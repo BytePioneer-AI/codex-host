@@ -1,11 +1,11 @@
 import { consumesNextArgument } from "./delegation-cli-options.js";
 
 const COMMAND_HELP = {
-  "host info": `codexhost host info [--refresh true|false]
+  "host info": `codexhost host info [--refresh true|false] [--format json|compact|text]
 Read this Host's environment, tools and workspace defaults. Cached observations expire after 60 seconds.`,
-  "project list": `codexhost project list [--query <text>] [--offset <n>] [--limit <n>] [--refresh true|false]
+  "project list": `codexhost project list [--query <text>] [--offset <n>] [--limit <n>] [--refresh true|false] [--format json|compact|text]
 Discover projects under this Host's configured roots. Returns live project metadata and pagination; no static project registry is required.`,
-  "thread file": `codexhost thread file <thread> --path <file> [--offset <n>] [--limit <bytes>] [--revision <revision>]
+  "thread file": `codexhost thread file <thread> --path <file> [--offset <n>] [--limit <bytes>] [--revision <revision>] [--format json|compact|text]
 Read a file explicitly linked in the latest final report, inside the Thread workspace. Returns a base64 chunk, revision, nextOffset and eof. Continue with the returned revision; restart if it changes. Maximum chunk size is 1 MiB. Read through the execution Host.`,
   "client add": `codexhost client add <name>
 Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
@@ -20,12 +20,12 @@ The listener also serves GET /v1/events as server-sent events (resume with Last-
 List registered external clients with their registration time. Tokens are never shown.`,
   "client remove": `codexhost client remove <name>
 Revoke a client immediately. Its later requests are rejected with UNAUTHORIZED and its open event streams are closed. Threads it started remain.`,
-  "harness list": `codexhost harness list [--format json|compact]
+  "harness list": `codexhost harness list [--format json|compact|text]
 List Harnesses available in the active Runtime.`,
-  "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact]
+  "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact|text]
 Read available Models, native defaults, Thinking options, and configuration capabilities.
 Use the returned Model and Thinking IDs for explicit selections.`,
-  "delegate start": `codexhost delegate start --harness <id> --task <text> [--task-name <name>] [--cwd <path>] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact]
+  "delegate start": `codexhost delegate start --harness <id> --task <text> [--task-name <name>] [--cwd <path>] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
 Create an independent child Thread, submit the task, and return immediately.
 --task-name supplies a short subtask name (1-120 characters); otherwise the first task line is used.
 The child title is "subtask name · parent title", fixed at creation; renaming the parent does not rename existing children.
@@ -37,26 +37,26 @@ Reuse --request-id for an idempotent retry. Identical recent parent/target/task/
 --ref records where the work came from, such as an issue URL; repeat it for several. Absolute URIs only, at most 16 per Thread; credentials in a URI are removed. A child inherits its parent Thread's references.
 An external client that omits --parent-thread starts the work as itself (parent client:<name>) and must pass --cwd.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> --message <text> [--format json|compact]
+  "thread send": `codexhost thread send <thread> --message <text> [--format json|compact|text]
 Start a new Turn in an idle writable Thread and return immediately.
 THREAD_BUSY means the current Turn is still active: wait or cancel before sending. Messages are not queued.
 To be notified when that Turn ends, run thread watch after sending.`,
-  "thread cancel": `codexhost thread cancel <thread> [--format json|compact]
+  "thread cancel": `codexhost thread cancel <thread> [--format json|compact|text]
 Request cancellation of the active Turn while preserving the Thread and history.
 Accepted cancellation also removes all watches on that Thread.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
-  "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
+  "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact|text]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
 The default result view reports the latest Turn's status and result.
 The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
 Compact messages output contains only the message page and status; compact result output includes the latest nonempty progress while running.
-Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included in either format.`,
-  "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
+Text output shows a Thread/Harness/status header, optional Turn and progress, then --- and verbatim result text; messages are separate role-labelled paragraphs. Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included in these formats.`,
+  "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact|text]
 Wait until the Thread is terminal or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
 timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
 Message pagination uses --view messages, default limit 25, maximum 100. hasMore is for current pages; nextCursor also supports future incremental reads.`,
-  "thread watch": `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact]
+  "thread watch": `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact|text]
 Ask the Host to notify one Thread, once, when the watched Thread stops. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
 --notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); for an external client it defaults to the client, and the notification becomes an event in its log (see codexhost events). Otherwise it is required. delegate start reports the caller as its parent.
 The notification starts a new Turn in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, timedOut, unreadable, or notFound. It reports execution state only and asks the notified agent to read each Thread's result before continuing.
@@ -64,9 +64,10 @@ The notification starts a new Turn in the notified Thread with the watched Threa
 state=watching means registered. state=alreadyTerminal means the Thread was not running: nothing was registered and nothing will be sent.
 A busy notified Thread is notified after its Turn ends (retried for up to 6 hours); notifications due together arrive as one message. THREAD_BUSY is never treated as delivered.
 A watch is one-shot with no standalone unsubscribe command; an accepted thread cancel removes all watches on the watched Thread. Watching the same pair again while it is still watched returns that watch; once it has stopped, a new watch covers the next stop and any pending notification is still delivered. Watches are stored and resume after a Host Runtime restart; a notification whose delivery was in progress when the Runtime stopped is sent again, so a restart may repeat one. A Turn that was running when the Runtime restarted is reported as interrupted, because the restart ended its Harness process.`,
-  "thread watches": `codexhost thread watches [--format json|compact]
-List watches that have not been delivered: watching, pendingDelivery (waiting for the notified Thread), or undeliverable (with the reason). Delivered watches are removed.`,
-  "thread list": `codexhost thread list [--cwd <path>] [--parent <thread> | --client <name>] [--ref <uri>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc] [--format json|compact]
+  "thread watches": `codexhost thread watches [--format json|compact|text]
+List watches that have not been delivered: watching, pendingDelivery (waiting for the notified Thread), or undeliverable (with the reason). Delivered watches are removed.
+Entries include taskName when known, threadStatus when readable, and watchedForMs since registration (including downtime). Text prints one watch per line.`,
+  "thread list": `codexhost thread list [--cwd <path>] [--parent <thread> | --client <name>] [--ref <uri>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc] [--format json|compact|text]
 Find existing Threads by workspace, or use --parent to list a Thread's delegated children.
 Workspace listing defaults to the caller process cwd. Default limit 25 (maximum 100), sorted created-desc.
 --parent uses Delegation relationships. --client lists what an external client started without a parent Thread. --ref lists Threads carrying that reference, newest first, across workspaces. An external client lists all workspaces unless --cwd is given. A null nextCursor ends the list.
@@ -78,6 +79,7 @@ export type DelegationCliCommand = keyof typeof COMMAND_HELP;
 const COMMON_HELP = `Thread references accept a bare ID or codex://threads/<id>.
 Options accept --name <value> or --name=<value>. --task, --task-name, and --message take the next argument verbatim, even when it is empty or starts with --.
 --format json is the compatible full JSON output (default); --format compact returns concise JSON using task links instead of internal IDs.
+--format text returns readable key/value lines with unescaped Thread bodies and at least the compact fields. It is not supported by client or events commands; unsupported commands return an explicit error. Errors remain JSON on stderr in every format.
 Success is written to stdout; errors {"error":{"code":"...","message":"...","details":{...}}} go to stderr with exit code 1. Exit code 0 means the command succeeded, not that the delegated task succeeded.
 read/wait are non-consuming. Native Codex callers need local Runtime access; RUNTIME_UNREACHABLE requires the Host-provided environment and a sandbox that permits that connection.
 Native Codex shell commands also need the Host-provided CODEXHOST_* environment variables. If shell_environment_policy filters them, prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only containing "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools. Avoid unconstrained inherit = "all", which forwards unrelated ambient variables.`;

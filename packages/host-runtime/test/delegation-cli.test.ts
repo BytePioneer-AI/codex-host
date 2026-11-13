@@ -567,7 +567,7 @@ describe("delegation CLI", () => {
   });
 
   it.each([
-    ["invalid format", ["thread", "read", "thread-1", "--format", "text"]],
+    ["invalid format", ["thread", "read", "thread-1", "--format", "yaml"]],
     ["invalid discovery arguments", ["harness", "list", "pi"]],
     ["invalid view", ["thread", "read", "thread-1", "--view", "raw"]],
     ["invalid timeout", ["thread", "wait", "thread-1", "--timeout-ms", "0"]],

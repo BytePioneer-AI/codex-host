@@ -235,6 +235,7 @@ export class DelegationWatchService {
       registeredAt: new Date().toISOString(),
       timeoutMs: input.timeoutMs,
       deadline: Date.now() + input.timeoutMs,
+      ...(target.title ? { title: target.title } : {}),
     };
     this.#watches.push(watch);
     try {
@@ -253,18 +254,42 @@ export class DelegationWatchService {
 
   async watches(): Promise<ThreadWatchListResult> {
     await this.#ready;
+    const watches = [...this.#watches];
+    const snapshots = new Map<string, DelegationThreadSnapshot | undefined>();
+    await Promise.all(
+      [...new Set(watches.map(({ threadId }) => threadId))].map(async (threadId) => {
+        try {
+          snapshots.set(threadId, await this.#api.read({ threadId, view: "result" }));
+        } catch {
+          // A missing or temporarily unreadable Thread must not hide its watch.
+        }
+      }),
+    );
+    const now = Date.now();
     return {
-      watches: this.#watches.map(
-        ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt }) => ({
-          threadId,
-          notifyThreadId,
-          state,
-          ...(outcome ? { outcome } : {}),
-          ...(turnId ? { turnId } : {}),
-          ...(reason ? { reason } : {}),
-          registeredAt,
-        }),
-      ),
+      watches: watches
+        .filter((watch) => this.#watches.includes(watch))
+        .map(
+          ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt, title }) => {
+            const snapshot = snapshots.get(threadId);
+            const taskName = snapshot?.title || title;
+            const registeredMs = Date.parse(registeredAt);
+            return {
+              threadId,
+              notifyThreadId,
+              state,
+              ...(outcome ? { outcome } : {}),
+              ...(turnId ? { turnId } : {}),
+              ...(reason ? { reason } : {}),
+              registeredAt,
+              ...(taskName ? { taskName } : {}),
+              ...(snapshot ? { threadStatus: snapshot.status } : {}),
+              ...(Number.isFinite(registeredMs)
+                ? { watchedForMs: Math.max(0, now - registeredMs) }
+                : {}),
+            };
+          },
+        ),
     };
   }
 

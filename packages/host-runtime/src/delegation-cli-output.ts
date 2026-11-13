@@ -17,7 +17,7 @@ function targetLink(identifier: string): string {
   return originClientName(identifier) !== undefined ? identifier : threadLink(identifier);
 }
 
-export type DelegationCliFormat = "json" | "compact";
+export type DelegationCliFormat = "json" | "compact" | "text";
 
 function threadLink(threadId: string): string {
   return `codex://threads/${threadId}`;
@@ -163,13 +163,27 @@ export function compactDelegationOutput(
     case "thread watches": {
       const result = body as ThreadWatchListResult;
       return {
-        watches: result.watches.map(({ threadId, notifyThreadId, state, outcome, reason }) => ({
-          thread: threadLink(threadId),
-          notify: targetLink(notifyThreadId),
-          state,
-          ...(outcome ? { outcome } : {}),
-          ...(reason ? { reason } : {}),
-        })),
+        watches: result.watches.map(
+          ({
+            threadId,
+            notifyThreadId,
+            state,
+            outcome,
+            reason,
+            taskName,
+            threadStatus,
+            watchedForMs,
+          }) => ({
+            thread: threadLink(threadId),
+            notify: targetLink(notifyThreadId),
+            state,
+            ...(outcome ? { outcome } : {}),
+            ...(reason ? { reason } : {}),
+            ...(taskName ? { taskName } : {}),
+            ...(threadStatus ? { threadStatus } : {}),
+            ...(watchedForMs !== undefined ? { watchedForMs } : {}),
+          }),
+        ),
       };
     }
     case "thread list": {

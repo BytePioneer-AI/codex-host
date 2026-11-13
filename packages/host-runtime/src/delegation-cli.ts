@@ -4,6 +4,7 @@ import type { Writable } from "node:stream";
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
 import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
+import { assertDelegationTextCommand, textDelegationOutput } from "./delegation-cli-text.js";
 import { resolveRuntimeConnection, usesExternalClient } from "./delegation-runtime-connection.js";
 import { runClientCommand } from "./external-client-cli.js";
 import { originClientName } from "./external-client-origin.js";
@@ -187,20 +188,30 @@ export async function runDelegationCli(input: {
       output.write(help);
       return 0;
     }
-    const parsed = parseDelegationArguments(rest);
+    const parsed = parseDelegationArguments(group === "events" ? input.arguments.slice(1) : rest);
     const format = value(parsed, "--format") ?? "json";
-    if (format !== "json" && format !== "compact") {
-      throw new DelegationControlError("INVALID_ARGUMENT", "--format must be json or compact");
+    if (format !== "json" && format !== "compact" && format !== "text") {
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "--format must be json, compact or text",
+      );
     }
+    if (format === "text")
+      assertDelegationTextCommand(group === "events" ? group : `${group} ${command}`);
     const writeResult = (
       name: DelegationCliCommand,
       body: unknown,
       view: "result" | "messages" = "result",
-    ): void =>
-      writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+    ): void => {
+      if (format === "text") {
+        const text = textDelegationOutput(name, body, view);
+        output.write(text.endsWith("\n") ? text : `${text}\n`);
+      } else {
+        writeJson(output, format === "json" ? body : compactDelegationOutput(name, body, view));
+      }
+    };
     if (group === "events") {
-      // events has no subcommand, so its options start right after the group.
-      const options = parseDelegationArguments(input.arguments.slice(1));
+      const options = parsed;
       rejectUnknown(options, ["--after", "--limit", "--follow"]);
       if (options.positionals.length > 0)
         throw new DelegationControlError(
@@ -263,8 +274,8 @@ export async function runDelegationCli(input: {
           "INVALID_ARGUMENT",
           "--offset must be a non-negative integer",
         );
-      writeJson(
-        output,
+      writeResult(
+        group === "host" ? "host info" : "project list",
         await requestRuntime({
           environment,
           path: group === "host" ? "/v1/host/info" : "/v1/project/list",
@@ -295,8 +306,8 @@ export async function runDelegationCli(input: {
           "INVALID_ARGUMENT",
           "--offset must be a non-negative integer",
         );
-      writeJson(
-        output,
+      writeResult(
+        "thread file",
         await requestRuntime({
           environment,
           path: "/v1/thread/file",

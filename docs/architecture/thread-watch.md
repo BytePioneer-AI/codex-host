@@ -34,6 +34,8 @@
 | `delegate start ... --watch true` | 创建委派后顺手观察，通知 Host 解析出的发起方 |
 | `thread watches` | 列出尚未送达的 watch |
 
+`thread watches` 的 JSON / compact 条目在原有字段外提供 `taskName`（当前标题；无法读取时使用登记或观察时保存的标题）、`threadStatus`（查询时读取的 Thread 当前状态，读取失败时省略）、`watchedForMs`（自登记以来的毫秒数，包含 Host 停机时间，不因重复登记重置）。Thread 当前状态与 watch 的 `state` / 已观察到的 `outcome` 不同：通知待送达时 Thread 可能已启动新 Turn。查询只读取信息，不推进观察或投递；同一被观察 Thread 在一次查询中只读一次。无法读取某个 Thread 不会让其 watch 从列表消失。`--format text` 每个 watch 一行，保留 compact 信息。
+
 watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 先完成委派；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。`thread send` 不提供 `--watch`，发送后需要通知时单独执行 `thread watch`。
 
 ## 结果

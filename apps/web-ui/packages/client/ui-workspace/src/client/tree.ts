@@ -61,6 +61,7 @@ export interface SessionNode {
   reference?: ThreadReference | undefined;
   /** Stored title, or empty; the renderer localizes blank and unnamed row labels. */
   title: string;
+  cwd?: string;
   /** Domain blank marker; browser navigation filters these provisional Sessions out. */
   blank: boolean;
   /** A Session-scoped UI consumer is awaiting this user. */
@@ -431,6 +432,7 @@ function sessionNode(
     reference: threadReferenceOf(s),
     remote: s.projectionValues?.remoteHost ?? undefined,
     title: sessionTitle(s),
+    ...(s.cwd === undefined ? {} : { cwd: s.cwd }),
     blank: s.blank,
     ...sessionActivity(s, list, statuses),
     pinned: !archived.has(s.id) && pinned.has(s.id),

@@ -314,9 +314,9 @@ export function ProjectRowItem({
 }
 
 /**
- * Hover-card body: full title, relative time, the Session's own scheduled-task
- * section, and every relevant live status. The task section sits above the
- * status lines so they stay the card's trailing status line.
+ * Hover-card body: full title, Session working directory, relative time, the
+ * Session's own scheduled-task section, and every relevant live status.
+ * The task section sits above the trailing status lines.
  */
 function SessionHoverContent({
   node,
@@ -337,6 +337,7 @@ function SessionHoverContent({
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{displayTitle(node, t)}</div>
+      {node.cwd && <div className={css.hoverPath}>{node.cwd}</div>}
       {/* Same placeholder rule as the row's trailing cell: no timestamp
           before the first prompt. */}
       {!node.blank && <div className={css.hoverTime}>{hoverTimeLabel(node.updatedAt, now, t)}</div>}

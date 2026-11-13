@@ -86,7 +86,7 @@ async function fixture() {
     adapter,
     async cleanup() {
       await adapter.close();
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     },
   };
 }

@@ -39,6 +39,7 @@ export function SessionRowContent({
           onClick={onIdentityClick}
           data-thread-icon-toggle
           aria-label={identityLabel}
+          title={identityLabel}
           aria-expanded={identityExpanded}
           aria-controls={identityControls}
         >

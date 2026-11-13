@@ -1,6 +1,6 @@
 /** Compose Workspace-owned phone navigation and its local General Settings row. */
 import type { Context } from "@deepseek-ai/cordis";
-import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
+import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-connection/client";
 import type { UiWorkspaceService } from "./navigation.ts";
@@ -10,19 +10,13 @@ import {
   type RecentNavigationInjected,
 } from "./RecentNavigation.tsx";
 import { RecentNavigationRow, type RecentNavigationRowInjected } from "./RecentNavigationRow.tsx";
-import {
-  RECENT_NAVIGATION_NAMESPACE,
-  recentNavigationDefaults,
-  recentNavigationSchema,
-  type RecentNavigationSettings,
-} from "./recent-navigation-settings.ts";
+import type { RecentNavigationSettings } from "./recent-navigation-settings.ts";
 
-export function registerRecentNavigation(ctx: Context, navigation: UiWorkspaceService): void {
-  const preference = ctx.configForms.registerBrowser<RecentNavigationSettings>(
-    RECENT_NAVIGATION_NAMESPACE,
-    recentNavigationSchema.toJSON(),
-    recentNavigationDefaults,
-  );
+export function registerRecentNavigation(
+  ctx: Context,
+  navigation: UiWorkspaceService,
+  preference: ConfigForm<RecentNavigationSettings>,
+): void {
   const setEnabled = (enabled: boolean): Promise<boolean> =>
     preference.set("showRecentVisits", enabled);
   const setIdleTimeout = (minutes: number): Promise<boolean> =>

@@ -17,7 +17,13 @@ const GROUPS: readonly { title: SettingsKey; items: readonly string[] }[] = [
   },
   {
     title: "general.display",
-    items: ["language", "appearance", "font-size", "workspace.recent-navigation"],
+    items: [
+      "language",
+      "appearance",
+      "font-size",
+      "workspace.thread-tree-style",
+      "workspace.recent-navigation",
+    ],
   },
   {
     title: "general.interaction",

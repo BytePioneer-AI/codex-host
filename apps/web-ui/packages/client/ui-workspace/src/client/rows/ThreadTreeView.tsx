@@ -6,26 +6,38 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import { deriveThreadForest, type SessionNode } from "../tree.ts";
 import { visibleThreadRows } from "../thread-tree.ts";
+import { hasExplicitTreeStyle, type ThreadTreeCollapseStyle } from "../workspace-preferences.ts";
 
 const EMPTY_EXPANSION: Readonly<Record<string, boolean>> = {};
 const ThreadTreeContext = createContext<{
+  t: WorkspaceBrowserProps["t"];
   expansion: Readonly<Record<string, boolean>>;
   rows: (roots: readonly SessionNode[]) => SessionNode[];
-  toggle: (id: string, expanded: boolean) => void;
+  toggle: (id: string, expanded: boolean, occurrence?: string) => void;
+  collapseStyle: ThreadTreeCollapseStyle;
+  stylePrompt: string | undefined;
+  dismissStylePrompt: () => void;
+  setCollapseStyle: (style: ThreadTreeCollapseStyle) => Promise<boolean>;
   rootId: (id: SessionId) => SessionId;
   reveal: (id: SessionId) => void;
   selectSidebarRow: (id: SessionId) => void;
   isSidebarSelection: (id: SessionId) => boolean;
 }>({
+  t: (key) => key,
   expansion: EMPTY_EXPANSION,
   rows: (roots) => visibleThreadRows(roots, EMPTY_EXPANSION),
   toggle: () => {},
+  collapseStyle: "summary",
+  stylePrompt: undefined,
+  dismissStylePrompt: () => {},
+  setCollapseStyle: async () => false,
   rootId: (id) => id,
   reveal: () => {},
   selectSidebarRow: () => {},
@@ -43,7 +55,20 @@ export function ThreadTreeViewProvider({
   browser: WorkspaceBrowserProps;
   children: ReactNode;
 }) {
-  const { useSessions, useStore, useWorkspaces, actions } = browser;
+  const {
+    useSessions,
+    useStore,
+    useWorkspaces,
+    actions,
+    useWorkspacePreferences,
+    setThreadTreeCollapseStyle,
+  } = browser;
+  const preference = useWorkspacePreferences((snapshot) => snapshot);
+  const explicitlyChosen = hasExplicitTreeStyle(preference.user);
+  const collapseStyle = preference.value?.threadTreeCollapseStyle ?? "summary";
+  // Only direct fold controls supply an occurrence; reveals and restored folds never do.
+  const [promptOccurrence, setPromptOccurrence] = useState<string>();
+  const dismissStylePrompt = useCallback(() => setPromptOccurrence(undefined), []);
   const list = useSessions((state) => state);
   const workspaceState = useWorkspaces((state) => state);
   const expansion = useStore((state) => state.threadExpansion ?? EMPTY_EXPANSION);
@@ -110,15 +135,37 @@ export function ThreadTreeViewProvider({
   }, [current, isSidebarSelection, reveal, targets]);
   const value = useMemo(
     () => ({
+      t: browser.t,
       expansion,
       rows: (roots: readonly SessionNode[]) => visibleThreadRows(roots, expansion),
-      toggle: (id: string, expanded: boolean) => actions.setThreadsExpanded([id], expanded),
+      toggle: (id: string, expanded: boolean, occurrence?: string) => {
+        actions.setThreadsExpanded([id], expanded);
+        if (expanded && occurrence !== undefined && !explicitlyChosen)
+          setPromptOccurrence(occurrence);
+      },
+      collapseStyle,
+      stylePrompt: explicitlyChosen ? undefined : promptOccurrence,
+      dismissStylePrompt,
+      setCollapseStyle: setThreadTreeCollapseStyle,
       rootId: (id: SessionId) => targets.get(id)?.root.id ?? id,
       reveal,
       selectSidebarRow,
       isSidebarSelection,
     }),
-    [actions, expansion, targets, reveal, selectSidebarRow, isSidebarSelection],
+    [
+      browser.t,
+      actions,
+      expansion,
+      targets,
+      reveal,
+      selectSidebarRow,
+      isSidebarSelection,
+      collapseStyle,
+      explicitlyChosen,
+      promptOccurrence,
+      dismissStylePrompt,
+      setThreadTreeCollapseStyle,
+    ],
   );
   return <ThreadTreeContext.Provider value={value}>{children}</ThreadTreeContext.Provider>;
 }

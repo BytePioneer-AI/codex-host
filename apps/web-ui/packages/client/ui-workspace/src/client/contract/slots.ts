@@ -38,6 +38,8 @@
  * session-scoped seat would force a Session binding, which would activate and
  * retain every listed Session.
  */
+import type { ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
+import type { WorkspacePreferences, ThreadTreeCollapseStyle } from "../workspace-preferences.ts";
 import type {
   HostObservable,
   InjectFace,
@@ -258,7 +260,9 @@ export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected["hooks"]
  * browsing region drives.
  */
 export type WorkspaceBrowserInjected = {
+  setThreadTreeCollapseStyle: (style: ThreadTreeCollapseStyle) => Promise<boolean>;
   hooks: DirectoryPickingInjected["hooks"] & {
+    workspacePreferences: HostObservable<ConfigFormSnapshot<WorkspacePreferences>>;
     /**
      * Fixed Host facts, reached through a hook rather than injected as values:
      * the renderer memoizes an entry's inject result for the registration's

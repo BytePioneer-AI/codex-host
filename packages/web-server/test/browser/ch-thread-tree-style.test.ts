@@ -1,0 +1,232 @@
+/** Browser-local collapse styles and transient onboarding; no real Harness calls. */
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import { expect } from "@playwright/test";
+import type { Page } from "playwright";
+import {
+  openSidebar,
+  threadRow,
+  threadTreeBrowser,
+  treeShot,
+} from "../support/thread-tree-browser.ts";
+
+const KEY = "codexhost.web.preferences.v1:ui-workspace";
+async function themedShots(page: Page, name: string) {
+  await page.mouse.move(800, 30);
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    if (colorScheme === "dark") await page.locator("body[data-ds-dark-theme]").waitFor();
+    else await page.locator("body[data-ds-dark-theme]").waitFor({ state: "detached" });
+    await treeShot(page, `${name}-${colorScheme}`);
+  }
+}
+async function fits(page: Page) {
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.deepEqual(
+    await page
+      .locator('[role="tree"], [data-thread-style-prompt]')
+      .evaluateAll((nodes) =>
+        nodes
+          .filter((node) => node.scrollWidth > node.clientWidth + 1)
+          .map((node) => node.outerHTML.slice(0, 100)),
+      ),
+    [],
+  );
+}
+async function chooseInMenu(page: Page, name: string) {
+  await page.getByRole("button", { name: "View options", exact: true }).click();
+  await treeShot(page, `style-${page.viewportSize()?.width}-view-options`);
+  await page.getByRole("radio", { name, exact: true }).click();
+  await page.keyboard.press("Escape");
+}
+
+for (const width of [1280, 390]) {
+  it(
+    `tree style prompt, persistence and ring priorities at ${width}px`,
+    { timeout: 60_000 },
+    async (t) => {
+      const { page, host } = await threadTreeBrowser(t, width);
+      const parent = threadRow(page, "parent");
+      const prompt = page.locator("[data-thread-style-prompt]");
+      assert.equal(await prompt.count(), 0, "initial load does not prompt");
+      await themedShots(page, `style-${width}-summary`);
+      await parent.locator("[data-thread-summary]").click();
+      await prompt.waitFor();
+      assert.equal(await prompt.count(), 1);
+      assert.equal(
+        await prompt.locator("button").count(),
+        3,
+        "samples have no interactive controls",
+      );
+      await prompt.scrollIntoViewIfNeeded();
+      await fits(page);
+      await themedShots(page, `style-${width}-choice-bar`);
+      await prompt.getByRole("button", { name: "Later", exact: true }).click();
+      await expect(prompt).toHaveCount(0);
+      assert.equal(
+        await page.evaluate(
+          (key) =>
+            Object.hasOwn(
+              JSON.parse(localStorage.getItem(key) ?? "{}").user,
+              "threadTreeCollapseStyle",
+            ),
+          KEY,
+        ),
+        false,
+      );
+      await parent.locator("[data-thread-icon-toggle]").click();
+      await parent.locator("[data-thread-icon-toggle]").focus();
+      await page.keyboard.press("Enter");
+      await prompt.waitFor();
+      // Browser quota refusal must not mark the default as an explicit choice.
+      await page.evaluate(`(() => {
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (key.endsWith(":ui-workspace")) throw new DOMException("full", "QuotaExceededError");
+        return original.call(this, key, value);
+      };
+      window.restoreTreeStorage = () => { Storage.prototype.setItem = original; };
+    })()`);
+      await prompt.locator('[data-thread-style-choice="ring"]').click();
+      await prompt.getByRole("alert").waitFor();
+      await treeShot(page, `style-${width}-save-error`);
+      await page.evaluate(() =>
+        (window as unknown as { restoreTreeStorage: () => void }).restoreTreeStorage(),
+      );
+      await prompt.locator('[data-thread-style-choice="ring"]').click();
+      await expect(prompt).toHaveCount(0);
+      await expect(parent.locator("[data-thread-icon-toggle]")).toBeFocused();
+      await parent.locator("[data-thread-icon-toggle]").click();
+      await expect(parent.locator("[data-thread-summary]")).toHaveCount(0);
+      const ring = parent.locator("[data-thread-ring]");
+      await expect(ring).toHaveAttribute("data-thread-ring", "running");
+      const geometry = await parent.evaluate((row) => {
+        const iconNode = row.querySelector("[data-harness-id]");
+        const ringNode = row.querySelector("[data-thread-ring]");
+        if (!iconNode || !ringNode) throw new Error("Missing Harness glyph or descendant ring");
+        const icon = iconNode.getBoundingClientRect();
+        const ring = ringNode.getBoundingClientRect();
+        return {
+          glyph: icon.width,
+          diameter: ring.width,
+          x: ring.x + ring.width / 2 - icon.x - icon.width / 2,
+          y: ring.y + ring.height / 2 - icon.y - icon.height / 2,
+          height: row.getBoundingClientRect().height,
+        };
+      });
+      assert.deepEqual(geometry, {
+        glyph: 14,
+        diameter: 22,
+        x: 0,
+        y: 0,
+        height: width === 390 ? 48 : 32,
+      });
+      await themedShots(page, `style-${width}-ring-running`);
+      host.pending = [
+        {
+          requestId: -91,
+          threadId: "grandchild",
+          kind: "approval",
+          interaction: {
+            type: "approval",
+            title: "Review checks",
+            description: "Run checks?",
+            actions: [{ id: "once", label: "Allow once", effect: "allowOnce" }],
+          },
+          request: {
+            method: "mcpServer/elicitation/request",
+            params: { requestedSchema: { type: "object", properties: {} } },
+          },
+        },
+      ];
+      host.changed("grandchild", "mcpServer/elicitation/request");
+      await expect(ring).toHaveAttribute("data-thread-ring", "pending");
+      await expect(parent.locator("[data-thread-icon-toggle]")).toHaveAccessibleName(
+        /4 child sessions.*1 running.*1 needs approval.*expand/,
+      );
+      await themedShots(page, `style-${width}-ring-pending`);
+      host.pending = [];
+      host.changed("grandchild", "serverRequest/resolved");
+      await expect(ring).toHaveAttribute("data-thread-ring", "running");
+      const grandchild = host.threads.get("grandchild");
+      assert.ok(grandchild);
+      grandchild.status = { type: "idle" };
+      host.changed("grandchild", "turn/completed");
+      await expect(ring).toHaveAttribute("data-thread-ring", "completed");
+      await themedShots(page, `style-${width}-ring-unread`);
+      await parent.locator("[data-thread-icon-toggle]").click();
+      await threadRow(page, "child").locator("[data-thread-icon-toggle]").click();
+      await threadRow(page, "grandchild").locator("[data-session-title]").click();
+      await page
+        .locator('[data-conversation-session="grandchild"] [data-composer-input]')
+        .waitFor();
+      await openSidebar(page);
+      await parent.locator("[data-thread-icon-toggle]").click();
+      await expect(ring).toHaveAttribute("data-thread-ring", "idle");
+      await themedShots(page, `style-${width}-ring-idle`);
+      await fits(page);
+      await chooseInMenu(page, "Summary row");
+      await parent.locator("[data-thread-summary]").waitFor();
+      await parent.locator("[data-thread-icon-toggle]").click();
+      await expect(prompt).toHaveCount(0);
+      await page.reload();
+      await openSidebar(page);
+      await expect(prompt).toHaveCount(0);
+      assert.equal(
+        await page.evaluate(
+          (key) => JSON.parse(localStorage.getItem(key) ?? "{}").user.threadTreeCollapseStyle,
+          KEY,
+        ),
+        "summary",
+      );
+    },
+  );
+}
+
+it(
+  "automatic expansion never prompts; settings and storage updates return summary focus",
+  { timeout: 40_000 },
+  async (t) => {
+    const { page } = await threadTreeBrowser(t, 1280, "grandchild");
+    const parent = threadRow(page, "parent");
+    const prompt = page.locator("[data-thread-style-prompt]");
+    await expect(parent).toHaveAttribute("aria-expanded", "true");
+    await expect(prompt).toHaveCount(0);
+    await page.reload();
+    await expect(parent).toHaveAttribute("aria-expanded", "true");
+    await expect(prompt).toHaveCount(0);
+    await parent.locator("[data-thread-icon-toggle]").click();
+    await parent.locator("[data-thread-summary]").focus();
+    await page.evaluate((key) => {
+      const record = JSON.parse(localStorage.getItem(key) ?? "{}");
+      record.user.threadTreeCollapseStyle = "ring";
+      record.revision++;
+      localStorage.setItem(key, JSON.stringify(record));
+      window.dispatchEvent(new StorageEvent("storage", { key }));
+    }, KEY);
+    await expect(parent.locator("[data-thread-summary]")).toHaveCount(0);
+    await expect(parent.locator("[data-thread-icon-toggle]")).toBeFocused();
+    const view = page.getByRole("button", { name: "View options", exact: true });
+    await view.click();
+    await view.focus();
+    await page.keyboard.press("End");
+    await expect(page.getByRole("radio", { name: "Icon ring", exact: true })).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.getByRole("radio", { name: "Summary row", exact: true })).toBeChecked();
+    await page.keyboard.press("Escape");
+    await parent.locator("[data-thread-summary]").waitFor();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "General", exact: true }).click();
+    const display = page.getByRole("region", { name: "Display & language", exact: true });
+    await display.getByRole("radio", { name: "Icon ring", exact: true }).click();
+    await expect(page.getByRole("radio", { name: "Icon ring", exact: true })).toBeChecked();
+    await page.getByRole("radio", { name: "Icon ring", exact: true }).press("ArrowLeft");
+    await expect(page.getByRole("radio", { name: "Summary row", exact: true })).toBeChecked();
+    await display.scrollIntoViewIfNeeded();
+    await themedShots(page, "style-1280-settings");
+    await page.keyboard.press("Escape");
+    await parent.locator("[data-thread-summary]").waitFor();
+    await parent.locator("[data-thread-icon-toggle]").click();
+    await expect(prompt).toHaveCount(0);
+  },
+);

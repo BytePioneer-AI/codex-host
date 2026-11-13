@@ -1,0 +1,65 @@
+.ring {
+  position: absolute;
+  /* Centered on the actual glyph, not the row's 16px identity slot. */
+  width: 22px;
+  height: 22px;
+  inset-inline-start: 50%;
+  top: 50%;
+  margin-inline-start: -11px;
+  margin-top: -11px;
+  pointer-events: none;
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.ring svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.ring circle {
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.ring[data-thread-ring="pending"] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.ring[data-thread-ring="running"] {
+  color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary),
+    var(--dsw-alias-state-success-primary)
+  );
+}
+
+.ring[data-thread-ring="running"] svg {
+  animation: spin 1.8s linear infinite;
+}
+
+.ring[data-thread-ring="running"] circle {
+  stroke-dasharray: 48 16.4;
+}
+
+.ring[data-thread-ring="idle"] {
+  color: var(--dsw-alias-label-tertiary);
+  opacity: 0.55;
+}
+
+.ring[data-thread-ring="idle"] circle {
+  stroke-width: 1;
+  stroke-dasharray: 1.5 3;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring[data-thread-ring="running"] svg {
+    animation: none;
+  }
+}

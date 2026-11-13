@@ -94,6 +94,7 @@ import {
 } from "../stores.ts";
 import { WorkspacePickFlow } from "../WorkspacePicker.tsx";
 import css from "./WorkspaceBrowser.module.css";
+import { ThreadTreeStyleOptions } from "../ThreadTreeStyleOptions.tsx";
 
 /**
  * Column slide length (--ds-transition-duration-slow): rail-search focus waits it out —
@@ -160,6 +161,7 @@ function ViewOptionsMenu({
 }) {
   const [open, setOpen] = useState(false);
   const phoneSidebar = usePhoneSidebar();
+  const { collapseStyle, setCollapseStyle } = useThreadTreeView();
   return (
     <Menu
       phoneSidebarTitle={t("viewOptions.label")}
@@ -232,7 +234,9 @@ function ViewOptionsMenu({
           </button>
         </Tooltip>
       }
-    />
+    >
+      <ThreadTreeStyleOptions style={collapseStyle} setStyle={setCollapseStyle} t={t} />
+    </Menu>
   );
 }
 

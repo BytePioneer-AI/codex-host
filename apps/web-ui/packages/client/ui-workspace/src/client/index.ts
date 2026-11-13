@@ -57,6 +57,7 @@ import {
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from "./shortcuts.ts";
 import { UiWorkspaceService } from "./navigation.ts";
 import { registerRecentNavigation } from "./recent-navigation.ts";
+import { registerWorkspacePreferences } from "./workspace-preferences.ts";
 import { createWorkspaceViewStore } from "./stores.ts";
 import { WorkspaceBrowser } from "./rows/WorkspaceBrowser.tsx";
 import {
@@ -185,7 +186,8 @@ export function apply(ctx: Context): void {
     viewInstance.actions,
     notify,
   );
-  registerRecentNavigation(ctx, uiWorkspace);
+  const workspacePreferences = registerWorkspacePreferences(ctx);
+  registerRecentNavigation(ctx, uiWorkspace, workspacePreferences);
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } });
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-workspace: dictionaries");
   const shortcutControls = createWorkspaceShortcutControls();
@@ -403,7 +405,10 @@ export function apply(ctx: Context): void {
     closeAddWorkspace: shortcutControls.closeAdd,
     setDirectoryBusy: shortcutControls.directoryBusy,
     dismissForkError: shortcutControls.dismissForkError,
+    setThreadTreeCollapseStyle: (style) =>
+      workspacePreferences.set("threadTreeCollapseStyle", style),
     hooks: {
+      workspacePreferences,
       directoryFlow: browserFlowSource,
       hostInfo,
       workspaceShortcuts: shortcutControls.state,

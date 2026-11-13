@@ -1,9 +1,20 @@
 /** Nested display groups keep ancestry guides independent of row and subtree heights. */
-import { createContext, useContext, useId, type CSSProperties, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useId,
+  useLayoutEffect,
+  useRef,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import type { SessionNode } from "../tree.ts";
 import css from "./ThreadTreeControls.module.css";
+import { threadTreeSummary } from "./thread-tree-presentation.ts";
+import { ThreadTreeSummaryContent } from "./ThreadTreeSummaryContent.tsx";
+import { ThreadTreeStylePrompt } from "./ThreadTreeStylePrompt.tsx";
 
 const ChildGroupContext = createContext<string | undefined>(undefined);
 export const useThreadChildGroup = () => useContext(ChildGroupContext);
@@ -26,7 +37,8 @@ function ThreadTreeBranch({
   renderRow: (node: SessionNode) => ReactNode;
 }) {
   const groupId = useId();
-  const { expansion } = useThreadTreeView();
+  const { expansion, stylePrompt, dismissStylePrompt, collapseStyle, setCollapseStyle, t } =
+    useThreadTreeView();
   const expanded = expansion[node.id] === true;
   const depth = node.tree?.depth ?? 0;
   const children = node.tree?.children ?? [];
@@ -45,6 +57,21 @@ function ThreadTreeBranch({
           {expanded && <ThreadTreeRows roots={children}>{renderRow}</ThreadTreeRows>}
         </div>
       )}
+      {expanded && stylePrompt === groupId && (
+        <ThreadTreeStylePrompt
+          style={collapseStyle}
+          setStyle={setCollapseStyle}
+          onLater={dismissStylePrompt}
+          onExit={() =>
+            document
+              .querySelector<HTMLElement>(
+                `[data-thread-icon-toggle][aria-controls="${CSS.escape(groupId)}"]`,
+              )
+              ?.focus({ preventScroll: true })
+          }
+          t={t}
+        />
+      )}
     </div>
   );
 }
@@ -61,20 +88,23 @@ export function ThreadTreeSummary({
   t: WorkspaceBrowserProps["t"];
 }) {
   const groupId = useThreadChildGroup();
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    const button = buttonRef.current;
+    return () => {
+      if (button !== null && document.activeElement === button)
+        button
+          .closest("[data-row-key]")
+          ?.querySelector<HTMLElement>("[data-thread-icon-toggle]")
+          ?.focus({ preventScroll: true });
+    };
+  }, []);
   const tree = node.tree;
   if (!tree || tree.descendantCount === 0) return null;
-  const segments = [
-    { state: "running", count: tree.activity.running },
-    { state: "pending", count: tree.activity.pendingInteraction },
-    { state: "completed", count: tree.activity.completed },
-  ] as const;
-  const count = t("threadTree.children", { n: tree.descendantCount });
-  const summary = [
-    count,
-    ...segments.filter((s) => s.count > 0).map((s) => t(`threadTree.${s.state}`, { n: s.count })),
-  ].join(" · ");
+  const summary = threadTreeSummary(tree.descendantCount, tree.activity, t);
   return (
     <button
+      ref={buttonRef}
       type="button"
       data-thread-summary
       className={css.summary}
@@ -91,14 +121,7 @@ export function ThreadTreeSummary({
         toggle();
       }}
     >
-      {count}
-      {segments
-        .filter((s) => s.count > 0)
-        .map((s) => (
-          <span key={s.state} data-thread-tree-activity={s.state}>
-            {` · ${t(`threadTree.${s.state}`, { n: s.count })}`}
-          </span>
-        ))}
+      <ThreadTreeSummaryContent count={tree.descendantCount} activity={tree.activity} t={t} />
     </button>
   );
 }

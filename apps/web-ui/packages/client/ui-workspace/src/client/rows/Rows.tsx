@@ -42,6 +42,8 @@ import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadTreeSummary, useThreadChildGroup } from "./ThreadTreeControls.tsx";
+import { ThreadTreeRing } from "./ThreadTreeRing.tsx";
+import { threadTreeSummary } from "./thread-tree-presentation.ts";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -490,7 +492,7 @@ export function SessionNodeItem({
   | "sidebar.session.row.hover"
 >) {
   const row = node;
-  const { expansion, toggle } = useThreadTreeView();
+  const { expansion, toggle, collapseStyle } = useThreadTreeView();
   const childGroupId = useThreadChildGroup();
   const depth = node.tree?.depth ?? 0;
   const expanded = expansion[node.id] === true;
@@ -608,14 +610,26 @@ export function SessionNodeItem({
         <SessionRowContent
           identityLabel={
             node.tree?.descendantCount
-              ? t(expanded ? "threadTree.collapse" : "threadTree.expand", {
-                  n: node.tree.descendantCount,
-                })
+              ? !expanded && collapseStyle === "ring"
+                ? t("threadTree.expandSummary", {
+                    title,
+                    summary: threadTreeSummary(node.tree.descendantCount, node.tree.activity, t),
+                  })
+                : t(expanded ? "threadTree.collapse" : "threadTree.expand", {
+                    n: node.tree.descendantCount,
+                  })
               : undefined
           }
           identityExpanded={node.tree?.descendantCount ? expanded : undefined}
           identityControls={childGroupId}
-          identity={renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
+          identity={
+            <>
+              {renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
+              {!expanded && collapseStyle === "ring" && !!node.tree?.descendantCount && (
+                <ThreadTreeRing activity={node.tree.activity} />
+              )}
+            </>
+          }
           ambient={
             !row.archived &&
             !row.blank &&
@@ -627,7 +641,7 @@ export function SessionNodeItem({
             node.tree?.descendantCount
               ? (e) => {
                   e.stopPropagation();
-                  toggle(node.id, !expanded);
+                  toggle(node.id, !expanded, childGroupId);
                 }
               : undefined
           }
@@ -722,8 +736,13 @@ export function SessionNodeItem({
           </span>
         </SessionRowContent>
       </div>
-      {!expanded && (
-        <ThreadTreeSummary node={node} title={title} toggle={() => toggle(node.id, true)} t={t} />
+      {!expanded && collapseStyle === "summary" && (
+        <ThreadTreeSummary
+          node={node}
+          title={title}
+          toggle={() => toggle(node.id, true, childGroupId)}
+          t={t}
+        />
       )}
     </div>
   );

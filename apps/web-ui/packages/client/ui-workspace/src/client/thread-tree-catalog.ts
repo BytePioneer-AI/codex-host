@@ -44,8 +44,14 @@ export function threadPlacementCandidates(
   query: string,
 ): SessionSummary[] {
   const source = Object.values(list.byId).find((row) => row.id === sessionId);
-  if (!canPlaceThread(source)) return [];
-  const excluded = new Set([sessionId, ...sessionDescendantIds(list, sessionId), ...archivedIds]);
+  if (!canPlaceThread(source) || archivedIds.includes(sessionId)) return [];
+  const parent = source === undefined ? null : threadTreeParentOf(source, list);
+  const excluded = new Set([
+    sessionId,
+    ...(parent === null ? [] : [parent]),
+    ...sessionDescendantIds(list, sessionId),
+    ...archivedIds,
+  ]);
   const hostId = source?.projectionValues?.threadReference?.hostId;
   const q = query.trim().toLocaleLowerCase();
   return list.ids

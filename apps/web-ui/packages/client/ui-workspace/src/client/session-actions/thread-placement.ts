@@ -19,7 +19,7 @@ export function registerThreadPlacement(
   sessions: ISessions,
   view: WorkspaceViewStoreActions,
   notify: (toast: RowToast) => void,
-): void {
+): PlaceSessionInjected["placeSession"] {
   const request = createSnapshotStore<SessionId | null>(null);
   const injected = (): PlaceSessionInjected => ({
     hooks: { placementRequest: request },
@@ -52,6 +52,7 @@ export function registerThreadPlacement(
       }
     },
   });
+  const placeSession = injected().placeSession;
   ctx.slots.inject("sidebar.workspaces.session.menu.item", () =>
     ctx.slots.register(
       {
@@ -75,4 +76,5 @@ export function registerThreadPlacement(
       PlaceSessionDialog,
     ),
   );
+  return placeSession;
 }

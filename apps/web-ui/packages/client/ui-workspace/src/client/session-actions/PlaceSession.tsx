@@ -1,6 +1,7 @@
-/** The same menu and searchable placement dialog serve pointer, keyboard, and touch. */
+/** Phone placement uses the row menu and searchable dialog. */
 import { useMemo, useState } from "react";
 import { Button, MenuItemButton, Modal } from "@deepseek-ai/dsh-client-ui-primitives";
+import { useSidebarTouch } from "../rows/use-sidebar-touch.ts";
 import type {
   HostObservable,
   PropsHooks,
@@ -35,7 +36,8 @@ export function PlaceSessionMenuItems({
 }: SessionMenuItemProps<PlaceSessionInjected>) {
   const summary = useSessions((list) => list.byId[sessionId]);
   const [, setOpen] = useMenuOpenState();
-  if (!canPlaceThread(summary)) return null;
+  const touch = useSidebarTouch();
+  if (!touch || !canPlaceThread(summary)) return null;
   return (
     <>
       <MenuItemButton

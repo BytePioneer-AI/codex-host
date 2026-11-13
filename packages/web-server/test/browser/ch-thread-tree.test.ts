@@ -292,7 +292,7 @@ it(
         .locator('[role="tree"] [data-row-key]')
         .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-row-key")));
     const order = await rows();
-    await child.dragTo(threadRow(page, "destination"));
+    await child.dragTo(threadRow(page, "destination"), { targetPosition: { x: 100, y: 1 } });
     assert.deepEqual(await savedOrder(), before);
     assert.deepEqual(await rows(), order);
     assert.equal(host.placements.size, 0);
@@ -394,7 +394,7 @@ it(
   },
 );
 
-for (const width of [1280, 390]) {
+for (const width of [390]) {
   it(
     `placement filters candidates, expands target ancestors and persists an explicit top level at ${width}px`,
     { timeout: 60_000 },
@@ -465,7 +465,7 @@ it(
   "a refused placement reports the Host error without moving the subtree",
   { timeout: 60_000 },
   async (t) => {
-    const { page, host } = await threadTreeBrowser(t);
+    const { page, host } = await threadTreeBrowser(t, 390);
     await expanded(page, "parent", true);
     host.placeError = "Placement rejected by Host.";
     await threadMenu(page, "child");

@@ -523,28 +523,31 @@ describe("QwenCodeSdkTransport", () => {
     });
   });
 
-  it("puts the Host Node.js runtime on the Qwen child PATH", async () => {
-    const query = new FakeQuery();
-    let options: { env?: Record<string, string> } | undefined;
-    const transport = new QwenCodeSdkTransport({
-      cwd: process.cwd(),
-      command: process.execPath,
-      environment: { PATH: "/usr/bin:/bin" },
-      queryFactory: vi.fn(({ options: received }) => {
-        options = received;
-        return query as unknown as Query;
-      }) as unknown as typeof sdkQuery,
-    });
+  it.each([false, true])(
+    "puts the Host Node.js runtime on the Qwen child PATH (present: %s)",
+    async (present) => {
+      const runtime = path.dirname(process.execPath);
+      const entries = [...new Set(["/usr/bin", "/bin", ...(present ? [runtime] : [])])];
+      const query = new FakeQuery();
+      let options: { env?: Record<string, string> } | undefined;
+      const transport = new QwenCodeSdkTransport({
+        cwd: process.cwd(),
+        command: process.execPath,
+        environment: { PATH: entries.join(path.delimiter) },
+        queryFactory: vi.fn(({ options: received }) => {
+          options = received;
+          return query as unknown as Query;
+        }) as unknown as typeof sdkQuery,
+      });
 
-    await transport.open({ kind: "create", permissionMode: "default" as never });
+      await transport.open({ kind: "create", permissionMode: "default" as never });
 
-    expect(options?.env?.PATH?.split(path.delimiter)).toEqual([
-      "/usr/bin",
-      "/bin",
-      path.dirname(process.execPath),
-    ]);
-    await transport.close();
-  });
+      expect(options?.env?.PATH?.split(path.delimiter)).toEqual([
+        ...new Set([...entries, runtime]),
+      ]);
+      await transport.close();
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "keeps a closed Qwen child stdin from becoming an uncaught EPIPE",

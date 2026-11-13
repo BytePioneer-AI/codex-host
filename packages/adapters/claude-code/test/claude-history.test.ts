@@ -327,6 +327,64 @@ describe("Claude history mapping", () => {
     });
   });
 
+  it("restores Claude MCP tools and WebSearch as MCP and web search Items", () => {
+    const history = [
+      message("user", "user-1", "search"),
+      message("assistant", "assistant-1", [
+        { type: "tool_use", id: "mcp-1", name: "mcp__docs__lookup", input: { id: 7 } },
+        { type: "tool_use", id: "search-1", name: "WebSearch", input: { query: "codex" } },
+        { type: "tool_use", id: "mcp-2", name: "mcp__docs__lookup", input: { id: 8 } },
+      ]),
+      message("user", "tool-results", [
+        { type: "tool_result", tool_use_id: "mcp-1", content: "found" },
+        { type: "tool_result", tool_use_id: "search-1", content: "Web search results" },
+        { type: "tool_result", tool_use_id: "mcp-2", content: "missing", is_error: true },
+      ]),
+    ];
+
+    const items = mapClaudeSnapshot(history, sessionId).turns[0]?.items;
+    expect(items).toEqual([
+      {
+        item: {
+          type: "mcpToolCall",
+          itemId: "claude-item-v2-user-1-tool-1",
+          server: "docs",
+          tool: "lookup",
+          arguments: { id: 7 },
+          output: { content: [{ type: "text", text: "found" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "webSearch",
+          itemId: "claude-item-v2-user-1-tool-2",
+          query: "codex",
+          output: { content: [{ type: "text", text: "Web search results" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "mcpToolCall",
+          itemId: "claude-item-v2-user-1-tool-3",
+          server: "docs",
+          tool: "lookup",
+          arguments: { id: 8 },
+          output: { content: [{ type: "text", text: "missing" }] },
+        },
+        outcome: {
+          status: "failed",
+          error: {
+            code: "nativeFailure",
+            message: "mcp__docs__lookup failed",
+            retryable: false,
+          },
+        },
+      },
+    ]);
+  });
+
   it("omits Claude model controls and metadata without hiding other human commands", () => {
     const synthetic = {
       ...message("user", "synthetic", "synthetic prompt"),

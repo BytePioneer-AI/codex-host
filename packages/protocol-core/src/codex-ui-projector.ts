@@ -8,6 +8,7 @@ import type {
   HostItemUpdate,
   HostQuestionInteraction,
   HostTextInput,
+  HostToolOutput,
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
@@ -83,6 +84,8 @@ interface ProjectedItem {
   reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
   wireStarted: boolean;
+  /** Holds its place in the Turn's Item order before its wire Item starts. */
+  orderReserved?: boolean;
   startedAtMs?: number;
   durationMs?: number;
 }
@@ -92,18 +95,20 @@ function resolvedItemDurationMs(
   startedAtMs: number,
   completedAtMs: number,
 ): number {
-  if (
-    (item.type === "commandExecution" || item.type === "toolExecution") &&
-    item.durationMs !== undefined
-  ) {
-    return item.durationMs;
-  }
+  if (hasDuration(item) && item.durationMs !== undefined) return item.durationMs;
   return Math.max(0, completedAtMs - startedAtMs);
 }
 
+function hasDuration(
+  item: HostItem,
+): item is Extract<HostItem, { type: "commandExecution" | "toolExecution" | "mcpToolCall" }> {
+  return (
+    item.type === "commandExecution" || item.type === "toolExecution" || item.type === "mcpToolCall"
+  );
+}
+
 function withResolvedDuration(item: HostItem, durationMs: number): HostItem {
-  if (item.type !== "commandExecution" && item.type !== "toolExecution") return item;
-  return { ...item, durationMs };
+  return hasDuration(item) ? { ...item, durationMs } : item;
 }
 
 type ProjectedInteraction =
@@ -428,6 +433,64 @@ function planStatus(value: unknown): CodexPlanStepStatus {
   return "pending";
 }
 
+/**
+ * Codex's web search Item has no status, so a search that did not succeed keeps
+ * the generic tool card with its native error instead.
+ */
+function presentedItem(item: HostItem, outcome: HostItemOutcome | null): HostItem {
+  if (item.type !== "webSearch" || !outcome || outcome.status === "succeeded") return item;
+  return {
+    type: "toolExecution",
+    itemId: item.itemId,
+    toolName: "web_search",
+    arguments: { query: item.query },
+    ...(item.output ? { output: item.output } : {}),
+  };
+}
+
+/** MCP content blocks for Codex's MCP tool result. */
+function mcpResultContent(output: HostToolOutput | undefined): JsonValue[] {
+  return (output?.content ?? []).map((content) =>
+    content.type === "text"
+      ? { type: "text", text: content.text }
+      : { type: "image", data: content.base64Data, mimeType: content.mimeType },
+  );
+}
+
+function projectMcpToolCall(
+  item: Extract<HostItem, { type: "mcpToolCall" }>,
+  outcome: HostItemOutcome | null,
+): JsonObject {
+  const status = itemStatus(outcome);
+  const outputText = item.output?.content
+    .flatMap((content) => (content.type === "text" ? [content.text] : []))
+    .join("");
+  const failure =
+    outcome?.status === "failed"
+      ? outcome.error.message
+      : outcome?.status === "cancelled"
+        ? (outcome.reason ?? "Cancelled")
+        : "";
+  return {
+    id: item.itemId,
+    type: "mcpToolCall",
+    server: item.server,
+    tool: item.tool,
+    status,
+    arguments: item.arguments,
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result:
+      status === "completed"
+        ? { content: mcpResultContent(item.output), structuredContent: null, _meta: null }
+        : null,
+    error: status === "failed" ? { message: outputText || failure } : null,
+    durationMs: item.durationMs ?? null,
+  };
+}
+
 function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): JsonValue[] | null {
   if (!item.output) return null;
   return item.output.content.map((content) =>
@@ -556,6 +619,16 @@ function projectItem(
         durationMs: item.durationMs ?? null,
       };
     }
+    case "mcpToolCall":
+      return projectMcpToolCall(item, outcome);
+    case "webSearch":
+      return {
+        id: item.itemId,
+        type: "webSearch",
+        query: item.query,
+        action: { type: "search", query: item.query, queries: null },
+        results: null,
+      };
     case "fileChange":
       return {
         id: item.itemId,
@@ -676,7 +749,9 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
-  const projectEntry = ({ item, outcome }: HostItemSnapshot): JsonObject[] => {
+  const projectEntry = (entry: HostItemSnapshot): JsonObject[] => {
+    const { outcome } = entry;
+    const item = presentedItem(entry.item, outcome);
     if (itemFileChanges(item) !== null) {
       return files?.itemId === item.itemId
         ? [projectItem(files, { status: "succeeded" }, cwd)]
@@ -1115,6 +1190,13 @@ export class CodexTurnProjector {
       if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
     }
     if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
+    // Its wire type depends on the outcome (see presentedItem), so only its
+    // place in the Turn is taken now.
+    if (event.item.type === "webSearch") {
+      projected.orderReserved = true;
+      this.#wireItemOrder.push(event.item.itemId);
+      return { messages: [] };
+    }
     const startedItem =
       event.item.type === "reasoning" ? { ...event.item, text: "" } : this.#mediaItem(event.item);
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
@@ -1248,7 +1330,11 @@ export class CodexTurnProjector {
     const startedAtMs = projected.startedAtMs;
     if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
     const durationMs = resolvedItemDurationMs(projected.item, startedAtMs, emittedAtMs);
-    projected.item = withResolvedDuration(projected.item, durationMs);
+    // Keep the presented form so snapshots and reads match the live wire Item.
+    projected.item = presentedItem(
+      withResolvedDuration(projected.item, durationMs),
+      projected.outcome,
+    );
     projected.durationMs = durationMs;
     if (itemFileChanges(projected.item) !== null) {
       return { messages: this.#fileChangeUpdates(emittedAtMs) };
@@ -1265,6 +1351,14 @@ export class CodexTurnProjector {
       },
     });
     if (!projected.wireStarted) {
+      if (event.snapshot.item.type === "webSearch") {
+        return {
+          messages: [
+            this.#startWireItem(projected, projected.item, startedAtMs),
+            completedItem(this.#projectItem(projected.item, projected.outcome)),
+          ],
+        };
+      }
       if (projected.item.type === "toolExecution") {
         if (isTodoTool(projected.item.toolName)) {
           const plan =
@@ -1445,7 +1539,7 @@ export class CodexTurnProjector {
     if (projected.wireStarted) throw new Error("Codex Item started more than once");
     projected.wireStarted = true;
     projected.startedAtMs = startedAtMs;
-    this.#wireItemOrder.push(item.itemId);
+    if (!projected.orderReserved) this.#wireItemOrder.push(item.itemId);
     return {
       method: "item/started",
       emittedAtMs: startedAtMs,

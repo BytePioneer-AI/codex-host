@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
   HostFileChangeItem,
+  HostMcpToolCallItem,
   HostQuestionInteraction,
   HostSubagentDelegationItem,
   HostThreadSnapshot,
   HostToolExecutionItem,
+  HostWebSearchItem,
 } from "@codexhost/harness-adapter";
 import {
   hostInteractionIdSchema,
@@ -1238,6 +1240,213 @@ describe("Codex UI projector", () => {
     });
     expect(completed.completedTurn).toMatchObject({ items: [] });
     expect(JSON.stringify(completed)).not.toContain("mcpToolCall");
+  });
+
+  it("projects MCP tool calls and successful web searches onto Codex's native Items, live and historical", () => {
+    const value = projector();
+    const mcpId = itemId("mcp-1");
+    const failedMcpId = itemId("mcp-2");
+    const searchId = itemId("search-1");
+    const failedSearchId = itemId("search-2");
+    const mcp: HostMcpToolCallItem = {
+      type: "mcpToolCall",
+      itemId: mcpId,
+      server: "docs",
+      tool: "lookup",
+      arguments: { id: 7 },
+    };
+    const search: HostWebSearchItem = { type: "webSearch", itemId: searchId, query: "codex" };
+    value.project({ type: "turn.started", turnId });
+    expect(value.project({ type: "item.started", turnId, item: mcp }).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: mcpId,
+            type: "mcpToolCall",
+            server: "docs",
+            tool: "lookup",
+            status: "inProgress",
+            arguments: { id: 7 },
+            result: null,
+            error: null,
+          },
+        },
+      },
+    ]);
+    const completedMcp = {
+      ...mcp,
+      output: { content: [{ type: "text" as const, text: "found" }] },
+      durationMs: 5,
+    };
+    const mcpCompleted = {
+      id: mcpId,
+      type: "mcpToolCall",
+      server: "docs",
+      tool: "lookup",
+      status: "completed",
+      arguments: { id: 7 },
+      appContext: null,
+      mcpAppUi: null,
+      pluginId: null,
+      readOnlyHint: null,
+      result: { content: [{ type: "text", text: "found" }], structuredContent: null, _meta: null },
+      error: null,
+      durationMs: 5,
+    };
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: completedMcp, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toMatchObject([{ method: "item/completed", params: { item: mcpCompleted } }]);
+
+    const failedMcp: HostMcpToolCallItem = { ...mcp, itemId: failedMcpId };
+    const failure = {
+      status: "failed" as const,
+      error: { code: "nativeFailure" as const, message: "lookup failed", retryable: false },
+    };
+    value.project({ type: "item.started", turnId, item: failedMcp });
+    const failedMcpCompleted = {
+      status: "failed",
+      result: null,
+      error: { message: "server unavailable" },
+    };
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            ...failedMcp,
+            output: { content: [{ type: "text", text: "server unavailable" }] },
+          },
+          outcome: failure,
+        },
+      }).messages,
+    ).toMatchObject([{ params: { item: failedMcpCompleted } }]);
+
+    const searchItem = {
+      id: searchId,
+      type: "webSearch",
+      query: "codex",
+      action: { type: "search", query: "codex", queries: null },
+      results: null,
+    };
+    // A web search has no status, so its wire type waits for the outcome.
+    expect(value.project({ type: "item.started", turnId, item: search }).messages).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: search, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toEqual([
+      expect.objectContaining({
+        method: "item/started",
+        params: expect.objectContaining({ item: searchItem }),
+      }),
+      expect.objectContaining({
+        method: "item/completed",
+        params: expect.objectContaining({ item: searchItem }),
+      }),
+    ]);
+    const failedSearch: HostWebSearchItem = {
+      type: "webSearch",
+      itemId: failedSearchId,
+      query: "codex",
+      output: { content: [{ type: "text", text: "rate limited" }] },
+    };
+    const failedSearchItem = {
+      id: failedSearchId,
+      type: "dynamicToolCall",
+      tool: "web_search",
+      arguments: { query: "codex" },
+      status: "failed",
+      contentItems: [{ type: "inputText", text: "rate limited" }],
+      success: false,
+    };
+    value.project({ type: "item.started", turnId, item: failedSearch });
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: failedSearch, outcome: failure },
+      }).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { ...failedSearchItem, status: "inProgress", success: null } },
+      },
+      { method: "item/completed", params: { item: failedSearchItem } },
+    ]);
+
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "session-1",
+        nativeTurnKey: "turn-1",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [
+        { item: completedMcp, outcome: { status: "succeeded" } },
+        {
+          item: {
+            ...failedMcp,
+            output: { content: [{ type: "text", text: "server unavailable" }] },
+          },
+          outcome: failure,
+        },
+        { item: search, outcome: { status: "succeeded" } },
+        { item: failedSearch, outcome: failure },
+      ],
+      outcome: { status: "succeeded" },
+    };
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot }).items).toEqual([
+      expect.objectContaining({ type: "userMessage" }),
+      mcpCompleted,
+      expect.objectContaining({ id: failedMcpId, ...failedMcpCompleted }),
+      searchItem,
+      expect.objectContaining(failedSearchItem),
+    ]);
+  });
+
+  it("keeps a live web search in start order and in its presented form for snapshots", () => {
+    const value = projector();
+    const searchId = itemId("search-order");
+    const mcpId = itemId("mcp-order");
+    const search: HostWebSearchItem = { type: "webSearch", itemId: searchId, query: "codex" };
+    const mcp: HostMcpToolCallItem = {
+      type: "mcpToolCall",
+      itemId: mcpId,
+      server: "docs",
+      tool: "lookup",
+      arguments: {},
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: search });
+    value.project({ type: "item.started", turnId, item: mcp });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: mcp, outcome: { status: "succeeded" } },
+    });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: search, outcome: { status: "cancelled", reason: "Cancelled by user" } },
+    });
+    const { completedTurn } = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "cancelled" },
+    });
+    expect(value.snapshotTurn(completedTurn).items).toMatchObject([
+      { id: searchId, type: "dynamicToolCall", tool: "web_search", status: "failed" },
+      { id: mcpId, type: "mcpToolCall", status: "completed" },
+    ]);
   });
 
   it("lifts Read/Glob/Grep Generic Tools into Command Execution cards with paths", () => {

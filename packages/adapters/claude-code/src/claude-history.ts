@@ -11,6 +11,7 @@ import {
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HostItemId,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -19,6 +20,7 @@ import {
   claudeSendMessageFailed,
 } from "./native-message.js";
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
+import { claudeToolItem, type ClaudeToolItem } from "./claude-tool-item.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 
@@ -592,15 +594,8 @@ export function mapClaudeSnapshotWithCheckpointIds(
             });
             continue;
           }
-          const argumentsResult = jsonValueSchema.safeParse(block.input);
           items.push({
-            item: {
-              type: "toolExecution",
-              itemId,
-              toolName: block.name,
-              arguments: argumentsResult.success ? argumentsResult.data : null,
-              ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-            },
+            item: historyToolItem(itemId, block.name, block.input, output),
             outcome: toolOutcome,
           });
         }
@@ -611,6 +606,21 @@ export function mapClaudeSnapshotWithCheckpointIds(
     index = end;
   }
   return { snapshot: { turns }, turnCheckpointIds };
+}
+
+function historyToolItem(
+  itemId: HostItemId,
+  toolName: string,
+  input: unknown,
+  output: string | undefined,
+): ClaudeToolItem {
+  const argumentsResult = jsonValueSchema.safeParse(input);
+  const item = claudeToolItem(
+    itemId,
+    toolName,
+    argumentsResult.success ? argumentsResult.data : null,
+  );
+  return output ? { ...item, output: { content: [{ type: "text", text: output }] } } : item;
 }
 
 function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<string, unknown>> {
@@ -776,15 +786,8 @@ export function mapClaudeSubagentSnapshot(
           });
           continue;
         }
-        const argumentsResult = jsonValueSchema.safeParse(block.input);
         items.push({
-          item: {
-            type: "toolExecution",
-            itemId,
-            toolName: block.name,
-            arguments: argumentsResult.success ? argumentsResult.data : null,
-            ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-          },
+          item: historyToolItem(itemId, block.name, block.input, output),
           outcome: toolOutcome,
         });
       }

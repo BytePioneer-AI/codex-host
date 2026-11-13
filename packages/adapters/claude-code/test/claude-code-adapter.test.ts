@@ -3049,6 +3049,134 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("projects Claude MCP tools and WebSearch as MCP and web search Items", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("tools"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.event({
+      type: "tool.started",
+      callId: "mcp-1",
+      toolName: "mcp__docs__search__v2",
+      arguments: { q: "codex" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "mcpToolCall",
+        server: "docs",
+        tool: "search__v2",
+        arguments: { q: "codex" },
+      },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "mcp-1",
+      toolName: "mcp__docs__search__v2",
+      outputText: "server unavailable",
+      isError: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "mcpToolCall",
+          output: { content: [{ type: "text", text: "server unavailable" }] },
+          durationMs: expect.any(Number),
+        },
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      },
+    });
+
+    // A reported server whose Tool-name segment contains `__` decides the split.
+    transport.event({ type: "segment.started", mcpServers: ["team..docs"] });
+    transport.event({
+      type: "tool.started",
+      callId: "mcp-2",
+      toolName: "mcp__team__docs__search",
+      arguments: {},
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "mcpToolCall", server: "team__docs", tool: "search" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "mcp-2",
+      toolName: "mcp__team__docs__search",
+      outputText: "found",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "mcpToolCall", server: "team__docs", tool: "search" } },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "search-1",
+      toolName: "WebSearch",
+      arguments: { query: "codex app server" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "webSearch", query: "codex app server" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "search-1",
+      toolName: "WebSearch",
+      outputText: "Web search results",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "webSearch",
+          query: "codex app server",
+          output: { content: [{ type: "text", text: "Web search results" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "monitor-1",
+      toolName: "Monitor",
+      arguments: { command: "tail -f log", description: "log events" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Monitor" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "monitor-1",
+      toolName: "Monitor",
+      outputText: "Monitor started",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "toolExecution", toolName: "Monitor" },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
   it("projects Claude Task tools as accumulated Todo snapshots", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

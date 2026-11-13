@@ -34,7 +34,7 @@
 | B5 | Fork | 原生有则必做 | P1 | 受限 | src/claude-fork.ts、claude-fork-references.ts | test/claude-queued-fork.test.ts、claude-rollback.test.ts、claude-fork-references.test.ts | 校验原生完整前缀；本次不执行真实 Fork |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/claude-code-adapter.ts | history.forkAcrossCwd=false；test/claude-code-adapter.test.ts | 原生会话 cwd 约束 |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/claude-fork.ts、pending-session.ts | test/claude-rollback.test.ts | 派生并校验前缀，不改源 Session |
-| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 支持 | src/native-message.ts、tool-lifecycle.ts、file-change.ts | test/native-message.test.ts、file-change.test.ts | 历史不把普通附件当用户输入 |
+| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 支持 | src/native-message.ts、tool-lifecycle.ts、claude-tool-item.ts、file-change.ts | test/native-message.test.ts、file-change.test.ts；claude-code-adapter.test.ts、claude-history.test.ts 的 MCP/WebSearch 用例 | 历史不把普通附件当用户输入；`mcp__<server>__<tool>` 显示为 MCP 工具调用，成功的 WebSearch 显示为网页搜索、失败的保留通用工具卡及错误，实时与历史同一映射；Monitor 仍为通用工具卡 |
 | B9 | 审批 | 原生有则必做 | P0 | 支持 | src/sdk-transport.ts、claude-code-adapter.ts | test/sdk-transport.test.ts、claude-code-adapter.test.ts | 使用公共 Interaction |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/sdk-transport.ts、claude-code-adapter.ts | test/sdk-transport.test.ts、claude-code-adapter.test.ts | 使用原生问题回调 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 支持 | src/subagent-lifecycle.ts、claude-history.ts | test/claude-history.test.ts、native-message.test.ts | 根级与子 Agent 不混淆 |
@@ -65,10 +65,13 @@
 - B5、B7：只接受原生可精确保留且验证通过的前缀，不把附件 UUID 用作 checkpoint；原生 Fork 未保留内容时拒绝派生结果。
 - B12、C8：后台续态与额度依原生帧/接口，不将未知状态猜成支持或成功。
 - B15、B16、D3：仅定位既有实现/测试，没有完成完整委派或插件 Loader/发行验证。
+- B8：Codex 的网页搜索 Item 没有状态，Desktop 也不渲染 `results`，因此成功的搜索只显示查询词；未成功的搜索改投影为带原生错误的通用工具卡（实时与历史一致）。实时搜索在结果确定后才出现在 Desktop，Web 行随该 Item 结束，不等 Turn 结束。WebFetch 仍为通用工具卡。Monitor 只返回“已启动”，之后的事件以不带 `tool-use-id`、`<status>` 和输出文件的 `<task-notification><event>` 逐条到达，没有可确认的结束信号，与后台 Bash 依输出文件和结束通知收尾的方式不同，因此不映射为命令卡。
 
 ## 插件外改动
 
 `docs/harnesses/claude-code/claude-code-steer.md` 记录冷历史恢复规则、checkpoint 与验证边界。恢复输入使用已有 `HostUserMessageItem`，不扩展公共契约；Web 通过通用的同轮用户 Item 投影独立显示，不读取 Claude 原生 attachment。官方 Codex 的队列和实时工具修复由 Host Runtime 负责，不属于本插件。
+
+公共契约新增 `HostMcpToolCallItem`（server、tool、arguments、output）与 `HostWebSearchItem`（query），Protocol Core 投影为 Codex app-server 的 `mcpToolCall` 与 `webSearch`；两者均在随 Codex Desktop 附带的 codex-cli 0.167.0-alpha.4.1 生成的 `ThreadItem` 中，Desktop 渲染层有对应分支。Web 把这两类 Item 转回 `server__tool` 与 `web_search` 工具行。
 
 ## 验证记录
 
@@ -81,5 +84,6 @@
 | Host 集成 | 运行中共享 Host 保持原状 | 本次未部署修复 |
 | 真实原生验收 | 新模型执行、真实 Fork / rollback | 本次未执行；仅只读历史 |
 | Desktop / 委派 | GUI 工具限制与本次范围 | 本次未执行 |
+| MCP / WebSearch 投影 | `npx tsc -b`；vitest 跑 codex-ui-projector、claude-code-adapter、claude-history 三个测试文件；`node --import tsx --test` 跑 web-server ch-tool-items | 通过；未在 Codex Desktop 实机查看卡片 |
 
 本次原生回放和聚焦测试结果存于 `/tmp/cc-queued-command-analysis-7WczIV/`，这是本地临时证据，不是发行依赖。冷历史 Item 身份稳定于原生记录，不承诺与 Host 的实时 Item ID 或本地 Web requestId 相同。

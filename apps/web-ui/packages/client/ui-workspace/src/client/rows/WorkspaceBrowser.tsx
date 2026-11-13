@@ -442,11 +442,12 @@ function SessionTree({
     if (
       current === undefined ||
       currentGroup === undefined ||
+      threadView.isSidebarSelection(current) ||
       Object.hasOwn(groupExpansion, currentGroup)
     )
       return;
     setGroupExpanded(currentGroup, true);
-  }, [current, currentGroup, setGroupExpanded, groupExpansion]);
+  }, [current, currentGroup, setGroupExpanded, groupExpansion, threadView]);
   const parents = useMemo(() => {
     if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
     const pathsByHost = new Map<string, Map<string, WorkspaceId>>();
@@ -1350,7 +1351,7 @@ function WorkspaceBrowserContent({
       notifyArchivedNotOpenable();
       return;
     }
-    threadView.reveal(sessionId);
+    threadView.selectSidebarRow(sessionId);
     open(sessionId);
   };
   const leaveArchivedOnly = (): void => {

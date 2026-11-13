@@ -24,7 +24,16 @@ const ThreadTreeContext = createContext<{
   toggle: (id: string, expanded: boolean) => void;
   rootId: (id: SessionId) => SessionId;
   reveal: (id: SessionId) => void;
-}>({ expansion: EMPTY_EXPANSION, toggle: () => {}, rootId: (id) => id, reveal: () => {} });
+  selectSidebarRow: (id: SessionId) => void;
+  isSidebarSelection: (id: SessionId) => boolean;
+}>({
+  expansion: EMPTY_EXPANSION,
+  toggle: () => {},
+  rootId: (id) => id,
+  reveal: () => {},
+  selectSidebarRow: () => {},
+  isSidebarSelection: () => false,
+});
 
 export function useThreadTreeView() {
   return useContext(ThreadTreeContext);
@@ -67,8 +76,20 @@ export function ThreadTreeViewProvider({
     }
     return result;
   }, [forest]);
+  // A row selection remains local to this browser until navigation leaves it.
+  // Both reveal effects consult it, including when the current row is clicked again.
+  const sidebarSelection = useRef<SessionId | undefined>(undefined);
+  const isSidebarSelection = useCallback((id: SessionId) => sidebarSelection.current === id, []);
+  const selectSidebarRow = useCallback(
+    (id: SessionId) => {
+      sidebarSelection.current = id;
+      actions.setThreadsExpanded(targets.get(id)?.ancestors ?? [], true);
+    },
+    [actions, targets],
+  );
   const reveal = useCallback(
     (id: SessionId) => {
+      sidebarSelection.current = undefined;
       const target = targets.get(id);
       if (target === undefined) return;
       actions.setThreadsExpanded(target.ancestors, true);
@@ -110,16 +131,18 @@ export function ThreadTreeViewProvider({
     // Live activity and manual folds must not be mistaken for navigation.
     if (navigationSeen.current === key) return;
     navigationSeen.current = key;
-    reveal(current);
-  }, [current, reveal, targets, workspaceState.items]);
+    if (!isSidebarSelection(current)) reveal(current);
+  }, [current, isSidebarSelection, reveal, targets, workspaceState.items]);
   const value = useMemo(
     () => ({
       expansion,
       toggle: (id: string, expanded: boolean) => actions.setThreadsExpanded([id], expanded),
       rootId: (id: SessionId) => targets.get(id)?.root.id ?? id,
       reveal,
+      selectSidebarRow,
+      isSidebarSelection,
     }),
-    [actions, expansion, targets, reveal],
+    [actions, expansion, targets, reveal, selectSidebarRow, isSidebarSelection],
   );
   return <ThreadTreeContext.Provider value={value}>{children}</ThreadTreeContext.Provider>;
 }

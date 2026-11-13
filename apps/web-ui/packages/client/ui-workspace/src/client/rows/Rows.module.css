@@ -395,6 +395,14 @@
     border-radius: var(--dsw-radius-sm);
   }
 
+  /* A fold badge is interactive: hover actions must take space after it,
+     rather than covering its pointer target as they cover title text. */
+  .sessionRow:has([data-thread-toggle]):is(:hover, :focus-visible, :has(:focus-visible), .menuOpen)
+    .rowActions {
+    position: static;
+    transform: none;
+  }
+
   .projectRow > .rowActions::before,
   .sessionRow .rowActions::before {
     content: "";
@@ -404,6 +412,10 @@
     width: 12px;
     background: linear-gradient(to right, transparent, var(--dsh-row-surface));
     pointer-events: none;
+  }
+
+  .sessionRow:has([data-thread-toggle]) .rowActions::before {
+    display: none;
   }
 }
 

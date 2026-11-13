@@ -635,6 +635,17 @@ export class OmpRpcSession {
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
     });
+    // A child that exits before reading closes the pipe; without a listener the
+    // EPIPE becomes an uncaught exception and stops the shared Host.
+    child.stdin.on("error", (error) => {
+      this.#fail(
+        new OmpRpcFaultError(
+          "processExited",
+          `Omp RPC stdin closed: ${error.message}`,
+          this.stderrTail,
+        ),
+      );
+    });
     child.once("error", (error) => {
       const kind = isRecord(error) && error.code === "ENOENT" ? "notInstalled" : "unavailable";
       this.#fail(

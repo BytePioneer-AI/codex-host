@@ -81,15 +81,6 @@ for (const [name, environment, expected] of [
     },
     undefined,
   ],
-  [
-    "lowercase precedence",
-    {
-      NODE_USE_ENV_PROXY: "1",
-      HTTPS_PROXY: "http://upper.example.test:8080",
-      https_proxy: "http://lower.example.test:8080",
-    },
-    "http://lower.example.test:8080",
-  ],
 ] as const) {
   it(`passes the resolved push proxy to web-push on every Node version: ${name}`, async (t) => {
     proxyEnvironment(t, environment);

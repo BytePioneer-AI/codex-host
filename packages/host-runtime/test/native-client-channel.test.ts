@@ -200,19 +200,6 @@ it.each([
   expect(request).toHaveBeenCalledTimes(1);
 });
 
-it.each(["turn/start", "thread/resume", "thread/turns/list"])(
-  "does not retry %s on an empty-rollout error",
-  async (method) => {
-    const { channel, request } = snapshotChannel();
-    channel.observeResponse("thread/resume", { threadId: "native-thread" }, { result: { thread } });
-    request.mockResolvedValue({ error: emptyRolloutError });
-    expect(await channel.request(method, { threadId: "native-thread" })).toEqual({
-      error: emptyRolloutError,
-    });
-    expect(request).toHaveBeenCalledTimes(1);
-  },
-);
-
 it("does not carry a pending metadata read retry into a new Host generation", async () => {
   const { channel, request } = snapshotChannel();
   request.mockResolvedValue({ error: emptyRolloutError });

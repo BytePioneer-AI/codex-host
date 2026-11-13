@@ -47,7 +47,7 @@ it("recognizes enabled legacy official settings without resetting the address or
     (connection) => {
       connections.push(connection);
       connection.connecting();
-      connection.registered(hostname);
+      connection.registered({ hostname });
       return () => {};
     },
   );
@@ -156,7 +156,7 @@ it("uses the official default, switches only while off, isolates assignments and
   data.writeJson(`${endpoint}/certificate-state.json`, { hostname });
   writeFileSync(data.path(endpoint, "certificate.pem"), credentials.cert);
   writeFileSync(data.path("remote-relay/certificate-key.pem"), credentials.key);
-  connections[0]?.registered(hostname);
+  connections[0]?.registered({ hostname });
   assert.equal(web.state.status, "connected");
   assert.equal("certificate" in web.state && web.state.certificate.issuing, false);
   web.setEnabled(false);
@@ -178,7 +178,7 @@ it("uses the official default, switches only while off, isolates assignments and
   assert.equal(connections[2]?.host, OFFICIAL_RELAY_HOST);
   assert.equal(connections[2]?.name, "alice");
   assert.equal(connections[2]?.invite, "secret");
-  connections[2]?.registered(hostname);
+  connections[2]?.registered({ hostname });
   assert.equal(web.access.officialHostname, hostname);
   assert.equal(web.state.status, "connected");
   assert.equal("certificate" in web.state && web.state.certificate.issuing, false);
@@ -245,7 +245,7 @@ it("isolates hostnames and certificates by control address even with the same as
     new RequestTrust(undefined),
     (connection) => {
       connection.connecting();
-      connection.registered(hostname);
+      connection.registered({ hostname });
       return () => {};
     },
   );

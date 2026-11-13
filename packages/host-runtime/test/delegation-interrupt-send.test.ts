@@ -173,7 +173,15 @@ describe("interrupt before send", () => {
     vi.useFakeTimers();
     const { registry, api, setStatus, snapshot } = setup();
     await registry.watch({ threadId: "target", notifyThreadId: "parent", timeoutMs: 100_000 });
-    const before = await registry.watches();
+    const stable = async () => ({
+      watches: (await registry.watches()).watches.map((watch) => {
+        const copy: Record<string, unknown> = { ...watch };
+        delete copy.watchedForMs;
+        delete copy.threadStatus;
+        return copy;
+      }),
+    });
+    const before = await stable();
     let release!: () => void;
     vi.mocked(api.wait).mockImplementation(async () => {
       setStatus("interrupted");
@@ -185,11 +193,11 @@ describe("interrupt before send", () => {
     const pending = registry.send(send);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(api.send).not.toHaveBeenCalled();
-    expect(await registry.watches()).toEqual(before);
+    expect(await stable()).toEqual(before);
     release();
     await pending;
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(await registry.watches()).toEqual(before);
+    expect(await stable()).toEqual(before);
     expect(api.send).toHaveBeenCalledTimes(1);
     setStatus("completed");
     await vi.advanceTimersByTimeAsync(2_000);

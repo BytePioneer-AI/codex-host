@@ -1,0 +1,30 @@
+.container {
+  display: contents;
+}
+
+.container [data-thread-drop] {
+  position: relative;
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary) 16%,
+    transparent
+  ) !important;
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+
+.container [data-thread-drop]::after {
+  content: attr(data-thread-drop-label);
+  position: absolute;
+  z-index: 10;
+  inset-inline-end: 4px;
+  top: 100%;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--dsw-alias-state-business-primary);
+  color: white;
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+}

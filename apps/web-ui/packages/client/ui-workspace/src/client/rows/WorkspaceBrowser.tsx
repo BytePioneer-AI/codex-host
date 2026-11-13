@@ -72,6 +72,7 @@ import { pinOrderSource } from "../pin-order.ts";
 import { threadTreeOrderSource } from "../thread-tree-order.ts";
 import { visibleThreadRows } from "../thread-tree.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
+import { ThreadPlacementDragProvider } from "./ThreadPlacementDrag.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
@@ -800,6 +801,8 @@ function SessionTree({
               const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
                 node.blank ? "after" : half;
               const dragProps = {
+                leave: () =>
+                  setDrag((active) => (active?.over ? { ...active, over: null } : active)),
                 start: () => {
                   sessionDropCommitted.current = false;
                   setDrag({
@@ -1099,6 +1102,8 @@ function FlatList({
                   : undefined
               }
               drag={{
+                leave: () =>
+                  setDrag((active) => (active?.over ? { ...active, over: null } : active)),
                 start: () => {
                   dropCommitted.current = false;
                   setDrag({
@@ -1271,7 +1276,9 @@ function SearchResults({
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   return (
     <ThreadTreeViewProvider browser={props}>
-      <WorkspaceBrowserContent {...props} />
+      <ThreadPlacementDragProvider browser={props}>
+        <WorkspaceBrowserContent {...props} />
+      </ThreadPlacementDragProvider>
     </ThreadTreeViewProvider>
   );
 }

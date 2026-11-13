@@ -368,7 +368,21 @@ export function apply(ctx: Context): void {
       viewInstance.actions.setArchivedFilter("show");
     },
   });
+  const placeSession = registerThreadPlacement(ctx, sessions, viewInstance.actions, notify);
   const browserInjected = (): WorkspaceBrowserInjected => ({
+    placeSession,
+    moveSessionToWorkspace: async (sessionId, workspaceId) => {
+      try {
+        await workspaces.insertSessionBefore(workspaceId, sessionId);
+        return true;
+      } catch (reason) {
+        notify({
+          kind: "placeFailed",
+          message: reason instanceof Error ? reason.message : String(reason),
+        });
+        return false;
+      }
+    },
     // Explicit group actions keep their target; unscoped New Session inherits
     // the current Session Workspace before the recent-Workspace fallback.
     startSession: (workspaceId) => {
@@ -524,7 +538,6 @@ export function apply(ctx: Context): void {
       PinSessionRowButton,
     );
   });
-  registerThreadPlacement(ctx, sessions, viewInstance.actions, notify);
   // The surfaces the actions raise live in the frame-wide layer: they must
   // outlive the row menu the action sat in.
   ctx.slots.inject("shell.overlay", function* () {

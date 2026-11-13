@@ -42,6 +42,7 @@ import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadTreeToggle } from "./ThreadTreeControls.tsx";
+import { useThreadPlacementDrag } from "./ThreadPlacementDrag.tsx";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -125,6 +126,8 @@ export interface RowDragProps {
   hover: (half: "before" | "after") => void;
   drop: (half: "before" | "after") => void;
   end: (copied?: boolean) => void;
+  /** Clear stale insertion markers when entering a placement or rejected target. */
+  leave: () => void;
 }
 
 /** Drag lifecycle owned by a workspace row; its enclosing group owns hit testing. */
@@ -490,6 +493,7 @@ export function SessionNodeItem({
 >) {
   const row = node;
   const { expansion, toggle } = useThreadTreeView();
+  const placementDrag = useThreadPlacementDrag();
   const depth = node.tree?.depth ?? 0;
   const expanded = expansion[node.id] === true;
   const drag = depth > 0 ? undefined : suppliedDrag;
@@ -503,7 +507,10 @@ export function SessionNodeItem({
   // their drop targets to fellow pinned rows.
   const reorderable = drag !== undefined && !row.blank && !row.archived;
   const reference = !row.blank ? row.reference : undefined;
-  const draggable = reorderable || reference !== undefined;
+  const draggable =
+    reorderable ||
+    reference !== undefined ||
+    (placementDrag.enabled && !row.blank && !row.archived && !row.remote);
   const dragged = useRef(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
@@ -522,6 +529,8 @@ export function SessionNodeItem({
       data-row-key={rowKey}
       data-thread-parent={node.tree?.parentId ?? undefined}
       data-thread-depth={depth}
+      data-thread-sortable={String(reorderable)}
+      data-thread-pinned={String(node.pinned)}
       style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 16}px` } as CSSProperties}
       className={clsx(
         css.sessionRow,
@@ -569,17 +578,34 @@ export function SessionNodeItem({
           : (e) => {
               dragged.current = true;
               e.dataTransfer.effectAllowed =
-                reference === undefined ? "move" : reorderable ? "copyMove" : "copy";
+                reference === undefined
+                  ? "move"
+                  : reorderable || placementDrag.enabled
+                    ? "copyMove"
+                    : "copy";
               e.dataTransfer.setData(
                 "text/plain",
                 reference === undefined ? node.id : threadReferenceInsert(reference).clipboardText,
               );
               if (reference !== undefined)
                 e.dataTransfer.setData(THREAD_REFERENCE_MIME, JSON.stringify(reference));
+              placementDrag.start(
+                node.id,
+                e.currentTarget,
+                () => drag?.leave(),
+                () => drag?.end(true),
+              );
               if (reorderable) drag?.start();
             }
       }
-      onDragEnd={!draggable ? undefined : (e) => drag?.end(e.dataTransfer.dropEffect === "copy")}
+      onDragEnd={
+        !draggable
+          ? undefined
+          : (e) => {
+              const cancelSort = placementDrag.end();
+              drag?.end(e.dataTransfer.dropEffect === "copy" || cancelSort);
+            }
+      }
       onDragOver={
         drag === undefined
           ? undefined

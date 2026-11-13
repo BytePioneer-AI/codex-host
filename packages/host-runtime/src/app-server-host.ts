@@ -317,6 +317,7 @@ import {
 } from "./thread-list-aggregator.js";
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
+import { ThreadTree } from "./thread-tree.js";
 import { externalThreadListEntries } from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { UsageMeasurementsStore } from "./usage-measurements-store.js";
@@ -687,6 +688,7 @@ export class AppServerHost {
   readonly #desktopControl: DesktopControlRequests;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
+  readonly #threadTree: ThreadTree;
   #sectionOperations: Promise<unknown> = Promise.resolve();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
@@ -883,6 +885,11 @@ export class AppServerHost {
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
     );
+    this.#threadTree = new ThreadTree(
+      this.#repository,
+      (method, params) => this.#requestOfficial(method, params),
+      this.#options.sharedThreads,
+    );
     this.#threadPins = new ThreadPins(this.#repository, (method, params) =>
       this.#requestOfficial(method, params),
     );
@@ -924,6 +931,8 @@ export class AppServerHost {
       startExternalTurn: (thread, text, turnId) =>
         this.#startDelegatedExternalTurn(thread, text, turnId),
       notifyThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
+      notifyTreeChanged: (threadId) =>
+        this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
       inspectOfficial: (input) => this.#inspectOfficialDelegationTarget(input),
       readOfficial: (input) => this.#readOfficialDelegationThread(input),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
@@ -1770,6 +1779,21 @@ export class AppServerHost {
     }
     if (await this.#desktopControl.handle(request)) return;
     if (
+      request.method === "codexhost/thread/tree/read" ||
+      request.method === "codexhost/thread/tree/place"
+    ) {
+      this.#dispatchDesktopReply(request, async () => {
+        await this.#waitForPlugins();
+        await this.#writer.json(
+          await this.#threadTree.handle(request, (threadId) =>
+            this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
+          ),
+        );
+      });
+      return;
+    }
+
+    if (
       request.method === "codexhost/thread/pins/list" ||
       request.method === "codexhost/thread/pins/set"
     ) {
@@ -2334,6 +2358,7 @@ export class AppServerHost {
         ...(input.requestId ? { requestId: input.requestId } : {}),
         taskDigest: digest,
       });
+      this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
       return {
         delegationId,
         threadId,

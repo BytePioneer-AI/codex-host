@@ -104,6 +104,9 @@ export class FakeChHost implements ChHostClient {
     let value: unknown;
     const row = this.threads.get(String(params.threadId));
     switch (method) {
+      case "codexhost/thread/tree/read":
+        value = { parents: {} };
+        break;
       case "codexhost/workspace/read":
         value = { ...structuredClone(this.projectSnapshot), pinned: [...this.pinnedIds] };
         break;

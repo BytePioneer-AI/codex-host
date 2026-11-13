@@ -21,7 +21,7 @@
 - [<会话标题>](thread://<id>): <结果>. <可选说明>
 ```
 
-- 链接标签是观察期间读到的 Thread 标题，随 watch 记录持久化；从未读到标题时使用 Thread ID。
+- 链接标签使用观察期间读到的 Thread 标题；从未读到标题时使用 Thread ID。生成通知时，首个 ` · ` 后的整个后缀超过 20 个 Unicode 字符则保留前 20 个并加 `…`，短后缀及无分隔符的标题不变。该规则也适用于恢复后待投递的历史 watch，只改变通知字符串，不回写 Thread 标题或 watch 中持久化的完整标题。新委派的标题只有子任务名，见 [委派命名](delegation-titles.md)。Web 通知卡片仍优先显示目录中的当前标题，未载入目录时显示通知标签。
 - 说明只在需要时出现：`timedOut` 提示重新注册，`unreadable` 附读取错误，`notFound` 说明 Thread 已不存在，重启导致的 `interrupted` 附重启说明。
 - 链接使用 Desktop 原生的会话引用形式 `[标题](thread://<id>)`，Desktop 将其显示为会话引用标签。链接不能带 title 属性（`[标题](thread://<id> "…")`），也不能用普通的 `codex://threads/<id>`，否则 Desktop 用户消息按原文显示。`codexhost thread read` 同样接受该形式。
 - 同一份原文给模型阅读，Web 解析后显示为通知卡片（见 [独立 Web](../product/standalone-web.md)）。不符合格式的文字（包括旧格式的历史通知）按普通用户消息显示。

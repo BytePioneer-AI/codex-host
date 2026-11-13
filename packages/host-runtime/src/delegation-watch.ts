@@ -14,6 +14,7 @@ import {
   type ThreadWatchResult,
 } from "./delegation-types.js";
 import type { DelegationWatchStore, PersistedWatch } from "./delegation-watch-store.js";
+import { threadWatchLabel } from "./delegation-title.js";
 import type { NewClientEvent } from "./external-client-events.js";
 import { originClientName } from "./external-client-origin.js";
 import { isValidClientName } from "./external-clients.js";
@@ -138,7 +139,7 @@ function notification(watches: readonly Watch[]): string {
       const note = noticeNote(watch);
       return {
         threadId: watch.threadId,
-        label: watch.title || watch.threadId,
+        label: threadWatchLabel(watch.title, watch.threadId),
         // Only pending deliveries, whose outcome has been observed, are notified.
         outcome: watch.outcome as ThreadWatchOutcome,
         ...(note ? { note } : {}),

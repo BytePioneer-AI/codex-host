@@ -15,7 +15,10 @@ for (const width of [1280, 390])
     async (t) => {
       const host = new FakeChHost();
       const source = host.add("watch-source", "/computer/project", "Watch notices");
-      const currentTitle = "审查最近 PR · 委派五项 Harness 任务与非常长的会话标题以验证窄屏布局";
+      const currentTitle =
+        width === 1280
+          ? "summary-row"
+          : "审查最近 PR · 委派五项 Harness 任务与非常长的会话标题以验证窄屏布局";
       const target = host.add("watch-target", "/computer/project", currentTitle);
       const answer = target.turns[0]?.items.at(-1);
       assert.ok(answer);
@@ -29,7 +32,7 @@ for (const width of [1280, 390])
         },
         { threadId: "late-target", label: "尚未载入的会话", outcome: "timedOut", note },
         { threadId: "missing", label: "不存在的会话", outcome: "notFound" },
-        { threadId: "done", label: "完成的会话", outcome: "completed" },
+        { threadId: "done", label: "summary-row · " + "父".repeat(20) + "…", outcome: "completed" },
         { threadId: "failed", label: "失败的会话", outcome: "failed" },
         { threadId: "unknown", label: "未知的会话", outcome: "unreadable" },
       ]);
@@ -72,6 +75,7 @@ for (const width of [1280, 390])
       await known.getByText(currentTitle, { exact: true }).waitFor();
       assert.equal(await card.count(), 1);
       assert.equal(await card.locator("li").count(), 6);
+      await card.getByText("summary-row · " + "父".repeat(20) + "…", { exact: true }).waitFor();
       assert.equal(await body.locator('[class*="_bubble"]').count(), 0);
       assert.equal((await card.innerText()).includes(THREAD_WATCH_NOTICE_HEADER), false);
       assert.equal((await card.innerText()).includes("Old title"), false);

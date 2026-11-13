@@ -89,6 +89,7 @@ import {
   decodeAntigravityPermissionModeId,
   type AntigravityPermissionMode,
 } from "./permission-modes.js";
+import { nativeTurnRecoveredFromError } from "./recovered-native-error.js";
 import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
 import {
@@ -1210,7 +1211,29 @@ class AntigravitySession implements HarnessSession {
         // Conversation already reported did not fail.
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
       } else {
-        this.#completeTurn(active, { status: "failed", error, checkpoint }, nativeTurnRef);
+        // agy also reports ERROR when a step of this Turn failed but the agent
+        // retried past it (a transient network error on one model request, for
+        // example) and went on to finish with a reply. Such a Turn did not fail.
+        const recovered =
+          !timedOut &&
+          finishedReason !== "interrupted" &&
+          repliedThisTurn &&
+          event.result.error?.trim() &&
+          (await nativeTurnRecoveredFromError({
+            conversationId: convId,
+            error: event.result.error,
+            homedir: antigravityHome(this.#environment),
+          }));
+        if (this.#active !== active) return;
+        this.#completeTurn(
+          active,
+          active.cancellationRequested
+            ? { status: "cancelled", reason: "Cancelled by user", checkpoint }
+            : recovered
+              ? { status: "succeeded", checkpoint }
+              : { status: "failed", error, checkpoint },
+          nativeTurnRef,
+        );
       }
     }
   }

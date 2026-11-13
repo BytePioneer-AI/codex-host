@@ -113,8 +113,9 @@ async function guides(
     return {
       axis: group.getBoundingClientRect().left + parseFloat(bridge.left) + 0.5,
       iconCenter: icon.x + icon.width / 2,
-      top: group.getBoundingClientRect().top - parseFloat(bridge.height),
+      top: group.getBoundingClientRect().top + parseFloat(bridge.top),
       iconBottom: icon.bottom,
+      parentGap: row.getAttribute("data-thread-depth") === "0" ? 12 : 10,
       width: bridge.width,
       pointerEvents: bridge.pointerEvents,
       color: bridge.backgroundColor,
@@ -129,8 +130,9 @@ async function guides(
           center: childIcon && childIcon.top + childIcon.height / 2,
           iconGap:
             childIcon && childIcon.left - rect.left - parseFloat(arc.left) - parseFloat(arc.width),
-          radius: arc.borderBottomLeftRadius,
-          border: arc.borderBottomWidth,
+          mask: arc.maskImage,
+          height: arc.height,
+          color: arc.backgroundColor,
           stemBottom: rect.top + parseFloat(stem.top) + parseFloat(stem.height),
           nextTop: branches[index + 1]?.getBoundingClientRect().top,
           overlay: stem.zIndex,
@@ -140,16 +142,21 @@ async function guides(
   });
   assert.equal(geometry === null ? 0 : 1, count);
   if (geometry) {
-    assert.equal(geometry.axis, geometry.iconCenter, "stem follows the parent's icon axis");
-    assert.equal(geometry.top, geometry.iconBottom + 4, "stem leaves a gap below the parent icon");
+    assert.equal(geometry.axis, geometry.iconCenter + 1, "stem sits just right of the parent axis");
+    assert.equal(
+      geometry.top,
+      geometry.iconBottom + geometry.parentGap,
+      "stem leaves breathing room below its own parent icon",
+    );
     assert.equal(geometry.width, "1px");
     assert.equal(geometry.pointerEvents, "none");
     assert.equal(geometry.color, await tokenColor(page, id, "--dsw-alias-border-l2"));
     for (const arc of geometry.elbows) {
       assert.equal(arc.bottom, arc.center, "each elbow points at its direct child's icon");
-      assert.equal(arc.radius, "6px");
-      assert.equal(arc.border, "1px");
-      assert.ok(arc.iconGap !== undefined && arc.iconGap >= 2 && arc.iconGap <= 3);
+      assert.match(arc.mask, /data:image\/svg\+xml/);
+      assert.equal(arc.height, "8px");
+      assert.equal(arc.color, geometry.color);
+      assert.equal(arc.iconGap, 6);
       assert.equal(arc.stemBottom, arc.nextTop ?? arc.top, "only non-last stems continue downward");
       assert.equal(arc.overlay, "1", "guides stay above selected and hovered row backgrounds");
     }
@@ -205,7 +212,7 @@ for (const width of [1280, 390]) {
         await parent.locator("[data-thread-summary]").innerText(),
         "4 child sessions · 1 running",
       );
-      assert.equal((await parent.boundingBox())?.height, width === 390 ? 76 : 54);
+      assert.equal((await parent.boundingBox())?.height, width === 390 ? 78 : 56);
       const collapsedStyle = await foldStyle(page, "parent");
       assert.equal(collapsedStyle.background, "rgba(0, 0, 0, 0)");
       await foldLayout(page, "parent");
@@ -248,8 +255,8 @@ for (const width of [1280, 390]) {
       const rootPosition = await rowAlignment(page, "parent");
       const childPosition = await rowAlignment(page, "child");
       const grandchildPosition = await rowAlignment(page, "grandchild");
-      assert.equal(childPosition.icon - rootPosition.icon, 16);
-      assert.equal(grandchildPosition.title - childPosition.title, 16);
+      assert.equal(childPosition.icon - rootPosition.icon, 24);
+      assert.equal(grandchildPosition.title - childPosition.title, 24);
       await page.mouse.move(width - 10, 850);
       if (width === 390)
         assert.equal(

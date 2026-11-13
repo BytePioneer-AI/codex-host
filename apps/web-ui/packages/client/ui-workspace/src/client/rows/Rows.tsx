@@ -526,7 +526,7 @@ export function SessionNodeItem({
       data-thread-depth={depth}
       data-thread-sortable={String(reorderable)}
       data-thread-pinned={String(node.pinned)}
-      style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 16}px` } as CSSProperties}
+      style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 24}px` } as CSSProperties}
       className={clsx(
         css.sessionRow,
         selected && css.selected,

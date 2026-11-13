@@ -40,7 +40,7 @@ function ThreadTreeBranch({
           hidden={!expanded}
           data-thread-guide={expanded && depth < 3 ? "" : undefined}
           className={css.children}
-          style={{ "--dsh-thread-guide-indent": `${Math.min(depth, 3) * 16}px` } as CSSProperties}
+          style={{ "--dsh-thread-guide-indent": `${Math.min(depth, 3) * 24}px` } as CSSProperties}
         >
           {expanded && <ThreadTreeRows roots={children}>{renderRow}</ThreadTreeRows>}
         </div>

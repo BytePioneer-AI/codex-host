@@ -10,16 +10,31 @@
   --dsh-thread-icon-size: 14px;
 }
 
+.branch:has(> :first-child [data-harness-id]) > .children {
+  --dsh-thread-parent-icon-size: 14px;
+}
+
 .children {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--dsh-thread-row-gap);
   margin-top: var(--dsh-thread-row-gap);
+  --dsh-thread-parent-icon-size: 16px;
+  --dsh-thread-guide-parent-gap: 12px;
+  --dsh-thread-guide-start: calc(
+    var(--dsh-thread-guide-parent-gap) -
+      (var(--dsh-thread-row-height) - var(--dsh-thread-parent-icon-size)) / 2 -
+      var(--dsh-thread-row-gap)
+  );
   --dsh-thread-guide-axis: calc(
     8px + var(--dsh-workspace-indent, 0px) + var(--dsh-thread-guide-indent) +
-      var(--dsh-thread-icon-size) / 2 - 0.5px
+      var(--dsh-thread-parent-icon-size) / 2 + 0.5px
   );
+}
+
+.children .children {
+  --dsh-thread-guide-parent-gap: 10px;
 }
 
 .children[hidden] {
@@ -38,11 +53,8 @@
 }
 
 .children[data-thread-guide]::before {
-  bottom: 100%;
-  height: calc(
-    (var(--dsh-thread-row-height) - var(--dsh-thread-icon-size)) / 2 + var(--dsh-thread-row-gap) -
-      4px
-  );
+  top: var(--dsh-thread-guide-start);
+  height: max(0px, calc(-1 * var(--dsh-thread-guide-start)));
   width: 1px;
   background: var(--dsw-alias-border-l2);
 }
@@ -54,19 +66,22 @@
   background: var(--dsw-alias-border-l2);
 }
 
-.children[data-thread-guide] > .branch:last-child::before {
-  bottom: auto;
-  height: calc(var(--dsh-thread-row-height) / 2 - 6px);
+.children[data-thread-guide] > .branch:first-child::before {
+  top: max(0px, var(--dsh-thread-guide-start));
 }
 
+.children[data-thread-guide] > .branch:last-child::before {
+  bottom: calc(100% - var(--dsh-thread-row-height) / 2 + 8px);
+}
+
+/* A smooth turn leads into a short diagonal, without a horizontal tail. */
 .children[data-thread-guide] > .branch::after {
-  top: calc(var(--dsh-thread-row-height) / 2 - 6px);
-  width: calc(16px - var(--dsh-thread-icon-size) / 2 - 2px);
-  height: 6px;
-  box-sizing: border-box;
-  border-inline-start: 1px solid var(--dsw-alias-border-l2);
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-  border-end-start-radius: 6px;
+  top: calc(var(--dsh-thread-row-height) / 2 - 8px);
+  width: calc(24px - var(--dsh-thread-parent-icon-size) / 2 - 6.5px);
+  height: 8px;
+  background: var(--dsw-alias-border-l2);
+  mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 0V1Q.5 3.3 2.5 4.5L10.5 7.5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
+    0 0 / 100% 100% no-repeat;
 }
 
 .summary {

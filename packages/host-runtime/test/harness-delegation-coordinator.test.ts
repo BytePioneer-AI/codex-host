@@ -884,7 +884,7 @@ describe("HarnessDelegationCoordinator", () => {
       );
       expect(
         await value.coordinator.read({ threadId: thread.id, view: "messages" }),
-      ).not.toHaveProperty("turns");
+      ).not.toHaveProperty("thread");
       thread.running = false;
       thread.activeTurnId = null;
       thread.turns.push({ ...projector.snapshotTurn(), status: "completed" });

@@ -93,11 +93,11 @@ function pathCandidates(target: string): string[] {
   const fragment = target.indexOf("#");
   for (const value of [target, fragment < 0 ? target : target.slice(0, fragment)]) {
     if (!value) continue;
-    spellings.add(value);
     try {
       spellings.add(decodeURIComponent(value));
     } catch {
       // A literal `%` in a file name is not an escape.
+      spellings.add(value);
     }
   }
   return [...spellings];

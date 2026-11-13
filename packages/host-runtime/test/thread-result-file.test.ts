@@ -132,6 +132,22 @@ describe("Thread result files", () => {
     ).resolves.toMatchObject({ data: Buffer.from("fixture bytes").toString("base64") });
   });
 
+  it.each(["plot%281%29.png", "100%25.md", "notes%23topic.md"])(
+    "does not authorize the literal spelling of encoded destination %s",
+    async (link) => {
+      const decoded = decodeURIComponent(link);
+      await writeFile(path.join(workspace, link), "unlinked bytes");
+      await writeFile(path.join(workspace, decoded), "linked bytes");
+      snapshot.result.text = `[result](${link})`;
+      await expect(
+        readThreadResultFile(api, { threadId: "task-1", path: link }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(
+        readThreadResultFile(api, { threadId: "task-1", path: decoded }),
+      ).resolves.toMatchObject({ data: Buffer.from("linked bytes").toString("base64") });
+    },
+  );
+
   it.each([
     'plot.png\n\n"Chart"',
     'plot.png\r\n\r\n"Chart"',

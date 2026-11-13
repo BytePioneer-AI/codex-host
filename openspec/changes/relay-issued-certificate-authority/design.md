@@ -16,7 +16,7 @@
 - 注册响应：`{ hostname: string; token: string; certificateAuthority: { directory: string } }`。`token` 为 32 字节随机数的 base64url，只在本次注册有效。旧电脑忽略新字段。
 - 变更通知：中转向在线电脑 `POST /v1/notice`，正文 `{ certificateAuthority: { directory } }`。旧电脑按现有逻辑忽略。
 - 外部账户凭据：电脑向控制地址 `POST /v1/external-account`，`Authorization: Bearer <token>`，无正文。
-  - 200 `{ keyId: string; hmacKey: string }`（hmacKey 为 base64url）；
+  - 200 `{ keyId: string; hmacKey: string; contact?: string[] }`（hmacKey 为 base64url；contact 为部署者的账户联系地址，如 `mailto:ops@example.com`，GTS 要求账户至少有一个联系方式）；
   - 404 不提供（未配置处理函数，或当前证书机构不需要）；
   - 429 带 `Retry-After`（秒）；503 暂时不可用；401 凭证无效。
 - 证书请求通道：电脑向控制地址发 `CONNECT <目录主机>:<目录端口>`，`Proxy-Authorization: Bearer <token>`。
@@ -39,14 +39,14 @@
 - 目录优先级：`CODEXHOST_RELAY_ACME_DIRECTORY`（直连）> 注册下发的目录（经通道）> Let's Encrypt 生产环境（直连，旧中转）。
 - `Certificates` 的目录改为随注册设置；收到变更且目录不同时：作废进行中的轮次，按新目录重新 `check()`。失败记录规则不变（目录不同即不适用）。
 - 经通道时，每轮建一个 HTTPS Agent：先连控制地址（有 `HTTPS_PROXY` 时先经代理 CONNECT，复用控制连接的做法），TLS（servername 为控制地址）后发 CONNECT，再在其上与证书机构做 TLS，正常校验证书。Agent 只属于本轮，轮次结束时销毁；请求拦截器为本轮请求设置该 Agent。
-- 账户：仍先 `onlyReturnExisting` 查询；不存在且有凭证时向中转领取 EAB，200 则带 EAB 创建账户，404 则不带。429/503 作为本轮失败，`Retry-After` 计入记录的 `retryAfter`；不计为验证失败，不暂停。
+- 账户：仍先 `onlyReturnExisting` 查询；不存在且有凭证时向中转领取 EAB，200 则带 EAB 及返回的 `contact` 创建账户，404 则不带。电脑不提交用户自己的联系方式。429/503 作为本轮失败，`Retry-After` 计入记录的 `retryAfter`；不计为验证失败，不暂停。
 - 不新增持久化文件，不改账户私钥和证书私钥的位置。
 
 ### 官方中转（`codexhost-cloud`）
 
-- 启动参数：`--gts-credentials <服务账号 JSON 路径>`；`--gts-staging`（只用于测试部署，使用 GTS staging 目录 `https://dv.acme-v02.test-api.pki.goog/directory` 和 `preprod-publicca.googleapis.com`）。生产 GTS 目录 `https://dv.acme-v02.api.pki.goog/directory`。
+- 启动参数：`--gts-credentials <服务账号 JSON 路径>` 与必须同时提供的 `--gts-contact <邮箱>`（作为 GTS 账户联系方式随 EAB 下发，GTS 拒绝没有联系方式的账户）；`--gts-staging`（只用于测试部署，使用 GTS staging 目录 `https://dv.acme-v02.test-api.pki.goog/directory` 和 `preprod-publicca.googleapis.com`）。生产 GTS 目录 `https://dv.acme-v02.api.pki.goog/directory`。
 - 设置 `certificate_authority`：`letsencrypt`（默认）| `gts`。没有 `--gts-credentials` 时不能设为 `gts`（管理页禁用该选项，CLI 报错）。启动时用当前值作为 `certificateDirectory`；`tick` 发现变化时调用 `setCertificateDirectory`，最迟 10 秒生效。
-- EAB：用服务账号签 JWT 换取访问令牌（缓存到过期前），调用 Public CA `externalAccountKeys.create`，把返回的 MAC 密钥转为 base64url。当前设置不是 `gts` 时返回 `undefined`。不新增依赖，使用 Node 内置 `crypto` 与 `fetch`。
+- EAB：用服务账号签 JWT 换取访问令牌（缓存到过期前），调用 Public CA `externalAccountKeys.create`。REST 响应的 `b64MacKey` 是 bytes 字段的 base64，解码后的文本即 base64url 的 HMAC 密钥，原样下发。当前设置不是 `gts` 时返回 `undefined`。不新增依赖，使用 Node 内置 `crypto` 与 `fetch`。
 - 限流：同一电脑 ID 每 24 小时最多 3 份凭据（内存，重启清空），超出返回 `{ retryAfter }`。日志只记 ID、地址名与结果，不记凭据。
 - 管理页“运行配置”增加“证书机构”分组，随“保存配置”一起提交；文案见任务文件。
 

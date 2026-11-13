@@ -51,10 +51,14 @@ export interface RegistrationResponse {
 export type RelayNotice =
   { quota: "exhausted"; until: string } | { certificateAuthority: CertificateAuthority };
 
-/** Body of a successful `POST /v1/external-account`; `hmacKey` is base64url. */
+/**
+ * Body of a successful `POST /v1/external-account`; `hmacKey` is base64url. `contact` holds
+ * the deployer's account contact URLs for authorities that require one, such as GTS.
+ */
 export interface ExternalAccount {
   keyId: string;
   hmacKey: string;
+  contact?: string[];
 }
 
 export const streamWindowSize = 2 * 1024 * 1024;

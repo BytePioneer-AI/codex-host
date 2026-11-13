@@ -55,6 +55,7 @@ import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output
 import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
+import { tryGenerateThreadTitle, type ThreadTitleGenerator } from "./ch-thread-titles.ts";
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -70,6 +71,7 @@ interface Draft {
   createdAt: number;
   canonicalId?: string;
   creating?: Promise<string>;
+  titleRequested?: boolean;
 }
 
 export class ChSessions {
@@ -96,6 +98,7 @@ export class ChSessions {
   private closed = false;
   private readonly realtime: ChRealtime | undefined;
   private readonly skills: WebSkills;
+  private readonly titleRequests = new Set<string>();
   private readonly interactions: ChInteractions | undefined;
   private hostOnline = true;
   private hostEpoch: string | undefined;
@@ -108,6 +111,7 @@ export class ChSessions {
     displayEntries?: () => Promise<HarnessDisplayEntries>,
     private readonly preferences?: WebHarnessPreferences,
     harnesses?: ReadonlySet<string>,
+    private readonly generateTitle?: ThreadTitleGenerator,
   ) {
     this.catalog = new ChHarnessCatalog(host, displayEntries, preferences, harnesses);
     this.attachments = images ? new ChAttachments(images, files) : undefined;
@@ -1280,6 +1284,29 @@ export class ChSessions {
           ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
         });
       }
+      if (draft && !draft.titleRequested && this.generateTitle) {
+        draft.titleRequested = true;
+        const row = this.rows.get(threadId);
+        if (row) {
+          this.titleRequests.add(threadId);
+          const prompt = request.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text ?? "")
+            .join("\n");
+          void tryGenerateThreadTitle(
+            this.host,
+            row,
+            prompt,
+            this.generateTitle,
+            () => !this.closed && this.titleRequests.has(threadId),
+          )
+            .then(async (changed) => {
+              if (changed && !this.closed) await this.refresh();
+            })
+            .catch(() => undefined)
+            .finally(() => this.titleRequests.delete(threadId));
+        }
+      }
       this.fileInputs?.accepted(threadId, request.content);
       try {
         await this.view(threadId);
@@ -1379,6 +1406,7 @@ export class ChSessions {
     });
     rpc.register("session/rename", async (args) => {
       const request = requestOf<{ sessionId: string; title: string }>(args);
+      this.titleRequests.delete(this.id(request.sessionId));
       await this.owner(request.sessionId);
       await this.host.request("thread/name/set", {
         threadId: this.id(request.sessionId),
@@ -1672,6 +1700,7 @@ export class ChSessions {
     this.fileReferences.close();
     this.skills.close();
     this.closed = true;
+    this.titleRequests.clear();
     this.pins.close();
     this.realtime?.close();
     this.interactions?.clear();

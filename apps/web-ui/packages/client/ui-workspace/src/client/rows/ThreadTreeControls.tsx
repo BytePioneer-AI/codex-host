@@ -45,18 +45,6 @@ function ThreadTreeBranch({
   return (
     <div className={css.branch} data-thread-branch>
       <ChildGroupContext.Provider value={groupId}>{renderRow(node)}</ChildGroupContext.Provider>
-      {children.length > 0 && (
-        <div
-          id={groupId}
-          role="group"
-          hidden={!expanded}
-          data-thread-guide={expanded && depth < 3 ? "" : undefined}
-          className={css.children}
-          style={{ "--dsh-thread-guide-indent": `${Math.min(depth, 3) * 24}px` } as CSSProperties}
-        >
-          {expanded && <ThreadTreeRows roots={children}>{renderRow}</ThreadTreeRows>}
-        </div>
-      )}
       {expanded && stylePrompt === groupId && (
         <ThreadTreeStylePrompt
           style={collapseStyle}
@@ -71,6 +59,18 @@ function ThreadTreeBranch({
           }
           t={t}
         />
+      )}
+      {children.length > 0 && (
+        <div
+          id={groupId}
+          role="group"
+          hidden={!expanded}
+          data-thread-guide={expanded && depth < 3 ? "" : undefined}
+          className={css.children}
+          style={{ "--dsh-thread-guide-indent": `${Math.min(depth, 3) * 24}px` } as CSSProperties}
+        >
+          {expanded && <ThreadTreeRows roots={children}>{renderRow}</ThreadTreeRows>}
+        </div>
       )}
     </div>
   );

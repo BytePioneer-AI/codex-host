@@ -35,8 +35,49 @@ async function fits(page: Page) {
 }
 async function chooseInMenu(page: Page, name: string) {
   await page.getByRole("button", { name: "View options", exact: true }).click();
+  const menu = page.getByRole("menu");
+  const choice = menu.getByRole("menuitem", { name, exact: true });
+  await expect(menu.getByText("Collapsed session trees", { exact: true })).toBeVisible();
+  await expect(menu.getByRole("radiogroup")).toHaveCount(0);
+  await expect(
+    menu.getByRole("menuitem", { name: "Compact", exact: true }).locator("svg"),
+  ).toHaveCount(1);
+  await expect(choice.locator("svg")).toHaveCount(0);
   await treeShot(page, `style-${page.viewportSize()?.width}-view-options`);
-  await page.getByRole("radio", { name, exact: true }).click();
+  await page.evaluate(`(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key.endsWith(":ui-workspace")) throw new DOMException("full", "QuotaExceededError");
+      return original.call(this, key, value);
+    };
+    window.restoreMenuStorage = () => { Storage.prototype.setItem = original; };
+  })()`);
+  await choice.click();
+  await expect(menu.getByRole("alert")).toHaveText(
+    "Could not save the style. Previous setting kept; please retry.",
+  );
+  await expect(
+    menu.getByRole("menuitem", { name: "Compact", exact: true }).locator("svg"),
+  ).toHaveCount(1);
+  assert.equal(
+    await page.evaluate(
+      (key) => JSON.parse(localStorage.getItem(key) ?? "{}").user.threadTreeCollapseStyle,
+      KEY,
+    ),
+    "ring",
+  );
+  await page.evaluate(() =>
+    (window as unknown as { restoreMenuStorage: () => void }).restoreMenuStorage(),
+  );
+  await choice.focus();
+  await page.keyboard.press("Tab");
+  await expect(menu).toHaveCount(0);
+  await page.getByRole("button", { name: "View options", exact: true }).click();
+  await expect(choice.locator("svg")).toHaveCount(1);
+  await expect(
+    menu.getByRole("menuitem", { name: "Compact", exact: true }).locator("svg"),
+  ).toHaveCount(0);
+  await expect(menu.getByRole("alert")).toHaveCount(0);
   await page.keyboard.press("Escape");
 }
 
@@ -339,10 +380,14 @@ it(
     await view.click();
     await view.focus();
     await page.keyboard.press("End");
-    await expect(page.getByRole("radio", { name: "Compact", exact: true })).toBeFocused();
-    await page.keyboard.press("ArrowLeft");
-    await expect(page.getByRole("radio", { name: "Detailed", exact: true })).toBeChecked();
-    await page.keyboard.press("Escape");
+    const compact = page.getByRole("menuitem", { name: "Compact", exact: true });
+    await expect(compact).toBeFocused();
+    await expect(compact.locator("svg")).toHaveCount(1);
+    await page.keyboard.press("ArrowUp");
+    await expect(page.getByRole("menuitem", { name: "Detailed", exact: true })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+    await expect(view).toBeFocused();
     await parent.locator("[data-thread-summary]").waitFor();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "General", exact: true }).click();

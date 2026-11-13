@@ -1,4 +1,4 @@
-/** Row-leading fold control placed in the left padding with one priority-ordered descendant activity dot. */
+/** Row-leading fold control and capped ancestry guides, without shifting row identity. */
 import { IconChevronDownOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { SessionNode } from "../tree.ts";
@@ -16,7 +16,6 @@ export function ThreadTreeToggle({
   t: WorkspaceBrowserProps["t"];
 }) {
   const count = node.tree?.descendantCount ?? 0;
-  if (!count) return null;
   const activity = node.tree?.activity;
   const state = expanded
     ? undefined
@@ -27,22 +26,43 @@ export function ThreadTreeToggle({
         : activity?.completed
           ? "completed"
           : undefined;
+  const label = t(expanded ? "threadTree.collapse" : "threadTree.expand", { n: count });
+  const description = state === undefined ? undefined : t(`threadTree.${state}`);
   return (
-    <button
-      type="button"
-      data-thread-toggle
-      className={css.toggle}
-      aria-label={t(expanded ? "threadTree.collapse" : "threadTree.expand", { n: count })}
-      aria-expanded={expanded}
-      aria-description={state === undefined ? undefined : t(`threadTree.${state}`)}
-      onClick={(event) => {
-        event.stopPropagation();
-        toggle();
-      }}
-    >
-      <span className={css.badge} data-thread-tree-activity={state}>
-        <IconChevronDownOutlineRegular size={10} className={expanded ? undefined : css.collapsed} />
-      </span>
-    </button>
+    <>
+      {Array.from({ length: Math.min(node.tree?.depth ?? 0, 3) }, (_, level) => (
+        <span
+          key={level}
+          aria-hidden="true"
+          data-thread-guide
+          className={css.guide}
+          style={{
+            insetInlineStart: `calc(var(--dsh-workspace-indent, 0px) + ${level * 16 + 1}px)`,
+          }}
+        />
+      ))}
+      {count > 0 && (
+        <button
+          type="button"
+          data-thread-toggle
+          className={css.toggle}
+          aria-label={label}
+          aria-expanded={expanded}
+          aria-description={description}
+          title={description ?? label}
+          onClick={(event) => {
+            event.stopPropagation();
+            toggle();
+          }}
+        >
+          <span
+            className={`${css.chevron}${expanded ? "" : ` ${css.collapsed}`}`}
+            data-thread-tree-activity={state}
+          >
+            <IconChevronDownOutlineRegular size={14} />
+          </span>
+        </button>
+      )}
+    </>
   );
 }

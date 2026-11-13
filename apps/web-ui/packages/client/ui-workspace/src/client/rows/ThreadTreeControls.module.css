@@ -1,16 +1,15 @@
-/* The chevron lives in the row's left padding, so icons and titles keep the
-   same x position whether or not a row has children. */
+/* The 1px column center stays in the existing gutter; identity keeps its 8px inset. */
 .toggle {
   appearance: none;
   position: absolute;
   inset-block: 0;
-  inset-inline-start: calc(var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) - 4px);
+  inset-inline-start: calc(var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) - 13px);
   z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 12px;
+  width: 28px;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -20,23 +19,30 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-/* Widen the hit target into the sidebar gutter without moving the glyph. */
-.toggle::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  inset-inline: -6px -2px;
-}
-
-.badge {
-  position: relative;
+.chevron {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: transform 150ms ease;
 }
 
-.toggle[aria-expanded="true"] {
-  color: var(--dsw-alias-label-primary);
+/* Fill the 14px icon box with the chevron artwork rather than its internal whitespace. */
+.chevron svg path {
+  transform: scale(1.5);
+  transform-origin: 8px 8px;
+}
+
+.collapsed {
+  transform: rotate(-90deg);
+}
+
+/* Only descendants of visible expanded rows are mounted. Guides cannot intercept clicks. */
+.guide {
+  position: absolute;
+  inset-block: -1px;
+  width: 1px;
+  background: var(--dsw-alias-border-l2);
+  pointer-events: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -50,25 +56,21 @@
   outline-offset: -2px;
 }
 
-.collapsed {
-  transform: rotate(-90deg);
-}
-
-/* Collapsed rows tint the chevron instead of adding a marker. */
-.badge[data-thread-tree-activity="pending"] {
+/* Collapsed rows tint only the chevron, with no additional marker or count. */
+.chevron[data-thread-tree-activity="pending"] {
   color: var(--dsw-alias-state-warn-primary);
 }
 
-.badge[data-thread-tree-activity="completed"] {
+.chevron[data-thread-tree-activity="running"] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.chevron[data-thread-tree-activity="completed"] {
   color: var(--dsw-alias-state-business-primary);
 }
 
-@media (hover: none), (pointer: coarse) {
-  .toggle {
-    padding-block: 8px;
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
   }
-}
-
-.badge[data-thread-tree-activity="running"] {
-  color: var(--dsw-alias-label-primary);
 }

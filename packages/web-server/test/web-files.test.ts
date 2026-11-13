@@ -290,7 +290,7 @@ it("stages explicit images in images/, preserves native text and presentation, a
     input.upload(
       "draft",
       (async function* () {
-        yield Buffer.alloc(20 * 1024 * 1024);
+        yield Buffer.alloc(50 * 1024 * 1024);
         yield Buffer.alloc(1);
         exhausted = true;
         yield Buffer.alloc(1);
@@ -298,18 +298,18 @@ it("stages explicit images in images/, preserves native text and presentation, a
       "large.png",
       "image/png",
     ),
-    /20 MiB/u,
+    { code: "session/attachment-invalid", details: { reason: "IMAGE_TOO_LARGE" } },
   );
   assert.equal(exhausted, false);
   await assert.rejects(input.prepare("draft", Array(21).fill(content[0])), /20 images/u);
-  const large = Buffer.concat([bytes, Buffer.alloc(17 * 1024 * 1024)]);
+  const large = Buffer.concat([bytes, Buffer.alloc(26 * 1024 * 1024)]);
   const bigger = await input.upload("draft", chunks(large), "big.png", "image/png");
   await assert.rejects(
     input.prepare("draft", [
       { type: "file", receiptId: bigger.receiptId },
       { type: "image", data: large.toString("base64"), mediaType: "image/png" },
     ]),
-    /32 MiB/u,
+    { code: "session/attachment-invalid", details: { reason: "IMAGES_TOO_LARGE" } },
   );
   const mixed = await input.prepare("draft", [
     content[0],

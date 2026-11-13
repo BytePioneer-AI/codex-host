@@ -23,7 +23,6 @@ interface ImageRef extends WebImageRef {
   name: string;
   /** Captured at projection time, never supplied by the browser during a read. */
   fingerprint?: string;
-  unavailable?: boolean;
 }
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -69,8 +68,6 @@ export class ChAttachments {
   }
 
   project(threadId: string, content: readonly unknown[]): unknown[] {
-    let count = 0;
-    let total = 0;
     return nativeUserInput(content).map((part) => {
       if (part.type === "other") return part.value;
       if (part.type === "text") return part;
@@ -102,17 +99,8 @@ export class ChAttachments {
         width: 64,
         height: 64,
       };
-      if (++count > WEB_IMAGE_LIMITS.maxImagesPerMessage) {
-        fallback.unavailable = true;
-        return { type: "image", attachment: fallback };
-      }
       try {
         const image = this.bytes(part.source);
-        total += image.bytes.length;
-        if (total > WEB_IMAGE_LIMITS.maxMessageImageBytes) {
-          fallback.unavailable = true;
-          return { type: "image", attachment: fallback };
-        }
         const attachment: ImageRef = {
           ...image.ref,
           attachmentId,
@@ -163,7 +151,7 @@ export class ChAttachments {
     attachmentId: string,
   ): { attachment: ImageRef; data: string } {
     const expected = message?.find((ref) => ref.attachmentId === attachmentId);
-    if (!expected || expected.unavailable) return unavailable();
+    if (!expected) return unavailable();
     let source: NativeImage | undefined;
     for (const input of inputs) {
       source = nativeUserInput(input).find(
@@ -176,15 +164,18 @@ export class ChAttachments {
     try {
       const image = this.bytes(source.source);
       if (expected.fingerprint && expected.fingerprint !== image.leaf) return unavailable();
-      const otherBytes =
-        message?.reduce((sum, ref) => sum + (ref === expected ? 0 : ref.bytes), 0) ?? 0;
-      if (otherBytes + image.bytes.length > WEB_IMAGE_LIMITS.maxMessageImageBytes)
-        return unavailable();
       return {
         attachment: { ...expected, ...image.ref, attachmentId, fingerprint: image.leaf },
         data: image.bytes.toString("base64"),
       };
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof RpcError &&
+        "reason" in error.details &&
+        (error.details.reason === "IMAGE_TOO_LARGE" ||
+          error.details.reason === "IMAGE_TOO_MANY_PIXELS")
+      )
+        throw error;
       return unavailable();
     }
   }

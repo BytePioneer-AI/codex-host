@@ -10,13 +10,7 @@ import {
 } from "react";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
-import {
-  deriveThreadForest,
-  owningGroupKey,
-  owningParentFolder,
-  type SessionNode,
-} from "../tree.ts";
-import { PINNED_SECTION_KEY, WORKSPACES_SECTION_KEY } from "../stores.ts";
+import { deriveThreadForest, type SessionNode } from "../tree.ts";
 import { visibleThreadRows } from "../thread-tree.ts";
 import { orderedThreadChildren } from "../thread-tree-order.ts";
 
@@ -99,29 +93,8 @@ export function ThreadTreeViewProvider({
       const target = targets.get(id);
       if (target === undefined) return;
       actions.setThreadsExpanded(target.ancestors, true);
-      if (target.root.pinned) actions.setSectionExpanded(PINNED_SECTION_KEY, true);
-      else {
-        const group = owningGroupKey(workspaceState.items, target.root.id);
-        actions.setGroupExpanded(group, true);
-        actions.setSectionExpanded(WORKSPACES_SECTION_KEY, true);
-        const workspace = workspaceState.items.find((item) => item.workspaceId === group);
-        const sameHost = workspaceState.items.filter(
-          (item) => item.remote?.hostId === workspace?.remote?.hostId,
-        );
-        let path = workspace?.path;
-        while (path !== undefined) {
-          const parentPath = owningParentFolder(
-            path,
-            sameHost.map((item) => item.path),
-          );
-          const ancestor = sameHost.find((item) => item.path === parentPath);
-          if (ancestor === undefined) break;
-          actions.setGroupExpanded(ancestor.workspaceId, true);
-          path = ancestor.path;
-        }
-      }
     },
-    [actions, targets, workspaceState.items],
+    [actions, targets],
   );
   const current = Object.values(list.byId).find((row) => (row.retainedBy.mainView ?? 0) > 0)?.id;
   const navigationSeen = useRef("");
@@ -132,13 +105,12 @@ export function ThreadTreeViewProvider({
     }
     const target = targets.get(current);
     if (target === undefined) return;
-    const group = owningGroupKey(workspaceState.items, target.root.id);
-    const key = JSON.stringify([current, target.ancestors, group]);
-    // Live activity and manual folds must not be mistaken for navigation.
-    if (navigationSeen.current === key) return;
-    navigationSeen.current = key;
+    // Only a change of the open Thread counts as navigation; tree or group
+    // changes and live activity must not reopen what the user folded.
+    if (navigationSeen.current === current) return;
+    navigationSeen.current = current;
     if (!isSidebarSelection(current)) reveal(current);
-  }, [current, isSidebarSelection, reveal, targets, workspaceState.items]);
+  }, [current, isSidebarSelection, reveal, targets]);
   const value = useMemo(
     () => ({
       expansion,

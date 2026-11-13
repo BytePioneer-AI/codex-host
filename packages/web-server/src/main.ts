@@ -483,8 +483,8 @@ async function readBody(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<string | undefined> {
-  // 32 MiB of image bytes plus base64/JSON overhead. Reject before parsing or saving.
-  const limit = 48 * 1024 * 1024;
+  // 50 MiB of image bytes plus base64/JSON overhead. Reject before parsing or saving.
+  const limit = 72 * 1024 * 1024;
   const reject = () => {
     response
       .writeHead(413, { "content-type": "text/plain", "cache-control": "no-store" })

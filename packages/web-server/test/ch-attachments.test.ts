@@ -163,20 +163,26 @@ it("bounds native image reads and separates ordinary files without reading them"
   const path = join(root, "too-big.png");
   writeFileSync(path, Buffer.alloc(WEB_IMAGE_LIMITS.maxImageBytes + 1));
   const tooBig = view(attachments, nativeImageInput(path));
-  assert.throws(() => attachments.read(tooBig.rendered, tooBig.ref.attachmentId), /unavailable/u);
+  assert.throws(() => attachments.read(tooBig.rendered, tooBig.ref.attachmentId), {
+    code: "session/attachment-invalid",
+    details: { reason: "IMAGE_TOO_LARGE" },
+  });
   const dimension = Buffer.from(PNG, "base64");
   dimension.writeUInt32BE(8193, 16);
   writeFileSync(path, dimension);
   const tooWide = view(attachments, nativeImageInput(path));
-  assert.throws(() => attachments.read(tooWide.rendered, tooWide.ref.attachmentId), /unavailable/u);
+  assert.equal(
+    attachments.read(tooWide.rendered, tooWide.ref.attachmentId).data,
+    dimension.toString("base64"),
+  );
   dimension.writeUInt32BE(8192, 16);
   dimension.writeUInt32BE(8192, 20);
   writeFileSync(path, dimension);
   const tooManyPixels = view(attachments, nativeImageInput(path));
-  assert.throws(
-    () => attachments.read(tooManyPixels.rendered, tooManyPixels.ref.attachmentId),
-    /unavailable/u,
-  );
+  assert.throws(() => attachments.read(tooManyPixels.rendered, tooManyPixels.ref.attachmentId), {
+    code: "session/attachment-invalid",
+    details: { reason: "IMAGE_TOO_MANY_PIXELS" },
+  });
   const padded = Buffer.alloc(17 * 1024 * 1024);
   Buffer.from(PNG, "base64").copy(padded);
   const large = ["first.png", "second.png"].map((name) => {
@@ -188,7 +194,10 @@ it("bounds native image reads and separates ordinary files without reading them"
   const overBudget = total.message.content.at(-1)?.attachment;
   assert.ok(overBudget);
   assert.equal(total.ref.bytes, padded.length);
-  assert.throws(() => attachments.read(total.rendered, overBudget.attachmentId), /unavailable/u);
+  assert.equal(
+    attachments.read(total.rendered, overBudget.attachmentId).data,
+    padded.toString("base64"),
+  );
   const many = Array.from({ length: 21 }, (_, index) => ({
     type: "localImage",
     path: join(root, `image-${index}.png`),
@@ -197,7 +206,7 @@ it("bounds native image reads and separates ordinary files without reading them"
   const input = view(attachments, many);
   const last = input.message.content.at(-1)?.attachment;
   assert.ok(last);
-  assert.throws(() => attachments.read(input.rendered, last.attachmentId), /unavailable/u);
+  assert.equal(attachments.read(input.rendered, last.attachmentId).data, PNG);
   const original = nativeImageInput(join(root, "does-not-exist.png"), "Review")[0];
   assert.ok(original);
   const text = original.text.replace("Image attachment: true\n", "");

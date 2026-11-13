@@ -59,6 +59,8 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/session-import/import",
   // Settings pages shared with the console and GUI (connections, accounts, usage, updates, idle release).
   "codexhost/harness/installation",
+  "codexhost/harness/installation/start",
+  "codexhost/harness/installation/status",
   "codexhost/harness/launch-settings/get",
   "codexhost/harness/launch-settings/set",
   "codexhost/harness/web-ui/open",

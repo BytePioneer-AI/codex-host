@@ -19,9 +19,9 @@
   - 200 `{ keyId: string; hmacKey: string }`（hmacKey 为 base64url）；
   - 404 不提供（未配置处理函数，或当前证书机构不需要）；
   - 429 带 `Retry-After`（秒）；503 暂时不可用；401 凭证无效。
-- 证书请求通道：电脑向控制地址发 `CONNECT <证书机构主机>:443`，`Proxy-Authorization: Bearer <token>`。
-  - 200 建立；407 凭证无效；403 目标不是当前目录的主机或端口不是 443；429 该凭证已有 4 条通道；502 连不上目标。
-  - 目标只比对当前目录 URL 的主机名，不解析目录内容。Let's Encrypt 和 GTS 的全部 ACME 接口与目录同主机；若证书机构跳到其他主机，请求会被拒绝并表现为申请失败。
+- 证书请求通道：电脑向控制地址发 `CONNECT <目录主机>:<目录端口>`，`Proxy-Authorization: Bearer <token>`。
+  - 200 建立；407 凭证无效；403 目标与当前目录 URL 的主机或端口（未写时 443）不符；429 该凭证已有 4 条通道；502 连不上目标。
+  - 目标只比对当前目录 URL 的主机和端口，不解析目录内容；测试可直接用本地 ACME 服务的目录地址。Let's Encrypt 和 GTS 的全部 ACME 接口与目录同主机；若证书机构跳到其他主机，请求会被拒绝并表现为申请失败。
 - 导出常量 `defaultCertificateDirectory`（Let's Encrypt 生产目录）及上述类型；`paths.externalAccount = "/v1/external-account"`。
 
 ### 中转核心

@@ -36,7 +36,7 @@ item/completed                       type: reasoning
 <host-item-id>-summary
 ```
 
-Protocol Core 持续发送 `summaryTextDelta`。Codex Desktop 决定预览如何展示。当前观察到的行为通常是单行、短暂、从累计文本开头截断，因此即使后续 delta 已经发送，用户也不一定能依次看到第二句、第三句。
+Protocol Core 按 Codex 原生 GPT Reasoning 的形状分段发送：每个段落（代码块外的空行分隔）是一个 summary part，依次用 `summaryPartAdded` 和递增的 `summaryIndex` 开启，再用 `summaryTextDelta` 追加。以 `**标题**` 开头的段落原样开启新 part，其后没有标题的段落都并入该 part，直到下一个 `**` 段落；以代码围栏开头的段落并入上一 part，围栏行不作标题。在 Harness 给出标题之前，没有标题的段落去掉开头的列表或标题标记后把第一句提为粗体标题（数字或缩写后的句点不算句末；宽度超过 60 列时截断并加 `…`，中日韩及全角字符计 2 列，正文保留整段）。标题未确定前（首句未结束且宽度未超限）该段暂不发送，Item 完成时补发。完成 Item 和历史 `thread/read` 的 `summary[]` 由同一个纯函数（`packages/protocol-core/src/reasoning-summary-parts.ts`）从完整文本确定性生成，与 live delta 拼接结果一致。Codex Desktop 决定预览如何展示；预期它像 GPT Reasoning 一样显示最新 part 的标题。
 
 ### 2.2 持久 Reasoning Transcript
 
@@ -100,7 +100,7 @@ Reasoning 完成
 第一句 → 第二句 → 第三句
 ```
 
-当前单个 Reasoning Item 使用一个 `summaryIndex: 0`，Codex 可能始终从累计文本开头显示单行截断。延迟创建 transcript 不能解决这个原生展示限制。
+早期实现只使用一个 `summaryIndex: 0`，Codex 始终从累计文本开头显示单行截断。现已按段落拆成多个带粗体标题的 summary part（见 2.1）；最新段落能否在真实 Desktop 上逐段轮换仍需 Desktop Gate 确认。延迟创建 transcript 与此无关。
 
 ### 3.4 Command Execution 是兼容载体，不是公开的 Reasoning transcript 契约
 
@@ -268,7 +268,7 @@ Native Session 仍提供 Reasoning 正文；Protocol Core 只在 `thread/read` �
 
 ## 11. 已知未解决问题
 
-1. **原生逐句轮换**：事件驱动延迟不能保证 Codex 原生预览展示最新一句；这需要独立 Gate 研究 `summaryIndex`、多个 summary part 或其他原生消息形状。
+1. **原生逐段轮换**：Protocol Core 已按段落发送多个带标题的 summary part（见 2.1），但尚未在真实 Codex Desktop 上验证预览会切换到最新 part 并显示其标题。
 2. **载体语义**：`thinking` 仍显示为 Shell/Command Execution，而不是真正的 Reasoning transcript 类型。除非 Codex 提供更合适的原生持久 Item，否则这是明确的兼容折中。
 3. **Item ID 派生**：当前 `${itemId}-summary` 需要评估 opaque Host Item ID 的碰撞风险。
 4. **失败状态**：后续实现需要让 transcript 的 `status`、`exitCode` 和 Reasoning outcome 保持一致，不能在 failed/cancelled 时无条件显示成功退出码。

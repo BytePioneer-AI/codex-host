@@ -1922,11 +1922,9 @@ describe("DeepSeek Harness Modern Session", () => {
         ? ui.project(entry).messages
         : [],
     );
-    expect(wire).toContainEqual(
-      expect.objectContaining({
-        method: "item/reasoning/summaryTextDelta",
-        params: expect.objectContaining({ delta: "Think" }),
-      }),
+    // The summary preview holds "Think" until its title is decided; the transcript twin streams it.
+    expect(wire).not.toContainEqual(
+      expect.objectContaining({ method: "item/reasoning/summaryTextDelta" }),
     );
     expect(wire).toContainEqual(
       expect.objectContaining({

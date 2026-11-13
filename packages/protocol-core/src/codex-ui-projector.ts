@@ -35,6 +35,7 @@ import { createTwoFilesPatch } from "diff";
 import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
 import { isFileMutatingTool, projectFileOperations } from "./file-operation-projection.js";
+import { reasoningSummaryParts } from "./reasoning-summary-parts.js";
 
 import {
   projectCodexApprovalRequest,
@@ -83,7 +84,8 @@ interface ProjectedItem {
   item: HostItem;
   media?: ReturnType<typeof createAgentMedia>;
   outcome: HostItemOutcome | null;
-  reasoningPartStarted: boolean;
+  /** Codex summary part text already streamed, by summaryIndex. */
+  reasoningSummary: string[];
   streamedCommandOutput: boolean;
   wireStarted: boolean;
   /** Holds its place in the Turn's Item order before its wire Item starts. */
@@ -589,7 +591,7 @@ function projectItem(
       return {
         id: reasoningPreviewItemId(item.itemId),
         type: "reasoning",
-        summary: text ? [text] : [],
+        summary: reasoningSummaryParts(text, true),
         content: [],
       };
     }
@@ -1218,7 +1220,7 @@ export class CodexTurnProjector {
         ? { media: createAgentMedia(event.item.text, this.#cwd) }
         : {}),
       outcome: null,
-      reasoningPartStarted: false,
+      reasoningSummary: [],
       streamedCommandOutput: false,
       wireStarted: false,
       startedAtMs,
@@ -1262,7 +1264,7 @@ export class CodexTurnProjector {
       messages.push(
         this.#startReasoningTranscript(event.item, startedAtMs),
         this.#reasoningOutputDelta(event.item.itemId, text, startedAtMs),
-        ...this.#reasoningDelta(projected, text, startedAtMs),
+        ...this.#reasoningSummaryDeltas(projected, startedAtMs, false),
       );
     }
     return { messages };
@@ -1299,7 +1301,7 @@ export class CodexTurnProjector {
         }
         messages.push(
           this.#reasoningOutputDelta(event.itemId, delta, emittedAtMs),
-          ...this.#reasoningDelta(projected, delta, emittedAtMs),
+          ...this.#reasoningSummaryDeltas(projected, emittedAtMs, false),
         );
       }
     } else if (event.update.type === "output.append") {
@@ -1434,6 +1436,10 @@ export class CodexTurnProjector {
     }
     const messages = [
       ...mediaMessages,
+      // Flush the tail held back while the paragraph could still change.
+      ...(projected.item.type === "reasoning"
+        ? this.#reasoningSummaryDeltas(projected, emittedAtMs, true)
+        : []),
       completedItem(
         this.#projectItem(projected.item, projected.outcome, !projected.streamedCommandOutput),
       ),
@@ -1686,35 +1692,39 @@ export class CodexTurnProjector {
     };
   }
 
-  #reasoningDelta(projected: ProjectedItem, delta: string, emittedAtMs: number): JsonObject[] {
+  #reasoningSummaryDeltas(
+    projected: ProjectedItem,
+    emittedAtMs: number,
+    complete: boolean,
+  ): JsonObject[] {
     if (projected.item.type !== "reasoning" || !projected.wireStarted) {
       throw new Error("Host Reasoning update precedes its Item start");
     }
+    const itemId = reasoningPreviewItemId(projected.item.itemId);
+    const parts = reasoningSummaryParts(reasoningDisplayText(projected.item.text), complete);
+    const streamed = projected.reasoningSummary;
     const messages: JsonObject[] = [];
-    if (!projected.reasoningPartStarted) {
-      projected.reasoningPartStarted = true;
-      messages.push({
-        method: "item/reasoning/summaryPartAdded",
-        emittedAtMs,
-        params: {
-          threadId: this.#threadId,
-          turnId: this.#turnId,
-          itemId: reasoningPreviewItemId(projected.item.itemId),
-          summaryIndex: 0,
-        },
-      });
+    for (const [summaryIndex, part] of parts.entries()) {
+      const previous = streamed[summaryIndex];
+      if (previous === undefined) {
+        messages.push({
+          method: "item/reasoning/summaryPartAdded",
+          emittedAtMs,
+          params: { threadId: this.#threadId, turnId: this.#turnId, itemId, summaryIndex },
+        });
+      } else if (!part.startsWith(previous)) {
+        throw new Error("Reasoning summary part changed after it was streamed");
+      }
+      const delta = part.slice(previous?.length ?? 0);
+      if (delta) {
+        messages.push({
+          method: "item/reasoning/summaryTextDelta",
+          emittedAtMs,
+          params: { threadId: this.#threadId, turnId: this.#turnId, itemId, delta, summaryIndex },
+        });
+      }
     }
-    messages.push({
-      method: "item/reasoning/summaryTextDelta",
-      emittedAtMs,
-      params: {
-        threadId: this.#threadId,
-        turnId: this.#turnId,
-        itemId: reasoningPreviewItemId(projected.item.itemId),
-        delta,
-        summaryIndex: 0,
-      },
-    });
+    projected.reasoningSummary = parts;
     return messages;
   }
 

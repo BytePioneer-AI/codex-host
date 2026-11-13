@@ -720,7 +720,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       params: { threadId, input: [{ type: "text", text: "reasoning" }] },
     });
     await fixture.collector.waitFor((message) => requestId(message, 2));
-    const reasoningId = session.startReasoning("visible ");
+    const reasoningId = session.startReasoning("Visible step. Then");
     await expect(
       fixture.collector.waitFor(
         (message) =>
@@ -734,14 +734,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await fixture.collector.waitFor((message) =>
       method(message, "item/reasoning/summaryPartAdded"),
     );
-    session.appendReasoning(reasoningId, "analysis");
+    session.appendReasoning(reasoningId, " more.\n\nSecond step? Yes");
     await expect(
       fixture.collector.waitFor(
         (message) =>
           method(message, "item/reasoning/summaryTextDelta") &&
-          (message.params as JsonObject).delta === "analysis",
+          (message.params as JsonObject).delta === "**Second step?**\n\nYes",
       ),
-    ).resolves.toMatchObject({ params: { summaryIndex: 0 } });
+    ).resolves.toMatchObject({ params: { summaryIndex: 1 } });
     session.completeItem(reasoningId, { status: "succeeded" });
     await fixture.collector.waitFor(
       (message) =>
@@ -760,14 +760,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
             {
               id: `${reasoningId}-summary`,
               type: "reasoning",
-              summary: ["visible analysis"],
+              summary: ["**Visible step**\n\nThen more.", "**Second step?**\n\nYes"],
               content: [],
             },
             {
               id: reasoningId,
               type: "commandExecution",
               command: "thinking",
-              aggregatedOutput: "visible analysis",
+              aggregatedOutput: "Visible step. Then more.\n\nSecond step? Yes",
             },
             { type: "agentMessage", text: "answer" },
           ],
@@ -792,14 +792,14 @@ describe("AppServerHost HarnessAdapter projection", () => {
                 {
                   id: `${reasoningId}-summary`,
                   type: "reasoning",
-                  summary: ["visible analysis"],
+                  summary: ["**Visible step**\n\nThen more.", "**Second step?**\n\nYes"],
                   content: [],
                 },
                 {
                   id: reasoningId,
                   type: "commandExecution",
                   command: "thinking",
-                  aggregatedOutput: "visible analysis",
+                  aggregatedOutput: "Visible step. Then more.\n\nSecond step? Yes",
                 },
                 { type: "agentMessage", text: "answer" },
               ],

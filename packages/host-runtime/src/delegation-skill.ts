@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 12;
+const SKILL_VERSION = 13;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
@@ -24,6 +24,8 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "242a07e7521949e5d651102f6b353c48e7575a679e3403c5c5db295abad9896b",
   // v11, before the worktree note.
   "e762e3dea2633656dec27ea568b95f005e7f5c13a21b029dd149813f49c1330c",
+  // v12, before the thread export note.
+  "1c238d035647b40f6f6db17409e31e1723fbe57c5aa1aaf35487686aecb65b6f",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -90,7 +92,8 @@ user’s request and the task:
 - leave it running in the background.
 
 A watch notification reports execution state only. Read the Thread before
-judging or reporting its work.
+judging or reporting its work. Only when debugging needs the full Thread, export
+it to a file; help shows how.
 
 Report the result returned by read or a completed wait, together with the target
 agent, status, and a labeled task link. Keep internal tracking IDs in tool calls.

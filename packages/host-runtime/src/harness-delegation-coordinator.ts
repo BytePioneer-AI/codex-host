@@ -43,6 +43,7 @@ import {
   type ThreadWaitInput,
 } from "./delegation-types.js";
 import { originClientName } from "./external-client-origin.js";
+import { delegationTitle } from "./delegation-title.js";
 import { projectDelegationThreadSnapshot, validateReadOptions } from "./delegation-snapshot.js";
 import {
   createExternalThreadRecordInput,
@@ -55,20 +56,6 @@ const IMPLICIT_DEDUPLICATION_MS = 30_000;
 const NATIVE_REF_TIMEOUT_MS = 10_000;
 
 type ParentMetadata = { cwd?: string; title?: string };
-
-function truncateTitle(value: string, length: number): string {
-  return value.slice(0, length).replace(/[\uD800-\uDBFF]$/u, "");
-}
-
-function delegationTitle(parentTitle: string | undefined, input: DelegationStartInput): string {
-  const taskName = (input.taskName ?? input.task.trim().split(/\r?\n/u)[0] ?? input.task)
-    .replace(/\s+/gu, " ")
-    .trim();
-  const subtask = truncateTitle(taskName, 120);
-  const parent = (parentTitle?.trim() || "Untitled Thread").replace(/\s+/gu, " ");
-  // 子任务名在前：侧边栏从末尾截断，同一父会话的子任务仍能区分；父标题过长时截断父标题。
-  return `${subtask} · ${truncateTitle(parent, 200 - subtask.length - 3)}`;
-}
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -243,7 +230,7 @@ export class HarnessDelegationCoordinator {
     const parentThreadId = await this.#resolveParent(input.parentThreadId);
     const parent = await this.#parentMetadata(parentThreadId);
     const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
-    const title = delegationTitle(parent.title, input);
+    const title = delegationTitle(input);
     if (input.harnessId === "codex") {
       const result = await this.#startOfficial({
         ...input,
@@ -727,8 +714,7 @@ export class HarnessDelegationCoordinator {
   async #parentMetadata(
     parentThreadId: string,
   ): Promise<ParentMetadata & { harnessId: RoutedHarnessId }> {
-    // A client origin is no Thread: the stored source Harness keeps the native default, and
-    // the client's name stands in for a parent title, so titles read "<subtask> · <client>".
+    // A client origin is no Thread; its stored source Harness keeps the native default.
     const client = originClientName(parentThreadId);
     if (client) return { harnessId: "codex", title: client };
     const record = await this.#repository.find(parentThreadId);

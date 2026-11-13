@@ -21,7 +21,7 @@
 - [<会话标题>](thread://<id>): <结果>. <可选说明>
 ```
 
-- 链接标签是观察期间读到的 Thread 标题，随 watch 记录持久化；从未读到标题时使用 Thread ID。
+- 链接标签使用观察期间读到的 Thread 标题；从未读到标题时使用 Thread ID。生成通知时，首个 ` · ` 后的整个后缀超过 20 个 Unicode 字符则保留前 20 个并加 `…`，短后缀及无分隔符的标题不变。该规则也适用于恢复后待投递的历史 watch，只改变通知字符串，不回写 Thread 标题或 watch 中持久化的完整标题。新委派的标题只有子任务名，见 [委派命名](delegation-titles.md)。Web 通知卡片仍优先显示目录中的当前标题，未载入目录时显示通知标签。
 - 说明只在需要时出现：`timedOut` 提示重新注册，`unreadable` 附读取错误，`notFound` 说明 Thread 已不存在，重启导致的 `interrupted` 附重启说明。
 - 链接使用 Desktop 原生的会话引用形式 `[标题](thread://<id>)`，Desktop 将其显示为会话引用标签。链接不能带 title 属性（`[标题](thread://<id> "…")`），也不能用普通的 `codex://threads/<id>`，否则 Desktop 用户消息按原文显示。`codexhost thread read` 同样接受该形式。
 - 同一份原文给模型阅读，Web 解析后显示为通知卡片（见 [独立 Web](../product/standalone-web.md)）。不符合格式的文字（包括旧格式的历史通知）按普通用户消息显示。
@@ -33,6 +33,8 @@
 | `thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` | 观察一个已有 Thread |
 | `delegate start ... --watch true` | 创建委派后顺手观察，通知 Host 解析出的发起方 |
 | `thread watches` | 列出尚未送达的 watch |
+
+`thread watches` 的 JSON / compact 条目在原有字段外提供 `taskName`（当前标题；无法读取时使用登记或观察时保存的标题）、`threadStatus`（查询时读取的 Thread 当前状态，读取失败时省略）、`watchedForMs`（自登记以来的毫秒数，包含 Host 停机时间，不因重复登记重置）。Thread 当前状态与 watch 的 `state` / 已观察到的 `outcome` 不同：通知待送达时 Thread 可能已启动新 Turn。查询只读取信息，不推进观察或投递；同一被观察 Thread 在一次查询中只读一次。无法读取某个 Thread 不会让其 watch 从列表消失。`--format text` 每个 watch 一行，保留 compact 信息。
 
 watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 先完成委派；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。`thread send` 不提供 `--watch`，发送后需要通知时单独执行 `thread watch`。
 

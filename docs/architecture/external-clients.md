@@ -12,6 +12,20 @@
 - 连接优先级：完整的 Host 注入参数 → 显式客户端令牌／令牌文件 → 本机私有凭据。部分缺失的 Host 参数仍报错，不自动改变内部会话身份；显式令牌无效时不会回退到本机凭据。
 - HTTP／MCP 不免认证，仍须显式提供 Bearer 令牌。
 
+### CLI 输出格式
+
+`harness`、`delegate`、`thread`、`host info` 和 `project list` 支持 `--format json|compact|text`。默认 `json` 保留完整返回结构；`compact` 使用 Thread 链接和精简 JSON 字段。`text` 面向人和 Agent 阅读，信息至少覆盖 compact，以键值行显示嵌套字段（如 `watch.state`、`threads.0.title`），不做 JSON 字符串转义。
+
+```sh
+codexhost thread read <thread> --format text
+codexhost thread read <thread> --view messages --format text
+codexhost thread watches --format text
+```
+
+`thread read` / `wait` 首行为 `thread: <链接>   harness: <id>   status: <状态>`，随后显示可用的 Turn、结果可用性、超时、进度或消息分页信息，再以单独一行 `---` 分隔正文。结果正文保留真实换行、引号和缩进；消息视图每条消息单独成段并标注角色及可用的 phase。输出以换行结束。`thread watches` 每个 watch 一行，元数据里的换行折叠为空格。
+
+`client` 和 `events` 不支持 `--format text`，执行前返回明确错误，不自动回退。所有格式的错误都保持 JSON 写入 stderr、退出码 1；成功输出写入 stdout、退出码 0，任务自身的失败状态不改变此约定。HTTP / MCP 的结构化响应不受 CLI text 格式影响。
+
 ## 登记与认证
 
 - `codexhost client add <name>` 生成 `chc_` 开头的随机令牌并只输出一次；`client list` 列出名称与登记时间；`client remove` 立即吊销。

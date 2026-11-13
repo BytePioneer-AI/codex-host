@@ -108,6 +108,24 @@ describe("DelegationWatchService", () => {
     },
   );
 
+  it("shortens a historical title only in the notification, without changing the Thread", async () => {
+    const title = "summary-row · " + "父会话首条消息".repeat(10);
+    const fake = runtime({ child: { status: "running", title }, parent: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    fake.update("child", { status: "completed" });
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "summary-row · " + "父会话首条消息".repeat(3).slice(0, 20) + "…",
+        outcome: "completed",
+      },
+    ]);
+    expect(fake.threads.child?.title).toBe(title);
+  });
+
   it("keeps a notification pending while the subscriber is busy", async () => {
     const fake = runtime({ child: { status: "running" }, parent: { status: "running" } });
     const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });

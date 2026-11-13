@@ -77,11 +77,10 @@ import { RowActionToast } from "./session-actions/RowActionToast.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { en, zh, type WorkspaceKey } from "./locales.ts";
 import {
-  canPlaceThread,
+  isLocalThreadTreeMember,
   runningSubagentsInThreadSubtree,
   runningThreadSubtree,
 } from "./thread-tree-catalog.ts";
-import { registerThreadPlacement } from "./session-actions/thread-placement.ts";
 
 export { ReferenceSessionMenuItem } from "./session-actions/ReferenceSession.tsx";
 export type { StartSessionOptions, UiWorkspace } from "./navigation.ts";
@@ -140,7 +139,6 @@ export const inject = [
   "workspaces",
   "locale",
   "remote",
-  "connection",
   "remote.directoryPicker",
   "layout",
   "shortcuts",
@@ -277,7 +275,7 @@ export function apply(ctx: Context): void {
       const summary = list.byId[sessionId];
       const runningThreads = runningThreadSubtree(list, sessionId);
       const subagents = runningSubagentsInThreadSubtree(list, sessionId);
-      if (canPlaceThread(summary) && (runningThreads.length > 0 || subagents.length > 0)) {
+      if (isLocalThreadTreeMember(summary) && (runningThreads.length > 0 || subagents.length > 0)) {
         archiveRequest.set({
           sessionId,
           displayTitle: summary?.displayTitle ?? sessionId,
@@ -368,21 +366,7 @@ export function apply(ctx: Context): void {
       viewInstance.actions.setArchivedFilter("show");
     },
   });
-  const placeSession = registerThreadPlacement(ctx, sessions, viewInstance.actions, notify);
   const browserInjected = (): WorkspaceBrowserInjected => ({
-    placeSession,
-    moveSessionToWorkspace: async (sessionId, workspaceId) => {
-      try {
-        await workspaces.insertSessionBefore(workspaceId, sessionId);
-        return true;
-      } catch (reason) {
-        notify({
-          kind: "placeFailed",
-          message: reason instanceof Error ? reason.message : String(reason),
-        });
-        return false;
-      }
-    },
     // Explicit group actions keep their target; unscoped New Session inherits
     // the current Session Workspace before the recent-Workspace fallback.
     startSession: (workspaceId) => {

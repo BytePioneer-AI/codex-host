@@ -25,8 +25,6 @@ export type {
   StoredTurnMappingV1,
   ThreadMetadataPatch,
 } from "./records.js";
-export { storedThreadTreePlacementV1Schema } from "./thread-tree-placements.js";
-export type { StoredThreadTreePlacementV1 } from "./thread-tree-placements.js";
 export { storedSectionPlacementV1Schema } from "./section-placements.js";
 export { SUPERSEDED_SESSIONS_MAX } from "./superseded-sessions.js";
 export type { StoredSupersededSessionV1 } from "./superseded-sessions.js";

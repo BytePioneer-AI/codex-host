@@ -77,15 +77,14 @@ async function foldLayout(page: Page, id: string, row = threadRow(page, id)): Pr
     const toggle = row.querySelector("[data-thread-toggle]");
     const icon = row.querySelector("[data-thread-icon-toggle]");
     const chevron = toggle?.querySelector("svg");
-    if (!toggle || !icon || !chevron) throw new Error("Missing fold layout elements");
+    const artwork = chevron?.querySelector("path");
+    if (!toggle || !icon || !chevron || !artwork) throw new Error("Missing fold layout elements");
     const chevronBox = chevron.getBoundingClientRect();
     return {
-      artworkGap:
-        icon.getBoundingClientRect().left -
-        toggle.querySelector("svg path")!.getBoundingClientRect().right,
+      artworkGap: icon.getBoundingClientRect().left - artwork.getBoundingClientRect().right,
       chevronInRow: chevronBox.left >= 4,
       chevronWidth: chevronBox.width,
-      artwork: toggle.querySelector("svg path")?.getBoundingClientRect().toJSON(),
+      artwork: artwork.getBoundingClientRect().toJSON(),
       stroke: getComputedStyle(chevron).strokeWidth,
       toggleWidth: toggle.getBoundingClientRect().width,
       toggleHeight: toggle.getBoundingClientRect().height,
@@ -116,9 +115,10 @@ async function guides(
   assert.equal(await row.locator("[data-thread-guide]").count(), count);
   const geometry = await row.evaluate((row) => {
     const icon = row.querySelector("[data-harness-id]")?.getBoundingClientRect();
-    if (!icon) throw new Error("Missing parent icon");
+    const tree = row.closest('[role="tree"]');
+    if (!icon || !tree) throw new Error("Missing parent icon or tree");
     const depth = Number(row.getAttribute("data-thread-depth"));
-    const rows = [...row.closest('[role="tree"]')!.querySelectorAll("[data-row-key]")];
+    const rows = [...tree.querySelectorAll("[data-row-key]")];
     let last: Element = row;
     for (const next of rows.slice(rows.indexOf(row) + 1)) {
       if (!next.hasAttribute("data-thread-depth")) break;
@@ -783,7 +783,6 @@ it(
     await chip.waitFor();
     assert.equal(await chip.innerText(), "Delegated implementation");
     assert.deepEqual(await savedOrder(), before);
-    assert.equal(host.placements.size, 0);
     assert.deepEqual(host.pinnedIds, ["child"]);
     assert.equal(
       host.requests.some((request) => request.method === "turn/start"),
@@ -870,93 +869,6 @@ it(
     assert.equal(host.archivedIds.has("child"), false);
     await threadRow(page, "parent").waitFor({ state: "detached" });
     await threadRow(page, "child").waitFor();
-  },
-);
-
-for (const width of [390]) {
-  it(
-    `placement filters candidates, expands target ancestors and persists an explicit top level at ${width}px`,
-    { timeout: 60_000 },
-    async (t) => {
-      const { page, host } = await threadTreeBrowser(t, width);
-      await expanded(page, "parent", true);
-      await viewOption(page, "All conversations (show archived)");
-      await threadMenu(page, "child");
-      await page.getByRole("menuitem", { name: "Move under…", exact: true }).click();
-      const picker = page.getByRole("dialog", { name: "Move under…", exact: true });
-      const targets = picker.getByRole("group", { name: "Choose a parent session", exact: true });
-      await targets.getByRole("button", { name: /^Move target/ }).waitFor();
-      for (const name of [
-        "Delegated implementation",
-        "Approval checks",
-        "Deep review",
-        "Nested follow-up",
-        "Archived work",
-        "Native worker",
-      ])
-        assert.equal(
-          await targets.getByRole("button", { name: new RegExp(`^${name}`) }).count(),
-          0,
-          name,
-        );
-      await treeShot(page, `thread-tree-${width}-placement-picker`);
-      const search = picker.getByRole("searchbox", { name: "Search sessions", exact: true });
-      await search.fill("MOVE TARGET");
-      assert.equal(await targets.getByRole("button").count(), 1);
-      await targets.getByRole("button", { name: /^Move target/ }).click();
-      await picker.waitFor({ state: "hidden" });
-      await openSidebar(page);
-      const child = threadRow(page, "child");
-      await child.waitFor();
-      assert.equal(host.parents.child, "target");
-      assert.equal(await child.getAttribute("data-thread-parent"), "target");
-      assert.equal(await threadRow(page, "target-root").getAttribute("aria-expanded"), "true");
-      assert.equal(await threadRow(page, "target").getAttribute("aria-expanded"), "true");
-      await threadMenu(page, "child");
-      await page.getByRole("menuitem", { name: "Move to top level", exact: true }).click();
-      await openSidebar(page);
-      await page.waitForFunction(() => {
-        const row = document.querySelector(
-          '[data-row-key="recent:child"], [data-row-key="session:child"]',
-        );
-        return row?.getAttribute("data-thread-depth") === "0";
-      });
-      assert.equal(host.placements.get("child"), null);
-      assert.equal(host.delegations.child, "parent", "placement never edits delegation");
-      await page.reload();
-      await page.getByText("Native Model", { exact: true }).waitFor();
-      await openSidebar(page);
-      await child.waitFor();
-      assert.equal(await child.getAttribute("data-thread-depth"), "0");
-      assert.equal(await child.getAttribute("data-thread-parent"), null);
-      await noHorizontalOverflow(page);
-      await threadMenu(page, "child");
-      assert.equal(
-        await page.getByRole("menuitem", { name: "Move to top level", exact: true }).count(),
-        0,
-      );
-      await page.keyboard.press("Escape");
-    },
-  );
-}
-
-it(
-  "a refused placement reports the Host error without moving the subtree",
-  { timeout: 60_000 },
-  async (t) => {
-    const { page, host } = await threadTreeBrowser(t, 390);
-    await expanded(page, "parent", true);
-    host.placeError = "Placement rejected by Host.";
-    await threadMenu(page, "child");
-    await page.getByRole("menuitem", { name: "Move under…", exact: true }).click();
-    const picker = page.getByRole("dialog", { name: "Move under…", exact: true });
-    await picker.getByRole("button", { name: /^Move target/ }).click();
-    await page
-      .getByText("Could not move session: Placement rejected by Host.", { exact: true })
-      .waitFor();
-    assert.equal(host.parents.child, "parent");
-    assert.equal(await threadRow(page, "child").getAttribute("data-thread-parent"), "parent");
-    assert.equal(await picker.getByRole("searchbox").isEnabled(), true);
   },
 );
 

@@ -885,11 +885,7 @@ export class AppServerHost {
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
     );
-    this.#threadTree = new ThreadTree(
-      this.#repository,
-      (method, params) => this.#requestOfficial(method, params),
-      this.#options.sharedThreads,
-    );
+    this.#threadTree = new ThreadTree(this.#repository);
     this.#threadPins = new ThreadPins(this.#repository, (method, params) =>
       this.#requestOfficial(method, params),
     );
@@ -1778,17 +1774,10 @@ export class AppServerHost {
       return;
     }
     if (await this.#desktopControl.handle(request)) return;
-    if (
-      request.method === "codexhost/thread/tree/read" ||
-      request.method === "codexhost/thread/tree/place"
-    ) {
+    if (request.method === "codexhost/thread/tree/read") {
       this.#dispatchDesktopReply(request, async () => {
         await this.#waitForPlugins();
-        await this.#writer.json(
-          await this.#threadTree.handle(request, (threadId) =>
-            this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
-          ),
-        );
+        await this.#writer.json(await this.#threadTree.handle(request));
       });
       return;
     }

@@ -106,29 +106,12 @@ export function buildThreadTree<T extends ThreadTreeRow>(
 export function visibleThreadRows<T extends { id: string; tree?: ThreadTreeInfo<T> }>(
   roots: readonly T[],
   expansion: Readonly<Record<string, boolean>>,
-  childrenOf: (node: T) => readonly T[] = (node) => node.tree?.children ?? [],
 ): T[] {
   const result: T[] = [];
   const stack = [...roots].reverse();
   for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
     result.push(node);
-    if (expansion[node.id]) stack.push(...[...childrenOf(node)].reverse());
-  }
-  return result;
-}
-
-/** Raw display ancestors, also usable before the selected row enters a visible forest. */
-export function threadAncestors(
-  id: string,
-  parentOf: (id: string) => string | null | undefined,
-): string[] {
-  const result: string[] = [];
-  const seen = new Set([id]);
-  let parent = parentOf(id);
-  while (parent != null && !seen.has(parent)) {
-    seen.add(parent);
-    result.push(parent);
-    parent = parentOf(parent);
+    if (expansion[node.id]) stack.push(...[...(node.tree?.children ?? [])].reverse());
   }
   return result;
 }

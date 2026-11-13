@@ -53,7 +53,6 @@ export interface ChProjectSnapshot {
 const exec = promisify(execFile);
 const METHODS = new Set([
   "codexhost/thread/tree/read",
-  "codexhost/thread/tree/place",
   "codexhost/thread/pins/list",
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",

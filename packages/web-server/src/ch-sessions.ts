@@ -1029,16 +1029,6 @@ export class ChSessions {
         return { pinnedSessionIds: await this.pins.sync({ threadId: id, pinned }) };
       });
     }
-    rpc.register("session/place", async (args) => {
-      const { sessionId, parentSessionId } = requestOf<{
-        sessionId: unknown;
-        parentSessionId: unknown;
-      }>(args);
-      await this.tree.place(sessionId, parentSessionId, (id) => this.drafts.has(id));
-      await this.refreshing?.catch(() => undefined);
-      await this.refresh();
-      return {};
-    });
     rpc.register("session/list", async (args, context) => {
       const {
         includeArchived = false,

@@ -16,7 +16,6 @@ import {
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
-  type StoredThreadTreePlacementV1,
   type StoredThreadRecordV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
@@ -88,8 +87,6 @@ export interface ExternalThreadStore {
   ): Promise<StoredThreadRecordV1>;
   removeProvisional(hostThreadId: HostThreadId): Promise<void>;
   removeThread(hostThreadId: HostThreadId): Promise<void>;
-  listThreadTreePlacements(): Promise<StoredThreadTreePlacementV1[]>;
-  setThreadTreePlacement(hostThreadId: string, parentThreadId: string | null): Promise<void>;
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]>;
   replaceSectionPlacements(
     placements: readonly StoredSectionPlacementV1[],
@@ -147,14 +144,6 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
-  }
-
-  listThreadTreePlacements(): Promise<StoredThreadTreePlacementV1[]> {
-    return this.store.listThreadTreePlacements();
-  }
-
-  setThreadTreePlacement(hostThreadId: string, parentThreadId: string | null): Promise<void> {
-    return this.store.setThreadTreePlacement(hostThreadId, parentThreadId);
   }
 
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {

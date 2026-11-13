@@ -7,7 +7,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { THREAD_TREE_ANCESTOR_LIMIT } from "../src/ch-thread-tree.ts";
 import { DataDir } from "../src/store.ts";
-import { RemoteSessions } from "../src/remote-sessions.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
@@ -18,18 +17,8 @@ class TreeHost extends FakeChChannel {
   pageIds: Set<string> | undefined;
   failures = new Set<string>();
   override async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    if (method === "codexhost/thread/tree/read" || method === "codexhost/thread/tree/place") {
+    if (method === "codexhost/thread/tree/read") {
       this.requests.push({ method, params: structuredClone(params) });
-      if (method.endsWith("/place")) {
-        if (this.failures.has(String(params.threadId)))
-          throw new Error("Placement rejected by Host.");
-        if (params.parentThreadId === null)
-          this.parents = Object.fromEntries(
-            Object.entries(this.parents).filter(([id]) => id !== params.threadId),
-          );
-        else this.parents[String(params.threadId)] = String(params.parentThreadId);
-        this.changed(String(params.threadId), "codexhost/thread/tree/changed");
-      }
       return { parents: { ...this.parents } } as T;
     }
     if (
@@ -154,43 +143,25 @@ it("keeps display lineage in newly opened history projections before another cat
   assert.equal(projections.values.threadTreeParent, "parent");
 });
 
-it("pushes delegation and placement-only relationship changes through the existing catalog", async (t) => {
-  const { host, add, list, call, events } = fixture(t);
-  add("child");
-  add("parent");
-  const emitted = t.mock.method(events, "emit");
-  await list();
-  host.parents = { child: "parent" };
-  host.changed("child", "thread/started");
-  await wait(() =>
-    emitted.mock.calls.some(
-      ({ arguments: [event, value] }) =>
-        event === "api-session/added" &&
-        (value as Summary).sessionId === "child" &&
-        (value as Summary).projections.values.threadTreeParent === "parent",
-    ),
-  );
-  emitted.mock.resetCalls();
-  assert.deepEqual(await call("session/place", { sessionId: "child", parentSessionId: null }), {});
-  assert.ok(
-    emitted.mock.calls.some(
-      ({ arguments: [event, value] }) =>
-        event === "api-session/added" &&
-        (value as Summary).sessionId === "child" &&
-        (value as Summary).projections.values.threadTreeParent === null,
-    ),
-  );
-  emitted.mock.resetCalls();
-  host.parents = { child: "parent" };
-  host.changed("child", "codexhost/thread/tree/changed");
-  await wait(() =>
-    emitted.mock.calls.some(
-      ({ arguments: [event, value] }) =>
-        event === "api-session/added" &&
-        (value as Summary).projections.values.threadTreeParent === "parent",
-    ),
-  );
-});
+for (const notification of ["thread/started", "codexhost/thread/tree/changed"]) {
+  it(`pushes delegation relationship changes through the catalog on ${notification}`, async (t) => {
+    const { host, add, list, events } = fixture(t);
+    add("child");
+    add("parent");
+    const emitted = t.mock.method(events, "emit");
+    await list();
+    host.parents = { child: "parent" };
+    host.changed("child", notification);
+    await wait(() =>
+      emitted.mock.calls.some(
+        ({ arguments: [event, value] }) =>
+          event === "api-session/added" &&
+          (value as Summary).sessionId === "child" &&
+          (value as Summary).projections.values.threadTreeParent === "parent",
+      ),
+    );
+  });
+}
 
 it("bounds missing ancestor reads, deduplicates cycles, and tolerates deleted ancestors", async (t) => {
   const { host, add, list } = fixture(t);
@@ -267,55 +238,6 @@ it("retains archive notifications received while ancestor project metadata is lo
   const page = await pending;
   assert.ok(page.items.some((row) => row.sessionId === "parent"));
   assert.ok(!workspaces.archivedSessionIds().includes("parent"));
-});
-
-it("rejects remote, draft and malformed placement IDs before sending a Host mutation", async (t) => {
-  const { host, add, call, dispatch } = fixture(t);
-  add("local");
-  const draft = await call<{ sessionId: string }>("session/create", { cwd: "/synthetic" });
-  for (const request of [
-    { sessionId: "web-remote:any", parentSessionId: null },
-    { sessionId: "local", parentSessionId: "web-remote:any" },
-    { sessionId: draft.sessionId, parentSessionId: null },
-    { sessionId: "local", parentSessionId: draft.sessionId },
-    { sessionId: "local" },
-    { sessionId: "", parentSessionId: null },
-  ]) {
-    const result = await dispatch("session/place", request);
-    assert.ok(!result.ok);
-    assert.equal(result.error.code, "session/place-invalid");
-  }
-  assert.ok(!host.requests.some((request) => request.method.endsWith("tree/place")));
-  add("draft-named-thread");
-  await call("session/place", { sessionId: "draft-named-thread", parentSessionId: "local" });
-  assert.equal(host.parents["draft-named-thread"], "local");
-  host.failures.add("local");
-  const rejected = await dispatch("session/place", { sessionId: "local", parentSessionId: null });
-  assert.ok(!rejected.ok);
-  assert.equal(rejected.error.code, "session/place-invalid");
-});
-
-it("keeps the placement rejection contract when remote session routing is installed", async (t) => {
-  const { events, workspaces, rpc, dispatch, host } = fixture(t);
-  let remoteCalls = 0;
-  const remote = new RemoteSessions(
-    events,
-    async () => {
-      remoteCalls++;
-      return [];
-    },
-    workspaces,
-  );
-  remote.install(rpc, new StreamRegistry());
-  t.after(() => remote.close());
-  const result = await dispatch("session/place", {
-    sessionId: "web-remote:invalid",
-    parentSessionId: null,
-  });
-  assert.ok(!result.ok);
-  assert.equal(result.error.code, "session/place-invalid");
-  assert.equal(remoteCalls, 0);
-  assert.equal(host.requests.length, 0);
 });
 
 it("archives and restores all unloaded descendants parent first, and limits child-only archive to its subtree", async (t) => {

@@ -69,10 +69,8 @@ import {
   UNGROUPED_KEY,
 } from "../tree.ts";
 import { pinOrderSource } from "../pin-order.ts";
-import { threadChildOrder, threadTreeOrderSource } from "../thread-tree-order.ts";
+import { threadTreeOrderSource } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
-import { ThreadPlacementDragProvider } from "./ThreadPlacementDrag.tsx";
-import { OptimisticThreadPlacementProvider } from "./OptimisticThreadPlacement.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
@@ -321,7 +319,6 @@ type SessionTreeProps = Pick<
     workspaces: readonly WorkspaceView[];
     /** Browser-projected order for Sessions outside every Workspace. */
     ungroupedSessionIds: readonly SessionId[];
-    recentOrder?: readonly SessionId[] | undefined;
     /** Whether the current Workspace stream has a complete Host baseline. */
     workspaceReady: boolean;
     canStartProjectless: boolean;
@@ -394,7 +391,6 @@ function SessionTree({
   open,
   workspaces,
   ungroupedSessionIds,
-  recentOrder,
   rowState,
   onLeaveArchivedOnly,
   workspaceReady,
@@ -468,7 +464,6 @@ function SessionTree({
     const result = deriveGroups(list, workspaces, rowState, statuses, {
       expandedGroups,
       excludePinned: true,
-      recentOrder,
     });
     if (
       (canStartProjectless || (list.hasMore && result.length === 0)) &&
@@ -486,7 +481,7 @@ function SessionTree({
         sessions: [],
       });
     return result;
-  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless, recentOrder]);
+  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless]);
   const now = Date.now();
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;
@@ -786,8 +781,6 @@ function SessionTree({
               const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
                 node.blank ? "after" : half;
               const dragProps = {
-                leave: () =>
-                  setDrag((active) => (active?.over ? { ...active, over: null } : active)),
                 start: () => {
                   sessionDropCommitted.current = false;
                   setDrag({
@@ -840,7 +833,11 @@ function SessionTree({
                         }
                       : undefined
                   }
-                  drag={workspaceId === undefined || group.remote ? undefined : dragProps}
+                  drag={
+                    workspaceId === undefined || group.remote || (node.tree?.depth ?? 0) > 0
+                      ? undefined
+                      : dragProps
+                  }
                   t={t}
                 />
               );
@@ -1081,8 +1078,6 @@ function FlatList({
                   : undefined
               }
               drag={{
-                leave: () =>
-                  setDrag((active) => (active?.over ? { ...active, over: null } : active)),
                 start: () => {
                   dropCommitted.current = false;
                   setDrag({
@@ -1254,15 +1249,9 @@ function SearchResults({
  */
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   return (
-    <OptimisticThreadPlacementProvider browser={props}>
-      {(browser) => (
-        <ThreadTreeViewProvider browser={browser}>
-          <ThreadPlacementDragProvider browser={browser}>
-            <WorkspaceBrowserContent {...browser} />
-          </ThreadPlacementDragProvider>
-        </ThreadTreeViewProvider>
-      )}
-    </OptimisticThreadPlacementProvider>
+    <ThreadTreeViewProvider browser={props}>
+      <WorkspaceBrowserContent {...props} />
+    </ThreadTreeViewProvider>
   );
 }
 
@@ -1430,24 +1419,13 @@ function WorkspaceBrowserContent({
   const activeSessionOrders = useMemo<Readonly<Record<string, readonly SessionId[]>>>(
     () =>
       Object.fromEntries([
-        ...Object.entries(threadOrder.childMembers).map(([key, members]) => [
-          key,
-          threadChildOrder(members, sessionOrderByAccount[key], list.byId),
-        ]),
         ...orderedWorkspaces.map(
           (workspace) => [workspace.workspaceId, workspace.sessionIds] as const,
         ),
         [UNGROUPED_KEY, orderedUngroupedSessionIds] as const,
         [FLAT_SESSION_ORDER_KEY, orderedFlatSessionIds] as const,
       ]),
-    [
-      orderedFlatSessionIds,
-      orderedUngroupedSessionIds,
-      orderedWorkspaces,
-      threadOrder,
-      sessionOrderByAccount,
-      list.byId,
-    ],
+    [orderedFlatSessionIds, orderedUngroupedSessionIds, orderedWorkspaces],
   );
   useEffect(() => {
     if (workspacePhase !== "ready") return;
@@ -1948,7 +1926,6 @@ function WorkspaceBrowserContent({
               renderSlot={renderSlot}
               workspaces={orderedWorkspaces}
               ungroupedSessionIds={orderedUngroupedSessionIds}
-              recentOrder={orderBy === "manual" ? orderedFlatSessionIds : undefined}
               canStartProjectless={canStartProjectless}
               workspaceReady={workspaceReady}
               nestWorkspaces={groupBy === "workspace-tree"}

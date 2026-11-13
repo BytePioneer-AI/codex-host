@@ -3,11 +3,6 @@ import {
   type UsageMeasurementsSnapshot,
 } from "@codexhost/shared-contracts";
 import { execFileSync } from "node:child_process";
-import {
-  readThreadTreePlacementsFile,
-  writeThreadTreePlacementsFile,
-  type StoredThreadTreePlacementV1,
-} from "./thread-tree-placements.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -371,7 +366,6 @@ export class MappingStore {
   readonly #nativeSessions = new Map<string, HostThreadId>();
   readonly #hostTurns = new Map<HostTurnId, HostThreadId>();
   readonly #nativeTurns = new Map<string, HostTurnId>();
-  #threadTreePlacements: StoredThreadTreePlacementV1[] = [];
   #sectionPlacements: StoredSectionPlacementV1[] = [];
   #supersededSessions: StoredSupersededSessionV1[] = [];
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
@@ -525,9 +519,6 @@ export class MappingStore {
         ).catch(() => undefined);
         this.#supersededSessions = [];
       }
-      this.#threadTreePlacements = await readThreadTreePlacementsFile(
-        this.#threadTreePlacementsPath,
-      );
       this.#rebuildIndexes();
       this.#initialized = true;
     } catch (error) {
@@ -981,38 +972,6 @@ export class MappingStore {
       // Backfilling a display hint is not new conversation activity.
       Object.keys(patch).every((key) => key === "preview"),
     );
-  }
-
-  async listThreadTreePlacements(): Promise<StoredThreadTreePlacementV1[]> {
-    this.#requireInitialized();
-    return this.#threadTreePlacements.map((entry) => cloneRecord(entry));
-  }
-
-  /** Official and External Threads share display placements, separate from their records. */
-  async setThreadTreePlacement(hostThreadId: string, parentThreadId: string | null): Promise<void> {
-    this.#requireInitialized();
-    await this.#enqueue(async () => {
-      const placements = this.#threadTreePlacements.filter(
-        (entry) => entry.hostThreadId !== hostThreadId,
-      );
-      if (parentThreadId !== null || this.#delegationChildren.has(hostThreadId as HostThreadId)) {
-        placements.push({ hostThreadId, parentThreadId, placedAt: this.#now().toISOString() });
-      }
-      try {
-        this.#threadTreePlacements = await writeThreadTreePlacementsFile(
-          this.#threadTreePlacementsPath,
-          placements,
-        );
-      } catch (error) {
-        throw new MappingStoreError("IO_ERROR", "Thread tree placements could not be persisted", {
-          cause: error,
-        });
-      }
-    });
-  }
-
-  get #threadTreePlacementsPath(): string {
-    return path.join(this.#directory, "thread-tree-placements.json");
   }
 
   /** Section placements of stored External Threads, in insertion order. */

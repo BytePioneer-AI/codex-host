@@ -35,7 +35,7 @@ type WorkspaceViewState = {
    * section, which also covers views persisted before sections could fold.
    */
   sectionExpansion?: Record<string, boolean>;
-  /** Saved manual order per root account or `thread:<parentId>` child container. */
+  /** Saved manual root order per Workspace group plus the browser-local flat-list account. */
   sessionOrderByAccount: Record<string, string[]>;
   /** Archived-row visibility for the current page; page startup resets it to 'default'. */
   archivedFilter?: ArchivedFilter;
@@ -123,7 +123,6 @@ function copySessionOrders(
         const index = retained.indexOf(id);
         if (index !== -1) insertion = index + 1;
         else if (
-          !key.startsWith("thread:") &&
           !known.has(id) &&
           (key === FLAT_SESSION_ORDER_KEY || !accounts.has(id) || accounts.get(id) === key)
         ) {
@@ -182,9 +181,7 @@ export function createWorkspaceViewStore(): EngineStoreHandle<
           Object.entries(d.groupExpansion).filter(([key]) => retained.has(key)),
         );
         d.sessionOrderByAccount = Object.fromEntries(
-          Object.entries(d.sessionOrderByAccount).filter(
-            ([key]) => retained.has(key) || key.startsWith("thread:"),
-          ),
+          Object.entries(d.sessionOrderByAccount).filter(([key]) => retained.has(key)),
         );
         delete (d as WorkspaceViewState & { sessionUpdatedAtByAccount?: unknown })
           .sessionUpdatedAtByAccount;

@@ -271,10 +271,6 @@ export type WorkspaceBrowserInjected = {
   };
   /** Open the browser search and focus its input. */
   requestSearch: () => void;
-  /** Persist display lineage without changing Workspace membership. */
-  placeSession: (sessionId: SessionId, parentSessionId: SessionId | null) => Promise<boolean>;
-  /** Move Workspace membership without changing display lineage. */
-  moveSessionToWorkspace: (sessionId: SessionId, workspaceId: WorkspaceId) => Promise<boolean>;
   /** Request the existing directory picker. */
   requestAddWorkspace: () => void;
   /** Consume the directory-picker opening request. */
@@ -350,7 +346,6 @@ export type RowToast =
   | { kind: "unarchiveFailed"; message: string }
   | { kind: "pinFailed"; message: string }
   | { kind: "unpinFailed"; message: string }
-  | { kind: "placeFailed"; message: string }
   | { kind: "archivedNotOpenable" }
   | { kind: "defaultWorkspaceFailed" }
   | { kind: "sessionLinkCopied" }

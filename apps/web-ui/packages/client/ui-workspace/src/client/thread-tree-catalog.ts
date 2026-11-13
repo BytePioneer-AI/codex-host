@@ -26,7 +26,7 @@ export function sessionDescendantIds(list: SessionListState, id: string): Readon
   return seen;
 }
 
-export function canPlaceThread(summary: SessionSummary | undefined): boolean {
+export function isLocalThreadTreeMember(summary: SessionSummary | undefined): boolean {
   return (
     summary !== undefined &&
     !summary.blank &&
@@ -34,42 +34,6 @@ export function canPlaceThread(summary: SessionSummary | undefined): boolean {
     !summary.projectionValues?.remoteHost &&
     summary.projectionValues?.threadTreeParent !== undefined
   );
-}
-
-/** Loaded, local targets only; the Host remains authoritative at write time. */
-export function threadPlacementCandidates(
-  list: SessionListState,
-  sessionId: string,
-  archivedIds: readonly string[],
-  query: string,
-): SessionSummary[] {
-  const source = Object.values(list.byId).find((row) => row.id === sessionId);
-  if (!canPlaceThread(source) || archivedIds.includes(sessionId)) return [];
-  const parent = source === undefined ? null : threadTreeParentOf(source, list);
-  const excluded = new Set([
-    sessionId,
-    ...(parent === null ? [] : [parent]),
-    ...sessionDescendantIds(list, sessionId),
-    ...archivedIds,
-  ]);
-  const hostId = source?.projectionValues?.threadReference?.hostId;
-  const q = query.trim().toLocaleLowerCase();
-  return list.ids
-    .flatMap((id) => {
-      const row = list.byId[id];
-      if (
-        row === undefined ||
-        !canPlaceThread(row) ||
-        excluded.has(id) ||
-        row.projectionValues?.threadReference?.hostId !== hostId
-      )
-        return [];
-      return q === "" ||
-        `${row.title ?? row.displayTitle} ${row.cwd ?? ""}`.toLocaleLowerCase().includes(q)
-        ? [row]
-        : [];
-    })
-    .sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
 /** Native Subagents retain their own confirmation lines, even below display descendants. */

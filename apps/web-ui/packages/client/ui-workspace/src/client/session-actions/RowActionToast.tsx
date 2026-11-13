@@ -108,8 +108,6 @@ function plainNoticeText(
       return t("toast.pinFailed", { message: toast.message });
     case "unpinFailed":
       return t("toast.unpinFailed", { message: toast.message });
-    case "placeFailed":
-      return t("threadTree.moveFailed", { message: toast.message });
     case "defaultWorkspaceFailed":
       return t("defaultWorkspace.failed");
     case "archivedNotOpenable":

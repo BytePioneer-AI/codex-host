@@ -6,7 +6,7 @@ import type {
   SessionSummary,
 } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
-import { buildThreadTree, threadAncestors, visibleThreadRows } from "../src/client/thread-tree.ts";
+import { buildThreadTree, visibleThreadRows } from "../src/client/thread-tree.ts";
 import {
   deriveFlat,
   deriveGroups,
@@ -17,10 +17,9 @@ import {
 } from "../src/client/tree.ts";
 import { threadTreeOrderSource } from "../src/client/thread-tree-order.ts";
 import {
-  canPlaceThread,
+  isLocalThreadTreeMember,
   runningSubagentsInThreadSubtree,
   runningThreadSubtree,
-  threadPlacementCandidates,
 } from "../src/client/thread-tree-catalog.ts";
 import { sidebarWindow } from "../src/client/rows/sidebar-window.ts";
 import { createWorkspaceViewStore } from "../src/client/stores.ts";
@@ -238,7 +237,7 @@ it("keeps roots outside the window for running, pending or selected descendants,
   assert.equal(sidebarWindow(roots, 2).rows.length, 2);
 });
 
-it("retains arbitrary depth with explicit expansion and cycle-safe ancestor navigation", () => {
+it("retains arbitrary depth with explicit expansion", () => {
   const list = catalog(...Array.from({ length: 12 }, (_, i) => row(`${i}`, i ? `${i - 1}` : null)));
   const roots = deriveFlat(list, list.ids, state, new Map());
   assert.equal(visibleThreadRows(roots, {}).length, 1);
@@ -246,13 +245,9 @@ it("retains arbitrary depth with explicit expansion and cycle-safe ancestor navi
   const visible = visibleThreadRows(roots, expansion);
   assert.equal(visible.length, 12);
   assert.equal(visible.at(-1)?.tree?.depth, 11);
-  assert.deepEqual(
-    threadAncestors("c", (id) => ({ c: "b", b: "a", a: "b" })[id]),
-    ["b", "a"],
-  );
 });
 
-it("keeps remote sessions flat and excludes them from placement", () => {
+it("keeps remote sessions flat and outside the local delegation tree", () => {
   const remote = {
     ...row("remote", "a"),
     projectionValues: {
@@ -265,7 +260,7 @@ it("keeps remote sessions flat and excludes them from placement", () => {
     deriveFlat(list, list.ids, state, new Map()).map((node) => node.id),
     ["a", "remote"],
   );
-  assert.equal(canPlaceThread(remote), false);
+  assert.equal(isLocalThreadTreeMember(remote), false);
   const crossHost = catalog(remote, row("local", "remote"));
   assert.deepEqual(
     deriveFlat(crossHost, crossHost.ids, state, new Map()).map((node) => node.id),
@@ -289,40 +284,6 @@ it("keeps search flat and supplies the display-parent title without using native
     result.items.map((node) => [node.id, node.parentTitle]),
     [["match", "parent"]],
   );
-});
-
-it("filters placement by host, archive, submission, native Subagent and all descendant levels; searches title and folder", () => {
-  const list = catalog(
-    row("source"),
-    row("child", "source"),
-    row("grandchild", "child"),
-    row("target"),
-    { ...row("folder"), cwd: "/project" },
-    row("archived"),
-    { ...row("draft"), blank: true },
-    { ...row("native"), origin: "subagent" },
-    {
-      ...row("remote"),
-      projectionValues: { remoteHost: { hostId: "r", displayName: "R", state: "connected" } },
-    },
-    {
-      ...row("foreign"),
-      projectionValues: { threadTreeParent: null, threadReference: { hostId: "foreign" } },
-    },
-  );
-  assert.deepEqual(
-    threadPlacementCandidates(list, "source", ["archived"], "").map((node) => node.id),
-    ["folder", "target"],
-  );
-  assert.deepEqual(
-    threadPlacementCandidates(list, "source", ["archived"], "TARGET").map((node) => node.id),
-    ["target"],
-  );
-  assert.deepEqual(
-    threadPlacementCandidates(list, "source", ["archived"], "project").map((node) => node.id),
-    ["folder"],
-  );
-  assert.deepEqual(threadPlacementCandidates(list, "remote", [], ""), []);
 });
 
 it("lists running threads at every descendant level for archive confirmation", () => {

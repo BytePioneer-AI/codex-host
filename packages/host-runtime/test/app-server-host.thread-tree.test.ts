@@ -65,7 +65,7 @@ it("publishes official delegation tree changes after persistence even though nat
   });
 });
 
-it("routes tree methods on client and Desktop channels while native archive remains non-cascading", async () => {
+it("reads delegation parents on client and Desktop channels while native archive remains non-cascading", async () => {
   let api: DelegationControlRegistration | undefined;
   const fixture = createFixture({
     onDelegationApi: (value) => {
@@ -99,19 +99,10 @@ it("routes tree methods on client and Desktop channels while native archive rema
     delegationApi.list({ parentThreadId: parent, limit: 20, sort: "updated-desc" });
   const delegated = await listChildren();
   expect(delegated.threads.map((thread) => thread.threadId)).toEqual([child]);
-  expect(
-    await fixture.host.handleClientRequest("codexhost/thread/tree/place", {
-      threadId: child,
-      parentThreadId: null,
-    }),
-  ).toEqual({ result: { parents: {} } });
+  expect(await fixture.host.handleClientRequest("codexhost/thread/tree/read", {})).toEqual({
+    result: { parents: { [child]: parent } },
+  });
   expect(await listChildren()).toEqual(delegated);
-  expect(
-    await fixture.host.handleClientRequest("codexhost/thread/tree/place", {
-      threadId: child,
-      parentThreadId: parent,
-    }),
-  ).toEqual({ result: { parents: { [child]: parent } } });
   writeRequest(fixture.desktopInput, { id: 901, method: "codexhost/thread/tree/read", params: {} });
   expect(await fixture.collector.waitFor((message) => message.id === 901)).toMatchObject({
     result: { parents: { [child]: parent } },

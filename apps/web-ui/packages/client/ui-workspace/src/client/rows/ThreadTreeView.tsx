@@ -12,7 +12,6 @@ import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import { deriveThreadForest, type SessionNode } from "../tree.ts";
 import { visibleThreadRows } from "../thread-tree.ts";
-import { orderedThreadChildren } from "../thread-tree-order.ts";
 
 const EMPTY_EXPANSION: Readonly<Record<string, boolean>> = {};
 const ThreadTreeContext = createContext<{
@@ -49,8 +48,6 @@ export function ThreadTreeViewProvider({
   const workspaceState = useWorkspaces((state) => state);
   const expansion = useStore((state) => state.threadExpansion ?? EMPTY_EXPANSION);
   const archivedFilter = useStore((state) => state.archivedFilter ?? "default");
-  const manual = useStore((state) => state.orderBy === "manual");
-  const orders = useStore((state) => state.sessionOrderByAccount);
   const forest = useMemo(
     () =>
       deriveThreadForest(
@@ -114,29 +111,14 @@ export function ThreadTreeViewProvider({
   const value = useMemo(
     () => ({
       expansion,
-      rows: (roots: readonly SessionNode[]) =>
-        visibleThreadRows(
-          roots,
-          expansion,
-          manual ? (node) => orderedThreadChildren(node, orders, list.byId) : undefined,
-        ),
+      rows: (roots: readonly SessionNode[]) => visibleThreadRows(roots, expansion),
       toggle: (id: string, expanded: boolean) => actions.setThreadsExpanded([id], expanded),
       rootId: (id: SessionId) => targets.get(id)?.root.id ?? id,
       reveal,
       selectSidebarRow,
       isSidebarSelection,
     }),
-    [
-      actions,
-      expansion,
-      manual,
-      orders,
-      list.byId,
-      targets,
-      reveal,
-      selectSidebarRow,
-      isSidebarSelection,
-    ],
+    [actions, expansion, targets, reveal, selectSidebarRow, isSidebarSelection],
   );
   return <ThreadTreeContext.Provider value={value}>{children}</ThreadTreeContext.Provider>;
 }

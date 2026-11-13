@@ -40,7 +40,6 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/thread/queue/send-now",
   "codexhost/workspace/read",
   "codexhost/thread/tree/read",
-  "codexhost/thread/tree/place",
   "codexhost/thread/pins/list",
   "codexhost/thread/pins/set",
   "codexhost/harness/plugins/list",
@@ -86,14 +85,8 @@ export const clientThreadPinParamsSchema = z
   .object({ threadId: z.string().min(1).max(1_024), pinned: z.boolean() })
   .strict();
 
-/** Display organization only; independent of delegation and native Subagent ownership. */
+/** Delegation parents for the sidebar tree; independent of native Subagent ownership. */
 export const clientThreadTreeReadParamsSchema = z.object({}).strict();
-export const clientThreadTreePlaceParamsSchema = z
-  .object({
-    threadId: z.string().min(1).max(1_024),
-    parentThreadId: z.string().min(1).max(1_024).nullable(),
-  })
-  .strict();
 export const clientThreadTreeSchema = z
   .object({
     parents: z.record(z.string().min(1), z.string().min(1)),

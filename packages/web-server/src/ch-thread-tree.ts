@@ -50,30 +50,6 @@ export class ChThreadTree {
     }
   }
 
-  async place(
-    sessionId: unknown,
-    parentSessionId: unknown,
-    isDraft: (id: string) => boolean,
-  ): Promise<void> {
-    const validId = (id: unknown): id is string =>
-      typeof id === "string" && id.length > 0 && !id.startsWith("web-remote:") && !isDraft(id);
-    if (!validId(sessionId) || (parentSessionId !== null && !validId(parentSessionId)))
-      throw new RpcError("session/place-invalid", "Choose local, started Threads to organize.");
-    try {
-      this.parents = clientThreadTreeSchema.parse(
-        await this.host.request("codexhost/thread/tree/place", {
-          threadId: sessionId,
-          parentThreadId: parentSessionId,
-        }),
-      ).parents;
-    } catch (error) {
-      throw new RpcError(
-        "session/place-invalid",
-        error instanceof Error ? error.message : "Thread placement failed.",
-      );
-    }
-  }
-
   async archive(
     id: string,
     archived: boolean,

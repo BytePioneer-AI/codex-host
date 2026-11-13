@@ -1,4 +1,4 @@
-/** Fixture Host protocol only; the browser uses the production Web tree and placement endpoints. */
+/** Fixture Host protocol only; the browser uses the production Web tree endpoints. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,31 +19,13 @@ export class ThreadTreeBrowserHost extends FakeChChannel {
     "workspace-child": "workspace-root",
     "workspace-grandchild": "workspace-child",
   };
-  readonly placements = new Map<string, string | null>();
-  placeError: string | undefined;
-  placeDelayMs = 0;
   readonly archiveFailures = new Set<string>();
   get parents(): Record<string, string> {
-    const parents = new Map(Object.entries(this.delegations));
-    for (const [id, parent] of this.placements) {
-      if (parent === null) parents.delete(id);
-      else parents.set(id, parent);
-    }
-    return Object.fromEntries(parents);
+    return { ...this.delegations };
   }
   override async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    if (method === "codexhost/thread/tree/read" || method === "codexhost/thread/tree/place") {
+    if (method === "codexhost/thread/tree/read") {
       this.requests.push({ method, params: structuredClone(params) });
-      if (method.endsWith("/place")) {
-        const error = this.placeError;
-        await new Promise((resolve) => setTimeout(resolve, this.placeDelayMs));
-        if (error) throw new Error(error);
-        this.placements.set(
-          String(params.threadId),
-          params.parentThreadId === null ? null : String(params.parentThreadId),
-        );
-        this.changed(String(params.threadId), "codexhost/thread/tree/changed");
-      }
       return { parents: this.parents } as T;
     }
     if (method === "thread/archive" && this.archiveFailures.has(String(params.threadId))) {

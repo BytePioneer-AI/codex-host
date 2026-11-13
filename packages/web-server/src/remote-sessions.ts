@@ -564,8 +564,6 @@ export class RemoteSessions {
   }
   install(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.routeSessions(async (method, args, next) => {
-      // Local placement validation rejects remote identities with the placement error contract.
-      if (method === "session/place") return next();
       if (method === "session/list") {
         const request = requestOf<{ sessionId?: unknown; cursor?: unknown }>(args);
         if (request.sessionId !== undefined) {

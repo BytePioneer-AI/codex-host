@@ -15,10 +15,14 @@ import { RelayTls } from "../../src/remote-relay/tls.ts";
 import { RequestTrust } from "../../src/request-trust.ts";
 import { relayData, startRelay, until } from "./relay.ts";
 import { defined } from "./defined.ts";
+import type { ExternalAccount, RegistrationResponse } from "@codexhost/remote-relay/protocol";
 
-export function environment(t: TestContext, values: Record<string, string>): void {
+export function environment(t: TestContext, values: Record<string, string | undefined>): void {
   const previous = { ...process.env };
-  Object.assign(process.env, values);
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) Reflect.deleteProperty(process.env, key);
+    else process.env[key] = value;
+  }
   t.after(() => {
     for (const key of Object.keys(values)) {
       if (previous[key] === undefined) Reflect.deleteProperty(process.env, key);
@@ -40,7 +44,11 @@ export function httpsText(url: string): Promise<string> {
   });
 }
 
-export async function pebble(t: TestContext, reuse: 0 | 100) {
+export async function pebble(
+  t: TestContext,
+  reuse: 0 | 100,
+  options: { externalAccount?: ExternalAccount; throughRelay?: boolean } = {},
+) {
   const directory = process.env.CODEXHOST_TEST_PEBBLE_DIR;
   assert.ok(
     directory,
@@ -64,7 +72,17 @@ export async function pebble(t: TestContext, reuse: 0 | 100) {
     NO_PROXY: "",
     no_proxy: "",
   });
-  const relay = await startRelay(t);
+  const acmeDirectory = "https://localhost:4492/dir";
+  let externalAccounts = 0;
+  const relayOptions = {
+    domain: "relay.test",
+    ...(options.throughRelay ? { certificateDirectory: acmeDirectory } : {}),
+    externalAccount: async () => {
+      externalAccounts++;
+      return options.externalAccount;
+    },
+  };
+  const relay = await startRelay(t, 25_000, relayOptions);
   const data = relayData(t);
   const identity = relayIdentity(data);
   const hostname = `${identity.id}.relay.test`;
@@ -73,13 +91,15 @@ export async function pebble(t: TestContext, reuse: 0 | 100) {
     new RequestTrust(undefined),
   );
   let registered = false;
+  let registration: RegistrationResponse | undefined;
   const disconnect = connectRelay({
     host: `localhost:${relay.port}`,
     identity,
     connecting: () => {
       registered = false;
     },
-    registered: () => {
+    registered: (response) => {
+      registration = response;
       registered = true;
     },
     stopped: () => {
@@ -148,6 +168,14 @@ export async function pebble(t: TestContext, reuse: 0 | 100) {
         privateKey: join(directory, "key.pem"),
         httpPort: 4494,
         tlsPort: relay.port,
+        ...(options.externalAccount
+          ? {
+              externalAccountBindingRequired: true,
+              externalAccountMACKeys: {
+                [options.externalAccount.keyId]: options.externalAccount.hmacKey,
+              },
+            }
+          : {}),
       },
     }),
   );
@@ -168,7 +196,9 @@ export async function pebble(t: TestContext, reuse: 0 | 100) {
     identity,
     hostname,
     disconnect,
-    directory: "https://localhost:4492/dir",
+    directory: acmeDirectory,
+    registration: defined(registration),
+    externalAccounts: () => externalAccounts,
     root: await httpsText("https://localhost:4493/roots/0"),
   };
 }

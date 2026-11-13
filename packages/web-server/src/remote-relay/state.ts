@@ -82,15 +82,17 @@ export class RemoteRelay {
         this.hostname = undefined;
         this.state = { status: "connecting", ...(reason ? { reason } : {}) };
       },
-      registered: (hostname) => {
+      registered: (registration) => {
+        const { hostname } = registration;
         this.hostname = hostname;
         const saved = readServiceOptions(this.data);
         if (saved.relayRegistrations[host]?.hostname !== hostname) {
           saved.relayRegistrations[host] = { ...saved.relayRegistrations[host], hostname };
           this.data.writeJson("service.json", saved, { mode: 0o600 });
         }
-        this.certificates.start(hostname, host);
+        this.certificates.start(hostname, host, registration);
       },
+      certificateAuthority: (authority) => this.certificates.certificateAuthority(authority),
       stopped: (reason) => {
         this.certificates.stop();
         this.hostname = undefined;

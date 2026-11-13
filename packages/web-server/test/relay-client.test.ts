@@ -43,7 +43,7 @@ function client(
       attempts++;
       reasons.push(reason);
     },
-    registered: (hostname) => registrations.push(hostname),
+    registered: ({ hostname }) => registrations.push(hostname),
     stopped: (reason) => stopped.push(reason),
     tcp: (stream) => stream.close(),
     ...extra,

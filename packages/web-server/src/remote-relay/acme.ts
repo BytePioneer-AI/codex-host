@@ -6,6 +6,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import * as acme from "acme-client";
 import type { DataDir } from "../store.ts";
 import type { RelayTls } from "./tls.ts";
+import {
+  defaultCertificateDirectory,
+  type ExternalAccount,
+} from "@codexhost/remote-relay/protocol";
+import { CertificateTransport, type CertificateRelay } from "./certificate-transport.ts";
 
 export interface AcmeProblem {
   type?: string;
@@ -36,8 +41,16 @@ export function classifyFailure(problem?: AcmeProblem, invalidAuthorization = fa
   );
 }
 
-export function acmeDirectory(): string {
-  return process.env.CODEXHOST_RELAY_ACME_DIRECTORY ?? acme.directory.letsencrypt.production;
+export function acmeDirectory(directory?: string): string {
+  return process.env.CODEXHOST_RELAY_ACME_DIRECTORY ?? directory ?? defaultCertificateDirectory;
+}
+
+function retryAfter(header: string | undefined): number | undefined {
+  return header === undefined
+    ? undefined
+    : /^\d+$/.test(header)
+      ? Date.now() + Number(header) * 1_000
+      : Date.parse(header);
 }
 
 export function certificateKey(
@@ -69,7 +82,14 @@ export class AcmeRound {
   private readonly deadline = setTimeout(() => this.stop(), 10 * 60_000);
   private challengeInstalled = false;
 
-  constructor(private readonly tls: RelayTls) {}
+  readonly transport: CertificateTransport | undefined;
+
+  constructor(
+    private readonly tls: RelayTls,
+    relay?: CertificateRelay,
+  ) {
+    if (relay) this.transport = new CertificateTransport(relay, this.controller.signal);
+  }
 
   assertActive(): void {
     this.controller.signal.throwIfAborted();
@@ -84,6 +104,7 @@ export class AcmeRound {
   stop(): void {
     clearTimeout(this.deadline);
     this.controller.abort();
+    this.transport?.destroy();
     if (this.challengeInstalled) {
       this.tls.clearChallenge();
       this.challengeInstalled = false;
@@ -115,6 +136,11 @@ acme.axios.interceptors.request.use((config) => {
   if (round) {
     round.assertActive();
     requests.set(config, round);
+    config.signal = round.controller.signal;
+    if (round.transport) {
+      config.httpsAgent = round.transport;
+      config.proxy = false;
+    }
   }
   return config;
 });
@@ -122,12 +148,7 @@ acme.axios.interceptors.response.use((response) => {
   const round = requests.get(response.config);
   if (round) {
     const header = response.headers["retry-after"] as string | undefined;
-    round.retryAfter =
-      header === undefined
-        ? undefined
-        : /^\d+$/.test(header)
-          ? Date.now() + Number(header) * 1_000
-          : Date.parse(header);
+    round.retryAfter = retryAfter(header);
     round.responseFailure =
       response.status >= 200 && response.status < 300
         ? undefined
@@ -151,10 +172,11 @@ export async function issueCertificate(
 ): Promise<string> {
   return rounds.run(round, async () => {
     round.assertActive();
-    const client = new acme.Client({
+    const options = {
       directoryUrl: directory,
       accountKey: certificateKey(data, "acme-account.pem"),
-    });
+    };
+    let client = new acme.Client(options);
     const key = certificateKey(data, "certificate-key.pem");
     try {
       await client.createAccount({ onlyReturnExisting: true });
@@ -162,6 +184,27 @@ export async function issueCertificate(
       round.assertActive();
       if (round.responseFailure?.type !== "urn:ietf:params:acme:error:accountDoesNotExist")
         throw error;
+      if (round.transport) {
+        round.responseFailure = undefined;
+        round.retryAfter = undefined;
+        const response = await round.transport.externalAccount();
+        round.assertActive();
+        round.retryAfter = retryAfter(response.retryAfter);
+        if (response.status === 200) {
+          const eab = JSON.parse(response.body) as ExternalAccount;
+          client = new acme.Client({
+            ...options,
+            externalAccountBinding: {
+              kid: eab.keyId,
+              // acme-client 5.4 decodes HMAC keys as base64.
+              hmacKey: Buffer.from(eab.hmacKey, "base64url").toString("base64"),
+            },
+          });
+        } else if (response.status !== 404) {
+          round.responseFailure = { status: response.status, retryAfter: round.retryAfter };
+          throw new AcmeFailure("other");
+        }
+      }
       await client.createAccount({ termsOfServiceAgreed: true });
     }
     round.assertActive();

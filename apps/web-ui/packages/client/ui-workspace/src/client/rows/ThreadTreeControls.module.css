@@ -26,7 +26,7 @@
   display: none;
 }
 
-/* Bridge the parent's icon bottom to its first child, then follow real branch heights. */
+/* Leave breathing room below the parent icon; branch segments follow subtree heights. */
 .children[data-thread-guide]::before,
 .children[data-thread-guide] > .branch::before,
 .children[data-thread-guide] > .branch::after {
@@ -40,7 +40,8 @@
 .children[data-thread-guide]::before {
   bottom: 100%;
   height: calc(
-    (var(--dsh-thread-row-height) - var(--dsh-thread-icon-size)) / 2 + var(--dsh-thread-row-gap)
+    (var(--dsh-thread-row-height) - var(--dsh-thread-icon-size)) / 2 + var(--dsh-thread-row-gap) -
+      4px
   );
   width: 1px;
   background: var(--dsw-alias-border-l2);
@@ -55,17 +56,17 @@
 
 .children[data-thread-guide] > .branch:last-child::before {
   bottom: auto;
-  height: calc(var(--dsh-thread-row-height) / 2 - 7px);
+  height: calc(var(--dsh-thread-row-height) / 2 - 6px);
 }
 
 .children[data-thread-guide] > .branch::after {
-  top: calc(var(--dsh-thread-row-height) / 2 - 7px);
-  width: calc(16px - var(--dsh-thread-icon-size) / 2);
-  height: 7px;
+  top: calc(var(--dsh-thread-row-height) / 2 - 6px);
+  width: calc(16px - var(--dsh-thread-icon-size) / 2 - 2px);
+  height: 6px;
   box-sizing: border-box;
   border-inline-start: 1px solid var(--dsw-alias-border-l2);
   border-bottom: 1px solid var(--dsw-alias-border-l2);
-  border-end-start-radius: 7px;
+  border-end-start-radius: 6px;
 }
 
 .summary {

@@ -118,14 +118,22 @@ async function guides(
       width: bridge.width,
       pointerEvents: bridge.pointerEvents,
       color: bridge.backgroundColor,
-      elbows: branches.map((branch) => {
+      elbows: branches.map((branch, index) => {
         const arc = getComputedStyle(branch, "::after");
+        const stem = getComputedStyle(branch, "::before");
+        const rect = branch.getBoundingClientRect();
         const childIcon = branch.querySelector("[data-harness-id]")?.getBoundingClientRect();
         return {
-          bottom: branch.getBoundingClientRect().top + parseFloat(arc.top) + parseFloat(arc.height),
+          top: rect.top + parseFloat(arc.top),
+          bottom: rect.top + parseFloat(arc.top) + parseFloat(arc.height),
           center: childIcon && childIcon.top + childIcon.height / 2,
+          iconGap:
+            childIcon && childIcon.left - rect.left - parseFloat(arc.left) - parseFloat(arc.width),
           radius: arc.borderBottomLeftRadius,
           border: arc.borderBottomWidth,
+          stemBottom: rect.top + parseFloat(stem.top) + parseFloat(stem.height),
+          nextTop: branches[index + 1]?.getBoundingClientRect().top,
+          overlay: stem.zIndex,
         };
       }),
     };
@@ -133,14 +141,17 @@ async function guides(
   assert.equal(geometry === null ? 0 : 1, count);
   if (geometry) {
     assert.equal(geometry.axis, geometry.iconCenter, "stem follows the parent's icon axis");
-    assert.equal(geometry.top, geometry.iconBottom, "stem starts below the parent icon");
+    assert.equal(geometry.top, geometry.iconBottom + 4, "stem leaves a gap below the parent icon");
     assert.equal(geometry.width, "1px");
     assert.equal(geometry.pointerEvents, "none");
     assert.equal(geometry.color, await tokenColor(page, id, "--dsw-alias-border-l2"));
     for (const arc of geometry.elbows) {
       assert.equal(arc.bottom, arc.center, "each elbow points at its direct child's icon");
-      assert.equal(arc.radius, "7px");
+      assert.equal(arc.radius, "6px");
       assert.equal(arc.border, "1px");
+      assert.ok(arc.iconGap !== undefined && arc.iconGap >= 2 && arc.iconGap <= 3);
+      assert.equal(arc.stemBottom, arc.nextTop ?? arc.top, "only non-last stems continue downward");
+      assert.equal(arc.overlay, "1", "guides stay above selected and hovered row backgrounds");
     }
   }
 }

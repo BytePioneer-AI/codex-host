@@ -34,15 +34,16 @@ async function fixture() {
       taskDigest: "b".repeat(64),
     });
   }
-  const tree = new ThreadTree(new ExternalThreadRepository(store));
-  return { store, tree, id };
+  const pins = new Set<string>();
+  const tree = new ThreadTree(new ExternalThreadRepository(store), async () => [...pins]);
+  return { store, tree, id, pins };
 }
 
 it("reads historical multilevel delegation without altering --parent results", async () => {
   const { store, tree, id } = await fixture();
   const delegatedToB = await store.listDelegations(id("b"));
   expect(await tree.read()).toEqual({ parents: { b: "a", external: "b" } });
-  expect(await new ThreadTree(new ExternalThreadRepository(store)).read()).toEqual({
+  expect(await new ThreadTree(new ExternalThreadRepository(store), async () => []).read()).toEqual({
     parents: { b: "a", external: "b" },
   });
   expect(await store.listDelegations(id("b"))).toEqual(delegatedToB);
@@ -67,6 +68,20 @@ it("keeps external client origins out of display parents without changing delega
   expect(await store.listDelegations(id("client:automation"))).toEqual([
     expect.objectContaining({ childHostThreadId: "client-child" }),
   ]);
+});
+
+it("promotes a pinned child with its descendants and restores delegation on unpin", async () => {
+  const { tree, pins, store, id } = await fixture();
+  const delegations = await store.listDelegations(id("a"));
+  pins.add("b");
+  expect(await tree.read()).toEqual({ parents: { external: "b" } });
+  pins.add("external");
+  expect(await tree.read()).toEqual({ parents: {} });
+  pins.delete("b");
+  expect(await tree.read()).toEqual({ parents: { b: "a" } });
+  pins.clear();
+  expect(await tree.read()).toEqual({ parents: { b: "a", external: "b" } });
+  expect(await store.listDelegations(id("a"))).toEqual(delegations);
 });
 
 it("rejects invalid read parameters", async () => {

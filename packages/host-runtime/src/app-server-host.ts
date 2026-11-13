@@ -885,9 +885,13 @@ export class AppServerHost {
       options.mappingStore ??
         createProductionExternalThreadStore(this.#options.environment ?? process.env),
     );
-    this.#threadTree = new ThreadTree(this.#repository);
-    this.#threadPins = new ThreadPins(this.#repository, (method, params) =>
-      this.#requestOfficial(method, params),
+    this.#threadPins = new ThreadPins(
+      this.#repository,
+      (method, params) => this.#requestOfficial(method, params),
+      (threadId) => this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
+    );
+    this.#threadTree = new ThreadTree(this.#repository, () =>
+      this.#runSectionOperation(() => this.#threadPins.list()),
     );
     this.#externalAdapters = new Map(options.externalAdapters);
     for (const [harnessId, adapter] of this.#externalAdapters) {
@@ -1065,7 +1069,7 @@ export class AppServerHost {
       listThreads: (request, listRequest, origin) =>
         this.#listThreads(request, listRequest, origin),
       runSectionOperation: (run) => this.#runSectionOperation(run),
-      moveThreadSection: (request, frame, move) => this.#moveThreadSection(request, frame, move),
+      moveThreadSection: (request, move) => this.#moveThreadSection(request, move),
       setExternalThreadArchived: (request, location, archived) =>
         this.#setExternalThreadArchived(request, location, archived),
       updateExternalThreadMetadata: (request, location, update) =>
@@ -2815,7 +2819,6 @@ export class AppServerHost {
 
   async #moveThreadSection(
     request: JsonRpcRequest,
-    frame: Buffer<ArrayBufferLike>,
     move: DecodedThreadSectionMoveRequest,
   ): Promise<void> {
     try {
@@ -2836,10 +2839,16 @@ export class AppServerHost {
       });
       if (outcome.kind === "moved" && outcome.persistError !== undefined)
         this.#diagnose(outcome.persistError);
-      if (outcome.kind === "forward") await this.#forwardOfficialRequest(request, frame);
-      else if (outcome.kind === "error")
+      if (outcome.kind === "forward") {
+        // Keep the serial section boundary until native persistence is confirmed.
+        const response = await this.#requestOfficial(request.method, requestObject(request));
+        await this.#writer.json(rpcEnvelope(request, { ...response, id: request.id }));
+        if (response.error) return;
+      } else if (outcome.kind === "error") {
         await this.#writer.json(rpcEnvelope(request, { error: outcome.error }));
-      else await this.#writer.json(rpcEnvelope(request, { result: {} }));
+        return;
+      } else await this.#writer.json(rpcEnvelope(request, { result: {} }));
+      this.clientEvents.changed(move.threadId, "codexhost/thread/tree/changed");
     } catch (error) {
       await this.#writer.json(rpcError(request, -32081, "Thread section could not be moved"));
       this.#diagnose(error);

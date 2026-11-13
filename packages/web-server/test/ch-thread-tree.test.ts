@@ -19,7 +19,11 @@ class TreeHost extends FakeChChannel {
   override async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
     if (method === "codexhost/thread/tree/read") {
       this.requests.push({ method, params: structuredClone(params) });
-      return { parents: { ...this.parents } } as T;
+      return {
+        parents: Object.fromEntries(
+          Object.entries(this.parents).filter(([id]) => !this.pinnedIds.includes(id)),
+        ),
+      } as T;
     }
     if (
       (method === "thread/archive" || method === "thread/unarchive") &&
@@ -270,6 +274,68 @@ it("archives and restores all unloaded descendants parent first, and limits chil
     ["child", "grandchild"],
   );
   assert.ok(!host.archivedIds.has("root"));
+});
+
+it("pin writes publish Host parents and exclude the promoted subtree from ancestor reads and archive cascades", async (t) => {
+  const { host, add, list, call, mutations, events } = fixture(t);
+  for (const id of ["root", "child", "grandchild", "sibling"]) add(id);
+  host.parents = { child: "root", grandchild: "child", sibling: "root" };
+  await list();
+  const emitted = t.mock.method(events, "emit");
+  await call("workspace/pinSession", { sessionId: "child" });
+  assert.ok(
+    emitted.mock.calls.some(
+      ({ arguments: [event, value] }) =>
+        event === "api-session/added" &&
+        (value as Summary).sessionId === "child" &&
+        (value as Summary).projections.values.threadTreeParent === null,
+    ),
+  );
+  const direct = await list({ sessionId: "grandchild" });
+  assert.deepEqual(
+    direct.items.map((row) => row.sessionId),
+    ["grandchild", "child"],
+  );
+  host.requests.length = 0;
+  await call("workspace/archiveSession", { sessionId: "root" });
+  assert.deepEqual(
+    mutations().map((request) => request.params.threadId),
+    ["root", "sibling"],
+  );
+  assert.deepEqual([...host.archivedIds], ["root", "sibling"]);
+  assert.deepEqual(host.pinnedIds, ["child"]);
+  await call("workspace/unarchiveSession", { sessionId: "root" });
+  await call("workspace/unpinSession", { sessionId: "child" });
+  const restored = await list();
+  assert.equal(
+    restored.items.find((row) => row.sessionId === "child")?.projections.values.threadTreeParent,
+    "root",
+  );
+  host.requests.length = 0;
+  await call("session/archive", { sessionId: "root" });
+  assert.deepEqual(
+    mutations().map((request) => request.params.threadId),
+    ["root", "child", "sibling", "grandchild"],
+  );
+});
+
+it("does not reject or replay a confirmed pin when the following tree refresh fails", async (t) => {
+  const { host, add, list, call } = fixture(t);
+  add("child");
+  await list();
+  const request = host.request.bind(host);
+  t.mock.method(
+    host,
+    "request",
+    async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      if (method === "codexhost/thread/tree/read") throw new Error("Tree read unavailable");
+      return request<T>(method, params);
+    },
+  );
+  assert.deepEqual(await call("workspace/pinSession", { sessionId: "child" }), {
+    pinnedSessionIds: ["child"],
+  });
+  assert.deepEqual(host.pinWrites, [{ threadId: "child", pinned: true }]);
 });
 
 it("uses the same cascade for sidebar Workspace archive and restore commands", async (t) => {

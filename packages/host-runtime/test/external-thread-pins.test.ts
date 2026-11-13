@@ -296,8 +296,9 @@ it("leaves a custom section alone when cancelling a non-existent pin", async () 
   expect(await fixture.mappingStore.listSectionPlacements()).toEqual([placement]);
 });
 
-it("does not undo or replay a durable write when native confirmation fails", async () => {
+it("notifies tree changes without undoing or replaying a durable write when native confirmation fails", async () => {
   const { fixture, threadId, native } = await setup();
+  const changed = vi.spyOn(fixture.host.clientEvents, "changed");
   const replace = fixture.mappingStore.replaceSectionPlacements.bind(fixture.mappingStore);
   const writes = vi
     .spyOn(fixture.mappingStore, "replaceSectionPlacements")
@@ -312,6 +313,7 @@ it("does not undo or replay a durable write when native confirmation fails", asy
   ]);
   expect(await set(fixture, threadId, true)).toHaveProperty("error");
   expect(writes).toHaveBeenCalledOnce();
+  expect(changed).toHaveBeenCalledExactlyOnceWith(threadId, "codexhost/thread/tree/changed");
 });
 
 it("fails without changing state when native sections are unavailable, with no fallback", async () => {

@@ -71,7 +71,7 @@ export interface SessionNode {
   runningSubagentCount: number;
   /** Finished running while not selected and not yet opened (the green "done" reminder dot). */
   completed: boolean;
-  /** Shared pin membership projected only for display-tree roots. */
+  /** Shared Host pin membership. */
   pinned: boolean;
   /** In the registry-global archive set: shown grayed in place and not openable. */
   archived: boolean;
@@ -471,16 +471,10 @@ export function deriveThreadForest(
     const summary = list.byId[id];
     return summary === undefined ? [] : [sessionNode(summary, list, statuses, pinned, archived)];
   });
-  const roots = buildThreadTree(rows, (row) => {
+  return buildThreadTree(rows, (row) => {
     const summary = list.byId[row.id];
     return summary === undefined ? null : threadTreeParentOf(summary, list);
   });
-  const stack = [...roots];
-  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
-    if (node.tree.depth > 0) node.pinned = false;
-    stack.push(...node.tree.children);
-  }
-  return roots;
 }
 
 /**

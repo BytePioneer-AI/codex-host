@@ -132,8 +132,8 @@ it("promotes orphans, invisible parents, self-links and every cycle member witho
   );
 });
 
-it("puts a cross-workspace subtree only in its root workspace and ignores the child's shared pin", () => {
-  const list = catalog(row("a"), row("b", "a"), row("c", "b"));
+it("places a promoted child's subtree in pins using Host parents, outside the original parent's group", () => {
+  const list = catalog(row("a", null, 1), row("b", null, 2), row("c", "b", 10));
   const rowState = { ...state, pinnedSessionIds: [id("b")] };
   const groups = deriveGroups(
     list,
@@ -147,9 +147,13 @@ it("puts a cross-workspace subtree only in its root workspace and ignores the ch
     ["a"],
   );
   assert.equal(groups[1]?.sessions.length, 0);
-  assert.deepEqual(groups[0]?.sessions[0]?.tree?.descendantIds, ["b", "c"]);
-  assert.equal(groups[0]?.sessions[0]?.tree?.children[0]?.pinned, false);
-  assert.equal(deriveFlat(list, rowState.pinnedSessionIds, rowState, new Map()).length, 0);
+  assert.deepEqual(groups[0]?.sessions[0]?.tree?.descendantIds, []);
+  assert.equal(groups[0]?.sessions[0]?.tree?.updatedAt, 1);
+  const pins = deriveFlat(list, rowState.pinnedSessionIds, rowState, new Map());
+  assert.equal(pins[0]?.pinned, true);
+  assert.deepEqual(pins[0]?.tree?.descendantIds, ["c"]);
+  assert.equal(pins[0]?.tree?.updatedAt, 10);
+  assert.deepEqual(pinOrderSource([workspace("y", "b", "c")], list, rowState).members.y, ["b"]);
   assert.deepEqual(rowState.pinnedSessionIds, ["b"]);
 });
 

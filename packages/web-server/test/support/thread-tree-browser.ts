@@ -21,7 +21,9 @@ export class ThreadTreeBrowserHost extends FakeChChannel {
   };
   readonly archiveFailures = new Set<string>();
   get parents(): Record<string, string> {
-    return { ...this.delegations };
+    return Object.fromEntries(
+      Object.entries(this.delegations).filter(([id]) => !this.pinnedIds.includes(id)),
+    );
   }
   override async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
     if (method === "codexhost/thread/tree/read") {
@@ -65,8 +67,6 @@ export async function threadTreeBrowser(t: TestContext, width = 1280, selected?:
     row.createdAt = now - 7200;
     row.updatedAt = now - 300;
   }
-  // A shared pin on a child must remain untouched and must not create a Web pinned section.
-  host.pinnedIds = ["child"];
   const running = host.threads.get("grandchild");
   assert.ok(running);
   running.status = { type: "active" };

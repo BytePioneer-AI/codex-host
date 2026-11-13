@@ -7,16 +7,24 @@ import type { ExternalThreadRepository } from "./external-thread-repository.js";
 import { rpcEnvelope, errorMessage } from "./desktop-rpc.js";
 import { originClientName } from "./external-client-origin.js";
 
-/** Sidebar parents are delegation parents, excluding external client origins. */
+/** Sidebar parents are delegation parents, excluding pins and external client origins. */
 export class ThreadTree {
-  constructor(private readonly repository: ExternalThreadRepository) {}
+  constructor(
+    private readonly repository: ExternalThreadRepository,
+    private readonly pinnedThreadIds: () => Promise<readonly string[]>,
+  ) {}
 
   async read(): Promise<ClientThreadTree> {
     const delegations = await this.repository.listDelegations();
+    const pinned = new Set(delegations.length ? await this.pinnedThreadIds() : []);
     return {
       parents: Object.fromEntries(
         delegations
-          .filter((entry) => originClientName(entry.parentHostThreadId) === undefined)
+          .filter(
+            (entry) =>
+              !pinned.has(entry.childHostThreadId) &&
+              originClientName(entry.parentHostThreadId) === undefined,
+          )
           .map((entry) => [entry.childHostThreadId, entry.parentHostThreadId]),
       ),
     };

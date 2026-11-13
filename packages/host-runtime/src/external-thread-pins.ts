@@ -34,9 +34,12 @@ export function externalPinIds(
 
 /** Official pins belong to app-server; External placements share Desktop's merged section order. */
 export class ThreadPins {
+  private observedIds = new Set<string>();
+
   constructor(
     private readonly repository: ExternalThreadRepository,
     private readonly requestOfficial: OfficialRequest,
+    private readonly membershipChanged: (threadId: string) => void,
   ) {}
 
   async list(): Promise<string[]> {
@@ -52,7 +55,15 @@ export class ThreadPins {
       placements,
       requestOfficial: this.requestOfficial,
     });
-    return order.filter((id) => !externalIds.has(id) || visible.has(id));
+    const ids = order.filter((id) => !externalIds.has(id) || visible.has(id));
+    const next = new Set(ids);
+    const previous = this.observedIds;
+    this.observedIds = next;
+    // Canonical reads also observe moves made by another Desktop/Host process.
+    for (const id of new Set([...previous, ...next])) {
+      if (previous.has(id) !== next.has(id)) this.membershipChanged(id);
+    }
+    return ids;
   }
 
   async set(threadId: string, pinned: boolean): Promise<string[]> {
@@ -106,6 +117,9 @@ export class ThreadPins {
     } else if (outcome.kind === "error") {
       throw new ThreadSectionError(String(outcome.error.message ?? "Native pin change failed"));
     }
+    if (pinned) this.observedIds.add(threadId);
+    else this.observedIds.delete(threadId);
+    this.membershipChanged(threadId);
     // Confirmation failure does not undo the durable write or cause it to be replayed.
     return this.list();
   }

@@ -337,7 +337,7 @@ for (const width of [1280, 390]) {
       assert.equal(await indent("deepest"), await indent("deep"));
       assert.notEqual(await indent("grandchild"), await indent("deep"));
       await noHorizontalOverflow(page);
-      assert.deepEqual(host.pinnedIds, ["child"], "Web never writes the child's shared pin");
+      assert.deepEqual(host.pinnedIds, [], "folding never changes shared pins");
       assert.equal(host.pinWrites.length, 0);
     },
   );
@@ -757,7 +757,7 @@ async function dragInto(page: Page, source: Locator, target: Locator): Promise<v
 }
 
 it(
-  "children hide pin actions and retain native reference dragging into chat",
+  "children can be pinned as independent roots and retain native reference dragging into chat",
   { timeout: 60_000 },
   async (t) => {
     const { page, host } = await threadTreeBrowser(t, 1280, "destination");
@@ -766,8 +766,24 @@ it(
     await expanded(page, "parent", true);
     const child = threadRow(page, "child");
     await threadMenu(page, "child");
-    assert.equal(await page.getByRole("menuitem", { name: /^(Unpin|Pin) session$/ }).count(), 0);
-    await page.keyboard.press("Escape");
+    await page.getByRole("menuitem", { name: "Pin session", exact: true }).click();
+    const pinned = page.locator('[data-sidebar-pinned] [data-row-key="session:child"]');
+    await pinned.waitFor();
+    assert.equal(await pinned.getAttribute("data-thread-parent"), null);
+    assert.equal(await pinned.getAttribute("data-thread-depth"), "0");
+    assert.equal(await pinned.getAttribute("data-thread-pinned"), "true");
+    await expanded(page, "child", true);
+    await threadRow(page, "grandchild").waitFor();
+    assert.equal(await threadRow(page, "grandchild").getAttribute("data-thread-parent"), "child");
+    assert.equal(await threadRow(page, "grandchild").getAttribute("data-thread-depth"), "1");
+    assert.equal(await threadRow(page, "parent").getAttribute("aria-expanded"), null);
+    assert.deepEqual(host.pinnedIds, ["child"]);
+    await threadMenu(page, "child");
+    await page.getByRole("menuitem", { name: "Unpin session", exact: true }).click();
+    await pinned.waitFor({ state: "detached" });
+    await child.waitFor();
+    assert.equal(await child.getAttribute("data-thread-parent"), "parent");
+    assert.equal(await child.getAttribute("data-thread-pinned"), "false");
     const savedOrder = () =>
       page.evaluate(
         () =>
@@ -783,7 +799,7 @@ it(
     await chip.waitFor();
     assert.equal(await chip.innerText(), "Delegated implementation");
     assert.deepEqual(await savedOrder(), before);
-    assert.deepEqual(host.pinnedIds, ["child"]);
+    assert.deepEqual(host.pinnedIds, []);
     assert.equal(
       host.requests.some((request) => request.method === "turn/start"),
       false,

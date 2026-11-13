@@ -41,7 +41,7 @@ export function PinSessionMenuItem(props: SessionMenuItemProps<PinSessionInjecte
   const { sessionId, useMenuOpenState, pinSession, unpinSession, t } = props;
   const [, setMenuOpen] = useMenuOpenState();
   const { pinned, archived } = usePinState(props);
-  if (archived || props.threadTreeChild) return null;
+  if (archived) return null;
   return (
     <MenuItemButton
       icon={pinned ? <IconPinFillRegular /> : <IconPinOutlineRegular />}
@@ -63,7 +63,7 @@ export function PinSessionMenuItem(props: SessionMenuItemProps<PinSessionInjecte
 export function PinSessionRowButton(props: SessionRowActionProps<PinSessionInjected>) {
   const { sessionId, pinSession, unpinSession, t } = props;
   const { pinned, archived } = usePinState(props);
-  if (archived || props.threadTreeChild) return null;
+  if (archived) return null;
   return (
     <Tooltip
       label={t(pinned ? "actions.unpin" : "actions.pin")}

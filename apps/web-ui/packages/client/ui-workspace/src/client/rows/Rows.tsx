@@ -10,7 +10,7 @@
  * context; this package's own actions are entries like any plugin's. The
  * session and workspace hover cards are suppressed while a menu is open.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import {
@@ -40,6 +40,8 @@ import { SessionRowContent } from "./SessionRowContent.tsx";
 import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
+import { useThreadTreeView } from "./ThreadTreeView.tsx";
+import { ThreadTreeActivity, ThreadTreeToggle } from "./ThreadTreeControls.tsx";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -424,6 +426,7 @@ export function SearchResultItem({
       <span className={css.searchResultMeta}>
         <span className={css.searchResultWorkspace}>
           {result.workspace || t("group.ungrouped")}
+          {result.parentTitle !== undefined && ` · ${result.parentTitle || t("session.untitled")}`}
         </span>
         {result.snippet !== undefined && (
           <span className={css.searchResultSnippet}>{result.snippet}</span>
@@ -460,7 +463,7 @@ export function SessionNodeItem({
   onRenameRequest,
   renderSlot,
   onReveal,
-  drag,
+  drag: suppliedDrag,
   showHost = true,
   t,
 }: {
@@ -486,6 +489,10 @@ export function SessionNodeItem({
   | "sidebar.session.row.hover"
 >) {
   const row = node;
+  const { expansion, toggle } = useThreadTreeView();
+  const depth = node.tree?.depth ?? 0;
+  const expanded = expansion[node.id] === true;
+  const drag = depth > 0 ? undefined : suppliedDrag;
   const title = displayTitle(node, t);
   const selected = node.id === currentId;
   const statuses = sessionStatuses(node, t);
@@ -513,6 +520,9 @@ export function SessionNodeItem({
     <div
       ref={rowRef}
       data-row-key={rowKey}
+      data-thread-parent={node.tree?.parentId ?? undefined}
+      data-thread-depth={depth}
+      style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 16}px` } as CSSProperties}
       className={clsx(
         css.sessionRow,
         selected && css.selected,
@@ -524,6 +534,8 @@ export function SessionNodeItem({
       role="treeitem"
       aria-selected={selected}
       aria-current={selected ? "page" : undefined}
+      aria-level={depth + 1}
+      aria-expanded={node.tree?.descendantCount ? expanded : undefined}
       tabIndex={-1}
       onContextMenu={(e) => {
         if (row.blank || (e.target as HTMLElement).closest("button")) return;
@@ -588,6 +600,12 @@ export function SessionNodeItem({
             }
       }
     >
+      <ThreadTreeToggle
+        node={node}
+        expanded={expanded}
+        toggle={() => toggle(node.id, !expanded)}
+        t={t}
+      />
       <SessionRowContent
         identity={renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
         ambient={
@@ -606,6 +624,7 @@ export function SessionNodeItem({
               }
         }
       >
+        <ThreadTreeActivity node={node} expanded={expanded} t={t} />
         {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
         <span className={css.trailing}>
           {/* A blank New Session row is a provisional placeholder: nothing has
@@ -672,7 +691,7 @@ export function SessionNodeItem({
               >
                 {renderSlot(
                   "sidebar.workspaces.session.menu.item",
-                  { sessionId: node.id, displayTitle: row.title },
+                  { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
                   { hookContext: menuOpenState },
                 )}
               </Menu>
@@ -680,6 +699,7 @@ export function SessionNodeItem({
                 {renderSlot("sidebar.workspaces.session.row.action", {
                   sessionId: node.id,
                   displayTitle: row.title,
+                  threadTreeChild: depth > 0,
                 })}
               </span>
             </span>

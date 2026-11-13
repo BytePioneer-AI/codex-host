@@ -39,6 +39,11 @@ export function navigateSidebar(event: KeyboardEvent<HTMLDivElement>): void {
   const index = rows.indexOf(row);
   if (index < 0) return;
   const groupRow = row.matches('[role="treeitem"][aria-expanded]');
+  const toggle = row.querySelector<HTMLElement>("[data-thread-toggle]");
+  const fold = (): void => {
+    if (toggle) toggle.click();
+    else row.click();
+  };
   let next: HTMLElement | undefined;
   switch (event.key) {
     case "ArrowDown":
@@ -54,12 +59,18 @@ export function navigateSidebar(event: KeyboardEvent<HTMLDivElement>): void {
       next = rows.at(-1);
       break;
     case "ArrowRight":
-      if (groupRow && row.getAttribute("aria-expanded") === "false") row.click();
+      if (groupRow && row.getAttribute("aria-expanded") === "false") fold();
       else if (groupRow) next = rows[index + 1];
       break;
     case "ArrowLeft": {
-      if (groupRow && row.getAttribute("aria-expanded") === "true") row.click();
+      if (groupRow && row.getAttribute("aria-expanded") === "true") fold();
       else {
+        const parent = row.dataset.threadParent;
+        if (parent !== undefined) {
+          const prefix = row.dataset.rowKey?.startsWith("recent:") ? "recent:" : "session:";
+          next = rows.find((candidate) => candidate.dataset.rowKey === `${prefix}${parent}`);
+          break;
+        }
         let group = row.closest("[data-sidebar-group]");
         let heading = group?.querySelector<HTMLElement>('[data-row-key^="workspace:"]');
         if (heading === row) {

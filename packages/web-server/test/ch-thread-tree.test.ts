@@ -141,6 +141,19 @@ it("supplements a first-page child with deduplicated multilevel ancestors and ke
   );
 });
 
+it("keeps display lineage in newly opened history projections before another catalog refresh", async (t) => {
+  const { host, add, list, call } = fixture(t);
+  add("parent");
+  add("child");
+  host.parents = { child: "parent" };
+  await list();
+  const projections = await call<{ values: { threadTreeParent?: string | null } }>(
+    "session/projections",
+    { sessionId: "child" },
+  );
+  assert.equal(projections.values.threadTreeParent, "parent");
+});
+
 it("pushes delegation and placement-only relationship changes through the existing catalog", async (t) => {
   const { host, add, list, call, events } = fixture(t);
   add("child");
@@ -337,6 +350,26 @@ it("archives and restores all unloaded descendants parent first, and limits chil
   assert.ok(!host.archivedIds.has("root"));
 });
 
+it("uses the same cascade for sidebar Workspace archive and restore commands", async (t) => {
+  const { host, add, list, call, mutations } = fixture(t);
+  for (const id of ["root", "child", "grandchild"]) add(id);
+  host.parents = { child: "root", grandchild: "child" };
+  await list();
+  const archived = await call<{ archivedSessionIds: string[] }>("workspace/archiveSession", {
+    sessionId: "root",
+  });
+  assert.deepEqual(archived.archivedSessionIds, ["child", "grandchild", "root"]);
+  assert.deepEqual(
+    mutations().map((request) => request.params.threadId),
+    ["root", "child", "grandchild"],
+  );
+  const restored = await call<{ archivedSessionIds: string[] }>("workspace/unarchiveSession", {
+    sessionId: "root",
+  });
+  assert.deepEqual(restored.archivedSessionIds, []);
+  assert.equal(host.archivedIds.size, 0);
+});
+
 it("refreshes the catalog once per cascade rather than once per descendant", async (t) => {
   const { host, add, list, call, mutations } = fixture(t);
   add("root");
@@ -378,6 +411,32 @@ for (const archived of [true, false]) {
     );
     for (const id of ["root", "child", "grandchild"])
       assert.equal(host.archivedIds.has(id), archived);
+  });
+}
+
+for (const archived of [true, false]) {
+  it(`preserves the selected Thread's ${archived ? "archive" : "restore"} error and leaves all descendants untouched`, async (t) => {
+    const { host, add, list, dispatch, mutations } = fixture(t);
+    const ids = ["root", "child", "grandchild"];
+    for (const id of ids) {
+      add(id);
+      if (!archived) host.archivedIds.add(id);
+    }
+    host.parents = { child: "root", grandchild: "child" };
+    await list({ includeArchived: true });
+    host.failures.add("root");
+    host.requests.length = 0;
+    const result = await dispatch(archived ? "session/archive" : "session/unarchive", {
+      sessionId: "root",
+    });
+    assert.ok(!result.ok);
+    assert.equal(result.error.message, "Archive rejected by Host.");
+    assert.notEqual(result.error.code, "session/archive-partial");
+    assert.deepEqual(
+      mutations().map((request) => request.params.threadId),
+      ["root"],
+    );
+    for (const id of ids) assert.equal(host.archivedIds.has(id), !archived);
   });
 }
 

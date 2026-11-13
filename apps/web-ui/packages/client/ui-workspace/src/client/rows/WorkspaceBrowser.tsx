@@ -46,6 +46,7 @@ import type {
 import type { WorkspaceId, WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import { workspaceDisplayTitle } from "@deepseek-ai/dsh-api-workspace-controller/default-workspace";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import type { ShortcutCatalogEntry } from "@deepseek-ai/dsh-client-shortcuts/client";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import type {
@@ -68,6 +69,9 @@ import {
   UNGROUPED_KEY,
 } from "../tree.ts";
 import { pinOrderSource } from "../pin-order.ts";
+import { threadTreeOrderSource } from "../thread-tree-order.ts";
+import { visibleThreadRows } from "../thread-tree.ts";
+import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
@@ -307,7 +311,7 @@ type SessionTreeProps = Pick<
     | "sidebar.session.row.leading"
     | "sidebar.session.row.hover"
   > & {
-    shortcuts: readonly import("@deepseek-ai/dsh-client-shortcuts/client").ShortcutCatalogEntry[];
+    shortcuts: readonly ShortcutCatalogEntry[];
     /** Always-mounted Session list snapshot. */
     list: SessionListState;
     /** Host account home for POSIX hover-path abbreviation. */
@@ -412,6 +416,7 @@ function SessionTree({
   shortcuts,
   loadMoreSessions,
 }: SessionTreeProps) {
+  const threadView = useThreadTreeView();
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
   const current = panelActive
@@ -420,7 +425,7 @@ function SessionTree({
   const revealGroup =
     revealSessionId === undefined || !workspaceReady
       ? undefined
-      : owningGroupKey(workspaces, revealSessionId);
+      : owningGroupKey(workspaces, threadView.rootId(revealSessionId));
   const [sessionLimits, setSessionLimits] = useState<Readonly<Record<string, number>>>({});
   // Transient drag marker state; the selected mode owns the resulting order.
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -430,7 +435,9 @@ function SessionTree({
   const nativeDragActive = drag !== null || workspaceDrag !== null;
   useNativeDragAcceptance(nativeDragActive);
   const currentGroup =
-    current === undefined || !workspaceReady ? undefined : owningGroupKey(workspaces, current);
+    current === undefined || !workspaceReady
+      ? undefined
+      : owningGroupKey(workspaces, threadView.rootId(current));
   useEffect(() => {
     if (
       current === undefined ||
@@ -609,7 +616,9 @@ function SessionTree({
   const rowKeys: string[] = [];
   if (pinnedRows.length > 0) {
     rowKeys.push(`section:${PINNED_SECTION_KEY}`);
-    if (pinnedSectionExpanded) for (const node of pinnedRows) rowKeys.push(`session:${node.id}`);
+    if (pinnedSectionExpanded)
+      for (const node of visibleThreadRows(pinnedRows, threadView.expansion))
+        rowKeys.push(`session:${node.id}`);
   }
   if (groups.length === 0 && pinnedRows.length === 0) rowKeys.push("empty");
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
@@ -627,7 +636,7 @@ function SessionTree({
     );
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
-    const sessions = visible.rows;
+    const sessions = visibleThreadRows(visible.rows, threadView.expansion);
     for (const node of sessions)
       rowKeys.push(`${workspaceId === undefined ? "recent" : "session"}:${node.id}`);
     const canExpand = group.expanded && (visible.hiddenCount > 0 || list.hasMore);
@@ -842,7 +851,11 @@ function SessionTree({
                         }
                       : undefined
                   }
-                  drag={workspaceId === undefined || group.remote ? undefined : dragProps}
+                  drag={
+                    workspaceId === undefined || group.remote || (node.tree?.depth ?? 0) > 0
+                      ? undefined
+                      : dragProps
+                  }
                   t={t}
                 />
               );
@@ -995,6 +1008,7 @@ function FlatList({
 }) {
   const panelActive = usePanelInfo((info) => info.activePanelId !== null);
   const statuses = useSessionStatus((s) => s);
+  const threadView = useThreadTreeView();
   const rows = useMemo(
     () => deriveFlat(list, sessionIds, rowState, statuses).filter((node) => !node.pinned),
     [list, sessionIds, rowState, statuses],
@@ -1028,9 +1042,13 @@ function FlatList({
         label={t("section.sessions")}
         rowKeys={[
           ...(pinnedRows.length === 0 ? [] : [`section:${PINNED_SECTION_KEY}`]),
-          ...(pinnedSectionExpanded ? pinnedRows.map((row) => `session:${row.id}`) : []),
+          ...(pinnedSectionExpanded
+            ? visibleThreadRows(pinnedRows, threadView.expansion).map((row) => `session:${row.id}`)
+            : []),
           ...(rows.length === 0 && pinnedRows.length === 0 ? ["empty"] : []),
-          ...visible.rows.map((row) => `session:${row.id}`),
+          ...visibleThreadRows(visible.rows, threadView.expansion).map(
+            (row) => `session:${row.id}`,
+          ),
           ...(hasOverflow || list.hasMore ? ["overflow:flat"] : []),
         ]}
         ready={list.phase === "ready" && workspaceReady && drag === null}
@@ -1059,7 +1077,7 @@ function FlatList({
             t={t}
           />
         )}
-        {visible.rows.map((node) => {
+        {visibleThreadRows(visible.rows, threadView.expansion).map((node) => {
           const active = drag !== null && drag.pinned === node.pinned;
           const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
             node.blank ? "after" : half;
@@ -1249,7 +1267,15 @@ function SearchResults({
  * @param props - composed slot props (shell owner share + store + injected actions).
  * @returns the region element tree.
  */
-export function WorkspaceBrowser({
+export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
+  return (
+    <ThreadTreeViewProvider browser={props}>
+      <WorkspaceBrowserContent {...props} />
+    </ThreadTreeViewProvider>
+  );
+}
+
+function WorkspaceBrowserContent({
   wide,
   usePanelInfo,
   expandSidebar,
@@ -1314,6 +1340,7 @@ export function WorkspaceBrowser({
   const orderBy = useStore((s) => s.orderBy);
   const archivedFilter = useStore((s) => s.archivedFilter ?? "default");
   const groupExpansion = useStore((s) => s.groupExpansion);
+  const threadView = useThreadTreeView();
   const sectionExpansion = useStore((s) => s.sectionExpansion);
   const sessionOrderByAccount = useStore((s) => s.sessionOrderByAccount);
   // Archived sessions are not openable: the row stays visible under the
@@ -1323,6 +1350,7 @@ export function WorkspaceBrowser({
       notifyArchivedNotOpenable();
       return;
     }
+    threadView.reveal(sessionId);
     open(sessionId);
   };
   const leaveArchivedOnly = (): void => {
@@ -1352,17 +1380,20 @@ export function WorkspaceBrowser({
     () => sessionMemberIds(list, archivedSessionIds),
     [archivedSessionIds, list],
   );
+  const threadOrder = useMemo(() => threadTreeOrderSource(list, rowState), [list, rowState]);
   const orderedWorkspaces = useMemo(
     () =>
       workspaces.map((workspace) => {
-        const memberIds = workspace.sessionIds;
+        const memberIds = workspace.sessionIds.filter(
+          (id) => list.byId[id] === undefined || threadOrder.rootIds.has(id),
+        );
         const baseOrder =
           orderBy === "updated"
-            ? orderByRecency(memberIds, list.byId)
+            ? orderByRecency(memberIds, threadOrder.summaries)
             : reconcileManualOrder(
                 memberIds,
                 sessionOrderByAccount[workspace.workspaceId],
-                list.byId,
+                threadOrder.summaries,
                 orderState,
               );
         return {
@@ -1375,30 +1406,35 @@ export function WorkspaceBrowser({
           ),
         };
       }),
-    [currentBlank, list.byId, orderBy, orderState, sessionOrderByAccount, workspaces],
+    [currentBlank, list.byId, threadOrder, orderBy, orderState, sessionOrderByAccount, workspaces],
   );
   const orderedUngroupedSessionIds = useMemo(
-    () => orderByRecency(ungroupedMemberIds, list.byId),
-    [list.byId, ungroupedMemberIds],
+    () =>
+      orderByRecency(
+        ungroupedMemberIds.filter((id) => threadOrder.rootIds.has(id)),
+        threadOrder.summaries,
+      ),
+    [threadOrder, ungroupedMemberIds],
   );
   const orderedFlatSessionIds = useMemo(() => {
+    const memberIds = flatMemberIds.filter((id) => threadOrder.rootIds.has(id));
     const baseOrder =
       orderBy === "updated"
-        ? orderByRecency(flatMemberIds, list.byId)
+        ? orderByRecency(memberIds, threadOrder.summaries)
         : reconcileManualOrder(
-            flatMemberIds,
+            memberIds,
             sessionOrderByAccount[FLAT_SESSION_ORDER_KEY],
-            list.byId,
+            threadOrder.summaries,
             orderState,
           );
     return pinCurrentBlank(
       baseOrder,
       currentBlank !== undefined && flatMemberIds.includes(currentBlank) ? currentBlank : undefined,
     );
-  }, [currentBlank, flatMemberIds, list.byId, orderBy, orderState, sessionOrderByAccount]);
+  }, [currentBlank, flatMemberIds, threadOrder, orderBy, orderState, sessionOrderByAccount]);
   const orderSource = useMemo(
-    () => pinOrderSource(workspaces, list, orderState),
-    [list, orderState, workspaces],
+    () => pinOrderSource(workspaces, list, rowState),
+    [list, rowState, workspaces],
   );
   const activeSessionOrders = useMemo<Readonly<Record<string, readonly SessionId[]>>>(
     () =>
@@ -1501,6 +1537,7 @@ export function WorkspaceBrowser({
     setRevealSessionId(sessionId);
     setQuery("");
     setSearchExpanded(false);
+    threadView.reveal(sessionId);
     open(sessionId);
   };
   const acknowledgeSessionReveal = (sessionId: SessionId): void => {

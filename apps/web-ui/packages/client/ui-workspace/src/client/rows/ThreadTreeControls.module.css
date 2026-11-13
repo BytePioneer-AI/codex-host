@@ -1,0 +1,57 @@
+.slot,
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+}
+
+.toggle {
+  appearance: none;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-tertiary);
+  background: transparent;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .toggle:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.toggle:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.collapsed {
+  transform: rotate(-90deg);
+}
+
+.count {
+  max-width: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+
+.activity {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 3px;
+  margin-inline: 3px;
+}
+
+.activity > span {
+  display: inline-flex;
+}

@@ -97,7 +97,8 @@ export class ChThreadTree {
       if (next !== id && archivedIds.has(next) === archived) continue;
       try {
         await setArchived(next);
-      } catch {
+      } catch (error) {
+        if (next === id) throw error;
         failedSessionIds.push(next);
       }
     }

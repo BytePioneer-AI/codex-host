@@ -81,14 +81,16 @@ function nativeFixture() {
     for (const connection of connections) connection.close();
     exit.resolve({ code: 0, signal: null });
   });
+  const start = vi.fn(async () => {});
   vi.mocked(createOwnedLoopbackBackend).mockReturnValue({
     closed: exit.promise,
-    start: vi.fn(async () => {}),
+    start,
     connect,
     stop,
   });
   return {
     requests,
+    start,
     connect,
     stop,
     notify: (value: JsonObject) => {
@@ -255,6 +257,129 @@ describe("local Codex read-only identity startup", () => {
       expect.objectContaining({
         arguments: ["-c", "features.code_mode_host=true", "app-server"],
       }),
+    );
+  });
+
+  it("accepts Desktop's valid configuration after a failed startup generation", async () => {
+    nativeFixture();
+    vi.mocked(createOwnedLoopbackBackend).mockImplementationOnce(
+      () =>
+        ({
+          closed: Promise.resolve({ code: 1, signal: null }),
+          start: vi.fn(async () => {
+            throw new Error("Synthetic spawn failure");
+          }),
+          connect: vi.fn(async () => {
+            throw new Error("Synthetic connection failure");
+          }),
+          stop: vi.fn(async () => {}),
+        }) as unknown as ReturnType<typeof createOwnedLoopbackBackend>,
+    );
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-recovery-startup-"));
+    temporaryDirectories.add(directory);
+    const local = await prepareLocalCodex({
+      stockCodexPath: "/synthetic/broken",
+      arguments: ["app-server"],
+      environment: { CODEX_HOME: path.join(directory, "home"), CODEXHOST_DATA_DIR: directory },
+      diagnosticOutput: new PassThrough(),
+      deferStart: true,
+      remoteControl: true,
+    });
+    prepared.add(local);
+    await expect(local.officialRuntimeScope.start()).rejects.toThrow("unavailable");
+    const configuration = {
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: ["-c", "features.recovered=true", "app-server"],
+      environment: {},
+    };
+    await local.configureStartup(configuration);
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        stockCodexPath: configuration.stockCodexPath,
+        arguments: configuration.arguments,
+      }),
+    );
+  });
+
+  it.each([false, true])(
+    "recovers from a backend factory failure without a generation (factory throws: %s)",
+    async (factoryThrows) => {
+      nativeFixture();
+      if (factoryThrows)
+        vi.mocked(createOwnedLoopbackBackend).mockImplementationOnce(() => {
+          throw new Error("Synthetic factory failure");
+        });
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-factory-recovery-"));
+      temporaryDirectories.add(directory);
+      const local = await prepareLocalCodex({
+        stockCodexPath: factoryThrows ? "/synthetic/broken" : path.resolve("codexhost-shim"),
+        arguments: ["app-server"],
+        environment: { CODEX_HOME: path.join(directory, "home") },
+        diagnosticOutput: new PassThrough(),
+        deferStart: true,
+        remoteControl: true,
+      });
+      prepared.add(local);
+      await expect(local.officialRuntimeScope.start()).rejects.toThrow("unavailable");
+      expect(local.officialRuntimeScope.owner.generation).toBe(0);
+      const configuration = {
+        stockCodexPath: "/synthetic/desktop-codex",
+        arguments: ["-c", "features.recovered=true", "app-server"],
+        environment: {},
+      };
+      await local.configureStartup(configuration);
+      await local.officialRuntimeScope.start();
+      expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          stockCodexPath: configuration.stockCodexPath,
+          arguments: configuration.arguments,
+        }),
+      );
+      expect(local.officialRuntimeScope.owner.running).toBe(true);
+      await expect(local.accountControl.refresh?.()).resolves.toMatchObject({ phase: "ready" });
+    },
+  );
+
+  it("preserves Remote Control configuration while its backend is starting", async () => {
+    const first = nativeFixture();
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    first.start.mockImplementationOnce(async () => {
+      entered.resolve(undefined);
+      await release.promise;
+    });
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-starting-config-"));
+    temporaryDirectories.add(directory);
+    const local = await prepareLocalCodex({
+      stockCodexPath: "/synthetic/codex",
+      arguments: ["app-server"],
+      environment: { CODEX_HOME: path.join(directory, "home") },
+      diagnosticOutput: new PassThrough(),
+      deferStart: true,
+      remoteControl: true,
+    });
+    prepared.add(local);
+    const starting = local.officialRuntimeScope.start();
+    try {
+      await entered.promise;
+      expect(local.officialRuntimeScope.owner.running).toBe(false);
+      await local.configureStartup({
+        stockCodexPath: "/synthetic/replacement",
+        arguments: ["app-server", "--analytics-default-enabled"],
+        environment: {},
+      });
+      expect(first.stop).not.toHaveBeenCalled();
+    } finally {
+      release.resolve(undefined);
+      await starting;
+    }
+    await local.officialRuntimeScope.stop();
+    nativeFixture();
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({ stockCodexPath: "/synthetic/codex", arguments: ["app-server"] }),
     );
   });
 

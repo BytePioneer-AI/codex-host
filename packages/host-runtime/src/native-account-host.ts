@@ -102,16 +102,26 @@ export async function prepareLocalCodex(input: {
     // Local Desktop connections outlive a failed official backend generation.
     recovery: {},
     createBackend: () => {
-      startupConfigured = true;
-      if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
-      backendFiles = captureCodexRuntimeFiles(startup.stockCodexPath);
-      running = startup;
-      return createOwnedLoopbackBackend({
-        stockCodexPath: startup.stockCodexPath,
-        cwd: home,
-        arguments: startup.arguments,
-        environment: { ...officialEnvironment(startup.environment), CODEX_HOME: home },
-      });
+      try {
+        if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
+        backendFiles = captureCodexRuntimeFiles(startup.stockCodexPath);
+        running = startup;
+        const backend = createOwnedLoopbackBackend({
+          stockCodexPath: startup.stockCodexPath,
+          cwd: home,
+          arguments: startup.arguments,
+          environment: { ...officialEnvironment(startup.environment), CODEX_HOME: home },
+        });
+        startupConfigured = true;
+        // Keep the invocation fixed through startup and until backend exit is confirmed.
+        void backend.closed.then(() => {
+          startupConfigured = false;
+        });
+        return backend;
+      } catch (error) {
+        startupConfigured = false;
+        throw error;
+      }
     },
   });
   // controlRequest requires an initialized client on this same owned backend.
@@ -147,7 +157,13 @@ export async function prepareLocalCodex(input: {
     officialRuntimeScope: scope,
     accountControl: accounts,
     configureStartup: async (configuration) => {
-      if (!input.deferStart || scope.closed || (input.remoteControl && startupConfigured)) return;
+      if (
+        !input.deferStart ||
+        scope.closed ||
+        (input.remoteControl &&
+          (startupConfigured || scope.owner.running || scope.owner.hasActiveWork))
+      )
+        return;
       const stockCodexPath = await resolveOfficialCodexExecutable(
         configuration.stockCodexPath,
         configuration.environment,
@@ -155,6 +171,8 @@ export async function prepareLocalCodex(input: {
       if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
       const next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
       if (input.remoteControl) {
+        if (scope.closed || startupConfigured || scope.owner.running || scope.owner.hasActiveWork)
+          return;
         startupConfigured = true;
         startup = next;
         return;

@@ -1,5 +1,5 @@
-/** Explicit fold control and descendant-only status, without replacing the row's own status. */
-import { IconChevronDownOutlineRegular, StateDot } from "@deepseek-ai/dsh-client-ui-primitives";
+/** Title-trailing fold badge with one priority-ordered descendant activity dot. */
+import { IconChevronDownOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { SessionNode } from "../tree.ts";
 import css from "./ThreadTreeControls.module.css";
@@ -15,57 +15,46 @@ export function ThreadTreeToggle({
   toggle: () => void;
   t: WorkspaceBrowserProps["t"];
 }) {
-  if (!node.tree?.descendantCount) return <span className={css.slot} aria-hidden="true" />;
+  const count = node.tree?.descendantCount ?? 0;
+  if (!count) return null;
+  const activity = node.tree?.activity;
+  const state = expanded
+    ? undefined
+    : activity?.pendingInteraction
+      ? "pending"
+      : activity?.running
+        ? "running"
+        : activity?.completed
+          ? "completed"
+          : undefined;
   return (
     <button
       type="button"
       data-thread-toggle
       className={css.toggle}
-      aria-label={t(expanded ? "threadTree.collapse" : "threadTree.expand", {
-        n: node.tree.descendantCount,
-      })}
+      aria-label={t(expanded ? "threadTree.collapse" : "threadTree.expand", { n: count })}
       aria-expanded={expanded}
+      aria-description={state === undefined ? undefined : t(`threadTree.${state}`)}
       onClick={(event) => {
         event.stopPropagation();
         toggle();
       }}
     >
-      <IconChevronDownOutlineRegular size={12} className={expanded ? undefined : css.collapsed} />
-      <span className={css.count} aria-hidden="true">
-        {node.tree.descendantCount}
+      <span className={css.badge}>
+        {state !== undefined && (
+          <span
+            className={css.activity}
+            data-thread-tree-activity={state}
+            role="img"
+            aria-label={t(`threadTree.${state}`)}
+            title={t(`threadTree.${state}`)}
+          />
+        )}
+        <span className={css.count} aria-hidden="true">
+          {count > 999 ? "999+" : count}
+        </span>
+        <IconChevronDownOutlineRegular size={12} className={expanded ? undefined : css.collapsed} />
       </span>
     </button>
-  );
-}
-
-export function ThreadTreeActivity({
-  node,
-  expanded,
-  t,
-}: {
-  node: SessionNode;
-  expanded: boolean;
-  t: WorkspaceBrowserProps["t"];
-}) {
-  const activity = node.tree?.activity;
-  if (expanded || activity === undefined) return null;
-  const statuses = [
-    {
-      show: activity.pendingInteraction,
-      state: "warning" as const,
-      label: t("threadTree.pending"),
-    },
-    { show: activity.running, state: "ongoing" as const, label: t("threadTree.running") },
-    { show: activity.completed, state: "done" as const, label: t("threadTree.completed") },
-  ].filter((status) => status.show);
-  if (statuses.length === 0) return null;
-  return (
-    <span className={css.activity} data-thread-tree-activity>
-      {statuses.map(({ state, label }) => (
-        <span key={state} role="img" aria-label={label} title={label}>
-          <StateDot state={state} />
-        </span>
-      ))}
-    </span>
   );
 }

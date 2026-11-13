@@ -1,35 +1,52 @@
-.slot,
 .toggle {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
   box-sizing: border-box;
-  width: 28px;
+  width: 56px;
   height: 28px;
-}
-
-.toggle {
-  appearance: none;
-  gap: 2px;
+  margin-inline-end: 4px;
   padding: 0;
   border: 0;
-  border-radius: var(--dsw-radius-sm);
+  border-radius: 999px;
   color: var(--dsw-alias-label-tertiary);
   background: transparent;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  box-sizing: border-box;
+  width: 56px;
+  height: 20px;
+  padding-inline: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
+}
+
+.toggle[aria-expanded="true"] .badge {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .toggle:hover {
-    background: var(--dsw-alias-interactive-bg-hover);
+  .toggle:hover .badge {
+    background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
   }
 }
 
 .toggle:focus-visible {
-  background: var(--dsw-alias-interactive-bg-hover);
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
+}
+
+.toggle:focus-visible .badge {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
 }
 
 .collapsed {
@@ -37,21 +54,32 @@
 }
 
 .count {
-  max-width: 14px;
+  max-width: 24px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
 }
 
 .activity {
-  display: inline-flex;
-  align-items: center;
   flex: none;
-  gap: 3px;
-  margin-inline: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
 }
 
-.activity > span {
-  display: inline-flex;
+.activity[data-thread-tree-activity="pending"] {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.activity[data-thread-tree-activity="completed"] {
+  background: var(--dsw-alias-state-business-primary);
+}
+
+@media (hover: none), (pointer: coarse) {
+  .toggle {
+    height: 44px;
+  }
 }

@@ -16,6 +16,8 @@ export class ThreadTreeBrowserHost extends FakeChChannel {
     deep: "grandchild",
     deepest: "deep",
     target: "target-root",
+    "workspace-child": "workspace-root",
+    "workspace-grandchild": "workspace-child",
   };
   readonly placements = new Map<string, string | null>();
   placeError: string | undefined;
@@ -65,6 +67,10 @@ export async function threadTreeBrowser(t: TestContext, width = 1280, selected?:
     archived: "Archived work",
   }))
     host.add(id, "/computer/thread-tree", title, false);
+  host.add("workspace-ancestor", "/computer/projects", "Workspace ancestor");
+  host.add("workspace-root", "/computer/projects/tree", "Workspace plan");
+  host.add("workspace-child", "/computer/projects/tree", "Workspace implementation", false);
+  host.add("workspace-grandchild", "/computer/projects/tree", "Workspace review", false);
   const native = host.add("native", "/computer/thread-tree", "Native worker", false);
   native.parentThreadId = "parent";
   native.canAcceptDirectInput = false;

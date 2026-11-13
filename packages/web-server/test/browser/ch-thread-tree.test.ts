@@ -71,7 +71,14 @@ for (const width of [1280, 390]) {
         await rowAlignment(page, "destination"),
         "root icons and titles align with or without a fold control",
       );
+      assert.equal((await rowAlignment(page, "parent")).icon, 8, "no leading toggle slot");
       assert.equal(await parent.locator("[data-thread-toggle] svg").count(), 1);
+      const toggleBounds = await parent.locator("[data-thread-toggle]").boundingBox();
+      assert.ok(
+        toggleBounds &&
+          toggleBounds.width >= 44 &&
+          toggleBounds.height >= (width === 390 ? 44 : 24),
+      );
       assert.equal(
         await parent
           .locator("[data-thread-toggle]")
@@ -82,7 +89,13 @@ for (const width of [1280, 390]) {
       assert.equal(await page.locator('[data-row-key="section:pinned"]').count(), 0);
       await parent.getByRole("img", { name: "Child sessions are running", exact: true }).waitFor();
       assert.equal(await page.getByText("Native worker", { exact: true }).count(), 0);
+      const selectionBefore = await parent.getAttribute("aria-selected");
       await expanded(page, "parent", true);
+      assert.equal(
+        await parent.getAttribute("aria-selected"),
+        selectionBefore,
+        "folding does not open the row",
+      );
       await expanded(page, "child", true);
       await threadRow(page, "grandchild").waitFor();
       assert.equal(await threadRow(page, "child").getAttribute("data-thread-parent"), "parent");
@@ -224,9 +237,44 @@ it(
     await expanded(page, "parent", false);
     const parent = threadRow(page, "parent");
     await parent.getByRole("img", { name: "Child sessions need attention", exact: true }).waitFor();
-    await parent.getByRole("img", { name: "Child sessions are running", exact: true }).waitFor();
+    assert.equal(await parent.locator("[data-thread-tree-activity]").count(), 1);
+    assert.equal(
+      await parent
+        .locator("[data-thread-toggle] [data-thread-tree-activity]")
+        .getAttribute("data-thread-tree-activity"),
+      "pending",
+    );
     await noHorizontalOverflow(page);
     await treeShot(page, "thread-tree-390-collapsed-summary");
+    const pendingColor = await parent
+      .locator("[data-thread-tree-activity]")
+      .evaluate((node) => getComputedStyle(node).backgroundColor);
+    host.pending = [];
+    host.changed("grandchild", "serverRequest/resolved");
+    await parent.getByRole("img", { name: "Child sessions are running", exact: true }).waitFor();
+    const runningColor = await parent
+      .locator("[data-thread-tree-activity]")
+      .evaluate((node) => getComputedStyle(node).backgroundColor);
+    const running = host.threads.get("grandchild");
+    assert.ok(running);
+    running.status = { type: "idle" };
+    host.changed("grandchild", "turn/completed");
+    await parent
+      .getByRole("img", { name: "Child sessions finished and have not been opened", exact: true })
+      .waitFor();
+    const completedColor = await parent
+      .locator("[data-thread-tree-activity]")
+      .evaluate((node) => getComputedStyle(node).backgroundColor);
+    assert.equal(
+      new Set([pendingColor, runningColor, completedColor]).size,
+      3,
+      "each aggregate state has its own sidebar color",
+    );
+    assert.equal(
+      await parent.locator("[data-session-status]").count(),
+      0,
+      "descendant activity does not replace the parent's own idle status",
+    );
     // Search stays flat and reopening the selected child reveals its ancestry.
     await page.getByRole("button", { name: "Search sessions", exact: true }).click();
     await page.getByPlaceholder("Search session names").fill("Approval checks");
@@ -247,6 +295,130 @@ it(
     await threadRow(page, "deepest").waitFor();
     for (const id of ["parent", "child", "grandchild", "deep"])
       assert.equal(await threadRow(page, id).getAttribute("aria-expanded"), "true");
+  },
+);
+
+function workspaceRow(page: Page, title: string) {
+  return page.locator('[data-row-key^="workspace:"]').filter({ hasText: new RegExp(`^${title}$`) });
+}
+
+async function groupFolds(page: Page) {
+  return page.evaluate(() => {
+    const view = JSON.parse(localStorage.getItem("dsh.workspace.view.v5") ?? "{}");
+    return { groups: view.groupExpansion ?? {}, sections: view.sectionExpansion ?? {} };
+  });
+}
+
+for (const width of [1280, 390]) {
+  it(
+    `Recents selection preserves default and explicit workspace folds, including the current Thread at ${width}px`,
+    { timeout: 60_000 },
+    async (t) => {
+      const { page } = await threadTreeBrowser(t, width);
+      const workspace = workspaceRow(page, "tree");
+      await workspace.waitFor();
+      assert.equal(await workspace.getAttribute("aria-expanded"), "false");
+      const selectRecent = async (id: string) => {
+        await page.locator(`[data-row-key="recent:${id}"] [data-session-title]`).click();
+        await page.locator(`[data-conversation-session="${id}"] [data-composer-input]`).waitFor();
+        await openSidebar(page);
+        if (await workspace.count())
+          assert.equal(await workspace.getAttribute("aria-expanded"), "false");
+      };
+      const defaults = await groupFolds(page);
+      await selectRecent("workspace-root");
+      assert.deepEqual(await groupFolds(page), defaults, "default folds are untouched");
+      await selectRecent("workspace-root");
+      assert.deepEqual(await groupFolds(page), defaults, "reselecting the current Thread is inert");
+      await workspace.click();
+      await page.locator('[data-row-key="session:workspace-root"]').waitFor();
+      await workspace.click();
+      const explicit = await groupFolds(page);
+      await selectRecent("destination");
+      await selectRecent("workspace-root");
+      await selectRecent("workspace-root");
+      assert.deepEqual(await groupFolds(page), explicit, "explicit folds are untouched");
+      await expanded(page, "workspace-root", true);
+      await expanded(page, "workspace-child", true);
+      await selectRecent("workspace-grandchild");
+      assert.deepEqual(
+        await groupFolds(page),
+        explicit,
+        "child selection only reveals Thread ancestors",
+      );
+      await selectRecent("workspace-root");
+      await treeShot(page, `thread-tree-${width}-recent-workspace-folded`);
+      await page.locator('[data-row-key="section:workspaces"]').click();
+      const sectionFolded = await groupFolds(page);
+      await selectRecent("workspace-root");
+      assert.deepEqual(
+        await groupFolds(page),
+        sectionFolded,
+        "the workspace section stays folded too",
+      );
+      await noHorizontalOverflow(page);
+    },
+  );
+}
+
+it(
+  "deep links, search and notification navigation reveal workspace path and Thread ancestors",
+  { timeout: 60_000 },
+  async (t) => {
+    const { page, url } = await threadTreeBrowser(t, 390);
+    await viewOption(page, "Workspace Tree");
+    const ancestor = workspaceRow(page, "projects");
+    const workspace = workspaceRow(page, "tree");
+    const section = page.locator('[data-row-key="section:workspaces"]');
+    const foldPath = async () => {
+      if ((await ancestor.getAttribute("aria-expanded")) !== "true") await ancestor.click();
+      if ((await workspace.getAttribute("aria-expanded")) === "true") await workspace.click();
+      await ancestor.click();
+      if ((await section.getAttribute("aria-expanded")) === "true") await section.click();
+      await expanded(page, "workspace-root", false);
+    };
+    const assertRevealed = async () => {
+      await page
+        .locator('[data-conversation-session="workspace-grandchild"] [data-composer-input]')
+        .waitFor();
+      await openSidebar(page);
+      for (const row of [
+        section,
+        ancestor,
+        workspace,
+        threadRow(page, "workspace-root"),
+        threadRow(page, "workspace-child"),
+      ])
+        assert.equal(await row.getAttribute("aria-expanded"), "true");
+      await page.locator('[data-row-key="session:workspace-grandchild"]').waitFor();
+    };
+    await foldPath();
+    const link = new URL(url);
+    link.searchParams.set("session", "workspace-grandchild");
+    await page.goto(link.href);
+    await assertRevealed();
+    await page.locator('[data-row-key="recent:destination"]').click();
+    await page.locator('[data-conversation-session="destination"] [data-composer-input]').waitFor();
+    await openSidebar(page);
+    await foldPath();
+    // Exercise the production service-worker message listener, without real push delivery.
+    await page.evaluate(() =>
+      navigator.serviceWorker.dispatchEvent(
+        new MessageEvent("message", {
+          data: { type: "codexhost/open-session", sessionId: "workspace-grandchild" },
+        }),
+      ),
+    );
+    await assertRevealed();
+    await page.locator('[data-row-key="recent:destination"]').click();
+    await page.locator('[data-conversation-session="destination"] [data-composer-input]').waitFor();
+    await openSidebar(page);
+    await foldPath();
+    await page.getByRole("button", { name: "Search sessions", exact: true }).click();
+    await page.getByPlaceholder("Search session names").fill("Workspace review");
+    await page.getByRole("treeitem").filter({ hasText: "Workspace review" }).click();
+    await assertRevealed();
+    await noHorizontalOverflow(page);
   },
 );
 

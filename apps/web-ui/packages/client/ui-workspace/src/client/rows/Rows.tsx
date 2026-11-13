@@ -41,7 +41,7 @@ import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
-import { ThreadTreeActivity, ThreadTreeToggle } from "./ThreadTreeControls.tsx";
+import { ThreadTreeToggle } from "./ThreadTreeControls.tsx";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -600,12 +600,6 @@ export function SessionNodeItem({
             }
       }
     >
-      <ThreadTreeToggle
-        node={node}
-        expanded={expanded}
-        toggle={() => toggle(node.id, !expanded)}
-        t={t}
-      />
       <SessionRowContent
         identity={renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
         ambient={
@@ -624,7 +618,12 @@ export function SessionNodeItem({
               }
         }
       >
-        <ThreadTreeActivity node={node} expanded={expanded} t={t} />
+        <ThreadTreeToggle
+          node={node}
+          expanded={expanded}
+          toggle={() => toggle(node.id, !expanded)}
+          t={t}
+        />
         {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
         <span className={css.trailing}>
           {/* A blank New Session row is a provisional placeholder: nothing has

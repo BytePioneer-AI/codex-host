@@ -158,11 +158,14 @@ pub fn show_for_launch(reason: Option<&str>) -> bool {
     shown
 }
 
-/// Stops the loopback console that this launch started. Called after a managed
-/// Desktop session ends so the next launch does not inherit a detached orphan
-/// on the same port. Failure paths that call [`show_for_launch`] leave the
-/// console up for diagnostics and skip this.
+/// Stops the loopback console after a managed Desktop session ends, unless
+/// independent Host or Web services still use it. Failure paths that call
+/// [`show_for_launch`] leave the console up for diagnostics and skip this.
 pub fn stop_for_launch() {
+    stop_for_launch_in(crate::startup_record::data_directory().as_deref());
+}
+
+fn stop_for_launch_in(data: Option<&Path>) {
     let command = {
         let Ok(mut slot) = LAUNCH_CONSOLE.lock() else {
             return;
@@ -175,6 +178,15 @@ pub fn stop_for_launch() {
         }
         console.command
     };
+    if data.is_some_and(|data| {
+        crate::host_service::current_runtime(data).is_some()
+            || crate::web_service::owner(data)
+                .ok()
+                .flatten()
+                .is_some_and(|owner| owner.web_running())
+    }) {
+        return;
+    }
     let Ok(mut process) = node_command(&command) else {
         return;
     };
@@ -488,16 +500,46 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn stop_for_launch_asks_the_console_to_stop() {
+    fn assert_stop_for_launch(service: &str) {
         use std::os::unix::fs::PermissionsExt;
 
         let _gate = LAUNCH_TEST_GATE.lock().expect("launch test gate");
         *PRESENTATION.lock().expect("presentation") = None;
         *LAUNCH_CONSOLE.lock().expect("console state") = None;
 
-        let root = env::temp_dir().join(format!("codexhost-console-stop-{}", std::process::id()));
+        let root = env::temp_dir().join(format!(
+            "codexhost-console-stop-{service}-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).expect("create fixture");
+        let live = codexhost_platform::process_snapshot(std::process::id()).expect("fixture owner");
+        let mut web = (service == "web").then(|| {
+            Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .expect("Web fixture child")
+        });
+        if service != "none" {
+            let record = json!({
+                "pid": live.id,
+                "started_at_micros": live.started_at_micros + u64::from(service == "stale"),
+                "executable": live.executable,
+                "runtime": env::current_exe().expect("fixture runtime"),
+                "version": env!("CARGO_PKG_VERSION"),
+                "web_pid": web.as_ref().map(|child| child.id()).unwrap_or(live.id),
+                "address": "http://127.0.0.1:4398/",
+                "loginUrl": "http://127.0.0.1:4398/",
+            });
+            for file in ["shared-host-ready.json", "web-service-ready.json"] {
+                if service == "stale"
+                    || (service == "host" && file == "shared-host-ready.json")
+                    || (service == "web" && file == "web-service-ready.json")
+                {
+                    std::fs::write(root.join(file), serde_json::to_vec(&record).unwrap())
+                        .expect("service fixture");
+                }
+            }
+        }
         let console_server = root.join("console-server.mjs");
         std::fs::write(&console_server, "fixture").expect("console entry");
         let calls = root.join("calls");
@@ -525,7 +567,11 @@ mod tests {
             .and_then(|console| console.ensure.take())
             .expect("ensure started");
         ensure.join().expect("ensure finished");
-        stop_for_launch();
+        stop_for_launch_in(Some(&root));
+        if let Some(child) = web.as_mut() {
+            child.kill().expect("stop Web fixture child");
+            child.wait().expect("reap Web fixture child");
+        }
         let calls = std::fs::read_to_string(&calls).unwrap_or_default();
         let cleared = LAUNCH_CONSOLE
             .lock()
@@ -535,7 +581,38 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("remove fixture");
 
         assert!(cleared);
-        assert_eq!(calls, "ensure\nstop\n");
+        assert_eq!(
+            calls,
+            if service == "host" || service == "web" {
+                "ensure\n"
+            } else {
+                "ensure\nstop\n"
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_asks_the_console_to_stop_without_services() {
+        assert_stop_for_launch("none");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_ignores_stale_service_records() {
+        assert_stop_for_launch("stale");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_preserves_console_for_shared_host() {
+        assert_stop_for_launch("host");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_for_launch_preserves_console_for_web() {
+        assert_stop_for_launch("web");
     }
 
     #[test]

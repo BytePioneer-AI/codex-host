@@ -11,6 +11,7 @@ import {
   type ExternalAccount,
 } from "@codexhost/remote-relay/protocol";
 import { CertificateTransport, type CertificateRelay } from "./certificate-transport.ts";
+import { createAlpnCertificate } from "./alpn-certificate.ts";
 
 export interface AcmeProblem {
   type?: string;
@@ -229,8 +230,8 @@ export async function issueCertificate(
         round.assertActive();
         const challengeKey = await acme.crypto.createPrivateEcdsaKey("P-256");
         round.assertActive();
-        const [, cert] = await acme.crypto.createAlpnCertificate(
-          authz,
+        const cert = await createAlpnCertificate(
+          authz.identifier.value,
           authorization,
           challengeKey,
         );

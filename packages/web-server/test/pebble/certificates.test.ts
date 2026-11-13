@@ -166,6 +166,7 @@ for (const reuse of [0, 100] as const) {
       const set = f.tls.setChallenge.bind(f.tls);
       t.mock.method(f.tls, "setChallenge", (...args: Parameters<typeof set>) => {
         challenges++;
+        assert.equal(new X509Certificate(args[1]).ca, false);
         set(...args);
       });
       const issue = async () => {

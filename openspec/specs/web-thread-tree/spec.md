@@ -1,29 +1,9 @@
 # web-thread-tree Specification
 
 ## Purpose
-让 Web 侧栏把相关 Thread 组织成可展开、收起的树：委派子 Thread 自动挂在发起它的父 Thread 下，用户也可以手动调整位置，从而在大量委派后仍能浏览会话列表。
+让 Web 侧栏把相关 Thread 组织成可展开、收起的树：委派子 Thread 自动挂在发起它的父 Thread 下，从而在大量委派后仍能浏览会话列表。
 
 ## Requirements
-
-### Requirement: 显示父 Thread 的来源与优先级
-每个 Thread SHALL 至多有一个显示父 Thread，按以下顺序确定：用户在 Web 中的手动放置（放到某个 Thread 下，或明确放在顶层）优先；否则为委派该 Thread 的父 Thread；否则没有显示父 Thread，作为顶层显示。显示父 Thread 与 Harness 原生 Subagent 的父子关联相互独立；Subagent Thread 不进入侧栏的规则不变。
-
-#### Scenario: 委派子 Thread 自动挂载
-- **WHEN** Thread A 通过委派创建了子 Thread B，且用户没有手动放置 B
-- **THEN** Web 侧栏 SHALL 把 B 显示在 A 下面
-
-#### Scenario: 历史委派同样生效
-- **WHEN** 升级前已经存在 A 委派 B 的关系
-- **THEN** 升级后的 Web 侧栏 SHALL 把 B 显示在 A 下面，无需用户操作
-
-#### Scenario: 手动放置覆盖委派关系
-- **WHEN** B 是 A 的委派子 Thread，用户把 B 移到 C 下，或移到顶层
-- **THEN** B SHALL 显示在 C 下，或显示为顶层 Thread
-- **AND** B 与 A 的委派关系、委派完成通知和 `codexhost thread list --parent` 的结果 MUST NOT 改变
-
-#### Scenario: Subagent 不受影响
-- **WHEN** 某个 Thread 有 Harness 原生 Subagent
-- **THEN** Subagent MUST NOT 作为树中的子 Thread 出现在侧栏，仍从父 Thread 的现有入口查看
 
 ### Requirement: 树关系只用于整理视图
 显示父 Thread 只决定 Web 侧栏的位置。它 MUST NOT 改变 Thread 的 Harness 归属、执行、路由、输入能力、标题或委派状态，也 MUST NOT 改变 Codex Desktop 的侧栏、置顶或归档行为。
@@ -33,7 +13,7 @@
 - **THEN** 该 Thread SHALL 保留输入框，可以直接续聊、改名、Fork 和被引用
 
 #### Scenario: Desktop 保持原样
-- **WHEN** 用户在 Web 中把 B 移到 A 下
+- **WHEN** Web 把 B 显示在 A 下
 - **THEN** Codex Desktop 的侧栏 SHALL 仍按原有方式显示 B
 
 ### Requirement: 多层树显示
@@ -100,22 +80,6 @@ Web 侧栏 SHALL 支持任意层级的 Thread 树，同一个 Thread 只出现�
 - **THEN** Web MUST NOT 改变任何 Thread 的顺序或显示父 Thread
 - **AND** 把该子 Thread 拖入聊天区域作为会话引用的功能 SHALL 不受影响
 
-### Requirement: 只有顶层 Thread 可以置顶
-Web SHALL 只为顶层 Thread 提供置顶操作；置顶的顶层 Thread 连同整棵子树显示在置顶区，并可在置顶区展开、收起。已经置顶的 Thread 成为子 Thread 后，Web SHALL 按未置顶显示并隐藏其置顶操作，但 MUST NOT 修改 Host 与 Codex Desktop 共享的置顶状态。
-
-#### Scenario: 置顶带子树的 Thread
-- **WHEN** 用户置顶有子 Thread 的顶层 Thread A
-- **THEN** A 及其后代 SHALL 显示在置顶区，且不在普通分组中重复出现
-
-#### Scenario: 子 Thread 菜单
-- **WHEN** 用户打开子 Thread 的行菜单
-- **THEN** 菜单 MUST NOT 提供置顶操作
-
-#### Scenario: 已置顶 Thread 被移到其他 Thread 下
-- **WHEN** 已置顶的 Thread B 被移到 A 下
-- **THEN** B SHALL 显示在 A 下且不显示为置顶
-- **AND** Codex Desktop 中 B 的置顶状态 SHALL 保持不变
-
 ### Requirement: 归档与恢复级联到后代
 在 Web 中归档一个 Thread 时，Web SHALL 同时归档其全部后代；恢复时 SHALL 同时恢复其全部后代。后代包括列表中尚未加载的 Thread。归档确认 SHALL 列出整棵子树中正在运行的 Thread。单独归档某个子 Thread 只影响该 Thread 及其后代。级联中部分 Thread 失败时，Web SHALL 报告失败的 Thread，已成功的不回滚。
 
@@ -132,47 +96,44 @@ Web SHALL 只为顶层 Thread 提供置顶操作；置顶的顶层 Thread 连同
 - **WHEN** 用户在 Codex Desktop 中归档 A
 - **THEN** 只有 A 被归档，A 的子 Thread 在 Web 中作为顶层显示
 
-### Requirement: 手动放置 Thread
-Web SHALL 在 Thread 行菜单中提供“移到…下”：打开可搜索的选择器，选择目标后该 Thread 连同其后代移到目标下。有显示父 Thread 的 Thread SHALL 额外提供“移到顶层”。两种操作在桌面和手机上使用同一菜单，不依赖拖动。放置由 Host 持久化，Host 或 Web 重启后保持；不理解该数据的旧版本 SHALL 忽略它并继续正常列出全部 Thread。
-
-#### Scenario: 移到其他 Thread 下
-- **WHEN** 用户在 Thread B 的菜单中选择“移到…下”，并选中 Thread C
-- **THEN** B 及其后代 SHALL 显示在 C 下，C 的祖先被展开
-
-#### Scenario: 移回顶层
-- **WHEN** 用户对委派子 Thread B 选择“移到顶层”
-- **THEN** B SHALL 显示为顶层 Thread，Host 重启后仍为顶层，不再回到委派父 Thread 下
-
-#### Scenario: 在手机上放置
-- **WHEN** 用户在手机宽度下通过行菜单执行“移到…下”
-- **THEN** 选择器 SHALL 完整可用且无需拖动
-
-#### Scenario: 重启后保持
-- **WHEN** 用户把 B 移到 C 下后重启 Host
-- **THEN** B SHALL 仍显示在 C 下
-
-### Requirement: 手动放置的约束
-选择器 SHALL 只列出可以作为目标的 Thread：与被移动的 Thread 属于同一 Host、未归档、已提交、不是 Harness 原生 Subagent，且不是被移动的 Thread 本身或其后代。Host SHALL 再次校验这些条件，对不满足的请求返回明确错误并保持原有放置不变。
-
-#### Scenario: 移到自己的后代下
-- **WHEN** 请求把 A 放到其子 Thread B 下
-- **THEN** Host SHALL 拒绝该请求，A 与 B 的位置不变，Web 显示失败提示
-
-#### Scenario: 跨 Host
-- **WHEN** 请求把本地 Thread 放到远程 Host 的 Thread 下
-- **THEN** 选择器 MUST NOT 列出该远程 Thread，Host SHALL 拒绝直接构造的此类请求
-
-#### Scenario: 远程 Host 的 Thread
-- **WHEN** Web 侧栏显示通过远程连接接入的其他 Host 的 Thread
-- **THEN** 这些 Thread SHALL 按现有方式平铺显示，行菜单 MUST NOT 提供“移到…下”或“移到顶层”
-
-#### Scenario: 目标后来被删除
-- **WHEN** B 被放到 C 下，之后 C 不再存在
-- **THEN** B SHALL 作为顶层显示，不被隐藏
-
 ### Requirement: 搜索结果保持平铺
 侧栏搜索结果 SHALL 保持平铺，不按树折叠；有显示父 Thread 的结果 SHALL 同时显示其父 Thread 的标题，便于区分同名 Thread。打开搜索结果时按“展开与收起”的规则展开其祖先。
 
 #### Scenario: 搜索命中子 Thread
 - **WHEN** 搜索命中一个位于收起树中的子 Thread
 - **THEN** 该结果 SHALL 直接出现在搜索结果中，并显示其父 Thread 的标题
+
+### Requirement: 显示父 Thread 来自委派关系
+每个 Thread SHALL 至多有一个显示父 Thread，即委派该 Thread 的父 Thread（包括升级前已有的委派）；没有委派父 Thread 时作为顶层显示。Web MUST NOT 提供手动改变显示父 Thread 的入口。显示父 Thread 与 Harness 原生 Subagent 的父子关联相互独立；Subagent Thread 不进入侧栏的规则不变。
+
+#### Scenario: 委派子 Thread 自动挂载
+- **WHEN** Thread A 通过委派创建了子 Thread B
+- **THEN** Web 侧栏 SHALL 把 B 显示在 A 下面
+
+#### Scenario: 历史委派同样生效
+- **WHEN** 升级前已经存在 A 委派 B 的关系
+- **THEN** 升级后的 Web 侧栏 SHALL 把 B 显示在 A 下面，无需用户操作
+
+#### Scenario: 旧的手动放置被忽略
+- **WHEN** 磁盘上留有旧版本保存的手动放置数据
+- **THEN** 它 SHALL 被忽略，B 仍按委派关系显示，Thread 记录不受影响
+
+#### Scenario: Subagent 不受影响
+- **WHEN** 某个 Thread 有 Harness 原生 Subagent
+- **THEN** Subagent MUST NOT 作为树中的子 Thread 出现在侧栏，仍从父 Thread 的现有入口查看
+
+### Requirement: 置顶仅限顶层 Thread
+Web SHALL 只为顶层 Thread 提供置顶操作；置顶的顶层 Thread 连同整棵子树显示在置顶区，并可在置顶区展开、收起。已经置顶的 Thread 作为委派子 Thread 显示时，Web SHALL 按未置顶显示并隐藏其置顶操作，但 MUST NOT 修改 Host 与 Codex Desktop 共享的置顶状态。
+
+#### Scenario: 置顶带子树的 Thread
+- **WHEN** 用户置顶有子 Thread 的顶层 Thread A
+- **THEN** A 及其后代 SHALL 显示在置顶区，且不在普通分组中重复出现
+
+#### Scenario: 子 Thread 菜单
+- **WHEN** 用户打开子 Thread 的行菜单
+- **THEN** 菜单 MUST NOT 提供置顶操作
+
+#### Scenario: 已置顶 Thread 是委派子 Thread
+- **WHEN** 已置顶的 Thread B 是 A 的委派子 Thread
+- **THEN** B SHALL 显示在 A 下且不显示为置顶
+- **AND** Codex Desktop 中 B 的置顶状态 SHALL 保持不变

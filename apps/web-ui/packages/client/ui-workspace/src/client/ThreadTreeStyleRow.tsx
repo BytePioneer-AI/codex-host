@@ -21,5 +21,5 @@ export function ThreadTreeStyleRow({
   PropsLocale<"workspace"> &
   InjectFace<ThreadTreeStyleRowInjected>) {
   const style = usePreference((snapshot) => snapshot.value?.threadTreeCollapseStyle ?? "summary");
-  return <ThreadTreeStyleOptions style={style} setStyle={setStyle} t={t} />;
+  return <ThreadTreeStyleOptions style={style} setStyle={setStyle} t={t} settings />;
 }

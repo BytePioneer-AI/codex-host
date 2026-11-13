@@ -53,6 +53,9 @@ for (const width of [1280, 390]) {
       await parent.locator("[data-thread-summary]").click();
       await prompt.waitFor();
       assert.equal(await prompt.count(), 1);
+      await expect(prompt).toHaveAccessibleName("Collapsed session trees");
+      await expect(prompt.getByText("Shows count and status", { exact: true })).toBeVisible();
+      await expect(prompt.getByText("Status ring on the icon only", { exact: true })).toBeVisible();
       assert.equal(
         await prompt.locator("button").count(),
         3,
@@ -165,7 +168,7 @@ for (const width of [1280, 390]) {
       await expect(ring).toHaveAttribute("data-thread-ring", "idle");
       await themedShots(page, `style-${width}-ring-idle`);
       await fits(page);
-      await chooseInMenu(page, "Summary row");
+      await chooseInMenu(page, "Detailed");
       await parent.locator("[data-thread-summary]").waitFor();
       await parent.locator("[data-thread-icon-toggle]").click();
       await expect(prompt).toHaveCount(0);
@@ -179,6 +182,27 @@ for (const width of [1280, 390]) {
         ),
         "summary",
       );
+      if (width === 390) {
+        await page.getByRole("button", { name: "Settings", exact: true }).click();
+        await page.getByRole("button", { name: "General", exact: true }).click();
+        const styles = page.getByRole("radiogroup", {
+          name: "Collapsed session trees",
+          exact: true,
+        });
+        await styles.scrollIntoViewIfNeeded();
+        await expect(styles.getByRole("radio", { name: "Detailed", exact: true })).toBeChecked();
+        await fits(page);
+        assert.equal(
+          await styles.evaluate((node) => {
+            const row = node.parentElement?.getBoundingClientRect();
+            if (!row) return false;
+            const control = node.getBoundingClientRect();
+            return control.left >= row.left && control.right <= row.right + 1;
+          }),
+          true,
+        );
+        await themedShots(page, "style-390-settings");
+      }
     },
   );
 }
@@ -315,18 +339,25 @@ it(
     await view.click();
     await view.focus();
     await page.keyboard.press("End");
-    await expect(page.getByRole("radio", { name: "Icon ring", exact: true })).toBeFocused();
+    await expect(page.getByRole("radio", { name: "Compact", exact: true })).toBeFocused();
     await page.keyboard.press("ArrowLeft");
-    await expect(page.getByRole("radio", { name: "Summary row", exact: true })).toBeChecked();
+    await expect(page.getByRole("radio", { name: "Detailed", exact: true })).toBeChecked();
     await page.keyboard.press("Escape");
     await parent.locator("[data-thread-summary]").waitFor();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.getByRole("button", { name: "General", exact: true }).click();
     const display = page.getByRole("region", { name: "Display & language", exact: true });
-    await display.getByRole("radio", { name: "Icon ring", exact: true }).click();
-    await expect(page.getByRole("radio", { name: "Icon ring", exact: true })).toBeChecked();
-    await page.getByRole("radio", { name: "Icon ring", exact: true }).press("ArrowLeft");
-    await expect(page.getByRole("radio", { name: "Summary row", exact: true })).toBeChecked();
+    const styles = display.getByRole("radiogroup", {
+      name: "Collapsed session trees",
+      exact: true,
+    });
+    await expect(styles).toHaveAccessibleDescription(
+      "How a collapsed parent shows its child sessions' status.",
+    );
+    await styles.getByRole("radio", { name: "Compact", exact: true }).click();
+    await expect(styles.getByRole("radio", { name: "Compact", exact: true })).toBeChecked();
+    await styles.getByRole("radio", { name: "Compact", exact: true }).press("ArrowLeft");
+    await expect(styles.getByRole("radio", { name: "Detailed", exact: true })).toBeChecked();
     await display.scrollIntoViewIfNeeded();
     await themedShots(page, "style-1280-settings");
     await page.keyboard.press("Escape");

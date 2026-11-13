@@ -1,51 +1,15 @@
 .options {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   min-width: 0;
   padding-block: 6px;
   color: var(--dsw-alias-label-primary);
 }
 
-.radios {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  font-size: 13px;
-}
-
-.legend {
-  flex-basis: 100%;
-  font-weight: 500;
-}
-
-.radio {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.radioDot {
-  width: 14px;
-  height: 14px;
-  box-sizing: border-box;
-  flex: none;
-  border: 1px solid var(--dsw-alias-label-tertiary);
-  border-radius: 50%;
-}
-
-.radio[aria-checked="true"] .radioDot {
-  border: 4px solid var(--dsw-alias-state-business-primary);
+.settingsText {
+  flex: 1 1 240px;
 }
 
 .prompt {
@@ -106,6 +70,13 @@
   font-weight: 500;
 }
 
+.cardSubtitle {
+  padding: 0 8px 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .preview {
   zoom: 0.7;
   pointer-events: none;
@@ -140,13 +111,13 @@
 }
 
 .card:focus-visible,
-.later:focus-visible,
-.radio:focus-visible {
+.later:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: 2px;
 }
 
 .error {
+  flex-basis: 100%;
   color: var(--dsw-alias-state-warn-primary);
   font-size: 12px;
   margin-top: 6px;
@@ -164,7 +135,6 @@
 }
 
 @media (hover: none), (pointer: coarse) {
-  .radio,
   .later {
     min-height: 44px;
   }

@@ -8,6 +8,7 @@ import { installCurrentRendererAdapter } from "../src/versioned-renderer-adapter
 type Draft = Record<string, unknown> & { modelSettings: { model: string } };
 type CreateInput = {
   cwd: string;
+  config?: Record<string, unknown>;
   input: { type: string; text: string }[];
   collaborationMode: { mode: string; settings: { model: string; reasoning_effort: string } };
 };
@@ -145,6 +146,8 @@ it.each<RendererAgent>(["claude-code", "antigravity", "deepseek-harness", "pi"])
       );
       expect(input).toEqual({
         ...f.originals[0],
+        // The routed creation names the carrier in config so it cannot consume a native prewarm.
+        config: { model: input.collaborationMode.settings.model },
         collaborationMode: {
           mode: "default",
           settings: {

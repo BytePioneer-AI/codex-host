@@ -339,6 +339,24 @@ class FakeOmpProcess extends EventEmitter {
 }
 
 describe("OMP RPC session", () => {
+  it("faults the Session instead of throwing when the child closes stdin", async () => {
+    const process = new FakeOmpProcess();
+    const onFault = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onFault },
+      { spawn: () => process as never },
+    );
+    try {
+      await session.start();
+      const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      expect(() => process.stdin.emit("error", epipe)).not.toThrow();
+      expect(onFault).toHaveBeenCalledOnce();
+      expect(onFault).toHaveBeenCalledWith(expect.objectContaining({ kind: "processExited" }));
+    } finally {
+      await session.close();
+    }
+  });
+
   it.each(["background wake", "silent drain", "settled during state check"])(
     "keeps cancellation active through %s and permits the next Turn",
     async (scenario) => {

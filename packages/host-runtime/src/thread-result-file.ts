@@ -41,6 +41,68 @@ function within(directory: string, file: string): boolean {
   );
 }
 
+/** Length of the line ending (LF, CR or CRLF) at `index`, or 0. */
+function lineEnding(text: string, index: number): number {
+  if (text[index] === "\n") return 1;
+  if (text[index] === "\r") return text[index + 1] === "\n" ? 2 : 1;
+  return 0;
+}
+
+/** Skips CommonMark link whitespace: spaces, tabs and at most one line ending. */
+function linkSpace(text: string, index: number): number {
+  let end = index;
+  let crossed = false;
+  for (;;) {
+    if (text[end] === " " || text[end] === "\t") end += 1;
+    else if (!crossed && lineEnding(text, end)) {
+      end += lineEnding(text, end);
+      crossed = true;
+    } else return end;
+  }
+}
+
+/** Index of the `)` closing a link after its destination, skipping an optional CommonMark title. */
+function closingParenthesis(text: string, index: number): number | undefined {
+  // A second line ending here is a blank line, which ends the paragraph and the link.
+  let end = linkSpace(text, index);
+  if (text[end] === ")") return end;
+  if (end === index) return undefined;
+  const open = text[end];
+  const close = open === '"' ? '"' : open === "'" ? "'" : open === "(" ? ")" : undefined;
+  if (!close) return undefined;
+  for (end += 1; end < text.length && text[end] !== close; end += 1) {
+    // A backslash before a line ending is literal, so the blank-line check still sees it.
+    if (text[end] === "\\" && !lineEnding(text, end + 1)) end += 1;
+    else if (open === "(" && text[end] === "(") return undefined;
+    else if (lineEnding(text, end)) {
+      // A title may span lines but not a blank line.
+      const next = linkSpace(text, end);
+      if (lineEnding(text, next)) return undefined;
+      end = next - 1;
+    }
+  }
+  if (end >= text.length) return undefined;
+  end = linkSpace(text, end + 1);
+  return text[end] === ")" ? end : undefined;
+}
+
+/** Local path spellings of one link: percent-decoded or literal, with and without a `#fragment`. */
+function pathCandidates(target: string): string[] {
+  const spellings = new Set<string>();
+  // The literal spelling may name a file containing `#`; otherwise the fragment starts at the first `#`.
+  const fragment = target.indexOf("#");
+  for (const value of [target, fragment < 0 ? target : target.slice(0, fragment)]) {
+    if (!value) continue;
+    try {
+      spellings.add(decodeURIComponent(value));
+    } catch {
+      // A literal `%` in a file name is not an escape.
+      spellings.add(value);
+    }
+  }
+  return [...spellings];
+}
+
 /** Only explicit file links in the latest final report are exportable. */
 function linkedFiles(text: string, cwd: string): Set<string> {
   const files = new Set<string>();
@@ -51,10 +113,12 @@ function linkedFiles(text: string, cwd: string): Set<string> {
     let target: string;
     if (text[start] === "<") {
       end = text.indexOf(">", start + 1);
-      if (end < 0 || text[end + 1] !== ")") continue;
+      if (end < 0) continue;
+      const close = closingParenthesis(text, end + 1);
+      if (close === undefined) continue;
       target = text.slice(start + 1, end);
       if (/[\r\n]/u.test(target)) continue;
-      links.lastIndex = end + 2;
+      links.lastIndex = close + 1;
     } else {
       let depth = 0;
       while (end < text.length && !/\s/u.test(text[end] as string)) {
@@ -70,23 +134,26 @@ function linkedFiles(text: string, cwd: string): Set<string> {
         }
         end += 1;
       }
-      links.lastIndex = end + 1;
-      if (text[end] !== ")" || depth !== 0) continue;
+      const close = depth === 0 ? closingParenthesis(text, end) : undefined;
+      links.lastIndex = (close ?? end) + 1;
+      if (close === undefined) continue;
       target = text.slice(start, end).replace(/\\([\\()])/gu, "$1");
     }
     if (!target) continue;
     try {
-      let file: string;
+      let candidates: string[];
       if (target.startsWith("file:")) {
         const url = new URL(target);
         if (url.username || url.password || url.search || url.hash) continue;
-        file = fileURLToPath(url);
+        candidates = [fileURLToPath(url)];
       } else {
         if (!path.isAbsolute(target) && /^[a-z][a-z0-9+.-]*:/iu.test(target)) continue;
-        file = decodeURIComponent(target);
+        candidates = pathCandidates(target);
       }
-      const resolved = path.resolve(cwd, file);
-      if (within(cwd, resolved)) files.add(resolved);
+      for (const file of candidates) {
+        const resolved = path.resolve(cwd, file);
+        if (within(cwd, resolved)) files.add(resolved);
+      }
     } catch {
       // Remote URLs and malformed file links do not authorize a filesystem read.
     }

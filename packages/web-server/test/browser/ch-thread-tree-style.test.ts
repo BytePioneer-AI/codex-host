@@ -184,6 +184,111 @@ for (const width of [1280, 390]) {
 }
 
 it(
+  "a short sidebar reveals choices for a recent parent with 23 additional children",
+  { timeout: 40_000 },
+  async (t) => {
+    const { page, host } = await threadTreeBrowser(t);
+    for (let index = 0; index < 23; index++) {
+      const id = `delegated-${index}`;
+      const child = host.add(id, "/computer/thread-tree", `Delegated task ${index + 1}`, false);
+      child.updatedAt = Math.floor(Date.now() / 1000) - index;
+      host.delegations[id] = "parent";
+    }
+    // Keep a Workspace projection as well as the independently rendered Recents row.
+    host.projectSnapshot.assignments.parent = "project-workspace-root";
+    host.projectSnapshot.projectless = host.projectSnapshot.projectless.filter(
+      (id) => id !== "parent",
+    );
+    await page.evaluate((key) => {
+      const record = JSON.parse(localStorage.getItem(key) ?? "{}");
+      record.user.showRecentVisits = false;
+      record.revision++;
+      localStorage.setItem(key, JSON.stringify(record));
+    }, KEY);
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.reload();
+    const parent = page.locator('[data-row-key="recent:parent"]');
+    const icon = parent.locator("[data-thread-icon-toggle]");
+    const prompt = page.locator("[data-thread-style-prompt]");
+    const assertChoicesVisible = async () => {
+      await expect(prompt).toHaveCount(1);
+      for (const style of ["summary", "ring"])
+        await expect(prompt.locator(`[data-thread-style-choice="${style}"]`)).toBeInViewport({
+          ratio: 1,
+        });
+      await expect(prompt.getByRole("button", { name: "Later", exact: true })).toBeInViewport({
+        ratio: 1,
+      });
+      assert.equal(
+        await parent.evaluate((row) =>
+          row
+            .closest("[data-thread-branch]")
+            ?.firstElementChild?.nextElementSibling?.hasAttribute("data-thread-style-prompt"),
+        ),
+        true,
+      );
+    };
+    const assertUnchosen = async () => {
+      assert.equal(
+        await page.evaluate(
+          (key) =>
+            Object.hasOwn(
+              JSON.parse(localStorage.getItem(key) ?? "{}").user,
+              "threadTreeCollapseStyle",
+            ),
+          KEY,
+        ),
+        false,
+      );
+    };
+    await expect(prompt).toHaveCount(0);
+    await parent.locator("[data-thread-summary]").click();
+    await assertChoicesVisible();
+    await expect(icon).toBeFocused();
+    await treeShot(page, "prompt-short-sidebar-first-expansion");
+    await prompt.getByRole("button", { name: "Later", exact: true }).click();
+    await assertUnchosen();
+    await page.reload();
+    await expect(parent).toHaveAttribute("aria-expanded", "true");
+    await expect(prompt).toHaveCount(0);
+    await icon.click();
+    await expect(parent).toHaveAttribute("aria-expanded", "false");
+    await icon.click();
+    await assertChoicesVisible();
+    await treeShot(page, "prompt-short-sidebar-restored-reexpanded");
+    await prompt.getByRole("button", { name: "Later", exact: true }).click();
+    await parent.focus();
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowRight");
+    await assertChoicesVisible();
+    const reads = () =>
+      host.requests.filter((request) => request.method === "codexhost/thread/tree/read").length;
+    const before = reads();
+    const occurrence = await icon.getAttribute("aria-controls");
+    host.changed("parent", "codexhost/thread/tree/changed");
+    await expect.poll(reads).toBeGreaterThan(before);
+    await assertChoicesVisible();
+    assert.equal(await icon.getAttribute("aria-controls"), occurrence);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "General", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await assertUnchosen();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await parent.scrollIntoViewIfNeeded();
+    await themedShots(page, "prompt-recent-23-children-restored");
+    await prompt.locator('[data-thread-style-choice="summary"]').click();
+    await expect(prompt).toHaveCount(0);
+    await icon.click();
+    await icon.click();
+    await expect(prompt).toHaveCount(0);
+    await page.reload();
+    await expect(parent).toHaveAttribute("aria-expanded", "true");
+    await expect(prompt).toHaveCount(0);
+  },
+);
+
+it(
   "automatic expansion never prompts; settings and storage updates return summary focus",
   { timeout: 40_000 },
   async (t) => {

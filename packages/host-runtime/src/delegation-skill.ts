@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 11;
+const SKILL_VERSION = 12;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
@@ -22,6 +22,8 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "b72a059e139bd5b93b95f7ac02ab80f428d5a721cc67b004210d5263e75baed7",
   // v10.
   "242a07e7521949e5d651102f6b353c48e7575a679e3403c5c5db295abad9896b",
+  // v11, before the worktree note.
+  "e762e3dea2633656dec27ea568b95f005e7f5c13a21b029dd149813f49c1330c",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -67,7 +69,9 @@ selection is needed or the default is unavailable.
 
 For a new delegation, create an independent child session and submit the
 requested task. Give it a short task name that tells it apart from sibling
-tasks, using the help's task-name option. For an existing external session, resolve the target from the
+tasks, using the help's task-name option. When the change is large, or several
+delegated tasks run in parallel and may touch the same files, an isolated git
+worktree for the child is an option; help shows how to request one. For an existing external session, resolve the target from the
 user-provided session link, identifier, or context and operate on that Thread
 directly; it need not have been created by the current assistant. If the target
 is ambiguous, ask the user to identify it. Keep requests to view or summarize a

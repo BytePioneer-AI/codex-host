@@ -18,4 +18,4 @@
 
 ## 4. 收尾
 
-- [ ] 4.1 （主导者完成）新增 `docs/architecture/web-thread-tree.md`，说明显示父 Thread 的规则、Host 方法、持久化文件和 Web 行为边界；更新 `docs/index.md` 和 `docs/product/standalone-web.md`。运行 `npm run typecheck`、`npm run lint`、`npm run build:web:ui`、`openspec validate add-web-thread-tree --strict`，只报告实际执行过的检查。
+- [x] 4.1 （主导者完成）新增 `docs/architecture/web-thread-tree.md`，说明显示父 Thread 的规则、Host 方法、持久化文件和 Web 行为边界；更新 `docs/index.md` 和 `docs/product/standalone-web.md`。运行 `npm run typecheck`、`npm run lint`、`npm run build:web:ui`、`openspec validate add-web-thread-tree --strict`，只报告实际执行过的检查。

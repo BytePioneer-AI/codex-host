@@ -31,7 +31,7 @@ Web 侧栏把本机 Host 的 Thread 显示成可以展开、收起的树。树�
 - 每次刷新列表都读取完整的 `parents`。本机 CH 会话摘要的投影 `threadTreeParent` 为显示父 Thread ID 或 `null`；草稿和远程 Host 会话没有该字段。
 - 已加载行的祖先不在当前页时，Web Server 按 ID 单独读取并一起返回，最多向上 64 层。遇到环或无法确认的祖先时停止，子 Thread 显示在顶层。
 - `session/place` 转发放置请求。远程或草稿 ID 返回 `session/place-invalid`。
-- `session/archive` / `session/unarchive` 级联到全部后代，包括未加载的后代：先父后子，跳过已处于目标状态的后代，最后只刷新一次列表。部分失败返回 `session/archive-partial`，`details.failedSessionIds` 列出失败的 Thread，已成功的不回滚。
+- 侧栏的归档与恢复（`workspace/archiveSession`、`workspace/unarchiveSession`、`session/archive`、`session/unarchive`）级联到全部后代，包括未加载的后代：先父后子，跳过已处于目标状态的后代，最后只刷新一次列表。用户直接操作的 Thread 写入失败时返回它自己的错误，不处理后代；只有后代失败时返回 `session/archive-partial`，`details.failedSessionIds` 列出失败的 Thread，已成功的不回滚。
 
 ## Web 侧栏
 

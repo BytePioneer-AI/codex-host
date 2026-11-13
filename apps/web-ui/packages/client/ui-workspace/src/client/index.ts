@@ -76,6 +76,12 @@ import { RenameSessionMenuItem, SessionRenameDialog } from "./session-actions/Re
 import { RowActionToast } from "./session-actions/RowActionToast.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { en, zh, type WorkspaceKey } from "./locales.ts";
+import {
+  canPlaceThread,
+  runningSubagentsInThreadSubtree,
+  runningThreadSubtree,
+} from "./thread-tree-catalog.ts";
+import { registerThreadPlacement } from "./session-actions/thread-placement.ts";
 
 export { ReferenceSessionMenuItem } from "./session-actions/ReferenceSession.tsx";
 export type { StartSessionOptions, UiWorkspace } from "./navigation.ts";
@@ -134,6 +140,7 @@ export const inject = [
   "workspaces",
   "locale",
   "remote",
+  "connection",
   "remote.directoryPicker",
   "layout",
   "shortcuts",
@@ -266,6 +273,19 @@ export function apply(ctx: Context): void {
     // The Host's refusal for running work is the one case that asks first:
     // the confirmation names that work and offers to stop it.
     archiveSession: (sessionId) => {
+      const list = sessions.list.getSnapshot();
+      const summary = list.byId[sessionId];
+      const runningThreads = runningThreadSubtree(list, sessionId);
+      const subagents = runningSubagentsInThreadSubtree(list, sessionId);
+      if (canPlaceThread(summary) && (runningThreads.length > 0 || subagents.length > 0)) {
+        archiveRequest.set({
+          sessionId,
+          displayTitle: summary?.displayTitle ?? sessionId,
+          activity: subagents.length === 0 ? [] : [{ kind: "subagent", items: subagents }],
+          runningThreads,
+        });
+        return;
+      }
       uiWorkspace
         .archiveSession(sessionId)
         .then(() => {
@@ -504,6 +524,7 @@ export function apply(ctx: Context): void {
       PinSessionRowButton,
     );
   });
+  registerThreadPlacement(ctx, sessions, viewInstance.actions, notify);
   // The surfaces the actions raise live in the frame-wide layer: they must
   // outlive the row menu the action sat in.
   ctx.slots.inject("shell.overlay", function* () {

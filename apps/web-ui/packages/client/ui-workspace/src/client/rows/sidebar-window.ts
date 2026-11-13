@@ -5,6 +5,11 @@ interface SidebarRow {
   pinned: boolean;
   running: boolean;
   runningSubagentCount: number;
+  pendingInteraction?: string;
+  tree?: {
+    descendantIds: readonly string[];
+    activity: { running: boolean; pendingInteraction: boolean };
+  };
 }
 
 export const GROUP_INITIAL_ROWS = 5;
@@ -20,9 +25,22 @@ export function sidebarWindow<T extends SidebarRow>(
 ): { rows: readonly T[]; hiddenCount: number } {
   let ordinary = 0;
   const rows = sessions.filter((session) => {
-    if (session.blank || session.pinned || session.running || session.runningSubagentCount > 0)
+    if (
+      session.blank ||
+      session.pinned ||
+      session.running ||
+      session.runningSubagentCount > 0 ||
+      session.pendingInteraction !== undefined ||
+      session.tree?.activity.running ||
+      session.tree?.activity.pendingInteraction
+    )
       return true;
-    return ordinary++ < limit || session.id === currentId || session.id === revealId;
+    return (
+      ordinary++ < limit ||
+      session.id === currentId ||
+      session.id === revealId ||
+      session.tree?.descendantIds.some((id) => id === currentId || id === revealId) === true
+    );
   });
   return { rows, hiddenCount: sessions.length - rows.length };
 }

@@ -1,13 +1,13 @@
-/* The 1px column center stays in the existing gutter; identity keeps its 8px inset. */
+/* Use the sidebar's 12px inset and the row's 8px inset without moving identity. */
 .toggle {
   appearance: none;
   position: absolute;
   inset-block: 0;
-  inset-inline-start: calc(var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) - 13px);
+  inset-inline-start: calc(var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) - 19px);
   z-index: 1;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   box-sizing: border-box;
   width: 28px;
   padding: 0;
@@ -26,20 +26,23 @@
   transition: transform 150ms ease;
 }
 
-/* Fill the 14px icon box with the chevron artwork rather than its internal whitespace. */
-.chevron svg path {
-  transform: scale(1.5);
-  transform-origin: 8px 8px;
-}
-
 .collapsed {
   transform: rotate(-90deg);
 }
 
-/* Only descendants of visible expanded rows are mounted. Guides cannot intercept clicks. */
+/* One stem per expanded parent, ending at its last visible descendant's center. */
 .guide {
   position: absolute;
-  inset-block: -1px;
+  z-index: 1;
+  inset-block-start: calc(50% + var(--dsh-thread-icon-size) / 2);
+  inset-inline-start: calc(
+    8px + var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) +
+      var(--dsh-thread-icon-size) / 2 - 0.5px
+  );
+  height: calc(
+    var(--dsh-thread-visible-descendants) *
+      (var(--dsh-thread-row-height) + var(--dsh-thread-row-gap)) - var(--dsh-thread-icon-size) / 2
+  );
   width: 1px;
   background: var(--dsw-alias-border-l2);
   pointer-events: none;

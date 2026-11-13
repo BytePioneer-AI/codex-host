@@ -356,6 +356,30 @@ describe("External Thread follow-up queue", () => {
         expect.objectContaining({ type: "turn.start", input: text("uncertain input") }),
       );
       writeRequest(fixture.desktopInput, {
+        id: 24,
+        method: "thread/queue/add",
+        params: { threadId, input: text("another queued input"), clientUserMessageId: "another" },
+      });
+      const another = await fixture.collector.waitFor((message) => requestId(message, 24));
+      const anotherItem = (another.result as { queuedSubmission: JsonObject & { id: string } })
+        .queuedSubmission;
+      writeRequest(fixture.desktopInput, {
+        id: 25,
+        method: "thread/queue/start",
+        params: { threadId, queuedSubmissionId: anotherItem.id },
+      });
+      const anotherStarted = await fixture.collector.waitFor((message) => requestId(message, 25));
+      expect(anotherStarted).not.toHaveProperty("error");
+      const anotherTurnId = (anotherStarted.result as { turn: { id: string } }).turn.id;
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", anotherTurnId),
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(execute).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "turn.start", input: text("uncertain input") }),
+      );
+      writeRequest(fixture.desktopInput, {
         id: 23,
         method: "thread/queue/start",
         params: { threadId, queuedSubmissionId: queued.id },

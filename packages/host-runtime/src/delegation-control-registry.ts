@@ -124,7 +124,9 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {
-    return (await this.#registrationForThread(input.threadId)).cancel(input);
+    return this.#watchService.cancel(input.threadId, async () =>
+      (await this.#registrationForThread(input.threadId)).cancel(input),
+    );
   }
 
   async read(input: ThreadReadInput) {

@@ -43,6 +43,7 @@ THREAD_BUSY means the current Turn is still active: wait or cancel before sendin
 To be notified when that Turn ends, run thread watch after sending.`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact]
 Request cancellation of the active Turn while preserving the Thread and history.
+Accepted cancellation also removes all watches on that Thread.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
@@ -62,7 +63,7 @@ The notification starts a new Turn in the notified Thread with the watched Threa
 --timeout-ms defaults to 1740000 (29 min). timedOut means the Thread had not reached a terminal state, which also covers a Harness that stopped without reporting it; watch again to keep waiting. unreadable means reads failed for 60 s, so the state is unknown.
 state=watching means registered. state=alreadyTerminal means the Thread was not running: nothing was registered and nothing will be sent.
 A busy notified Thread is notified after its Turn ends (retried for up to 6 hours); notifications due together arrive as one message. THREAD_BUSY is never treated as delivered.
-A watch is one-shot and cannot be cancelled. Watching the same pair again while it is still watched returns that watch; once it has stopped, a new watch covers the next stop and any pending notification is still delivered. Watches are stored and resume after a Host Runtime restart; a notification whose delivery was in progress when the Runtime stopped is sent again, so a restart may repeat one. A Turn that was running when the Runtime restarted is reported as interrupted, because the restart ended its Harness process.`,
+A watch is one-shot with no standalone unsubscribe command; an accepted thread cancel removes all watches on the watched Thread. Watching the same pair again while it is still watched returns that watch; once it has stopped, a new watch covers the next stop and any pending notification is still delivered. Watches are stored and resume after a Host Runtime restart; a notification whose delivery was in progress when the Runtime stopped is sent again, so a restart may repeat one. A Turn that was running when the Runtime restarted is reported as interrupted, because the restart ended its Harness process.`,
   "thread watches": `codexhost thread watches [--format json|compact]
 List watches that have not been delivered: watching, pendingDelivery (waiting for the notified Thread), or undeliverable (with the reason). Delivered watches are removed.`,
   "thread list": `codexhost thread list [--cwd <path>] [--parent <thread> | --client <name>] [--ref <uri>] [--limit <n>] [--cursor <cursor>] [--sort created-asc|created-desc|updated-asc|updated-desc|recency-asc|recency-desc] [--format json|compact]

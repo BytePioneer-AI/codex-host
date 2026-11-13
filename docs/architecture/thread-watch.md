@@ -7,7 +7,7 @@
 ## 模型
 
 - 只有两个 Thread：被观察的 Thread 和被通知的 Thread。与委派的父子关系无关，任意两个不同的 Thread 都可以。
-- 一次性。被观察 Thread 停下，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有取消或退订；想继续等就再注册一次。
+- 一次性。被观察 Thread 停下，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有独立退订命令；主动 `thread cancel` 成功接受取消请求时，会删除被取消 Thread 上的全部 watch（含内存和存盘记录），不再投递其通知。取消失败或返回 `cancelled=false` 时保留 watch；想继续等就再注册一次。
 - 每次注册各自兑现。同一对 Thread 仍在观察中时重复注册，返回已有的 watch；该 watch 已停下、通知仍在待送达时再次注册（例如 Thread 又开始了新一轮），会新建一个 watch 观察下一次停下，旧通知照常送达，不会被替换或丢弃。
 - 通知只报告执行状态：Thread 链接和结果，不注明 Turn；同一 Thread 不同轮次的结果以 `thread read` 读到的为准。通知不包含会话正文或摘要，也不代表工作被验收。接收方应自行 `thread read`。
 
@@ -62,8 +62,8 @@ watch 首次持久化失败时不保留内存注册，`thread watch` 返回错�
 
 ## 与 Stop 的关系
 
-- 用户 Stop 被观察的 Thread，Thread 停下，watch 以 `interrupted` 通知一次。“调整方向”的停止后重发不算停下，不会通知。
-- 用户 Stop 被通知 Thread 的当前 Turn，不会取消已注册的 watch：该 Thread 空闲后，到期的通知仍会启动一个新 Turn。watch 不能取消，这是注册 watch 时就选择的行为。
+- Desktop / Web 的 Stop 被观察的 Thread，Thread 停下，watch 以 `interrupted` 通知一次。“调整方向”的停止后重发不算停下，不会通知。主动 `thread cancel` 则移除被观察 Thread 的 watch；自然完成、失败或 Host 重启等外部中断仍照常通知。
+- 用户 Stop 被通知 Thread 的当前 Turn，不会取消观察其他 Thread 的 watch：该 Thread 空闲后，到期的通知仍会启动一个新 Turn。
 - 与 `thread send` 的“不排队”约定和 [调整方向](external-thread-steering.md) 的“失败不自动重试或偷偷排队”并不冲突：待送达的通知只存在于显式注册的 watch 中，普通消息的语义不变。
 
 ## 被通知 Thread 的确定
@@ -78,7 +78,7 @@ watch 首次持久化失败时不保留内存注册，`thread watch` 返回错�
 ## 实现与边界
 
 - `packages/host-runtime/src/delegation-watch.ts` 只依赖公开的 `read` 与 `send`，每轮完成后间隔 2 秒继续轮询（现有 `thread wait` 同样基于轮询）。它不依赖具体 Harness、Desktop、Renderer 或委派血缘。
-- 服务由 `DelegationControlRegistry` 持有，位于各 Host 会话之上，因此两端可以属于不同的 Host 会话。
+- 服务由 `DelegationControlRegistry` 持有，位于各 Host 会话之上，因此两端可以属于不同的 Host 会话。CLI 与 Runtime 控制接口的 cancel 都经此入口：取消结果未定时暂停该 Thread 的通知投递，接受后删除所有通知目标的 watch，否则恢复投递。异步观察和投递准备在继续时检查 watch 是否仍有效；已经发起的投递无法撤回，仍按原有规则清理。
 - watch 持久保存在 `<数据目录>/delegation-watches/`（默认 `~/.codexhost`），每个 watch 一个仅当前用户可读写的记录，只含 Thread 标识、状态、期限与原因。Runtime 重启后恢复观察与投递，调用方无需重新注册；期限按绝对时间计算，停机时间计入。
 - 多个 Runtime 进程可共用数据目录（例如 Desktop 与远程监听同时运行）。每个进程只写自己的记录；启动时接管已退出进程（或上次开机遗留）的记录，以原子重命名认领，同一记录只被一个进程接管。
 - 恢复后的 watch 最多等待 5 分钟让持有 Thread 的会话重新注册：这期间读取失败不计入 60 秒 `unreadable` 宽限，也不报告 `notFound` 或 `timedOut`；待投递通知要等被通知 Thread 可读后再发送。

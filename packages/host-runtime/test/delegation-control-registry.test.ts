@@ -1,7 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
-import type { DelegationControlRegistration } from "../src/delegation-types.js";
+import {
+  DelegationControlError,
+  type DelegationControlRegistration,
+  type DelegationThreadSnapshot,
+  type DelegationThreadStatus,
+  type ThreadCancelResult,
+} from "../src/delegation-types.js";
+import type { DelegationWatchStore, PersistedWatch } from "../src/delegation-watch-store.js";
 
 function registration(threadId: string): DelegationControlRegistration {
   return {
@@ -248,6 +255,286 @@ describe("DelegationControlRegistry", () => {
     expect(session.read).not.toHaveBeenCalled();
     registry.close();
   });
+});
+
+describe("DelegationControlRegistry cancel watches", () => {
+  const registries: DelegationControlRegistry[] = [];
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    for (const registry of registries.splice(0)) registry.close();
+    vi.useRealTimers();
+  });
+
+  function setup() {
+    const records = new Map<string, PersistedWatch>();
+    const store: DelegationWatchStore = {
+      adopt: async () => [...records.values()].map((record) => structuredClone(record)),
+      save: vi.fn(async (watch) => {
+        records.set(watch.id, structuredClone(watch));
+      }),
+      remove: vi.fn(async (id) => {
+        records.delete(id);
+      }),
+    };
+    const clientEvents = { append: vi.fn(async () => undefined) };
+    const registry = new DelegationControlRegistry({ watchStore: store, clientEvents });
+    registries.push(registry);
+    const child = registration("child");
+    const parent = registration("parent");
+    registry.register(child);
+    registry.register(parent);
+    const snapshot = (status: DelegationThreadStatus): DelegationThreadSnapshot => ({
+      threadId: "child",
+      harnessId: "pi",
+      status,
+      turn: null,
+      progress: [],
+      result: { availability: "pending" },
+      nextCursor: null,
+    });
+    const result: ThreadCancelResult = {
+      threadId: "child",
+      harnessId: "pi",
+      turnId: "turn-child",
+      cancelled: true,
+    };
+    vi.mocked(child.cancel).mockImplementation(async () => {
+      vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+      return result;
+    });
+    const watch = (notifyThreadId = "parent") =>
+      registry.watch({
+        threadId: "child",
+        notifyThreadId,
+        timeoutMs: 60_000,
+      });
+    return { registry, child, parent, store, records, snapshot, result, watch, clientEvents };
+  }
+
+  it("removes watches from memory and storage after an accepted cancel without notifying", async () => {
+    const { registry, parent, records, result, watch } = setup();
+    await watch();
+    expect(records.size).toBe(1);
+    await expect(registry.cancel({ threadId: "child" })).resolves.toBe(result);
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+    expect(records.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("still notifies on natural completion without cancel", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).toHaveBeenCalledOnce();
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+    expect(records.size).toBe(0);
+  });
+
+  it("removes a client's watch without appending an event", async () => {
+    const { registry, records, watch, clientEvents } = setup();
+    await watch("client:reviewer");
+    await registry.cancel({ threadId: "child" });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(records.size).toBe(0);
+    expect(clientEvents.append).not.toHaveBeenCalled();
+  });
+
+  it("accepts cancellation without any watch", async () => {
+    const { registry, records, result } = setup();
+    await expect(registry.cancel({ threadId: "child" })).resolves.toBe(result);
+    expect(records.size).toBe(0);
+  });
+
+  it("removes every notify target but keeps watches on other Threads", async () => {
+    const { registry, parent, records, watch } = setup();
+    const other = registration("other");
+    registry.register(other);
+    await watch();
+    await watch("other");
+    await registry.watch({ threadId: "other", notifyThreadId: "parent", timeoutMs: 60_000 });
+    await registry.cancel({ threadId: "child" });
+    expect((await registry.watches()).watches).toMatchObject([{ threadId: "other" }]);
+    expect([...records.values()]).toMatchObject([{ threadId: "other" }]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(parent.send).not.toHaveBeenCalled();
+    expect(other.send).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "idle"] as const)("preserves watches when cancel is %s", async (mode) => {
+    const { registry, child, parent, records, result, snapshot, watch } = setup();
+    await watch();
+    const failure = new DelegationControlError("DELEGATION_FAILED", "cancel refused");
+    if (mode === "rejected") vi.mocked(child.cancel).mockRejectedValue(failure);
+    else vi.mocked(child.cancel).mockResolvedValue({ ...result, cancelled: false });
+    const cancelled = registry.cancel({ threadId: "child" });
+    if (mode === "rejected") await expect(cancelled).rejects.toBe(failure);
+    else await expect(cancelled).resolves.toMatchObject({ cancelled: false });
+    expect((await registry.watches()).watches).toHaveLength(1);
+    expect(records.size).toBe(1);
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])(
+    "holds terminal notifications until cancel settles (accepted=%s)",
+    async (accepted) => {
+      const { registry, child, parent, records, result, snapshot, watch } = setup();
+      await watch();
+      const completion = Promise.withResolvers<ThreadCancelResult>();
+      const started = Promise.withResolvers<undefined>();
+      vi.mocked(child.cancel).mockImplementation(() => {
+        vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+        started.resolve(undefined);
+        return completion.promise;
+      });
+      const cancelled = registry.cancel({ threadId: "child" });
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(parent.send).not.toHaveBeenCalled();
+      completion.resolve({ ...result, cancelled: accepted });
+      await cancelled;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(parent.send).toHaveBeenCalledTimes(accepted ? 0 : 1);
+      expect(records.size).toBe(0);
+    },
+  );
+
+  it("keeps delivery paused until overlapping cancels have both settled", async () => {
+    const { registry, child, parent, result, snapshot, watch } = setup();
+    await watch();
+    const first = Promise.withResolvers<ThreadCancelResult>();
+    const second = Promise.withResolvers<ThreadCancelResult>();
+    const started = Promise.withResolvers<undefined>();
+    vi.mocked(child.cancel)
+      .mockReturnValueOnce(first.promise)
+      .mockImplementationOnce(() => {
+        started.resolve(undefined);
+        return second.promise;
+      });
+    const one = registry.cancel({ threadId: "child" });
+    const two = registry.cancel({ threadId: "child" });
+    await started.promise;
+    first.resolve({ ...result, cancelled: false });
+    await one;
+    vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).not.toHaveBeenCalled();
+    second.resolve(result);
+    await two;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("removes pending notifications when a later active Turn is cancelled", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    vi.mocked(parent.send).mockRejectedValue(new DelegationControlError("THREAD_BUSY", "busy"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect((await registry.watches()).watches).toMatchObject([{ state: "pendingDelivery" }]);
+    vi.mocked(child.read).mockResolvedValue(snapshot("running"));
+    await watch();
+    await registry.cancel({ threadId: "child" });
+    expect(records.size).toBe(0);
+    vi.mocked(parent.send).mockClear();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a cancelled watch when an already-started send is rejected", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    const delivery = Promise.withResolvers<Awaited<ReturnType<typeof parent.send>>>();
+    vi.mocked(parent.send).mockReturnValueOnce(delivery.promise);
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).toHaveBeenCalledOnce();
+    await registry.cancel({ threadId: "child" });
+    delivery.reject(new DelegationControlError("THREAD_BUSY", "busy"));
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(records.size).toBe(0);
+    expect(parent.send).toHaveBeenCalledOnce();
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+  });
+
+  it("does not resurrect a removed watch when an in-flight observation finishes", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    const observation = Promise.withResolvers<DelegationThreadSnapshot>();
+    vi.mocked(child.read).mockReturnValueOnce(observation.promise);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await registry.cancel({ threadId: "child" });
+    observation.resolve(snapshot("interrupted"));
+    await vi.advanceTimersByTimeAsync(4_000);
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+    expect(records.size).toBe(0);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("does not deliver a restored notice removed while waiting for its subscriber", async () => {
+    const { registry, child, parent, store, records, snapshot, watch } = setup();
+    await watch();
+    registry.close();
+    for (const record of records.values()) {
+      record.state = "pendingDelivery";
+      record.outcome = "completed";
+      record.deliveryDeadline = Date.now() + 60_000;
+    }
+    const restored = new DelegationControlRegistry({ watchStore: store });
+    registries.push(restored);
+    restored.register(child);
+    restored.register(parent);
+    const subscriber = Promise.withResolvers<DelegationThreadSnapshot>();
+    vi.mocked(parent.read).mockReturnValueOnce(subscriber.promise);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await restored.cancel({ threadId: "child" });
+    subscriber.resolve({ ...snapshot("completed"), threadId: "parent" });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(parent.send).not.toHaveBeenCalled();
+    expect(records.size).toBe(0);
+  });
+
+  it.each([false, true])(
+    "filters cancelled notices out of a prepared delivery (batched=%s)",
+    async (batched) => {
+      const { registry, child, parent, store, records, snapshot, watch } = setup();
+      await watch();
+      if (batched) {
+        const other = registration("other");
+        registry.register(other);
+        await registry.watch({ threadId: "other", notifyThreadId: "parent", timeoutMs: 60_000 });
+        vi.mocked(other.read).mockResolvedValue({ ...snapshot("completed"), threadId: "other" });
+      }
+      const saving = Promise.withResolvers<undefined>();
+      vi.mocked(store.save).mockImplementation(async (record) => {
+        if (record.delivering) await saving.promise;
+        records.set(record.id, structuredClone(record));
+      });
+      vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(store.save).toHaveBeenCalledWith(expect.objectContaining({ delivering: true }));
+      const started = Promise.withResolvers<undefined>();
+      vi.mocked(child.cancel).mockImplementation(async () => {
+        started.resolve(undefined);
+        return { threadId: "child", harnessId: "pi", turnId: "turn-child", cancelled: true };
+      });
+      const cancelled = registry.cancel({ threadId: "child" });
+      await started.promise;
+      saving.resolve(undefined);
+      await cancelled;
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(parent.send).toHaveBeenCalledTimes(batched ? 1 : 0);
+      if (batched) {
+        const message = vi.mocked(parent.send).mock.calls[0]?.[0].message;
+        expect(message).toContain("thread://other");
+        expect(message).not.toContain("thread://child");
+      }
+      expect(records.size).toBe(0);
+    },
+  );
 });
 
 describe("DelegationControlRegistry list paging across sessions", () => {

@@ -184,6 +184,7 @@ export async function issueCertificate(
       round.assertActive();
       if (round.responseFailure?.type !== "urn:ietf:params:acme:error:accountDoesNotExist")
         throw error;
+      let contact: string[] | undefined;
       if (round.transport) {
         round.responseFailure = undefined;
         round.retryAfter = undefined;
@@ -192,6 +193,7 @@ export async function issueCertificate(
         round.retryAfter = retryAfter(response.retryAfter);
         if (response.status === 200) {
           const eab = JSON.parse(response.body) as ExternalAccount;
+          contact = eab.contact;
           client = new acme.Client({
             ...options,
             externalAccountBinding: {
@@ -205,7 +207,10 @@ export async function issueCertificate(
           throw new AcmeFailure("other");
         }
       }
-      await client.createAccount({ termsOfServiceAgreed: true });
+      await client.createAccount({
+        termsOfServiceAgreed: true,
+        ...(contact === undefined ? {} : { contact }),
+      });
     }
     round.assertActive();
     let order = await client.createOrder({ identifiers: [{ type: "dns", value: hostname }] });

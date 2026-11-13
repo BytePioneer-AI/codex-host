@@ -39,6 +39,7 @@ async function fixture(
   ]);
   const registered: ReturnType<ExternalThreadRuntime["register"]>[] = [];
   const notifications: unknown[] = [];
+  const treeChanged = vi.fn<(threadId: string) => void>();
   const delivered: string[] = [];
   const runtime = new ExternalThreadRuntime({
     adapters,
@@ -71,6 +72,7 @@ async function fixture(
     notifyThreadStarted: async (thread) => {
       notifications.push(thread);
     },
+    notifyTreeChanged: treeChanged,
     inspectOfficial: vi.fn(),
     readOfficial: vi.fn(),
     sendOfficial: vi.fn(),
@@ -90,6 +92,7 @@ async function fixture(
     directory,
     delivered,
     notifications,
+    treeChanged,
     registered,
     repository,
     runtime,
@@ -127,6 +130,38 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 }
 
 describe("HarnessDelegationCoordinator", () => {
+  it("invalidates the tree only after the external delegation record write completes", async () => {
+    const value = await fixture();
+    const written = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const create = value.repository.createDelegation.bind(value.repository);
+    vi.spyOn(value.repository, "createDelegation").mockImplementation(async (input) => {
+      const record = await create(input);
+      written.resolve(undefined);
+      await release.promise;
+      return record;
+    });
+    try {
+      const starting = value.coordinator.start({
+        harnessId: "pi",
+        parentThreadId: "parent",
+        cwd: "/synthetic",
+        task: "Create child",
+      });
+      await written.promise;
+      expect(value.treeChanged).not.toHaveBeenCalled();
+      release.resolve(undefined);
+      const result = await starting;
+      expect(value.treeChanged).toHaveBeenCalledExactlyOnceWith(result.threadId);
+      expect(
+        await value.repository.getDelegationByChild(hostThreadIdSchema.parse(result.threadId)),
+      ).toMatchObject({ parentHostThreadId: "parent" });
+      expect(value.notifications).toHaveLength(1);
+    } finally {
+      release.resolve(undefined);
+      await value.close();
+    }
+  });
   it("carries the display name through the real CLI HTTP endpoint and persists it separately from the task", async () => {
     const value = await fixture(undefined, async () => ({ title: "Main project" }));
     const server = await startDelegationControlServer({

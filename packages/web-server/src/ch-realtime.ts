@@ -59,7 +59,8 @@ export class ChRealtime {
         event.method.startsWith("thread/") ||
         event.method === "turn/started" ||
         event.method === "turn/completed" ||
-        event.method === "codexhost/thread/pins/changed"
+        event.method === "codexhost/thread/pins/changed" ||
+        event.method === "codexhost/thread/tree/changed"
       )
         this.schedule("");
     }

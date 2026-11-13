@@ -188,6 +188,7 @@ it("resolves an existing unbound draft summary without native reads, then follow
   assert.deepEqual(
     host.requests.map((req) => ({ method: req.method, threadId: req.params.threadId })),
     [
+      { method: "codexhost/thread/tree/read", threadId: undefined },
       { method: "codexhost/thread/inspect", threadId: canonical },
       { method: "thread/read", threadId: canonical },
     ],

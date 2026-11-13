@@ -187,7 +187,14 @@ export async function rendererRemoteSession(
     if (routing.forHost(operation.hostId) !== route)
       throw new Error("Remote connection changed during read");
     const header = result as {
-      thread?: { historyMode?: string; modelProvider?: string; cwd?: string };
+      thread?: {
+        historyMode?: string;
+        modelProvider?: string;
+        cwd?: string;
+        model?: unknown;
+        reasoningEffort?: unknown;
+        serviceTier?: unknown;
+      };
     };
     if (header.thread?.historyMode === "paginated") {
       const turns: unknown[] = [],
@@ -227,7 +234,7 @@ export async function rendererRemoteSession(
     if (routing.forHost(operation.hostId) !== route)
       throw new Error("Remote connection changed during read");
     let metadata: Record<string, unknown> = {};
-    if (header.thread?.modelProvider === "codexhost") {
+    if (header.thread) {
       const cwd = header.thread.cwd;
       try {
         const configuration = (await manager.sendRequest("codexhost/thread/inspect", {
@@ -235,9 +242,44 @@ export async function rendererRemoteSession(
         })) as { owner?: string; harnessId?: string };
         if (routing.forHost(operation.hostId) !== route)
           throw new Error("Remote connection changed during read");
-        metadata = { configuration };
-        if (configuration.owner === "external" && configuration.harnessId) {
-          const harnessId = configuration.harnessId,
+        metadata = {
+          configuration,
+          ...(configuration.owner === "codex"
+            ? {
+                nativeSettings: {
+                  model: header.thread.model,
+                  reasoningEffort: header.thread.reasoningEffort,
+                  serviceTier: header.thread.serviceTier,
+                },
+              }
+            : {}),
+        };
+        if (configuration.owner === "codex" && manager.getConversation) {
+          const conversation = (await Promise.resolve()
+            .then(() => manager.getConversation?.(threadId))
+            .catch(() => undefined)) as
+            | {
+                latestThreadSettings?: { model?: unknown; effort?: unknown; serviceTier?: unknown };
+              }
+            | undefined;
+          if (routing.forHost(operation.hostId) !== route)
+            throw new Error("Remote connection changed during read");
+          const settings = conversation?.latestThreadSettings;
+          // Native Thread headers omit serviceTier on older servers. Desktop's
+          // confirmed settings supply Fast/effort only for the same model.
+          if (settings?.model === header.thread.model && typeof settings?.model === "string")
+            metadata.nativeSettings = {
+              model: settings.model,
+              reasoningEffort: settings.effort,
+              serviceTier: settings.serviceTier,
+            };
+        }
+        if (
+          configuration.owner === "codex" ||
+          (configuration.owner === "external" && configuration.harnessId)
+        ) {
+          const harnessId =
+              configuration.owner === "codex" ? "codex" : (configuration.harnessId ?? "codex"),
             key = JSON.stringify([harnessId, cwd]);
           const cache = (generation.metadata ??= new Map());
           let discovery = cache.get(key);
@@ -347,7 +389,7 @@ export async function rendererRemoteSession(
       })) as { owner?: string };
       if (routing.forHost(operation.hostId) !== route)
         throw new Error("Remote connection changed during configuration");
-      if (configuration.owner !== "external")
+      if (configuration.owner !== "external" && configuration.owner !== "codex")
         throw new Error("Remote Thread configuration is unavailable");
       let method: string, params: Record<string, unknown>;
       if (operation.modelId !== undefined) {

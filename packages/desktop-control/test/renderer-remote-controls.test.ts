@@ -67,6 +67,58 @@ function fixture() {
     }>;
   return { send, read, routes, target, route };
 }
+it("reads native Codex controls and forwards model changes to the owning Host", async () => {
+  const f = fixture();
+  let settingsModel = "gpt-6-astra";
+  Object.assign(f.route.manager, {
+    getConversation: async () => ({
+      latestThreadSettings: { model: settingsModel, effort: "high", serviceTier: "priority" },
+    }),
+  });
+  f.send.mockImplementation(async (method) => {
+    if (method === "thread/read")
+      return {
+        thread: {
+          id: "same",
+          modelProvider: "openai",
+          model: "gpt-6-astra",
+          cwd: "/mac",
+          turns: [],
+        },
+      };
+    if (method === "codexhost/thread/inspect") return { owner: "codex", locked: true };
+    if (method === "codexhost/harness/inspect") return { status: "ready", catalog: { models: [] } };
+    if (method === "codexhost/harness/plugins/list") return { plugins: [] };
+    if (method === "codexhost/thread/model/select") return { effectiveModel: { id: "selected" } };
+    return {};
+  });
+  const result = await f.read();
+  expect(result).toMatchObject({
+    nativeSettings: { model: "gpt-6-astra", serviceTier: "priority", reasoningEffort: "high" },
+    configuration: { owner: "codex" },
+  });
+  expect(f.send).toHaveBeenCalledWith("codexhost/harness/inspect", {
+    harnessId: "codex",
+    cwd: "/mac",
+  });
+  await rendererRemoteSession(f.target, {
+    kind: "configure",
+    hostId: "remote-ssh-discovered:mac",
+    threadId: "same",
+    epoch: result.epoch,
+    modelId: "selected",
+  });
+  expect(f.send).toHaveBeenCalledWith("codexhost/thread/model/select", {
+    threadId: "same",
+    model: { id: "selected" },
+  });
+  expect(
+    f.send.mock.calls.filter(([method]) => method === "codexhost/thread/model/select"),
+  ).toHaveLength(1);
+  settingsModel = "stale-model";
+  const stale = await f.read();
+  expect(stale).toMatchObject({ nativeSettings: { model: "gpt-6-astra", serviceTier: undefined } });
+});
 it("reads full paginated history and remote identity without using the legacy full read", async () => {
   const f = fixture();
   const r = await f.read();

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  encodeOfficialCodexModelRef,
   harnessInspectionSchema,
   threadInspectionSchema,
   type HarnessInspection,
@@ -20,6 +21,7 @@ const remoteHarnessDescriptorSchema = z
   .passthrough();
 
 export interface RemoteControlsSnapshot {
+  nativeSettings?: unknown;
   configuration?: unknown;
   inspection?: unknown;
   harness?: unknown;
@@ -44,6 +46,27 @@ export function parseRemoteControls(snapshot: RemoteControlsSnapshot): RemoteCon
   const controls: RemoteControls = {};
   const configuration = threadInspectionSchema.safeParse(snapshot.configuration);
   if (configuration.success) controls.configuration = configuration.data;
+  const native = z
+    .object({
+      model: z.string().min(1),
+      serviceTier: z.string().nullable().optional(),
+      reasoningEffort: z.string().nullable().optional(),
+    })
+    .safeParse(snapshot.nativeSettings);
+  if (configuration.success && configuration.data.owner === "codex" && native.success) {
+    try {
+      const parsed = threadInspectionSchema.safeParse({
+        ...configuration.data,
+        effectiveModel: encodeOfficialCodexModelRef(native.data.model, native.data.serviceTier),
+        ...(native.data.reasoningEffort
+          ? { effectiveThinkingOptionId: native.data.reasoningEffort }
+          : {}),
+      });
+      if (parsed.success) controls.configuration = parsed.data;
+    } catch {
+      /* Invalid optional native metadata must not block history. */
+    }
+  }
   const inspection = harnessInspectionSchema.safeParse(snapshot.inspection);
   if (inspection.success) controls.inspection = inspection.data;
   const harness = remoteHarnessDescriptorSchema.safeParse(snapshot.harness);
@@ -133,13 +156,13 @@ export function applyRemoteControls(entry: RemoteControlsEntry, view: ChThreadVi
     currentValue: external?.effectivePermissionModeId ?? "",
   });
   const selection =
-    external?.effectiveModel === undefined
+    configuration?.effectiveModel === undefined
       ? null
       : {
-          provider: external.harnessId,
-          model: external.effectiveModel.id,
-          ...(external.effectiveThinkingOptionId
-            ? { reasoningEffort: external.effectiveThinkingOptionId }
+          provider: configuration.owner === "external" ? configuration.harnessId : "codex",
+          model: configuration.effectiveModel.id,
+          ...(configuration.effectiveThinkingOptionId
+            ? { reasoningEffort: configuration.effectiveThinkingOptionId }
             : {}),
         };
   view.log.setProjection("modelSelection", { lastUsed: selection, next: selection });
@@ -155,14 +178,26 @@ export function externalConfiguration(entry: RemoteControlsEntry): ExternalThrea
   return configuration;
 }
 
+export function modelConfiguration(entry: RemoteControlsEntry) {
+  const configuration = entry.controls?.configuration;
+  if (!configuration)
+    throw new RpcError("remote/unsupported", "Remote model configuration is unavailable.");
+  return {
+    ...configuration,
+    harnessId: configuration.owner === "codex" ? "codex" : configuration.harnessId,
+  };
+}
+
 export function remoteModelCatalog(entry: RemoteControlsEntry) {
-  const configuration = externalConfiguration(entry);
+  const configuration = modelConfiguration(entry);
   const inspection = entry.controls?.inspection;
   if (!inspection || inspection.status !== "ready")
     throw new RpcError(
       "remote/unsupported",
       "Remote Harness model discovery is unavailable for this Thread.",
     );
+  if (configuration.owner === "codex" && !configuration.effectiveModel)
+    throw new RpcError("remote/unsupported", "Remote Codex has not reported its current model.");
   const group = groupOf(
     configuration.harnessId,
     remoteHarnessIdentity(entry)?.name ?? configuration.harnessId,
@@ -186,7 +221,7 @@ export async function selectRemoteModel(
   configure: (entry: RemoteControlsEntry, setting: RemoteConfigurationSetting) => Promise<void>,
   refresh: (id: string) => Promise<unknown>,
 ): Promise<Record<string, never>> {
-  const configuration = externalConfiguration(entry);
+  const configuration = modelConfiguration(entry);
   if (typeof request.provider !== "string" || request.provider !== configuration.harnessId)
     throw new RpcError(
       "session/model-unavailable",
@@ -208,7 +243,7 @@ export async function selectRemoteModel(
     if (typeof request.reasoningEffort === "string") {
       try {
         await refresh(id);
-        currentConfiguration = externalConfiguration(entry);
+        currentConfiguration = modelConfiguration(entry);
         refreshedAfterModel = true;
       } catch {
         throw new RpcError(

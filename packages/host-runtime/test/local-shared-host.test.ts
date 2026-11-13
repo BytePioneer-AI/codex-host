@@ -348,6 +348,15 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     pinned: [],
   });
   expect(readFileSync(file, "utf8")).toBe(text);
+  const migrated = JSON.parse(text);
+  migrated["app-server-project-id-by-legacy-project-id-by-host"] = {
+    [`local:${path.resolve(root)}`]: { hidden: "confirmed-native-project" },
+  };
+  writeFileSync(file, JSON.stringify(migrated));
+  expect((await readNativeWorkspaceSnapshot(environment)).projects).toEqual([
+    { id: "selected", name: "Project", rootPaths: ["/real/project"] },
+    { id: "hidden", name: "Hidden", rootPaths: ["/other"] },
+  ]);
   for (const invalid of ["{bad", "[]", "null", '"wrong"', '{"project-order":[123]}']) {
     writeFileSync(file, invalid);
     await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow();

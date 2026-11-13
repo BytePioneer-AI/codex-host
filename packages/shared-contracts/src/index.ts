@@ -428,3 +428,4 @@ export {
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   type RemoteSessionOperation,
 } from "./remote-sessions.js";
+export { desktopProjectDefinitions } from "./desktop-project-definitions.js";

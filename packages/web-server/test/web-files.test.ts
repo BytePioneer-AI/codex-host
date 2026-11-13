@@ -101,6 +101,26 @@ it("never leaves trailing whitespace or a reserved device name after a long name
   }
 });
 
+it("keeps the extension of a long name whose stem is only dots or whitespace", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-empty-stem-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("empty stem");
+  for (const [name, expected] of [
+    // The cut stem trims to nothing; the fallback cut was dots too, so the extension was lost.
+    [`${".".repeat(160)}.pdf`, "attachment.pdf"],
+    [`.${" ".repeat(200)}.txt`, "attachment.txt"],
+    [`${"\u00a0.".repeat(100)}.md`, "attachment.md"],
+    [`${". \u3000".repeat(60)}.${"e".repeat(31)}`, `attachment.${"e".repeat(31)}`],
+  ]) {
+    const result = await files.upload("draft", chunks(bytes), name);
+    assert.equal(result.file.name, expected, JSON.stringify(name));
+    const [stored] = await files.resolve("draft", [result.receiptId]);
+    assert.ok(stored);
+    assert.deepEqual(files.reference(stored.path), result.file);
+  }
+});
+
 it("stores every sanitized name again unchanged, within 160 bytes", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "web-files-idempotent-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -133,10 +153,13 @@ it("stores every sanitized name again unchanged, within 160 bytes", async (t) =>
     return (seed >>> 0) % limit;
   };
   const names: string[] = [];
-  for (const head of ["CON", "nul", "a", "报", " "])
+  const typed: string[] = [];
+  // Heads of only dots or whitespace leave an empty stem once a long name is cut.
+  for (const head of ["CON", "nul", "a", "报", " ", ".", "\u00a0.", ". "])
     for (const pad of ["", " ", "\u00a0", "."])
-      for (const length of [150, 155, 156, 157, 158, 159, 160, 161, 162])
-        names.push(`${head}${pad.repeat(Math.max(0, length - head.length - 4))}.txt`);
+      for (const length of [150, 155, 156, 157, 158, 159, 160, 161, 162, 200])
+        typed.push(`${head}${pad.repeat(Math.max(0, length - head.length - 4))}.txt`);
+  names.push(...typed);
   for (let index = 0; index < 300; index += 1) {
     let name = "";
     const count = 1 + random(120);
@@ -148,6 +171,8 @@ it("stores every sanitized name again unchanged, within 160 bytes", async (t) =>
     assert.ok(Buffer.byteLength(first.file.name) <= 160, JSON.stringify(name));
     const second = await files.upload("draft", chunks(bytes), first.file.name);
     assert.equal(second.file.name, first.file.name, JSON.stringify(name));
+    // A short extension survives sanitizing, however the stem is cut.
+    if (typed.includes(name)) assert.ok(first.file.name.endsWith(".txt"), JSON.stringify(name));
   }
 });
 

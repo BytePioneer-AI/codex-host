@@ -52,7 +52,9 @@ function fitName(clean: string, limit: number): string {
     truncateBytes(clean.slice(0, clean.length - kept.length), limit - Buffer.byteLength(kept)),
   );
   // A cut may end on a dot or space, which Windows drops and `trimName` removes.
-  return stem ? `${stem}${kept}` : trimName(truncateBytes(clean, limit));
+  if (stem) return `${stem}${kept}`;
+  // A stem of only dots or spaces trims away; name it so the extension survives.
+  return kept ? `attachment${kept}` : trimName(truncateBytes(clean, limit));
 }
 /** Idempotent: `reference()` accepts a stored object only when its name is already safe. */
 function safeName(name = "attachment"): string {

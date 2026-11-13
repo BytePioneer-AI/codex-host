@@ -1,6 +1,8 @@
 /** Row-leading fold control and capped ancestry guides, without shifting row identity. */
 import { IconChevronDownOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { CSSProperties } from "react";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
+import { useThreadTreeView } from "./ThreadTreeView.tsx";
 import type { SessionNode } from "../tree.ts";
 import css from "./ThreadTreeControls.module.css";
 
@@ -15,6 +17,9 @@ export function ThreadTreeToggle({
   toggle: () => void;
   t: WorkspaceBrowserProps["t"];
 }) {
+  const { rows } = useThreadTreeView();
+  const visibleDescendants =
+    expanded && node.tree && node.tree.depth < 3 ? rows(node.tree.children).length : 0;
   const count = node.tree?.descendantCount ?? 0;
   const activity = node.tree?.activity;
   const state = expanded
@@ -30,17 +35,14 @@ export function ThreadTreeToggle({
   const description = state === undefined ? undefined : t(`threadTree.${state}`);
   return (
     <>
-      {Array.from({ length: Math.min(node.tree?.depth ?? 0, 3) }, (_, level) => (
+      {visibleDescendants > 0 && (
         <span
-          key={level}
           aria-hidden="true"
           data-thread-guide
           className={css.guide}
-          style={{
-            insetInlineStart: `calc(var(--dsh-workspace-indent, 0px) + ${level * 16 + 1}px)`,
-          }}
+          style={{ "--dsh-thread-visible-descendants": visibleDescendants } as CSSProperties}
         />
-      ))}
+      )}
       {count > 0 && (
         <button
           type="button"
@@ -59,7 +61,7 @@ export function ThreadTreeToggle({
             className={`${css.chevron}${expanded ? "" : ` ${css.collapsed}`}`}
             data-thread-tree-activity={state}
           >
-            <IconChevronDownOutlineRegular size={14} />
+            <IconChevronDownOutlineRegular size={12} />
           </span>
         </button>
       )}

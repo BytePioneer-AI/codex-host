@@ -91,11 +91,10 @@ export function defaultProjections(): Record<string, unknown> {
     // publishes its supported intake; standalone still submits text only.
     attachmentInput: { enabled: false },
     imageLimits: {
-      maxImageBytes: 20971520,
+      maxImageBytes: 50 * 1024 * 1024,
       maxImagesPerMessage: 20,
-      maxMessageImageBytes: 209715200,
+      maxMessageImageBytes: 50 * 1024 * 1024,
       maxImagePixels: 64000000,
-      maxImageDimension: 8192,
       mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
     },
   };

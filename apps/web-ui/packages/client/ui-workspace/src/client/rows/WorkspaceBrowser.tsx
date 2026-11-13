@@ -439,16 +439,6 @@ function SessionTree({
     current === undefined || !workspaceReady
       ? undefined
       : owningGroupKey(workspaces, threadView.rootId(current));
-  useEffect(() => {
-    if (
-      current === undefined ||
-      currentGroup === undefined ||
-      threadView.isSidebarSelection(current) ||
-      Object.hasOwn(groupExpansion, currentGroup)
-    )
-      return;
-    setGroupExpanded(currentGroup, true);
-  }, [current, currentGroup, setGroupExpanded, groupExpansion, threadView]);
   const parents = useMemo(() => {
     if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
     const pathsByHost = new Map<string, Map<string, WorkspaceId>>();
@@ -494,13 +484,6 @@ function SessionTree({
       });
     return result;
   }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless]);
-  useEffect(() => {
-    for (let key = revealGroup; key !== undefined; key = parents.get(key)) {
-      if (groupExpansion[key] === false || (key === revealGroup && groupExpansion[key] !== true)) {
-        setGroupExpanded(key, true);
-      }
-    }
-  }, [groupExpansion, parents, revealGroup, setGroupExpanded]);
   const now = Date.now();
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;

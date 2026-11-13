@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { DataDir } from "../src/store.ts";
-import { readImageFile, WebImages, WEB_IMAGE_LIMITS } from "../src/web-images.ts";
+import { inspectImage, readImageFile, WebImages, WEB_IMAGE_LIMITS } from "../src/web-images.ts";
 import { ChAttachments } from "../src/ch-attachments.ts";
 
 import { PNG } from "./support/image.ts";
@@ -121,11 +121,40 @@ it("validates every image before any files are written", (t) => {
     ...image,
     data: "A".repeat(Math.ceil(WEB_IMAGE_LIMITS.maxImageBytes / 3) * 4 + 4),
   };
-  assert.throws(() => images.prepare([huge]), /20 MiB/u);
-  const dimensions = Buffer.from(PNG, "base64");
-  dimensions.writeUInt32BE(8193, 16);
-  assert.throws(() => images.prepare([{ ...image, data: dimensions.toString("base64") }]), /8192/u);
+  assert.throws(() => images.prepare([huge]), {
+    code: "session/attachment-invalid",
+    details: { reason: "IMAGE_TOO_LARGE" },
+  });
   assert.deepEqual(readdirSync(images.directory), []);
+});
+
+it("accepts tall and wide images within the pixel budget and enforces the 50 MiB boundary", () => {
+  for (const [width, height] of [
+    [1000, 30000],
+    [30000, 1000],
+    [8000, 8000],
+  ]) {
+    const bytes = Buffer.from(PNG, "base64");
+    bytes.writeUInt32BE(width, 16);
+    bytes.writeUInt32BE(height, 20);
+    const inspected = inspectImage(bytes);
+    assert.equal(inspected.ref.width, width);
+    assert.equal(inspected.ref.height, height);
+  }
+  const tooManyPixels = Buffer.from(PNG, "base64");
+  tooManyPixels.writeUInt32BE(8192, 16);
+  tooManyPixels.writeUInt32BE(8192, 20);
+  assert.throws(() => inspectImage(tooManyPixels), {
+    code: "session/attachment-invalid",
+    details: { reason: "IMAGE_TOO_MANY_PIXELS" },
+  });
+  const boundary = Buffer.alloc(50 * 1024 * 1024 + 1);
+  Buffer.from(PNG, "base64").copy(boundary);
+  assert.equal(inspectImage(boundary.subarray(0, -1)).ref.bytes, 50 * 1024 * 1024);
+  assert.throws(() => inspectImage(boundary), {
+    code: "session/attachment-invalid",
+    details: { reason: "IMAGE_TOO_LARGE" },
+  });
 });
 
 it("does not expose foreign paths, traversal, symlinks or changed object bytes", (t) => {

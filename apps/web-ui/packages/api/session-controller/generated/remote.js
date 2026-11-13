@@ -78,7 +78,6 @@ const _deepseek_ai_dsh_api_session_controller_session_control_result$schema = ()
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({
@@ -296,7 +295,6 @@ const _deepseek_ai_dsh_api_session_controller_session_follow_result$schema = () 
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({
@@ -513,7 +511,6 @@ const _deepseek_ai_dsh_api_session_controller_session_list_result$schema = () =>
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({
@@ -742,7 +739,6 @@ const _deepseek_ai_dsh_api_session_controller_session_projections_result$schema 
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({

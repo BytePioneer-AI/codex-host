@@ -18,11 +18,10 @@ import type { DataDir } from "./store.ts";
 import { RpcError } from "./transport.ts";
 
 export const WEB_IMAGE_LIMITS = {
-  maxImageBytes: 20 * 1024 * 1024,
+  maxImageBytes: 50 * 1024 * 1024,
   maxImagesPerMessage: 20,
-  maxMessageImageBytes: 32 * 1024 * 1024,
+  maxMessageImageBytes: 50 * 1024 * 1024,
   maxImagePixels: 64_000_000,
-  maxImageDimension: 8192,
   mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
 };
 export const WEB_IMAGE_INPUT = { enabled: true, imagesOnly: true };
@@ -63,7 +62,7 @@ function digest(bytes: Buffer): string {
 export function inspectImage(bytes: Buffer, mediaType?: string): PreparedImage {
   if (!bytes.length) return invalid("INVALID_IMAGE", "Image is empty.");
   if (bytes.length > WEB_IMAGE_LIMITS.maxImageBytes)
-    return invalid("IMAGE_TOO_LARGE", "Image exceeds 20 MiB.");
+    return invalid("IMAGE_TOO_LARGE", "Image exceeds 50 MiB.");
   // Reject non-raster formats before invoking any format-specific header parser.
   const raster =
     bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
@@ -86,8 +85,6 @@ export function inspectImage(bytes: Buffer, mediaType?: string): PreparedImage {
   const { width, height } = size;
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0)
     return invalid("INVALID_IMAGE", "Image dimensions are invalid.");
-  if (width > WEB_IMAGE_LIMITS.maxImageDimension || height > WEB_IMAGE_LIMITS.maxImageDimension)
-    return invalid("IMAGE_DIMENSION_TOO_LARGE", "Image dimensions exceed 8192 pixels.");
   if (width * height > WEB_IMAGE_LIMITS.maxImagePixels)
     return invalid("IMAGE_TOO_MANY_PIXELS", "Image exceeds 64 million pixels.");
   const leaf = `${digest(bytes)}.${size.type}`;
@@ -135,8 +132,9 @@ export function readImageFile(path: string): Buffer {
       throw new Error("Image symlink refused");
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const before = fstatSync(fd);
-    if (!before.isFile() || before.size > WEB_IMAGE_LIMITS.maxImageBytes)
-      throw new Error("Invalid image file");
+    if (!before.isFile()) throw new Error("Invalid image file");
+    if (before.size > WEB_IMAGE_LIMITS.maxImageBytes)
+      return invalid("IMAGE_TOO_LARGE", "Image exceeds 50 MiB.");
     // A growing file cannot make readFileSync allocate an unbounded buffer.
     const buffer = Buffer.alloc(before.size + 1);
     let length = 0;
@@ -149,7 +147,8 @@ export function readImageFile(path: string): Buffer {
     if (length !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs)
       throw new Error("Image changed while reading");
     return buffer.subarray(0, length);
-  } catch {
+  } catch (error) {
+    if (error instanceof RpcError && error.code === "session/attachment-invalid") throw error;
     throw new RpcError(
       "session/attachment-not-found",
       "The referenced local image is unavailable.",
@@ -181,7 +180,7 @@ export class WebImages {
     if (uploaded.length > WEB_IMAGE_LIMITS.maxImagesPerMessage)
       return invalid("TOO_MANY_IMAGES", "At most 20 images can be attached.");
     if (total > WEB_IMAGE_LIMITS.maxMessageImageBytes)
-      return invalid("IMAGES_TOO_LARGE", "Images exceed 32 MiB in one message.");
+      return invalid("IMAGES_TOO_LARGE", "Images exceed 50 MiB in one message.");
     for (const part of content) {
       if (!part || typeof part !== "object")
         return invalid("INVALID_IMAGE", "Invalid prompt content.");
@@ -199,7 +198,7 @@ export class WebImages {
       if (!WEB_IMAGE_LIMITS.mediaTypes.includes(part.mediaType) || typeof part.data !== "string")
         return invalid("INVALID_IMAGE", "Unsupported image encoding or media type.");
       if (part.data.length > Math.ceil(WEB_IMAGE_LIMITS.maxImageBytes / 3) * 4)
-        return invalid("IMAGE_TOO_LARGE", "Image exceeds 20 MiB.");
+        return invalid("IMAGE_TOO_LARGE", "Image exceeds 50 MiB.");
       if (
         !part.data.length ||
         part.data.length % 4 !== 0 ||
@@ -211,7 +210,7 @@ export class WebImages {
         return invalid("INVALID_IMAGE", "Image must use canonical base64.");
       total += bytes.length;
       if (total > WEB_IMAGE_LIMITS.maxMessageImageBytes)
-        return invalid("IMAGES_TOO_LARGE", "Images exceed 32 MiB in one message.");
+        return invalid("IMAGES_TOO_LARGE", "Images exceed 50 MiB in one message.");
       images.push(inspectImage(bytes, part.mediaType));
     }
     if (!images.length) return texts;
@@ -281,7 +280,14 @@ export class WebImages {
       const image = inspectImage(readImageFile(join(this.directory, leaf)));
       if (image.leaf !== leaf) throw new Error("Image content changed");
       return image;
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof RpcError &&
+        "reason" in error.details &&
+        (error.details.reason === "IMAGE_TOO_LARGE" ||
+          error.details.reason === "IMAGE_TOO_MANY_PIXELS")
+      )
+        throw error;
       throw new RpcError("session/attachment-not-found", "The saved Web image is unavailable.");
     }
   }

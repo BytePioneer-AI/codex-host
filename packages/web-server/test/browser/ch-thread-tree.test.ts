@@ -446,7 +446,7 @@ for (const width of [1280, 390]) {
 }
 
 it(
-  "deep links, search and notification navigation reveal workspace path and Thread ancestors",
+  "deep links, search and notification navigation open the Thread without opening its workspace folders",
   { timeout: 60_000 },
   async (t) => {
     const { page, url } = await threadTreeBrowser(t, 390);
@@ -466,13 +466,18 @@ it(
         .locator('[data-conversation-session="workspace-grandchild"] [data-composer-input]')
         .waitFor();
       await openSidebar(page);
-      for (const row of [
-        section,
-        ancestor,
-        workspace,
-        threadRow(page, "workspace-root"),
-        threadRow(page, "workspace-child"),
-      ])
+      assert.equal(
+        await section.getAttribute("aria-expanded"),
+        "false",
+        "navigation does not open the workspaces section or its folders",
+      );
+      assert.equal(await workspace.count(), 0);
+      assert.equal(await page.locator('[data-row-key="session:workspace-root"]').count(), 0);
+      // The Thread ancestors are remembered, so the subtree is open once the user opens the folders.
+      await section.click();
+      if ((await ancestor.getAttribute("aria-expanded")) !== "true") await ancestor.click();
+      if ((await workspace.getAttribute("aria-expanded")) !== "true") await workspace.click();
+      for (const row of [threadRow(page, "workspace-root"), threadRow(page, "workspace-child")])
         assert.equal(await row.getAttribute("aria-expanded"), "true");
       await page.locator('[data-row-key="session:workspace-grandchild"]').waitFor();
     };

@@ -100,7 +100,7 @@ export class WebFiles {
       for await (const chunk of chunks) {
         length += chunk.byteLength;
         if (length > WEB_IMAGE_LIMITS.maxImageBytes)
-          invalid("IMAGE_TOO_LARGE", "Image exceeds 20 MiB.");
+          invalid("IMAGE_TOO_LARGE", "Image exceeds 50 MiB.");
         parts.push(Buffer.from(chunk));
       }
       const image = inspectImage(Buffer.concat(parts), imageMediaType);

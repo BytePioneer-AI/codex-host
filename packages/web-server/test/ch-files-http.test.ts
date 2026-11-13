@@ -79,7 +79,7 @@ it("raw file uploads retain auth/origin checks without file quotas, stay draft-o
     415,
   );
   // Both declared-length and chunked uploads exceed the old 64 MiB limit and
-  // bypass the unrelated 48 MiB JSON RPC body gate without aggregating bytes.
+  // bypass the unrelated 72 MiB JSON RPC body gate without aggregating bytes.
   for (const declared of [true, false]) {
     const largeEndpoint = new URL(endpoint);
     largeEndpoint.searchParams.set("name", "large.bin");
@@ -154,7 +154,7 @@ it("raw file uploads retain auth/origin checks without file quotas, stay draft-o
       request.on("error", reject);
       void (async () => {
         const block = Buffer.alloc(1024 * 1024);
-        for (let i = 0; i < 20; i++) if (!request.write(block)) await once(request, "drain");
+        for (let i = 0; i < 50; i++) if (!request.write(block)) await once(request, "drain");
         request.write(Buffer.alloc(1));
       })().catch(reject);
     },

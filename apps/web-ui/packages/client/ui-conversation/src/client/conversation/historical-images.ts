@@ -118,7 +118,7 @@ export class HistoricalImageCache {
     return entry.binding.session
       .readAttachment(attachment.attachmentId)
       .then((result) => {
-        if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+        if (!result.ok) throw Object.assign(new Error(result.error.message), result.error);
         this.assertLive(key, entry);
         let url: string;
         if (typeof URL.createObjectURL !== "function") {

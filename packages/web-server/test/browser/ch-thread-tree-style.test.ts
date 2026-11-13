@@ -37,7 +37,7 @@ async function chooseInMenu(page: Page, name: string) {
   await page.getByRole("button", { name: "View options", exact: true }).click();
   const menu = page.getByRole("menu");
   const choice = menu.getByRole("menuitem", { name, exact: true });
-  await expect(menu.getByText("Collapsed session trees", { exact: true })).toBeVisible();
+  await expect(menu.getByText("Session count display", { exact: true })).toBeVisible();
   await expect(menu.getByRole("radiogroup")).toHaveCount(0);
   await expect(
     menu.getByRole("menuitem", { name: "Compact", exact: true }).locator("svg"),
@@ -94,7 +94,7 @@ for (const width of [1280, 390]) {
       await parent.locator("[data-thread-summary]").click();
       await prompt.waitFor();
       assert.equal(await prompt.count(), 1);
-      await expect(prompt).toHaveAccessibleName("Collapsed session trees");
+      await expect(prompt).toHaveAccessibleName("Choose how to display session counts");
       await expect(prompt.getByText("Count and status", { exact: true })).toBeVisible();
       await expect(prompt.getByText("Icon status ring", { exact: true })).toBeVisible();
       const choices = prompt.getByRole("radiogroup");
@@ -260,7 +260,7 @@ for (const width of [1280, 390]) {
         await page.getByRole("button", { name: "Settings", exact: true }).click();
         await page.getByRole("button", { name: "General", exact: true }).click();
         const styles = page.getByRole("radiogroup", {
-          name: "Collapsed session trees",
+          name: "Session count display",
           exact: true,
         });
         await styles.scrollIntoViewIfNeeded();
@@ -427,7 +427,7 @@ it(
     await page.getByRole("button", { name: "General", exact: true }).click();
     const display = page.getByRole("region", { name: "Display & language", exact: true });
     const styles = display.getByRole("radiogroup", {
-      name: "Collapsed session trees",
+      name: "Session count display",
       exact: true,
     });
     await expect(styles).toHaveAccessibleDescription(

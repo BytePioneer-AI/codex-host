@@ -125,7 +125,7 @@
 }
 
 .hint {
-  margin: 8px 0 0;
+  margin: 0 0 8px;
   color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
   line-height: 1.5;

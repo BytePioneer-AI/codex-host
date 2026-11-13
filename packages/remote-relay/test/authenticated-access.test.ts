@@ -75,8 +75,7 @@ it("binds authentication reports to live non-ACME connections owned by the signe
     expect(authenticated()).toHaveLength(0);
     await push(firstPeer, id);
     await push(firstPeer, id);
-    await delay(20);
-    expect(authenticated()).toHaveLength(1);
+    await expect.poll(() => authenticated().length).toBe(1);
     expect(authenticated()[0]).toMatchObject({
       id,
       ip: "127.0.0.1",

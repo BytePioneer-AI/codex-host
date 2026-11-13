@@ -70,6 +70,7 @@ it(
     const requests: string[] = [];
     const proxy = createServer();
     proxy.on("connect", (request, socket) => {
+      socket.on("error", () => {});
       requests.push(request.url ?? "");
       socket.end("HTTP/1.1 502 Test proxy\r\nContent-Length: 0\r\n\r\n");
     });

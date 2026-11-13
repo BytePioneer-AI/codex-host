@@ -224,6 +224,7 @@ import type {
   ThreadSendInput,
   ThreadSendResult,
 } from "./delegation-types.js";
+import { exportDelegationThread, type ThreadExportInput } from "./delegation-thread-export.js";
 import { projectDelegationThreadSnapshot } from "./delegation-snapshot.js";
 import { rememberNativeListSeconds } from "./delegation-thread-list-merge.js";
 import {
@@ -935,6 +936,12 @@ export class AppServerHost {
         this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
       inspectOfficial: (input) => this.#inspectOfficialDelegationTarget(input),
       readOfficial: (input) => this.#readOfficialDelegationThread(input),
+      exportOfficial: async (input) =>
+        exportDelegationThread(
+          input,
+          await this.#readFullOfficialDelegationThread(input.threadId),
+          this.#options.environment ?? process.env,
+        ),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
       startOfficial: (input) => this.#startOfficialDelegation(input),
@@ -972,6 +979,8 @@ export class AppServerHost {
         cancel: (input) =>
           this.#waitForPlugins().then(() => this.#delegationCoordinator.cancel(input)),
         read: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.read(input)),
+        exportThread: (input: ThreadExportInput) =>
+          this.#waitForPlugins().then(() => this.#delegationCoordinator.exportThread(input)),
         wait: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.wait(input)),
         list: (input) => this.#waitForPlugins().then(() => this.#delegationCoordinator.list(input)),
         canHandleStart: (input) => this.#canHandleDelegationStart(input),
@@ -2517,9 +2526,9 @@ export class AppServerHost {
     return { threadId: input.threadId, turnId, harnessId: "codex", cancelled: true };
   }
 
-  async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
+  async #readFullOfficialDelegationThread(threadId: string) {
     const response = await this.#requestOfficial("thread/read", {
-      threadId: input.threadId,
+      threadId,
       includeTurns: true,
     });
     if (isRecord(response.error)) throw officialThreadReadError(response.error);
@@ -2531,14 +2540,15 @@ export class AppServerHost {
       ? thread.turns.filter((turn): turn is JsonObject => isRecord(turn))
       : [];
     const running =
-      this.#activeOfficialTurns.has(input.threadId) ||
+      this.#activeOfficialTurns.has(threadId) ||
       (isRecord(thread.status) && thread.status.type === "active");
+    return { threadId, harnessId: "codex" as const, thread, turns, running };
+  }
+
+  async #readOfficialDelegationThread(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
+    const source = await this.#readFullOfficialDelegationThread(input.threadId);
     const snapshot = projectDelegationThreadSnapshot({
-      threadId: input.threadId,
-      harnessId: "codex",
-      thread,
-      turns,
-      running,
+      ...source,
       view: input.view,
       ...(input.cursor ? { cursor: input.cursor } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),

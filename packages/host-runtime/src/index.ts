@@ -59,6 +59,7 @@ export type {
   ThreadReadInput,
   ThreadWaitInput,
 } from "./delegation-types.js";
+export type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
 export { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
 export {

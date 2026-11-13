@@ -108,6 +108,7 @@ export function compactDelegationOutput(
     case "host info":
     case "project list":
     case "thread file":
+    case "thread export":
     case "harness list":
       return body;
     case "harness inspect":

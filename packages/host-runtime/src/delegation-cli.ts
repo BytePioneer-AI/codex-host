@@ -512,6 +512,29 @@ export async function runDelegationCli(input: {
       );
       return 0;
     }
+    if (group === "thread" && command === "export") {
+      rejectUnknown(parsed, ["--out"]);
+      const thread = parsed.positionals[0];
+      if (parsed.positionals.length !== 1 || !thread)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread export requires one Thread identifier",
+        );
+      const out = value(parsed, "--out");
+      writeResult(
+        "thread export",
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/export",
+          body: {
+            ...readThreadReference(thread),
+            ...(out ? { out: path.resolve(process.cwd(), out) } : {}),
+          },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
+      );
+      return 0;
+    }
     if (group === "thread" && command === "cancel") {
       rejectUnknown(parsed, []);
       if (parsed.positionals.length !== 1) {

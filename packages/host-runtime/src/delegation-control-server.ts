@@ -17,6 +17,7 @@ import {
 } from "./delegation-types.js";
 import { matchesBearerToken } from "./bearer-token.js";
 import type { HostInventory } from "./host-inventory.js";
+import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { readThreadResultFile } from "./thread-result-file.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
@@ -153,6 +154,13 @@ export async function routeDelegationRequest(
         : sendWithWatch(handlers.api, watchApi(handlers.watchApi), body);
     case "/v1/thread/cancel":
       return handlers.api.cancel(body as unknown as ThreadCancelInput);
+    case "/v1/thread/export": {
+      const input = body as unknown as ThreadExportInput;
+      validateThreadExportInput(input);
+      if (!handlers.api.exportThread)
+        throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
+      return handlers.api.exportThread(input);
+    }
     case "/v1/thread/read":
       return handlers.api.read(body as unknown as ThreadReadInput);
     case "/v1/thread/wait":

@@ -22,6 +22,7 @@ import { DelegationWatchService, type ClientEventSink } from "./delegation-watch
 import type { DelegationWatchStore } from "./delegation-watch-store.js";
 import { clientOrigin, originClientName } from "./external-client-origin.js";
 import { interruptAndSend } from "./delegation-interrupt-send.js";
+import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
 
 const REF_CURSOR_PREFIX = "ref:";
@@ -167,6 +168,14 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       return this.#remoteRead(read);
     }
     return (await this.#registrationForThread(read.threadId)).read(read);
+  }
+
+  async exportThread(input: ThreadExportInput) {
+    validateThreadExportInput(input);
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!registration.exportThread)
+      throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
+    return registration.exportThread(input);
   }
 
   async wait(input: ThreadWaitInput) {

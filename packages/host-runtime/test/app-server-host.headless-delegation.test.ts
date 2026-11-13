@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -11,7 +11,7 @@ import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
 import { JsonLineCollector } from "./app-server-host-fixture.js";
 
-it("initializes a headless client's first default-model Codex delegation", async () => {
+it("initializes a headless client's first default-model Codex delegation and exports its full Thread", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "headless-delegation-"));
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -21,6 +21,17 @@ it("initializes a headless client's first default-model Codex delegation", async
   const requests = new JsonLineCollector(stdin);
   const methods: string[] = [];
   let initialized = false;
+  const turns = [
+    {
+      id: "native-turn",
+      status: "inProgress",
+      items: [
+        { type: "reasoning", summary: ["native reasoning"] },
+        { type: "commandExecution", command: "ls", aggregatedOutput: "native tool output" },
+      ],
+    },
+  ];
+  const threadReads: unknown[] = [];
   stdin.on("data", () => {
     for (const request of requests.messages.splice(0)) {
       methods.push(String(request.method));
@@ -33,6 +44,19 @@ it("initializes a headless client's first default-model Codex delegation", async
         response = { error: { code: -32002, message: "Not initialized" } };
       } else if (request.method === "thread/start") {
         response = { result: { thread: { id: "native-child" } } };
+      } else if (request.method === "thread/read") {
+        threadReads.push(request.params);
+        response = {
+          result: {
+            thread: {
+              id: "native-child",
+              cwd: directory,
+              title: "Native",
+              status: { type: "active" },
+              turns,
+            },
+          },
+        };
       } else if (request.method === "turn/start") {
         response = { result: { turn: { id: "native-turn" } } };
       } else {
@@ -96,6 +120,23 @@ it("initializes a headless client's first default-model Codex delegation", async
       turnId: "native-turn",
       status: "running",
     });
+    const exported = await api.exportThread?.({ threadId: "native-child" });
+    expect(exported).toMatchObject({
+      threadId: "native-child",
+      harnessId: "codex",
+      turns: 1,
+      complete: false,
+    });
+    if (!exported) throw new Error("Export unavailable");
+    const document = JSON.parse(readFileSync(exported.path, "utf8"));
+    expect(document.thread).toMatchObject({
+      id: "native-child",
+      harnessId: "codex",
+      cwd: directory,
+      title: "Native",
+    });
+    expect(document.turns).toEqual(turns);
+    expect(threadReads).toContainEqual({ threadId: "native-child", includeTurns: true });
     expect(methods.indexOf("initialize")).toBeLessThan(methods.indexOf("thread/start"));
     expect(methods.filter((method) => method === "initialize")).toHaveLength(1);
   } finally {

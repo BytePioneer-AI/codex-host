@@ -1,3 +1,4 @@
+import type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
@@ -273,6 +274,8 @@ export interface DelegationControlApi {
   send(input: ThreadSendInput): Promise<ThreadSendResult>;
   cancel(input: ThreadCancelInput): Promise<ThreadCancelResult>;
   read(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
+  /** Optional for older control registrations that do not support debug exports. */
+  exportThread?(input: ThreadExportInput): Promise<ThreadExportResult>;
   wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }>;
   list(input: ThreadListInput): Promise<DelegationThreadListResult>;
 }

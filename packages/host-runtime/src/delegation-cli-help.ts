@@ -58,6 +58,8 @@ The messages view pages visible user/Agent messages, oldest first. Default limit
 hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
 Compact messages output contains only the message page and status; compact result output includes the latest nonempty progress while running.
 Text output shows a Thread/Harness/status header, optional Turn and progress, then --- and verbatim result text; messages are separate role-labelled paragraphs. Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included in these formats.`,
+  "thread export": `codexhost thread export <thread> [--out <path>] [--format json|compact|text]
+Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.`,
   "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact|text]
 Wait until the Thread is terminal or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
 timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
@@ -101,6 +103,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--watch true]
   codexhost thread cancel <thread>
   codexhost thread read <thread>
+  codexhost thread export <thread> (rarely needed)
   codexhost thread wait <thread>
   codexhost thread watch <thread>
   codexhost thread watches

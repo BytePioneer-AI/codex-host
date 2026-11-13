@@ -176,6 +176,23 @@ const TOOLS: Tool[] = [
     }),
   },
   {
+    name: "thread_export",
+    description:
+      "Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread,
+        out: string("Output file on this Host; defaults to its data directory under exports/"),
+      },
+      required: ["thread"],
+    },
+    call: (args) => ({
+      route: "/v1/thread/export",
+      body: { threadId: threadId(args), ...pick(args, ["out"]) },
+    }),
+  },
+  {
     name: "thread_file_read",
     description:
       "Read a binary result file linked in a Thread's latest final report, inside that Thread's workspace. Returns base64 chunks, never a public URL. Save the tool response to a file (write_to_file when supported), decode data on your computer, then attach the real file to the user's original conversation. Continue with nextOffset and the same revision until eof=true; do not paste base64 into chat. Fetch final deliverables only unless the user asks for sources.",

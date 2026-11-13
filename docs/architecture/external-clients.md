@@ -26,6 +26,20 @@ codexhost thread watches --format text
 
 `client` 和 `events` 不支持 `--format text`，执行前返回明确错误，不自动回退。所有格式的错误都保持 JSON 写入 stderr、退出码 1；成功输出写入 stdout、退出码 0，任务自身的失败状态不改变此约定。HTTP / MCP 的结构化响应不受 CLI text 格式影响。
 
+### 调试导出（很少使用）
+
+```sh
+codexhost thread export <thread> [--out <path>] [--format json|compact|text]
+```
+
+Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.
+
+导出文件为 `{exportedAt, thread, turns}`，保留 Host 当前持有的元数据与全部 Turns/items，按原始顺序，不过滤或分页。官方 Codex 使用 `thread/read(includeTurns: true)`；外部 Harness 使用现有 Host 历史投影，活动 Turn 使用完整物化快照。不会读取各 Harness 的原始日志；原生接口未提供的字段保持缺省。
+
+默认写入 `<数据目录>/exports/<threadId>-<UTC 时间戳>.json`（`CODEXHOST_DATA_DIR`，默认 `~/.codexhost`）。`--out` 相对路径由 CLI 按调用方 cwd 解析。自动创建目录，以 0600 临时文件加 rename 原子写入；指定文件存在时直接覆盖。Windows 权限依赖数据目录 ACL。
+
+所有格式只返回 `{threadId, harnessId, path, bytes, turns, complete}`，`text` 为键值行，不返回会话正文。`turns` 是数量；`complete=false` 表示会话仍在运行，文件是导出时的快照，而非原生历史完整性的保证。同一操作也提供给 HTTP `POST /v1/thread/export`（`threadId`、可选 `out`）和 MCP `thread_export(thread, out?)`；文件路径均位于接收请求的 Host，HTTP/MCP 的相对路径相对该 Host 的 cwd。不能跨远程 Host 导出；返回与其他非读取操作相同的错误。
+
 ## 登记与认证
 
 - `codexhost client add <name>` 生成 `chc_` 开头的随机令牌并只输出一次；`client list` 列出名称与登记时间；`client remove` 立即吊销。
@@ -67,7 +81,7 @@ codexhost thread watches --format text
 
 ## MCP
 
-外部监听在 `/mcp` 以 Streamable HTTP 提供 MCP：每个 POST 携带一条 JSON-RPC 消息并以 JSON 应答；`GET` 返回 405（不提供服务端主动流，推送用 `/v1/events`），`DELETE` 视为结束会话。工具与 CLI 一一对应：`harness_list`、`harness_inspect`、`host_info`、`project_list`、`delegate_start`、`thread_read`、`thread_file_read`、`thread_wait`（最多 60 秒）、`thread_list`、`thread_send`、`thread_cancel`、`thread_watch`、`thread_watches`、`events_poll`。工具结果同时以文本和 `structuredContent` 返回 CLI 的 JSON；委派错误作为 `isError` 结果返回相同的错误代码。实现不依赖 MCP SDK。
+外部监听在 `/mcp` 以 Streamable HTTP 提供 MCP：每个 POST 携带一条 JSON-RPC 消息并以 JSON 应答；`GET` 返回 405（不提供服务端主动流，推送用 `/v1/events`），`DELETE` 视为结束会话。工具与 CLI 一一对应：`harness_list`、`harness_inspect`、`host_info`、`project_list`、`delegate_start`、`thread_read`、`thread_export`、`thread_file_read`、`thread_wait`（最多 60 秒）、`thread_list`、`thread_send`、`thread_cancel`、`thread_watch`、`thread_watches`、`events_poll`。工具结果同时以文本和 `structuredContent` 返回 CLI 的 JSON；委派错误作为 `isError` 结果返回相同的错误代码。实现不依赖 MCP SDK。
 
 ### 设备与项目发现
 

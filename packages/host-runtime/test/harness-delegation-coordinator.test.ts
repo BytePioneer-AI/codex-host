@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -7,11 +7,12 @@ import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
-import type { ExternalHarnessId } from "@codexhost/protocol-core";
+import { CodexTurnProjector, type ExternalHarnessId } from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
   harnessModelCatalogSchema,
   hostThreadIdSchema,
+  hostItemIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -812,6 +813,90 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
       ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND", message: "Thread was not found" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("exports full live and historical Host items without changing the normal read view", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "work",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      if (!thread) throw new Error("delegated Thread was not registered");
+      const turnId = hostTurnIdSchema.parse(started.turnId);
+      const projector = new CodexTurnProjector({
+        threadId: thread.id,
+        turnId,
+        cwd: thread.cwd,
+        startedAtMs: Date.now(),
+        initialInput: [{ type: "text", text: "work" }],
+      });
+      projector.project({ type: "turn.started", turnId });
+      projector.project({
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: hostItemIdSchema.parse("r1"), text: "live reasoning" },
+      });
+      projector.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "commandExecution",
+          itemId: hostItemIdSchema.parse("c1"),
+          command: "ls",
+          output: "live tool output",
+        },
+      });
+      thread.projectedTurns.set(turnId, { projector });
+      thread.turns = [
+        {
+          id: "older-turn",
+          status: "completed",
+          items: [
+            {
+              type: "mcpToolCall",
+              tool: "historical-tool",
+              result: { content: "historical output" },
+            },
+          ],
+        },
+      ];
+      const live = await value.coordinator.exportThread({
+        threadId: thread.id,
+        out: path.join(value.directory, "live.json"),
+      });
+      expect(live).toMatchObject({ harnessId: "pi", turns: 2, complete: false });
+      const document = JSON.parse(await readFile(live.path, "utf8"));
+      expect(document.turns[0]).toEqual(thread.turns[0]);
+      expect(document.turns[1]).toEqual(projector.snapshotTurn());
+      expect(document.turns[1].items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "reasoning", summary: ["live reasoning"] }),
+          expect.objectContaining({
+            type: "commandExecution",
+            command: "ls",
+            aggregatedOutput: "live tool output",
+          }),
+        ]),
+      );
+      expect(
+        await value.coordinator.read({ threadId: thread.id, view: "messages" }),
+      ).not.toHaveProperty("turns");
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.turns.push({ ...projector.snapshotTurn(), status: "completed" });
+      vi.spyOn(value.runtime, "refresh").mockResolvedValue(null);
+      const complete = await value.coordinator.exportThread({
+        threadId: thread.id,
+        out: path.join(value.directory, "complete.json"),
+      });
+      expect(complete.complete).toBe(true);
+      expect(JSON.parse(await readFile(complete.path, "utf8")).turns).toEqual(thread.turns);
     } finally {
       await value.close();
     }

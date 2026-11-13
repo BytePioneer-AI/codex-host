@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -7,6 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DelegationControlError, type DelegationControlApi } from "../src/delegation-types.js";
+import { exportDelegationThread, type ThreadExportInput } from "../src/delegation-thread-export.js";
 import { ClientEventLog } from "../src/external-client-events.js";
 import { externalClientMcp } from "../src/external-client-mcp.js";
 import { externalClientRouter } from "../src/external-client-routes.js";
@@ -22,6 +23,18 @@ describe("external client MCP endpoint", () => {
   let server: ExternalClientServer | undefined;
   let token: string;
   const api = {
+    exportThread: (input: ThreadExportInput) =>
+      exportDelegationThread(
+        input,
+        {
+          threadId: input.threadId,
+          harnessId: "codex",
+          thread: { id: input.threadId, title: "Native export" },
+          turns: [{ id: "turn-1", items: [{ type: "reasoning", text: "native-reasoning" }] }],
+          running: false,
+        },
+        { CODEXHOST_DATA_DIR: directory },
+      ),
     read: vi.fn(async () => ({
       threadId: "t1",
       harnessId: "codex",
@@ -100,6 +113,7 @@ describe("external client MCP endpoint", () => {
       "harness_inspect",
       "delegate_start",
       "thread_read",
+      "thread_export",
       "thread_file_read",
       "thread_wait",
       "thread_list",
@@ -171,6 +185,39 @@ describe("external client MCP endpoint", () => {
       structuredContent: { events: [{ threadId: "t0", outcome: "completed" }] },
     });
     await client.close();
+  });
+
+  it("exports to a Host file through authenticated HTTP and MCP, returning only metadata", async () => {
+    const client = await connect();
+    try {
+      const result = await client.callTool({
+        name: "thread_export",
+        arguments: { thread: "codex://threads/t1" },
+      });
+      expect(result).toMatchObject({
+        isError: false,
+        structuredContent: { threadId: "t1", harnessId: "codex", turns: 1, complete: true },
+      });
+      expect(JSON.stringify(result)).not.toContain("native-reasoning");
+      const summary = result.structuredContent as { path: string };
+      expect(JSON.parse(await readFile(summary.path, "utf8")).turns[0].items[0].type).toBe(
+        "reasoning",
+      );
+      const out = path.join(directory, "http-export.json");
+      await writeFile(out, "old content");
+      const response = await fetch(new URL("/v1/thread/export", server?.endpoint), {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ threadId: "t1", out }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({ threadId: "t1", path: out, complete: true });
+      expect(JSON.stringify(body)).not.toContain("native-reasoning");
+      expect(JSON.parse(await readFile(out, "utf8")).turns).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
   });
 
   it("transfers linked result bytes through the authenticated MCP endpoint", async () => {

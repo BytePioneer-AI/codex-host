@@ -54,6 +54,7 @@ export function assertDelegationTextCommand(command: string): void {
     case "host info":
     case "project list":
     case "thread file":
+    case "thread export":
     case "harness list":
     case "harness inspect":
     case "delegate start":

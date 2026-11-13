@@ -18,7 +18,7 @@ it("creates a valid self-signed P-256 TLS-ALPN leaf with only SAN and critical a
   const pem = await createAlpnCertificate(hostname, authorization, key);
   const after = Date.now();
   const cert = new X509Certificate(pem);
-  const parsed = new ParsedCertificate(pem);
+  const parsed = new ParsedCertificate(pem.toString("utf8"));
 
   assert.equal(cert.ca, false);
   assert.equal(parsed.getExtension(BasicConstraintsExtension), null);

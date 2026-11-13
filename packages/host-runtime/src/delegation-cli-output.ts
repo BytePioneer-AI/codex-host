@@ -1,4 +1,5 @@
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
+import type { DelegationWorktree } from "./delegation-cli-worktree.js";
 import {
   DelegationControlError,
   type DelegationStartResult,
@@ -112,13 +113,14 @@ export function compactDelegationOutput(
     case "harness inspect":
       return inspectOutput(body as HarnessInspectResult);
     case "delegate start": {
-      const result = body as DelegationStartResult;
+      const result = body as DelegationStartResult & { worktree?: DelegationWorktree };
       const effective = result.configuration?.effective;
       return {
         thread: result.deepLink,
         harnessId: result.harnessId,
         status: result.status,
         ...(result.cwd ? { cwd: result.cwd } : {}),
+        ...(result.worktree ? { worktree: result.worktree } : {}),
         ...(result.parentThreadId
           ? {
               parent: targetLink(result.parentThreadId),

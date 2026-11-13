@@ -25,12 +25,15 @@ List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact]
 Read available Models, native defaults, Thinking options, and configuration capabilities.
 Use the returned Model and Thinking IDs for explicit selections.`,
-  "delegate start": `codexhost delegate start --harness <id> --task <text> [--task-name <name>] [--cwd <path>] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact]
+  "delegate start": `codexhost delegate start --harness <id> --task <text> [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact]
 Create an independent child Thread, submit the task, and return immediately.
 --task-name supplies a short subtask name (1-120 characters); otherwise the first task line is used.
 The child title is "subtask name · parent title", fixed at creation; renaming the parent does not rename existing children.
 Omit --model and --thinking to use the Harness native defaults.
 --cwd overrides the child workspace; a relative path resolves against the caller process cwd. Otherwise use the resolved parent Thread workspace, then the Host Runtime process cwd.
+--worktree creates a new branch and workspace at <main-repository>.worktrees/<sanitized-branch>, then uses it as the child cwd. The source is --cwd, or the caller process cwd when omitted (not the parent Thread workspace).
+--base requires --worktree and defaults to that source checkout's HEAD commit, including detached HEAD. JSON and compact responses add worktree {path, branch, base}, where base is the resolved commit SHA. Existing branches/directories, merges, rebases, unmerged indexes, non-Git cwd and unresolved bases are rejected. Uncommitted source changes are not copied.
+No automatic merge or cleanup is performed; --request-id does not reuse an existing worktree or branch. If creation or the Runtime request fails after creating artifacts, the error reports any retained worktree/branch in details.worktree (worktreeRetained=true); a failed response can still mean the child started.
 --parent-thread overrides caller inference. PARENT_THREAD_AMBIGUOUS requires an explicit parent.
 Reuse --request-id for an idempotent retry. Identical recent parent/target/task/configuration requests are also deduplicated briefly.
 --watch true also registers thread watch on the child with the resolved parent as the notified Thread; the response's watch field reports whether it was registered.

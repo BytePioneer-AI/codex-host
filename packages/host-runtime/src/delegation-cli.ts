@@ -4,6 +4,7 @@ import type { Writable } from "node:stream";
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
 import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
+import { startWithDelegationWorktree } from "./delegation-cli-worktree.js";
 import { resolveRuntimeConnection, usesExternalClient } from "./delegation-runtime-connection.js";
 import { runClientCommand } from "./external-client-cli.js";
 import { originClientName } from "./external-client-origin.js";
@@ -373,6 +374,8 @@ export async function runDelegationCli(input: {
         "--task",
         "--task-name",
         "--cwd",
+        "--worktree",
+        "--base",
         "--model",
         "--thinking",
         "--parent-thread",
@@ -399,35 +402,39 @@ export async function runDelegationCli(input: {
           "INVALID_ARGUMENT",
           "--watch-timeout-ms requires --watch true",
         );
+      // Validate all local options before creating a worktree or making a Runtime request.
+      const body = {
+        harnessId,
+        task,
+        ...(value(parsed, "--task-name") !== undefined
+          ? { taskName: value(parsed, "--task-name") }
+          : {}),
+        ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
+        ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
+        ...(value(parsed, "--thinking") ? { thinkingOptionId: value(parsed, "--thinking") } : {}),
+        ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
+        ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),
+        ...(parsed.repeated.get("--ref") ? { refs: parsed.repeated.get("--ref") } : {}),
+        ...(watch === "true"
+          ? {
+              watchTimeoutMs: value(parsed, "--watch-timeout-ms")
+                ? positiveInteger(value(parsed, "--watch-timeout-ms"), "--watch-timeout-ms")
+                : DEFAULT_WATCH_TIMEOUT_MS,
+            }
+          : {}),
+      };
       writeResult(
         "delegate start",
-        await requestRuntime({
-          environment,
-          path: "/v1/delegate/start",
-          body: {
-            harnessId,
-            task,
-            ...(value(parsed, "--task-name") !== undefined
-              ? { taskName: value(parsed, "--task-name") }
-              : {}),
-            ...(cwdOption(parsed) ? { cwd: cwdOption(parsed) } : {}),
-            ...(value(parsed, "--model") ? { model: { id: value(parsed, "--model") } } : {}),
-            ...(value(parsed, "--thinking")
-              ? { thinkingOptionId: value(parsed, "--thinking") }
-              : {}),
-            ...(parentThread ? { parentThreadId: normalizeThreadId(parentThread) } : {}),
-            ...(value(parsed, "--request-id") ? { requestId: value(parsed, "--request-id") } : {}),
-            ...(parsed.repeated.get("--ref") ? { refs: parsed.repeated.get("--ref") } : {}),
-            ...(watch === "true"
-              ? {
-                  watchTimeoutMs: value(parsed, "--watch-timeout-ms")
-                    ? positiveInteger(value(parsed, "--watch-timeout-ms"), "--watch-timeout-ms")
-                    : DEFAULT_WATCH_TIMEOUT_MS,
-                }
-              : {}),
-          },
-          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
-        }),
+        await startWithDelegationWorktree(
+          { cwd: body.cwd, branch: value(parsed, "--worktree"), base: value(parsed, "--base") },
+          (cwd) =>
+            requestRuntime({
+              environment,
+              path: "/v1/delegate/start",
+              body: { ...body, ...(cwd ? { cwd } : {}) },
+              ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+            }),
+        ),
       );
       return 0;
     }

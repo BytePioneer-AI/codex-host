@@ -2,24 +2,25 @@
 import type { SessionListState } from "@deepseek-ai/dsh-api-session-controller/client";
 import { threadPlacementCandidates } from "../thread-tree-catalog.ts";
 
-export const THREAD_DWELL_MS = 500;
-export const THREAD_DWELL_SLOP = 6;
+export const THREAD_DWELL_MS = 400;
+/** Nesting starts inside the middle half of a row and survives drift until the outer 10% edges. */
+const DWELL_ENTER = [0.25, 0.75] as const;
+const DWELL_KEEP = [0.1, 0.9] as const;
 
 export type ThreadDwell = { id: string; x: number; y: number; since: number };
 
-/** Leaving the middle or moving beyond the anchor resets the entire dwell. */
+/** Staying on one row's middle is the intent; small pointer drift inside the row never restarts it. */
 export function threadDropDwell(
   previous: ThreadDwell | null,
   point: { id: string; x: number; y: number; now: number },
   rect: { top: number; height: number },
 ): ThreadDwell | null {
+  if (rect.height <= 0) return null;
   const fraction = (point.y - rect.top) / rect.height;
-  if (rect.height <= 0 || fraction < 0.3 || fraction > 0.7) return null;
-  if (
-    previous?.id === point.id &&
-    Math.hypot(point.x - previous.x, point.y - previous.y) <= THREAD_DWELL_SLOP
-  )
-    return previous;
+  const confirmed = previous?.id === point.id && point.now - previous.since >= THREAD_DWELL_MS;
+  const [low, high] = confirmed ? DWELL_KEEP : DWELL_ENTER;
+  if (fraction < low || fraction > high) return null;
+  if (previous?.id === point.id) return previous;
   return { id: point.id, x: point.x, y: point.y, since: point.now };
 }
 

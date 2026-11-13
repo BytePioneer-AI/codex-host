@@ -459,7 +459,7 @@ it(
 );
 
 it(
-  "moving beyond the dwell anchor restarts progress and leaving the middle cancels child intent",
+  "drifting inside the row keeps the dwell and leaving the row edges cancels child intent",
   { timeout: 60_000 },
   async (t) => {
     const { page, host } = await threadTreeBrowser(t);
@@ -470,16 +470,15 @@ it(
     const data = await begin(page, source);
     await over(target, data);
     await page.waitForTimeout(300);
-    await over(target, data, 0.5, 7);
+    await over(target, data, 0.5, 30);
     await page.waitForTimeout(250);
-    assert.equal(await target.getAttribute("data-thread-drop"), "after");
-    assert.equal(await target.getAttribute("data-thread-dwell"), "true");
-    await page.waitForTimeout(300);
     assert.equal(await target.getAttribute("data-thread-drop"), "under");
-    await over(target, data, 0.1);
+    await over(target, data, 0.15);
+    assert.equal(await target.getAttribute("data-thread-drop"), "under");
+    await over(target, data, 0.05);
     assert.equal(await target.getAttribute("data-thread-drop"), "before");
     assert.equal(await target.getAttribute("data-thread-dwell"), null);
-    await release(source, target, data, 0.1);
+    await release(source, target, data, 0.05);
     assert.equal(host.placements.size, 0);
     assert.equal(await source.getAttribute("data-thread-parent"), null);
   },

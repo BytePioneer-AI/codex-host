@@ -41,22 +41,19 @@ it("uses half rows for insertion, never attaching without a confirmed dwell", ()
   assert.equal(threadDropRegion(100, { top: 100, height: 0 }, true), "sibling");
 });
 
-it("confirms only after 500ms within the middle 40%, tolerates 6px and resets larger drift", () => {
+it("confirms after 400ms in the middle half, keeps drifting inside the row and resets at the edges", () => {
   const rect = { top: 100, height: 40 };
   const point = { id: "target", x: 100, y: 120, now: 1000 };
   const dwell = threadDropDwell(null, point, rect);
   assert.ok(dwell);
-  assert.equal(threadDropRegion(120, rect, true, dwell, 1499), "after");
+  assert.equal(threadDropRegion(120, rect, true, dwell, 1399), "after");
   for (const manual of [true, false])
-    assert.equal(threadDropRegion(120, rect, manual, dwell, 1500), "under");
-  assert.equal(threadDropDwell(dwell, { ...point, x: 106, now: 1500 }, rect), dwell);
-  const moved = threadDropDwell(dwell, { ...point, x: 106.01, now: 1500 }, rect);
-  assert.equal(moved?.since, 1500);
-  assert.equal(threadDropRegion(120, rect, true, moved, 1500), "after");
-  assert.equal(threadDropDwell(dwell, { ...point, y: 111.9 }, rect), null);
-  assert.equal(threadDropDwell(dwell, { ...point, y: 128.1 }, rect), null);
+    assert.equal(threadDropRegion(120, rect, manual, dwell, 1400), "under");
+  assert.equal(threadDropDwell(dwell, { ...point, x: 160, now: 1200 }, rect), dwell);
+  assert.equal(threadDropDwell(dwell, { ...point, y: 109.9, now: 1200 }, rect), null);
+  assert.equal(threadDropDwell(dwell, { ...point, y: 109.9, now: 1400 }, rect), dwell);
+  assert.equal(threadDropDwell(dwell, { ...point, y: 136.1, now: 1400 }, rect), null);
   assert.equal(threadDropDwell(dwell, { ...point, id: "other", now: 1600 }, rect)?.since, 1600);
-  assert.equal(threadDropDwell(null, { ...point, now: 1800 }, rect)?.since, 1800);
   assert.equal(threadDropDwell(dwell, point, { top: 100, height: 0 }), null);
 });
 

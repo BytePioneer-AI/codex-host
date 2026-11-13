@@ -1,19 +1,16 @@
-import { createHash } from "node:crypto";
-
-import type { JsonObject } from "@codexhost/protocol-core";
-import type { RoutedHarnessId } from "@codexhost/protocol-core";
+import type { JsonObject, RoutedHarnessId } from "@codexhost/protocol-core";
 
 import {
   DelegationControlError,
   type DelegationMessage,
+  type DelegationMessageTurn,
   type DelegationThreadSnapshot,
   type DelegationThreadStatus,
   type ThreadReadInput,
 } from "./delegation-types.js";
 
-const CURSOR_PREFIX = "codexhost:thread-messages:v1:";
-const DEFAULT_MESSAGE_LIMIT = 25;
-const MAX_MESSAGE_LIMIT = 100;
+const DEFAULT_TURN_COUNT = 10;
+const MAX_TURN_COUNT = 50;
 
 function isRecord(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -40,9 +37,7 @@ function textFromUserItem(item: JsonObject): string {
 
 function threadStatus(value: unknown, running: boolean): DelegationThreadStatus {
   if (running) return "running";
-  if (isRecord(value)) {
-    if (value.type === "active") return "running";
-  }
+  if (isRecord(value) && value.type === "active") return "running";
   return "completed";
 }
 
@@ -53,91 +48,96 @@ function turnStatus(value: unknown): DelegationThreadStatus {
   return "completed";
 }
 
-function allVisibleMessages(turns: readonly JsonObject[]): DelegationMessage[] {
+function agentItems(turn: JsonObject): JsonObject[] {
+  return Array.isArray(turn.items)
+    ? turn.items.filter(
+        (item): item is JsonObject => isRecord(item) && item.type === "agentMessage",
+      )
+    : [];
+}
+
+function messageTurn(
+  turn: JsonObject,
+  turnNumber: number,
+  running: boolean,
+): DelegationMessageTurn {
+  const status = running ? "running" : turnStatus(turn.status);
   const messages: DelegationMessage[] = [];
-  for (const turn of turns) {
-    const turnId = stringValue(turn.id);
-    if (!turnId || !Array.isArray(turn.items)) continue;
-    const agentItems = turn.items.filter(
-      (item): item is JsonObject => isRecord(item) && item.type === "agentMessage",
-    );
+  if (Array.isArray(turn.items)) {
     for (const item of turn.items) {
-      if (!isRecord(item)) continue;
+      if (!isRecord(item) || item.type !== "userMessage") continue;
       const id = stringValue(item.id);
-      if (!id) continue;
-      if (item.type === "userMessage") {
-        const text = textFromUserItem(item);
-        if (text) messages.push({ id, turnId, role: "user", text });
-      } else if (item.type === "agentMessage" && typeof item.text === "string" && item.text) {
-        const itemIndex = agentItems.indexOf(item);
-        const phase =
-          item.phase === "commentary" || item.phase === "final"
-            ? item.phase
-            : turn.status === "inProgress" || itemIndex < agentItems.length - 1
-              ? "commentary"
-              : "final";
-        messages.push({ id, turnId, role: "agent", phase, text: item.text });
-      }
+      const text = textFromUserItem(item);
+      if (id && text.trim()) messages.push({ id, role: "user", text });
     }
   }
-  return messages;
-}
-
-function cursorFingerprint(threadId: string): string {
-  return createHash("sha256").update(threadId).digest("hex");
-}
-
-function encodeCursor(threadId: string, offset: number): string {
-  const payload = JSON.stringify({ version: 1, fingerprint: cursorFingerprint(threadId), offset });
-  return `${CURSOR_PREFIX}${Buffer.from(payload).toString("base64url")}`;
-}
-
-function decodeCursor(threadId: string, cursor: string | undefined): number {
-  if (!cursor) return 0;
-  if (!cursor.startsWith(CURSOR_PREFIX)) {
-    throw new DelegationControlError("INVALID_ARGUMENT", "Message cursor is invalid");
-  }
-  try {
-    const value = JSON.parse(
-      Buffer.from(cursor.slice(CURSOR_PREFIX.length), "base64url").toString("utf8"),
-    ) as Record<string, unknown>;
-    if (
-      value.version !== 1 ||
-      value.fingerprint !== cursorFingerprint(threadId) ||
-      !Number.isSafeInteger(value.offset) ||
-      (value.offset as number) < 0
-    ) {
-      throw new Error("invalid cursor");
+  if (status !== "running") {
+    const agents = agentItems(turn);
+    const finals = agents.filter((item) => item.phase === "final");
+    const final = (finals.length ? finals : agents)
+      .filter((item) => typeof item.text === "string" && item.text.trim())
+      .at(-1);
+    const id = final ? stringValue(final.id) : null;
+    if (final && id && typeof final.text === "string") {
+      messages.push({ id, role: "agent", phase: "final", text: final.text });
     }
-    return value.offset as number;
-  } catch {
-    throw new DelegationControlError("INVALID_ARGUMENT", "Message cursor is invalid");
   }
+  return { turnId: stringValue(turn.id), turnNumber, status, messages };
 }
 
-export function validateReadOptions(input: ThreadReadInput): Required<
-  Pick<ThreadReadInput, "view">
-> & {
-  cursor?: string;
-  limit: number;
-} {
+function latestAgentMessages(turn: JsonObject | null) {
+  const turnId = turn ? stringValue(turn.id) : null;
+  if (!turn || !turnId) return [];
+  const agents = agentItems(turn);
+  return agents.flatMap((item, index) => {
+    const id = stringValue(item.id);
+    if (!id || typeof item.text !== "string" || !item.text.trim()) return [];
+    const phase =
+      item.phase === "commentary" || item.phase === "final"
+        ? item.phase
+        : turn.status === "inProgress" || index < agents.length - 1
+          ? "commentary"
+          : "final";
+    return [{ id, turnId, phase, text: item.text }];
+  });
+}
+
+export function validateReadOptions(
+  input: ThreadReadInput,
+): Pick<ThreadReadInput, "view" | "from" | "to"> {
   if (input.view !== "result" && input.view !== "messages") {
     throw new DelegationControlError("INVALID_ARGUMENT", "View must be 'result' or 'messages'");
   }
-  if (input.view === "result" && (input.cursor !== undefined || input.limit !== undefined)) {
+  if (input.view === "result" && (input.from !== undefined || input.to !== undefined)) {
+    throw new DelegationControlError("INVALID_ARGUMENT", "--from and --to require --view messages");
+  }
+  for (const name of ["from", "to"] as const) {
+    const value = input[name];
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      throw new DelegationControlError("INVALID_ARGUMENT", `${name} must be a positive integer`);
+    }
+  }
+  if (input.from !== undefined && input.to !== undefined && input.from > input.to) {
+    throw new DelegationControlError("INVALID_ARGUMENT", "from must not exceed to");
+  }
+  return {
+    view: input.view,
+    ...(input.from !== undefined ? { from: input.from } : {}),
+    ...(input.to !== undefined ? { to: input.to } : {}),
+  };
+}
+
+function turnRange(totalTurns: number, options: Pick<ThreadReadInput, "from" | "to">) {
+  const to = Math.min(options.to ?? totalTurns, totalTurns);
+  const from = options.from ?? Math.max(1, to - DEFAULT_TURN_COUNT + 1);
+  if (from > to) return { from: null, to: null };
+  if (to - from + 1 > MAX_TURN_COUNT) {
     throw new DelegationControlError(
       "INVALID_ARGUMENT",
-      "--cursor and --limit require --view messages",
+      `A read may return at most ${MAX_TURN_COUNT} Turns`,
     );
   }
-  const limit = input.limit ?? DEFAULT_MESSAGE_LIMIT;
-  if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_MESSAGE_LIMIT) {
-    throw new DelegationControlError(
-      "INVALID_ARGUMENT",
-      `Message limit must be between 1 and ${MAX_MESSAGE_LIMIT}`,
-    );
-  }
-  return { view: input.view, ...(input.cursor ? { cursor: input.cursor } : {}), limit };
+  return { from, to };
 }
 
 export function projectDelegationThreadSnapshot(input: {
@@ -147,16 +147,10 @@ export function projectDelegationThreadSnapshot(input: {
   turns: readonly JsonObject[];
   running: boolean;
   view: "result" | "messages";
-  cursor?: string;
-  limit?: number;
+  from?: number;
+  to?: number;
 }): DelegationThreadSnapshot {
-  const options = validateReadOptions({
-    threadId: input.threadId,
-    view: input.view,
-    ...(input.cursor ? { cursor: input.cursor } : {}),
-    ...(input.limit !== undefined ? { limit: input.limit } : {}),
-  });
-  const visible = allVisibleMessages(input.turns);
+  const options = validateReadOptions(input);
   const latestTurn = input.turns.at(-1) ?? null;
   const latestTurnId = latestTurn ? stringValue(latestTurn.id) : null;
   const latestTurnStatus = latestTurn ? turnStatus(latestTurn.status) : null;
@@ -165,15 +159,14 @@ export function projectDelegationThreadSnapshot(input: {
     : latestTurnStatus === "failed" || latestTurnStatus === "interrupted"
       ? latestTurnStatus
       : threadStatus(input.thread.status, input.running);
-  const latestTurnMessages = latestTurnId
-    ? visible.filter((message) => message.turnId === latestTurnId && message.role === "agent")
-    : [];
-  const final = latestTurnMessages
-    .filter((message) => message.phase === "final" && message.text.trim())
-    .at(-1);
-  const progress = latestTurnMessages
-    .filter((message) => message.phase !== "final" && message.text.trim())
-    .map(({ id, turnId, text }) => ({ id, turnId, text }));
+  const latestTurnMessages = latestAgentMessages(latestTurn);
+  const final = latestTurnMessages.filter((message) => message.phase === "final").at(-1);
+  const progress =
+    options.view === "result"
+      ? latestTurnMessages
+          .filter((message) => message.phase !== "final")
+          .map(({ id, turnId, text }) => ({ id, turnId, text }))
+      : [];
   const result = input.running
     ? ({ availability: "pending" } as const)
     : final
@@ -184,21 +177,8 @@ export function projectDelegationThreadSnapshot(input: {
             ? { message: latestTurn.error.message }
             : {}),
         } as const);
-
-  const offset =
-    options.view === "messages" ? decodeCursor(input.threadId, options.cursor) : visible.length;
-  // Keep cursor offsets in the original message sequence, including whitespace,
-  // so cursors issued before whitespace filtering remain valid.
-  const page: DelegationMessage[] | undefined = options.view === "messages" ? [] : undefined;
-  let nextOffset = offset;
-  if (page) {
-    while (nextOffset < visible.length && page.length < options.limit) {
-      const message = visible[nextOffset++];
-      if (message?.text.trim()) page.push(message);
-    }
-  }
   const title = threadTitle(input.thread);
-  return {
+  const snapshot: DelegationThreadSnapshot = {
     threadId: input.threadId,
     harnessId: input.harnessId,
     ...(typeof input.thread.cwd === "string" && input.thread.cwd ? { cwd: input.thread.cwd } : {}),
@@ -208,12 +188,18 @@ export function projectDelegationThreadSnapshot(input: {
       latestTurnId && latestTurnStatus ? { turnId: latestTurnId, status: latestTurnStatus } : null,
     progress,
     result,
-    ...(page
-      ? {
-          messages: page,
-          hasMore: visible.slice(nextOffset).some((message) => message.text.trim()),
-        }
-      : {}),
-    nextCursor: encodeCursor(input.threadId, nextOffset),
   };
+  if (options.view === "messages") {
+    const totalTurns = input.turns.length;
+    const range = turnRange(totalTurns, options);
+    const turns: DelegationMessageTurn[] = [];
+    if (range.from !== null && range.to !== null) {
+      for (let number = range.to; number >= range.from; number -= 1) {
+        const turn = input.turns[number - 1];
+        if (turn) turns.push(messageTurn(turn, number, input.running && number === totalTurns));
+      }
+    }
+    return { ...snapshot, totalTurns, ...range, turns };
+  }
+  return snapshot;
 }

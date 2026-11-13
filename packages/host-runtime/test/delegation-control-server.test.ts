@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
+import { projectDelegationThreadSnapshot } from "../src/delegation-snapshot.js";
+import type { ThreadReadInput, ThreadWaitInput } from "../src/delegation-types.js";
 
 const token = "synthetic-token";
 
@@ -13,6 +15,76 @@ function authorized(body: unknown): RequestInit {
 }
 
 describe("delegation control server", () => {
+  it("reads whole Turn ranges over HTTP and rejects invalid and removed arguments", async () => {
+    const turns = Array.from({ length: 60 }, (_, index) => ({
+      id: `t${index + 1}`,
+      status: "completed",
+      items: [],
+    }));
+    const read = vi.fn(async (input: ThreadReadInput) =>
+      projectDelegationThreadSnapshot({
+        ...input,
+        harnessId: "pi",
+        thread: {},
+        turns,
+        running: false,
+      }),
+    );
+    const wait = vi.fn(async (input: ThreadWaitInput) => ({
+      ...(await read(input)),
+      timedOut: false,
+    }));
+    const server = await startDelegationControlServer({
+      token,
+      api: {
+        listHarnesses: vi.fn(),
+        inspect: vi.fn(),
+        start: vi.fn(),
+        send: vi.fn(),
+        cancel: vi.fn(),
+        read,
+        wait,
+        list: vi.fn(),
+      },
+    });
+    try {
+      for (const command of ["read", "wait"]) {
+        const base = {
+          threadId: "thread",
+          view: "messages",
+          ...(command === "wait" ? { timeoutMs: 10 } : {}),
+        };
+        const request = (bounds: Record<string, unknown>) =>
+          fetch(`${server.endpoint}/v1/thread/${command}`, authorized({ ...base, ...bounds }));
+        const latest = await request({});
+        expect(latest.status).toBe(200);
+        expect(await latest.json()).toMatchObject({ totalTurns: 60, from: 51, to: 60 });
+        const selected = await request({ from: 3, to: 5 });
+        expect(await selected.json()).toMatchObject({
+          totalTurns: 60,
+          from: 3,
+          to: 5,
+          turns: [{ turnNumber: 5 }, { turnNumber: 4 }, { turnNumber: 3 }],
+        });
+        for (const bounds of [
+          { from: "3" },
+          { to: 0 },
+          { from: 1.5 },
+          { from: 5, to: 3 },
+          { from: 1, to: 60 },
+          { cursor: "old" },
+          { limit: 10 },
+        ]) {
+          const invalid = await request(bounds);
+          expect(invalid.status).toBe(400);
+          expect(await invalid.json()).toMatchObject({ error: { code: "INVALID_ARGUMENT" } });
+        }
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
   it("binds loopback, authenticates requests, and dispatches structured inputs", async () => {
     const start = vi.fn(async () => ({
       delegationId: "delegation-1",

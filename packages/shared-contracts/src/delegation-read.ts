@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Serialized Controller replies are bounded independently of message-count pagination. */
+/** Serialized Controller replies are bounded independently of Turn-range reads. */
 export const REMOTE_THREAD_REPLY_MAX_BYTES = 16 * 1024 * 1024;
 export const REMOTE_THREAD_READ_TIMEOUT_MS = 35_000;
 export const REMOTE_THREAD_CONTROL_TIMEOUT_MS = 40_000;
@@ -12,7 +12,7 @@ export const THREAD_REFERENCE_SOURCE_HOST_PARAM = "codexhostSourceHostId";
 export const delegationReadParamsSchema = z.strictObject({
   threadId: z.string().min(1).max(1024),
   view: z.enum(["result", "messages"]),
-  cursor: z.string().min(1).max(8192).optional(),
-  limit: z.number().int().min(1).max(100).optional(),
+  from: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  to: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
 });
 export type DelegationReadParams = z.infer<typeof delegationReadParamsSchema>;

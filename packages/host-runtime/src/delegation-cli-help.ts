@@ -1,5 +1,10 @@
 import { consumesNextArgument } from "./delegation-cli-options.js";
 
+const MESSAGE_VIEW_HELP = `The messages view returns Turns newest first, with user messages before each Turn's final Agent reply. Intermediate commentary is omitted; terminal Turns without a final marker use their last nonempty Agent message. Running Turns contain only user input. Each Turn includes turnNumber and status, even without messages.
+--from and --to are inclusive absolute Turn numbers, starting at 1, and require --view messages. Neither: latest 10 Turns. Only --from n: n through latest. Only --to m: the latest 10 Turns ending at m. Bounds are intersected with existing Turns (to is clamped before choosing the default from); an empty range returns from=null and to=null. from>to, non-integers and values below 1 are invalid. At most 50 Turns may be returned; larger effective ranges are rejected. Text per Turn is not truncated.
+The response includes totalTurns (before message filtering), from, to and turns. Turn numbers stay fixed when new Turns are appended; use an older --to to read earlier context, or omit both bounds to read the latest context.
+Text messages output starts with totalTurns/from/to, then Thread metadata and ---; each Turn has a #<turnNumber> <status> section with verbatim user and final reply text. Compact result output keeps the latest nonempty progress while running, omitted once stopped.`;
+
 const COMMAND_HELP = {
   "host info": `codexhost host info [--refresh true|false] [--format json|compact|text]
 Read this Host's environment, tools and workspace defaults. Cached observations expire after 60 seconds.`,
@@ -51,17 +56,14 @@ Without --interrupt, THREAD_BUSY means the current Turn is still active. Message
 Request cancellation of the active Turn while preserving the Thread and history.
 Accepted cancellation also removes all watches on that Thread; thread send --interrupt instead preserves them.
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
-  "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact|text]
+  "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
-The default result view reports the latest Turn's status and result.
-The messages view pages visible user/Agent messages, oldest first. Default limit 25, maximum 100; --cursor and --limit require --view messages.
-hasMore describes remaining messages now. Save nextCursor for later incremental reads even when hasMore=false.
-Compact messages output contains only the message page and status; compact result output includes the latest nonempty progress while running.
-Text output shows a Thread/Harness/status header, optional Turn and progress, then --- and verbatim result text; messages are separate role-labelled paragraphs. Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included in these formats.`,
-  "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--cursor <cursor>] [--limit <n>] [--format json|compact|text]
+The default result view reports the latest Turn's status and result. Text result output shows Thread metadata, then --- and verbatim result text. Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included.
+${MESSAGE_VIEW_HELP}`,
+  "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
 Wait until the Thread is terminal or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
 timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
-Message pagination uses --view messages, default limit 25, maximum 100. hasMore is for current pages; nextCursor also supports future incremental reads.`,
+${MESSAGE_VIEW_HELP}`,
   "thread watch": `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact|text]
 Ask the Host to notify one Thread, once, when the watched Thread stops. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
 --notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); for an external client it defaults to the client, and the notification becomes an event in its log (see codexhost events). Otherwise it is required. delegate start reports the caller as its parent.

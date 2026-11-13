@@ -32,7 +32,6 @@ async function watchFixture() {
         turn: { turnId: `${threadId}-turn`, status },
         progress: [],
         result: { availability: "pending" },
-        nextCursor: null,
       }),
       send: (input) => send(input),
     },

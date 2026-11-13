@@ -94,8 +94,8 @@ describe("delegation CLI option values", () => {
       watchTimeoutMs: 5,
     });
     await expect(
-      sentBody(["thread", "read", "abc", "--view=messages", "--limit=3", "--format=json"]),
-    ).resolves.toMatchObject({ threadId: "abc", view: "messages", limit: 3 });
+      sentBody(["thread", "read", "abc", "--view=messages", "--from=3", "--to=5", "--format=json"]),
+    ).resolves.toMatchObject({ threadId: "abc", view: "messages", from: 3, to: 5 });
   });
 
   it.each([
@@ -140,14 +140,32 @@ describe("delegation CLI option values", () => {
   });
 
   it.each(["1e2", "0x10", " 7", "7 ", "+7", "7.0", "-1", "0"])(
-    "rejects non-decimal limit %j",
-    async (limit) => {
+    "rejects non-decimal Turn number %j",
+    async (from) => {
       await expect(
-        rejection(["thread", "read", "abc", "--view", "messages", "--limit", limit]),
+        rejection(["thread", "read", "abc", "--view", "messages", "--from", from]),
       ).resolves.toEqual({
         code: "INVALID_ARGUMENT",
-        message: "--limit must be a positive integer no greater than 100",
+        message: "--from must be a positive integer",
       });
+    },
+  );
+
+  it.each(["read", "wait"])(
+    "forwards %s Turn ranges and rejects reversed ranges and removed options",
+    async (command) => {
+      await expect(
+        sentBody(["thread", command, "abc", "--view", "messages", "--from", "2", "--to", "4"]),
+      ).resolves.toMatchObject({ from: 2, to: 4 });
+      for (const args of [
+        ["--from", "4", "--to", "2"],
+        ["--cursor", "old"],
+        ["--limit", "3"],
+      ]) {
+        await expect(
+          rejection(["thread", command, "abc", "--view", "messages", ...args]),
+        ).resolves.toMatchObject({ code: "INVALID_ARGUMENT" });
+      }
     },
   );
 

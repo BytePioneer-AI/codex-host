@@ -112,6 +112,47 @@ describe("external client MCP endpoint", () => {
     await client.close();
   });
 
+  it("forwards absolute Turn bounds for read/wait and rejects invalid and removed arguments", async () => {
+    api.read.mockClear();
+    api.wait.mockClear();
+    const client = await connect();
+    const { tools } = await client.listTools();
+    for (const name of ["thread_read", "thread_wait"]) {
+      const schema = tools.find((tool) => tool.name === name)?.inputSchema.properties;
+      expect(schema).toMatchObject({
+        from: { type: "integer", minimum: 1 },
+        to: { type: "integer", minimum: 1 },
+      });
+      expect(schema).not.toHaveProperty("cursor");
+      expect(schema).not.toHaveProperty("limit");
+      const result = await client.callTool({
+        name,
+        arguments: { thread: "t1", view: "messages", from: 2, to: 4 },
+      });
+      expect(result.isError).toBe(false);
+      expect(name === "thread_read" ? api.read : api.wait).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: "t1", view: "messages", from: 2, to: 4 }),
+      );
+      for (const bounds of [
+        { from: 0 },
+        { to: 1.5 },
+        { from: 4, to: 2 },
+        { cursor: "old" },
+        { limit: 10 },
+      ]) {
+        expect(
+          (
+            await client.callTool({
+              name,
+              arguments: { thread: "t1", view: "messages", ...bounds },
+            })
+          ).isError,
+        ).toBe(true);
+      }
+    }
+    await client.close();
+  });
+
   it("allows authenticated clients to discover projects and validates arguments", async () => {
     await writeFile(
       path.join(directory, "host-inventory.json"),

@@ -32,10 +32,16 @@ export type DelegationResultAvailability = "pending" | "available" | "unavailabl
 
 export interface DelegationMessage {
   id: string;
-  turnId: string;
   role: "user" | "agent";
   text: string;
-  phase?: "commentary" | "final";
+  phase?: "final";
+}
+
+export interface DelegationMessageTurn {
+  turnId: string | null;
+  turnNumber: number;
+  status: DelegationThreadStatus;
+  messages: DelegationMessage[];
 }
 
 export interface DelegationProgress {
@@ -58,9 +64,11 @@ export interface DelegationThreadSnapshot {
     text?: string;
     message?: string;
   };
-  messages?: DelegationMessage[];
-  hasMore?: boolean;
-  nextCursor: string | null;
+  turns?: DelegationMessageTurn[];
+  totalTurns?: number;
+  /** Inclusive absolute Turn numbers; null when the range contains no Turns. */
+  from?: number | null;
+  to?: number | null;
   /** Omitted when the Thread carries no references. */
   refs?: string[];
 }
@@ -162,8 +170,8 @@ export interface ThreadReadInput {
   hostId?: string;
   threadId: string;
   view: "result" | "messages";
-  cursor?: string;
-  limit?: number;
+  from?: number;
+  to?: number;
 }
 
 export interface ThreadWaitInput extends ThreadReadInput {

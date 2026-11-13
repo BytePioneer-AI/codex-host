@@ -193,19 +193,23 @@ describe("HarnessDelegationCoordinator", () => {
           output,
         }),
       ).toBe(0);
-      const result = JSON.parse(Buffer.concat(chunks).toString()) as { threadId: string };
+      const result = JSON.parse(Buffer.concat(chunks).toString()) as {
+        threadId: string;
+        title: string;
+      };
+      expect(result.title).toBe("Protocol review");
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Protocol review · Main project",
+        title: "Protocol review",
       });
       expect(value.delivered).toEqual(["Full instructions\nwith details"]);
-      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Main project" });
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review" });
     } finally {
       await server.close();
       await value.close();
     }
   });
 
-  it("snapshots the parent title and subtask name without changing task delivery or retry identity", async () => {
+  it("saves only the subtask name without changing task delivery or retry identity", async () => {
     const value = await fixture();
     try {
       const parent = await value.repository.createProvisional({
@@ -226,17 +230,18 @@ describe("HarnessDelegationCoordinator", () => {
         requestId: "named-child",
       };
       const result = await value.coordinator.start(input);
+      expect(result.title).toBe("Protocol review");
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Protocol review · Project review",
+        title: "Protocol review",
       });
-      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Project review" });
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review" });
       await value.repository.setTitle(parent.hostThreadId, "Renamed parent");
       expect(
         await value.coordinator.start({ ...input, taskName: "Changed display name" }),
       ).toMatchObject({ threadId: result.threadId });
       expect(value.adapter.sessions).toHaveLength(1);
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Protocol review · Project review",
+        title: "Protocol review",
       });
       const next = await value.coordinator.start({
         harnessId: input.harnessId,
@@ -245,7 +250,7 @@ describe("HarnessDelegationCoordinator", () => {
         requestId: "next-child",
       });
       expect(await value.repository.find(next.threadId)).toMatchObject({
-        title: "Next task · Renamed parent",
+        title: "Next task",
       });
     } finally {
       await value.close();
@@ -253,15 +258,15 @@ describe("HarnessDelegationCoordinator", () => {
   });
 
   it.each([
-    { title: "", preview: "  现在有一个问题，\n帮我理解  ", expected: "现在有一个问题， 帮我理解" },
-    { title: " \n ", preview: "First message", expected: "First message" },
-    { title: undefined, preview: "First message", expected: "First message" },
-    { title: "Named parent", preview: "First message", expected: "Named parent" },
-    { title: "", preview: " \n ", expected: "Untitled Thread" },
-    { title: "", preview: undefined, expected: "Untitled Thread" },
+    { title: "", preview: "  现在有一个问题，\n帮我理解  " },
+    { title: " \n ", preview: "First message" },
+    { title: undefined, preview: "First message" },
+    { title: "Named parent", preview: "First message" },
+    { title: "", preview: " \n " },
+    { title: "", preview: undefined },
   ])(
-    "uses the parent preview only when its saved title is blank ($title, $preview)",
-    async ({ title, preview, expected }) => {
+    "does not append or change the parent title or preview ($title, $preview)",
+    async ({ title, preview }) => {
       const value = await fixture();
       try {
         const parent = await value.repository.createProvisional({
@@ -283,7 +288,7 @@ describe("HarnessDelegationCoordinator", () => {
           taskName: "删除 Skill 命令链路",
           parentThreadId: parent.hostThreadId,
         });
-        const childTitle = `删除 Skill 命令链路 · ${expected}`;
+        const childTitle = "删除 Skill 命令链路";
         expect(result.title).toBe(childTitle);
         expect(await value.repository.find(result.threadId)).toMatchObject({ title: childTitle });
         expect(value.notifications[0]).toMatchObject({ name: childTitle });
@@ -295,7 +300,7 @@ describe("HarnessDelegationCoordinator", () => {
     },
   );
 
-  it("uses native parent metadata and keeps the subtask name first for long Unicode titles", async () => {
+  it("excludes long native parent titles from the subtask name", async () => {
     const value = await fixture(undefined, async () => ({ title: "🐙".repeat(150) }));
     try {
       const result = await value.coordinator.start({
@@ -305,10 +310,7 @@ describe("HarnessDelegationCoordinator", () => {
         parentThreadId: "native-parent",
       });
       const record = await value.repository.find(result.threadId);
-      expect(record?.title).toMatch(/^Tool test · /u);
-      expect(record?.title?.length).toBeLessThanOrEqual(200);
-      expect(record?.title).not.toMatch(/[\uD800-\uDBFF]$/u);
-      expect(record?.title).toBe("Tool test · " + "🐙".repeat(94));
+      expect(record?.title).toBe("Tool test");
     } finally {
       await value.close();
     }
@@ -919,9 +921,8 @@ describe("HarnessDelegationCoordinator", () => {
       };
       const result = await value.coordinator.start(input);
       expect(result).toMatchObject({ parentThreadId: "client:grok-bot", status: "running" });
-      // No parent title exists, so the client's name takes its place.
       await expect(value.repository.find(result.threadId)).resolves.toMatchObject({
-        title: "triage issue 12 · grok-bot",
+        title: "triage issue 12",
       });
       expect(metadata).not.toHaveBeenCalled();
       // A retry from the same client within the window returns the same child.

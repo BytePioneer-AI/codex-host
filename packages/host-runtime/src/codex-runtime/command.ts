@@ -26,17 +26,23 @@ function nativeWindowsNpmCodex(
   isExecutable: (candidate: string) => boolean,
 ): string | undefined {
   const pathFlavor = targetPath("win32");
+  const modulesDirectory = pathFlavor.join(shimDirectory, "node_modules");
+  const dependencyDirectories = [
+    pathFlavor.join(modulesDirectory, "@openai", "codex", "node_modules"),
+    modulesDirectory,
+  ];
   for (const [name, target] of WINDOWS_NPM_CODEX_PACKAGES) {
-    const native = pathFlavor.join(
-      shimDirectory,
-      "node_modules",
-      ...name.split("/"),
-      "vendor",
-      target,
-      "bin",
-      "codex.exe",
-    );
-    if (isExecutable(native)) return native;
+    for (const directory of dependencyDirectories) {
+      const native = pathFlavor.join(
+        directory,
+        ...name.split("/"),
+        "vendor",
+        target,
+        "bin",
+        "codex.exe",
+      );
+      if (isExecutable(native)) return native;
+    }
   }
   for (const [, target] of WINDOWS_NPM_CODEX_PACKAGES) {
     const bundled = pathFlavor.join(

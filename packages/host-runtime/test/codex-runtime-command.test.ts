@@ -103,6 +103,18 @@ describe("Windows npm shim discovery", () => {
     );
   });
 
+  it.each([
+    ["codex-win32-x64", "x86_64-pc-windows-msvc"],
+    ["codex-win32-arm64", "aarch64-pc-windows-msvc"],
+  ])("resolves the nested npm platform dependency %s before a hoisted copy", (name, target) => {
+    const hoisted = native(name, target);
+    const nested = `${npmDirectory}\\node_modules\\@openai\\codex\\node_modules\\@openai\\${name}\\vendor\\${target}\\bin\\codex.exe`;
+    expect(discovery((candidate) => [nested, shim].includes(candidate))?.executable).toBe(nested);
+    expect(discovery((candidate) => [nested, hoisted, shim].includes(candidate))?.executable).toBe(
+      nested,
+    );
+  });
+
   it("rejects the shim instead of selecting an unusable command", () => {
     expect(discovery((candidate) => candidate === shim)).toBeUndefined();
   });

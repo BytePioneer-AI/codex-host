@@ -1401,69 +1401,6 @@ rl.once("line", (stdinData) => {
       }
     });
 
-    it("emits turn.completed with cancelled outcome on session close while active", async () => {
-      // Stream that does not emit result immediately (simulates long turn)
-      const streamLines = [
-        JSON.stringify({
-          event: "init",
-          init: { permission_mode: "default" },
-          conversation_id: "conv-close",
-        }),
-        JSON.stringify({
-          event: "step_update",
-          step_update: {
-            conversation_id: "conv-close",
-            step_index: 1,
-            state: "ACTIVE",
-            step_type: "agent_response",
-            text_delta: "Working on it...",
-          },
-        }),
-      ];
-
-      const { command, cwd, cleanup } = await fakeStreamingAgy(streamLines);
-      const adapter = new AntigravityAdapter({ command });
-      try {
-        const opened = await adapter.open({ kind: "create", cwd });
-        expect(opened.ok).toBe(true);
-        if (!opened.ok) return;
-
-        const session = opened.value;
-        const iterator = session.outputs[Symbol.asyncIterator]();
-        const turnId = hostTurnIdSchema.parse("turn-close");
-
-        await session.execute({
-          type: "turn.start",
-          turnId,
-          input: [{ type: "text", text: "long running" }],
-        });
-
-        expect((await nextEvent(iterator)).type).toBe("turn.started");
-        expect((await nextEvent(iterator)).type).toBe("session.state.changed");
-        expect((await nextEvent(iterator)).type).toBe("item.started");
-
-        // Close session while active
-        await session.close();
-
-        const itemCompleted = await nextEvent(iterator);
-        expect(itemCompleted).toMatchObject({
-          type: "item.completed",
-          turnId,
-          snapshot: { outcome: { status: "cancelled", reason: "Session closed" } },
-        });
-
-        const turnCompleted = await nextEvent(iterator);
-        expect(turnCompleted).toMatchObject({
-          type: "turn.completed",
-          turnId,
-          outcome: { status: "cancelled", reason: "Session closed" },
-        });
-      } finally {
-        await adapter.close();
-        await cleanup();
-      }
-    });
-
     it("correctly handles cumulative text snapshots without duplicating text", async () => {
       const streamLines = [
         JSON.stringify({

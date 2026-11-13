@@ -72,59 +72,83 @@ async function tokenColor(page: Page, id: string, token: string): Promise<string
   }, token);
 }
 
-async function foldLayout(page: Page, id: string): Promise<void> {
-  const layout = await threadRow(page, id).evaluate((row) => {
+async function foldLayout(page: Page, id: string, row = threadRow(page, id)): Promise<void> {
+  const layout = await row.evaluate((row) => {
     const toggle = row.querySelector("[data-thread-toggle]");
     const icon = row.querySelector("[data-thread-icon-toggle]");
     const chevron = toggle?.querySelector("svg");
     if (!toggle || !icon || !chevron) throw new Error("Missing fold layout elements");
     const chevronBox = chevron.getBoundingClientRect();
     return {
-      chevronBeforeIcon: chevronBox.right <= icon.getBoundingClientRect().left,
-      chevronInRow: chevronBox.left >= -1,
+      artworkGap:
+        icon.getBoundingClientRect().left -
+        toggle.querySelector("svg path")!.getBoundingClientRect().right,
+      chevronInRow: chevronBox.left >= 4,
       chevronWidth: chevronBox.width,
       artwork: toggle.querySelector("svg path")?.getBoundingClientRect().toJSON(),
+      stroke: getComputedStyle(chevron).strokeWidth,
       toggleWidth: toggle.getBoundingClientRect().width,
       toggleHeight: toggle.getBoundingClientRect().height,
       rowHeight: row.getBoundingClientRect().height,
     };
   });
-  assert.equal(layout.chevronBeforeIcon, true, "the chevron sits left of the icon");
-  assert.equal(layout.chevronInRow, true);
-  assert.equal(layout.chevronWidth, 14);
   assert.ok(
-    layout.artwork && Math.max(layout.artwork.width, layout.artwork.height) >= 10.5,
-    "the artwork fills the icon box",
+    layout.artworkGap >= 2 && layout.artworkGap <= 4,
+    `the chevron artwork stays close to the icon (${layout.artworkGap}px)`,
   );
+  assert.equal(layout.chevronInRow, true);
+  assert.equal(layout.chevronWidth, 12);
+  assert.ok(
+    layout.artwork && Math.max(layout.artwork.width, layout.artwork.height) === 6,
+    "both directions use the same unscaled artwork",
+  );
+  assert.equal(layout.stroke, "1px", "expansion does not change the chevron stroke");
   assert.equal(layout.toggleWidth, 28);
   assert.equal(layout.toggleHeight, layout.rowHeight, "the full row height is clickable");
 }
 
-async function guides(page: Page, id: string, count: number): Promise<void> {
-  const row = threadRow(page, id);
+async function guides(
+  page: Page,
+  id: string,
+  count: number,
+  row = threadRow(page, id),
+): Promise<void> {
   assert.equal(await row.locator("[data-thread-guide]").count(), count);
   const geometry = await row.evaluate((row) => {
-    const box = row.getBoundingClientRect();
-    const workspaceIndent =
-      parseFloat(getComputedStyle(row).getPropertyValue("--dsh-workspace-indent")) || 0;
+    const icon = row.querySelector("[data-harness-id]")?.getBoundingClientRect();
+    if (!icon) throw new Error("Missing parent icon");
+    const depth = Number(row.getAttribute("data-thread-depth"));
+    const rows = [...row.closest('[role="tree"]')!.querySelectorAll("[data-row-key]")];
+    let last: Element = row;
+    for (const next of rows.slice(rows.indexOf(row) + 1)) {
+      if (!next.hasAttribute("data-thread-depth")) break;
+      if (Number(next.getAttribute("data-thread-depth")) <= depth) break;
+      last = next;
+    }
+    const lastBox = last.getBoundingClientRect();
     return [...row.querySelectorAll("[data-thread-guide]")].map((guide) => {
       const rect = guide.getBoundingClientRect();
       return {
-        x: rect.x - box.x - workspaceIndent,
+        center: rect.x + rect.width / 2,
+        iconCenter: icon.x + icon.width / 2,
+        top: rect.top,
+        iconBottom: icon.bottom,
+        bottom: rect.bottom,
+        lastCenter: lastBox.y + lastBox.height / 2,
+
         width: rect.width,
-        height: rect.height,
-        rowHeight: box.height,
         pointerEvents: getComputedStyle(guide).pointerEvents,
         color: getComputedStyle(guide).backgroundColor,
       };
     });
   });
-  for (const [level, guide] of geometry.entries()) {
-    assert.equal(guide.x, level * 16 + 1, "guides align with ancestor chevron columns");
+  for (const guide of geometry) {
+    assert.equal(guide.center, guide.iconCenter, "the stem is on its parent's icon axis");
+    assert.equal(guide.top, guide.iconBottom, "the stem starts at the icon's bottom edge");
+    assert.equal(guide.bottom, guide.lastCenter, "the stem ends at its last visible descendant");
     assert.equal(guide.width, 1);
-    assert.equal(guide.height, guide.rowHeight + 2, "guides bridge the 2px row gap");
     assert.equal(guide.pointerEvents, "none");
-    assert.notEqual(guide.color, "rgba(0, 0, 0, 0)");
+    assert.equal(guide.color, await tokenColor(page, id, "--dsw-alias-border-l2"));
   }
 }
 
@@ -239,9 +263,9 @@ for (const width of [1280, 390]) {
           "rgba(0, 0, 0, 0)",
           "touch focus does not leave a filled toggle",
         );
-      await guides(page, "parent", 0);
+      await guides(page, "parent", 1);
       await guides(page, "child", 1);
-      await guides(page, "grandchild", 2);
+      await guides(page, "grandchild", 0);
       await guides(page, "destination", 0);
       await themedShots(page, `thread-tree-${width}-expanded`);
       if (width === 1280) {
@@ -296,14 +320,17 @@ for (const width of [1280, 390]) {
       );
       await page.keyboard.press("ArrowLeft");
       assert.equal(await threadRow(page, "child").getAttribute("aria-expanded"), "false");
+      await guides(page, "parent", 1);
       await page.keyboard.press("ArrowLeft");
       assert.equal(await parent.evaluate((node) => node === document.activeElement), true);
       await expanded(page, "child", true);
       await expanded(page, "grandchild", true);
       await expanded(page, "deep", true);
       await threadRow(page, "deepest").waitFor();
-      await guides(page, "deep", 3);
-      await guides(page, "deepest", 3);
+      await guides(page, "deep", 0);
+      await guides(page, "deepest", 0);
+      assert.equal(await page.locator("[data-thread-guide]").count(), 3);
+      for (const id of ["parent", "child", "grandchild"]) await guides(page, id, 1);
       assert.equal(await threadRow(page, "deepest").getAttribute("aria-level"), "5");
       const indent = async (id: string) =>
         threadRow(page, id).evaluate((node) => getComputedStyle(node).paddingInlineStart);
@@ -365,7 +392,9 @@ it(
     for (const id of ["parent", "child"])
       assert.equal(await threadRow(page, id).getAttribute("aria-expanded"), "true");
     assert.equal(await threadRow(page, "grandchild").getAttribute("aria-selected"), "true");
-    await guides(page, "grandchild", 2);
+    await guides(page, "parent", 1);
+    await guides(page, "child", 1);
+    await guides(page, "grandchild", 0);
     await treeShot(page, "thread-tree-390-selected-guides");
     host.pending = [
       {
@@ -499,6 +528,9 @@ it(
     assert.equal(idle.color, idle.defaultColor, "no descendant activity leaves the default color");
     assert.equal(idle.color, await tokenColor(page, "parent", "--dsw-alias-label-secondary"));
     assert.equal(idle.description, null);
+    await expanded(page, "parent", true);
+    assert.equal((await foldStyle(page, "parent")).color, idle.color);
+    await expanded(page, "parent", false);
     assert.equal(new Set([pendingColor, runningColor, completedColor, idle.color]).size, 4);
     await noHorizontalOverflow(page);
     await treeShot(page, "thread-tree-390-collapsed-idle");
@@ -515,6 +547,69 @@ it(
 
 function workspaceRow(page: Page, title: string) {
   return page.locator('[data-row-key^="workspace:"]').filter({ hasText: new RegExp(`^${title}$`) });
+}
+
+for (const width of [1280, 390]) {
+  it(
+    `icon-axis stems and uniform chevrons align in Recents, workspaces and pins at ${width}px`,
+    { timeout: 60_000 },
+    async (t) => {
+      const { page } = await threadTreeBrowser(t, width);
+      await page.emulateMedia({ colorScheme: "light" });
+      for (const id of ["parent", "child", "grandchild"]) await expanded(page, id, true);
+      for (const id of ["parent", "child", "grandchild"]) {
+        await guides(page, id, 1);
+        await foldLayout(page, id);
+      }
+      await themedShots(page, `thread-tree-${width}-three-levels`);
+
+      await workspaceRow(page, "tree").click();
+      for (const id of ["workspace-root", "workspace-child"]) await expanded(page, id, true);
+      const groupedRoot = page.locator('[data-row-key="session:workspace-root"]');
+      const groupedChild = page.locator('[data-row-key="session:workspace-child"]');
+      await groupedRoot.scrollIntoViewIfNeeded();
+      assert.ok(
+        await groupedRoot.evaluate(
+          (row) => parseFloat(getComputedStyle(row).getPropertyValue("--dsh-workspace-indent")) > 0,
+        ),
+      );
+      for (const scheme of ["light", "dark"] as const) {
+        await page.emulateMedia({ colorScheme: scheme });
+        await page.waitForFunction(
+          (dark) => document.body.hasAttribute("data-ds-dark-theme") === dark,
+          scheme === "dark",
+        );
+        await guides(page, "workspace-root", 1, groupedRoot);
+        await guides(page, "workspace-child", 1, groupedChild);
+        await foldLayout(page, "workspace-root", groupedRoot);
+        await page.mouse.move(width - 10, 850);
+        const openStyle = await foldStyle(page, "workspace-root");
+        await expanded(page, "workspace-root", false);
+        await page.mouse.move(width - 10, 850);
+        const closedStyle = await foldStyle(page, "workspace-root");
+        assert.equal(openStyle.color, closedStyle.color, "idle folding changes direction only");
+        assert.equal(
+          openStyle.color,
+          await tokenColor(page, "workspace-root", "--dsw-alias-label-secondary"),
+        );
+        await foldLayout(page, "workspace-root", groupedRoot);
+        await expanded(page, "workspace-root", true);
+        await treeShot(page, `thread-tree-${width}-workspace-${scheme}`);
+      }
+
+      await threadMenu(page, "parent");
+      await page.getByRole("menuitem", { name: "Pin session", exact: true }).click();
+      await openSidebar(page);
+      const pinnedRoot = page.locator('[data-sidebar-pinned] [data-row-key="session:parent"]');
+      await pinnedRoot.waitFor();
+      await pinnedRoot.scrollIntoViewIfNeeded();
+      await guides(page, "parent", 1, pinnedRoot);
+      await foldLayout(page, "parent", pinnedRoot);
+      await page.emulateMedia({ colorScheme: "light" });
+      await themedShots(page, `thread-tree-${width}-pinned`);
+      await noHorizontalOverflow(page);
+    },
+  );
 }
 
 async function groupFolds(page: Page) {

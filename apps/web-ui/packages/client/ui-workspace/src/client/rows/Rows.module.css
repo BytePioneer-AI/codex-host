@@ -178,7 +178,10 @@
 
 /* Session cell (figma): pad 8, a 16px status slot, then a 4px title gap. */
 .sessionRow {
-  height: 32px;
+  --dsh-thread-row-height: 32px;
+  --dsh-thread-row-gap: 2px;
+  --dsh-thread-icon-size: 16px;
+  height: var(--dsh-thread-row-height);
   gap: 0;
   min-width: 0;
   max-width: 100%;
@@ -186,6 +189,15 @@
   padding-inline-start: calc(
     8px + var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px)
   );
+}
+
+.sessionRow:has([data-harness-id]) {
+  --dsh-thread-icon-size: 14px;
+}
+
+/* Pinned row wrappers are contiguous; grouped and recent lists have a 2px gap. */
+:global([data-sidebar-pinned]) .sessionRow {
+  --dsh-thread-row-gap: 0px;
 }
 
 .sessionRow .title {
@@ -409,7 +421,8 @@
 
 /* Frame phone layout only: touch laptops and desktop search keep their rules. */
 :global([data-phone-drawer]) .sessionRow {
-  height: 48px;
+  --dsh-thread-row-height: 48px;
+  height: var(--dsh-thread-row-height);
   min-height: 48px;
 }
 
@@ -568,6 +581,10 @@
 /* Touch has no hover. Keep one large explicit menu trigger; all actions
    remain in that menu instead of exposing small accidental archive targets. */
 @media (hover: none), (pointer: coarse) {
+  .sessionRow {
+    --dsh-thread-row-height: 44px;
+  }
+
   .projectRow,
   .sessionRow {
     min-height: 44px;

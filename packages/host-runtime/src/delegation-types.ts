@@ -244,6 +244,12 @@ export interface ThreadWatchEntry {
   /** Present for `undeliverable`. */
   reason?: string;
   registeredAt: string;
+  /** Current title, or the last observed title when the Thread cannot be read. */
+  taskName?: string;
+  /** Current Thread status; omitted when the Thread cannot be read. */
+  threadStatus?: DelegationThreadStatus;
+  /** Elapsed time since registration, including Host downtime. */
+  watchedForMs?: number;
 }
 
 export interface ThreadWatchListResult {

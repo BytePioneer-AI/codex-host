@@ -1,4 +1,5 @@
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
+import type { DelegationWorktree } from "./delegation-cli-worktree.js";
 import {
   DelegationControlError,
   type DelegationStartResult,
@@ -17,7 +18,7 @@ function targetLink(identifier: string): string {
   return originClientName(identifier) !== undefined ? identifier : threadLink(identifier);
 }
 
-export type DelegationCliFormat = "json" | "compact";
+export type DelegationCliFormat = "json" | "compact" | "text";
 
 function threadLink(threadId: string): string {
   return `codex://threads/${threadId}`;
@@ -112,13 +113,14 @@ export function compactDelegationOutput(
     case "harness inspect":
       return inspectOutput(body as HarnessInspectResult);
     case "delegate start": {
-      const result = body as DelegationStartResult;
+      const result = body as DelegationStartResult & { worktree?: DelegationWorktree };
       const effective = result.configuration?.effective;
       return {
         thread: result.deepLink,
         harnessId: result.harnessId,
         status: result.status,
         ...(result.cwd ? { cwd: result.cwd } : {}),
+        ...(result.worktree ? { worktree: result.worktree } : {}),
         ...(result.parentThreadId
           ? {
               parent: targetLink(result.parentThreadId),
@@ -164,13 +166,27 @@ export function compactDelegationOutput(
     case "thread watches": {
       const result = body as ThreadWatchListResult;
       return {
-        watches: result.watches.map(({ threadId, notifyThreadId, state, outcome, reason }) => ({
-          thread: threadLink(threadId),
-          notify: targetLink(notifyThreadId),
-          state,
-          ...(outcome ? { outcome } : {}),
-          ...(reason ? { reason } : {}),
-        })),
+        watches: result.watches.map(
+          ({
+            threadId,
+            notifyThreadId,
+            state,
+            outcome,
+            reason,
+            taskName,
+            threadStatus,
+            watchedForMs,
+          }) => ({
+            thread: threadLink(threadId),
+            notify: targetLink(notifyThreadId),
+            state,
+            ...(outcome ? { outcome } : {}),
+            ...(reason ? { reason } : {}),
+            ...(taskName ? { taskName } : {}),
+            ...(threadStatus ? { threadStatus } : {}),
+            ...(watchedForMs !== undefined ? { watchedForMs } : {}),
+          }),
+        ),
       };
     }
     case "thread list": {

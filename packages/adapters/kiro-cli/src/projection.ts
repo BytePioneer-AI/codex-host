@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type { RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import type {
   HostApprovalAction,
@@ -352,14 +353,19 @@ export function projectKiroToolCall(
     const input = isRecord(toolCall.rawInput) ? toolCall.rawInput : {};
     const subagentState: HostSubagentState = {
       subagentId: subtaskId,
+      nativeSubagentId: subtaskId,
       description: typeof input.prompt === "string" ? input.prompt : "Subagent task",
+      ...subagentConfiguration(input),
+      ...subagentConfiguration(kiroMeta),
       background: false,
       status:
-        toolCall.status === "completed"
-          ? "completed"
-          : toolCall.status === "failed"
-            ? "failed"
-            : "running",
+        toolCall.status === "pending"
+          ? "pending"
+          : toolCall.status === "completed"
+            ? "completed"
+            : toolCall.status === "failed"
+              ? "failed"
+              : "running",
       ...(typeof input.name === "string" ? { role: input.name } : {}),
       ...(typeof toolCall.rawOutput === "string" ? { resultSummary: toolCall.rawOutput } : {}),
     };
@@ -367,6 +373,7 @@ export function projectKiroToolCall(
       type: "subagentDelegation",
       itemId: hostItemId,
       operation: "spawn",
+      ...(typeof input.prompt === "string" ? { prompt: input.prompt } : {}),
       subagents: [subagentState],
     };
     return subagentItem;

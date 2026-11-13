@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   codeActionFileChange,
   parseAntigravityCodeActions,
+  parseAntigravityStepThinking,
   type AntigravityCodeAction,
 } from "../src/index.js";
 
@@ -189,6 +190,40 @@ describe("Antigravity Code Action diffs", () => {
       const change = codeActionFileChange(requireAction(action), CWD);
       expect(change?.path).toBe(outside.replaceAll("\\", "/"));
       expect(change?.unifiedDiff).toContain(`+++ ${outside.replaceAll("\\", "/")}`);
+    });
+  });
+
+  describe("parseAntigravityStepThinking", () => {
+    it("reads plannerResponse thinking or rawThinking at the step index or offset", () => {
+      const payload = {
+        steps: [
+          { type: "CORTEX_STEP_TYPE_USER_INPUT", status: "CORTEX_STEP_STATUS_DONE" },
+          {
+            type: "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+            status: "CORTEX_STEP_STATUS_DONE",
+            plannerResponse: {
+              thinking: "Inspecting the binary symbols before running tools.",
+              response: "Done.",
+            },
+          },
+          {
+            type: "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+            status: "CORTEX_STEP_STATUS_DONE",
+            plannerResponse: {
+              rawThinking: "Fallback raw thinking block.",
+            },
+          },
+        ],
+      };
+      expect(parseAntigravityStepThinking(payload, 0)).toBeNull();
+      expect(parseAntigravityStepThinking(payload, 1)).toBe(
+        "Inspecting the binary symbols before running tools.",
+      );
+      expect(parseAntigravityStepThinking(payload, 2)).toBe("Fallback raw thinking block.");
+      expect(parseAntigravityStepThinking({ steps: [payload.steps[1]] }, 256, 256)).toBe(
+        "Inspecting the binary symbols before running tools.",
+      );
+      expect(parseAntigravityStepThinking(null, 1)).toBeNull();
     });
   });
 });

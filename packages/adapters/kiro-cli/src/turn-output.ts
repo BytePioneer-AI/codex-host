@@ -35,6 +35,20 @@ export class KiroTurnOutput {
   }
 
   #complete(item: HostItem, outcome: HostItemOutcome): void {
+    if (item.type === "subagentDelegation") {
+      item = {
+        ...item,
+        subagents: item.subagents.map((child) => ({
+          ...child,
+          status:
+            outcome.status === "cancelled"
+              ? "interrupted"
+              : outcome.status === "failed"
+                ? "failed"
+                : child.status,
+        })),
+      };
+    }
     this.emit({
       kind: "event",
       event: {
@@ -43,6 +57,25 @@ export class KiroTurnOutput {
         snapshot: { item, outcome },
       },
     });
+    if (item.type === "subagentDelegation")
+      for (const child of item.subagents)
+        if (child.nativeSubagentId) {
+          this.emit({
+            kind: "event",
+            event: {
+              type: "subagent.state.changed",
+              nativeSubagentId: child.nativeSubagentId,
+              status: child.status,
+            },
+          });
+          this.emit({
+            kind: "event",
+            event: {
+              type: "subagent.transcript.changed",
+              nativeSubagentId: child.nativeSubagentId,
+            },
+          });
+        }
   }
 
   #completeMessage(outcome: HostItemOutcome, phase: "commentary" | "final_answer"): void {
@@ -148,6 +181,21 @@ export class KiroTurnOutput {
       const tool: ToolState = { ...previous, event: merged, item, done };
       this.#tools.set(event.callId, tool);
       if (!done) {
+        if (
+          previous?.item.type === "subagentDelegation" &&
+          item.type === "subagentDelegation" &&
+          JSON.stringify(previous.item.subagents) !== JSON.stringify(item.subagents)
+        ) {
+          this.emit({
+            kind: "event",
+            event: {
+              type: "item.updated",
+              turnId: this.turnId,
+              itemId: item.itemId,
+              update: { type: "subagents.replace", subagents: item.subagents },
+            },
+          });
+        }
         this.#fileOutput(tool, event.content);
         return;
       }

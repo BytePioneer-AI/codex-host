@@ -131,6 +131,80 @@ describe("Antigravity Subagents", () => {
     expect(otherParent.turns[0]?.items[0]?.item.itemId).not.toBe(ids[0]);
   });
 
+  it("projects PLANNER_RESPONSE thinking as a reasoning Item before tool calls and final text", () => {
+    const withThinking =
+      row({
+        step_index: 0,
+        source: "USER_EXPLICIT",
+        type: "USER_INPUT",
+        status: "DONE",
+        content: "<USER_REQUEST>\nInspect fixture\n</USER_REQUEST>",
+      }) +
+      row({
+        step_index: 1,
+        source: "MODEL",
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        thinking: "Checking directory contents first.",
+        tool_calls: [{ name: "list_dir", args: { DirectoryPath: "fixture" } }],
+      }) +
+      row({
+        step_index: 2,
+        source: "MODEL",
+        type: "GENERIC",
+        status: "DONE",
+        content: "marker.txt",
+      }) +
+      row({
+        step_index: 3,
+        source: "MODEL",
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        thinking: "Found marker.txt; summarizing result.",
+        content: "AGY_CHILD_PROBE_OK",
+      });
+    const snapshot = parseSubagentTranscript(
+      withThinking,
+      parent,
+      child,
+      "completed",
+      process.cwd(),
+      64_000,
+    );
+    expect(snapshot.turns[0]?.items).toMatchObject([
+      {
+        item: {
+          type: "reasoning",
+          itemId: `agy-${parent}-${child}-1-thinking`,
+          text: "Checking directory contents first.",
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "toolExecution",
+          toolName: "list_dir",
+          output: { content: [{ text: "marker.txt" }] },
+        },
+      },
+      {
+        item: {
+          type: "reasoning",
+          itemId: `agy-${parent}-${child}-3-thinking`,
+          text: "Found marker.txt; summarizing result.",
+        },
+        outcome: { status: "succeeded" },
+      },
+      {
+        item: {
+          type: "agentMessage",
+          itemId: `agy-${parent}-${child}-3`,
+          text: "AGY_CHILD_PROBE_OK",
+        },
+      },
+    ]);
+  });
+
   it("ignores an incomplete final line, rejects interior corruption and does not invent terminal success", () => {
     const snapshot = parseSubagentTranscript(
       transcript + '{"step_index":4',
@@ -456,4 +530,55 @@ describe("Antigravity Subagents", () => {
       observer.stop();
     }
   });
+});
+
+describe("Antigravity child configuration", () => {
+  it.each([{}, { model: "native-model", reasoningEffort: "low" }])(
+    "uses native data before parent defaults: %j",
+    (configuration) => {
+      const { observer, events, completed } = fixture({
+        parentConfiguration: { model: "parent-model", reasoningEffort: "high" },
+      });
+      const event = step("RUNNING");
+      const childInfo = event.subagent_info.subagents[0];
+      if (!childInfo) throw new Error("Expected child info");
+      Object.assign(childInfo, configuration);
+      observer.handle(event);
+      expect(events[0]).toMatchObject({
+        item: {
+          prompt: "Inspect fixture",
+          subagents: [
+            {
+              model: "parent-model",
+              reasoningEffort: "high",
+              ...configuration,
+              nativeSubagentId: child,
+              role: "research",
+              status: "running",
+            },
+          ],
+        },
+      });
+      observer.handle(step("DONE"));
+      expect(completed[0]?.item).toMatchObject({
+        subagents: [{ model: "parent-model", reasoningEffort: "high", ...configuration }],
+      });
+      observer.stop();
+    },
+  );
+});
+
+it("does not discard Antigravity delegation identity when optional native configuration is opaque", () => {
+  const { observer, events } = fixture({
+    parentConfiguration: { model: "parent", reasoningEffort: "high" },
+  });
+  const event = step("RUNNING");
+  const childInfo = event.subagent_info.subagents[0];
+  if (!childInfo) throw new Error("Expected child info");
+  Object.assign(childInfo, { model: { id: "opaque" }, thinking: null });
+  observer.handle(event);
+  expect(events[0]).toMatchObject({
+    item: { subagents: [{ nativeSubagentId: child, model: "parent", reasoningEffort: "high" }] },
+  });
+  observer.stop();
 });

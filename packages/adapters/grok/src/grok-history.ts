@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type {
   HistoricalTurnOutcome,
   HostAgentMessageItem,
@@ -460,6 +461,7 @@ export function mapGrokReplay(
               description: grokSubagentDescription(event.rawInput, event.title),
               ...(role ? { role } : {}),
               ...(model ? { model } : {}),
+              ...subagentConfiguration(event.rawInput),
               background: grokSubagentBackground(event.rawInput),
               status: "running",
             },

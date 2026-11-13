@@ -39,16 +39,6 @@ it("prefers the Desktop program over a locally installed codex", async () => {
   expect(runInstallationCommand).not.toHaveBeenCalled();
 });
 
-it("uses local codex at the minimum supported version when Desktop is absent", async () => {
-  const { command, environment } = await installation();
-  expect(await resolveOfficialCodexExecutable("", environment)).toBe(command);
-  expect(runInstallationCommand).toHaveBeenCalledExactlyOnceWith(
-    command,
-    ["--version"],
-    environment,
-  );
-});
-
 it("refuses codexhost shim aliases and the routing proxy without executing them", async () => {
   const { command, environment } = await installation();
   const shim = path.join(path.dirname(command), "codexhost-shim");

@@ -16,6 +16,7 @@ export type { TextShimmerProps } from "./TextShimmer.tsx";
 export { Button } from "./Button.tsx";
 export type { ButtonVariant } from "./Button.tsx";
 export { Pill } from "./Pill.tsx";
+export { default as preferenceRowStyles } from "./settings-form/PreferenceRow.module.css";
 export { SegmentedTabs } from "./SegmentedTabs.tsx";
 export type { SegmentedTab } from "./SegmentedTabs.tsx";
 export { Tag } from "./Tag.tsx";

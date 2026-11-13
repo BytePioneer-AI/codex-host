@@ -1,4 +1,4 @@
-/* The bilingual label and native language names stay discoverable in either locale. */
+/* Shared settings-row rhythm and segmented preference choices. */
 
 .row {
   display: flex;
@@ -22,6 +22,13 @@
   font-weight: 400;
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
+}
+
+.description {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .choices {
@@ -52,11 +59,17 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.choice[aria-pressed="true"] {
+.choice[aria-pressed="true"],
+.choice[aria-checked="true"] {
   background: var(--dsw-alias-bg-layer-2);
   border-color: var(--dsw-alias-border-l2);
   color: var(--dsw-alias-label-primary);
   box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+}
+
+.choice[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .choice:focus-visible {

@@ -52,6 +52,7 @@ export function ThreadTreeStylePrompt({
             onClick={() => void save(value)}
           >
             <span className={css.cardTitle}>{t(`threadTree.style.${value}`)}</span>
+            <span className={css.cardSubtitle}>{t(`threadTree.style.${value}Subtitle`)}</span>
             <ThreadTreeStylePreview style={value} t={t} />
           </button>
         ))}

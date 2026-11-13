@@ -1129,23 +1129,30 @@ class AntigravitySession implements HarnessSession {
         // Turn that replied and only repeats an error an earlier Turn of this
         // Conversation already reported did not fail.
         this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
-      } else if (
-        repliedThisTurn &&
-        event.result.error?.trim() &&
-        (await nativeTurnRecoveredFromError({
-          conversationId: convId,
-          error: event.result.error,
-          homedir: antigravityHome(this.#environment),
-        }))
-      ) {
+      } else {
         // agy also reports ERROR when a step of this Turn failed but the agent
         // retried past it (a transient network error on one model request, for
         // example) and went on to finish with a reply. Such a Turn did not fail.
+        const recovered =
+          !timedOut &&
+          finishedReason !== "interrupted" &&
+          repliedThisTurn &&
+          event.result.error?.trim() &&
+          (await nativeTurnRecoveredFromError({
+            conversationId: convId,
+            error: event.result.error,
+            homedir: antigravityHome(this.#environment),
+          }));
         if (this.#active !== active) return;
-        this.#completeTurn(active, { status: "succeeded", checkpoint }, nativeTurnRef);
-      } else {
-        if (this.#active !== active) return;
-        this.#completeTurn(active, { status: "failed", error, checkpoint }, nativeTurnRef);
+        this.#completeTurn(
+          active,
+          active.cancellationRequested
+            ? { status: "cancelled", reason: "Cancelled by user", checkpoint }
+            : recovered
+              ? { status: "succeeded", checkpoint }
+              : { status: "failed", error, checkpoint },
+          nativeTurnRef,
+        );
       }
     }
   }

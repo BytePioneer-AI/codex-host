@@ -62,28 +62,20 @@ async function foldStyle(page: Page, id: string) {
 
 async function foldLayout(page: Page, id: string): Promise<void> {
   const layout = await threadRow(page, id).evaluate((row) => {
-    const title = row.querySelector("[data-session-title]");
     const toggle = row.querySelector("[data-thread-toggle]");
-    const trailing = row.lastElementChild;
-    const content = toggle?.firstElementChild;
+    const icon = row.querySelector("[data-thread-icon-toggle]");
     const chevron = toggle?.querySelector("svg");
-    if (!title || !toggle || !trailing || !content || !chevron)
-      throw new Error("Missing fold layout elements");
-    const dot = content.querySelector("[data-thread-tree-activity]");
+    if (!toggle || !icon || !chevron) throw new Error("Missing fold layout elements");
+    const chevronBox = chevron.getBoundingClientRect();
     return {
-      gap: toggle.getBoundingClientRect().left - title.getBoundingClientRect().right,
-      metadataGap: trailing.getBoundingClientRect().left - toggle.getBoundingClientRect().right,
-      contentFits: content.scrollWidth <= content.clientWidth + 1,
-      chevronWidth: chevron.getBoundingClientRect().width,
-      dotBeforeChevron:
-        !dot || dot.getBoundingClientRect().right <= chevron.getBoundingClientRect().left,
+      chevronBeforeIcon: chevronBox.right <= icon.getBoundingClientRect().left,
+      chevronInRow: chevronBox.left >= -1,
+      chevronWidth: chevronBox.width,
     };
   });
-  assert.ok(layout.gap >= 0 && layout.gap <= 1, "the control follows the title, not the row edge");
-  assert.ok(layout.metadataGap >= 6, "metadata and actions do not overlap the fold target");
-  assert.equal(layout.contentFits, true, "the chevron and dot do not shrink or clip");
+  assert.equal(layout.chevronBeforeIcon, true, "the chevron sits left of the icon");
+  assert.equal(layout.chevronInRow, true);
   assert.equal(layout.chevronWidth, 10);
-  assert.equal(layout.dotBeforeChevron, true);
 }
 
 async function rowAlignment(page: Page, id: string) {
@@ -138,7 +130,9 @@ for (const width of [1280, 390]) {
       await treeShot(page, `thread-tree-${width}-collapsed`);
       assert.equal(await threadRow(page, "child").count(), 0);
       assert.equal(await page.locator('[data-row-key="section:pinned"]').count(), 0);
-      await parent.getByRole("img", { name: "Child sessions are running", exact: true }).waitFor();
+      await parent
+        .locator('[data-thread-toggle][aria-description="Child sessions are running"]')
+        .waitFor();
       assert.equal(await page.getByText("Native worker", { exact: true }).count(), 0);
       const selectionBefore = await parent.getAttribute("aria-selected");
       await expanded(page, "parent", true);
@@ -162,11 +156,6 @@ for (const width of [1280, 390]) {
       assert.equal(expandedStyle.contentBackground, "rgba(0, 0, 0, 0)");
       assert.equal(expandedStyle.chevron, "none");
       assert.notEqual(expandedStyle.color, collapsedStyle.color);
-      const expandedBounds = await parent.locator("[data-thread-toggle]").boundingBox();
-      assert.ok(
-        expandedBounds && expandedBounds.width < toggleBounds.width,
-        "the control width follows its content when the summary dot disappears",
-      );
       await foldLayout(page, "parent");
       await foldLayout(page, "child");
       const rootPosition = await rowAlignment(page, "parent");
@@ -325,7 +314,9 @@ it(
     await openSidebar(page);
     await expanded(page, "parent", false);
     const parent = threadRow(page, "parent");
-    await parent.getByRole("img", { name: "Child sessions need attention", exact: true }).waitFor();
+    await parent
+      .locator('[data-thread-toggle][aria-description="Child sessions need attention"]')
+      .waitFor();
     assert.equal(await parent.locator("[data-thread-tree-activity]").count(), 1);
     assert.equal(
       await parent
@@ -337,23 +328,27 @@ it(
     await treeShot(page, "thread-tree-390-collapsed-summary");
     const pendingColor = await parent
       .locator("[data-thread-tree-activity]")
-      .evaluate((node) => getComputedStyle(node).backgroundColor);
+      .evaluate((node) => getComputedStyle(node).color);
     host.pending = [];
     host.changed("grandchild", "serverRequest/resolved");
-    await parent.getByRole("img", { name: "Child sessions are running", exact: true }).waitFor();
+    await parent
+      .locator('[data-thread-toggle][aria-description="Child sessions are running"]')
+      .waitFor();
     const runningColor = await parent
       .locator("[data-thread-tree-activity]")
-      .evaluate((node) => getComputedStyle(node).backgroundColor);
+      .evaluate((node) => getComputedStyle(node).color);
     const running = host.threads.get("grandchild");
     assert.ok(running);
     running.status = { type: "idle" };
     host.changed("grandchild", "turn/completed");
     await parent
-      .getByRole("img", { name: "Child sessions finished and have not been opened", exact: true })
+      .locator(
+        '[data-thread-toggle][aria-description="Child sessions finished and have not been opened"]',
+      )
       .waitFor();
     const completedColor = await parent
       .locator("[data-thread-tree-activity]")
-      .evaluate((node) => getComputedStyle(node).backgroundColor);
+      .evaluate((node) => getComputedStyle(node).color);
     assert.equal(
       new Set([pendingColor, runningColor, completedColor]).size,
       3,
@@ -739,5 +734,30 @@ it(
     assert.equal(host.parents.child, "parent");
     assert.equal(await threadRow(page, "child").getAttribute("data-thread-parent"), "parent");
     assert.equal(await picker.getByRole("searchbox").isEnabled(), true);
+  },
+);
+
+it(
+  "clicking the icon of a parent folds it without opening the session",
+  { timeout: 60_000 },
+  async (t) => {
+    const { page } = await threadTreeBrowser(t, 1280);
+    const parent = threadRow(page, "parent");
+    await parent.waitFor();
+    const selectionBefore = await parent.getAttribute("aria-selected");
+    await parent.locator("[data-thread-icon-toggle]").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-row-key$=":parent"]')?.getAttribute("aria-expanded") ===
+        "true",
+    );
+    assert.equal(await parent.getAttribute("aria-selected"), selectionBefore);
+    await parent.locator("[data-thread-icon-toggle]").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-row-key$=":parent"]')?.getAttribute("aria-expanded") ===
+        "false",
+    );
+    assert.equal(await page.locator('[data-conversation-session="parent"]').count(), 0);
   },
 );

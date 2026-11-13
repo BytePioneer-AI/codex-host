@@ -1,4 +1,4 @@
-/** Title-trailing fold control with one priority-ordered descendant activity dot. */
+/** Row-leading fold control placed in the left padding with one priority-ordered descendant activity dot. */
 import { IconChevronDownOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { WorkspaceBrowserProps } from "../contract/slots.ts";
 import type { SessionNode } from "../tree.ts";
@@ -40,16 +40,7 @@ export function ThreadTreeToggle({
         toggle();
       }}
     >
-      <span className={css.badge}>
-        {state !== undefined && (
-          <span
-            className={css.activity}
-            data-thread-tree-activity={state}
-            role="img"
-            aria-label={t(`threadTree.${state}`)}
-            title={t(`threadTree.${state}`)}
-          />
-        )}
+      <span className={css.badge} data-thread-tree-activity={state}>
         <IconChevronDownOutlineRegular size={10} className={expanded ? undefined : css.collapsed} />
       </span>
     </button>

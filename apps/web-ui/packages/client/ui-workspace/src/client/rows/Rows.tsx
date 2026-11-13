@@ -609,6 +609,14 @@ export function SessionNodeItem({
           renderSlot("sidebar.session.row.leading", { sessionId: node.id })
         }
         title={title}
+        onIdentityClick={
+          node.tree?.descendantCount
+            ? (e) => {
+                e.stopPropagation();
+                toggle(node.id, !expanded);
+              }
+            : undefined
+        }
         onTitleDoubleClick={
           row.blank
             ? undefined

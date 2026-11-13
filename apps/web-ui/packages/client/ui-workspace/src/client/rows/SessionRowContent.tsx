@@ -7,17 +7,24 @@ export function SessionRowContent({
   ambient,
   title,
   onTitleDoubleClick,
+  onIdentityClick,
   children,
 }: {
   identity: ReactNode;
   ambient?: ReactNode;
   title: string;
   onTitleDoubleClick?: MouseEventHandler<HTMLSpanElement>;
+  /** Set on rows that fold: the icon then toggles instead of opening the session. */
+  onIdentityClick?: MouseEventHandler<HTMLSpanElement>;
   children?: ReactNode;
 }) {
   return (
     <>
-      <span className={css.slot}>
+      <span
+        className={css.slot}
+        onClick={onIdentityClick}
+        data-thread-icon-toggle={onIdentityClick ? "" : undefined}
+      >
         {identity}
         <span className={css.statusOverlay}>{ambient}</span>
       </span>

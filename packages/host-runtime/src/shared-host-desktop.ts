@@ -18,6 +18,7 @@ import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import { isDesktopContextVariable } from "./desktop-context-environment.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
  * cannot change the service's data root, native account home or execution owner. */
@@ -44,7 +45,7 @@ function desktopContext(
     throw new Error("Invalid Desktop runtime context");
   const context: NodeJS.ProcessEnv = {};
   for (const [key, entry] of Object.entries(envelope.environment)) {
-    if (!key.startsWith("CODEXHOST_") || typeof entry !== "string")
+    if (!isDesktopContextVariable(key) || typeof entry !== "string")
       throw new Error("Invalid Desktop runtime context field");
     context[key] = entry;
   }

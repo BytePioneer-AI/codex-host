@@ -4,7 +4,7 @@ import type { SessionNode } from "../tree.ts";
 import { SessionNodeItem } from "./Rows.tsx";
 import { SectionHeading } from "./SectionHeading.tsx";
 import { PINNED_SECTION_KEY } from "../stores.ts";
-import { useThreadTreeView } from "./ThreadTreeView.tsx";
+import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
 import css from "./PinnedSection.module.css";
 
 type RowProps = ComponentProps<typeof SessionNodeItem>;
@@ -34,7 +34,6 @@ export function PinnedSection({
   /** Fold or unfold the section. */
   onToggle: () => void;
 }) {
-  const { rows: visibleRows } = useThreadTreeView();
   if (rows.length === 0) return null;
   return (
     <div role="group" aria-label={t("section.pinned")} className={css.section} data-sidebar-pinned>
@@ -45,20 +44,23 @@ export function PinnedSection({
         onToggle={onToggle}
         rowKey={`section:${PINNED_SECTION_KEY}`}
       />
-      {expanded &&
-        visibleRows(rows).map((node) => (
-          <SessionNodeItem
-            key={node.id}
-            node={node}
-            currentId={currentId}
-            now={Date.now()}
-            onOpen={onOpen}
-            onRenameRequest={onRenameRequest}
-            renderSlot={renderSlot}
-            onReveal={node.id === revealSessionId ? () => onSessionRevealed(node.id) : undefined}
-            t={t}
-          />
-        ))}
+      {expanded && (
+        <ThreadTreeRows roots={rows}>
+          {(node) => (
+            <SessionNodeItem
+              key={node.id}
+              node={node}
+              currentId={currentId}
+              now={Date.now()}
+              onOpen={onOpen}
+              onRenameRequest={onRenameRequest}
+              renderSlot={renderSlot}
+              onReveal={node.id === revealSessionId ? () => onSessionRevealed(node.id) : undefined}
+              t={t}
+            />
+          )}
+        </ThreadTreeRows>
+      )}
     </div>
   );
 }

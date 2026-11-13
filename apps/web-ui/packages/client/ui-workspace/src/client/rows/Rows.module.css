@@ -178,10 +178,8 @@
 
 /* Session cell (figma): pad 8, a 16px status slot, then a 4px title gap. */
 .sessionRow {
-  --dsh-thread-row-height: 32px;
-  --dsh-thread-row-gap: 2px;
-  --dsh-thread-icon-size: 16px;
-  height: var(--dsh-thread-row-height);
+  flex-direction: column;
+  align-items: stretch;
   gap: 0;
   min-width: 0;
   max-width: 100%;
@@ -191,13 +189,27 @@
   );
 }
 
-.sessionRow:has([data-harness-id]) {
-  --dsh-thread-icon-size: 14px;
+.sessionMain {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--dsh-thread-row-height);
+  flex: none;
 }
 
-/* Pinned row wrappers are contiguous; grouped and recent lists have a 2px gap. */
-:global([data-sidebar-pinned]) .sessionRow {
-  --dsh-thread-row-gap: 0px;
+.identityButton {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.identityButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
 }
 
 .sessionRow .title {
@@ -391,20 +403,24 @@
   margin-left: auto;
 }
 
-.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time {
-  visibility: hidden;
-}
-
 @media (hover: hover) and (pointer: fine) {
+  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time {
+    visibility: hidden;
+  }
+
   .projectRow > .rowActions,
   .sessionRow .rowActions {
     position: absolute;
-    inset-inline-end: 8px;
+    inset-inline-end: 0;
     top: 50%;
     transform: translateY(-50%);
     z-index: 1;
     background: var(--dsh-row-surface);
     border-radius: var(--dsw-radius-sm);
+  }
+
+  .projectRow > .rowActions {
+    inset-inline-end: 8px;
   }
 
   .projectRow > .rowActions::before,
@@ -421,8 +437,6 @@
 
 /* Frame phone layout only: touch laptops and desktop search keep their rules. */
 :global([data-phone-drawer]) .sessionRow {
-  --dsh-thread-row-height: 48px;
-  height: var(--dsh-thread-row-height);
   min-height: 48px;
 }
 
@@ -581,10 +595,6 @@
 /* Touch has no hover. Keep one large explicit menu trigger; all actions
    remain in that menu instead of exposing small accidental archive targets. */
 @media (hover: none), (pointer: coarse) {
-  .sessionRow {
-    --dsh-thread-row-height: 44px;
-  }
-
   .projectRow,
   .sessionRow {
     min-height: 44px;

@@ -39,7 +39,7 @@ export function navigateSidebar(event: KeyboardEvent<HTMLDivElement>): void {
   const index = rows.indexOf(row);
   if (index < 0) return;
   const groupRow = row.matches('[role="treeitem"][aria-expanded]');
-  const toggle = row.querySelector<HTMLElement>("[data-thread-toggle]");
+  const toggle = row.querySelector<HTMLElement>("[data-thread-icon-toggle]");
   const fold = (): void => {
     if (toggle) toggle.click();
     else row.click();

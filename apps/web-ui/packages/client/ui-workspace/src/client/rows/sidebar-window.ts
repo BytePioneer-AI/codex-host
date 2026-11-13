@@ -8,7 +8,7 @@ interface SidebarRow {
   pendingInteraction?: string;
   tree?: {
     descendantIds: readonly string[];
-    activity: { running: boolean; pendingInteraction: boolean };
+    activity: { running: number; pendingInteraction: number };
   };
 }
 

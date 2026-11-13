@@ -14,7 +14,7 @@ export interface ThreadTreeInfo<T> {
   descendantIds: readonly string[];
   descendantCount: number;
   /** Descendants only: the row keeps its own activity indicators. */
-  activity: { running: boolean; pendingInteraction: boolean; completed: boolean };
+  activity: { running: number; pendingInteraction: number; completed: number };
   updatedAt: number;
 }
 
@@ -61,7 +61,7 @@ export function buildThreadTree<T extends ThreadTreeRow>(
         children: [],
         descendantIds: [],
         descendantCount: 0,
-        activity: { running: false, pendingInteraction: false, completed: false },
+        activity: { running: 0, pendingInteraction: 0, completed: 0 },
         updatedAt: row.updatedAt,
       },
     });
@@ -91,10 +91,10 @@ export function buildThreadTree<T extends ThreadTreeRow>(
     for (const child of node.tree.children) {
       ids.push(child.id, ...child.tree.descendantIds);
       node.tree.updatedAt = Math.max(node.tree.updatedAt, child.tree.updatedAt);
-      node.tree.activity.running ||= child.running || child.tree.activity.running;
-      node.tree.activity.pendingInteraction ||=
-        child.pendingInteraction !== undefined || child.tree.activity.pendingInteraction;
-      node.tree.activity.completed ||= child.completed || child.tree.activity.completed;
+      node.tree.activity.running += Number(child.running) + child.tree.activity.running;
+      node.tree.activity.pendingInteraction +=
+        Number(child.pendingInteraction !== undefined) + child.tree.activity.pendingInteraction;
+      node.tree.activity.completed += Number(child.completed) + child.tree.activity.completed;
     }
     node.tree.descendantIds = ids;
     node.tree.descendantCount = ids.length;

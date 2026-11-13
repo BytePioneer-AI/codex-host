@@ -70,11 +70,13 @@ it("builds a three-layer tree with descendant IDs, depth, recency and all activi
       id: "c",
       parent: "b",
       updatedAt: 10,
-      running: false,
+      running: true,
       pendingInteraction: "approval",
       completed: true,
     },
   ];
+  // Repeated catalog entries must not inflate either descendants or activity.
+  source.push({ id: "b", parent: "a", updatedAt: 3, running: true, completed: false });
   const before = structuredClone(source);
   const roots = buildThreadTree(source, (row) => row.parent);
   assert.equal(roots.length, 1);
@@ -84,9 +86,9 @@ it("builds a three-layer tree with descendant IDs, depth, recency and all activi
   assert.equal(root.tree.descendantCount, 2);
   assert.equal(root.tree.updatedAt, 10);
   assert.deepEqual(root.tree.activity, {
-    running: true,
-    pendingInteraction: true,
-    completed: true,
+    running: 2,
+    pendingInteraction: 1,
+    completed: 1,
   });
   assert.equal(root.tree.children[0]?.tree.depth, 1);
   assert.equal(root.tree.children[0]?.tree.children[0]?.tree.depth, 2);
@@ -221,7 +223,7 @@ it("keeps roots outside the window for running, pending or selected descendants,
       ],
     ]),
   );
-  assert.equal(roots.at(-1)?.tree?.activity.pendingInteraction, true);
+  assert.equal(roots.at(-1)?.tree?.activity.pendingInteraction, 1);
   assert.equal(sidebarWindow(roots, 2).rows.at(-1)?.id, "root7");
   roots = deriveFlat(
     list,
@@ -231,7 +233,7 @@ it("keeps roots outside the window for running, pending or selected descendants,
       [id("running"), { running: false, completionUnread: true, pendingInteraction: undefined }],
     ]),
   );
-  assert.equal(roots.at(-1)?.tree?.activity.completed, true);
+  assert.equal(roots.at(-1)?.tree?.activity.completed, 1);
   assert.equal(sidebarWindow(roots, 2, "running").rows.at(-1)?.id, "root7");
   assert.equal(sidebarWindow(roots, 2, undefined, "running").rows.at(-1)?.id, "root7");
   assert.equal(sidebarWindow(roots, 2).rows.length, 2);

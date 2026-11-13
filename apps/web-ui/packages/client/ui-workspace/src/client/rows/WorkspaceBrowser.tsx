@@ -72,6 +72,7 @@ import { pinOrderSource } from "../pin-order.ts";
 import { threadTreeOrderSource } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
+import { ThreadTreeRows } from "./ThreadTreeControls.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
 import { SessionListError } from "./SessionListError.tsx";
@@ -773,75 +774,77 @@ function SessionTree({
               } as CSSProperties
             }
           >
-            {sessions.map((node) => {
-              // Session drag never leaves its browser-local account, and pinned
-              // rows reorder only within their leading pinned block.
-              const sameGroupDrag = drag !== null && drag.accountKey === group.key;
-              const compatibleTarget = sameGroupDrag && drag.pinned === node.pinned;
-              const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
-                node.blank ? "after" : half;
-              const dragProps = {
-                start: () => {
-                  sessionDropCommitted.current = false;
-                  setDrag({
-                    accountKey: group.key,
-                    sessionId: node.id,
-                    pinned: node.pinned,
-                    over: null,
-                  });
-                },
-                active: compatibleTarget,
-                marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
-                hover: (half: "before" | "after") => {
-                  /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
-                  setDrag((d) =>
-                    d === null
-                      ? d
-                      : {
-                          ...d,
-                          over: { id: node.id, half: normalizeHalf(half) },
-                        },
-                  );
-                },
-                drop: (half: "before" | "after") => {
-                  /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
-                  if (drag === null) return;
-                  commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) });
-                },
-                end: (copied?: boolean) => {
-                  if (!copied && drag?.over !== null && drag?.over !== undefined)
-                    commitSessionDrag(drag, drag.over);
-                  else setDrag(null);
-                  sessionDropCommitted.current = false;
-                },
-              };
-              return (
-                <SessionNodeItem
-                  key={node.id}
-                  rowKey={workspaceId === undefined ? `recent:${node.id}` : undefined}
-                  showHost={!group.remote}
-                  node={node}
-                  currentId={current}
-                  now={now}
-                  onOpen={open}
-                  onRenameRequest={onSessionRenameRequest}
-                  renderSlot={renderSlot}
-                  onReveal={
-                    node.id === revealSessionId && group.key === revealGroup
-                      ? () => {
-                          onSessionRevealed(node.id);
-                        }
-                      : undefined
-                  }
-                  drag={
-                    workspaceId === undefined || group.remote || (node.tree?.depth ?? 0) > 0
-                      ? undefined
-                      : dragProps
-                  }
-                  t={t}
-                />
-              );
-            })}
+            <ThreadTreeRows roots={visible.rows}>
+              {(node) => {
+                // Session drag never leaves its browser-local account, and pinned
+                // rows reorder only within their leading pinned block.
+                const sameGroupDrag = drag !== null && drag.accountKey === group.key;
+                const compatibleTarget = sameGroupDrag && drag.pinned === node.pinned;
+                const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
+                  node.blank ? "after" : half;
+                const dragProps = {
+                  start: () => {
+                    sessionDropCommitted.current = false;
+                    setDrag({
+                      accountKey: group.key,
+                      sessionId: node.id,
+                      pinned: node.pinned,
+                      over: null,
+                    });
+                  },
+                  active: compatibleTarget,
+                  marker: sameGroupDrag && drag.over?.id === node.id ? drag.over.half : null,
+                  hover: (half: "before" | "after") => {
+                    /* v8 ignore next -- narrowing guard: Rows gates hover on `active`, which is false while the drag state is null. */
+                    setDrag((d) =>
+                      d === null
+                        ? d
+                        : {
+                            ...d,
+                            over: { id: node.id, half: normalizeHalf(half) },
+                          },
+                    );
+                  },
+                  drop: (half: "before" | "after") => {
+                    /* v8 ignore next -- narrowing guard: Rows gates drop on `active`, which is false while the drag state is null. */
+                    if (drag === null) return;
+                    commitSessionDrag(drag, { id: node.id, half: normalizeHalf(half) });
+                  },
+                  end: (copied?: boolean) => {
+                    if (!copied && drag?.over !== null && drag?.over !== undefined)
+                      commitSessionDrag(drag, drag.over);
+                    else setDrag(null);
+                    sessionDropCommitted.current = false;
+                  },
+                };
+                return (
+                  <SessionNodeItem
+                    key={node.id}
+                    rowKey={workspaceId === undefined ? `recent:${node.id}` : undefined}
+                    showHost={!group.remote}
+                    node={node}
+                    currentId={current}
+                    now={now}
+                    onOpen={open}
+                    onRenameRequest={onSessionRenameRequest}
+                    renderSlot={renderSlot}
+                    onReveal={
+                      node.id === revealSessionId && group.key === revealGroup
+                        ? () => {
+                            onSessionRevealed(node.id);
+                          }
+                        : undefined
+                    }
+                    drag={
+                      workspaceId === undefined || group.remote || (node.tree?.depth ?? 0) > 0
+                        ? undefined
+                        : dragProps
+                    }
+                    t={t}
+                  />
+                );
+              }}
+            </ThreadTreeRows>
             {canExpand && (
               <SessionListExpansion
                 rowKey={`overflow:${group.key}`}
@@ -1057,62 +1060,64 @@ function FlatList({
             t={t}
           />
         )}
-        {threadView.rows(visible.rows).map((node) => {
-          const active = drag !== null && drag.pinned === node.pinned;
-          const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
-            node.blank ? "after" : half;
-          return (
-            <SessionNodeItem
-              key={node.id}
-              node={node}
-              currentId={currentId}
-              now={now}
-              onOpen={open}
-              onRenameRequest={onSessionRenameRequest}
-              renderSlot={renderSlot}
-              onReveal={
-                node.id === revealSessionId
-                  ? () => {
-                      onSessionRevealed(node.id);
-                    }
-                  : undefined
-              }
-              drag={{
-                start: () => {
-                  dropCommitted.current = false;
-                  setDrag({
-                    accountKey: FLAT_SESSION_ORDER_KEY,
-                    sessionId: node.id,
-                    pinned: node.pinned,
-                    over: null,
-                  });
-                },
-                active,
-                marker: active && drag.over?.id === node.id ? drag.over.half : null,
-                hover: (half) => {
-                  setDrag((current) =>
-                    current === null
-                      ? current
-                      : {
-                          ...current,
-                          over: { id: node.id, half: normalizeHalf(half) },
-                        },
-                  );
-                },
-                drop: (half) => {
-                  if (drag !== null) commitDrag(drag, { id: node.id, half: normalizeHalf(half) });
-                },
-                end: (copied?: boolean) => {
-                  if (!copied && drag?.over !== null && drag?.over !== undefined)
-                    commitDrag(drag, drag.over);
-                  else setDrag(null);
-                  dropCommitted.current = false;
-                },
-              }}
-              t={t}
-            />
-          );
-        })}
+        <ThreadTreeRows roots={visible.rows}>
+          {(node) => {
+            const active = drag !== null && drag.pinned === node.pinned;
+            const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
+              node.blank ? "after" : half;
+            return (
+              <SessionNodeItem
+                key={node.id}
+                node={node}
+                currentId={currentId}
+                now={now}
+                onOpen={open}
+                onRenameRequest={onSessionRenameRequest}
+                renderSlot={renderSlot}
+                onReveal={
+                  node.id === revealSessionId
+                    ? () => {
+                        onSessionRevealed(node.id);
+                      }
+                    : undefined
+                }
+                drag={{
+                  start: () => {
+                    dropCommitted.current = false;
+                    setDrag({
+                      accountKey: FLAT_SESSION_ORDER_KEY,
+                      sessionId: node.id,
+                      pinned: node.pinned,
+                      over: null,
+                    });
+                  },
+                  active,
+                  marker: active && drag.over?.id === node.id ? drag.over.half : null,
+                  hover: (half) => {
+                    setDrag((current) =>
+                      current === null
+                        ? current
+                        : {
+                            ...current,
+                            over: { id: node.id, half: normalizeHalf(half) },
+                          },
+                    );
+                  },
+                  drop: (half) => {
+                    if (drag !== null) commitDrag(drag, { id: node.id, half: normalizeHalf(half) });
+                  },
+                  end: (copied?: boolean) => {
+                    if (!copied && drag?.over !== null && drag?.over !== undefined)
+                      commitDrag(drag, drag.over);
+                    else setDrag(null);
+                    dropCommitted.current = false;
+                  },
+                }}
+                t={t}
+              />
+            );
+          }}
+        </ThreadTreeRows>
         <SessionListExpansion
           rowKey="overflow:flat"
           hiddenCount={visible.hiddenCount}

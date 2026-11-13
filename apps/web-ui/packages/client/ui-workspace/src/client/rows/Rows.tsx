@@ -41,7 +41,7 @@ import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
-import { ThreadTreeToggle } from "./ThreadTreeControls.tsx";
+import { ThreadTreeSummary, useThreadChildGroup } from "./ThreadTreeControls.tsx";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -491,6 +491,7 @@ export function SessionNodeItem({
 >) {
   const row = node;
   const { expansion, toggle } = useThreadTreeView();
+  const childGroupId = useThreadChildGroup();
   const depth = node.tree?.depth ?? 0;
   const expanded = expansion[node.id] === true;
   const drag = depth === 0 ? suppliedDrag : undefined;
@@ -603,119 +604,127 @@ export function SessionNodeItem({
             }
       }
     >
-      <SessionRowContent
-        identity={renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
-        ambient={
-          !row.archived &&
-          !row.blank &&
-          !showStatus &&
-          renderSlot("sidebar.session.row.leading", { sessionId: node.id })
-        }
-        title={title}
-        onIdentityClick={
-          node.tree?.descendantCount
-            ? (e) => {
-                e.stopPropagation();
-                toggle(node.id, !expanded);
-              }
-            : undefined
-        }
-        onTitleDoubleClick={
-          row.blank
-            ? undefined
-            : (e) => {
-                e.stopPropagation();
-                onRenameRequest(node.id, row.title);
-              }
-        }
-      >
-        <ThreadTreeToggle
-          node={node}
-          expanded={expanded}
-          toggle={() => toggle(node.id, !expanded)}
-          t={t}
-        />
-        {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
-        <span className={css.trailing}>
-          {/* A blank New Session row is a provisional placeholder: nothing has
+      <div className={css.sessionMain}>
+        <SessionRowContent
+          identityLabel={
+            node.tree?.descendantCount
+              ? t(expanded ? "threadTree.collapse" : "threadTree.expand", {
+                  n: node.tree.descendantCount,
+                })
+              : undefined
+          }
+          identityExpanded={node.tree?.descendantCount ? expanded : undefined}
+          identityControls={childGroupId}
+          identity={renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
+          ambient={
+            !row.archived &&
+            !row.blank &&
+            !showStatus &&
+            renderSlot("sidebar.session.row.leading", { sessionId: node.id })
+          }
+          title={title}
+          onIdentityClick={
+            node.tree?.descendantCount
+              ? (e) => {
+                  e.stopPropagation();
+                  toggle(node.id, !expanded);
+                }
+              : undefined
+          }
+          onTitleDoubleClick={
+            row.blank
+              ? undefined
+              : (e) => {
+                  e.stopPropagation();
+                  onRenameRequest(node.id, row.title);
+                }
+          }
+        >
+          {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
+          <span className={css.trailing}>
+            {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not
           exist — both trailing cells stay off until the first prompt. */}
-          {!row.blank && (
-            <span
-              className={clsx(css.time, showStatus && css.timeStatus)}
-              data-session-status={showStatus ? primaryStatus.state : undefined}
-            >
-              {showStatus ? (
-                <>
-                  <SessionStatusDots statuses={statuses} />
-                  {primaryStatus.trailingLabel !== undefined && (
-                    <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
-                  )}
-                </>
-              ) : (
-                timeLabel(row.updatedAt, now, t)
-              )}
-            </span>
-          )}
-          {/* The strip's clicks stay in the strip: the trigger and every
+            {!row.blank && (
+              <span
+                className={clsx(css.time, showStatus && css.timeStatus)}
+                data-session-status={showStatus ? primaryStatus.state : undefined}
+              >
+                {showStatus ? (
+                  <>
+                    <SessionStatusDots statuses={statuses} />
+                    {primaryStatus.trailingLabel !== undefined && (
+                      <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
+                    )}
+                  </>
+                ) : (
+                  timeLabel(row.updatedAt, now, t)
+                )}
+              </span>
+            )}
+            {/* The strip's clicks stay in the strip: the trigger and every
           row.action entry act without also opening the row, so an entry's
           button needs no propagation handling of its own. */}
-          {!row.blank && (
-            <span
-              className={css.rowActions}
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
-            >
-              <Menu
-                open={menuOpen}
-                onClose={() => {
-                  setMenuOpen(false);
+            {!row.blank && (
+              <span
+                className={css.rowActions}
+                onClick={(e) => {
+                  e.stopPropagation();
                 }}
-                portal
-                autoFocus
-                phoneSidebarTitle={title}
-                phoneSidebarFooterBackLabel={t("session.backToList")}
-                phoneSidebarDetails={
-                  <div className={css.phoneDetails}>
-                    <SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />
-                  </div>
-                }
-                getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
-                anchor={
-                  <button
-                    type="button"
-                    className={css.iconButton}
-                    aria-label={t("actions.session.aria", { name: title })}
-                    aria-haspopup="menu"
-                    aria-expanded={menuOpen}
-                    onClick={() => {
-                      setContextPoint(null);
-                      setMenuOpen((v) => !v);
-                    }}
-                  >
-                    <IconEllipsisOutlineRegular />
-                  </button>
-                }
               >
-                {renderSlot(
-                  "sidebar.workspaces.session.menu.item",
-                  { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
-                  { hookContext: menuOpenState },
-                )}
-              </Menu>
-              <span className={css.quickActions}>
-                {renderSlot("sidebar.workspaces.session.row.action", {
-                  sessionId: node.id,
-                  displayTitle: row.title,
-                  threadTreeChild: depth > 0,
-                })}
+                <Menu
+                  open={menuOpen}
+                  onClose={() => {
+                    setMenuOpen(false);
+                  }}
+                  portal
+                  autoFocus
+                  phoneSidebarTitle={title}
+                  phoneSidebarFooterBackLabel={t("session.backToList")}
+                  phoneSidebarDetails={
+                    <div className={css.phoneDetails}>
+                      <SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />
+                    </div>
+                  }
+                  getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
+                  anchor={
+                    <button
+                      type="button"
+                      className={css.iconButton}
+                      aria-label={t("actions.session.aria", { name: title })}
+                      aria-haspopup="menu"
+                      aria-expanded={menuOpen}
+                      onClick={() => {
+                        setContextPoint(null);
+                        setMenuOpen((v) => !v);
+                      }}
+                    >
+                      <IconEllipsisOutlineRegular />
+                    </button>
+                  }
+                >
+                  {renderSlot(
+                    "sidebar.workspaces.session.menu.item",
+                    { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
+                    { hookContext: menuOpenState },
+                  )}
+                </Menu>
+                <span className={css.quickActions}>
+                  {renderSlot("sidebar.workspaces.session.row.action", {
+                    sessionId: node.id,
+                    displayTitle: row.title,
+                    threadTreeChild: depth > 0,
+                  })}
+                </span>
               </span>
-            </span>
-          )}
-        </span>
-      </SessionRowContent>
+            )}
+          </span>
+        </SessionRowContent>
+      </div>
+      {!expanded && (
+        <ThreadTreeSummary node={node} title={title} toggle={() => toggle(node.id, true)} t={t} />
+      )}
     </div>
   );
   return (

@@ -1,79 +1,131 @@
-/* Use the sidebar's 12px inset and the row's 8px inset without moving identity. */
-.toggle {
-  appearance: none;
+.branch {
+  --dsh-thread-row-height: 32px;
+  --dsh-thread-icon-size: 16px;
+  --dsh-thread-row-gap: 2px;
+  position: relative;
+  min-width: 0;
+}
+
+.branch:has(> :first-child [data-harness-id]) {
+  --dsh-thread-icon-size: 14px;
+}
+
+.children {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dsh-thread-row-gap);
+  margin-top: var(--dsh-thread-row-gap);
+  --dsh-thread-guide-axis: calc(
+    8px + var(--dsh-workspace-indent, 0px) + var(--dsh-thread-guide-indent) +
+      var(--dsh-thread-icon-size) / 2 - 0.5px
+  );
+}
+
+.children[hidden] {
+  display: none;
+}
+
+/* Bridge the parent's icon bottom to its first child, then follow real branch heights. */
+.children[data-thread-guide]::before,
+.children[data-thread-guide] > .branch::before,
+.children[data-thread-guide] > .branch::after {
+  content: "";
   position: absolute;
-  inset-block: 0;
-  inset-inline-start: calc(var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) - 19px);
+  inset-inline-start: var(--dsh-thread-guide-axis);
+  pointer-events: none;
   z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
+}
+
+.children[data-thread-guide]::before {
+  bottom: 100%;
+  height: calc(
+    (var(--dsh-thread-row-height) - var(--dsh-thread-icon-size)) / 2 + var(--dsh-thread-row-gap)
+  );
+  width: 1px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.children[data-thread-guide] > .branch::before {
+  top: 0;
+  bottom: calc(-1 * var(--dsh-thread-row-gap));
+  width: 1px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.children[data-thread-guide] > .branch:last-child::before {
+  bottom: auto;
+  height: calc(var(--dsh-thread-row-height) / 2 - 7px);
+}
+
+.children[data-thread-guide] > .branch::after {
+  top: calc(var(--dsh-thread-row-height) / 2 - 7px);
+  width: calc(16px - var(--dsh-thread-icon-size) / 2);
+  height: 7px;
   box-sizing: border-box;
-  width: 28px;
-  padding: 0;
+  border-inline-start: 1px solid var(--dsw-alias-border-l2);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  border-end-start-radius: 7px;
+}
+
+.summary {
+  appearance: none;
+  display: block;
+  width: calc(100% - var(--dsh-thread-icon-size) - 8px);
+  min-width: 0;
+  margin-inline-start: calc(var(--dsh-thread-icon-size) + 8px);
+  padding: 0 0 4px;
   border: 0;
   border-radius: 4px;
-  color: var(--dsw-alias-label-secondary);
   background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: start;
+  overflow-wrap: anywhere;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
 
-.chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 150ms ease;
+.summary [data-thread-tree-activity="running"] {
+  color: color-mix(
+    in srgb,
+    var(--dsw-alias-state-business-primary),
+    var(--dsw-alias-state-success-primary)
+  );
 }
 
-.collapsed {
-  transform: rotate(-90deg);
+.summary [data-thread-tree-activity="pending"] {
+  color: var(--dsw-alias-state-warn-primary);
 }
 
-/* One stem per expanded parent, ending at its last visible descendant's center. */
-.guide {
-  position: absolute;
-  z-index: 1;
-  inset-block-start: calc(50% + var(--dsh-thread-icon-size) / 2);
-  inset-inline-start: calc(
-    8px + var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) +
-      var(--dsh-thread-icon-size) / 2 - 0.5px
-  );
-  height: calc(
-    var(--dsh-thread-visible-descendants) *
-      (var(--dsh-thread-row-height) + var(--dsh-thread-row-gap)) - var(--dsh-thread-icon-size) / 2
-  );
-  width: 1px;
-  background: var(--dsw-alias-border-l2);
-  pointer-events: none;
+.summary [data-thread-tree-activity="completed"] {
+  color: var(--dsw-alias-state-business-primary);
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .toggle:hover {
-    color: var(--dsw-alias-label-primary);
+  .summary:hover {
+    background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent);
   }
 }
 
-.toggle:focus-visible {
+.summary:focus-visible {
   outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
   outline-offset: -2px;
 }
 
-/* Collapsed rows tint only the chevron, with no additional marker or count. */
-.chevron[data-thread-tree-activity="pending"] {
-  color: var(--dsw-alias-state-warn-primary);
-}
-
-.chevron[data-thread-tree-activity="running"] {
-  color: var(--dsw-alias-label-primary);
-}
-
-.chevron[data-thread-tree-activity="completed"] {
-  color: var(--dsw-alias-state-business-primary);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chevron {
-    transition: none;
+@media (hover: none), (pointer: coarse) {
+  .branch {
+    --dsh-thread-row-height: 44px;
   }
+
+  .summary {
+    min-height: 28px;
+    padding-block: 3px 7px;
+  }
+}
+
+:global([data-phone-drawer]) .branch {
+  --dsh-thread-row-height: 48px;
 }

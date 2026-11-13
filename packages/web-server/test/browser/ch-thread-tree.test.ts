@@ -15,7 +15,7 @@ async function expanded(page: Page, id: string, value: boolean): Promise<void> {
   const row = threadRow(page, id);
   await row.waitFor();
   if ((await row.getAttribute("aria-expanded")) !== String(value))
-    await row.locator("[data-thread-toggle]").click();
+    await row.locator(value ? "[data-thread-summary]" : "[data-thread-icon-toggle]").click();
   await page.waitForFunction(
     ({ id, value }) => {
       const row = document.querySelector(
@@ -45,20 +45,11 @@ async function noHorizontalOverflow(page: Page): Promise<void> {
 
 async function foldStyle(page: Page, id: string) {
   return threadRow(page, id)
-    .locator("[data-thread-toggle]")
-    .evaluate((node) => {
-      const content = node.firstElementChild;
-      const chevron = node.querySelector("svg");
-      if (!content || !chevron) throw new Error("Missing fold content or chevron");
-      return {
-        background: getComputedStyle(node).backgroundColor,
-        contentBackground: getComputedStyle(content).backgroundColor,
-        border: getComputedStyle(node).borderWidth,
-        color: getComputedStyle(chevron).color,
-        chevron: getComputedStyle(content).transform,
-        transition: getComputedStyle(content).transitionDuration,
-      };
-    });
+    .locator("[data-thread-icon-toggle]")
+    .evaluate((node) => ({
+      background: getComputedStyle(node).backgroundColor,
+      color: getComputedStyle(node).color,
+    }));
 }
 
 async function tokenColor(page: Page, id: string, token: string): Promise<string> {
@@ -74,36 +65,34 @@ async function tokenColor(page: Page, id: string, token: string): Promise<string
 
 async function foldLayout(page: Page, id: string, row = threadRow(page, id)): Promise<void> {
   const layout = await row.evaluate((row) => {
-    const toggle = row.querySelector("[data-thread-toggle]");
     const icon = row.querySelector("[data-thread-icon-toggle]");
-    const chevron = toggle?.querySelector("svg");
-    const artwork = chevron?.querySelector("path");
-    if (!toggle || !icon || !chevron || !artwork) throw new Error("Missing fold layout elements");
-    const chevronBox = chevron.getBoundingClientRect();
+    const title = row.querySelector("[data-session-title]");
+    const summary = row.querySelector("[data-thread-summary]");
+    if (!icon || !title) throw new Error("Missing fold layout elements");
+    const group = document.getElementById(icon.getAttribute("aria-controls") ?? "");
     return {
-      artworkGap: icon.getBoundingClientRect().left - artwork.getBoundingClientRect().right,
-      chevronInRow: chevronBox.left >= 4,
-      chevronWidth: chevronBox.width,
-      artwork: artwork.getBoundingClientRect().toJSON(),
-      stroke: getComputedStyle(chevron).strokeWidth,
-      toggleWidth: toggle.getBoundingClientRect().width,
-      toggleHeight: toggle.getBoundingClientRect().height,
-      rowHeight: row.getBoundingClientRect().height,
+      oldToggle: row.querySelector("[data-thread-toggle]") !== null,
+      group: group?.getAttribute("role"),
+      summaryGroup: summary?.getAttribute("aria-controls"),
+      iconGroup: icon.getAttribute("aria-controls"),
+      summaryTop: summary?.getBoundingClientRect().top,
+      titleBottom: title.getBoundingClientRect().bottom,
+      summaryHeight: summary?.getBoundingClientRect().height,
+      rowBottom: row.getBoundingClientRect().bottom,
+      summaryBottom: summary?.getBoundingClientRect().bottom,
+      font: summary && getComputedStyle(summary).fontSize,
+      coarse: matchMedia("(pointer: coarse)").matches,
     };
   });
-  assert.ok(
-    layout.artworkGap >= 2 && layout.artworkGap <= 4,
-    `the chevron artwork stays close to the icon (${layout.artworkGap}px)`,
-  );
-  assert.equal(layout.chevronInRow, true);
-  assert.equal(layout.chevronWidth, 12);
-  assert.ok(
-    layout.artwork && Math.max(layout.artwork.width, layout.artwork.height) === 6,
-    "both directions use the same unscaled artwork",
-  );
-  assert.equal(layout.stroke, "1px", "expansion does not change the chevron stroke");
-  assert.equal(layout.toggleWidth, 28);
-  assert.equal(layout.toggleHeight, layout.rowHeight, "the full row height is clickable");
+  assert.equal(layout.oldToggle, false);
+  assert.equal(layout.group, "group");
+  if (layout.summaryTop !== undefined) {
+    assert.equal(layout.summaryGroup, layout.iconGroup);
+    assert.ok(layout.summaryTop >= layout.titleBottom);
+    assert.equal(layout.font, "11px");
+    assert.ok((layout.summaryBottom ?? 0) <= layout.rowBottom);
+    if (layout.coarse) assert.ok((layout.summaryHeight ?? 0) >= 28);
+  }
 }
 
 async function guides(
@@ -112,43 +101,47 @@ async function guides(
   count: number,
   row = threadRow(page, id),
 ): Promise<void> {
-  assert.equal(await row.locator("[data-thread-guide]").count(), count);
   const geometry = await row.evaluate((row) => {
+    const group = row
+      .closest("[data-thread-branch]")
+      ?.querySelector(":scope > [data-thread-guide]");
+    if (!group) return null;
     const icon = row.querySelector("[data-harness-id]")?.getBoundingClientRect();
-    const tree = row.closest('[role="tree"]');
-    if (!icon || !tree) throw new Error("Missing parent icon or tree");
-    const depth = Number(row.getAttribute("data-thread-depth"));
-    const rows = [...tree.querySelectorAll("[data-row-key]")];
-    let last: Element = row;
-    for (const next of rows.slice(rows.indexOf(row) + 1)) {
-      if (!next.hasAttribute("data-thread-depth")) break;
-      if (Number(next.getAttribute("data-thread-depth")) <= depth) break;
-      last = next;
-    }
-    const lastBox = last.getBoundingClientRect();
-    return [...row.querySelectorAll("[data-thread-guide]")].map((guide) => {
-      const rect = guide.getBoundingClientRect();
-      return {
-        center: rect.x + rect.width / 2,
-        iconCenter: icon.x + icon.width / 2,
-        top: rect.top,
-        iconBottom: icon.bottom,
-        bottom: rect.bottom,
-        lastCenter: lastBox.y + lastBox.height / 2,
-
-        width: rect.width,
-        pointerEvents: getComputedStyle(guide).pointerEvents,
-        color: getComputedStyle(guide).backgroundColor,
-      };
-    });
+    if (!icon) throw new Error("Missing parent icon");
+    const bridge = getComputedStyle(group, "::before");
+    const branches = [...group.children];
+    return {
+      axis: group.getBoundingClientRect().left + parseFloat(bridge.left) + 0.5,
+      iconCenter: icon.x + icon.width / 2,
+      top: group.getBoundingClientRect().top - parseFloat(bridge.height),
+      iconBottom: icon.bottom,
+      width: bridge.width,
+      pointerEvents: bridge.pointerEvents,
+      color: bridge.backgroundColor,
+      elbows: branches.map((branch) => {
+        const arc = getComputedStyle(branch, "::after");
+        const childIcon = branch.querySelector("[data-harness-id]")?.getBoundingClientRect();
+        return {
+          bottom: branch.getBoundingClientRect().top + parseFloat(arc.top) + parseFloat(arc.height),
+          center: childIcon && childIcon.top + childIcon.height / 2,
+          radius: arc.borderBottomLeftRadius,
+          border: arc.borderBottomWidth,
+        };
+      }),
+    };
   });
-  for (const guide of geometry) {
-    assert.equal(guide.center, guide.iconCenter, "the stem is on its parent's icon axis");
-    assert.equal(guide.top, guide.iconBottom, "the stem starts at the icon's bottom edge");
-    assert.equal(guide.bottom, guide.lastCenter, "the stem ends at its last visible descendant");
-    assert.equal(guide.width, 1);
-    assert.equal(guide.pointerEvents, "none");
-    assert.equal(guide.color, await tokenColor(page, id, "--dsw-alias-border-l2"));
+  assert.equal(geometry === null ? 0 : 1, count);
+  if (geometry) {
+    assert.equal(geometry.axis, geometry.iconCenter, "stem follows the parent's icon axis");
+    assert.equal(geometry.top, geometry.iconBottom, "stem starts below the parent icon");
+    assert.equal(geometry.width, "1px");
+    assert.equal(geometry.pointerEvents, "none");
+    assert.equal(geometry.color, await tokenColor(page, id, "--dsw-alias-border-l2"));
+    for (const arc of geometry.elbows) {
+      assert.equal(arc.bottom, arc.center, "each elbow points at its direct child's icon");
+      assert.equal(arc.radius, "7px");
+      assert.equal(arc.border, "1px");
+    }
   }
 }
 
@@ -184,31 +177,26 @@ for (const width of [1280, 390]) {
       const parent = threadRow(page, "parent");
       await parent.waitFor();
       assert.equal(await parent.getAttribute("aria-expanded"), "false");
-      await parent.getByRole("button", { name: "Expand 4 child sessions", exact: true }).waitFor();
+      await parent
+        .getByRole("button", {
+          name: "Release plan, 4 child sessions · 1 running, expand",
+          exact: true,
+        })
+        .waitFor();
       assert.deepEqual(
         await rowAlignment(page, "parent"),
         await rowAlignment(page, "destination"),
         "root icons and titles align with or without a fold control",
       );
       assert.equal((await rowAlignment(page, "parent")).icon, 8, "no leading toggle slot");
-      assert.equal(await parent.locator("[data-thread-toggle] svg").count(), 1);
-      const toggleBounds = await parent.locator("[data-thread-toggle]").boundingBox();
-      assert.ok(
-        toggleBounds &&
-          toggleBounds.width === 28 &&
-          toggleBounds.height === (width === 390 ? 48 : 32),
-        "the transparent fold target is 28px wide and fills the row height",
+      assert.equal(await parent.locator("[data-thread-toggle]").count(), 0);
+      assert.equal(
+        await parent.locator("[data-thread-summary]").innerText(),
+        "4 child sessions · 1 running",
       );
+      assert.equal((await parent.boundingBox())?.height, width === 390 ? 76 : 54);
       const collapsedStyle = await foldStyle(page, "parent");
       assert.equal(collapsedStyle.background, "rgba(0, 0, 0, 0)");
-      assert.equal(collapsedStyle.contentBackground, "rgba(0, 0, 0, 0)");
-      assert.equal(collapsedStyle.border, "0px");
-      assert.equal(await parent.locator("[data-thread-toggle]").innerText(), "");
-      assert.notEqual(collapsedStyle.chevron, "none");
-      assert.equal(collapsedStyle.transition, "0s", "reduced motion disables chevron rotation");
-      await page.emulateMedia({ reducedMotion: "no-preference" });
-      assert.equal((await foldStyle(page, "parent")).transition, "0.15s");
-      await page.emulateMedia({ reducedMotion: "reduce" });
       await foldLayout(page, "parent");
       assert.equal(
         await parent
@@ -221,9 +209,7 @@ for (const width of [1280, 390]) {
       await themedShots(page, `thread-tree-${width}-collapsed`);
       assert.equal(await threadRow(page, "child").count(), 0);
       assert.equal(await page.locator('[data-row-key="section:pinned"]').count(), 0);
-      await parent
-        .locator('[data-thread-toggle][aria-description="Child sessions are running"]')
-        .waitFor();
+      await parent.locator('[data-thread-summary] [data-thread-tree-activity="running"]').waitFor();
       assert.equal(await page.getByText("Native worker", { exact: true }).count(), 0);
       const selectionBefore = await parent.getAttribute("aria-selected");
       await expanded(page, "parent", true);
@@ -244,9 +230,8 @@ for (const width of [1280, 390]) {
       await page.mouse.move(width - 10, 850);
       const expandedStyle = await foldStyle(page, "parent");
       assert.equal(expandedStyle.background, "rgba(0, 0, 0, 0)");
-      assert.equal(expandedStyle.contentBackground, "rgba(0, 0, 0, 0)");
-      assert.equal(expandedStyle.chevron, "none");
-      assert.notEqual(expandedStyle.color, collapsedStyle.color);
+      assert.equal(await parent.locator("[data-thread-summary]").count(), 0);
+      assert.equal(expandedStyle.color, collapsedStyle.color);
       await foldLayout(page, "parent");
       await foldLayout(page, "child");
       const rootPosition = await rowAlignment(page, "parent");
@@ -258,7 +243,7 @@ for (const width of [1280, 390]) {
       if (width === 390)
         assert.equal(
           await threadRow(page, "child")
-            .locator("[data-thread-toggle]")
+            .locator("[data-thread-icon-toggle]")
             .evaluate((node) => getComputedStyle(node).backgroundColor),
           "rgba(0, 0, 0, 0)",
           "touch focus does not leave a filled toggle",
@@ -269,11 +254,11 @@ for (const width of [1280, 390]) {
       await guides(page, "destination", 0);
       await themedShots(page, `thread-tree-${width}-expanded`);
       if (width === 1280) {
-        await threadRow(page, "child").locator("[data-thread-toggle]").hover();
+        await threadRow(page, "child").locator("[data-thread-icon-toggle]").hover();
         assert.equal((await foldStyle(page, "child")).background, "rgba(0, 0, 0, 0)");
         await foldLayout(page, "child");
         await guides(page, "child", 1);
-        await parent.locator("[data-thread-toggle]").hover();
+        await parent.locator("[data-thread-icon-toggle]").hover();
         for (const name of ["Session actions for Release plan", "Archive session", "Pin session"])
           await parent.getByRole("button", { name, exact: true }).waitFor();
         await themedShots(page, "thread-tree-1280-expanded-hover");
@@ -283,7 +268,7 @@ for (const width of [1280, 390]) {
       await page.keyboard.press("Tab");
       assert.equal(
         await parent
-          .locator("[data-thread-toggle]")
+          .locator("[data-thread-icon-toggle]")
           .evaluate((node) => node.matches(":focus-visible")),
         true,
       );
@@ -295,8 +280,15 @@ for (const width of [1280, 390]) {
         0,
         "folded subtrees leave no guides",
       );
+      await parent.locator("[data-thread-summary]").focus();
       await page.keyboard.press("Space");
       assert.equal(await parent.getAttribute("aria-expanded"), "true");
+      assert.equal(
+        await parent
+          .locator("[data-thread-icon-toggle]")
+          .evaluate((node) => node === document.activeElement),
+        true,
+      );
       await parent
         .getByRole("button", { name: "Collapse 4 child sessions", exact: true })
         .waitFor();
@@ -427,36 +419,30 @@ it(
     await openSidebar(page);
     await expanded(page, "parent", false);
     const parent = threadRow(page, "parent");
-    await parent
-      .locator('[data-thread-toggle][aria-description="Child sessions need attention"]')
-      .waitFor();
-    assert.equal(await parent.locator("[data-thread-tree-activity]").count(), 1);
+    await parent.locator('[data-thread-summary] [data-thread-tree-activity="pending"]').waitFor();
     assert.equal(
-      await parent
-        .locator("[data-thread-toggle] [data-thread-tree-activity]")
-        .getAttribute("data-thread-tree-activity"),
-      "pending",
+      await parent.locator("[data-thread-summary]").innerText(),
+      "4 child sessions · 1 running · 1 needs approval",
+    );
+    assert.match(
+      (await parent.locator("[data-thread-summary]").getAttribute("aria-label")) ?? "",
+      /Release plan.*1 needs approval.*expand/,
     );
     await noHorizontalOverflow(page);
-    assert.equal(
-      await parent.locator("[data-thread-toggle]").getAttribute("title"),
-      "Child sessions need attention",
-    );
     await treeShot(page, "thread-tree-390-collapsed-pending");
     const pendingColor = await parent
-      .locator("[data-thread-tree-activity]")
+      .locator('[data-thread-tree-activity="pending"]')
       .evaluate((node) => getComputedStyle(node).color);
     assert.equal(pendingColor, await tokenColor(page, "parent", "--dsw-alias-state-warn-primary"));
     await noHorizontalOverflow(page);
     host.pending = [];
     host.changed("grandchild", "serverRequest/resolved");
-    await parent
-      .locator('[data-thread-toggle][aria-description="Child sessions are running"]')
-      .waitFor();
+    await parent.locator('[data-thread-tree-activity="pending"]').waitFor({ state: "detached" });
+    await parent.locator('[data-thread-tree-activity="running"]').waitFor();
     const runningColor = await parent
       .locator("[data-thread-tree-activity]")
       .evaluate((node) => getComputedStyle(node).color);
-    assert.equal(runningColor, await tokenColor(page, "parent", "--dsw-alias-label-primary"));
+    assert.notEqual(runningColor, pendingColor);
     // An unread completion on one descendant cannot hide another descendant's running state.
     await expanded(page, "parent", true);
     const child = host.threads.get("child");
@@ -475,11 +461,12 @@ it(
     assert.ok(running);
     running.status = { type: "idle" };
     host.changed("grandchild", "turn/completed");
-    await parent
-      .locator(
-        '[data-thread-toggle][aria-description="Child sessions finished and have not been opened"]',
-      )
-      .waitFor();
+    await parent.locator('[data-thread-tree-activity="running"]').waitFor({ state: "detached" });
+    await parent.locator('[data-thread-tree-activity="completed"]').waitFor();
+    assert.equal(
+      await parent.locator("[data-thread-summary]").innerText(),
+      "4 child sessions · 2 unread",
+    );
     const completedColor = await parent
       .locator("[data-thread-tree-activity]")
       .evaluate((node) => getComputedStyle(node).color);
@@ -516,22 +503,14 @@ it(
     // A fresh browser navigation must also reveal a previously folded path.
     await expanded(page, "parent", false);
     await parent.locator("[data-thread-tree-activity]").waitFor({ state: "detached" });
-    const idle = await parent.locator("[data-thread-toggle]").evaluate((toggle) => {
-      const chevron = toggle.querySelector("svg");
-      if (!chevron) throw new Error("Missing chevron");
-      return {
-        color: getComputedStyle(chevron).color,
-        defaultColor: getComputedStyle(toggle).color,
-        description: toggle.getAttribute("aria-description"),
-      };
-    });
-    assert.equal(idle.color, idle.defaultColor, "no descendant activity leaves the default color");
-    assert.equal(idle.color, await tokenColor(page, "parent", "--dsw-alias-label-secondary"));
-    assert.equal(idle.description, null);
+    assert.equal(await parent.locator("[data-thread-summary]").innerText(), "4 child sessions");
+    const idleColor = await parent
+      .locator("[data-thread-summary]")
+      .evaluate((node) => getComputedStyle(node).color);
+    assert.equal(idleColor, await tokenColor(page, "parent", "--dsw-alias-label-tertiary"));
     await expanded(page, "parent", true);
-    assert.equal((await foldStyle(page, "parent")).color, idle.color);
     await expanded(page, "parent", false);
-    assert.equal(new Set([pendingColor, runningColor, completedColor, idle.color]).size, 4);
+    assert.equal(new Set([pendingColor, runningColor, completedColor, idleColor]).size, 4);
     await noHorizontalOverflow(page);
     await treeShot(page, "thread-tree-390-collapsed-idle");
     const link = new URL(url);
@@ -551,7 +530,7 @@ function workspaceRow(page: Page, title: string) {
 
 for (const width of [1280, 390]) {
   it(
-    `icon-axis stems and uniform chevrons align in Recents, workspaces and pins at ${width}px`,
+    `bent guides and summary rows align in Recents, workspaces and pins at ${width}px`,
     { timeout: 60_000 },
     async (t) => {
       const { page } = await threadTreeBrowser(t, width);
@@ -589,8 +568,8 @@ for (const width of [1280, 390]) {
         const closedStyle = await foldStyle(page, "workspace-root");
         assert.equal(openStyle.color, closedStyle.color, "idle folding changes direction only");
         assert.equal(
-          openStyle.color,
-          await tokenColor(page, "workspace-root", "--dsw-alias-label-secondary"),
+          await groupedRoot.locator("[data-thread-summary]").innerText(),
+          "2 child sessions",
         );
         await foldLayout(page, "workspace-root", groupedRoot);
         await expanded(page, "workspace-root", true);

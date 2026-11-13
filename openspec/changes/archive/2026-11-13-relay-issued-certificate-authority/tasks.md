@@ -22,4 +22,4 @@
 ## 5. 文档与验收（主导者）
 
 - [x] 5.1 更新 `docs/product/web-remote-access.md`、`docs/product/self-hosted-relay.md`、`packages/remote-relay/README.md`，以及私有仓库 `relay/README.md` 与 `relay/server/DESIGN.md`。验证：`openspec validate relay-issued-certificate-authority`。
-- [ ] 5.2 本地测试中转（`--gts-staging`）+ 新客户端，对 GTS staging 完成一次真实签发与一次切换到 Let's Encrypt staging；记录 `onlyReturnExisting` 与限流的实际表现。验证：签发成功的证书链为 GTS staging。
+- [x] 5.2 生产验收（替代原 staging 计划）：官方中转切换为 Google Trust Services，全新身份的电脑从注册、领取 EAB、经通道签发到手机访问完整通过。验收中发现 acme-client 生成的 TLS-ALPN 验证证书（CA 标志、零有效期）被 GTS 拒绝，改为自行生成叶子证书后通过。

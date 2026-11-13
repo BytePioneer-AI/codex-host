@@ -15,8 +15,9 @@ import { canPlaceThread } from "../thread-tree-catalog.ts";
 import { owningGroupKey, reconcileManualOrder } from "../tree.ts";
 import { FLAT_SESSION_ORDER_KEY } from "../stores.ts";
 import { pinOrderSource } from "../pin-order.ts";
-import { threadChildOrder, threadInsertOrder, threadOrderKey } from "../thread-tree-order.ts";
+import { threadChildOrder, threadOrderKey } from "../thread-tree-order.ts";
 import { useThreadTreeView } from "./ThreadTreeView.tsx";
+import { useOptimisticThreadPlacement } from "./OptimisticThreadPlacement.tsx";
 import {
   THREAD_DWELL_MS,
   threadDropDwell,
@@ -66,6 +67,7 @@ export function ThreadPlacementDragProvider({
   children: ReactNode;
 }) {
   const phone = useSidebarTouch();
+  const place = useOptimisticThreadPlacement();
   const list = browser.useSessions((state) => state);
   const workspaces = browser.useWorkspaces((state) => state);
   const store = browser.useStore((state) => state);
@@ -84,7 +86,6 @@ export function ThreadPlacementDragProvider({
     dwellTimer.current = expandTimer.current = undefined;
     const element = hover.current?.element;
     element?.removeAttribute("data-thread-drop");
-    element?.removeAttribute("data-thread-drop-label");
     element?.removeAttribute("data-thread-dwell");
     hover.current = null;
     dwell.current = null;
@@ -204,19 +205,6 @@ export function ThreadPlacementDragProvider({
   const show = (target: Hit): void => {
     const drop = target.drop;
     target.element.dataset.threadDrop = drop.kind;
-    target.element.dataset.threadDropLabel = browser.t(
-      drop.kind === "under"
-        ? "threadTree.dropUnder"
-        : drop.kind === "top"
-          ? "threadTree.dropTop"
-          : drop.kind === "folder"
-            ? "threadTree.dropFolder"
-            : "threadTree.dropSibling",
-      {
-        name:
-          "id" in drop ? list.byId[SessionId(drop.id)]?.title || browser.t("session.untitled") : "",
-      },
-    );
   };
 
   const over = (event: DragEvent<HTMLDivElement>): void => {
@@ -248,10 +236,6 @@ export function ThreadPlacementDragProvider({
       target.element.removeAttribute("data-thread-dwell");
       if (dwell.current !== null && "parent" in target.drop) {
         target.element.dataset.threadDwell = "true";
-        // Restart the visual progress when movement resets the dwell anchor.
-        target.element.style.animation = "none";
-        void target.element.offsetWidth;
-        target.element.style.removeProperty("animation");
         const pending = dwell.current;
         const drop = target.drop;
         dwellTimer.current = setTimeout(() => {
@@ -297,27 +281,19 @@ export function ThreadPlacementDragProvider({
     const order = account.startsWith("thread:")
       ? threadChildOrder(members, saved, list.byId)
       : reconcileManualOrder(members, saved, orderSource.summaries, rowState);
-    const next = threadInsertOrder(
-      order,
+    await place(
       source.id,
-      drop.kind === "before" || drop.kind === "after" ? drop.id : undefined,
-      drop.kind === "after" ? "after" : "before",
+      parent,
+      manual
+        ? {
+            account,
+            base: order,
+            anchor: drop.kind === "before" || drop.kind === "after" ? drop.id : undefined,
+            half: drop.kind === "after" ? "after" : "before",
+          }
+        : undefined,
+      sourceParent !== parent || drop.kind === "top",
     );
-    if (
-      (sourceParent !== parent || drop.kind === "top") &&
-      !(await browser.placeSession(source.id, parent))
-    )
-      return;
-    if (manual)
-      browser.actions.setSessionOrder(
-        account,
-        next,
-        {},
-        {
-          ...orderSource,
-          members: { ...orderSource.members, [account]: next },
-        },
-      );
   };
 
   return (

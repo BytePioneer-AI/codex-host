@@ -21,6 +21,7 @@ export class ThreadTreeBrowserHost extends FakeChChannel {
   };
   readonly placements = new Map<string, string | null>();
   placeError: string | undefined;
+  placeDelayMs = 0;
   readonly archiveFailures = new Set<string>();
   get parents(): Record<string, string> {
     const parents = new Map(Object.entries(this.delegations));
@@ -34,7 +35,9 @@ export class ThreadTreeBrowserHost extends FakeChChannel {
     if (method === "codexhost/thread/tree/read" || method === "codexhost/thread/tree/place") {
       this.requests.push({ method, params: structuredClone(params) });
       if (method.endsWith("/place")) {
-        if (this.placeError) throw new Error(this.placeError);
+        const error = this.placeError;
+        await new Promise((resolve) => setTimeout(resolve, this.placeDelayMs));
+        if (error) throw new Error(error);
         this.placements.set(
           String(params.threadId),
           params.parentThreadId === null ? null : String(params.parentThreadId),

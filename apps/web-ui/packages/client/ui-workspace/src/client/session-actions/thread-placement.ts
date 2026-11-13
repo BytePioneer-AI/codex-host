@@ -32,7 +32,8 @@ export function registerThreadPlacement(
           args: { request: { sessionId, parentSessionId } },
         });
         if (!result.ok) throw new Error(result.error.message);
-        await sessions.refresh();
+        // The RPC publishes its catalog delta; a fallback read must not delay or reject the write.
+        void sessions.refresh().catch(() => undefined);
         if (parentSessionId !== null) {
           const list = sessions.list.getSnapshot();
           const ancestors = threadAncestors(parentSessionId, (id) => {

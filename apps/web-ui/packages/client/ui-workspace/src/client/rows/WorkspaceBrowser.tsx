@@ -72,6 +72,7 @@ import { pinOrderSource } from "../pin-order.ts";
 import { threadChildOrder, threadTreeOrderSource } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadPlacementDragProvider } from "./ThreadPlacementDrag.tsx";
+import { OptimisticThreadPlacementProvider } from "./OptimisticThreadPlacement.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
 import { AnimatedRows } from "./AnimatedRows.tsx";
 import { PinnedSection } from "./PinnedSection.tsx";
@@ -1253,11 +1254,15 @@ function SearchResults({
  */
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   return (
-    <ThreadTreeViewProvider browser={props}>
-      <ThreadPlacementDragProvider browser={props}>
-        <WorkspaceBrowserContent {...props} />
-      </ThreadPlacementDragProvider>
-    </ThreadTreeViewProvider>
+    <OptimisticThreadPlacementProvider browser={props}>
+      {(browser) => (
+        <ThreadTreeViewProvider browser={browser}>
+          <ThreadPlacementDragProvider browser={browser}>
+            <WorkspaceBrowserContent {...browser} />
+          </ThreadPlacementDragProvider>
+        </ThreadTreeViewProvider>
+      )}
+    </OptimisticThreadPlacementProvider>
   );
 }
 

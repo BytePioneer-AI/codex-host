@@ -7,21 +7,18 @@
 }
 
 .container [data-thread-drop="under"],
-.container [data-thread-drop="sibling"],
-.container [data-thread-drop="top"],
-.container [data-thread-drop="folder"] {
-  background-color: color-mix(
-    in srgb,
-    var(--dsw-alias-state-business-primary) 16%,
-    transparent
-  ) !important;
+.container [data-thread-drop="top"][data-row-key],
+.container [data-thread-drop="folder"][data-row-key] {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: -2px;
   border-radius: 6px;
 }
 
 .container [data-thread-drop="before"]::after,
-.container [data-thread-drop="after"]::after {
+.container [data-thread-drop="after"]::after,
+.container [data-thread-drop="sibling"]::after,
+.container [data-thread-drop="top"]:not([data-row-key])::after,
+.container [data-thread-drop="folder"]:not([data-row-key])::after {
   content: "";
   position: absolute;
   z-index: 10;
@@ -30,50 +27,10 @@
   border-radius: 2px;
   background: var(--dsw-alias-state-business-primary);
   pointer-events: none;
+  bottom: -1px;
 }
 
 .container [data-thread-drop="before"]::after {
   top: -1px;
-}
-.container [data-thread-drop="after"]::after {
-  bottom: -1px;
-}
-
-.container [data-thread-drop="under"]::after,
-.container [data-thread-drop="sibling"]::after,
-.container [data-thread-drop="top"]::after,
-.container [data-thread-drop="folder"]::after {
-  content: attr(data-thread-drop-label);
-  position: absolute;
-  z-index: 10;
-  inset-inline-start: 8px;
-  top: 100%;
-  max-width: calc(100% - 16px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 3px 6px;
-  border-radius: 4px;
-  background: var(--dsw-alias-state-business-primary);
-  color: var(--dsw-alias-label-on-primary, white);
-  font-size: 11px;
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.container [data-thread-dwell] {
-  background-image: linear-gradient(
-    color-mix(in srgb, var(--dsw-alias-state-business-primary) 22%, transparent),
-    color-mix(in srgb, var(--dsw-alias-state-business-primary) 22%, transparent)
-  ) !important;
-  background-repeat: no-repeat !important;
-  animation: dwell 500ms linear forwards;
-}
-
-@keyframes dwell {
-  from {
-    background-size: 0% 100%;
-  }
-  to {
-    background-size: 100% 100%;
-  }
+  bottom: auto;
 }

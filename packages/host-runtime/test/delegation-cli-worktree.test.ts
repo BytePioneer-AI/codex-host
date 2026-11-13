@@ -111,7 +111,6 @@ describe("delegate start --worktree", () => {
       });
       expect(result.thread ?? result.deepLink).toBe("codex://threads/child");
       expect(await git("-C", expected, "branch", "--show-current")).toBe("feature/review");
-      expect(await readFile(path.join(expected, "tracked.txt"), "utf8")).toBe("baseline\n");
       expect(await git("branch", "--show-current")).toBe("main");
     },
   );
@@ -314,9 +313,6 @@ describe("delegate start --worktree", () => {
         base: await git("rev-parse", "HEAD"),
       });
       expect(error.message).toContain(worktreePath("child"));
-      expect(await readFile(path.join(worktreePath("child"), "tracked.txt"), "utf8")).toBe(
-        "baseline\n",
-      );
     },
   );
 

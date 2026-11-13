@@ -99,6 +99,65 @@ describe("Thread result files", () => {
     ).resolves.toMatchObject({ data: Buffer.from("fixture bytes").toString("base64") });
   });
 
+  it.each([
+    ['plot.png "Chart"', "plot.png"],
+    ["plot.png 'Chart'", "plot.png"],
+    ["plot.png (Chart)", "plot.png"],
+    ['<plot (1).png> "Chart"', "plot (1).png"],
+    ["notes.md#usage", "notes.md"],
+    ["100%.md", "100%.md"],
+    ["100%25.md", "100%.md"],
+  ])("exports CommonMark destination %s", async (link, filename) => {
+    await writeFile(path.join(workspace, filename), "fixture bytes");
+    snapshot.result.text = `See [result](${link}).`;
+    await expect(
+      readThreadResultFile(api, { threadId: "task-1", path: filename }),
+    ).resolves.toMatchObject({ data: Buffer.from("fixture bytes").toString("base64") });
+  });
+
+  it.each([
+    ['plot.png\n"Chart"', "plot.png"],
+    ['plot.png\r\n"Chart"', "plot.png"],
+    ['plot.png \n  "Chart"\n', "plot.png"],
+    ['plot.png\r\n"Chart"\r\n', "plot.png"],
+    ["plot.png\n", "plot.png"],
+    ['plot.png "Two\nlines"', "plot.png"],
+    ["notes.md#section/subsection", "notes.md"],
+    ["notes.md#one#two", "notes.md"],
+  ])("exports CommonMark destination split across lines or anchored %j", async (link, filename) => {
+    await writeFile(path.join(workspace, filename), "fixture bytes");
+    snapshot.result.text = `See [result](${link}).`;
+    await expect(
+      readThreadResultFile(api, { threadId: "task-1", path: filename }),
+    ).resolves.toMatchObject({ data: Buffer.from("fixture bytes").toString("base64") });
+  });
+
+  it.each([
+    'plot.png\n\n"Chart"',
+    'plot.png\r\n\r\n"Chart"',
+    'plot.png\n \t\n"Chart"',
+    'plot.png "Chart"\n\n',
+    'plot.png "Two\n\nparagraphs"',
+    'plot.png "Two\\\n\nparagraphs"',
+  ])("does not authorize a link broken by a blank line %j", async (link) => {
+    await writeFile(path.join(workspace, "plot.png"), "fixture bytes");
+    snapshot.result.text = `[result](${link})`;
+    await expect(
+      readThreadResultFile(api, { threadId: "task-1", path: "plot.png" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it.each(['plot.png "Chart', "plot.png Chart", "../plot.png#top", '../plot.png "Chart"'])(
+    "does not authorize an unterminated title or an outside destination %s",
+    async (link) => {
+      await writeFile(path.join(workspace, "plot.png"), "fixture bytes");
+      snapshot.result.text = `[result](${link})`;
+      await expect(
+        readThreadResultFile(api, { threadId: "task-1", path: "plot.png" }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    },
+  );
+
   it.each(["plot(1.png", "https://example.test/plot(1).png", "../plot(1).png"])(
     "does not authorize malformed, remote or outside destination %s",
     async (link) => {

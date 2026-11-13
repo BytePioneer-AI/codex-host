@@ -407,6 +407,12 @@ export {
   type CodexSshDraft,
 } from "./remote-connections.js";
 
+export {
+  desktopThreadTitleInputSchema,
+  desktopThreadTitleResultSchema,
+  type DesktopThreadTitleInput,
+} from "./desktop-thread-title.js";
+
 export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";
 
 export {

@@ -1,7 +1,6 @@
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
 import type { DelegationWorktree } from "./delegation-cli-worktree.js";
 import {
-  DelegationControlError,
   type DelegationStartResult,
   type DelegationThreadListResult,
   type DelegationThreadSnapshot,
@@ -71,21 +70,20 @@ function snapshotOutput(
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
   };
   if (view === "messages") {
-    if (typeof snapshot.hasMore !== "boolean") {
-      throw new DelegationControlError(
-        "INTERNAL_ERROR",
-        "Compact message pagination requires an updated Host Runtime; use --format json with this Runtime.",
-      );
-    }
     return {
       ...common,
-      messages: (snapshot.messages ?? []).map(({ role, phase, text }) => ({
-        role,
-        ...(phase ? { phase } : {}),
-        text,
+      totalTurns: snapshot.totalTurns,
+      from: snapshot.from,
+      to: snapshot.to,
+      turns: (snapshot.turns ?? []).map(({ turnNumber, status, messages }) => ({
+        turnNumber,
+        status,
+        messages: messages.map(({ role, phase, text }) => ({
+          role,
+          ...(phase ? { phase } : {}),
+          text,
+        })),
       })),
-      hasMore: snapshot.hasMore,
-      nextCursor: snapshot.nextCursor,
       ...(snapshot.result.message ? { error: snapshot.result.message } : {}),
     };
   }

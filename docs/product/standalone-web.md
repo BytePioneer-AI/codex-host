@@ -16,9 +16,9 @@ Codex 的 Fast 闪电仅在官方 `model/list` 为当前 Model 的 `serviceTiers
 
 ### Web 新建会话标题
 
-Web 新建的本机 Codex／外部 Harness 会话，在首条消息成功发送后，后台尝试调用正在运行的 codexhost Desktop 的 `threadMetadataGeneration.generateTitle`。请求经 Launcher 私有描述文件及 nonce 鉴权的 Controller 通道进入 Desktop，复用原生临时 Thread 标题生成服务；不启动 Desktop、不复制账号凭据，也不改变聊天所用的 Harness 或 Model。标题输入只取首条消息文本的前 2000 个 UTF-16 代码单元，不包含附件内容；生成使用 Desktop 当前本机 Codex 连接及其标题生成模型，可能消耗该连接对应账号的额度。
+Web 新建的本机 Codex／外部 Harness 会话，在首条消息成功发送后，后台调用共享 Host 的 `codexhost/thread/title/generate`。Host 复用已有官方 Codex app-server，创建来源为 `thread_title` 的只读临时 Thread，以结构化输出生成最多 60 个 UTF-16 代码单元的标题；不要求 Desktop 界面或 Controller 运行，不复制账号凭据，也不改变聊天所用的 Harness 或 Model。标题输入只取首条消息文本的前 2000 个 UTF-16 代码单元，不包含附件内容；生成沿用本机 Codex 的原生默认 Model／Provider 与认证配置，可能消耗对应账号的额度，不保证使用 Desktop 的专用标题模型。
 
-每个新建会话仅尝试一次，不等待生成结果再返回发送成功，不重试结果未知的请求，也不进行后续自适应改名。Desktop 未运行、版本或服务不支持、超时、生成失败或返回空结果时，保留现有标题；显示继续依次回退到已保存名称、首条提示预览、项目目录名、Thread ID。纯附件或空白文本不请求生成。
+每个新建会话仅尝试一次，不等待生成结果再返回发送成功，不重试结果未知的请求，也不进行后续自适应改名。生成期限为 30 秒；完成后退订临时 Thread，超时且已知 Turn ID 时先尝试停止该回合。超时后才返回的创建结果仍会被清理，不再发送标题输入；官方连接换代后丢弃旧结果，不向新连接发送旧 Thread 的清理请求。原生 Codex 不可用、协议不支持、超时、生成失败或返回空结果时，保留现有标题；显示继续依次回退到已保存名称、首条提示预览、项目目录名、Thread ID。纯附件或空白文本不请求生成。
 
 生成成功后通过会话所属共享 Host 的 `thread/name/set` 保存并沿用现有标题同步。Web 手动改名取消尚未提交的自动标题；写回前重新读取当前名称，已观察到其他客户端改名时不覆盖。标题保存失败不改变已经接受的消息结果。已有、导入和派生会话不由此入口重新生成标题，Desktop 已有远程会话也不走本机生成入口。
 

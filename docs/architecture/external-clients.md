@@ -22,9 +22,19 @@ codexhost thread read <thread> --view messages --format text
 codexhost thread watches --format text
 ```
 
-`thread read` / `wait` 首行为 `thread: <链接>   harness: <id>   status: <状态>`，随后显示可用的 Turn、结果可用性、超时、进度或消息分页信息，再以单独一行 `---` 分隔正文。结果正文保留真实换行、引号和缩进；消息视图每条消息单独成段并标注角色及可用的 phase。输出以换行结束。`thread watches` 每个 watch 一行，元数据里的换行折叠为空格。
+`thread read` / `wait` 的 `result` 文本以 `thread: <链接>   harness: <id>   status: <状态>` 开头，随后显示可用的 Turn、结果可用性、超时或运行中进度，再以单独一行 `---` 分隔正文。`messages` 文本先显示 `totalTurns`、`from`、`to` 总览，再显示 Thread 元数据和 `---`；每个 Turn 一个 `#<序号> <状态>` 小节，先列用户输入，再列最终回复。正文保留真实换行、引号和缩进，顺序与 JSON 一致，输出以换行结束。`thread watches` 每个 watch 一行，元数据里的换行折叠为空格。
 
 `client` 和 `events` 不支持 `--format text`，执行前返回明确错误，不自动回退。所有格式的错误都保持 JSON 写入 stderr、退出码 1；成功输出写入 stdout、退出码 0，任务自身的失败状态不改变此约定。HTTP / MCP 的结构化响应不受 CLI text 格式影响。
+
+### Thread 读取视图
+
+CLI、HTTP、MCP 共用 `thread read` / `wait` 的读取投影：
+
+- `result` 读取最近 Turn 的结果；运行时 compact 输出仍附带最近一条非空 `progress`，停止后不再显示。这是读取当前中间进展的路径。
+- `messages` 以完整 Turn 为单位读取，只返回非空用户消息及每轮的一条最终 Agent 回复，不提供中间说明。优先取带 `phase: "final"` 的非空回复；已结束的 Turn 没有 final 标记时取最后一条非空 Agent 消息，并作为 final 输出。运行中的 Turn 标为 `running`，只含用户输入。
+- 响应含 `totalTurns`（过滤前的 Turn 总数）、实际范围 `from` / `to`，以及 `turns` 数组。每个 Turn 带 `turnNumber`、`turnId`、`status`、`messages`；没有正文的失败或中断 Turn 也保留。Turn 从新到旧排列，轮内先列用户消息，再列最终回复。序号取原始 turns 数组下标加一，追加 Turn 不改变旧序号。
+- CLI 使用 `--from <n> --to <m>`，HTTP / MCP 使用 `from` / `to`，均为含两端、1 起始的绝对 Turn 序号，只适用于 messages。都不传时读最近 10 轮；只传 from 时读该轮到最新；只传 to 时读截至该轮的最近 10 轮。to 先截到现有总数，再计算默认 from；显式 from 与现有范围取交集，空范围返回 `from: null`、`to: null`、`turns: []`。from 大于 to、非整数或小于 1 返回 `INVALID_ARGUMENT`。
+- 实际返回范围最多 50 轮，超过则报错，不静默截断；单轮正文不设长度上限。不传范围可重读最新上下文，继续往前读可将 to 设为上一段 from 减一。
 
 ### 调试导出（很少使用）
 

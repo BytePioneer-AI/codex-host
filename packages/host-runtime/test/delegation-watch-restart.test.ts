@@ -50,7 +50,6 @@ function runtime(
       turn: { turnId: thread.turnId ?? `turn-${threadId}`, status: thread.status },
       progress: [],
       result: { availability: "pending" },
-      nextCursor: null,
     } as DelegationThreadSnapshot;
   });
   const send = vi.fn(async (input: ThreadSendInput) => {

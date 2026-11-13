@@ -534,8 +534,8 @@ export class HarnessDelegationCoordinator {
       turns,
       running: busy,
       view: input.view,
-      ...(input.cursor ? { cursor: input.cursor } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.from !== undefined ? { from: input.from } : {}),
+      ...(input.to !== undefined ? { to: input.to } : {}),
     });
     const delegation = await this.#repository.getDelegationByChild(
       hostThreadIdSchema.parse(thread.id),

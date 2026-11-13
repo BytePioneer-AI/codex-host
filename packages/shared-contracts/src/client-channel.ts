@@ -26,6 +26,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/items/list",
   "thread/start",
   "thread/name/set",
+  "codexhost/thread/title/generate",
   "thread/archive",
   "thread/unarchive",
   "turn/start",

@@ -25,21 +25,25 @@ function snapshotText(
   const header = [
     `thread: ${compact.thread}   harness: ${snapshot.harnessId}   status: ${snapshot.status}`,
     ...(snapshot.turn ? [`turn: ${snapshot.turn.turnId}   status: ${snapshot.turn.status}`] : []),
-    ...fields(snapshot.progress.filter(({ text }) => text.trim()).at(-1)?.text, "progress").map(
-      singleLine,
-    ),
+    ...(view === "result" && snapshot.status === "running"
+      ? fields(snapshot.progress.filter(({ text }) => text.trim()).at(-1)?.text, "progress").map(
+          singleLine,
+        )
+      : []),
     ...fields(compact.timedOut, "timedOut"),
   ];
   if (view === "messages") {
-    header.push(
-      ...fields(compact.hasMore, "hasMore"),
-      ...fields(compact.nextCursor, "nextCursor"),
-      ...fields(compact.error, "error"),
+    const overview = `totalTurns: ${snapshot.totalTurns}   from: ${snapshot.from}   to: ${snapshot.to}`;
+    header.push(...fields(compact.error, "error"));
+    const turns = (snapshot.turns ?? []).map(({ turnNumber, status, messages }) =>
+      [
+        `#${turnNumber} ${status}`,
+        ...messages.map(
+          ({ role, phase, text }) => `role: ${role}${phase ? `   phase: ${phase}` : ""}\n${text}`,
+        ),
+      ].join("\n\n"),
     );
-    const messages = (snapshot.messages ?? []).map(
-      ({ role, phase, text }) => `role: ${role}${phase ? `   phase: ${phase}` : ""}\n${text}`,
-    );
-    return `${header.join("\n")}\n---\n${messages.join("\n\n")}`;
+    return `${overview}\n${header.join("\n")}\n---\n${turns.join("\n\n")}`;
   }
   header.push(
     ...fields(snapshot.result.availability, "availability"),

@@ -3,7 +3,6 @@ import { delegationReadParamsSchema } from "./delegation-read.js";
 import { jsonValueSchema } from "./json-value.js";
 import { remoteUpdateParamsSchema } from "./remote-runtime.js";
 import { remoteSessionOperationSchema } from "./remote-sessions.js";
-import { desktopThreadTitleInputSchema } from "./desktop-thread-title.js";
 
 export const CONSOLE_REMOTE_CONNECTIONS_METHOD = "codexhost/console/remote-connections";
 const hostId = z.string().min(1).max(1024);
@@ -25,9 +24,8 @@ export const codexSshDraftSchema = z.strictObject({
   identity: z.string().max(4096).nullable(),
 });
 
-/** Fixed Desktop services, settings and session operations; no arbitrary RPC or expressions. */
+/** Fixed settings and existing remote session operations; no arbitrary RPC or expressions. */
 export const remoteConnectionsRequestSchema = z.discriminatedUnion("action", [
-  desktopThreadTitleInputSchema.extend({ action: z.literal("generate-title") }),
   z.strictObject({ action: z.literal("session"), operation: remoteSessionOperationSchema }),
   z.strictObject({ action: z.literal("list") }),
   z.strictObject({ action: z.literal("catalog") }),

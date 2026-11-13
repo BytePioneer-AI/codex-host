@@ -1,6 +1,5 @@
 import { remoteConnectionsRequestSchema } from "@codexhost/shared-contracts";
 import type { RemoteConnectionsControl } from "./remote-connections-control.js";
-import { generateCodexThreadTitle } from "./codex-thread-title.js";
 
 /** Uses the same native settings and Host clients as the embedded settings page. */
 export async function handleRemoteConnectionsRequest(
@@ -9,8 +8,6 @@ export async function handleRemoteConnectionsRequest(
 ): Promise<unknown> {
   const request = remoteConnectionsRequestSchema.parse(input);
   switch (request.action) {
-    case "generate-title":
-      return generateCodexThreadTitle(window, { prompt: request.prompt, cwd: request.cwd });
     case "session":
       throw new Error("Remote sessions require the Desktop Controller route");
     case "read-thread":

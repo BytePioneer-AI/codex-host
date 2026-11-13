@@ -28,7 +28,6 @@ function setup(initial: DelegationThreadStatus = "running") {
     turn: { turnId: "old-turn", status },
     progress: [],
     result: { availability: "pending" },
-    nextCursor: null,
   });
   const api: DelegationControlRegistration = {
     ownsThread: () => true,

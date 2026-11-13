@@ -19,6 +19,7 @@ import { matchesBearerToken } from "./bearer-token.js";
 import type { HostInventory } from "./host-inventory.js";
 import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { readThreadResultFile } from "./thread-result-file.js";
+import { validateReadOptions } from "./delegation-snapshot.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -162,9 +163,23 @@ export async function routeDelegationRequest(
       return handlers.api.exportThread(input);
     }
     case "/v1/thread/read":
-      return handlers.api.read(body as unknown as ThreadReadInput);
-    case "/v1/thread/wait":
-      return handlers.api.wait(body as unknown as ThreadWaitInput);
+    case "/v1/thread/wait": {
+      const allowed = new Set([
+        "threadId",
+        "view",
+        "from",
+        "to",
+        ...(route === "/v1/thread/read" ? ["hostId", "callerThreadId"] : ["timeoutMs"]),
+      ]);
+      for (const key of Object.keys(body)) {
+        if (!allowed.has(key))
+          throw new DelegationControlError("INVALID_ARGUMENT", `Unknown read option: ${key}`);
+      }
+      validateReadOptions(body as unknown as ThreadReadInput);
+      return route === "/v1/thread/read"
+        ? handlers.api.read(body as unknown as ThreadReadInput)
+        : handlers.api.wait(body as unknown as ThreadWaitInput);
+    }
     case "/v1/thread/watch":
       return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
     case "/v1/thread/watches":

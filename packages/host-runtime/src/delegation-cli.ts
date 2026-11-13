@@ -2,7 +2,11 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
-import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
+import {
+  parseDelegationArguments,
+  parseDelegationTurnRange,
+  type DelegationCliArguments,
+} from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
 import { resolveCliTextInput } from "./delegation-cli-text-input.js";
 import { startWithDelegationWorktree } from "./delegation-cli-worktree.js";
@@ -561,8 +565,8 @@ export async function runDelegationCli(input: {
     if (group === "thread" && (command === "read" || command === "wait")) {
       rejectUnknown(parsed, [
         "--view",
-        "--cursor",
-        "--limit",
+        "--from",
+        "--to",
         "--timeout-ms",
         ...(command === "read" ? ["--host"] : []),
       ]);
@@ -574,10 +578,10 @@ export async function runDelegationCli(input: {
       const view = value(parsed, "--view") ?? "result";
       if (view !== "result" && view !== "messages")
         throw new DelegationControlError("INVALID_ARGUMENT", "--view must be result or messages");
-      if (view === "result" && (value(parsed, "--cursor") || value(parsed, "--limit")))
+      if (view === "result" && (value(parsed, "--from") || value(parsed, "--to")))
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
-          "--cursor and --limit require --view messages",
+          "--from and --to require --view messages",
         );
       if (command === "read" && value(parsed, "--timeout-ms"))
         throw new DelegationControlError(
@@ -603,10 +607,7 @@ export async function runDelegationCli(input: {
         ...(hostId ? { hostId } : {}),
         ...(caller ? { callerThreadId: normalizeThreadId(caller) } : {}),
         view,
-        ...(value(parsed, "--cursor") ? { cursor: value(parsed, "--cursor") } : {}),
-        ...(value(parsed, "--limit")
-          ? { limit: positiveInteger(value(parsed, "--limit"), "--limit", MAX_LIMIT) }
-          : {}),
+        ...parseDelegationTurnRange(parsed.options),
         ...(command === "wait"
           ? {
               timeoutMs: value(parsed, "--timeout-ms")

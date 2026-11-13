@@ -1693,8 +1693,8 @@ export class AppServerHost {
       const result = await this.#delegationCoordinator.read({
         threadId: parsed.data.threadId,
         view: parsed.data.view,
-        ...(parsed.data.cursor !== undefined ? { cursor: parsed.data.cursor } : {}),
-        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+        ...(parsed.data.from !== undefined ? { from: parsed.data.from } : {}),
+        ...(parsed.data.to !== undefined ? { to: parsed.data.to } : {}),
       });
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
@@ -2550,8 +2550,8 @@ export class AppServerHost {
     const snapshot = projectDelegationThreadSnapshot({
       ...source,
       view: input.view,
-      ...(input.cursor ? { cursor: input.cursor } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.from !== undefined ? { from: input.from } : {}),
+      ...(input.to !== undefined ? { to: input.to } : {}),
     });
     const delegation = await this.#repository.getDelegationByChild(
       hostThreadIdSchema.parse(input.threadId),

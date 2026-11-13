@@ -14,7 +14,6 @@ const snapshot: DelegationThreadSnapshot = {
   turn: { turnId: "turn-1", status: "completed" },
   progress: [],
   result: { availability: "available", text: body },
-  nextCursor: null,
 };
 
 async function run(args: string[], response: unknown = snapshot, status = 200) {
@@ -60,24 +59,34 @@ describe("text delegation CLI output", () => {
     expect(result.stdout.split("---\n")[1]).toBe(`${body}\n`);
   });
 
-  it("prints role-labelled message paragraphs and pagination without escaping text", async () => {
+  it("prints a range overview and numbered Turn sections without escaping text", async () => {
     const result = await run(
       ["thread", "read", "child", "--view", "messages", "--format", "text"],
       {
         ...snapshot,
-        messages: [
-          { id: "m1", turnId: "t", role: "user", text: body },
-          { id: "m2", turnId: "t", role: "agent", phase: "final", text: '回答\n"是"' },
+        totalTurns: 3,
+        from: 2,
+        to: 3,
+        turns: [
+          {
+            turnId: "t3",
+            turnNumber: 3,
+            status: "completed",
+            messages: [
+              { id: "m1", role: "user", text: body },
+              { id: "m2", role: "agent", phase: "final", text: '回答\n"是"' },
+            ],
+          },
+          { turnId: "t2", turnNumber: 2, status: "failed", messages: [] },
         ],
-        hasMore: false,
-        nextCursor: "cursor-2",
       },
     );
     expect(result.code).toBe(0);
     expect(result.stdout).toBe(
-      "thread: codex://threads/child   harness: pi   status: completed\n" +
-        "turn: turn-1   status: completed\nhasMore: false\nnextCursor: cursor-2\n---\n" +
-        `role: user\n${body}\n\nrole: agent   phase: final\n回答\n"是"\n`,
+      "totalTurns: 3   from: 2   to: 3\n" +
+        "thread: codex://threads/child   harness: pi   status: completed\n" +
+        "turn: turn-1   status: completed\n---\n" +
+        `#3 completed\n\nrole: user\n${body}\n\nrole: agent   phase: final\n回答\n"是"\n\n#2 failed\n`,
     );
   });
 

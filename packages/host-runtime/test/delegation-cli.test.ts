@@ -336,17 +336,25 @@ describe("delegation CLI", () => {
     });
   });
 
-  it("keeps full JSON compatible while compact message pages omit duplicated content and IDs", async () => {
+  it("keeps full JSON while compact Turn ranges omit duplicated content and IDs", async () => {
     const snapshot = {
       threadId: "child-1",
       harnessId: "pi",
       status: "completed",
       turn: { turnId: "internal-turn", status: "completed" },
-      progress: [{ id: "progress-id", turnId: "internal-turn", text: "Old progress" }],
+      progress: [],
       result: { availability: "available", text: "Final answer" },
-      messages: [{ id: "message-id", turnId: "internal-turn", role: "user", text: "Question" }],
-      hasMore: true,
-      nextCursor: "page-2",
+      totalTurns: 4,
+      from: 2,
+      to: 2,
+      turns: [
+        {
+          turnId: "internal-turn",
+          turnNumber: 2,
+          status: "completed",
+          messages: [{ id: "message-id", role: "user", text: "Question" }],
+        },
+      ],
     };
     const fetchImpl = successfulFetch(snapshot);
     for (const format of [undefined, "json", "compact"]) {
@@ -359,8 +367,10 @@ describe("delegation CLI", () => {
             "codex://threads/child-1",
             "--view",
             "messages",
-            "--limit",
-            "1",
+            "--from",
+            "2",
+            "--to",
+            "2",
             ...(format ? ["--format", format] : []),
           ],
           environment: {
@@ -377,9 +387,16 @@ describe("delegation CLI", () => {
               thread: "codex://threads/child-1",
               harnessId: "pi",
               status: "completed",
-              messages: [{ role: "user", text: "Question" }],
-              hasMore: true,
-              nextCursor: "page-2",
+              totalTurns: 4,
+              from: 2,
+              to: 2,
+              turns: [
+                {
+                  turnNumber: 2,
+                  status: "completed",
+                  messages: [{ role: "user", text: "Question" }],
+                },
+              ],
             }
           : snapshot,
       );
@@ -388,7 +405,8 @@ describe("delegation CLI", () => {
       expect(JSON.parse(String(init?.body))).toEqual({
         threadId: "child-1",
         view: "messages",
-        limit: 1,
+        from: 2,
+        to: 2,
       });
     }
   });
@@ -427,11 +445,11 @@ describe("delegation CLI", () => {
     expect(JSON.parse(String(cancelCall[1]?.body))).toEqual({ threadId: "child-1" });
   });
 
-  it("rejects message cursors on the default result view", async () => {
+  it("rejects Turn ranges on the default result view", async () => {
     const diagnosticOutput = new PassThrough();
     await expect(
       runDelegationCli({
-        arguments: ["thread", "read", "thread-1", "--cursor", "cursor-1"],
+        arguments: ["thread", "read", "thread-1", "--from", "1"],
         environment: {},
         diagnosticOutput,
       }),

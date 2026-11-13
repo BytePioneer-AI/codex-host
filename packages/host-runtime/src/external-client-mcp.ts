@@ -155,14 +155,20 @@ const TOOLS: Tool[] = [
   {
     name: "thread_read",
     description:
-      "Read a Thread's status and latest result, or page its visible messages (view=messages). Never changes the Thread.",
+      "Read a Thread's status and latest result, or user messages and each Turn's final reply (view=messages). Returns totalTurns, from/to and turns with absolute turnNumber and status, newest Turn first. User messages precede the reply; no intermediate commentary. Terminal Turns without a final marker use their last nonempty Agent message; running Turns contain only user input. Inclusive from/to start at 1; neither means latest 10, only from means through latest, only to means latest 10 ending there. Bounds intersect existing Turns; empty ranges return null bounds. At most 50 returned Turns; larger ranges are rejected. Never changes the Thread.",
     inputSchema: {
       type: "object",
       properties: {
         thread,
         view: { type: "string", enum: ["result", "messages"] },
-        cursor: string("Message cursor"),
-        limit: integer("Messages per page, at most 100"),
+        from: {
+          ...integer("First absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
+        to: {
+          ...integer("Last absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
       },
       required: ["thread"],
     },
@@ -171,7 +177,7 @@ const TOOLS: Tool[] = [
       body: {
         threadId: threadId(args),
         view: args.view ?? "result",
-        ...pick(args, ["cursor", "limit"]),
+        ...pick(args, ["from", "to"]),
       },
     }),
   },
@@ -221,13 +227,21 @@ const TOOLS: Tool[] = [
   {
     name: "thread_wait",
     description:
-      "Wait up to timeoutMs (at most 60000) for a Thread to stop, then return the same snapshot as thread_read plus timedOut.",
+      "Wait up to timeoutMs (at most 60000) for a Thread to stop, then return the same snapshot as thread_read plus timedOut. view=messages returns totalTurns, from/to and turns with absolute turnNumber and status, newest Turn first, user input then final reply. Running Turns contain only input; no intermediate commentary. Inclusive from/to start at 1; neither means latest 10, only from means through latest, only to means latest 10 ending there. Bounds intersect existing Turns; empty ranges return null bounds. At most 50 returned Turns; larger ranges are rejected.",
     inputSchema: {
       type: "object",
       properties: {
         thread,
         timeoutMs: integer("At most 60000; default 30000"),
         view: { type: "string", enum: ["result", "messages"] },
+        from: {
+          ...integer("First absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
+        to: {
+          ...integer("Last absolute Turn number, inclusive; requires view=messages"),
+          minimum: 1,
+        },
       },
       required: ["thread"],
     },
@@ -237,6 +251,7 @@ const TOOLS: Tool[] = [
         threadId: threadId(args),
         view: args.view ?? "result",
         timeoutMs: bounded(args, "timeoutMs", DEFAULT_TOOL_WAIT_MS, MAX_TOOL_WAIT_MS) || 1,
+        ...pick(args, ["from", "to"]),
       },
     }),
   },
@@ -355,6 +370,13 @@ async function callTool(route: ExternalClientRouter, call: ExternalClientCall, p
     typeof params.arguments === "object" && params.arguments !== null ? params.arguments : {}
   ) as Arguments;
   try {
+    if (tool.name === "thread_read" || tool.name === "thread_wait") {
+      for (const key of Object.keys(args)) {
+        if (!Object.hasOwn(tool.inputSchema.properties, key)) {
+          throw new DelegationControlError("INVALID_ARGUMENT", `Unknown read option: ${key}`);
+        }
+      }
+    }
     const request = tool.call(args);
     const value = await route(call, request.route, request.body);
     return {

@@ -6,10 +6,6 @@ import {
   remoteSessionRequestBytes,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   type RemoteSessionOperation,
-  desktopThreadTitleInputSchema,
-  desktopThreadTitleResultSchema,
-  type DesktopThreadTitleInput,
-  type RemoteConnectionsRequest,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "./remote-connections-control.js";
 import { readRemoteProjectMetadata } from "./remote-project-metadata.js";
@@ -54,38 +50,6 @@ export async function requestRemoteSession(
   const input = remoteSessionOperationSchema.parse(operation);
   if (remoteSessionRequestBytes(input) > REMOTE_CONTROLLER_REQUEST_MAX_BYTES)
     throw new Error("Remote request is too large; shorten the message before sending");
-  const result = await requestDesktopOperation({ action: "session", operation: input }, path);
-  if (input.kind === "hosts" && Array.isArray(result)) {
-    const projects = await readRemoteProjectMetadata().catch(() => []);
-    return result.map((host) =>
-      host && typeof host === "object" && !Array.isArray(host)
-        ? { ...host, projects: projects.filter((p) => p.hostId === host.hostId) }
-        : host,
-    );
-  }
-  return result;
-}
-
-/** Optional native title generation through an already running Desktop, without retries. */
-export async function requestDesktopThreadTitle(
-  input: DesktopThreadTitleInput,
-  path: string | readonly string[] = remoteSessionDescriptorPaths(),
-): Promise<string | null> {
-  const request = desktopThreadTitleInputSchema.parse(input);
-  return desktopThreadTitleResultSchema.parse(
-    await requestDesktopOperation({ action: "generate-title", ...request }, path),
-  );
-}
-
-async function requestDesktopOperation(
-  input: RemoteConnectionsRequest,
-  path: string | readonly string[],
-): Promise<unknown> {
-  if (
-    Buffer.byteLength(`REMOTE ${"0".repeat(32)} ${JSON.stringify(input)}\n`) >
-    REMOTE_CONTROLLER_REQUEST_MAX_BYTES
-  )
-    throw new Error("Desktop request exceeds the Controller byte limit");
   const paths = typeof path === "string" ? [path] : path;
   const candidates = [];
   for (const candidate of paths) {
@@ -113,9 +77,17 @@ async function requestDesktopOperation(
       CODEXHOST_CONTROL_PORT: String(value.control_port),
       CODEXHOST_CONTROL_NONCE: value.nonce,
     },
-    input,
+    { action: "session", operation: input },
   );
   if ("error" in reply) throw new Error(reply.error.message);
+  if (input.kind === "hosts" && Array.isArray(reply.result)) {
+    const projects = await readRemoteProjectMetadata().catch(() => []);
+    return reply.result.map((host) =>
+      host && typeof host === "object" && !Array.isArray(host)
+        ? { ...host, projects: projects.filter((p) => p.hostId === host.hostId) }
+        : host,
+    );
+  }
   return reply.result;
 }
 

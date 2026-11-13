@@ -11,6 +11,10 @@ it("preserves the explicit Host in a Desktop thread reference", async () => {
       "thread://remote-thread?hostId=remote-ssh-discovered%3Amac",
       "--view",
       "messages",
+      "--from",
+      "2",
+      "--to",
+      "4",
     ],
     environment: {
       CODEXHOST_RUNTIME_ENDPOINT: "http://127.0.0.1:1234",
@@ -25,5 +29,7 @@ it("preserves the explicit Host in a Desktop thread reference", async () => {
     threadId: "remote-thread",
     hostId: "remote-ssh-discovered:mac",
     view: "messages",
+    from: 2,
+    to: 4,
   });
 });

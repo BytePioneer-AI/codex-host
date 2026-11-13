@@ -60,8 +60,6 @@ function registration(threadId: string): DelegationControlRegistration {
       turn: null,
       progress: [],
       result: { availability: "pending" as const },
-      messages: [],
-      nextCursor: null,
     })),
     wait: vi.fn(async () => ({
       threadId,
@@ -70,8 +68,6 @@ function registration(threadId: string): DelegationControlRegistration {
       turn: null,
       progress: [],
       result: { availability: "pending" as const },
-      messages: [],
-      nextCursor: null,
       timedOut: true,
     })),
     list: vi.fn(async () => ({ threads: [], nextCursor: null })),
@@ -227,7 +223,6 @@ describe("DelegationControlRegistry", () => {
         turn: null,
         progress: [],
         result: { availability: "available", text: "done" },
-        nextCursor: null,
       });
       await vi.advanceTimersByTimeAsync(2_000);
       expect(subscriber.send).toHaveBeenCalledTimes(1);
@@ -290,7 +285,6 @@ describe("DelegationControlRegistry cancel watches", () => {
       turn: null,
       progress: [],
       result: { availability: "pending" },
-      nextCursor: null,
     });
     const result: ThreadCancelResult = {
       threadId: "child",

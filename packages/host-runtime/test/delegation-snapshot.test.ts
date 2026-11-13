@@ -16,11 +16,7 @@ const completedTurns = [
     id: "turn-1",
     status: "completed",
     items: [
-      {
-        id: "user-1",
-        type: "userMessage",
-        content: [{ type: "text", text: "inspect auth" }],
-      },
+      { id: "user-1", type: "userMessage", content: [{ type: "text", text: "inspect auth" }] },
       { id: "reason-1", type: "reasoning", summary: ["hidden"] },
       {
         id: "tool-1",
@@ -34,6 +30,14 @@ const completedTurns = [
     ],
   },
 ];
+
+const input = {
+  threadId: "thread-1",
+  harnessId: "pi" as const,
+  thread: { status: { type: "idle" }, cwd: "/workspace" },
+  turns: completedTurns,
+  running: false,
+};
 
 describe("delegation snapshot", () => {
   it("passes projected relative-image Markdown through result and message views", async () => {
@@ -66,21 +70,19 @@ describe("delegation snapshot", () => {
       });
       const text = `![shot](${path.join(cwd, "shot.png").replaceAll("\\", "/").replaceAll("%", "%2525")})`;
       for (const view of ["result", "messages"] as const) {
-        const snapshot = projectDelegationThreadSnapshot({
-          threadId: "thread-1",
-          harnessId: "pi",
-          thread: {},
-          turns: [turn],
-          running: false,
-          view,
-        });
+        const snapshot = projectDelegationThreadSnapshot({ ...input, turns: [turn], view });
         expect(snapshot).toMatchObject({
           status: "completed",
           result: { availability: "available", text },
         });
         if (view === "messages")
-          expect(snapshot.messages).toEqual([
-            { id: "answer", turnId: "turn-1", role: "agent", phase: "final", text },
+          expect(snapshot.turns).toEqual([
+            {
+              turnId: "turn-1",
+              turnNumber: 1,
+              status: "completed",
+              messages: [{ id: "answer", role: "agent", phase: "final", text }],
+            },
           ]);
       }
     } finally {
@@ -88,174 +90,59 @@ describe("delegation snapshot", () => {
     }
   });
 
-  it("returns only visible progress and the final Agent result by default", () => {
-    const snapshot = projectDelegationThreadSnapshot({
-      threadId: "thread-1",
-      harnessId: "pi",
-      thread: { status: { type: "idle" }, cwd: "/workspace" },
-      turns: completedTurns,
-      running: false,
-      view: "result",
-    });
-
+  it("preserves the default result snapshot without exposing tool output or reasoning", () => {
+    const snapshot = projectDelegationThreadSnapshot({ ...input, view: "result" });
     expect(snapshot).toMatchObject({
       cwd: "/workspace",
       status: "completed",
       progress: [{ id: "progress-1", text: "Checking auth." }],
       result: { availability: "available", text: "Found two issues." },
     });
-    expect(JSON.stringify(snapshot)).not.toContain("secret output");
-    expect(JSON.stringify(snapshot)).not.toContain("cat secret");
-    expect(JSON.stringify(snapshot)).not.toContain("hidden");
-    expect(snapshot).not.toHaveProperty("messages");
+    for (const hidden of ["secret output", "cat secret", "hidden"])
+      expect(JSON.stringify(snapshot)).not.toContain(hidden);
+    for (const field of ["turns", "totalTurns", "from", "to", "nextCursor", "hasMore"])
+      expect(snapshot).not.toHaveProperty(field);
   });
 
-  it("pages visible user and Agent messages with a non-consuming cursor", () => {
-    const first = projectDelegationThreadSnapshot({
-      threadId: "thread-1",
-      harnessId: "pi",
-      thread: { status: { type: "idle" } },
-      turns: completedTurns,
-      running: false,
-      view: "messages",
-      limit: 2,
-    });
-    expect(first.messages).toEqual([
-      { id: "user-1", turnId: "turn-1", role: "user", text: "inspect auth" },
-      {
-        id: "progress-1",
-        turnId: "turn-1",
-        role: "agent",
-        phase: "commentary",
-        text: "Checking auth.",
-      },
-    ]);
-    if (!first.nextCursor) throw new Error("Expected message cursor");
-
-    const second = projectDelegationThreadSnapshot({
-      threadId: "thread-1",
-      harnessId: "pi",
-      thread: { status: { type: "idle" } },
-      turns: completedTurns,
-      running: false,
-      view: "messages",
-      cursor: first.nextCursor,
-      limit: 2,
-    });
-    const repeated = projectDelegationThreadSnapshot({
-      threadId: "thread-1",
-      harnessId: "pi",
-      thread: { status: { type: "idle" } },
-      turns: completedTurns,
-      running: false,
-      view: "messages",
-      cursor: first.nextCursor,
-      limit: 2,
-    });
-    expect(second.messages).toEqual([
-      {
-        id: "final-1",
-        turnId: "turn-1",
-        role: "agent",
-        phase: "final",
-        text: "Found two issues.",
-      },
-    ]);
-    expect(first.hasMore).toBe(true);
-    expect(second.hasMore).toBe(false);
-    expect(repeated).toEqual(second);
-  });
-
-  it("filters whitespace without spending the page limit or breaking saved cursor offsets", () => {
-    const turns = [
-      {
-        id: "turn-1",
-        status: "completed",
-        items: [
-          { id: "blank", type: "agentMessage", phase: "commentary", text: "\n\n" },
-          { id: "answer", type: "agentMessage", phase: "final", text: "Answer" },
-          { id: "trailing-blank", type: "agentMessage", phase: "commentary", text: " " },
-        ],
-      },
-    ];
-    const input = {
-      threadId: "thread-1",
-      harnessId: "pi" as const,
-      thread: {},
-      turns,
-      running: false,
-    };
-    const page = projectDelegationThreadSnapshot({ ...input, view: "messages", limit: 1 });
-    expect(page.messages?.map(({ text }) => text)).toEqual(["Answer"]);
-    expect(page.progress).toEqual([]);
-    expect(page.hasMore).toBe(false);
-    const checkpoint = projectDelegationThreadSnapshot({ ...input, view: "result" });
-    const cursor = checkpoint.nextCursor;
-    if (!cursor) throw new Error("Missing incremental cursor");
-    const encoded = cursor.slice("codexhost:thread-messages:v1:".length);
-    expect(JSON.parse(Buffer.from(encoded, "base64url").toString()).offset).toBe(3);
-    turns[0]?.items.push({
-      id: "new-answer",
-      type: "agentMessage",
-      phase: "final",
-      text: "New answer",
-    });
-    const next = projectDelegationThreadSnapshot({ ...input, view: "messages", cursor, limit: 1 });
-    expect(next.messages?.map(({ text }) => text)).toEqual(["New answer"]);
-    expect(next.hasMore).toBe(false);
-    const after = projectDelegationThreadSnapshot({
+  it("returns only user input and the final reply in a whole Turn", () => {
+    const snapshot = projectDelegationThreadSnapshot({
       ...input,
       view: "messages",
-      cursor: next.nextCursor ?? "",
-      limit: 1,
+      from: 1,
+      to: 1,
     });
-    expect(after.messages).toEqual([]);
-    expect(after.hasMore).toBe(false);
-    expect(after.nextCursor).toBe(next.nextCursor);
+    expect(snapshot).toMatchObject({
+      totalTurns: 1,
+      from: 1,
+      to: 1,
+      progress: [],
+      turns: [
+        {
+          turnId: "turn-1",
+          turnNumber: 1,
+          status: "completed",
+          messages: [
+            { id: "user-1", role: "user", text: "inspect auth" },
+            { id: "final-1", role: "agent", phase: "final", text: "Found two issues." },
+          ],
+        },
+      ],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("Checking auth.");
+    expect(snapshot).not.toHaveProperty("nextCursor");
+    expect(snapshot).not.toHaveProperty("hasMore");
   });
 
-  it("keeps result fields stable while message pagination advances", () => {
-    const first = projectDelegationThreadSnapshot({
-      threadId: "thread-1",
-      harnessId: "pi",
-      thread: { status: { type: "idle" } },
-      turns: completedTurns,
-      running: false,
-      view: "messages",
-      limit: 1,
-    });
-    if (!first.nextCursor) throw new Error("Expected message cursor");
-    const second = projectDelegationThreadSnapshot({
-      threadId: "thread-1",
-      harnessId: "pi",
-      thread: { status: { type: "idle" } },
-      turns: completedTurns,
-      running: false,
-      view: "messages",
-      cursor: first.nextCursor,
-      limit: 1,
-    });
-    expect(second.result).toEqual(first.result);
-    expect(second.turn).toEqual(first.turn);
-    expect(second.status).toBe(first.status);
-  });
-
-  it("reports a running checkpoint without inventing a result", () => {
+  it("reports a running result checkpoint without inventing a result", () => {
     const snapshot = projectDelegationThreadSnapshot({
-      threadId: "thread-1",
-      harnessId: "pi",
+      ...input,
       thread: { status: { type: "active" } },
       turns: [
         {
           id: "turn-running",
           status: "inProgress",
           items: [
-            {
-              id: "progress",
-              type: "agentMessage",
-              phase: "commentary",
-              text: "Still checking.",
-            },
+            { id: "progress", type: "agentMessage", phase: "commentary", text: "Still checking." },
           ],
         },
       ],

@@ -730,7 +730,6 @@ describe("HarnessDelegationCoordinator", () => {
         turn: { turnId: "turn-1", status: "completed" },
         progress: [],
         result: { availability: "available", text: "done" },
-        nextCursor: "cursor",
       });
       await expect(
         value.coordinator.wait({
@@ -748,7 +747,6 @@ describe("HarnessDelegationCoordinator", () => {
         turn: { turnId: "turn-1", status: "running" },
         progress: [],
         result: { availability: "pending" },
-        nextCursor: "cursor",
       });
       await expect(
         value.coordinator.wait({

@@ -192,8 +192,8 @@ describe.runIf(enabled)("Copilot native reception through the public Host Coordi
       const continued = await control.wait({ ...read, timeoutMs: 60_000 });
       expect(continued.status).toBe("completed");
       expect(continued.result.text).toContain("COORDINATOR_CONTINUED");
-      const messages = await control.read({ ...read, view: "messages", limit: 100 });
-      expect(messages.messages?.length).toBeGreaterThan(0);
+      const messages = await control.read({ ...read, view: "messages" });
+      expect(messages.turns?.length).toBeGreaterThan(0);
       const threadId = hostThreadIdSchema.parse(first.threadId);
       const beforeRollback = await fixture.mappingStore.getThread(threadId);
       writeRequest(fixture.desktopInput, {

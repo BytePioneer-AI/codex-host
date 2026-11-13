@@ -351,7 +351,9 @@ function planFromTodoValue(
   const list = coerceTodoList(
     record.todos ?? record.items ?? record.plan ?? record.tasks ?? record.entries,
   );
-  if (!list || list.length === 0) return planFromChecklistText(explanation);
+  if (!list) return planFromChecklistText(explanation);
+  // An explicit empty list clears the plan, e.g. after every task is deleted.
+  if (list.length === 0) return planFromChecklistText(explanation) ?? { explanation, plan: [] };
   const plan: { step: string; status: CodexPlanStepStatus }[] = [];
   for (const entry of list) {
     if (typeof entry === "string" && entry.trim().length > 0) {
@@ -800,6 +802,14 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         ];
   };
   const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
+  // Codex history has no Todo Item; the Turn's last plan is replayed as turn/plan/updated.
+  const latestPlan = snapshot.items
+    .map(({ item }) =>
+      item.type === "toolExecution" && isTodoTool(item.toolName)
+        ? (planFromTodoValue(item.arguments) ?? planFromTodoValue(item.output))
+        : null,
+    )
+    .findLast((plan) => plan !== null);
   const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
   const finalAnswer = inferredFinalAnswer(
     lastVisible,
@@ -830,13 +840,38 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     durationMs: hasTiming ? completedAtMs - startedAtMs : null,
     itemsView: "full",
   };
-  return {
+  const projected: JsonObject = {
     ...turn,
     codexhostFileOperations: projectFileOperations(
       snapshot.items,
       turn.items,
       ({ item, outcome }) => projectItem(item, outcome, cwd, true, input.threadId ?? ""),
     ),
+  };
+  if (latestPlan) historicalPlans.set(projected, latestPlan);
+  return projected;
+}
+
+/** Each projected history Turn's last plan, kept off the Turn sent to clients. */
+const historicalPlans = new WeakMap<
+  JsonObject,
+  { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] }
+>();
+
+/**
+ * Codex Desktop keeps a plan only from turn/plan/updated, so a reopened Thread
+ * receives the latest historical plan again on the Turn that produced it.
+ */
+export function historicalPlanUpdate(
+  threadId: string,
+  turns: readonly JsonObject[],
+): JsonObject | null {
+  const turn = turns.findLast((candidate) => historicalPlans.has(candidate));
+  const plan = turn && historicalPlans.get(turn);
+  if (!turn || !plan || typeof turn.id !== "string") return null;
+  return {
+    method: "turn/plan/updated",
+    params: { threadId, turnId: turn.id, explanation: plan.explanation, plan: plan.plan },
   };
 }
 

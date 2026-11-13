@@ -594,6 +594,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         includePartialMessages: true,
         forwardSubagentText: true,
         env: withNodeRuntimeOnPath({
+          // Non-interactive Claude Code omits TaskCreate/TaskGet/TaskList/TaskUpdate unless
+          // asked; they feed the Codex plan panel. A user-set value wins. CLAUDE_CODE_ENABLE_TASKS
+          // stays unset because it hides these tools again.
+          CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
           ...this.#environment,
           CLAUDE_CODE_ENTRYPOINT: SESSION_ENTRYPOINT,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,

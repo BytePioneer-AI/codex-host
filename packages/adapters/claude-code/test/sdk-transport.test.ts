@@ -1168,6 +1168,21 @@ describe("ClaudeSdkTransport process environment", () => {
     await value.transport.close();
   });
 
+  it("enables Claude Code task tools unless the user already chose a value", async () => {
+    const enabled = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {});
+    await enabled.transport.start();
+    expect(options(enabled).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("1");
+    expect(options(enabled).env).not.toHaveProperty("CLAUDE_CODE_ENABLE_TASKS");
+    await enabled.transport.close();
+
+    const userChoice = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: "0",
+    });
+    await userChoice.transport.start();
+    expect(options(userChoice).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("0");
+    await userChoice.transport.close();
+  });
+
   it("adds the Host Node runtime to the Claude process PATH", async () => {
     const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",

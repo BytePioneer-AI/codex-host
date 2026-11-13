@@ -14,11 +14,12 @@ import {
   hostInteractionIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
+  type JsonValue,
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, projectHistoricalTurn } from "../src/index.js";
+import { CodexTurnProjector, historicalPlanUpdate, projectHistoricalTurn } from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -1694,6 +1695,48 @@ describe("Codex UI projector", () => {
         }).messages,
       ).toMatchObject([{ params: { item: { type: "commandExecution", cwd } } }]);
     }
+  });
+
+  it("clears the plan from an empty Todo list, live and in replayed history", () => {
+    const todo = (
+      id: string,
+      todos: JsonValue[],
+    ): HostThreadSnapshot["turns"][number]["items"][number] => ({
+      item: { type: "toolExecution", itemId: itemId(id), toolName: "Todo", arguments: { todos } },
+      outcome: { status: "succeeded" },
+    });
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    expect(
+      value.project({ type: "item.started", turnId, item: todo("todo-empty", []).item }).messages,
+    ).toMatchObject([{ method: "turn/plan/updated", params: { plan: [] } }]);
+
+    const historicalTurn = (id: string, todos: JsonValue[]) =>
+      projectHistoricalTurn({
+        turnId: hostTurnIdSchema.parse(id),
+        cwd: "/workspace",
+        snapshot: {
+          nativeTurnRef: nativeTurnRefSchema.parse({
+            harnessId: "claude-code",
+            nativeSessionId: "session-1",
+            nativeTurnKey: id,
+            formatVersion: 1,
+          }),
+          input: [],
+          items: [todo(`${id}-todo`, todos)],
+          outcome: { status: "succeeded" },
+        },
+      });
+    const planned = historicalTurn("turn-1", [{ content: "Ship", status: "pending" }]);
+    const cleared = historicalTurn("turn-2", []);
+    expect(planned).not.toHaveProperty("codexhostPlan");
+    expect(historicalPlanUpdate("thread-1", [planned])).toMatchObject({
+      params: { turnId: "turn-1", plan: [{ step: "Ship", status: "pending" }] },
+    });
+    expect(historicalPlanUpdate("thread-1", [planned, cleared])).toEqual({
+      method: "turn/plan/updated",
+      params: { threadId: "thread-1", turnId: "turn-2", explanation: null, plan: [] },
+    });
   });
 
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {

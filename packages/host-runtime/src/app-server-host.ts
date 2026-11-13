@@ -355,6 +355,7 @@ import { USAGE_STATISTICS_METHOD } from "@codexhost/shared-contracts";
 import {
   CodexTurnProjector,
   decodeCreateRoute,
+  historicalPlanUpdate,
   decodeExternalTransportSelection,
   encodeExternalTransportSelection,
   decodeThreadListRequest,
@@ -5108,7 +5109,10 @@ export class AppServerHost {
         },
       }),
     );
-    if (includeTurns) this.#markExternalHistoryRead(thread, readTurns);
+    if (includeTurns) {
+      this.#markExternalHistoryRead(thread, readTurns);
+      await this.#replayExternalPlan(thread);
+    }
     await this.#replayExternalUsage(thread);
   }
 
@@ -5223,7 +5227,9 @@ export class AppServerHost {
             : "External Thread history projection failed",
         ),
       );
+      return;
     }
+    await this.#replayExternalPlan(thread);
   }
 
   #externalHistoryTurns(thread: ExternalThread, forClient = false): JsonObject[] {
@@ -7067,6 +7073,18 @@ export class AppServerHost {
   #meterTurnTiming(thread: ExternalThread, event: HostEvent): boolean {
     if (this.#externalRuntime.get(thread.id) !== thread) return false;
     return thread.usageMeter.observeTurn(event);
+  }
+
+  /**
+   * Desktop restores a plan only from turn/plan/updated, never from Thread history. Only a
+   * Harness whose plan outlives its Turn gets it replayed; other plans stay with their Turn.
+   */
+  async #replayExternalPlan(thread: ExternalThread): Promise<void> {
+    if (thread.session.capabilities.persistentPlan !== true) return;
+    const update = thread.livePlan
+      ? { method: "turn/plan/updated", params: thread.livePlan }
+      : historicalPlanUpdate(thread.id, thread.turns);
+    if (update) await this.#writer.json(update);
   }
 
   async #replayExternalUsage(thread: ExternalThread): Promise<void> {

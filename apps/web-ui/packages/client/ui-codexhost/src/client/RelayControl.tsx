@@ -44,6 +44,7 @@ export function RelayControl({
   const current = kind === relay.kind;
   const state: RelayState = current ? relay.state : { status: "off" };
   const official = kind === "official";
+  const showInvite = official && state.status === "off" && state.reason === "invite";
   const hostname = official ? relay.officialHostname : relay.customHostname;
   const quotaUntil = current ? relay.quotaUntil : undefined;
   const blocked = relay.enabled && !current;
@@ -204,17 +205,19 @@ export function RelayControl({
           )}
           {official && hostname === undefined && (
             <div className={css.relayFields}>
-              <p className={css.meta}>
-                {t("connectDevices.relay.beta")}{" "}
-                <a
-                  className={css.link}
-                  href="https://github.com/BytePioneer-AI/codex-host#join-the-community"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {t("connectDevices.relay.betaLink")}
-                </a>
-              </p>
+              {showInvite && (
+                <p className={css.meta}>
+                  {t("connectDevices.relay.beta")}{" "}
+                  <a
+                    className={css.link}
+                    href="https://github.com/BytePioneer-AI/codex-host#join-the-community"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {t("connectDevices.relay.betaLink")}
+                  </a>
+                </p>
+              )}
               <label className={`${css.relayField} ${css.notice}`}>
                 {t("connectDevices.relay.name")}
                 <input
@@ -232,17 +235,19 @@ export function RelayControl({
               <p id={nameHint} className={css.meta}>
                 {t("connectDevices.relay.nameHint")}
               </p>
-              <label className={`${css.relayField} ${css.notice}`}>
-                {t("connectDevices.relay.inviteLabel")}
-                <input
-                  className={css.input}
-                  value={invite}
-                  onChange={(event) => setInvite(event.target.value)}
-                  autoCapitalize="none"
-                  spellCheck={false}
-                  disabled={busy}
-                />
-              </label>
+              {showInvite && (
+                <label className={`${css.relayField} ${css.notice}`}>
+                  {t("connectDevices.relay.inviteLabel")}
+                  <input
+                    className={css.input}
+                    value={invite}
+                    onChange={(event) => setInvite(event.target.value)}
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    disabled={busy}
+                  />
+                </label>
+              )}
             </div>
           )}
           <div className={css.actions}>

@@ -15,6 +15,7 @@ export * from "./model-price-overrides.js";
 export * from "./usage-statistics.js";
 export * from "./thread-prewarm.js";
 export * from "./thread-questions.js";
+export * from "./thread-relations.js";
 export * from "./web.js";
 export * from "./web-tool-output.js";
 export {

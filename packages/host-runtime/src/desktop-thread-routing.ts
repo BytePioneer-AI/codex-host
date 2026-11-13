@@ -20,6 +20,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   THREAD_QUESTIONS_LIST_METHOD,
+  THREAD_RELATION_LIST_METHOD,
   THREAD_QUESTION_RESPOND_METHOD,
   harnessCommandsInspectParamsSchema,
   type HarnessId,
@@ -95,6 +96,7 @@ export interface DesktopThreadRoutingHost {
   inspectThread(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
   listThreadOwnership(request: JsonRpcRequest): Promise<void>;
+  listThreadRelations(request: JsonRpcRequest): Promise<void>;
   inspectThreadSteering(request: JsonRpcRequest): Promise<void>;
   handleSharedQuestionRequest(request: JsonRpcRequest): Promise<void>;
   selectThreadModel(request: JsonRpcRequest): Promise<void>;
@@ -218,6 +220,10 @@ export class DesktopThreadRouting {
     }
     if (request.method === "codexhost/thread/ownership/list") {
       await this.#host.listThreadOwnership(request);
+      return true;
+    }
+    if (request.method === THREAD_RELATION_LIST_METHOD) {
+      await this.#host.listThreadRelations(request);
       return true;
     }
     if (

@@ -104,7 +104,7 @@ Web 侧栏 SHALL 支持任意层级的 Thread 树，同一个 Thread 只出现�
 - **THEN** 该结果 SHALL 直接出现在搜索结果中，并显示其父 Thread 的标题
 
 ### Requirement: 显示父 Thread 来自委派关系
-每个 Thread SHALL 至多有一个显示父 Thread，即委派该 Thread 的父 Thread（包括升级前已有的委派）；没有委派父 Thread 时作为顶层显示。Web MUST NOT 提供手动改变显示父 Thread 的入口。显示父 Thread 与 Harness 原生 Subagent 的父子关联相互独立；Subagent Thread 不进入侧栏的规则不变。
+每个 Thread SHALL 至多有一个显示父 Thread，即委派该 Thread 的父 Thread（包括升级前已有的委派）；没有委派父 Thread 或已被置顶时作为顶层显示。Web MUST NOT 提供手动改变显示父 Thread 的入口。显示父 Thread 与 Harness 原生 Subagent 的父子关联相互独立；Subagent Thread 不进入侧栏的规则不变。
 
 #### Scenario: 委派子 Thread 自动挂载
 - **WHEN** Thread A 通过委派创建了子 Thread B
@@ -122,18 +122,22 @@ Web 侧栏 SHALL 支持任意层级的 Thread 树，同一个 Thread 只出现�
 - **WHEN** 某个 Thread 有 Harness 原生 Subagent
 - **THEN** Subagent MUST NOT 作为树中的子 Thread 出现在侧栏，仍从父 Thread 的现有入口查看
 
-### Requirement: 置顶仅限顶层 Thread
-Web SHALL 只为顶层 Thread 提供置顶操作；置顶的顶层 Thread 连同整棵子树显示在置顶区，并可在置顶区展开、收起。已经置顶的 Thread 作为委派子 Thread 显示时，Web SHALL 按未置顶显示并隐藏其置顶操作，但 MUST NOT 修改 Host 与 Codex Desktop 共享的置顶状态。
+### Requirement: 置顶的 Thread 成为顶层
+任何 Thread，包括委派出来的子 Thread，都 SHALL 可以置顶。被置顶的 Thread MUST NOT 有显示父 Thread：它作为独立的顶层 Thread 显示在置顶区，它的后代跟随它显示和汇总，并且不再出现在原来的父 Thread 下，也不计入原父 Thread 的后代数量、汇总状态、排序时间和归档级联。取消置顶后，它 SHALL 回到委派父 Thread 下。Web 与 Codex Desktop 共享置顶状态，在 Desktop 中置顶的子 Thread 在 Web 中同样作为顶层显示。
 
-#### Scenario: 置顶带子树的 Thread
-- **WHEN** 用户置顶有子 Thread 的顶层 Thread A
-- **THEN** A 及其后代 SHALL 显示在置顶区，且不在普通分组中重复出现
+#### Scenario: 置顶子 Thread
+- **WHEN** 用户置顶 A 的子 Thread B
+- **THEN** B SHALL 显示在置顶区，成为独立的顶层 Thread，B 的后代跟随它
+- **AND** B SHALL 不再显示在 A 下，A 的子 Thread 数量与汇总状态不再包含 B 及其后代
 
-#### Scenario: 子 Thread 菜单
-- **WHEN** 用户打开子 Thread 的行菜单
-- **THEN** 菜单 MUST NOT 提供置顶操作
+#### Scenario: 取消置顶
+- **WHEN** 用户取消置顶 B
+- **THEN** B SHALL 回到它的委派父 Thread A 下
 
-#### Scenario: 已置顶 Thread 是委派子 Thread
-- **WHEN** 已置顶的 Thread B 是 A 的委派子 Thread
-- **THEN** B SHALL 显示在 A 下且不显示为置顶
-- **AND** Codex Desktop 中 B 的置顶状态 SHALL 保持不变
+#### Scenario: 在 Desktop 中置顶
+- **WHEN** 用户在 Codex Desktop 中置顶 A 的子 Thread B
+- **THEN** Web 侧栏 SHALL 把 B 显示在置顶区，不再显示在 A 下
+
+#### Scenario: 归档原父 Thread
+- **WHEN** 用户归档 A，而 A 的子 Thread B 已被置顶
+- **THEN** 归档 SHALL 不级联到 B，B 仍显示在置顶区

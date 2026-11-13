@@ -141,6 +141,7 @@ export class PushNotifier {
           await webpush.sendNotification(subscription, payload, {
             TTL: 3600,
             urgency: message.kind === "turn" ? "normal" : "high",
+            timeout: 10_000,
           });
           sent += 1;
         } catch (error) {

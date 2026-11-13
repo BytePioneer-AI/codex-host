@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { previewLaunch } from "../src/preview-launch.ts";
+import { previewLaunch, previewProxyEnvironment } from "../src/preview-launch.ts";
 import { restartDevelopmentPreview } from "../src/development-restart.ts";
 
 const { values } = parseArgs({
@@ -75,6 +75,13 @@ for (const id of selected.split(",")) {
     throw new Error(`Preview requires a bundled session Adapter for ${id}`);
   }
 }
+launch.env = await previewProxyEnvironment(
+  resolve(
+    values["ch-launcher"] ??
+      resolve(distribution, "native", process.platform === "win32" ? "codexhost.exe" : "codexhost"),
+  ),
+  launch.env,
+);
 if (values.restart) await restartDevelopmentPreview(distribution, values, launch.env);
 // The development parent waits for the Host prompt to finish before starting watchers.
 process.send?.("ready");

@@ -232,6 +232,7 @@ for (const realRelay of [false, true]) {
       const account = {
         keyId: "pebble-external-account",
         hmacKey: Buffer.from("local-pebble-external-account-key").toString("base64url"),
+        contact: ["mailto:ops@example.com"],
       };
       const f = await pebble(t, 0, { throughRelay: realRelay, externalAccount: account });
       const double = realRelay

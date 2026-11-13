@@ -51,14 +51,21 @@ for (const proxy of [false, true]) {
   });
 }
 
-for (const status of [200, 404]) {
-  it(`claims EAB only after accountDoesNotExist and handles HTTP ${status}`, async (t) => {
+for (const { status, contact } of [
+  { status: 200 },
+  { status: 200, contact: ["mailto:ops@example.com"] },
+  { status: 404 },
+]) {
+  it(`claims EAB only after accountDoesNotExist and handles HTTP ${status}${contact ? " with contact" : " without contact"}`, async (t) => {
     const ca = await acmeServer(t, ({ path, payload, reply }) => {
       if (path !== "/account" || !payload?.onlyReturnExisting) return false;
       reply(400, { type: "urn:ietf:params:acme:error:accountDoesNotExist" });
       return true;
     });
-    const relay = await certificateRelay(t, ca.directory, { status, account });
+    const relay = await certificateRelay(t, ca.directory, {
+      status,
+      account: { ...account, ...(contact === undefined ? {} : { contact }) },
+    });
     const proxy = await certificateProxy(t, relay.host);
     environment(t, { HTTPS_PROXY: proxy.url });
     const round = new AcmeRound(new RelayTls(createServer(), new RequestTrust(undefined)), relay);
@@ -68,6 +75,12 @@ for (const status of [200, 404]) {
     assert.equal(proxy.targets.length, relay.targets.length + 1, "EAB also uses the HTTP proxy");
     const creation = ca.requests.find((request) => request.payload?.termsOfServiceAgreed);
     assert.ok(creation);
+    assert.deepEqual(creation.payload?.contact, contact);
+    assert.equal(Object.hasOwn(creation.payload ?? {}, "contact"), contact !== undefined);
+    assert.equal(
+      ca.requests.find((request) => request.payload?.onlyReturnExisting)?.payload?.contact,
+      undefined,
+    );
     const eab = creation.payload?.externalAccountBinding as
       | {
           protected: string;

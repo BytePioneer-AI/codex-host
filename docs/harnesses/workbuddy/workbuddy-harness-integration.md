@@ -116,6 +116,8 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 
 取消生成可能留下参数尚未闭合的 `function_call`。同时标记 `status: incomplete`、`providerData.isPartialAborted: true` 和 `providerData.discard: true` 的调用仅作为原生父链节点保留，不解析参数，也不投影为已启动的工具；后续 Turn 仍可读取。缺少上述丢弃证据的无效参数仍按协议错误处理，不将损坏历史伪装为成功。
 
+Fork 的子 Transcript 收集沿用上述丢弃判定，不将已丢弃的 Agent 调用视为待完成委派；保留前缀与父链节点不变。没有完整丢弃证据的未完成 Agent 委派仍拒绝 Fork，不跳过真实子任务的身份和范围验证。
+
 ### 流式消息身份与显示边界
 
 WorkBuddy 原生 ACP 可以在同一次 Prompt 的多次模型回复间复用顶层 `messageId`；单次模型回复的身份由 `_meta["codebuddy.ai/llmMessageId"]` 提供。共用的 CodeBuddy Adapter 优先使用后者划分回复，旧运行时依次回退到顶层 `messageId` 与 `_meta["codebuddy.ai/messageId"]`。新回复、普通工具、原生 Agent 子任务启动和原生压缩会结束前一段文本与 Reasoning；子任务内部通知、重复工具通知和已有工具的完成通知不会切断父消息。每段分配独立的公共 Item 身份，即使原生 ID 缺失或在工具前后复用，也不会把最终回答追加到已完成的过程消息中。

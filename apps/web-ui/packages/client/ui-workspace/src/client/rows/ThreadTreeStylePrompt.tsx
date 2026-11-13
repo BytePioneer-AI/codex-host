@@ -21,6 +21,8 @@ export function ThreadTreeStylePrompt({
   exitRef.current = onExit;
   useLayoutEffect(() => {
     const root = rootRef.current;
+    // A manually expanded parent may sit at the bottom of the scrollable sidebar.
+    root?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
     return () => {
       if (root?.contains(document.activeElement)) exitRef.current();
     };

@@ -70,6 +70,7 @@ function fixture() {
 it("reads native Codex controls and forwards model changes to the owning Host", async () => {
   const f = fixture();
   let settingsModel = "gpt-6-astra";
+  let headerSettings: Record<string, unknown> = {};
   Object.assign(f.route.manager, {
     getConversation: async () => ({
       latestThreadSettings: { model: settingsModel, effort: "high", serviceTier: "priority" },
@@ -84,6 +85,7 @@ it("reads native Codex controls and forwards model changes to the owning Host", 
           model: "gpt-6-astra",
           cwd: "/mac",
           turns: [],
+          ...headerSettings,
         },
       };
     if (method === "codexhost/thread/inspect") return { owner: "codex", locked: true };
@@ -115,6 +117,14 @@ it("reads native Codex controls and forwards model changes to the owning Host", 
   expect(
     f.send.mock.calls.filter(([method]) => method === "codexhost/thread/model/select"),
   ).toHaveLength(1);
+  for (const fields of [
+    { serviceTier: "default", reasoningEffort: "low" },
+    { serviceTier: null, reasoningEffort: null },
+  ]) {
+    headerSettings = fields;
+    expect(await f.read()).toMatchObject({ nativeSettings: fields });
+  }
+  headerSettings = {};
   settingsModel = "stale-model";
   const stale = await f.read();
   expect(stale).toMatchObject({ nativeSettings: { model: "gpt-6-astra", serviceTier: undefined } });

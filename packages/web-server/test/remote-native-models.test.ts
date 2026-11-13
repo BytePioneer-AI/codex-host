@@ -6,6 +6,42 @@ import {
 } from "@codexhost/shared-contracts";
 import { RemoteSessions, remoteSessionId } from "../src/remote-sessions.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
+import {
+  parseRemoteControls,
+  selectRemoteModel,
+  type RemoteControlsEntry,
+} from "../src/remote-session-controls.ts";
+
+it("stops a combined selection when refresh moves to another connection", async () => {
+  const entry: RemoteControlsEntry = {
+    epoch: "original",
+    row: { modelProvider: "openai" },
+    controls: parseRemoteControls({
+      configuration: { owner: "codex", locked: true },
+      nativeSettings: { model: "before" },
+    }),
+  };
+  const writes: unknown[] = [];
+  await assert.rejects(
+    selectRemoteModel(
+      "remote",
+      entry,
+      {
+        provider: "codex",
+        model: encodeOfficialCodexModelRef("after").id,
+        reasoningEffort: "high",
+      },
+      async (_entry, setting) => {
+        writes.push(setting);
+      },
+      async () => {
+        entry.epoch = "replacement";
+      },
+    ),
+    /Thinking was not completed/,
+  );
+  assert.deepEqual(writes, [{ modelId: encodeOfficialCodexModelRef("after").id }]);
+});
 
 it("reads and changes the remote native model without consulting local defaults", async (t) => {
   const rpc = new RpcRegistry();

@@ -270,8 +270,14 @@ export async function rendererRemoteSession(
           if (settings?.model === header.thread.model && typeof settings?.model === "string")
             metadata.nativeSettings = {
               model: settings.model,
-              reasoningEffort: settings.effort,
-              serviceTier: settings.serviceTier,
+              reasoningEffort:
+                header.thread.reasoningEffort === undefined
+                  ? settings.effort
+                  : header.thread.reasoningEffort,
+              serviceTier:
+                header.thread.serviceTier === undefined
+                  ? settings.serviceTier
+                  : header.thread.serviceTier,
             };
         }
         if (

@@ -38,6 +38,7 @@ export type RemoteConfigurationSetting =
   { modelId: string } | { thinkingOptionId: string } | { permissionModeId: string };
 
 export interface RemoteControlsEntry {
+  epoch?: string;
   controls?: RemoteControls;
   row: { modelProvider: string };
 }
@@ -221,6 +222,7 @@ export async function selectRemoteModel(
   configure: (entry: RemoteControlsEntry, setting: RemoteConfigurationSetting) => Promise<void>,
   refresh: (id: string) => Promise<unknown>,
 ): Promise<Record<string, never>> {
+  const epoch = entry.epoch;
   const configuration = modelConfiguration(entry);
   if (typeof request.provider !== "string" || request.provider !== configuration.harnessId)
     throw new RpcError(
@@ -243,6 +245,8 @@ export async function selectRemoteModel(
     if (typeof request.reasoningEffort === "string") {
       try {
         await refresh(id);
+        if (entry.epoch !== epoch)
+          throw new Error("Remote connection changed during model selection");
         currentConfiguration = modelConfiguration(entry);
         refreshedAfterModel = true;
       } catch {

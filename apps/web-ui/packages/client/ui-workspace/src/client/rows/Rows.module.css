@@ -228,6 +228,15 @@
   transform: translateY(-1px) rotate(45deg);
 }
 
+.identityButton[aria-expanded="true"] > :not(.foldChevron) {
+  visibility: hidden;
+}
+
+.identityButton[aria-expanded="true"] .foldChevron {
+  display: flex;
+  color: var(--dsw-alias-label-secondary, currentColor);
+}
+
 @media (hover: hover) and (pointer: fine) {
   .identityButton:hover > :not(.foldChevron),
   .identityButton:focus-visible > :not(.foldChevron) {

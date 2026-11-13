@@ -69,8 +69,7 @@ import {
   UNGROUPED_KEY,
 } from "../tree.ts";
 import { pinOrderSource } from "../pin-order.ts";
-import { threadTreeOrderSource } from "../thread-tree-order.ts";
-import { visibleThreadRows } from "../thread-tree.ts";
+import { threadChildOrder, threadTreeOrderSource } from "../thread-tree-order.ts";
 import { ThreadTreeViewProvider, useThreadTreeView } from "./ThreadTreeView.tsx";
 import { ThreadPlacementDragProvider } from "./ThreadPlacementDrag.tsx";
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from "./Rows.tsx";
@@ -321,6 +320,7 @@ type SessionTreeProps = Pick<
     workspaces: readonly WorkspaceView[];
     /** Browser-projected order for Sessions outside every Workspace. */
     ungroupedSessionIds: readonly SessionId[];
+    recentOrder?: readonly SessionId[] | undefined;
     /** Whether the current Workspace stream has a complete Host baseline. */
     workspaceReady: boolean;
     canStartProjectless: boolean;
@@ -393,6 +393,7 @@ function SessionTree({
   open,
   workspaces,
   ungroupedSessionIds,
+  recentOrder,
   rowState,
   onLeaveArchivedOnly,
   workspaceReady,
@@ -466,6 +467,7 @@ function SessionTree({
     const result = deriveGroups(list, workspaces, rowState, statuses, {
       expandedGroups,
       excludePinned: true,
+      recentOrder,
     });
     if (
       (canStartProjectless || (list.hasMore && result.length === 0)) &&
@@ -483,7 +485,7 @@ function SessionTree({
         sessions: [],
       });
     return result;
-  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless]);
+  }, [list, workspaces, rowState, statuses, expandedGroups, canStartProjectless, recentOrder]);
   const now = Date.now();
   const commitSessionDrag = (activeDrag: DragState, over: NonNullable<DragState["over"]>): void => {
     if (sessionDropCommitted.current) return;
@@ -602,8 +604,7 @@ function SessionTree({
   if (pinnedRows.length > 0) {
     rowKeys.push(`section:${PINNED_SECTION_KEY}`);
     if (pinnedSectionExpanded)
-      for (const node of visibleThreadRows(pinnedRows, threadView.expansion))
-        rowKeys.push(`session:${node.id}`);
+      for (const node of threadView.rows(pinnedRows)) rowKeys.push(`session:${node.id}`);
   }
   if (groups.length === 0 && pinnedRows.length === 0) rowKeys.push("empty");
   const renderGroup = (group: GroupNode, depth: number): ReactNode => {
@@ -621,7 +622,7 @@ function SessionTree({
     );
     rowKeys.push(`workspace:${group.key}`);
     const childRows = group.expanded ? children.map((child) => renderGroup(child, depth + 1)) : [];
-    const sessions = visibleThreadRows(visible.rows, threadView.expansion);
+    const sessions = threadView.rows(visible.rows);
     for (const node of sessions)
       rowKeys.push(`${workspaceId === undefined ? "recent" : "session"}:${node.id}`);
     const canExpand = group.expanded && (visible.hiddenCount > 0 || list.hasMore);
@@ -838,11 +839,7 @@ function SessionTree({
                         }
                       : undefined
                   }
-                  drag={
-                    workspaceId === undefined || group.remote || (node.tree?.depth ?? 0) > 0
-                      ? undefined
-                      : dragProps
-                  }
+                  drag={workspaceId === undefined || group.remote ? undefined : dragProps}
                   t={t}
                 />
               );
@@ -1030,12 +1027,10 @@ function FlatList({
         rowKeys={[
           ...(pinnedRows.length === 0 ? [] : [`section:${PINNED_SECTION_KEY}`]),
           ...(pinnedSectionExpanded
-            ? visibleThreadRows(pinnedRows, threadView.expansion).map((row) => `session:${row.id}`)
+            ? threadView.rows(pinnedRows).map((row) => `session:${row.id}`)
             : []),
           ...(rows.length === 0 && pinnedRows.length === 0 ? ["empty"] : []),
-          ...visibleThreadRows(visible.rows, threadView.expansion).map(
-            (row) => `session:${row.id}`,
-          ),
+          ...threadView.rows(visible.rows).map((row) => `session:${row.id}`),
           ...(hasOverflow || list.hasMore ? ["overflow:flat"] : []),
         ]}
         ready={list.phase === "ready" && workspaceReady && drag === null}
@@ -1064,7 +1059,7 @@ function FlatList({
             t={t}
           />
         )}
-        {visibleThreadRows(visible.rows, threadView.expansion).map((node) => {
+        {threadView.rows(visible.rows).map((node) => {
           const active = drag !== null && drag.pinned === node.pinned;
           const normalizeHalf = (half: "before" | "after"): "before" | "after" =>
             node.blank ? "after" : half;
@@ -1430,13 +1425,24 @@ function WorkspaceBrowserContent({
   const activeSessionOrders = useMemo<Readonly<Record<string, readonly SessionId[]>>>(
     () =>
       Object.fromEntries([
+        ...Object.entries(threadOrder.childMembers).map(([key, members]) => [
+          key,
+          threadChildOrder(members, sessionOrderByAccount[key], list.byId),
+        ]),
         ...orderedWorkspaces.map(
           (workspace) => [workspace.workspaceId, workspace.sessionIds] as const,
         ),
         [UNGROUPED_KEY, orderedUngroupedSessionIds] as const,
         [FLAT_SESSION_ORDER_KEY, orderedFlatSessionIds] as const,
       ]),
-    [orderedFlatSessionIds, orderedUngroupedSessionIds, orderedWorkspaces],
+    [
+      orderedFlatSessionIds,
+      orderedUngroupedSessionIds,
+      orderedWorkspaces,
+      threadOrder,
+      sessionOrderByAccount,
+      list.byId,
+    ],
   );
   useEffect(() => {
     if (workspacePhase !== "ready") return;
@@ -1937,6 +1943,7 @@ function WorkspaceBrowserContent({
               renderSlot={renderSlot}
               workspaces={orderedWorkspaces}
               ungroupedSessionIds={orderedUngroupedSessionIds}
+              recentOrder={orderBy === "manual" ? orderedFlatSessionIds : undefined}
               canStartProjectless={canStartProjectless}
               workspaceReady={workspaceReady}
               nestWorkspaces={groupBy === "workspace-tree"}

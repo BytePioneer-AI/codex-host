@@ -106,12 +106,13 @@ export function buildThreadTree<T extends ThreadTreeRow>(
 export function visibleThreadRows<T extends { id: string; tree?: ThreadTreeInfo<T> }>(
   roots: readonly T[],
   expansion: Readonly<Record<string, boolean>>,
+  childrenOf: (node: T) => readonly T[] = (node) => node.tree?.children ?? [],
 ): T[] {
   const result: T[] = [];
   const stack = [...roots].reverse();
   for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
     result.push(node);
-    if (expansion[node.id]) stack.push(...[...(node.tree?.children ?? [])].reverse());
+    if (expansion[node.id]) stack.push(...[...childrenOf(node)].reverse());
   }
   return result;
 }

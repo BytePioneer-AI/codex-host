@@ -497,7 +497,7 @@ export function SessionNodeItem({
   const placementDrag = useThreadPlacementDrag();
   const depth = node.tree?.depth ?? 0;
   const expanded = expansion[node.id] === true;
-  const drag = depth > 0 ? undefined : suppliedDrag;
+  const drag = placementDrag.enabled ? suppliedDrag : undefined;
   const title = displayTitle(node, t);
   const selected = node.id === currentId;
   const statuses = sessionStatuses(node, t);
@@ -509,9 +509,8 @@ export function SessionNodeItem({
   const reorderable = drag !== undefined && !row.blank && !row.archived;
   const reference = !row.blank ? row.reference : undefined;
   const draggable =
-    reorderable ||
-    reference !== undefined ||
-    (placementDrag.enabled && !row.blank && !row.archived && !row.remote);
+    placementDrag.enabled &&
+    (reorderable || reference !== undefined || (!row.blank && !row.archived && !row.remote));
   const dragged = useRef(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);

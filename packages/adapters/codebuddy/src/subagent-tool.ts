@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type { HostSubagentDelegationItem, HostSubagentStatus } from "@codexhost/harness-adapter";
 import { hostItemIdSchema } from "@codexhost/shared-contracts";
 import { record, text } from "./common.js";
@@ -34,7 +35,7 @@ export function codeBuddyDelegation(
         ...(nativeId ? { nativeSubagentId: nativeId } : {}),
         description: text(args.description) || `${displayName} Subagent`,
         ...(text(args.subagent_type) ? { role: text(args.subagent_type) } : {}),
-        ...(text(args.model) ? { model: text(args.model) } : {}),
+        ...subagentConfiguration(args),
         background: args.run_in_background === true,
         status,
       },

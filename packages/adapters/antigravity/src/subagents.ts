@@ -1,3 +1,8 @@
+import {
+  subagentConfiguration,
+  inheritSubagentConfiguration,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -26,6 +31,10 @@ const infoSchema = z.object({
         conversation_id: nativeSubagentIdSchema,
         type_name: z.string().max(256).optional(),
         role: z.string().max(2048).optional(),
+        model: z.string().max(512).optional().catch(undefined),
+        reasoningEffort: z.string().max(128).optional().catch(undefined),
+        reasoning_effort: z.string().max(128).optional().catch(undefined),
+        thinking: z.string().max(128).optional().catch(undefined),
         initial_prompt: z.string().max(128_000).optional(),
       }),
     )
@@ -44,6 +53,7 @@ interface SubagentOptions {
   cwd: string;
   outputLimit: number;
   observationTimeoutMs: number;
+  parentConfiguration?: SubagentConfiguration;
   initialStates?: HostSubagentState[];
   emit(event: HostEvent): void;
   complete(snapshot: HostItemSnapshot): void;
@@ -107,14 +117,18 @@ export class AntigravitySubagents {
         return true;
       }
       const subagents = parsed.data.subagents.map((child): HostSubagentState => {
-        const state: HostSubagentState = {
-          subagentId: child.conversation_id,
-          nativeSubagentId: child.conversation_id,
-          description: child.role || child.type_name || "Antigravity Subagent",
-          ...(child.type_name ? { role: child.type_name } : {}),
-          background: true,
-          status: "running",
-        };
+        const state: HostSubagentState = inheritSubagentConfiguration(
+          {
+            subagentId: child.conversation_id,
+            nativeSubagentId: child.conversation_id,
+            description: child.role || child.type_name || "Antigravity Subagent",
+            ...(child.type_name ? { role: child.type_name } : {}),
+            ...subagentConfiguration(child),
+            background: true,
+            status: "running",
+          },
+          this.#options.parentConfiguration ?? {},
+        );
         this.#states.set(child.conversation_id, state);
         return state;
       });

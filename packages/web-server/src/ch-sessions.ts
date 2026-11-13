@@ -55,7 +55,7 @@ import { readToolOutput, toolOutputRecords, toolOutputSink } from "./tool-output
 import type { WireEvent } from "./session-log.ts";
 import { SessionListTiming } from "./session-list-timing.ts";
 import { readSessionPage, nextCatalogCursor, type CatalogPage } from "./ch-session-page.ts";
-import { tryGenerateThreadTitle, type ThreadTitleGenerator } from "./ch-thread-titles.ts";
+import { tryGenerateThreadTitle } from "./ch-thread-titles.ts";
 
 function globalProjectionValues(values: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -111,7 +111,6 @@ export class ChSessions {
     displayEntries?: () => Promise<HarnessDisplayEntries>,
     private readonly preferences?: WebHarnessPreferences,
     harnesses?: ReadonlySet<string>,
-    private readonly generateTitle?: ThreadTitleGenerator,
   ) {
     this.catalog = new ChHarnessCatalog(host, displayEntries, preferences, harnesses);
     this.attachments = images ? new ChAttachments(images, files) : undefined;
@@ -1284,7 +1283,7 @@ export class ChSessions {
           ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
         });
       }
-      if (draft && !draft.titleRequested && this.generateTitle) {
+      if (draft && !draft.titleRequested) {
         draft.titleRequested = true;
         const row = this.rows.get(threadId);
         if (row) {
@@ -1297,7 +1296,6 @@ export class ChSessions {
             this.host,
             row,
             prompt,
-            this.generateTitle,
             () => !this.closed && this.titleRequests.has(threadId),
           )
             .then(async (changed) => {

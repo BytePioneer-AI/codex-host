@@ -56,7 +56,6 @@ import { ChSessions } from "./ch-sessions.ts";
 import { WebHarnessDisplaySettings } from "./harness-display-settings.ts";
 import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
-import { requestDesktopThreadTitle } from "@codexhost/desktop-control";
 import { RemoteSessions } from "./remote-sessions.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
 import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
@@ -268,7 +267,6 @@ const sessions = new ChSessions(
   displayEntries,
   preferences,
   enabledHarnesses,
-  requestDesktopThreadTitle,
 );
 // The right Sidebar's DSH backend runs in this process; a failure disables the
 // panel without taking Web down.

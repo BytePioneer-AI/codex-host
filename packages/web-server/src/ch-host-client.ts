@@ -68,6 +68,7 @@ const METHODS = new Set([
   "thread/resume",
   "thread/fork",
   "thread/name/set",
+  "codexhost/thread/title/generate",
   "thread/archive",
   "thread/unarchive",
   "turn/start",

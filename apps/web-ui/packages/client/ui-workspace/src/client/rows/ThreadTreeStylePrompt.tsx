@@ -38,11 +38,12 @@ export function ThreadTreeStylePrompt({
       aria-labelledby={labelId}
     >
       <div className={css.promptHeading}>
-        <strong id={labelId}>{t("threadTree.style.title")}</strong>
+        <strong id={labelId}>{t("threadTree.style.promptTitle")}</strong>
         <button type="button" className={css.later} disabled={busy} onClick={onLater}>
           {t("threadTree.style.later")}
         </button>
       </div>
+      <p className={css.hint}>{t("threadTree.style.hint")}</p>
       <div
         className={css.comparison}
         role="radiogroup"
@@ -86,7 +87,6 @@ export function ThreadTreeStylePrompt({
           </button>
         ))}
       </div>
-      <p className={css.hint}>{t("threadTree.style.hint")}</p>
       {failed && (
         <div className={css.error} role="alert">
           {t("threadTree.style.error")}

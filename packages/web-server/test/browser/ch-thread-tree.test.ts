@@ -101,6 +101,19 @@ async function guides(
   count: number,
   row = threadRow(page, id),
 ): Promise<void> {
+  // Guide geometry is measured without the transient onboarding between parent and children.
+  const later = page
+    .locator("[data-thread-style-prompt]")
+    .getByRole("button", { name: "Later", exact: true });
+  if (await later.count()) {
+    const focused = await page.evaluateHandle(() => document.activeElement);
+    await later.click();
+    await focused.evaluate((element) => {
+      if (element instanceof HTMLElement && element.isConnected)
+        element.focus({ preventScroll: true });
+    });
+    await focused.dispose();
+  }
   const geometry = await row.evaluate((row) => {
     const group = row
       .closest("[data-thread-branch]")

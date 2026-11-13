@@ -19,6 +19,7 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useStat
 import clsx from "clsx";
 import {
   Button,
+  focusWithoutRing,
   IconArchiveCheckOutlineRegular,
   IconArchiveOffOutlineRegular,
   IconArchiveOutlineRegular,
@@ -94,7 +95,8 @@ import {
 } from "../stores.ts";
 import { WorkspacePickFlow } from "../WorkspacePicker.tsx";
 import css from "./WorkspaceBrowser.module.css";
-import { ThreadTreeStyleOptions } from "../ThreadTreeStyleOptions.tsx";
+import { useThreadTreeStyleSave } from "../ThreadTreeStyleOptions.tsx";
+import treeStyleCss from "../ThreadTreeStyle.module.css";
 
 /**
  * Column slide length (--ds-transition-duration-slow): rail-search focus waits it out —
@@ -141,7 +143,7 @@ function useNativeDragAcceptance(active: boolean): void {
   }, [active]);
 }
 
-/** Grouping, ordering, and archived-filter menu; own open state so it resets with the wide chrome. */
+/** Sidebar view preferences; own open state so it resets with the wide chrome. */
 function ViewOptionsMenu({
   groupBy,
   orderBy,
@@ -160,8 +162,10 @@ function ViewOptionsMenu({
   t: WorkspaceBrowserProps["t"];
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const phoneSidebar = usePhoneSidebar();
   const { collapseStyle, setCollapseStyle } = useThreadTreeView();
+  const { busy, failed, save } = useThreadTreeStyleSave(setCollapseStyle);
   return (
     <Menu
       phoneSidebarTitle={t("viewOptions.label")}
@@ -199,13 +203,27 @@ function ViewOptionsMenu({
           label: t("viewOptions.onlyArchived"),
           icon: <IconArchiveCheckOutlineRegular />,
         },
+        { type: "separator" as const, id: "thread-tree-style-separator" },
+        { type: "label" as const, id: "thread-tree-style", text: t("threadTree.style.title") },
+        { id: "summary", label: t("threadTree.style.summary"), disabled: busy },
+        { id: "ring", label: t("threadTree.style.ring"), disabled: busy },
       ]}
       selectedIds={[
         groupBy,
         orderBy,
         { default: "hide-archived", show: "show-archived", only: "only-archived" }[archivedFilter],
+        collapseStyle,
       ]}
       onSelect={(id) => {
+        if (id === "summary" || id === "ring") {
+          void save(id).then((saved) => {
+            if (saved) {
+              setOpen(false);
+              if (triggerRef.current) focusWithoutRing(triggerRef.current);
+            }
+          });
+          return;
+        }
         if (id === "workspace" || id === "workspace-tree" || id === "flat") onGroupPick(id);
         else if (id === "manual" || id === "updated") onOrderPick(id);
         else if (id === "hide-archived") onArchivedFilterPick("default");
@@ -223,6 +241,7 @@ function ViewOptionsMenu({
         <Tooltip label={t("viewOptions.label")} side="bottom" delayMs={500}>
           <button
             type="button"
+            ref={triggerRef}
             className={clsx(css.iconButton, css.wide)}
             aria-label={t("viewOptions.label")}
             data-phone-sidebar-return={phoneSidebar !== null || undefined}
@@ -235,7 +254,11 @@ function ViewOptionsMenu({
         </Tooltip>
       }
     >
-      <ThreadTreeStyleOptions style={collapseStyle} setStyle={setCollapseStyle} t={t} />
+      {failed && (
+        <div className={treeStyleCss.error} role="alert">
+          {t("threadTree.style.error")}
+        </div>
+      )}
     </Menu>
   );
 }

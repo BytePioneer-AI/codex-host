@@ -17,14 +17,17 @@ export function useThreadTreeStyleSave(setStyle: ThreadTreeStyleProps["setStyle"
   const [failed, setFailed] = useState(false);
   const saving = useRef(false);
   const save = async (style: ThreadTreeCollapseStyle) => {
-    if (saving.current) return;
+    if (saving.current) return false;
     saving.current = true;
     setBusy(true);
     setFailed(false);
     try {
-      setFailed(!(await setStyle(style)));
+      const saved = await setStyle(style);
+      setFailed(!saved);
+      return saved;
     } catch {
       setFailed(true);
+      return false;
     } finally {
       saving.current = false;
       setBusy(false);

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
 import {
   clientThreadSnapshotSchema,
@@ -555,6 +556,23 @@ export class NativeClientChannel {
       method === "thread/resume" ? { ...params, excludeTurns: true } : params,
     );
     if (generation !== this.#generationToken) return stale();
+    // Codex can expose the rollout path before its metadata is flushed. Retry
+    // only this explicit read failure; persistent errors and writes stay intact.
+    for (const delayMs of [50, 100, 200, 400]) {
+      if (
+        method !== "thread/read" ||
+        !("error" in reply) ||
+        reply.error.code !== -32603 ||
+        !/^failed to read thread: thread-store internal error: failed to read session metadata ([\s\S]+): rollout at \1 is empty$/u.test(
+          reply.error.message,
+        )
+      )
+        break;
+      await delay(delayMs);
+      if (generation !== this.#generationToken) return stale();
+      reply = await this.#host.request(method, params);
+      if (generation !== this.#generationToken) return stale();
+    }
     // A native Thread exists before its first user message materializes history.
     // Only that explicit initial-page response means empty history, not a failed read.
     if (

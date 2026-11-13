@@ -1,0 +1,76 @@
+/* The 1px column center stays in the existing gutter; identity keeps its 8px inset. */
+.toggle {
+  appearance: none;
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px) - 13px);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 150ms ease;
+}
+
+/* Fill the 14px icon box with the chevron artwork rather than its internal whitespace. */
+.chevron svg path {
+  transform: scale(1.5);
+  transform-origin: 8px 8px;
+}
+
+.collapsed {
+  transform: rotate(-90deg);
+}
+
+/* Only descendants of visible expanded rows are mounted. Guides cannot intercept clicks. */
+.guide {
+  position: absolute;
+  inset-block: -1px;
+  width: 1px;
+  background: var(--dsw-alias-border-l2);
+  pointer-events: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .toggle:hover {
+    color: var(--dsw-alias-label-primary);
+  }
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+/* Collapsed rows tint only the chevron, with no additional marker or count. */
+.chevron[data-thread-tree-activity="pending"] {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.chevron[data-thread-tree-activity="running"] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.chevron[data-thread-tree-activity="completed"] {
+  color: var(--dsw-alias-state-business-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}

@@ -39,6 +39,8 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/queue/start",
   "codexhost/thread/queue/send-now",
   "codexhost/workspace/read",
+  "codexhost/thread/tree/read",
+  "codexhost/thread/tree/place",
   "codexhost/thread/pins/list",
   "codexhost/thread/pins/set",
   "codexhost/harness/plugins/list",
@@ -57,6 +59,8 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/session-import/import",
   // Settings pages shared with the console and GUI (connections, accounts, usage, updates, idle release).
   "codexhost/harness/installation",
+  "codexhost/harness/installation/start",
+  "codexhost/harness/installation/status",
   "codexhost/harness/launch-settings/get",
   "codexhost/harness/launch-settings/set",
   "codexhost/harness/web-ui/open",
@@ -81,6 +85,21 @@ export const clientThreadPinsSchema = z.object({ threadIds: z.array(z.string().m
 export const clientThreadPinParamsSchema = z
   .object({ threadId: z.string().min(1).max(1_024), pinned: z.boolean() })
   .strict();
+
+/** Display organization only; independent of delegation and native Subagent ownership. */
+export const clientThreadTreeReadParamsSchema = z.object({}).strict();
+export const clientThreadTreePlaceParamsSchema = z
+  .object({
+    threadId: z.string().min(1).max(1_024),
+    parentThreadId: z.string().min(1).max(1_024).nullable(),
+  })
+  .strict();
+export const clientThreadTreeSchema = z
+  .object({
+    parents: z.record(z.string().min(1), z.string().min(1)),
+  })
+  .strict();
+export type ClientThreadTree = z.infer<typeof clientThreadTreeSchema>;
 
 /** Explicit no-project creation; naming input is not a cwd or a project ID. */
 export const clientProjectlessWorkspaceSchema = z

@@ -180,6 +180,12 @@
 .sessionRow {
   height: 32px;
   gap: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding-inline-start: calc(
+    8px + var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px)
+  );
 }
 
 .sessionRow .title {

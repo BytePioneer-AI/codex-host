@@ -10,7 +10,7 @@ import {
 } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { WorkspaceId, WorkspaceView } from "@deepseek-ai/dsh-api-workspace-controller/client";
 import type { SessionStatusSnapshot } from "@deepseek-ai/dsh-client-ui-session/client";
-import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import { SessionId } from "@deepseek-ai/dsh-session/types";
 import { assertNever } from "@deepseek-ai/dsh-util-values";
 import { workspaceTitleOf } from "@deepseek-ai/dsh-util-workspace-path";
 import {
@@ -18,10 +18,13 @@ import {
   type ThreadReference,
 } from "@deepseek-ai/dsh-client-ui-conversation/thread-reference";
 
+import { buildThreadTree, type ThreadTreeInfo } from "./thread-tree.ts";
+
 /** Only the shared external catalog advertises this capability; absence is unsupported. */
 declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
     threadReference: { hostId: string; threadId?: string } | null;
+    threadTreeParent: string | null;
     remoteHost: { hostId: string; displayName: string; state: string } | null;
   }
 }
@@ -50,13 +53,15 @@ function mainSessionId(list: SessionListState): SessionId | undefined {
   return Object.values(list.byId).find((session) => (session.retainedBy.mainView ?? 0) > 0)?.id;
 }
 
-/** One top-level session row in a group or the flat list. */
+/** One Session row, with optional display-tree lineage in sidebar lists. */
 export interface SessionNode {
+  tree?: ThreadTreeInfo<SessionNode>;
   remote?: WorkspaceView["remote"];
   id: SessionId;
   reference?: ThreadReference | undefined;
   /** Stored title, or empty; the renderer localizes blank and unnamed row labels. */
   title: string;
+  cwd?: string;
   /** Domain blank marker; browser navigation filters these provisional Sessions out. */
   blank: boolean;
   /** A Session-scoped UI consumer is awaiting this user. */
@@ -66,7 +71,7 @@ export interface SessionNode {
   runningSubagentCount: number;
   /** Finished running while not selected and not yet opened (the green "done" reminder dot). */
   completed: boolean;
-  /** In the registry-global pin set; displayed once in the sidebar's Pinned section. */
+  /** Shared pin membership projected only for display-tree roots. */
   pinned: boolean;
   /** In the registry-global archive set: shown grayed in place and not openable. */
   archived: boolean;
@@ -87,7 +92,7 @@ export interface GroupNode {
   /** Workspace creation time (epoch ms); absent for Recents. */
   createdAt: number | undefined;
   label: string;
-  /** Total visible sessions in the group. */
+  /** Total visible root Threads in the group. */
   sessionCount: number;
   expanded: boolean;
   /** The group contains the selected session (active folder tint; supplied here so the renderer never scans). */
@@ -102,6 +107,7 @@ export interface SearchResultNode {
   id: SessionId;
   title: string;
   workspace: string;
+  parentTitle?: string;
   /** A Session-scoped UI consumer is awaiting this user. */
   pendingInteraction?: SessionPendingInteractionStatus;
   running: boolean;
@@ -125,6 +131,8 @@ export interface TreeView {
   expandedGroups: readonly string[];
   /** Omit active pins when a separate Pinned section renders them. Membership is unchanged. */
   excludePinned?: boolean;
+  /** Browser-local root order for the Recents projection; absent means recency. */
+  recentOrder?: readonly SessionId[];
 }
 
 interface Group {
@@ -289,13 +297,13 @@ export interface SessionRowState {
  * Partition visible rows into pinned and ordinary sections without changing
  * either partition's caller order. Blank drafts are filtered before this step.
  */
-function sectionMembers(
-  members: readonly SessionSummary[],
+function sectionMembers<T extends { id: SessionId }>(
+  members: readonly T[],
   pinned: ReadonlySet<SessionId>,
   archived: ReadonlySet<SessionId>,
-): SessionSummary[] {
-  const leading: SessionSummary[] = [];
-  const rest: SessionSummary[] = [];
+): T[] {
+  const leading: T[] = [];
+  const rest: T[] = [];
   for (const member of members) {
     if (!archived.has(member.id) && pinned.has(member.id)) leading.push(member);
     else rest.push(member);
@@ -426,6 +434,7 @@ function sessionNode(
     reference: threadReferenceOf(s),
     remote: s.projectionValues?.remoteHost ?? undefined,
     title: sessionTitle(s),
+    ...(s.cwd === undefined ? {} : { cwd: s.cwd }),
     blank: s.blank,
     ...sessionActivity(s, list, statuses),
     pinned: !archived.has(s.id) && pinned.has(s.id),
@@ -434,8 +443,50 @@ function sessionNode(
   };
 }
 
+/** Local display parent, independent of native lineage and unavailable on remote rows. */
+export function threadTreeParentOf(
+  summary: SessionSummary,
+  list?: SessionListState,
+): string | null {
+  if (summary.projectionValues?.remoteHost) return null;
+  const parentId = summary.projectionValues?.threadTreeParent ?? null;
+  const parent = parentId === null ? undefined : list?.byId[SessionId(parentId)];
+  if (parent?.projectionValues?.remoteHost) return null;
+  const host = summary.projectionValues?.threadReference?.hostId;
+  const parentHost = parent?.projectionValues?.threadReference?.hostId;
+  return host !== undefined && parentHost !== undefined && host !== parentHost ? null : parentId;
+}
+
+/** Build once across Workspaces so children follow their root's group. */
+export function deriveThreadForest(
+  list: SessionListState,
+  rowState: SessionRowState,
+  statuses: SessionStatuses,
+): SessionNode[] {
+  const archived = new Set(rowState.archivedSessionIds);
+  const pinned = new Set(rowState.pinnedSessionIds);
+  const rows = visibleSessionIds(
+    list,
+    rowState.archivedSessionIds,
+    rowState.archivedFilter,
+  ).flatMap((id) => {
+    const summary = list.byId[id];
+    return summary === undefined ? [] : [sessionNode(summary, list, statuses, pinned, archived)];
+  });
+  const roots = buildThreadTree(rows, (row) => {
+    const summary = list.byId[row.id];
+    return summary === undefined ? null : threadTreeParentOf(summary, list);
+  });
+  const stack = [...roots];
+  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
+    if (node.tree.depth > 0) node.pinned = false;
+    stack.push(...node.tree.children);
+  }
+  return roots;
+}
+
 /**
- * Derive the workspace browser groups with every session as a top-level row.
+ * Derive the workspace browser groups from display-tree roots.
  *
  * Every group shows, except that the archived-only filter drops groups
  * without visible members; sessions populate under expanded groups with
@@ -461,12 +512,25 @@ export function deriveGroups(
   const pinned = new Set(rowState.pinnedSessionIds);
   const expandedGroups = new Set(view.expandedGroups);
   const current = mainSessionId(list);
+  const roots = new Map(
+    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
+  );
   const groups: GroupNode[] = [];
   for (const g of groupByWorkspace(list, workspaces, archived, rowState.archivedFilter)) {
     const expanded = expandedGroups.has(g.key);
-    const members = view.excludePinned
-      ? g.sessions.filter((session) => !pinned.has(session.id) || archived.has(session.id))
-      : g.sessions;
+    const members = g.sessions.flatMap((session) => {
+      const root = roots.get(session.id);
+      return root === undefined || (view.excludePinned && root.pinned) ? [] : [root];
+    });
+    if (g.key === UNGROUPED_KEY && view.recentOrder) {
+      const rank = new Map(view.recentOrder.map((id, index) => [id, index]));
+      members.sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
+    } else if (g.key === UNGROUPED_KEY)
+      members.sort(
+        (a, b) =>
+          (b.tree?.updatedAt ?? b.updatedAt) - (a.tree?.updatedAt ?? a.updatedAt) ||
+          a.id.localeCompare(b.id),
+      );
     groups.push({
       key: g.key,
       workspaceId: g.workspaceId,
@@ -476,12 +540,12 @@ export function deriveGroups(
       remote: g.remote,
       sessionCount: members.length,
       expanded,
-      containsCurrent: g.sessions.some((session) => session.id === current),
-      sessions: expanded
-        ? sectionMembers(members, pinned, archived).map((session) =>
-            sessionNode(session, list, statuses, pinned, archived),
-          )
-        : [],
+      containsCurrent: members.some(
+        (node) =>
+          node.id === current ||
+          (current !== undefined && node.tree?.descendantIds.includes(current)),
+      ),
+      sessions: expanded ? sectionMembers(members, pinned, archived) : [],
     });
   }
   return groups;
@@ -539,15 +603,14 @@ export function deriveFlat(
 ): SessionNode[] {
   const archived = new Set(rowState.archivedSessionIds);
   const pinned = new Set(rowState.pinnedSessionIds);
-  const members = sessionIds.flatMap((id) => {
-    const session = list.byId[id];
-    return session !== undefined && sessionVisible(session, archived, rowState.archivedFilter)
-      ? [session]
-      : [];
-  });
-  return sectionMembers(members, pinned, archived).map((session) =>
-    sessionNode(session, list, statuses, pinned, archived),
+  const roots = new Map(
+    deriveThreadForest(list, rowState, statuses).map((node) => [node.id, node]),
   );
+  const members = sessionIds.flatMap((id) => {
+    const node = roots.get(id);
+    return node === undefined ? [] : [node];
+  });
+  return sectionMembers(members, pinned, archived);
 }
 
 /**
@@ -637,10 +700,16 @@ export function deriveSearchResults(
       const match = contentBySession.get(summary.id);
       const status = statuses.get(summary.id);
       const pendingInteraction = visiblePendingKind(status?.pendingInteraction?.kind);
+      const parentId = threadTreeParentOf(summary, list);
       return {
         id: summary.id,
         title: sessionTitle(summary),
         workspace: labelOf(summary),
+        ...(parentId === null
+          ? {}
+          : {
+              parentTitle: list.byId[SessionId(parentId)]?.title ?? "",
+            }),
         remote: summary.projectionValues?.remoteHost ?? undefined,
         running: status?.running ?? summary.running,
         runningSubagentCount: runningChildCount(list, summary.id, statuses),

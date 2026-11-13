@@ -89,6 +89,8 @@ export interface SessionRowOwnerProps {
   sessionId: SessionId;
   /** Row display title: persisted title, or empty when the Session has none. */
   displayTitle: string;
+  /** Display-tree descendants cannot change the shared pin set from this row. */
+  threadTreeChild?: boolean;
 }
 
 /** The row menu's open state as its owner holds it: the `useState` pair. */
@@ -269,6 +271,10 @@ export type WorkspaceBrowserInjected = {
   };
   /** Open the browser search and focus its input. */
   requestSearch: () => void;
+  /** Persist display lineage without changing Workspace membership. */
+  placeSession: (sessionId: SessionId, parentSessionId: SessionId | null) => Promise<boolean>;
+  /** Move Workspace membership without changing display lineage. */
+  moveSessionToWorkspace: (sessionId: SessionId, workspaceId: WorkspaceId) => Promise<boolean>;
   /** Request the existing directory picker. */
   requestAddWorkspace: () => void;
   /** Consume the directory-picker opening request. */
@@ -344,6 +350,7 @@ export type RowToast =
   | { kind: "unarchiveFailed"; message: string }
   | { kind: "pinFailed"; message: string }
   | { kind: "unpinFailed"; message: string }
+  | { kind: "placeFailed"; message: string }
   | { kind: "archivedNotOpenable" }
   | { kind: "defaultWorkspaceFailed" }
   | { kind: "sessionLinkCopied" }
@@ -413,6 +420,8 @@ export interface SessionArchiveConfirmRequest {
   displayTitle: string;
   /** What the Host reported running, in family order. */
   activity: readonly SessionActivity[];
+  /** Running display-tree members, including the selected parent when active. */
+  runningThreads?: readonly { id: string; title: string }[];
 }
 
 /**

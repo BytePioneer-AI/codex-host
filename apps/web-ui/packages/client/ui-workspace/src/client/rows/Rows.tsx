@@ -10,7 +10,7 @@
  * context; this package's own actions are entries like any plugin's. The
  * session and workspace hover cards are suppressed while a menu is open.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import {
@@ -40,6 +40,9 @@ import { SessionRowContent } from "./SessionRowContent.tsx";
 import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
+import { useThreadTreeView } from "./ThreadTreeView.tsx";
+import { ThreadTreeToggle } from "./ThreadTreeControls.tsx";
+import { useThreadPlacementDrag } from "./ThreadPlacementDrag.tsx";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -123,6 +126,8 @@ export interface RowDragProps {
   hover: (half: "before" | "after") => void;
   drop: (half: "before" | "after") => void;
   end: (copied?: boolean) => void;
+  /** Clear stale insertion markers when entering a placement or rejected target. */
+  leave: () => void;
 }
 
 /** Drag lifecycle owned by a workspace row; its enclosing group owns hit testing. */
@@ -309,9 +314,9 @@ export function ProjectRowItem({
 }
 
 /**
- * Hover-card body: full title, relative time, the Session's own scheduled-task
- * section, and every relevant live status. The task section sits above the
- * status lines so they stay the card's trailing status line.
+ * Hover-card body: full title, Session working directory, relative time, the
+ * Session's own scheduled-task section, and every relevant live status.
+ * The task section sits above the trailing status lines.
  */
 function SessionHoverContent({
   node,
@@ -332,6 +337,7 @@ function SessionHoverContent({
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{displayTitle(node, t)}</div>
+      {node.cwd && <div className={css.hoverPath}>{node.cwd}</div>}
       {/* Same placeholder rule as the row's trailing cell: no timestamp
           before the first prompt. */}
       {!node.blank && <div className={css.hoverTime}>{hoverTimeLabel(node.updatedAt, now, t)}</div>}
@@ -424,6 +430,7 @@ export function SearchResultItem({
       <span className={css.searchResultMeta}>
         <span className={css.searchResultWorkspace}>
           {result.workspace || t("group.ungrouped")}
+          {result.parentTitle !== undefined && ` · ${result.parentTitle || t("session.untitled")}`}
         </span>
         {result.snippet !== undefined && (
           <span className={css.searchResultSnippet}>{result.snippet}</span>
@@ -460,7 +467,7 @@ export function SessionNodeItem({
   onRenameRequest,
   renderSlot,
   onReveal,
-  drag,
+  drag: suppliedDrag,
   showHost = true,
   t,
 }: {
@@ -486,6 +493,11 @@ export function SessionNodeItem({
   | "sidebar.session.row.hover"
 >) {
   const row = node;
+  const { expansion, toggle } = useThreadTreeView();
+  const placementDrag = useThreadPlacementDrag();
+  const depth = node.tree?.depth ?? 0;
+  const expanded = expansion[node.id] === true;
+  const drag = placementDrag.enabled ? suppliedDrag : undefined;
   const title = displayTitle(node, t);
   const selected = node.id === currentId;
   const statuses = sessionStatuses(node, t);
@@ -496,7 +508,9 @@ export function SessionNodeItem({
   // their drop targets to fellow pinned rows.
   const reorderable = drag !== undefined && !row.blank && !row.archived;
   const reference = !row.blank ? row.reference : undefined;
-  const draggable = reorderable || reference !== undefined;
+  const draggable =
+    placementDrag.enabled &&
+    (reorderable || reference !== undefined || (!row.blank && !row.archived && !row.remote));
   const dragged = useRef(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
@@ -513,6 +527,11 @@ export function SessionNodeItem({
     <div
       ref={rowRef}
       data-row-key={rowKey}
+      data-thread-parent={node.tree?.parentId ?? undefined}
+      data-thread-depth={depth}
+      data-thread-sortable={String(reorderable)}
+      data-thread-pinned={String(node.pinned)}
+      style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 16}px` } as CSSProperties}
       className={clsx(
         css.sessionRow,
         selected && css.selected,
@@ -524,6 +543,8 @@ export function SessionNodeItem({
       role="treeitem"
       aria-selected={selected}
       aria-current={selected ? "page" : undefined}
+      aria-level={depth + 1}
+      aria-expanded={node.tree?.descendantCount ? expanded : undefined}
       tabIndex={-1}
       onContextMenu={(e) => {
         if (row.blank || (e.target as HTMLElement).closest("button")) return;
@@ -557,17 +578,34 @@ export function SessionNodeItem({
           : (e) => {
               dragged.current = true;
               e.dataTransfer.effectAllowed =
-                reference === undefined ? "move" : reorderable ? "copyMove" : "copy";
+                reference === undefined
+                  ? "move"
+                  : reorderable || placementDrag.enabled
+                    ? "copyMove"
+                    : "copy";
               e.dataTransfer.setData(
                 "text/plain",
                 reference === undefined ? node.id : threadReferenceInsert(reference).clipboardText,
               );
               if (reference !== undefined)
                 e.dataTransfer.setData(THREAD_REFERENCE_MIME, JSON.stringify(reference));
+              placementDrag.start(
+                node.id,
+                e.currentTarget,
+                () => drag?.leave(),
+                () => drag?.end(true),
+              );
               if (reorderable) drag?.start();
             }
       }
-      onDragEnd={!draggable ? undefined : (e) => drag?.end(e.dataTransfer.dropEffect === "copy")}
+      onDragEnd={
+        !draggable
+          ? undefined
+          : (e) => {
+              const cancelSort = placementDrag.end();
+              drag?.end(e.dataTransfer.dropEffect === "copy" || cancelSort);
+            }
+      }
       onDragOver={
         drag === undefined
           ? undefined
@@ -597,6 +635,14 @@ export function SessionNodeItem({
           renderSlot("sidebar.session.row.leading", { sessionId: node.id })
         }
         title={title}
+        onIdentityClick={
+          node.tree?.descendantCount
+            ? (e) => {
+                e.stopPropagation();
+                toggle(node.id, !expanded);
+              }
+            : undefined
+        }
         onTitleDoubleClick={
           row.blank
             ? undefined
@@ -606,6 +652,12 @@ export function SessionNodeItem({
               }
         }
       >
+        <ThreadTreeToggle
+          node={node}
+          expanded={expanded}
+          toggle={() => toggle(node.id, !expanded)}
+          t={t}
+        />
         {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
         <span className={css.trailing}>
           {/* A blank New Session row is a provisional placeholder: nothing has
@@ -672,7 +724,7 @@ export function SessionNodeItem({
               >
                 {renderSlot(
                   "sidebar.workspaces.session.menu.item",
-                  { sessionId: node.id, displayTitle: row.title },
+                  { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
                   { hookContext: menuOpenState },
                 )}
               </Menu>
@@ -680,6 +732,7 @@ export function SessionNodeItem({
                 {renderSlot("sidebar.workspaces.session.row.action", {
                   sessionId: node.id,
                   displayTitle: row.title,
+                  threadTreeChild: depth > 0,
                 })}
               </span>
             </span>

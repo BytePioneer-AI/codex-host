@@ -56,6 +56,126 @@ it("streams arbitrary bytes, preserves names/extensions safely and scopes receip
   assert.equal(readdirSync(root).includes("sessions"), false);
 });
 
+it("stores long file names within 160 bytes, keeps their extension and never ends them on a dot or space", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-long-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("long name");
+  for (const [name, expected] of [
+    // The 160-byte cut used to end on the space or dot, so the stored name was refused.
+    [`${"报".repeat(53)} 第二部分.pdf`, `${"报".repeat(52)}.pdf`],
+    [`${"a".repeat(159)}.final.docx`, `${"a".repeat(155)}.docx`],
+    [`${"季度销售分析报告".repeat(8)}.xlsx`, `${"季度销售分析报告".repeat(8).slice(0, 51)}.xlsx`],
+    [`${"x".repeat(150)}.${"e".repeat(40)}`, `${"x".repeat(150)}.${"e".repeat(9)}`],
+    [`CON.${"c".repeat(200)}`, `_CON.${"c".repeat(155)}`],
+  ]) {
+    const result = await files.upload("draft", chunks(bytes), name);
+    assert.equal(result.file.name, expected);
+    assert.ok(Buffer.byteLength(result.file.name) <= 160);
+    const [stored] = await files.resolve("draft", [result.receiptId]);
+    assert.ok(stored);
+    assert.deepEqual(readFileSync(stored.path), bytes);
+    assert.deepEqual(files.reference(stored.path), result.file);
+  }
+});
+
+it("never leaves trailing whitespace or a reserved device name after a long name is cut", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-cut-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("cut name");
+  for (const [name, expected] of [
+    // The cut ends on "\u00a0."; dropping the dot used to expose the no-break space.
+    [`${"a".repeat(157)}\u00a0.${"b".repeat(40)}`, "a".repeat(157)],
+    [`${"a".repeat(150)} \u3000.\u2003. ${"b".repeat(40)}`, "a".repeat(150)],
+    // Trimming the cut stem used to reveal a device name after the prefix check.
+    [`CON${" ".repeat(160)}.txt`, "_CON.txt"],
+    [`lpt1${"\u00a0".repeat(80)}.log`, "_lpt1.log"],
+    [`nul.${"n".repeat(157)}`, `_nul.${"n".repeat(155)}`],
+  ]) {
+    const result = await files.upload("draft", chunks(bytes), name);
+    assert.equal(result.file.name, expected);
+    const [stored] = await files.resolve("draft", [result.receiptId]);
+    assert.ok(stored);
+    assert.deepEqual(files.reference(stored.path), result.file);
+  }
+});
+
+it("keeps the extension of a long name whose stem is only dots or whitespace", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-empty-stem-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("empty stem");
+  for (const [name, expected] of [
+    // The cut stem trims to nothing; the fallback cut was dots too, so the extension was lost.
+    [`${".".repeat(160)}.pdf`, "attachment.pdf"],
+    [`.${" ".repeat(200)}.txt`, "attachment.txt"],
+    [`${"\u00a0.".repeat(100)}.md`, "attachment.md"],
+    [`${". \u3000".repeat(60)}.${"e".repeat(31)}`, `attachment.${"e".repeat(31)}`],
+  ]) {
+    const result = await files.upload("draft", chunks(bytes), name);
+    assert.equal(result.file.name, expected, JSON.stringify(name));
+    const [stored] = await files.resolve("draft", [result.receiptId]);
+    assert.ok(stored);
+    assert.deepEqual(files.reference(stored.path), result.file);
+  }
+});
+
+it("stores every sanitized name again unchanged, within 160 bytes", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "web-files-idempotent-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = new WebFiles(new DataDir(root));
+  const bytes = Buffer.from("idempotent");
+  const parts = [
+    "a",
+    "报",
+    "😀",
+    " ",
+    "\u00a0",
+    "\u2003",
+    "\u3000",
+    "\ufeff",
+    ".",
+    "..",
+    ".txt",
+    ":",
+    "e\u0301",
+    "CON",
+    "aux",
+    "com1",
+    "LPT9",
+  ];
+  let seed = 0x2545f491;
+  const random = (limit: number) => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) % limit;
+  };
+  const names: string[] = [];
+  const typed: string[] = [];
+  // Heads of only dots or whitespace leave an empty stem once a long name is cut.
+  for (const head of ["CON", "nul", "a", "报", " ", ".", "\u00a0.", ". "])
+    for (const pad of ["", " ", "\u00a0", "."])
+      for (const length of [150, 155, 156, 157, 158, 159, 160, 161, 162, 200])
+        typed.push(`${head}${pad.repeat(Math.max(0, length - head.length - 4))}.txt`);
+  names.push(...typed);
+  for (let index = 0; index < 300; index += 1) {
+    let name = "";
+    const count = 1 + random(120);
+    for (let part = 0; part < count; part += 1) name += parts[random(parts.length)];
+    names.push(name);
+  }
+  for (const name of names) {
+    const first = await files.upload("draft", chunks(bytes), name);
+    assert.ok(Buffer.byteLength(first.file.name) <= 160, JSON.stringify(name));
+    const second = await files.upload("draft", chunks(bytes), first.file.name);
+    assert.equal(second.file.name, first.file.name, JSON.stringify(name));
+    // A short extension survives sanitizing, however the stem is cut.
+    if (typed.includes(name)) assert.ok(first.file.name.endsWith(".txt"), JSON.stringify(name));
+  }
+});
+
 it("cleans failed streams and rejects tampered or symlink stored objects", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "web-files-invalid-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

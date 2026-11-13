@@ -13,6 +13,7 @@
     "../packages/**/test/**/*.ts",
     "../packages/renderer-extension/src/assets.d.ts",
     "../packages/web-server/src/web-push.d.ts",
+    "../packages/web-server/src/proxy-from-env.d.ts",
     "./**/*.ts"
   ],
   "exclude": ["./dsh"]

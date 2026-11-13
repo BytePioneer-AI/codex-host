@@ -167,6 +167,67 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
   }
 });
 
+it("forwards Desktop's app tools pipe to the shared official Codex startup", async () => {
+  const pipe = path.join(tmpdir(), "codex-app-tools-synthetic.sock");
+  const f = await setup((streams, request) =>
+    sharedHostDesktop(
+      {
+        environment: { CODEXHOST_DATA_DIR: f.root },
+        runtimeUrl: import.meta.url,
+        stockCodex: path.join(f.root, "codex.exe"),
+        official,
+        owner: f.owner,
+        store: f.store,
+        prices: new ModelPriceCatalog({
+          directory: path.join(f.root, "prices"),
+          diagnose: () => {},
+        }),
+        delegation: () => undefined,
+        register: () => undefined,
+        connected: new Set<AppServerHost>(),
+        running: new Set<Promise<number>>(),
+      },
+      streams,
+      request,
+    ),
+  );
+  const official = await prepareLocalCodex({
+    stockCodexPath: path.join(f.root, "codex.exe"),
+    arguments: ["app-server"],
+    environment: { CODEX_HOME: path.join(f.root, "native-home"), CODEXHOST_DATA_DIR: f.root },
+    diagnosticOutput: new PassThrough(),
+    deferStart: true,
+  });
+  const configured: NodeJS.ProcessEnv[] = [];
+  vi.spyOn(official, "configureStartup").mockImplementation(async ({ environment }) => {
+    configured.push(environment);
+    // Stop after admission; only the forwarded startup environment matters here.
+    throw new CodexRuntimeFilesRemovedError();
+  });
+  const stdin = vi.spyOn(process.stdin, "pipe").mockImplementation((destination) => destination);
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    await runLocalDesktopBridge(
+      {
+        CODEXHOST_LAUNCHER_EXECUTABLE: path.join(f.root, "unused-launcher"),
+        CODEXHOST_DATA_DIR: f.root,
+        CODEX_APP_TOOLS_PIPE_PATH: pipe,
+        UNRELATED_DESKTOP_SECRET: "must-not-cross",
+      },
+      path.join(f.root, "unused-runtime.mjs"),
+      path.join(f.root, "codex.exe"),
+      ["app-server"],
+    );
+    expect(configured).toHaveLength(1);
+    expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
+    expect(configured[0]).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
+  } finally {
+    stdin.mockRestore();
+    stderr.mockRestore();
+    await official.close();
+  }
+});
+
 it("SSH and local clients create and resume the same external sessions across separate stores", async () => {
   const { root, web, adapter, store } = await setup();
   const bridge = new SharedThreadBridge({

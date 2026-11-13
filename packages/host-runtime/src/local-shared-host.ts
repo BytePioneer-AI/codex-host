@@ -7,6 +7,7 @@ import {
 } from "@codexhost/desktop-control";
 import { WebSocket, createWebSocketStream } from "ws";
 import { StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
+import { isDesktopContextVariable } from "./desktop-context-environment.js";
 import {
   CODEX_RUNTIME_REMOVED_MESSAGE,
   CodexRuntimeFilesRemovedError,
@@ -60,7 +61,7 @@ async function connectStream(
           arguments: desktop.arguments,
           environment: Object.fromEntries(
             Object.entries(desktop.environment).filter(
-              ([key, value]) => key.startsWith("CODEXHOST_") && value !== undefined,
+              ([key, value]) => isDesktopContextVariable(key) && value !== undefined,
             ),
           ),
         }),

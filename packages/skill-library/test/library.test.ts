@@ -200,7 +200,8 @@ describe("Skill Library", () => {
     let first = true;
     vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
       const handle = await original(...args);
-      if (String(args[0]).includes("/old/") && first) {
+      // Match either separator; Windows passes backslash paths to fs.open.
+      if (/[\\/]old[\\/]/u.test(String(args[0])) && first) {
         first = false;
         await gate;
       }

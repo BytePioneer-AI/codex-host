@@ -782,7 +782,7 @@ describe("delegation CLI", () => {
     });
   });
 
-  it("does not offer watch options on thread send", async () => {
+  it("requests a send watch even when no caller identity is available locally", async () => {
     const fetchImpl = successfulFetch({});
     expect(
       await runDelegationCli({
@@ -795,8 +795,12 @@ describe("delegation CLI", () => {
         diagnosticOutput: new PassThrough(),
         fetchImpl,
       }),
-    ).toBe(1);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    ).toBe(0);
+    expect(JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.body))).toEqual({
+      threadId: "child",
+      message: "continue",
+      watchTimeoutMs: 1_740_000,
+    });
   });
 
   it("asks delegate start to watch the child only when requested", async () => {

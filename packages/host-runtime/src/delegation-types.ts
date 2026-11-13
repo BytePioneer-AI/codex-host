@@ -130,6 +130,8 @@ export interface DelegationStartResult {
 export interface ThreadSendInput {
   threadId: string;
   message: string;
+  /** Stop the current Turn and confirm idle before sending; preserve existing watches. */
+  interrupt?: boolean;
 }
 
 export interface ThreadSendResult {
@@ -137,6 +139,8 @@ export interface ThreadSendResult {
   turnId: string;
   harnessId: RoutedHarnessId;
   status: "running";
+  /** Present only when send also requested a watch, in the same shape as delegate start. */
+  watch?: DelegationStartResult["watch"];
   next: { read: string; wait: string };
 }
 

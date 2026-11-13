@@ -21,6 +21,7 @@ import {
 import { DelegationWatchService, type ClientEventSink } from "./delegation-watch.js";
 import type { DelegationWatchStore } from "./delegation-watch-store.js";
 import { clientOrigin, originClientName } from "./external-client-origin.js";
+import { interruptAndSend } from "./delegation-interrupt-send.js";
 import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
 
 const REF_CURSOR_PREFIX = "ref:";
@@ -120,7 +121,14 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
-    return (await this.#registrationForThread(input.threadId)).send(input);
+    if (input.interrupt !== undefined && typeof input.interrupt !== "boolean")
+      throw new DelegationControlError("INVALID_ARGUMENT", "interrupt must be a boolean");
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!input.interrupt) return registration.send(input);
+    const send = { threadId: input.threadId, message: input.message };
+    return this.#watchService.holdNotifications(input.threadId, () =>
+      interruptAndSend(registration, send),
+    );
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {

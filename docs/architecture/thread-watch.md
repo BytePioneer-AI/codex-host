@@ -32,9 +32,26 @@
 | --- | --- |
 | `thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` | 观察一个已有 Thread |
 | `delegate start ... --watch true` | 创建委派后顺手观察，通知 Host 解析出的发起方 |
+| `thread send <thread> ... --watch true` | 成功发送新消息后观察，通知解析出的调用方 |
 | `thread watches` | 列出尚未送达的 watch |
 
-watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 先完成委派；watch 注册失败不会让命令失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。`thread send` 不提供 `--watch`，发送后需要通知时单独执行 `thread watch`。
+watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 与 `thread send --watch true` 都先提交消息；watch 注册失败不会让已经成功的提交变成失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。两者沿用相同的 JSON / compact watch 字段形态；未请求 watch 时不增加字段。`--watch-timeout-ms` 仅能与 `--watch true` 同用，默认 29 分钟。
+
+### CLI 长文本输入
+
+`delegate start` 可用 `--task-file <path>` 代替 `--task`；`thread send` 可用 `--message-file <path>` 代替 `--message`。每组参数互斥，即使显式的文本参数为空也不能同时使用。文件路径相对调用方工作目录解析，`-` 表示标准输入。读取 UTF-8 原文，不转义、不展开变量或模板；仅移除一个结尾 LF 或 CRLF，保留其他换行及空白。每份输入在去除结尾换行前最多 262144 字节（256 KiB），空白内容、读取失败或超限均返回 `INVALID_ARGUMENT`，不提交消息。直接连接终端的 stdin 立即拒绝，不等待键盘输入；使用带引号的 heredoc 可避免 shell 展开：
+
+```sh
+codexhost delegate start --harness pi --task-file - --watch true <<'EOF'
+保留 "引号"、'单引号'、`反引号`、$变量 和换行。
+EOF
+
+codexhost thread send <thread> --message-file - --interrupt --watch true <<'EOF'
+请调整方向：保留 ${literal}，不要执行 $(shell)。
+EOF
+```
+
+原有 `--task` / `--message` 的文本处理及默认行为不变。
 
 ## 结果
 
@@ -63,6 +80,7 @@ watch 首次持久化失败时不保留内存注册，`thread watch` 返回错�
 ## 与 Stop 的关系
 
 - Desktop / Web 的 Stop 被观察的 Thread，Thread 停下，watch 以 `interrupted` 通知一次。“调整方向”的停止后重发不算停下，不会通知。主动 `thread cancel` 则移除被观察 Thread 的 watch；自然完成、失败或 Host 重启等外部中断仍照常通知。
+- `thread send --interrupt` 始终采用先停再发，不做原生同轮插入：目标忙时取消当前 Turn，确认 Thread 已停下后只发送一次；目标空闲时直接发送。读取、取消和等待停下合计最多 30 秒，取消拒绝、失败或超时都不发送新消息。它直接使用所属会话的取消接口，不经过会删除 watch 的主动 cancel 入口；从取消到新消息提交结束，暂停该 Thread 的 watch 观察和通知投递，丢弃跨越这段操作的在途观察结果，保留原有注册及期限。成功重发不产生临时 `interrupted` 通知；失败后恢复观察，实际终态仍可通知。已发起的投递不能撤回。与其他提交竞争时仍可能返回 `THREAD_BUSY`，不自动重试或排队。
 - 用户 Stop 被通知 Thread 的当前 Turn，不会取消观察其他 Thread 的 watch：该 Thread 空闲后，到期的通知仍会启动一个新 Turn。
 - 与 `thread send` 的“不排队”约定和 [调整方向](external-thread-steering.md) 的“失败不自动重试或偷偷排队”并不冲突：待送达的通知只存在于显式注册的 watch 中，普通消息的语义不变。
 
@@ -71,9 +89,9 @@ watch 首次持久化失败时不保留内存注册，`thread watch` 返回错�
 身份只确定一次，watch 不做自己的推断：
 
 1. `delegate start --watch`：使用委派已经解析出的父 Thread；没有父 Thread 时报告 `notRegistered`。
-2. `thread watch`：显式 `--notify`，否则使用 Host 提供给外部 Harness 的 `CODEXHOST_THREAD_ID`。
-3. 两者都没有（原生 Codex）时返回 `INVALID_ARGUMENT`，要求显式 `--notify`。原生 Codex 可使用 `delegate start` 响应中返回的 parent 作为自己的 Thread。
-4. 经外部客户端监听调用时，未给 `--notify` 即通知调用客户端自身（`client:<name>`）。此时“投递”是向该客户端的事件日志追加一条事件，不启动 Turn；追加失败在投递期限内重试。见 [外部客户端](external-clients.md)。
+2. `thread send --watch true`：使用 CLI 解析出的调用方，优先 `CODEXHOST_THREAD_ID`，其次原生 Codex 的 `CODEX_THREAD_ID`。没有调用方且未经过外部客户端监听时，消息照常发送，watch 报告 `notRegistered`，不推测目标 Thread 的委派父级。
+3. `thread watch`：显式 `--notify`，否则使用 `CODEXHOST_THREAD_ID`，其次 `CODEX_THREAD_ID`；都没有则返回 `INVALID_ARGUMENT`，要求显式 `--notify`。
+4. 经外部客户端监听调用时，`thread watch` 未给 `--notify`，或 `thread send --watch true` 没有解析出的调用方，均通知调用客户端自身（`client:<name>`）。此时“投递”是向该客户端的事件日志追加一条事件，不启动 Turn；追加失败在投递期限内重试。见 [外部客户端](external-clients.md)。
 
 ## 实现与边界
 

@@ -1,9 +1,10 @@
 import path from "node:path";
-import type { Writable } from "node:stream";
+import type { Readable, Writable } from "node:stream";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
 import { parseDelegationArguments, type DelegationCliArguments } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
+import { resolveCliTextInput } from "./delegation-cli-text-input.js";
 import { resolveRuntimeConnection, usesExternalClient } from "./delegation-runtime-connection.js";
 import { runClientCommand } from "./external-client-cli.js";
 import { originClientName } from "./external-client-origin.js";
@@ -175,6 +176,7 @@ export async function runDelegationCli(input: {
   environment?: NodeJS.ProcessEnv;
   output?: Writable;
   diagnosticOutput?: Writable;
+  stdin?: Readable & { isTTY?: boolean };
   fetchImpl?: typeof fetch;
 }): Promise<number> {
   const output = input.output ?? process.stdout;
@@ -371,6 +373,7 @@ export async function runDelegationCli(input: {
       rejectUnknown(parsed, [
         "--harness",
         "--task",
+        "--task-file",
         "--task-name",
         "--cwd",
         "--model",
@@ -387,9 +390,12 @@ export async function runDelegationCli(input: {
           "delegate start accepts no positional arguments",
         );
       const harnessId = value(parsed, "--harness");
-      const task = value(parsed, "--task");
+      const task = await resolveCliTextInput(parsed.options, "--task", input.stdin);
       if (!harnessId || !task)
-        throw new DelegationControlError("INVALID_ARGUMENT", "--harness and --task are required");
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--harness and either --task or --task-file are required",
+        );
       const parentThread = value(parsed, "--parent-thread") ?? callerThreadId(environment);
       const watch = value(parsed, "--watch");
       if (watch !== undefined && watch !== "true" && watch !== "false")
@@ -432,7 +438,13 @@ export async function runDelegationCli(input: {
       return 0;
     }
     if (group === "thread" && command === "send") {
-      rejectUnknown(parsed, ["--message"]);
+      rejectUnknown(parsed, [
+        "--message",
+        "--message-file",
+        "--interrupt",
+        "--watch",
+        "--watch-timeout-ms",
+      ]);
       if (parsed.positionals.length !== 1) {
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
@@ -440,19 +452,43 @@ export async function runDelegationCli(input: {
         );
       }
       const threadId = parsed.positionals[0];
-      const message = value(parsed, "--message");
+      const message = await resolveCliTextInput(parsed.options, "--message", input.stdin);
       if (!threadId || !message?.trim()) {
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
-          "Thread identifier and --message are required",
+          "Thread identifier and either --message or --message-file are required",
         );
       }
+      const interrupt = value(parsed, "--interrupt");
+      if (interrupt !== undefined && interrupt !== "true" && interrupt !== "false")
+        throw new DelegationControlError("INVALID_ARGUMENT", "--interrupt must be true or false");
+      const watch = value(parsed, "--watch");
+      if (watch !== undefined && watch !== "true" && watch !== "false")
+        throw new DelegationControlError("INVALID_ARGUMENT", "--watch must be true or false");
+      if (watch !== "true" && value(parsed, "--watch-timeout-ms"))
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--watch-timeout-ms requires --watch true",
+        );
+      const parentThread = callerThreadId(environment);
       writeResult(
         "thread send",
         await requestRuntime({
           environment,
           path: "/v1/thread/send",
-          body: { threadId: normalizeThreadId(threadId), message },
+          body: {
+            threadId: normalizeThreadId(threadId),
+            message,
+            ...(interrupt === "true" ? { interrupt: true } : {}),
+            ...(watch === "true"
+              ? {
+                  ...(parentThread ? { notifyThreadId: normalizeThreadId(parentThread) } : {}),
+                  watchTimeoutMs: value(parsed, "--watch-timeout-ms")
+                    ? positiveInteger(value(parsed, "--watch-timeout-ms"), "--watch-timeout-ms")
+                    : DEFAULT_WATCH_TIMEOUT_MS,
+                }
+              : {}),
+          },
           ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
         }),
       );

@@ -38,7 +38,10 @@ function forClient(
 ): Record<string, unknown> {
   if (route === "/v1/delegate/start")
     return { ...body, parentThreadId: ownOrigin(client, body.parentThreadId, "parentThreadId") };
-  if (route === "/v1/thread/watch")
+  if (
+    route === "/v1/thread/watch" ||
+    (route === "/v1/thread/send" && body.watchTimeoutMs !== undefined)
+  )
     return { ...body, notifyThreadId: ownOrigin(client, body.notifyThreadId, "notifyThreadId") };
   return body;
 }

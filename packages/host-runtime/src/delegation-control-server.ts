@@ -107,6 +107,22 @@ async function startWithWatch(
   return { ...result, watch };
 }
 
+/** Send first; optional notification targets the calling Thread resolved by the CLI/listener. */
+async function sendWithWatch(
+  api: DelegationControlApi,
+  watches: DelegationWatchApi,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const { watchTimeoutMs, notifyThreadId, ...send } = body;
+  const result = await api.send(send as unknown as ThreadSendInput);
+  const watch = await watchStartedTurn(watches, {
+    threadId: result.threadId,
+    notifyThreadId: (notifyThreadId ?? "") as string,
+    timeoutMs: watchTimeoutMs as number,
+  });
+  return { ...result, watch };
+}
+
 /** The delegation routes shared by the Host control server and the external client listener. */
 export async function routeDelegationRequest(
   handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi; inventory?: HostInventory },
@@ -132,7 +148,9 @@ export async function routeDelegationRequest(
         ? handlers.api.start(body as unknown as DelegationStartInput)
         : startWithWatch(handlers.api, watchApi(handlers.watchApi), body);
     case "/v1/thread/send":
-      return handlers.api.send(body as unknown as ThreadSendInput);
+      return body.watchTimeoutMs === undefined
+        ? handlers.api.send(body as unknown as ThreadSendInput)
+        : sendWithWatch(handlers.api, watchApi(handlers.watchApi), body);
     case "/v1/thread/cancel":
       return handlers.api.cancel(body as unknown as ThreadCancelInput);
     case "/v1/thread/read":

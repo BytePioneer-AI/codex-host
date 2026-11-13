@@ -34,6 +34,8 @@ const UNREADABLE_GRACE_MS = 60_000;
 const DEFAULT_RESTORE_GRACE_MS = 5 * 60_000;
 
 interface Watch extends PersistedWatch {
+  /** Invalidates reads that overlapped an internal stop-and-resend operation. */
+  observationGeneration?: number;
   unreadableSince?: number;
   lastReadError?: string;
   /** Restored watch: read failures mean the owning session is not back yet. */
@@ -273,9 +275,7 @@ export class DelegationWatchService {
     threadId: string,
     operation: () => Promise<ThreadCancelResult>,
   ): Promise<ThreadCancelResult> {
-    this.#cancelling.set(threadId, (this.#cancelling.get(threadId) ?? 0) + 1);
-    try {
-      await this.#ready;
+    return this.holdNotifications(threadId, async () => {
       const result = await operation();
       if (result.cancelled) {
         for (const watch of [...this.#watches]) {
@@ -285,6 +285,19 @@ export class DelegationWatchService {
         await this.#writes;
       }
       return result;
+    });
+  }
+
+  /** Internal stop-and-resend is not a stop: keep watches and suppress transient outcomes. */
+  async holdNotifications<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+    this.#cancelling.set(threadId, (this.#cancelling.get(threadId) ?? 0) + 1);
+    try {
+      await this.#ready;
+      for (const watch of this.#watches) {
+        if (watch.threadId === threadId)
+          watch.observationGeneration = (watch.observationGeneration ?? 0) + 1;
+      }
+      return await operation();
     } finally {
       const remaining = (this.#cancelling.get(threadId) ?? 1) - 1;
       if (remaining > 0) this.#cancelling.set(threadId, remaining);
@@ -351,8 +364,15 @@ export class DelegationWatchService {
     for (const watch of [...this.#watches]) {
       if (this.#closed) return;
       if (watch.state !== "watching" || this.#cancelling.has(watch.threadId)) continue;
+      const generation = watch.observationGeneration;
       const observed = await this.#observe(watch);
-      if (!observed || !this.#watches.includes(watch)) continue;
+      if (
+        !observed ||
+        !this.#watches.includes(watch) ||
+        this.#cancelling.has(watch.threadId) ||
+        generation !== watch.observationGeneration
+      )
+        continue;
       const { outcome, turnId, restartNote } = observed;
       if (restartNote) watch.restartNote = restartNote;
       watch.state = "pendingDelivery";

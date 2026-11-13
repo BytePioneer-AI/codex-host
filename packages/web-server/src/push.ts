@@ -6,6 +6,7 @@
  * without a native app. Keys and subscriptions live in the server data directory.
  */
 
+import { getProxyForUrl } from "proxy-from-env";
 import webpush from "web-push";
 
 import type { DataDir } from "./store.ts";
@@ -138,10 +139,14 @@ export class PushNotifier {
     await Promise.all(
       this.subscriptions.map(async (subscription) => {
         try {
+          // web-push's explicit proxy works even before Node's HTTPS environment-proxy support.
+          const proxy =
+            process.env.NODE_USE_ENV_PROXY === "1" ? getProxyForUrl(subscription.endpoint) : "";
           await webpush.sendNotification(subscription, payload, {
             TTL: 3600,
             urgency: message.kind === "turn" ? "normal" : "high",
             timeout: 10_000,
+            ...(proxy ? { proxy } : {}),
           });
           sent += 1;
         } catch (error) {

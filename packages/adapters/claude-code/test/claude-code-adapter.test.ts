@@ -39,6 +39,7 @@ import {
   type ClaudeTransportTurnResult,
   type ClaudeTurnEvent,
   type ClaudeTurnTransport,
+  type ClaudeUserContent,
 } from "../src/transport.js";
 import { FakeQuery } from "./fake-sdk-query.js";
 import { queuedCommand } from "./fixtures/claude-queued-command.js";
@@ -119,8 +120,8 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     [];
   readonly initCalls: string[] = [];
   readonly recapCalls: string[] = [];
-  readonly turns: Array<{ text: string; userMessageId: string }> = [];
-  readonly steers: Array<{ text: string; messageId: string; priority: "next" }> = [];
+  readonly turns: Array<{ text: ClaudeUserContent; userMessageId: string }> = [];
+  readonly steers: Array<{ text: ClaudeUserContent; messageId: string; priority: "next" }> = [];
   /** Whether the fake CLI reported `msg_lifecycle_v1` in its init capabilities. */
   nativeSteer = true;
   /** Whether the fake requested Turn currently runs a root tool call. */
@@ -195,7 +196,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 
   runTurn(
-    text: string,
+    text: ClaudeUserContent,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
@@ -216,7 +217,11 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     return this.idleLive && this.idleHandler !== null;
   }
 
-  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void> {
+  steer(
+    text: ClaudeUserContent,
+    messageId: string,
+    onTakeover?: (started: boolean) => void,
+  ): Promise<void> {
     if (!this.canSteerActiveTurn()) return Promise.reject(new ClaudeSteerMissedTurnError());
     this.steers.push({ text, messageId, priority: "next" });
     if (onTakeover) this.#steerTakeovers.set(messageId, onTakeover);
@@ -1197,6 +1202,70 @@ describe("Claude Code HarnessAdapter", () => {
     if (configured.ok) await configured.value.close();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it("sends Desktop image attachments as image blocks, and steers only images that fit", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "claude-adapter-image-"));
+    try {
+      const png = (width: number, height: number) => {
+        const data = Buffer.alloc(33);
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(data);
+        data.writeUInt32BE(13, 8);
+        data.write("IHDR", 12, "latin1");
+        data.writeUInt32BE(width, 16);
+        data.writeUInt32BE(height, 20);
+        return data;
+      };
+      const small = png(1, 1);
+      const wide = png(3000, 10);
+      const shot = path.join(directory, "shot.png");
+      const panorama = path.join(directory, "panorama.png");
+      const missing = path.join(directory, "gone.png");
+      await writeFile(shot, small);
+      await writeFile(panorama, wide);
+      const prompt = (files: string[], request: string) =>
+        "# Files mentioned by the user:\n\n" +
+        files
+          .map((file) => `## ${path.basename(file)}: ${file}\nImage attachment: true\n\n`)
+          .join("") +
+        `## My request:\n${request}`;
+      const block = (data: Buffer) => ({
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: data.toString("base64") },
+      });
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+
+      // A Turn Claude starts is shrunk natively; an unreadable file stays path text.
+      const started = prompt([missing, panorama], "describe");
+      await expect(
+        session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-1"),
+          input: [{ type: "text", text: started }],
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      expect(transport.turns[0]?.text).toEqual([{ type: "text", text: started }, block(wide)]);
+
+      // A steer joining the running Turn is sent unchanged, so an oversized image stays a path.
+      const steered = prompt([shot, panorama], "and this");
+      const steering = session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        input: [{ type: "text", text: steered }],
+      });
+      await vi.waitFor(() => expect(transport.steers).toHaveLength(1));
+      expect(transport.steers[0]?.text).toEqual([{ type: "text", text: steered }, block(small)]);
+      transport.recordSteer(transport.steers[0]?.messageId ?? "");
+      await expect(steering).resolves.toEqual({ ok: true, value: { accepted: true } });
+      transport.finish({ status: "succeeded" });
+      await session.close();
+      await adapter.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("declares and accepts native steering only when the CLI confirms steers", async () => {

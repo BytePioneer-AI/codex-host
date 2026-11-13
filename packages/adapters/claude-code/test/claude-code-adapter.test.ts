@@ -15,7 +15,11 @@ import {
   type HostInteractionId,
 } from "@codexhost/shared-contracts";
 
-import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
+import type {
+  HarnessOutput,
+  HarnessSession,
+  HarnessSessionState,
+} from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
 import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
@@ -5741,7 +5745,7 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(aliasState).not.toHaveProperty("state.resolvedModelLabel");
     await expect(selectingAlias).resolves.toEqual({ ok: true, value: { completed: true } });
-    expect(transport.setModel).toHaveBeenLastCalledWith("sonnet");
+    expect(transport.setModel).toHaveBeenLastCalledWith("sonnet", "auto");
 
     const resetting = session.execute({ type: "model.select", model: CLAUDE_DEFAULT_MODEL_REF });
     const defaultState = await nextEvent(iterator);
@@ -5751,8 +5755,128 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(defaultState).not.toHaveProperty("state.resolvedModelLabel");
     await expect(resetting).resolves.toEqual({ ok: true, value: { completed: true } });
-    expect(transport.setModel).toHaveBeenLastCalledWith(undefined);
+    expect(transport.setModel).toHaveBeenLastCalledWith(undefined, "auto");
     expect(transport.getContextUsage).toHaveBeenCalledTimes(contextReadsBeforeSelection);
+    await session.close();
+  });
+
+  it("fits Thinking to the selected Model's catalog options", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    await adapter.inspect({ cwd: "/synthetic" });
+    const sonnet = encodeClaudeModelRef("sonnet");
+    const xhigh = harnessThinkingOptionIdSchema.parse("xhigh");
+
+    // A requested effort the Model does not list never reaches Claude Code.
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: sonnet,
+      thinkingOptionId: xhigh,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: xhigh }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await session.execute(textTurn("fitted"));
+    expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: "sonnet", thinkingOptionId: "high" }),
+    );
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+
+    await expect(
+      session.execute({ type: "model.select", model: CLAUDE_DEFAULT_MODEL_REF }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: xhigh }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setThinkingOption).toHaveBeenLastCalledWith("xhigh");
+
+    await expect(session.execute({ type: "model.select", model: sonnet })).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(transport.setModel).toHaveBeenLastCalledWith("sonnet", "high");
+    const nextState = async (matches: (state: HarnessSessionState) => boolean) => {
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type === "session.state.changed" && matches(event.state)) return event.state;
+      }
+    };
+    await nextState(({ effectiveThinkingOptionId }) => effectiveThinkingOptionId === "xhigh");
+    await expect(
+      nextState(({ effectiveModel }) => effectiveModel?.id === sonnet.id),
+    ).resolves.toMatchObject({
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: [{ id: "off" }, { id: "auto" }, { id: "low" }, { id: "high" }],
+    });
+    await session.close();
+  });
+
+  it("fits Thinking to the catalog of the Session's own folder", async () => {
+    const { adapter, dependencies } = fixture();
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => {
+      const inspector = createInspector(input);
+      if (input.cwd !== path.resolve("/other")) return inspector;
+      return {
+        ...inspector,
+        inspect: async () => ({
+          ...(await inspector.inspect()),
+          models: [{ value: "sonnet", displayName: "Sonnet", supportedEffortLevels: ["xhigh"] }],
+        }),
+      };
+    };
+    const sonnet = encodeClaudeModelRef("sonnet");
+    const xhigh = harnessThinkingOptionIdSchema.parse("xhigh");
+    const openIn = async (cwd: string) => {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd,
+        model: sonnet,
+        thinkingOptionId: xhigh,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      return opened.value;
+    };
+
+    await adapter.inspect({ cwd: "/synthetic" });
+    await adapter.inspect({ cwd: "/other" });
+    await adapter.inspect();
+    const synthetic = await openIn("/synthetic");
+    const other = await openIn("/other");
+    await synthetic.execute(textTurn("synthetic"));
+    await other.execute(textTurn("other"));
+    expect(vi.mocked(dependencies.createTransport).mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({ cwd: path.resolve("/synthetic"), thinkingOptionId: "high" }),
+      expect.objectContaining({ cwd: path.resolve("/other"), thinkingOptionId: "xhigh" }),
+    ]);
+    await synthetic.close();
+    await other.close();
+  });
+
+  it("refits Thinking when the catalog arrives after the Session opened", async () => {
+    const { adapter, dependencies } = fixture();
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: encodeClaudeModelRef("sonnet"),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("xhigh"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+
+    await adapter.inspect({ cwd: "/synthetic" });
+    // The stored choice now matches what is shown, so a later Model switch starts from it.
+    await expect(
+      session.execute({ type: "model.select", model: CLAUDE_DEFAULT_MODEL_REF }),
+    ).resolves.toMatchObject({ ok: true });
+    await session.execute(textTurn("refitted"));
+    expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ thinkingOptionId: "high" }),
+    );
     await session.close();
   });
 
@@ -6103,7 +6227,7 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(session.execute({ type: "model.select", model: alias })).resolves.toMatchObject({
       ok: true,
     });
-    expect(transport.setModel).toHaveBeenCalledWith("sonnet");
+    expect(transport.setModel).toHaveBeenCalledWith("sonnet", "auto");
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
       state: { effectiveModel: alias },

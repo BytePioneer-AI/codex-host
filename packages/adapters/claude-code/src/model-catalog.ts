@@ -17,8 +17,8 @@ import { z } from "zod";
 
 import {
   CLAUDE_DEFAULT_THINKING_OPTION_ID,
-  CLAUDE_THINKING_OPTION_IDS,
   CLAUDE_THINKING_OPTIONS,
+  claudeSupportedThinkingOptionIds,
 } from "./thinking-options.js";
 
 const CLAUDE_MODEL_REF_PREFIX = "claude-model-v1.";
@@ -29,6 +29,12 @@ const modelInfoSchema = z.object({
   displayName: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH),
   description: z.string().trim().max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
   resolvedModel: harnessResolvedModelLabelSchema.optional(),
+  // Malformed capability fields count as unreported instead of failing the whole catalog;
+  // unknown effort levels are ignored when mapping Thinking options.
+  supportsEffort: z.boolean().optional().catch(undefined),
+  supportedEffortLevels: z.array(z.string()).optional().catch(undefined),
+  supportsAdaptiveThinking: z.boolean().optional().catch(undefined),
+  supportsThinkingOff: z.boolean().optional().catch(undefined),
 });
 
 const modelPickerOptionSchema = z.object({
@@ -306,7 +312,7 @@ export function normalizeClaudeModelCatalog(
       ref: encodeClaudeModelRef(row.value),
       label: labels.get(row.value) ?? row.displayName,
       ...(row.resolvedModel ? { resolvedModelLabel: row.resolvedModel } : {}),
-      supportedThinkingOptionIds: [...CLAUDE_THINKING_OPTION_IDS],
+      supportedThinkingOptionIds: claudeSupportedThinkingOptionIds(row),
     };
   });
   models.sort((left, right) => {

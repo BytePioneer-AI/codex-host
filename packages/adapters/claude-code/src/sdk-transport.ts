@@ -574,7 +574,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         // Adaptive Thinking is redacted by default: the API streams `thinking_delta`
         // frames carrying only token estimates and empty text, so no Reasoning Item
         // would ever start. Summarized display is the official channel for readable
-        // Thinking and is what Claude Code's own TUI renders.
+        // Thinking and is what Claude Code's own TUI renders. The SDK passes this as
+        // `--thinking adaptive`, which only turns Thinking on: Claude Code sends adaptive
+        // Thinking to Models that support it and a token budget to the rest. The caller
+        // fits the effort to the Model's catalog levels.
         thinking: thinking.enabled
           ? { type: "adaptive", display: "summarized" }
           : { type: "disabled" },
@@ -694,28 +697,44 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     return this.#permissionMode;
   }
 
-  async setModel(model?: string): Promise<void> {
+  async setModel(
+    model?: string,
+    thinkingOptionId: HarnessThinkingOptionId = this.#thinkingOptionId,
+  ): Promise<void> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
-    const thinking = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const id = parseClaudeThinkingOptionId(thinkingOptionId);
+    const previous = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const thinking = claudeThinkingConfiguration(id);
     const previousModel = this.#currentModel;
     await activeQuery.setModel(model);
+    if (id !== this.#thinkingOptionId && !thinking.ultracode) {
+      try {
+        await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, previous));
+      } catch (error) {
+        await this.#restoreOrFault(() => activeQuery.setModel(previousModel));
+        throw error;
+      }
+    }
     if (thinking.ultracode) {
       try {
         await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, thinking));
         await this.#verifyUltracode(activeQuery);
       } catch (error) {
-        // Ultracode stays selected, so the Model it cannot run on is rejected instead.
+        // The Model it cannot run on is rejected; restore the previous Model and Thinking.
         await this.#restoreOrFault(async () => {
           await activeQuery.setModel(previousModel);
-          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(previous, thinking));
           // A write Claude Code accepts may still not take effect; confirm the restored state.
-          await this.#verifyUltracode(activeQuery);
+          await (previous.ultracode
+            ? this.#verifyUltracode(activeQuery)
+            : this.#verifyUltracodeOff(activeQuery));
         });
         throw error;
       }
     }
     this.#currentModel = model;
+    this.#thinkingOptionId = id;
   }
 
   async setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void> {

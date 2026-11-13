@@ -1,5 +1,5 @@
 /** One transient choice bar attached to the manually expanded tree occurrence. */
-import { useId, useLayoutEffect, useRef } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import {
   THREAD_TREE_STYLES,
   useThreadTreeStyleSave,
@@ -16,6 +16,7 @@ export function ThreadTreeStylePrompt({
   t,
 }: ThreadTreeStyleProps & { onLater: () => void; onExit: () => void }) {
   const labelId = useId();
+  const [focusedStyle, setFocusedStyle] = useState(style);
   const rootRef = useRef<HTMLDivElement>(null);
   const exitRef = useRef(onExit);
   exitRef.current = onExit;
@@ -42,19 +43,45 @@ export function ThreadTreeStylePrompt({
           {t("threadTree.style.later")}
         </button>
       </div>
-      <div className={css.cards} role="group" aria-labelledby={labelId}>
+      <div
+        className={css.comparison}
+        role="radiogroup"
+        aria-labelledby={labelId}
+        aria-busy={busy}
+        onKeyDown={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const value =
+            event.key === "Home" || event.key === "End"
+              ? THREAD_TREE_STYLES[event.key === "Home" ? 0 : 1]
+              : THREAD_TREE_STYLES[focusedStyle === "summary" ? 1 : 0];
+          event.currentTarget
+            .querySelector<HTMLButtonElement>(`[data-thread-style-choice="${value}"]`)
+            ?.focus();
+        }}
+      >
         {THREAD_TREE_STYLES.map((value) => (
           <button
             key={value}
             type="button"
-            className={css.card}
+            role="radio"
+            className={css.choice}
             data-thread-style-choice={value}
             aria-disabled={busy}
-            aria-pressed={style === value}
+            aria-checked={style === value}
+            aria-labelledby={`${labelId}-${value}`}
+            aria-describedby={`${labelId}-${value}-description`}
+            tabIndex={focusedStyle === value ? 0 : -1}
+            onFocus={() => setFocusedStyle(value)}
             onClick={() => void save(value)}
           >
-            <span className={css.cardTitle}>{t(`threadTree.style.${value}`)}</span>
-            <span className={css.cardSubtitle}>{t(`threadTree.style.${value}Subtitle`)}</span>
+            <span className={css.choiceTitle} id={`${labelId}-${value}`}>
+              {t(`threadTree.style.${value}`)}
+            </span>
+            <span className={css.choiceSubtitle} id={`${labelId}-${value}-description`}>
+              {t(`threadTree.style.${value}Subtitle`)}
+            </span>
             <ThreadTreeStylePreview style={value} t={t} />
           </button>
         ))}

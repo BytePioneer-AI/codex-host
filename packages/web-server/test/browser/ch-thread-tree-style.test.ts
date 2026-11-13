@@ -95,8 +95,34 @@ for (const width of [1280, 390]) {
       await prompt.waitFor();
       assert.equal(await prompt.count(), 1);
       await expect(prompt).toHaveAccessibleName("Collapsed session trees");
-      await expect(prompt.getByText("Shows count and status", { exact: true })).toBeVisible();
-      await expect(prompt.getByText("Status ring on the icon only", { exact: true })).toBeVisible();
+      await expect(prompt.getByText("Count and status", { exact: true })).toBeVisible();
+      await expect(prompt.getByText("Icon status ring", { exact: true })).toBeVisible();
+      const choices = prompt.getByRole("radiogroup");
+      const detailed = choices.getByRole("radio", { name: "Detailed", exact: true });
+      const compact = choices.getByRole("radio", { name: "Compact", exact: true });
+      await expect(detailed).toBeChecked();
+      await expect(compact).not.toBeChecked();
+      const sampleTitles = [
+        "Child awaiting approval",
+        "Child running",
+        "Child finished, unread",
+        "All read",
+      ];
+      for (const choice of [detailed, compact]) {
+        assert.deepEqual(
+          await choice.locator("[data-session-title]").allTextContents(),
+          sampleTitles,
+        );
+      }
+      assert.deepEqual(
+        await compact
+          .locator("[data-thread-ring]")
+          .evaluateAll((rings) => rings.map((ring) => ring.getAttribute("data-thread-ring"))),
+        ["pending", "running", "completed", "idle"],
+      );
+      const left = await detailed.boundingBox();
+      const right = await compact.boundingBox();
+      assert.ok(left && right && left.x + left.width <= right.x + 1 && left.y === right.y);
       assert.equal(
         await prompt.locator("button").count(),
         3,
@@ -131,13 +157,20 @@ for (const width of [1280, 390]) {
       };
       window.restoreTreeStorage = () => { Storage.prototype.setItem = original; };
     })()`);
-      await prompt.locator('[data-thread-style-choice="ring"]').click();
+      await detailed.focus();
+      await page.keyboard.press("ArrowRight");
+      await expect(compact).toBeFocused();
+      await expect(detailed).toBeChecked();
+      await page.keyboard.press("ArrowLeft");
+      await expect(detailed).toBeFocused();
+      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("Space");
       await prompt.getByRole("alert").waitFor();
       await treeShot(page, `style-${width}-save-error`);
       await page.evaluate(() =>
         (window as unknown as { restoreTreeStorage: () => void }).restoreTreeStorage(),
       );
-      await prompt.locator('[data-thread-style-choice="ring"]').click();
+      await compact.press("Enter");
       await expect(prompt).toHaveCount(0);
       await expect(parent.locator("[data-thread-icon-toggle]")).toBeFocused();
       await parent.locator("[data-thread-icon-toggle]").click();
@@ -270,7 +303,8 @@ it(
       record.revision++;
       localStorage.setItem(key, JSON.stringify(record));
     }, KEY);
-    await page.setViewportSize({ width: 1280, height: 500 });
+    // Leave room for all four comparison samples, but not the expanded child list.
+    await page.setViewportSize({ width: 1280, height: 600 });
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.reload();
     const parent = page.locator('[data-row-key="recent:parent"]');

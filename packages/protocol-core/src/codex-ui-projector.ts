@@ -813,6 +813,11 @@ export class CodexTurnProjector {
     return this.#completed;
   }
 
+  /** True when this Turn already projected an Item with the given id (a replayed start). */
+  hasProjectedItem(itemId: HostItemId): boolean {
+    return this.#items.has(itemId);
+  }
+
   /** A completed Turn still owns detached Items that have not settled. */
   get hasOpenDetachedItems(): boolean {
     return [...this.#detached].some((itemId) => this.#items.get(itemId)?.outcome === null);
@@ -1078,6 +1083,16 @@ export class CodexTurnProjector {
     if (this.#items.has(event.item.itemId)) {
       const projected = this.#items.get(event.item.itemId);
       if (!projected || projected.item.type !== event.item.type) {
+        throw new Error("Host Item started more than once");
+      }
+      if (
+        projected.item.type === "toolExecution" &&
+        event.item.type === "toolExecution" &&
+        (projected.item.toolName !== event.item.toolName ||
+          projected.item.namespace !== event.item.namespace)
+      ) {
+        // Keep the first start's stable identity: the same ItemId must not be
+        // reused by a different tool, even within one Item kind.
         throw new Error("Host Item started more than once");
       }
       // A reconnected Harness session can replay the stream of an active Turn and

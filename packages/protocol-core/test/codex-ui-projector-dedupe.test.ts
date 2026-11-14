@@ -77,4 +77,60 @@ describe("CodexTurnProjector duplicate item.started replay", () => {
       }),
     ).toThrow("Host Item started more than once");
   });
+
+  it("rejects a replayed toolExecution ItemId that carries a different toolName", () => {
+    const ui = projector();
+    ui.project({ type: "turn.started", turnId });
+    const itemId = hostItemIdSchema.parse("tool-1");
+    ui.project({
+      type: "item.started",
+      turnId,
+      item: { type: "toolExecution", itemId, toolName: "TodoWrite", arguments: {} },
+    });
+    expect(() =>
+      ui.project({
+        type: "item.started",
+        turnId,
+        item: { type: "toolExecution", itemId, toolName: "Read", arguments: {} },
+      }),
+    ).toThrow("Host Item started more than once");
+  });
+
+  it("rejects a replayed toolExecution ItemId that carries a different namespace", () => {
+    const ui = projector();
+    ui.project({ type: "turn.started", turnId });
+    const itemId = hostItemIdSchema.parse("tool-2");
+    ui.project({
+      type: "item.started",
+      turnId,
+      item: { type: "toolExecution", itemId, toolName: "Read", arguments: {} },
+    });
+    expect(() =>
+      ui.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "toolExecution",
+          itemId,
+          toolName: "Read",
+          namespace: "other",
+          arguments: {},
+        },
+      }),
+    ).toThrow("Host Item started more than once");
+  });
+
+  it("treats a replayed toolExecution start with the same identity as a no-op", () => {
+    const ui = projector();
+    ui.project({ type: "turn.started", turnId });
+    const itemId = hostItemIdSchema.parse("tool-3");
+    const started = {
+      type: "item.started" as const,
+      turnId,
+      item: { type: "toolExecution" as const, itemId, toolName: "Read", arguments: {} },
+    };
+    ui.project(started);
+    expect(ui.hasProjectedItem(itemId)).toBe(true);
+    expect(ui.project(started).messages).toEqual([]);
+  });
 });

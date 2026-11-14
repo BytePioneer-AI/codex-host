@@ -5486,17 +5486,25 @@ export class AppServerHost {
     let event = output.event;
     if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
-      event = {
-        ...event,
-        item: {
-          ...event.item,
-          subagents: await Promise.all(
-            event.item.subagents.map((subagent) =>
-              this.#materializeSubagent(thread, subagent).catch(() => subagent),
+      // A replayed start for an Item this Turn already projected is ignored by the
+      // projector; its side effects must be skipped too, so a completed delegation's
+      // replayed running start cannot re-activate an idle child Thread.
+      const replayed =
+        thread.projectedTurns.get(event.turnId)?.projector.hasProjectedItem(event.item.itemId) ??
+        false;
+      if (!replayed) {
+        event = {
+          ...event,
+          item: {
+            ...event.item,
+            subagents: await Promise.all(
+              event.item.subagents.map((subagent) =>
+                this.#materializeSubagent(thread, subagent).catch(() => subagent),
+              ),
             ),
-          ),
-        },
-      };
+          },
+        };
+      }
     }
     if (event.type === "item.updated" && event.update.type === "subagents.replace") {
       event = {

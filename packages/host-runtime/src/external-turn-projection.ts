@@ -199,6 +199,7 @@ export class ExternalTurnProjection {
       }
     }
     if (
+      result.messages.length > 0 &&
       event.type === "item.started" &&
       event.item.type === "contextCompaction" &&
       this.#host.manualCompactionTurns.get(thread) === event.turnId
@@ -206,6 +207,8 @@ export class ExternalTurnProjection {
       // Only explicit /compact commands are manual; other commands can auto-compact.
       // Desktop labels a compaction manual only
       // through its own client registration, which must precede item/started.
+      // A replayed start was ignored by the projector (no messages), so it must
+      // not announce another registration without a corresponding Item start.
       await this.#host.writeJson({
         method: THREAD_MANUAL_COMPACTION_STARTED_METHOD,
         params: { threadId: thread.id, turnId: event.turnId },

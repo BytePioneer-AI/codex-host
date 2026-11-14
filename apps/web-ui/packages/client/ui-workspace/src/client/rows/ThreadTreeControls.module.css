@@ -43,8 +43,7 @@
 
 /* Leave breathing room below the parent icon; branch segments follow subtree heights. */
 .children[data-thread-guide]::before,
-.children[data-thread-guide] > .branch::before,
-.children[data-thread-guide] > .branch::after {
+.children[data-thread-guide] > .branch::before {
   content: "";
   position: absolute;
   inset-inline-start: var(--dsh-thread-guide-axis);
@@ -59,29 +58,28 @@
   background: var(--dsw-alias-border-l2);
 }
 
+/* Merge the stem and diagonal in the mask so the translucent token is painted only once. */
 .children[data-thread-guide] > .branch::before {
+  --dsh-thread-guide-stem-start: 0px;
+  --dsh-thread-guide-stem-end: 0px;
   top: 0;
   bottom: calc(-1 * var(--dsh-thread-row-gap));
-  width: 1px;
+  width: calc(24px - var(--dsh-thread-parent-icon-size) / 2 - 6.5px);
   background: var(--dsw-alias-border-l2);
+  mask:
+    linear-gradient(transparent var(--dsh-thread-guide-stem-start), black 0) 0 0 / 1px
+      calc(100% - var(--dsh-thread-guide-stem-end)) no-repeat,
+    url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 0V1Q.5 3.3 2.5 4.5L10.5 7.5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
+      0 calc(var(--dsh-thread-row-height) / 2 - 8px) / 100% 8px no-repeat;
 }
 
 .children[data-thread-guide] > .branch:first-child::before {
-  top: max(0px, var(--dsh-thread-guide-start));
+  --dsh-thread-guide-stem-start: max(0px, var(--dsh-thread-guide-start));
 }
 
 .children[data-thread-guide] > .branch:last-child::before {
-  bottom: calc(100% - var(--dsh-thread-row-height) / 2 + 8px);
-}
-
-/* A smooth turn leads into a short diagonal, without a horizontal tail. */
-.children[data-thread-guide] > .branch::after {
-  top: calc(var(--dsh-thread-row-height) / 2 - 8px);
-  width: calc(24px - var(--dsh-thread-parent-icon-size) / 2 - 6.5px);
-  height: 8px;
-  background: var(--dsw-alias-border-l2);
-  mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 0V1Q.5 3.3 2.5 4.5L10.5 7.5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
-    0 0 / 100% 100% no-repeat;
+  --dsh-thread-guide-stem-end: 8px;
+  bottom: calc(100% - var(--dsh-thread-row-height) / 2);
 }
 
 .summary {

@@ -13,6 +13,7 @@ import {
   createPreferenceSwitch,
   preferenceId,
 } from "./preference-ui.js";
+import { mountUserInstructionsControls } from "./user-instructions-controls.js";
 
 export function createAppearanceSettingsPage(
   messages: RendererSettingsMessages,
@@ -59,9 +60,15 @@ export function createAppearanceSettingsPage(
         messages,
         getLoadedSessionsClient,
       );
+      const disposeUserInstructions = mountUserInstructionsControls(
+        context,
+        messages,
+        getLoadedSessionsClient,
+      );
       return () => {
         ownerWindow.removeEventListener(REASONING_SOFT_WRAP_CHANGE_EVENT, sync);
         disposeIdleRelease();
+        disposeUserInstructions();
       };
     },
   });

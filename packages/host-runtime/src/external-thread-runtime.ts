@@ -33,6 +33,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
+import { HarnessUserInstructionsStore } from "./harness-user-instructions.js";
 import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
@@ -685,6 +686,9 @@ export class ExternalThreadRuntime {
       harnessId,
       thread.record.transportModelId,
     );
+    await new HarnessUserInstructionsStore(this.#environment)
+      .syncHarness(harnessId)
+      .catch(this.#diagnose);
     const opened = await adapter.open({
       kind: "resume",
       cwd: thread.record.cwd,
@@ -960,6 +964,11 @@ export class ExternalThreadRuntime {
       });
     }
     const restoredSelection = decodeExternalTransportSelection(harnessId, record.transportModelId);
+    if (!preparedSession) {
+      await new HarnessUserInstructionsStore(this.#environment)
+        .syncHarness(harnessId)
+        .catch(this.#diagnose);
+    }
     const opened = preparedSession
       ? { ok: true as const, value: preparedSession }
       : await adapter.open({

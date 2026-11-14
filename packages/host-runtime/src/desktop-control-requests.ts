@@ -13,6 +13,8 @@ import {
   HARNESS_DISPLAY_CAPABILITIES_METHOD,
   HARNESS_DISPLAY_GET_METHOD,
   HARNESS_DISPLAY_SET_METHOD,
+  HARNESS_USER_INSTRUCTIONS_SETTINGS_GET_METHOD,
+  HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD,
   HARNESS_INSTALLATION_METHOD,
   HARNESS_INSTALLATION_START_METHOD,
   HARNESS_INSTALLATION_STATUS_METHOD,
@@ -27,6 +29,8 @@ import {
   harnessAccountSourceListParamsSchema,
   harnessDisplayGetSchema,
   harnessDisplaySetSchema,
+  harnessUserInstructionsGetSchema,
+  harnessUserInstructionsSetSchema,
   harnessLaunchSettingsGetSchema,
   harnessLaunchSettingsSetSchema,
   harnessPluginListParamsSchema,
@@ -49,6 +53,7 @@ import { handleCredentialImports } from "./credential-imports.js";
 import { errorMessage, rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
+import type { HarnessUserInstructionsStore } from "./harness-user-instructions.js";
 import { handleHarnessInstallation, HarnessInstallationError } from "./harness-installation.js";
 import { HarnessInstallationTasks } from "./harness-installation-tasks.js";
 import {
@@ -70,6 +75,7 @@ export interface DesktopControlRequestHost {
   readonly environment: NodeJS.ProcessEnv;
   readonly preferences: HarnessPreferencesStore;
   readonly displaySettings: HarnessDisplaySettingsStore;
+  readonly userInstructions: HarnessUserInstructionsStore;
   readonly launchSettings: HarnessLaunchSettingsStore;
   readonly modelPrices: ModelPriceCatalog;
   readonly usageStatistics: UsageStatistics | undefined;
@@ -160,6 +166,35 @@ export class DesktopControlRequests {
       } catch {
         await this.#host.writeJson(
           rpcError(request, -32000, "Could not save or read Harness display settings"),
+        );
+      }
+      return true;
+    }
+    if (
+      request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_GET_METHOD ||
+      request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD
+    ) {
+      const parsed = (
+        request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD
+          ? harnessUserInstructionsSetSchema
+          : harnessUserInstructionsGetSchema
+      ).safeParse(request.params ?? {});
+      if (!parsed.success) {
+        await this.#host.writeJson(
+          rpcError(request, -32602, "Invalid Harness user instructions settings"),
+        );
+        return true;
+      }
+      try {
+        const store = this.#host.userInstructions;
+        const result =
+          request.method === HARNESS_USER_INSTRUCTIONS_SETTINGS_SET_METHOD
+            ? await store.set(harnessUserInstructionsSetSchema.parse(parsed.data))
+            : await store.get();
+        await this.#host.writeJson(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      } catch {
+        await this.#host.writeJson(
+          rpcError(request, -32000, "Could not save or read Harness user instructions settings"),
         );
       }
       return true;

@@ -54,6 +54,7 @@ import {
   LOADED_SESSIONS_METHOD,
 } from "@codexhost/shared-contracts";
 import { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
+import { HarnessUserInstructionsStore } from "./harness-user-instructions.js";
 import { isModelPriceOverridesMethod } from "./model-price-overrides-file.js";
 import { HARNESS_DISPLAY_CHANGED_METHOD } from "@codexhost/shared-contracts";
 import {
@@ -650,6 +651,7 @@ export class AppServerHost {
   #usageOnlyAdapters: HarnessUsageStatisticsAdapter[] = [];
   #plugins: HarnessPluginRegistry | undefined;
   readonly #launchSettings: HarnessLaunchSettingsStore;
+  readonly #userInstructions: HarnessUserInstructionsStore;
   readonly #displaySettings: HarnessDisplaySettingsStore;
   readonly #preferences: HarnessPreferencesStore;
   #appliedPreferenceRevision = -1;
@@ -810,6 +812,7 @@ export class AppServerHost {
     this.#launchSettings = new HarnessLaunchSettingsStore(
       this.#options.pluginContext?.environment ?? environment,
     );
+    this.#userInstructions = new HarnessUserInstructionsStore(environment);
     const permanentHome = path.resolve(environment.CODEX_HOME ?? path.join(os.homedir(), ".codex"));
     this.#ownsOfficialRuntimeScope = options.officialRuntimeScope === undefined;
     this.#officialRuntimeScope =
@@ -1026,6 +1029,7 @@ export class AppServerHost {
       environment: this.#options.environment ?? process.env,
       preferences: this.#preferences,
       displaySettings: this.#displaySettings,
+      userInstructions: this.#userInstructions,
       launchSettings: this.#launchSettings,
       modelPrices: this.#modelPrices,
       usageStatistics: this.#options.usageStatistics,
@@ -4165,6 +4169,9 @@ export class AppServerHost {
       return;
     }
 
+    await this.#userInstructions
+      .syncHarness(adapter.harnessId)
+      .catch((error) => this.#diagnose(error));
     const sessionResult = await adapter.open({
       kind: "create",
       cwd,

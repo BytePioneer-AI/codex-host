@@ -10,7 +10,14 @@ import {
 } from "./account/codex-account-control.js";
 import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
+import type { OwnedOfficialBackend } from "./codex-runtime/official-runtime-owner.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
+import {
+  createDesktopSpawnedLoopbackBackend,
+  DesktopOfficialSpawnerUnreachableError,
+  type DesktopOfficialBackendSpawnerDescriptor,
+} from "./codex-runtime/desktop-official-backend-spawner.js";
+import type { OfficialAppServerExit } from "./official-app-server-connection.js";
 import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
 import { DESKTOP_APP_TOOLS_PIPE_ENV } from "./desktop-context-environment.js";
 import {
@@ -26,8 +33,90 @@ export interface PreparedLocalCodex {
     stockCodexPath: string;
     arguments: string[];
     environment: NodeJS.ProcessEnv;
+    officialSpawner?: DesktopOfficialBackendSpawnerDescriptor;
   }): Promise<void>;
   close(): Promise<void>;
+}
+
+interface OfficialStartupConfiguration {
+  stockCodexPath: string;
+  arguments: string[];
+  environment: NodeJS.ProcessEnv;
+  officialSpawner?: DesktopOfficialBackendSpawnerDescriptor;
+}
+
+function createDesktopOrLocalBackend(input: {
+  spawner: DesktopOfficialBackendSpawnerDescriptor;
+  cwd: string;
+  stockCodexPath: string;
+  arguments: readonly string[];
+  environment: NodeJS.ProcessEnv;
+  onFallbackToLocal: () => void;
+}): OwnedOfficialBackend {
+  const closed = Promise.withResolvers<OfficialAppServerExit>();
+  let active: OwnedOfficialBackend | undefined;
+  let exitSettled = false;
+  let stopRequested = false;
+
+  const forwardClosed = (backend: OwnedOfficialBackend): void => {
+    void backend.closed.then((exit) => {
+      if (exitSettled) return;
+      exitSettled = true;
+      closed.resolve(exit);
+    });
+  };
+
+  return {
+    get processId() {
+      return active?.processId;
+    },
+    closed: closed.promise,
+    async start() {
+      if (stopRequested) throw new Error("Shared official app-server is already closed");
+      const { spawner, onFallbackToLocal, ...launch } = input;
+      const desktop = createDesktopSpawnedLoopbackBackend({ spawner, ...launch });
+      active = desktop;
+      try {
+        await desktop.start();
+        forwardClosed(desktop);
+      } catch (error) {
+        if (!(error instanceof DesktopOfficialSpawnerUnreachableError) || stopRequested) {
+          forwardClosed(desktop);
+          await desktop.stop().catch(() => undefined);
+          if (!exitSettled) {
+            exitSettled = true;
+            closed.resolve({
+              code: 1,
+              signal: null,
+              error: error instanceof Error ? error : new Error(String(error)),
+            });
+          }
+          throw error;
+        }
+        await desktop.stop().catch(() => undefined);
+        onFallbackToLocal();
+        const local = createOwnedLoopbackBackend(launch);
+        active = local;
+        forwardClosed(local);
+        await local.start();
+      }
+    },
+    async connect() {
+      if (!active) throw new Error("Official listener is not ready");
+      return active.connect();
+    },
+    async stop() {
+      stopRequested = true;
+      if (!active) {
+        if (!exitSettled) {
+          exitSettled = true;
+          closed.resolve({ code: 0, signal: null });
+        }
+        return;
+      }
+      await active.stop();
+    },
+  };
 }
 
 async function canonicalCodexHome(home: string): Promise<string> {
@@ -60,7 +149,7 @@ export async function prepareLocalCodex(input: {
     input.deferStart && !input.remoteControl && input.environment.CODEXHOST_DATA_DIR
       ? path.join(input.environment.CODEXHOST_DATA_DIR, "official-startup-v1.json")
       : undefined;
-  let startup = {
+  let startup: OfficialStartupConfiguration = {
     stockCodexPath: input.stockCodexPath,
     arguments:
       input.deferStart && !input.remoteControl
@@ -93,7 +182,7 @@ export async function prepareLocalCodex(input: {
     (await resolveOfficialCodexExecutable(startup.stockCodexPath, input.environment)) ?? "";
   // `startup` is what the next backend generation uses; `running` is what the current one used.
   // A preserved active Turn keeps `running` while `startup` already holds the newer request.
-  let running: typeof startup | undefined;
+  let running: (OfficialStartupConfiguration & { spawnedByDesktop: boolean }) | undefined;
   let startupConfigured = false;
   let backendFiles: string[] = [];
   const scope = new OfficialRuntimeScope({
@@ -105,13 +194,25 @@ export async function prepareLocalCodex(input: {
       try {
         if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
         backendFiles = captureCodexRuntimeFiles(startup.stockCodexPath);
-        running = startup;
-        const backend = createOwnedLoopbackBackend({
+        const spawner = startup.officialSpawner;
+        const generation = { ...startup, spawnedByDesktop: Boolean(spawner) };
+        running = generation;
+        const launch = {
           stockCodexPath: startup.stockCodexPath,
           cwd: home,
           arguments: startup.arguments,
           environment: { ...officialEnvironment(startup.environment), CODEX_HOME: home },
-        });
+        };
+        const backend = spawner
+          ? createDesktopOrLocalBackend({
+              spawner,
+              ...launch,
+              onFallbackToLocal: () => {
+                generation.spawnedByDesktop = false;
+                if (startup.officialSpawner === spawner) delete startup.officialSpawner;
+              },
+            })
+          : createOwnedLoopbackBackend(launch);
         startupConfigured = true;
         // Keep the invocation fixed through startup and until backend exit is confirmed.
         void backend.closed.then(() => {
@@ -195,13 +296,18 @@ export async function prepareLocalCodex(input: {
         }
       }
       // Compare with the live generation when one is running; otherwise with the last request.
-      const current = scope.owner.running && running ? running : startup;
+      const live = scope.owner.running && running ? running : undefined;
+      const current = live ?? startup;
+      const currentlySpawnedByDesktop = live
+        ? live.spawnedByDesktop
+        : Boolean(startup.officialSpawner);
       const changed =
         current.stockCodexPath !== next.stockCodexPath ||
         JSON.stringify(current.arguments) !== JSON.stringify(next.arguments) ||
         // A reopened Desktop serves its app tools on a new pipe; the old one is gone.
         current.environment[DESKTOP_APP_TOOLS_PIPE_ENV] !==
-          next.environment[DESKTOP_APP_TOOLS_PIPE_ENV];
+          next.environment[DESKTOP_APP_TOOLS_PIPE_ENV] ||
+        (!currentlySpawnedByDesktop && Boolean(next.officialSpawner));
       // Whatever happens to the running generation, the next one starts from this request.
       startup = next;
       // The running generation, not the next requested invocation, owns these files.

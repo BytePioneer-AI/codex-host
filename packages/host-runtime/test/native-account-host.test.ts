@@ -1,12 +1,16 @@
+import type { ChildProcess, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 import { jsonObjectSchema, codexAccountListResultSchema } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
 import { createOwnedLoopbackBackend } from "../src/codex-runtime/owned-official-backends.js";
+import { startDesktopOfficialBackendSpawner } from "../src/codex-runtime/desktop-official-backend-spawner.js";
 import { prepareLocalCodex, type PreparedLocalCodex } from "../src/native-account-host.js";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
 
@@ -16,7 +20,10 @@ vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
 
 const prepared = new Set<PreparedLocalCodex>();
 const temporaryDirectories = new Set<string>();
+const spawnersToCleanup = new Set<() => Promise<unknown>>();
 afterEach(async () => {
+  for (const cleanup of spawnersToCleanup) await cleanup();
+  spawnersToCleanup.clear();
   for (const local of prepared) await local.close();
   prepared.clear();
   for (const directory of temporaryDirectories)
@@ -692,5 +699,146 @@ describe("local Codex read-only identity startup", () => {
       ),
     ).toBe(true);
     expect(f.connect).toHaveBeenCalledOnce();
+  });
+
+  async function desktopSpawnerFixture() {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const port = (server.address() as { port: number }).port;
+    server.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const message = jsonObjectSchema.parse(JSON.parse(data.toString()));
+        if (message.method === "initialized") return;
+        const result: JsonObject =
+          message.method === "initialize"
+            ? { userAgent: "desktop-spawner-fixture" }
+            : message.method === "account/read"
+              ? {
+                  account: {
+                    type: "chatgpt",
+                    email: "desktop@example.com",
+                    planType: "pro",
+                  },
+                  requiresOpenaiAuth: true,
+                }
+              : {};
+        socket.send(JSON.stringify({ id: message.id, result }));
+      });
+    });
+
+    const spawned: Array<
+      EventEmitter & {
+        pid: undefined;
+        stderr: PassThrough;
+        kill: ReturnType<typeof vi.fn>;
+        unref: ReturnType<typeof vi.fn>;
+      }
+    > = [];
+    const spawnOfficial = vi.fn(() => {
+      const child = Object.assign(new EventEmitter(), {
+        pid: undefined,
+        stderr: new PassThrough(),
+        kill: vi.fn(() => {
+          queueMicrotask(() => child.emit("exit", 0, null));
+          return true;
+        }),
+        unref: vi.fn(),
+      });
+      spawned.push(child);
+      queueMicrotask(() => {
+        child.stderr.write(`listening on: ws://127.0.0.1:${port}\n`);
+      });
+      return child as unknown as ChildProcess;
+    });
+    const spawner = await startDesktopOfficialBackendSpawner({
+      spawnOfficial: spawnOfficial as unknown as typeof spawn,
+    });
+    spawnersToCleanup.add(async () => {
+      await spawner.detach();
+      for (const client of server.clients) client.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    return { spawner, spawnOfficial, spawned };
+  }
+
+  it("upgrades an idle Web-started backend to the Desktop spawner and avoids restarting Desktop-spawned generations", async () => {
+    const first = nativeFixture();
+    const local = await startLocal(true);
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+
+    const firstDesktop = await desktopSpawnerFixture();
+    await local.configureStartup({
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: ["-c", "features.code_mode_host=true", "app-server"],
+      environment: {},
+      officialSpawner: firstDesktop.spawner.descriptor,
+    });
+    expect(first.stop).toHaveBeenCalledOnce();
+
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+    expect(firstDesktop.spawnOfficial).toHaveBeenCalledOnce();
+    await expect(local.accountControl.refresh?.()).resolves.toMatchObject({
+      phase: "ready",
+      accounts: [{ email: "desktop@example.com" }],
+    });
+
+    // A second Desktop bridge with the same startup arguments and pipe keeps the
+    // running Desktop-spawned backend alive instead of restarting it.
+    const secondDesktop = await desktopSpawnerFixture();
+    await local.configureStartup({
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: ["-c", "features.code_mode_host=true", "app-server"],
+      environment: {},
+      officialSpawner: secondDesktop.spawner.descriptor,
+    });
+    expect(firstDesktop.spawned[0]?.kill).not.toHaveBeenCalled();
+    expect(secondDesktop.spawnOfficial).not.toHaveBeenCalled();
+  });
+
+  it("preserves an active Web-started Turn when Desktop connects with an official spawner", async () => {
+    const first = nativeFixture();
+    const diagnostics = new PassThrough();
+    const local = await startLocal(true, undefined, diagnostics);
+    await local.officialRuntimeScope.start();
+    first.notify({
+      method: "turn/started",
+      params: { threadId: "active-web-thread", turn: { id: "active-turn", status: "inProgress" } },
+    });
+    await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
+
+    const desktop = await desktopSpawnerFixture();
+    await local.configureStartup({
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: ["-c", "features.code_mode_host=true", "app-server"],
+      environment: {},
+      officialSpawner: desktop.spawner.descriptor,
+    });
+    expect(first.stop).not.toHaveBeenCalled();
+    expect(diagnostics.read()?.toString()).toContain("preserving active official Codex work");
+  });
+
+  it("falls back to Shared Host local spawning if the Desktop spawner is unreachable during recovery", async () => {
+    const desktop = await desktopSpawnerFixture();
+    const local = await startLocal(true);
+    await local.configureStartup({
+      stockCodexPath: "/synthetic/desktop-codex",
+      arguments: ["app-server"],
+      environment: {},
+      officialSpawner: desktop.spawner.descriptor,
+    });
+    await local.officialRuntimeScope.start();
+    expect(desktop.spawnOfficial).toHaveBeenCalledOnce();
+    expect(createOwnedLoopbackBackend).not.toHaveBeenCalled();
+
+    nativeFixture();
+    desktop.spawned[0]?.emit("exit", 1, null);
+    await vi.waitFor(() => expect(local.officialRuntimeScope.gate.phase).toBe("unavailable"));
+    await desktop.spawner.detach();
+
+    await local.officialRuntimeScope.start();
+    expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
+    expect(local.officialRuntimeScope.owner.running).toBe(true);
   });
 });

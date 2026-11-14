@@ -12,6 +12,10 @@ import {
   CODEX_RUNTIME_REMOVED_MESSAGE,
   CodexRuntimeFilesRemovedError,
 } from "./codex-runtime/backend-files.js";
+import {
+  startDesktopOfficialBackendSpawner,
+  type DesktopOfficialBackendSpawnerDescriptor,
+} from "./codex-runtime/desktop-official-backend-spawner.js";
 
 /** Matches both npm payloads and the signed macOS app's Resources/MacOS split. */
 export function sharedHostLauncherPath(
@@ -46,7 +50,11 @@ export function sharedHostDataDirectory(
 
 async function connectStream(
   launch: HostServiceLaunch,
-  desktop?: { environment: NodeJS.ProcessEnv; arguments: string[] },
+  desktop?: {
+    environment: NodeJS.ProcessEnv;
+    arguments: string[];
+    officialSpawner?: DesktopOfficialBackendSpawnerDescriptor;
+  },
   endpoint = "/v1/desktop",
 ) {
   await ensureHostService(launch);
@@ -64,6 +72,7 @@ async function connectStream(
               ([key, value]) => isDesktopContextVariable(key) && value !== undefined,
             ),
           ),
+          ...(desktop.officialSpawner ? { officialSpawner: desktop.officialSpawner } : {}),
         }),
       ).toString("base64")
     : undefined;
@@ -128,33 +137,42 @@ export async function runLocalDesktopBridge(
   const launcher = environment.CODEXHOST_LAUNCHER_EXECUTABLE;
   if (!launcher || !path.isAbsolute(launcher))
     throw new Error("Independent Host requires the native Launcher");
-  const stream = await connectStream(
-    {
-      launcher,
-      runtime,
-      stockCodex,
-      dataDirectory: path.resolve(
-        environment.CODEXHOST_DATA_DIR ?? path.join(homedir(), ".codexhost"),
-      ),
-      ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
-    },
-    { environment, arguments: arguments_ },
-  );
+  const officialSpawner = await startDesktopOfficialBackendSpawner();
   try {
-    const closed = new Promise<number>((resolve) => {
-      stream.once("error", (error) => {
-        if (error instanceof CodexRuntimeFilesRemovedError)
-          process.stderr.write(`${error.message}\n`);
-        resolve(1);
+    const stream = await connectStream(
+      {
+        launcher,
+        runtime,
+        stockCodex,
+        dataDirectory: path.resolve(
+          environment.CODEXHOST_DATA_DIR ?? path.join(homedir(), ".codexhost"),
+        ),
+        ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
+      },
+      {
+        environment,
+        arguments: arguments_,
+        officialSpawner: officialSpawner.descriptor,
+      },
+    );
+    try {
+      const closed = new Promise<number>((resolve) => {
+        stream.once("error", (error) => {
+          if (error instanceof CodexRuntimeFilesRemovedError)
+            process.stderr.write(`${error.message}\n`);
+          resolve(1);
+        });
+        stream.once("close", () => resolve(0));
       });
-      stream.once("close", () => resolve(0));
-    });
-    process.stdin.pipe(stream);
-    stream.pipe(process.stdout, { end: false });
-    return await closed;
+      process.stdin.pipe(stream);
+      stream.pipe(process.stdout, { end: false });
+      return await closed;
+    } finally {
+      process.stdin.unpipe(stream);
+      stream.unpipe(process.stdout);
+      stream.destroy();
+    }
   } finally {
-    process.stdin.unpipe(stream);
-    stream.unpipe(process.stdout);
-    stream.destroy();
+    await officialSpawner.detach();
   }
 }

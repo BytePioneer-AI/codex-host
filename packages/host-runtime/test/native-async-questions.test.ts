@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { NativeClientChannel, type NativeClientReply } from "../src/native-client-channel.js";
+import { NativeAsyncQuestions } from "../src/native-async-questions.js";
 
 const threadId = "native-thread";
 function defined<T>(value: T | undefined): T {
@@ -33,7 +34,7 @@ function reply(index = 0): JsonObject {
   };
 }
 
-function fixture(status = "inProgress") {
+function fixture(status = "inProgress", owner?: NativeAsyncQuestions) {
   const events = new ClientChannelEvents();
   const turns: JsonObject[] = [{ id: "turn-1", status, items: [structuredClone(question)] }];
   const request = vi.fn(async (method: string, params: JsonObject): Promise<NativeClientReply> => {
@@ -58,15 +59,96 @@ function fixture(status = "inProgress") {
     throw new Error(`Unexpected method ${method}`);
   });
   const respond = vi.fn(async () => undefined);
-  const channel = new NativeClientChannel({ events, request, respond });
+  const channel = new NativeClientChannel({
+    events,
+    request,
+    respond,
+    ...(owner ? { asyncQuestions: owner } : {}),
+  });
   const observe = (item: JsonObject, target = threadId) =>
     channel.observeMessage({
       method: "item/completed",
       params: { threadId: target, turnId: "turn-1", item },
     });
   const answer = { answers: { [questionId()]: { answers: ["My own direction"] } } };
-  return { channel, request, respond, turns, observe, answer, events };
+  return { channel, request, respond, turns, observe, answer, events, owner };
 }
+
+function sharedFixture() {
+  const owner = new NativeAsyncQuestions();
+  return { ...fixture("inProgress", owner), owner };
+}
+
+it("claims one native answer across Web and delegation credentials", async () => {
+  const { channel, owner, request, answer } = sharedFixture();
+  const web = defined((await channel.snapshot(threadId, {})).interactions[0]);
+  const delegate = defined(owner.pending(threadId, "delegate:")[0]);
+  const results = await Promise.all([
+    channel.respond(web.requestId, threadId, answer),
+    owner.respond(delegate.requestId, threadId, answer, "delegate:", request),
+  ]);
+  expect(results.filter(Boolean)).toHaveLength(1);
+  expect(request.mock.calls.filter(([method]) => method === "turn/steer")).toHaveLength(1);
+  expect(channel.interactions(threadId)).toEqual([]);
+  expect(owner.pending(threadId, "delegate:")).toEqual([]);
+});
+
+it("retains an unknown reply claim across Web and delegation credentials", async () => {
+  const { channel, owner, request, answer } = sharedFixture();
+  const web = defined((await channel.snapshot(threadId, {})).interactions[0]);
+  const delegate = defined(owner.pending(threadId, "delegate:")[0]);
+  const original = defined(request.getMockImplementation());
+  request.mockImplementation(async (method, params) => {
+    if (method === "turn/steer") throw new Error("lost native acknowledgement");
+    return original(method, params);
+  });
+  await expect(channel.respond(web.requestId, threadId, answer)).rejects.toThrow(
+    "lost native acknowledgement",
+  );
+  await expect(
+    owner.respond(delegate.requestId, threadId, answer, "delegate:", request),
+  ).rejects.toThrow("unknown");
+  expect(owner.pending(threadId, "delegate:")).toEqual([]);
+  expect(request.mock.calls.filter(([method]) => method === "turn/steer")).toHaveLength(1);
+});
+
+it("keeps Web Skip local while the shared native question remains answerable by delegation", async () => {
+  const { channel, owner, request, answer } = sharedFixture();
+  const web = defined((await channel.snapshot(threadId, {})).interactions[0]);
+  request.mockClear();
+  await channel.respond(web.requestId, threadId, { answers: { [questionId()]: { answers: [] } } });
+  expect(request).not.toHaveBeenCalled();
+  expect(channel.interactions(threadId)).toEqual([]);
+  expect(await channel.respond(web.requestId, threadId, answer)).toBe(false);
+  const delegate = defined(owner.pending(threadId, "delegate:")[0]);
+  await expect(
+    owner.respond(delegate.requestId, threadId, answer, "delegate:", request),
+  ).resolves.toBe(true);
+  expect(request.mock.calls.filter(([method]) => method === "turn/steer")).toHaveLength(1);
+});
+
+it("does not clear the shared native owner when one borrowing client resets", async () => {
+  const { channel, owner } = sharedFixture();
+  await channel.snapshot(threadId, {});
+  channel.resetGeneration();
+  expect(owner.pending(threadId, "delegate:")).toHaveLength(1);
+});
+
+it("keeps the upstream unknown-receipt error after observing another client's answer", async () => {
+  const { channel, request, answer, observe } = fixture();
+  const pending = defined((await channel.snapshot(threadId, {})).interactions[0]);
+  const original = defined(request.getMockImplementation());
+  request.mockImplementation(async (method, params) => {
+    if (method === "turn/steer") throw new Error("lost native acknowledgement");
+    return original(method, params);
+  });
+  await expect(channel.respond(pending.requestId, threadId, answer)).rejects.toThrow(
+    "lost native acknowledgement",
+  );
+  observe(reply());
+  await expect(channel.respond(pending.requestId, threadId, answer)).rejects.toThrow("unknown");
+  expect(request.mock.calls.filter(([method]) => method === "turn/steer")).toHaveLength(1);
+});
 
 it("restores structured async questions from native history as answerable cards", async () => {
   const { channel } = fixture();

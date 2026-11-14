@@ -62,7 +62,7 @@ it("routes official and external fork, queue, configuration, command, pin and us
     queueSnapshot: () => ({ items: [], pausedReason: null }),
     interactions: {
       approvals: new Map(),
-      questions: new Map(),
+      questions: () => new Map(),
       isApprovalRequestId: (value): value is number => typeof value === "number",
       isQuestionRequestId: (value): value is number => typeof value === "number",
       respondApproval: async () => false,
@@ -501,7 +501,7 @@ it("keeps writer-conflicted snapshots readable and falls back to queue IDs for m
     queueSnapshot: () => ({ items: [], pausedReason: null }),
     interactions: {
       approvals: new Map(),
-      questions: new Map(),
+      questions: () => new Map(),
       isApprovalRequestId: (value): value is number => typeof value === "number",
       isQuestionRequestId: (value): value is number => typeof value === "number",
       respondApproval: async () => false,
@@ -607,7 +607,7 @@ it.each(["direct", "queue"])(
       queueSnapshot: () => ({ items: [], pausedReason: null }),
       interactions: {
         approvals: new Map(),
-        questions: new Map(),
+        questions: () => new Map(),
         isApprovalRequestId: (value): value is number => typeof value === "number",
         isQuestionRequestId: (value): value is number => typeof value === "number",
         respondApproval: async () => false,

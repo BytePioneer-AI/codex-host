@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
@@ -20,6 +23,48 @@ function successfulFetch(body: unknown): typeof fetch {
   ) as unknown as typeof fetch;
 }
 
+async function answersFixture() {
+  const directory = await mkdtemp(path.join(tmpdir(), "codexhost-cli-answers-"));
+  return {
+    directory,
+    async write(content: string) {
+      const file = path.join(directory, "answers.json");
+      await writeFile(file, content);
+      return file;
+    },
+    close: () => rm(directory, { recursive: true, force: true }),
+  };
+}
+
+function answerCli(file: string, fetchImpl: typeof fetch) {
+  const output = new PassThrough();
+  const diagnosticOutput = new PassThrough();
+  return {
+    output,
+    diagnosticOutput,
+    run: (extraArguments: string[] = []) =>
+      runDelegationCli({
+        arguments: [
+          "thread",
+          "answer",
+          "codex://threads/child",
+          "--interaction",
+          "interaction-1",
+          "--answers-file",
+          file,
+          ...extraArguments,
+        ],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+        },
+        output,
+        diagnosticOutput,
+        fetchImpl,
+      }),
+  };
+}
+
 describe("delegation CLI", () => {
   it.each([
     ["harness", "list", "--help"],
@@ -29,6 +74,7 @@ describe("delegation CLI", () => {
     ["thread", "cancel", "--help"],
     ["thread", "read", "--help"],
     ["thread", "wait", "--help"],
+    ["thread", "answer", "--help"],
     ["thread", "watch", "--help"],
     ["thread", "watches", "--help"],
     ["thread", "list", "--help"],
@@ -144,7 +190,7 @@ describe("delegation CLI", () => {
     expect(String(firstCall[0])).toContain("/v1/harness/inspect");
     expect(JSON.parse(String(firstCall[1]?.body))).toEqual({
       harnessId: "pi",
-      cwd: "/synthetic",
+      cwd: path.resolve("/synthetic"),
       refresh: true,
     });
   });
@@ -211,7 +257,7 @@ describe("delegation CLI", () => {
       harnessId: "claude-code",
       task: "review auth",
       taskName: "Auth review",
-      cwd: "/workspace/project",
+      cwd: path.resolve("/workspace/project"),
       parentThreadId: "parent-1",
       requestId: "request-1",
       model: { id: "model-ref" },
@@ -798,6 +844,78 @@ describe("delegation CLI", () => {
       notifyThreadId: "parent",
       timeoutMs: 1_740_000,
     });
+  });
+
+  it("answers a pending Question from an answers file", async () => {
+    const files = await answersFixture();
+    const fetchImpl = successfulFetch({
+      threadId: "child",
+      interactionId: "interaction-1",
+      turnId: "turn-1",
+      harnessId: "pi",
+      status: "running",
+      next: { read: "read", wait: "wait" },
+    });
+    try {
+      const file = await files.write(
+        JSON.stringify({
+          answers: { decision: { answers: ["Continue"] }, note: { answers: ["typed"] } },
+        }),
+      );
+      const cli = answerCli(file, fetchImpl);
+      expect(await cli.run(["--format", "compact"])).toBe(0);
+      const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+      expect(String(url)).toContain("/v1/thread/answer");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        threadId: "child",
+        interactionId: "interaction-1",
+        result: { answers: { decision: { answers: ["Continue"] }, note: { answers: ["typed"] } } },
+      });
+      expect(JSON.parse(outputText(cli.output))).toEqual({
+        thread: "codex://threads/child",
+        interaction: "interaction-1",
+        turn: "turn-1",
+        harnessId: "pi",
+        status: "running",
+      });
+    } finally {
+      await files.close();
+    }
+  });
+
+  it("passes the answers file shape through and reports structured answer errors", async () => {
+    const files = await answersFixture();
+    const fetchImpl = successfulFetch({});
+    try {
+      const invalid = await files.write("not json");
+      expect(await answerCli(invalid, fetchImpl).run()).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+      // The CLI passes the existing reply result through, including native extensions.
+      for (const result of [
+        { answers: { decision: { answers: ["Continue"] } }, nativeExtension: true },
+        { answers: {} },
+      ]) {
+        const file = await files.write(JSON.stringify(result));
+        expect(await answerCli(file, fetchImpl).run()).toBe(0);
+        const [, init] = vi.mocked(fetchImpl).mock.calls.at(-1) ?? [];
+        expect(JSON.parse(String(init?.body))).toMatchObject({ result });
+      }
+      expect(await answerCli(path.join(files.directory, "missing.json"), fetchImpl).run()).toBe(1);
+
+      const stale = successfulFetch({
+        error: { code: "QUESTION_NOT_PENDING", message: "Question request is not pending" },
+      });
+      const file = await files.write(
+        JSON.stringify({ answers: { decision: { answers: ["Continue"] } } }),
+      );
+      const cli = answerCli(file, stale);
+      expect(await cli.run()).toBe(1);
+      expect(JSON.parse(outputText(cli.diagnosticOutput))).toEqual({
+        error: { code: "QUESTION_NOT_PENDING", message: "Question request is not pending" },
+      });
+    } finally {
+      await files.close();
+    }
   });
 
   it("requests a send watch even when no caller identity is available locally", async () => {

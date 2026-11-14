@@ -20,6 +20,7 @@ const operations = [
   "read",
   "exportThread",
   "wait",
+  "answer",
   "list",
 ] as const;
 type Operation = (typeof operations)[number];
@@ -67,7 +68,7 @@ export function sharedDelegationRegistration(
       );
     return result.value as Awaited<ReturnType<OperationApi[K]>>;
   }
-  async function thread<K extends "send" | "cancel" | "read" | "wait" | "exportThread">(
+  async function thread<K extends "send" | "cancel" | "read" | "wait" | "answer" | "exportThread">(
     operation: K,
     input: Parameters<OperationApi[K]>[0],
   ): Promise<Awaited<ReturnType<OperationApi[K]>>> {
@@ -128,6 +129,7 @@ export function sharedDelegationRegistration(
         : call("start", input),
     exportThread: (input) => thread("exportThread", input),
     read: (input) => thread("read", input),
+    answer: (input) => thread("answer", input),
     wait: async (input) => {
       if (!(await owner.ownership([input.threadId])).has(input.threadId)) return local.wait(input);
       if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
@@ -140,7 +142,10 @@ export function sharedDelegationRegistration(
       // Keep each RPC bounded even when the CLI asks to wait longer than a peer timeout.
       for (;;) {
         const snapshot = await call("read", read);
-        if (["completed", "failed", "interrupted"].includes(snapshot.status))
+        if (
+          ["completed", "failed", "interrupted"].includes(snapshot.status) ||
+          snapshot.pendingQuestions?.length
+        )
           return { ...snapshot, timedOut: false };
         const remaining = deadline - Date.now();
         if (remaining <= 0) return { ...snapshot, timedOut: true };

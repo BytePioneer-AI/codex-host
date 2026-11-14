@@ -57,6 +57,14 @@ describe("external client MCP endpoint", () => {
     send: vi.fn(async () => {
       throw new DelegationControlError("THREAD_BUSY", "Thread already has an active Turn");
     }),
+    answer: vi.fn(async (input: Record<string, unknown>) => ({
+      threadId: input.threadId,
+      interactionId: input.interactionId,
+      turnId: "turn",
+      harnessId: "codex",
+      status: "running",
+      next: { read: "read", wait: "wait" },
+    })),
   };
 
   async function connect(authorization = `Bearer ${token}`): Promise<Client> {
@@ -118,6 +126,7 @@ describe("external client MCP endpoint", () => {
       "thread_wait",
       "thread_list",
       "thread_send",
+      "thread_answer",
       "thread_cancel",
       "thread_watch",
       "thread_watches",
@@ -148,6 +157,26 @@ describe("external client MCP endpoint", () => {
       "watchedForMs",
     );
     await client.close();
+  });
+
+  it("answers a pending Question through the authenticated MCP route", async () => {
+    api.answer.mockClear();
+    const client = await connect();
+    const result = { answer: "Continue" };
+    try {
+      const response = await client.callTool({
+        name: "thread_answer",
+        arguments: { thread: "codex://threads/t1", interactionId: "question", result },
+      });
+      expect(response.isError).toBe(false);
+      expect(api.answer).toHaveBeenCalledExactlyOnceWith({
+        threadId: "t1",
+        interactionId: "question",
+        result,
+      });
+    } finally {
+      await client.close();
+    }
   });
 
   it("forwards absolute Turn bounds for read/wait and rejects invalid and removed arguments", async () => {

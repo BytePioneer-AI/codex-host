@@ -147,6 +147,66 @@ describe("delegation control server", () => {
     }
   });
 
+  it("accepts string Model and Thinking selectors and rejects the removed shapes", async () => {
+    const start = vi.fn(async () => ({
+      delegationId: "delegation-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      harnessId: "pi" as const,
+      deepLink: "codex://threads/thread-1",
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
+    }));
+    const server = await startDelegationControlServer({
+      token,
+      api: {
+        listHarnesses: vi.fn(),
+        inspect: vi.fn(),
+        start,
+        send: vi.fn(),
+        cancel: vi.fn(),
+        read: vi.fn(),
+        wait: vi.fn(),
+        list: vi.fn(),
+      },
+    });
+    try {
+      const selected = await fetch(
+        `${server.endpoint}/v1/delegate/start`,
+        authorized({
+          harnessId: "pi",
+          task: "review",
+          cwd: "/synthetic",
+          model: "provider/model-a",
+          thinking: "reasoning=high",
+        }),
+      );
+      expect(selected.status).toBe(200);
+      expect(start).toHaveBeenCalledWith({
+        harnessId: "pi",
+        task: "review",
+        cwd: "/synthetic",
+        model: "provider/model-a",
+        thinking: "reasoning=high",
+      });
+      start.mockClear();
+      for (const selectors of [
+        { model: { id: "provider/model-a" } },
+        { thinkingOptionId: "reasoning=high" },
+      ]) {
+        const rejected = await fetch(
+          `${server.endpoint}/v1/delegate/start`,
+          authorized({ harnessId: "pi", task: "review", cwd: "/synthetic", ...selectors }),
+        );
+        expect(rejected.status).toBe(400);
+        expect(await rejected.json()).toMatchObject({ error: { code: "INVALID_ARGUMENT" } });
+      }
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("dispatches Harness inspection", async () => {
     const inspect = vi.fn(async () => ({
       harnessId: "pi" as const,

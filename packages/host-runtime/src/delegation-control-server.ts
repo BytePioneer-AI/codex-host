@@ -94,6 +94,23 @@ function watchStartedTurn(watches: DelegationWatchApi, input: ThreadWatchInput) 
   }));
 }
 
+/** The wire contract is the CLI's string selectors; older object and Thinking shapes fail before starting. */
+function validateStartSelectors(body: Record<string, unknown>): void {
+  for (const name of ["model", "thinking"] as const) {
+    const value = body[name];
+    if (value !== undefined && (typeof value !== "string" || !value.trim()))
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        `${name} must be a catalog or native id string`,
+      );
+  }
+  if (body.thinkingOptionId !== undefined)
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      "thinkingOptionId is not accepted; send thinking with a catalog or native id",
+    );
+}
+
 /** `delegate start --watch`: the Host-resolved parent is the notified Thread. */
 async function startWithWatch(
   api: DelegationControlApi,
@@ -147,6 +164,7 @@ export async function routeDelegationRequest(
     case "/v1/harness/inspect":
       return handlers.api.inspect(body as unknown as HarnessInspectInput);
     case "/v1/delegate/start": {
+      validateStartSelectors(body);
       const { worktree, base, ...start } = body;
       return startWithDelegationWorktree(
         {

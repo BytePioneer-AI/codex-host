@@ -265,20 +265,19 @@ export class ExternalTurnSteering {
       if (key) {
         const receipt = { fingerprint, result, settled: false };
         this.#receipts.set(key, receipt);
-        void result.then(
-          () => {
-            receipt.settled = true;
-            // Bound completed receipts; never evict an in-flight delivery reservation.
-            while (this.#receipts.size > 128) {
-              const oldest = [...this.#receipts].find(([, entry]) => entry.settled)?.[0];
-              if (oldest === undefined) break;
-              this.#receipts.delete(oldest);
-            }
-          },
-          () => {
-            this.#receipts.delete(key);
-          },
-        );
+        const settle = (): void => {
+          receipt.settled = true;
+          // Bound completed receipts; never evict an in-flight delivery reservation.
+          while (this.#receipts.size > 128) {
+            const oldest = [...this.#receipts].find(([, entry]) => entry.settled)?.[0];
+            if (oldest === undefined) break;
+            this.#receipts.delete(oldest);
+          }
+        };
+        void result.then(settle, (error: unknown) => {
+          if (error instanceof ExternalSteerOutcomeUnknownError) settle();
+          else this.#receipts.delete(key);
+        });
       }
       return result;
     } catch (error) {

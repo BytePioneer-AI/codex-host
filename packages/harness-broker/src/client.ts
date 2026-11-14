@@ -59,6 +59,7 @@ import {
 } from "./paths.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
+  HARNESS_BROKER_MAX_RESPONSE_BYTES,
   HARNESS_BROKER_RETIRING_ERROR_CODE,
   HARNESS_BROKER_PROTOCOL_VERSION,
   HARNESS_BROKER_REQUEST_TIMEOUT_MS,
@@ -285,6 +286,7 @@ class BrokerConnection {
       socket,
       (raw) => this.#frame(raw),
       (error) => this.#fail(error),
+      HARNESS_BROKER_MAX_RESPONSE_BYTES,
     );
     socket.once("close", () => this.#fail(new Error("Aqua Harness broker connection closed")));
     socket.once("error", (error) => this.#fail(error));

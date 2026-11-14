@@ -6,6 +6,7 @@ import type {
   HarnessCommandCatalog,
   HarnessId,
   HarnessInspection,
+  HarnessModelCatalog,
   HarnessModelRef,
   HarnessPermissionModeId,
   HarnessSessionCapabilities,
@@ -606,6 +607,11 @@ export interface HarnessSession {
    * A read is advisory: turn.steer must recheck admission before handing input to the Harness.
    */
   readCapabilities?(): Promise<HarnessSessionCapabilities>;
+  /**
+   * Catalog that contains this Session's effective Model. Thread inspection uses it
+   * when that Model is more specific than the Adapter's separate inspection catalog.
+   */
+  modelCatalog?(): HarnessModelCatalog;
   refreshUsage?(): Promise<void>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;

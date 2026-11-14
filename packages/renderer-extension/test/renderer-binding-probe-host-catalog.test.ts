@@ -897,6 +897,72 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(getAgent({ hostId: "local", threadId: "thread-a", draftId: null })).toBeNull();
   });
 
+  it("uses the Thread Session catalog and adopts a more specific confirmed Model", async () => {
+    installFakeBrowser();
+    const sessionModel = harnessModelRefSchema.parse({ id: "cursor.live" });
+    const confirmed = harnessModelRefSchema.parse({ id: "cursor.live-fast" });
+    const sessionCatalog = {
+      models: [{ ref: sessionModel, label: "Alpha" }],
+      defaultModel: sessionModel,
+      thinkingOptions: [],
+    };
+    const host = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async () => readyInspection("catalog-only")),
+      inspectThread: vi.fn(async () => ({
+        owner: "external" as const,
+        harnessId: "claude-code",
+        transportModelId:
+          "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+        effectiveModel: sessionModel,
+        catalog: sessionCatalog,
+        history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
+        locked: true,
+      })),
+      inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
+      inspectThreadUsage: vi.fn(async () => ({ threadId: "thread-a", usage: null })),
+      selectThreadModel: vi.fn(async () => ({ effectiveModel: confirmed })),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      {
+        ...host,
+        currentHostId: () => "local",
+        clientForHost: () => host,
+      } as never,
+    );
+    try {
+      await vi.waitFor(() => {
+        expect(testState.renderedModelViews.at(-1)).toMatchObject({
+          status: "ready",
+          selected: sessionModel,
+          catalog: sessionCatalog,
+        });
+      });
+      assert(testState.selectModel);
+      testState.selectModel(sessionModel.id);
+      await vi.waitFor(() => {
+        expect(testState.renderedModelViews.at(-1)).toMatchObject({
+          status: "ready",
+          selected: confirmed,
+        });
+      });
+      expect(testState.renderedModelViews.at(-1)?.catalog?.models).toEqual([
+        { ref: confirmed, label: "Alpha" },
+      ]);
+      expect(testState.renderedModelViews.at(-1)?.catalog?.defaultModel).toEqual(confirmed);
+    } finally {
+      probe.dispose();
+    }
+  });
+
   it("keeps the latest catalog selectable until a locked Thread explicitly replaces its missing Model", async () => {
     installFakeBrowser();
     const oldModel = harnessModelRefSchema.parse({ id: "claude-model-v1.b3B1cw" });

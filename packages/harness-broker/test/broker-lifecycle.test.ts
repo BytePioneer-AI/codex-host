@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -33,12 +33,6 @@ async function fixture(): Promise<{ descriptorPath: string; socketPath: string }
         : path.join(root, "b.sock"),
   };
 }
-
-const exists = (file: string): Promise<boolean> =>
-  access(file).then(
-    () => true,
-    () => false,
-  );
 
 const until = async (condition: () => boolean | Promise<boolean>): Promise<void> => {
   const deadline = Date.now() + 2_000;
@@ -169,30 +163,31 @@ describe("on-demand Aqua Harness broker lifecycle", () => {
 
   it("refuses requests as retryable while retiring and the client retries on a new broker", async () => {
     const paths = await fixture();
+    const firstAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy"));
+    const replacementAdapter = new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy"));
+    const firstOpen = vi.spyOn(firstAdapter, "open");
+    const replacementOpen = vi.spyOn(replacementAdapter, "open");
     let first: HarnessBrokerServer | undefined;
-    let releaseRetire = (): void => undefined;
+    const retired = Promise.withResolvers<void>();
     const start = vi.fn(async () => {
       if (!first) {
         // A retiring broker keeps its connection open briefly (the grace period).
         first = await startHarnessBrokerServer({
           ...paths,
-          adapter: new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy")),
+          adapter: firstAdapter,
           idle: {
             timeoutMs: 50,
-            onRetire: () => {
-              releaseRetire = () => void first?.close();
-            },
+            onRetire: retired.resolve,
           },
         });
         servers.push(first);
         return;
       }
-      releaseRetire();
-      if (await exists(paths.descriptorPath)) return;
+      await first.close();
       servers.push(
         await startHarnessBrokerServer({
           ...paths,
-          adapter: new FakeHarnessAdapter(harnessIdSchema.parse("codebuddy")),
+          adapter: replacementAdapter,
         }),
       );
     });
@@ -201,15 +196,23 @@ describe("on-demand Aqua Harness broker lifecycle", () => {
       descriptorPath: paths.descriptorPath,
       startBroker: start,
     });
+    // Keep the first broker alive through descriptor I/O, authentication and inspection.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       expect((await client.inspect()).status).toBe("ready");
-      await until(async () => !(await exists(paths.descriptorPath)));
+      await vi.advanceTimersByTimeAsync(50);
+      vi.useRealTimers();
+      await retired.promise;
       // The open reaches the retiring broker over the kept connection, is refused
       // unprocessed, and is retried once on the replacement broker.
       const opened = await client.open({ kind: "create", cwd: "/synthetic" });
       expect(opened.ok).toBe(true);
+      expect(firstOpen).not.toHaveBeenCalled();
+      expect(replacementOpen).toHaveBeenCalledOnce();
+      expect(start).toHaveBeenCalledTimes(2);
       if (opened.ok) await opened.value.close();
     } finally {
+      vi.useRealTimers();
       await client.close();
     }
   });

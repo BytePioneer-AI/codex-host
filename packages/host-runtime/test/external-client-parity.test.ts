@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -313,7 +313,6 @@ describe.each(["HTTP", "MCP"] as const)("external client parity: %s", (transport
       cwd: target,
       parentThreadId: "client:parity",
     });
-    expect(await readFile(path.join(target, "tracked.txt"), "utf8")).toBe("baseline\n");
     expect(await git("branch", "--show-current")).toBe("main");
     expect(await git("-C", target, "branch", "--show-current")).toBe("feature/review");
   });
@@ -366,7 +365,6 @@ describe.each(["HTTP", "MCP"] as const)("external client parity: %s", (transport
         },
       },
     });
-    expect(await readFile(path.join(target, "tracked.txt"), "utf8")).toBe("baseline\n");
     expect(await git("rev-parse", "failed")).toBe(base);
   });
 

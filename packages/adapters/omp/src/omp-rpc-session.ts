@@ -169,6 +169,9 @@ export class OmpRpcFaultError extends Error {
   }
 }
 
+/** A correlated native response explicitly refused steer before acceptance. */
+export class OmpRpcSteerRejectedError extends Error {}
+
 export class OmpRpcUnsupportedCommandError extends Error {
   constructor(readonly command: string) {
     super(`Omp RPC does not support '${command}'`);
@@ -933,6 +936,22 @@ export class OmpRpcSession {
     }
   }
 
+  async steer(message: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Omp RPC Session is unavailable");
+    }
+    if (message.length === 0) throw new Error("Omp steer text must not be empty");
+    const response = await this.#send("steer", { message });
+    if (
+      isRecord(response.data) &&
+      response.data.disposition !== undefined &&
+      response.data.disposition !== "queued"
+    ) {
+      // An input hook may have handled it already; retrying could repeat its effects.
+      throw new Error("Omp steer was handled without confirming same-Turn queue admission");
+    }
+  }
+
   async runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Omp RPC Session is unavailable");
@@ -1637,7 +1656,12 @@ export class OmpRpcSession {
       pending.resolve(value);
     } else {
       const error = typeof value.error === "string" ? value.error : "Omp RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (pending.command === "steer" && value.command === "steer" && value.success === false) {
+        pending.reject(new OmpRpcSteerRejectedError(error));
+      } else if (
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new OmpRpcUnsupportedCommandError(pending.command));
       } else {
         pending.reject(new Error(error));

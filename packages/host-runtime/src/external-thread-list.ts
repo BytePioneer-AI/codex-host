@@ -1,4 +1,4 @@
-import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadSummaryV1 } from "@codexhost/mapping-store";
 import type {
   DecodedThreadListRequest,
   JsonObject,
@@ -86,9 +86,9 @@ export function externalAnchor(entry: ThreadListEntry): ThreadListExternalAnchor
 }
 
 function includesExternalRecord(
-  record: StoredThreadRecordV1,
+  record: StoredThreadSummaryV1,
   query: DecodedThreadListRequest,
-  byId: ReadonlyMap<string, StoredThreadRecordV1>,
+  byId: ReadonlyMap<string, StoredThreadSummaryV1>,
   sectionId: string | null,
 ): boolean {
   if (record.state !== "ready" || !record.nativeSessionRef) return false;
@@ -159,15 +159,15 @@ function includesExternalRecord(
 }
 
 export function resolveExternalSessionTreeIds(
-  records: readonly StoredThreadRecordV1[],
+  records: readonly StoredThreadSummaryV1[],
 ): Map<string, string> {
   const byId = new Map(records.map((record) => [record.hostThreadId, record] as const));
   const resolved = new Map<string, string>();
 
-  const resolve = (start: StoredThreadRecordV1): string => {
+  const resolve = (start: StoredThreadSummaryV1): string => {
     const cached = resolved.get(start.hostThreadId);
     if (cached) return cached;
-    const path: StoredThreadRecordV1[] = [];
+    const path: StoredThreadSummaryV1[] = [];
     const visited = new Set<string>();
     let current = start;
     while (true) {
@@ -197,7 +197,7 @@ export function resolveExternalSessionTreeIds(
 }
 
 export interface ExternalThreadListInput {
-  records: readonly StoredThreadRecordV1[];
+  records: readonly StoredThreadSummaryV1[];
   query: DecodedThreadListRequest;
   runtimeFor(threadId: string): ExternalThreadListRuntimeState | null;
   placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
@@ -206,7 +206,7 @@ export interface ExternalThreadListInput {
 /** The list visibility predicate without runtime lookup or row projection. */
 export function filterExternalThreadListRecords(
   input: Pick<ExternalThreadListInput, "records" | "query" | "placementOf">,
-): StoredThreadRecordV1[] {
+): StoredThreadSummaryV1[] {
   const byId = new Map(input.records.map((record) => [record.hostThreadId, record]));
   return input.records.filter((record) =>
     includesExternalRecord(

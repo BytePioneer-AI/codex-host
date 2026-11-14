@@ -214,6 +214,12 @@ export const storedThreadRecordV1Schema = z
 
 export type StoredThreadRecordV1 = z.infer<typeof storedThreadRecordV1Schema>;
 
+/** A Thread record without its Turn mappings, for catalogs that list Threads. */
+// Key remapping keeps the declared fields; `Omit` would collapse them into the passthrough index.
+export type StoredThreadSummaryV1 = {
+  [Key in keyof StoredThreadRecordV1 as Exclude<Key, "turnMappings">]: StoredThreadRecordV1[Key];
+};
+
 export const delegationStatusSchema = z.enum([
   "creating",
   "running",

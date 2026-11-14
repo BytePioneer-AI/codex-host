@@ -153,6 +153,25 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("lists Thread summaries without Turn mappings as independent copies", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await createReady(store);
+
+    const [full] = await store.listThreads();
+    const [summary] = await store.listThreadSummaries();
+    if (!full || !summary) throw new Error("expected one stored Thread");
+    const { turnMappings, ...expected } = full;
+    expect(turnMappings).toHaveLength(1);
+    expect(summary).toEqual(expected);
+    expect(summary).not.toHaveProperty("turnMappings");
+
+    summary.title = "Changed by caller";
+    await expect(store.getThread(threadId)).resolves.toMatchObject({ title: "External Thread" });
+    await store.close();
+  });
+
   it("serializes competing Native Session commits across Host Threads", async () => {
     const directory = await temporaryStoreDirectory();
     const firstReadyEntered = Promise.withResolvers<undefined>();

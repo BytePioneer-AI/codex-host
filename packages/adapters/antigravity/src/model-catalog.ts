@@ -157,17 +157,67 @@ export interface AntigravityAcpEffectiveModelState {
 }
 
 export function parseAntigravityAcpModelCatalog(
-  _availableModels: readonly AntigravityAcpAvailableModel[],
-  _configOptions?: readonly AntigravityAcpConfigOption[],
+  availableModels: readonly AntigravityAcpAvailableModel[],
+  configOptions: readonly AntigravityAcpConfigOption[] = [],
 ): HarnessModelCatalog {
-  throw new Error("parseAntigravityAcpModelCatalog stub");
+  const modelOption = configOptions.find(({ id }) => id === "model");
+  const thoughtOption = configOptions.find(({ id }) => id === "thought_level");
+  const thinkingOptions = (thoughtOption?.options ?? []).map(({ value, name }) => ({
+    id: harnessThinkingOptionIdSchema.parse(value),
+    label: name,
+  }));
+  const listed =
+    modelOption?.options.map(({ value, name }) => ({ modelId: value, name })) ?? availableModels;
+  const first = listed[0];
+  if (!first) throw new Error("Antigravity ACP returned no usable Models");
+  const currentModelId = modelOption?.currentValue ?? first.modelId;
+  return harnessModelCatalogSchema.parse({
+    models: listed.map(({ modelId, name }) => ({
+      ref: { id: modelId },
+      label: name,
+      resolvedModelLabel: name,
+      ...(modelId === currentModelId && thinkingOptions.length > 0
+        ? { supportedThinkingOptionIds: thinkingOptions.map(({ id }) => id) }
+        : {}),
+    })),
+    defaultModel: { id: currentModelId },
+    thinkingOptions,
+    ...(thoughtOption && thinkingOptions.some(({ id }) => id === thoughtOption.currentValue)
+      ? { defaultThinkingOptionId: thoughtOption.currentValue }
+      : {}),
+  });
 }
 
 export function readAcpEffectiveModelState(
-  _configOptions: readonly AntigravityAcpConfigOption[] | undefined,
-  _catalog?: HarnessModelCatalog,
+  configOptions: readonly AntigravityAcpConfigOption[] | undefined,
+  catalog?: HarnessModelCatalog,
 ): AntigravityAcpEffectiveModelState {
-  throw new Error("readAcpEffectiveModelState stub");
+  const model = configOptions?.find(({ id }) => id === "model");
+  const thought = configOptions?.find(({ id }) => id === "thought_level");
+  const effectiveModel = model
+    ? harnessModelRefSchema.parse({ id: model.currentValue })
+    : undefined;
+  const resolvedModelLabel =
+    model?.options.find(({ value }) => value === model.currentValue)?.name ??
+    catalog?.models.find(({ ref }) => ref.id === effectiveModel?.id)?.resolvedModelLabel;
+  const availableThinkingOptions = thought
+    ? thought.options.map(({ value, name }) => ({
+        id: harnessThinkingOptionIdSchema.parse(value),
+        label: name,
+      }))
+    : configOptions !== undefined
+      ? []
+      : antigravityAvailableThinkingOptions(catalog, effectiveModel);
+  const effectiveThinkingOptionId =
+    thought && availableThinkingOptions?.some(({ id }) => id === thought.currentValue)
+      ? harnessThinkingOptionIdSchema.parse(thought.currentValue)
+      : undefined;
+  return {
+    ...(effectiveModel ? { effectiveModel } : {}),
+    ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
+    ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
+    ...(availableThinkingOptions ? { availableThinkingOptions } : {}),
+  };
 }
 
 export function splitAntigravityModelAndEffort(rawModelId: string): {

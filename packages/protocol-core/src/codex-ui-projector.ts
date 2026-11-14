@@ -1075,17 +1075,7 @@ export class CodexTurnProjector {
 
   #startItem(event: ItemStartedEvent, startedAtMs: number): CodexTurnProjection {
     this.#requireStarted();
-    if (this.#items.has(event.item.itemId)) {
-      const projected = this.#items.get(event.item.itemId);
-      if (!projected || projected.item.type !== event.item.type) {
-        throw new Error("Host Item started more than once");
-      }
-      // A reconnected Harness session can replay the stream of an active Turn and
-      // re-deliver item.started for Items this Turn already projected. Replays of
-      // the same Item are idempotent no-ops; only a genuine identity clash, where
-      // the same ItemId carries a different Item kind, remains a protocol error.
-      return { messages: [] };
-    }
+    if (this.#items.has(event.item.itemId)) throw new Error("Host Item started more than once");
     const projected: ProjectedItem = {
       item: { ...event.item },
       ...(event.item.type === "agentMessage"

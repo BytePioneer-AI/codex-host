@@ -480,7 +480,51 @@
 
 /* Frame phone layout only: touch laptops and desktop search keep their rules. */
 :global([data-phone-drawer]) .sessionRow {
-  min-height: 48px;
+  min-height: 44px;
+}
+
+/* Keep a collapsed Thread's title and summary inside one phone-height row. */
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) {
+  display: grid;
+  grid-template-columns: var(--dsh-thread-icon-size, 16px) minmax(0, 1fr) auto;
+  grid-template-rows: 24px 24px;
+  column-gap: 8px;
+  padding-block: 2px;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .sessionMain {
+  display: contents;
+  position: static;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .slot {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .title {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  margin: 0;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .trailing {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+:global([data-phone-drawer]) .sessionRow > [data-thread-summary] {
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
+  margin: 0;
+  padding-inline: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .phoneDetails {

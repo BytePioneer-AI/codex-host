@@ -1,6 +1,7 @@
 .branch {
   --dsh-thread-row-height: 32px;
   --dsh-thread-icon-size: 16px;
+  --dsh-thread-icon-center-y: calc(var(--dsh-thread-row-height) / 2);
   --dsh-thread-row-gap: 2px;
   position: relative;
   min-width: 0;
@@ -70,7 +71,7 @@
     linear-gradient(transparent var(--dsh-thread-guide-stem-start), black 0) 0 0 / 1px
       calc(100% - var(--dsh-thread-guide-stem-end)) no-repeat,
     url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 0V1Q.5 3.3 2.5 4.5L10.5 7.5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
-      0 calc(var(--dsh-thread-row-height) / 2 - 8px) / 100% 8px no-repeat;
+      0 calc(var(--dsh-thread-icon-center-y) - 8px) / 100% 8px no-repeat;
 }
 
 .children[data-thread-guide] > .branch:first-child::before {
@@ -79,7 +80,7 @@
 
 .children[data-thread-guide] > .branch:last-child::before {
   --dsh-thread-guide-stem-end: 8px;
-  bottom: calc(100% - var(--dsh-thread-row-height) / 2);
+  bottom: calc(100% - var(--dsh-thread-icon-center-y));
 }
 
 .summary {
@@ -136,11 +137,15 @@
   }
 
   .summary {
-    min-height: 28px;
-    padding-block: 5px;
+    min-height: 24px;
+    padding-block: 3px;
   }
 }
 
 :global([data-phone-drawer]) .branch {
-  --dsh-thread-row-height: 48px;
+  --dsh-thread-row-height: 44px;
+}
+
+:global([data-phone-drawer]) .branch:has(> :first-child > [data-thread-summary]) {
+  --dsh-thread-icon-center-y: 14px;
 }

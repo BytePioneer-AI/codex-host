@@ -196,7 +196,7 @@ for (const width of [1280, 390]) {
         diameter: 22,
         x: 0,
         y: 0,
-        height: width === 390 ? 48 : 32,
+        height: width === 390 ? 44 : 32,
       });
       await themedShots(page, `style-${width}-ring-running`);
       host.pending = [

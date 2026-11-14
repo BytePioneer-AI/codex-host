@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessCommandInvocation, HostSubagentState } from "@codexhost/harness-adapter";
-import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   THREAD_MANUAL_COMPACTION_STARTED_METHOD,

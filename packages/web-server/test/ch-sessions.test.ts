@@ -3,7 +3,10 @@ import { mkdtempSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
-import { decodeHarnessPluginRoute } from "@codexhost/shared-contracts";
+import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  decodeHarnessPluginRoute,
+} from "@codexhost/shared-contracts";
 import { DataDir } from "../src/store.ts";
 import { Workspaces, projectRootTitles } from "../src/workspaces.ts";
 import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../src/transport.ts";
@@ -11,6 +14,7 @@ import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
 import { projectGroupRoot } from "../src/ch-project-groups.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
 it("shares canonical CH identity and cwd without a Web index/history or physical mkdir", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-web-"));
@@ -761,6 +765,39 @@ it("uses existing Desktop routing without installing code, and does not retry re
   );
   assert.equal(host.requests.filter((req) => req.method === "turn/start").length, 1);
   await assert.rejects(client.request("shell/execute", {}), /Unsupported CH method/);
+});
+
+it("projects native archive confirmation through the legacy Desktop transport", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-desktop-archive-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = nativeCodex(new FakeChHost());
+  const id = "native-desktop-archive";
+  host.add(id, root).modelProvider = "openai";
+  host.archivedIds.add(id);
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/archive")
+      throw Object.assign(new Error(`no rollout found for thread id ${id}`), { code: -32600 });
+    return request<T>(method, params);
+  };
+  const debuggerServer = await startFakeChDebugger(host);
+  t.after(() => debuggerServer.close());
+  const client = new DesktopChHostClient(debuggerServer.endpoint);
+  const workspaces = new Workspaces(new DataDir(root), root, true);
+  const sessions = new ChSessions(client, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  assert.equal(workspaces.isArchived(id), false);
+  assert.deepEqual(
+    await rpc.dispatch("workspace/archiveSession", {
+      args: { request: { sessionId: id } },
+    }),
+    { ok: true, value: { archivedSessionIds: [id] } },
+  );
+  assert.equal(workspaces.isArchived(id), true);
+  assert.equal(host.requests.filter((r) => r.method === THREAD_ARCHIVE_CONFIRM_METHOD).length, 1);
 });
 
 it("keeps a Thread created during an in-flight catalog read for its first history read", async (t) => {

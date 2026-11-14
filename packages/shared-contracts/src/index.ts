@@ -1,6 +1,7 @@
 import { z } from "zod";
 export * from "./client-channel.js";
 export * from "./thread-catalog.js";
+export * from "./thread-archive-confirm.js";
 export * from "./voice.js";
 export * from "./skills.js";
 export * from "./skill-reference.js";

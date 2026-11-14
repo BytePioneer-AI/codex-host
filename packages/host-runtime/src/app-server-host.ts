@@ -21,10 +21,12 @@ import {
   harnessInstallationRequestTimeoutMs,
   THREAD_CATALOG_READ_METHOD,
   threadCatalogReadParamsSchema,
+  threadArchiveConfirmParamsSchema,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "@codexhost/desktop-control";
 import type { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { readThreadCatalog } from "./thread-catalog.js";
+import { confirmNativeThreadArchived } from "./native-thread-archive-confirm.js";
 import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
@@ -1060,6 +1062,7 @@ export class AppServerHost {
       inspectThread: (request) => this.#inspectThread(request),
       inspectThreadUsage: (request) => this.#inspectThreadUsage(request),
       listThreadOwnership: (request) => this.#listThreadOwnership(request),
+      confirmThreadArchived: (request) => this.#confirmThreadArchived(request),
       inspectThreadSteering: (request) => this.#inspectThreadSteering(request),
       handleSharedQuestionRequest: (request) => this.#handleSharedQuestionRequest(request),
       selectThreadModel: (request) => this.#selectThreadModel(request),
@@ -2622,6 +2625,46 @@ export class AppServerHost {
       }),
       nextCursor: result.nextCursor,
     };
+  }
+
+  async #confirmThreadArchived(request: JsonRpcRequest): Promise<void> {
+    const parsed = threadArchiveConfirmParamsSchema.safeParse(request.params ?? {});
+    if (!parsed.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid archive confirmation params"));
+      return;
+    }
+    let fresh = true;
+    const observe = (value: JsonValue): void => {
+      if (
+        value === null ||
+        (isRecord(value) &&
+          value.method === "thread/unarchived" &&
+          isRecord(value.params) &&
+          value.params.threadId === parsed.data.threadId)
+      )
+        fresh = false;
+    };
+    this.#nativeSettingsNotifications.add(observe);
+    try {
+      const result = await confirmNativeThreadArchived({
+        threadId: parsed.data.threadId,
+        isNativeOwner: async () =>
+          (await this.#locateExternalThread(parsed.data.threadId)).kind === "official",
+        initializeOfficial: async () => {
+          if (this.#options.externalOnly) await this.#initializeSharedOfficial();
+        },
+        currentGeneration: () =>
+          fresh && this.#officialRuntimeScope.gate.phase === "ready"
+            ? this.#officialRuntimeScope.owner.generation
+            : null,
+        requestOfficial: (params) => this.#officialRuntime.request("thread/list", params),
+      });
+      await this.#writer.json(
+        rpcEnvelope(request, { result: { confirmed: fresh && result.confirmed } }),
+      );
+    } finally {
+      this.#nativeSettingsNotifications.delete(observe);
+    }
   }
 
   async #readThreadCatalog(request: JsonRpcRequest): Promise<void> {

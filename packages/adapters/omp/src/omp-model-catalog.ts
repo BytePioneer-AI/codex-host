@@ -136,6 +136,7 @@ export function normalizeOmpModelCatalog(
     byRef.set(ref.id, {
       model: {
         ref,
+        nativeId: `${native.provider}/${native.id}`,
         label: `${native.provider} / ${native.id}`,
       },
       reasoning: native.reasoning,

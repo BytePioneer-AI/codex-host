@@ -328,6 +328,7 @@ export async function readHermesModelInventory(
 
 export interface HermesCatalogModel {
   ref: HarnessModelRef;
+  nativeId?: string;
   label: string;
   description?: string;
 }
@@ -360,6 +361,7 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
     seen.add(ref.id);
     models.push({
       ref,
+      nativeId: nativeModelId,
       label: `${model.provider} / ${model.label}`,
       description: `Provider: ${model.provider}`,
     });

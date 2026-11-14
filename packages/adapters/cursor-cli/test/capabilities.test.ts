@@ -78,6 +78,12 @@ describe("Cursor parameterized Thinking", () => {
     const catalog = cursorCatalog(info);
     expect(catalog.thinkingOptions).toHaveLength(4);
     expect(catalog.models[0]?.supportedThinkingOptionIds).toHaveLength(4);
+    expect(catalog.models[0]?.nativeId).toBe("alpha");
+    expect(
+      catalog.thinkingOptions.every(
+        (opt) => typeof opt.nativeId === "string" && opt.nativeId.includes("="),
+      ),
+    ).toBe(true);
     expect(catalog.models[1]?.supportedThinkingOptionIds).toEqual([]);
     expect(
       cursorThinking(info.configOptions).every(({ values }) =>

@@ -1303,9 +1303,17 @@ describe("QoderAdapter", () => {
       ]);
 
       expect(catalog.models).toEqual([
-        { ref: encodeQoderModelRef("qoder-default"), label: "Default model" },
-        { ref: encodeQoderModelRef("qoder-new"), label: "New model" },
-        { ref: encodeQoderModelRef("qoder-custom/provider-model"), label: "Custom model" },
+        {
+          ref: encodeQoderModelRef("qoder-default"),
+          label: "Default model",
+          nativeId: "qoder-default",
+        },
+        { ref: encodeQoderModelRef("qoder-new"), label: "New model", nativeId: "qoder-new" },
+        {
+          ref: encodeQoderModelRef("qoder-custom/provider-model"),
+          label: "Custom model",
+          nativeId: "qoder-custom/provider-model",
+        },
       ]);
       expect(catalog.defaultModel).toEqual(encodeQoderModelRef("qoder-new"));
     });

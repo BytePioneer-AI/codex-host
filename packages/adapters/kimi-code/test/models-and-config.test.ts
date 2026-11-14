@@ -147,6 +147,18 @@ default_model = "test"
       expect(firstModel.supportedThinkingOptionIds).toBeUndefined();
     });
 
+    it("keeps an alias that equals another Model's opaque Ref without publishing it as nativeId", () => {
+      const catalog = buildModelCatalogFromConfig({
+        models: [{ alias: "a" }, { alias: "kimi.YQ" }],
+      });
+      expect(catalog.models.map(({ ref }) => ref.id)).toEqual([
+        encodeKimiModelRef("a").id,
+        encodeKimiModelRef("kimi.YQ").id,
+      ]);
+      expect(catalog.models[0]?.nativeId).toBe("a");
+      expect(catalog.models[1]).not.toHaveProperty("nativeId");
+    });
+
     it("does not infer selectable options from a disabled config setting", () => {
       const config: KimiNativeConfig = {
         models: [{ alias: "base" }],
@@ -242,6 +254,27 @@ default_model = "test"
         { id: "off", label: "Off" },
         { id: "high", label: "High" },
       ]);
+    });
+
+    it("keeps an ACP alias that equals another Model's opaque Ref without publishing it as nativeId", () => {
+      const catalog = buildModelCatalogFromAcp([
+        {
+          id: "model",
+          name: "Model",
+          type: "select",
+          currentValue: "a",
+          options: [
+            { value: "a", name: "A" },
+            { value: "kimi.YQ", name: "Kimi YQ" },
+          ],
+        },
+      ]);
+      expect(catalog.models.map(({ ref }) => ref.id)).toEqual([
+        encodeKimiModelRef("a").id,
+        encodeKimiModelRef("kimi.YQ").id,
+      ]);
+      expect(catalog.models[0]?.nativeId).toBe("a");
+      expect(catalog.models[1]).not.toHaveProperty("nativeId");
     });
 
     it("strips 'Thinking ' prefix and capitalizes tier names", () => {

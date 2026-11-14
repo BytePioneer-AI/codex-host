@@ -1,12 +1,13 @@
+import { createHash } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
+import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
 import { NativeClientChannel } from "../src/native-client-channel.js";
 import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js";
 import { updateNativeThreadSettings } from "../src/codex-runtime/native-thread-controls.js";
 import { createFixture, stopFixture } from "./app-server-host-fixture.js";
 import type { DelegationControlApi } from "../src/delegation-types.js";
-import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -188,8 +189,8 @@ it("uses native Model and priority parameters when the shared official catalog i
     parentThreadId: "parent",
     task: "test",
     cwd: "/synthetic",
-    model: fast,
-    thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    model: fast.id,
+    thinking: "high",
   });
   for (const method of ["thread/start", "turn/start"])
     expect(calls.find((call) => call.method === method)).toMatchObject({
@@ -201,6 +202,125 @@ it("uses native Model and priority parameters when the shared official catalog i
   expect(result).toMatchObject({
     configuration: { requested: { model: fast }, effective: { effectiveModel: fast } },
   });
+});
+
+it("deduplicates a native official Model selector with its opaque equivalent", async () => {
+  let api: DelegationControlApi | undefined;
+  const fixture = createFixture({
+    onDelegationApi: (value) => {
+      api = value;
+      return undefined;
+    },
+  });
+  cleanup.push(() => stopFixture(fixture));
+  await fixture.ready;
+  await vi.waitFor(() => expect(api).toBeDefined());
+  const calls: Array<{ method: string; params: JsonObject }> = [];
+  let buffer = "";
+  fixture.official.stdin.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString();
+    let end: number;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const request = JSON.parse(buffer.slice(0, end));
+      buffer = buffer.slice(end + 1);
+      calls.push(request);
+      const result =
+        request.method === "model/list"
+          ? {
+              data: [
+                {
+                  model: "native",
+                  isDefault: true,
+                  supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+                },
+              ],
+            }
+          : request.method === "thread/start"
+            ? { thread: { id: "native-child" }, model: "native" }
+            : request.method === "turn/start"
+              ? { turn: { id: "turn-child" } }
+              : request.method === "thread/read"
+                ? { thread: { id: "parent", cwd: "/synthetic" } }
+                : {};
+      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+    }
+  });
+  if (!api) throw new Error("Delegation API was not registered");
+  const start = {
+    harnessId: "codex" as const,
+    parentThreadId: "parent",
+    task: "test",
+    cwd: "/synthetic",
+    requestId: "official-equivalent",
+    thinking: "high",
+  };
+  const native = await api.start({ ...start, model: "native" });
+  const opaque = await api.start({
+    ...start,
+    model: encodeOfficialCodexModelRef("native").id,
+  });
+  expect(opaque.threadId).toBe(native.threadId);
+  expect(calls.filter(({ method }) => method === "thread/start")).toHaveLength(1);
+});
+
+it("retries an official delegation stored with the pre-selector digest", async () => {
+  let api: DelegationControlApi | undefined;
+  const fixture = createFixture({
+    onDelegationApi: (value) => {
+      api = value;
+      return undefined;
+    },
+  });
+  cleanup.push(() => stopFixture(fixture));
+  await fixture.ready;
+  await vi.waitFor(() => expect(api).toBeDefined());
+  const calls: string[] = [];
+  let buffer = "";
+  fixture.official.stdin.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString();
+    let end: number;
+    while ((end = buffer.indexOf("\n")) >= 0) {
+      const request = JSON.parse(buffer.slice(0, end));
+      buffer = buffer.slice(end + 1);
+      calls.push(request.method);
+      const result =
+        request.method === "thread/read" ? { thread: { id: "parent", cwd: "/synthetic" } } : {};
+      fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+    }
+  });
+  const taskDigest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        task: "test",
+        cwd: "/synthetic",
+        modelId: encodeOfficialCodexModelRef("native").id,
+        thinkingOptionId: "high",
+      }),
+    )
+    .digest("hex");
+  await fixture.mappingStore.createDelegation({
+    delegationId: hostThreadIdSchema.parse("official-legacy"),
+    parentHostThreadId: hostThreadIdSchema.parse("parent"),
+    childHostThreadId: hostThreadIdSchema.parse("legacy-child"),
+    sourceHarnessId: harnessIdSchema.parse("pi"),
+    targetHarnessId: harnessIdSchema.parse("codex"),
+    status: "running",
+    requestId: "official-legacy",
+    taskDigest,
+  });
+  if (!api) throw new Error("Delegation API was not registered");
+  const result = await api.start({
+    harnessId: "codex",
+    parentThreadId: "parent",
+    task: "test",
+    cwd: "/synthetic",
+    requestId: "official-legacy",
+    model: "native",
+    thinking: "high",
+  });
+  expect(result.threadId).toBe("legacy-child");
+  expect(calls).not.toContain("model/list");
+  expect(calls).not.toContain("thread/start");
 });
 
 it("projects confirmed Fast on creation, resume and Desktop settings changes without a Turn override", async () => {

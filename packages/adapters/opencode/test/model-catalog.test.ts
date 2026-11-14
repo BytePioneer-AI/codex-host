@@ -72,10 +72,16 @@ describe("OpenCode Model catalog", () => {
 
     expect(normalized.models).toHaveLength(1);
     expect(normalized.models[0]?.label).toBe("ALPHA / reasoner");
+    expect(normalized.models[0]?.nativeId).toBe("alpha/reasoner");
     expect(normalized.models[0]?.supportedThinkingOptionIds).toEqual([
       encodeOpenCodeVariant(undefined),
       encodeOpenCodeVariant("high"),
       encodeOpenCodeVariant("low"),
+    ]);
+    expect(normalized.thinkingOptions).toEqual([
+      { id: encodeOpenCodeVariant(undefined), label: "Default" },
+      { id: encodeOpenCodeVariant("high"), nativeId: "high", label: "high" },
+      { id: encodeOpenCodeVariant("low"), nativeId: "low", label: "low" },
     ]);
     expect(normalized.defaultModel).toEqual(
       encodeOpenCodeModelRef({ providerID: "alpha", modelID: "reasoner" }),

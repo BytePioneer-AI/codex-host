@@ -197,6 +197,7 @@ export function parseQoderModelCatalog(rawModels?: unknown[]): HarnessModelCatal
           seenRefs.add(ref.id);
           models.push({
             ref,
+            nativeId: value,
             label,
             ...(supportedEffortIds.length > 0
               ? { supportedThinkingOptionIds: supportedEffortIds }

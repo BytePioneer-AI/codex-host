@@ -183,7 +183,11 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** 失败输出 SHALL 携带可辨识的错误代码
 
 ### Requirement: 委派创建与结果观察解耦且不主动注入父 Session
-`codexhost delegate start --harness <harnessId> --task <text> [--parent-thread <thread>] [--request-id <id>] [--watch true|false] [--watch-timeout-ms <n>]` SHALL 在创建目标 Session/Thread 并投递任务后立即返回。`--harness` 与 `--task` SHALL 为必填参数；`--parent-thread` SHALL 显式覆盖 Host 推断的调用方 Thread；`--request-id` SHALL 承载调用方提供的幂等标识。发起方 Agent SHALL 可以自主选择通过 `thread read` 读取、通过有界 `thread wait` 等待、通过 `thread watch` 或 `--watch true` 注册一次性停下通知、稍后再次观察，或不再跟踪。除调用方显式注册的 watch 外，Host MUST NOT 在子任务完成后向父 Session 注入结果、唤醒父 Agent 或为此创建自主 Turn。
+`codexhost delegate start` SHALL 创建目标 Session/Thread 并在投递任务后立即返回。调用方 SHALL 可显式指定父 Thread、Request ID、Model/Thinking 与一次性 watch，或选择稍后读取、等待、再次观察及不再跟踪。除调用方显式注册的 watch 外，Host MUST NOT 在子任务完成后向父 Session 注入结果、唤醒父 Agent 或创建自主 Turn。
+
+#### Scenario: 必填参数缺失
+- **WHEN** 调用方未提供 `--harness` 或任务文本（`--task` / `--task-file`）
+- **THEN** 命令 SHALL 以 `INVALID_ARGUMENT` 失败
 
 #### Scenario: 委派创建成功返回
 - **WHEN** 调用方执行有效的 `codexhost delegate start --harness <harnessId> --task <text>`
@@ -236,6 +240,18 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **THEN** 它 SHALL 包含子 Thread 标识、当前状态，以及由 `availability` 和可选 `text` 构成的结果判定
 - **AND** `availability` SHALL 为 `pending`、`available` 或 `unavailable`
 - **AND** 它 MUST NOT 仅以自由文本表述成败
+
+### Requirement: 委派的 CLI、HTTP 与 MCP 入口共享 Model 与 Thinking 选择器契约
+`delegate start --model/--thinking`、HTTP `POST /v1/delegate/start` 的 `model`/`thinking` 与 MCP `delegate_start` 的 `model`/`thinking` SHALL 使用同一契约：值为目标 Catalog 的 ID 或条目声明的 `nativeId` 字符串，由 Host 解析为 opaque Model Ref 与 Thinking Option ID 后交给同一 Adapter seam；省略时保持 Harness 默认。HTTP SHALL 在委派开始前以 `INVALID_ARGUMENT` 拒绝非字符串 `model`/`thinking` 与已移除的 `thinkingOptionId`，MUST NOT 猜测对象形状或静默忽略选择。
+
+#### Scenario: 三个入口解析同一显式选择
+- **WHEN** CLI、HTTP 或 MCP 调用方为同一 Harness 指定相同的 Catalog ID 或 `nativeId` 作为 Model 与 Thinking
+- **THEN** Host SHALL 解析出相同的 Model Ref 与 Thinking Option ID，并以相同配置创建 Thread
+
+#### Scenario: HTTP 拒绝旧选择器形状
+- **WHEN** HTTP 请求使用 `model: {id}` 或 `thinkingOptionId`
+- **THEN** Host SHALL 以 `INVALID_ARGUMENT` 拒绝
+- **AND** MUST NOT 启动委派或创建 worktree
 
 ### Requirement: 调用方可显式注册一次性 Thread 停下通知
 系统 SHALL 提供 `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` 与 `codexhost thread watches`。watch 在被观察 Thread 停下或到期时，SHALL 通过与 `thread send` 相同的路径在被通知 Thread 中启动一个新 Turn，作为一次性通知。被观察 Thread 与被通知 Thread 可以是任意两个不同的 Thread，不要求委派血缘。通知 SHALL 只报告执行状态与 Thread 链接，MUST NOT 携带或摘要会话内容，也 MUST NOT 被表述为工作已验收。watch SHALL 只保存在 Host Runtime 内存中，不提供取消操作。

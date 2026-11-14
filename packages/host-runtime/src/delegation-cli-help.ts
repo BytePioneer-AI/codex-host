@@ -30,12 +30,12 @@ List Harnesses available in the active Runtime.`,
   "harness inspect": `codexhost harness inspect <harness> [--cwd <path>] [--refresh true|false] [--format json|compact|text]
 Read available Models, native defaults, Thinking options, and configuration capabilities.
 Use the returned Model and Thinking IDs for explicit selections.`,
-  "delegate start": `codexhost delegate start --harness <id> (--task <text> | --task-file <path|->) [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <opaque-ref>] [--thinking <option-id>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
+  "delegate start": `codexhost delegate start --harness <id> (--task <text> | --task-file <path|->) [--task-name <name>] [--cwd <path>] [--worktree <branch>] [--base <ref>] [--model <model>] [--thinking <thinking>] [--parent-thread <thread>] [--request-id <id>] [--ref <uri>]... [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
 Create an independent child Thread, submit the task, and return immediately.
 --task and --task-file are mutually exclusive. --task-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --task is unchanged.
 --task-name supplies a short subtask name (1-120 characters); otherwise the first task line is used.
 The child title is the subtask name only, fixed at creation; parent titles are not appended. Existing Threads are not renamed.
-Omit --model and --thinking to use the Harness native defaults.
+Omit --model and --thinking to use the Harness native defaults. Either the catalog id or the nativeId shown by harness inspect is accepted.
 --cwd overrides the child workspace; a relative path resolves against the caller process cwd. Otherwise use the resolved parent Thread workspace, then the Host Runtime process cwd.
 --worktree creates a new branch and workspace at <main-repository>.worktrees/<sanitized-branch>, then uses it as the child cwd. The source is --cwd, or the caller process cwd when omitted (not the parent Thread workspace).
 --base requires --worktree and defaults to that source checkout's HEAD commit, including detached HEAD. JSON and compact responses add worktree {path, branch, base}, where base is the resolved commit SHA. Existing branches/directories, merges, rebases, unmerged indexes, non-Git cwd and unresolved bases are rejected. Uncommitted source changes are not copied.

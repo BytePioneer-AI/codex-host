@@ -45,6 +45,11 @@ export const harnessThinkingOptionSchema = z
   .object({
     id: harnessThinkingOptionIdSchema,
     label: nonBlankTextSchema.max(HARNESS_MODEL_LABEL_MAX_LENGTH),
+    /**
+     * Optional native identifier used by the Harness to select this Thinking option.
+     * Set only when the option's `id` is not already that identifier.
+     */
+    nativeId: nonBlankTextSchema.max(HARNESS_MODEL_REF_MAX_LENGTH).optional(),
   })
   .strict();
 
@@ -54,6 +59,11 @@ export const harnessModelSchema = z
   .object({
     ref: harnessModelRefSchema,
     label: nonBlankTextSchema.max(HARNESS_MODEL_LABEL_MAX_LENGTH),
+    /**
+     * Optional native identifier used by the Harness to select this Model.
+     * Set only when the entry's `ref.id` is not already that identifier.
+     */
+    nativeId: nonBlankTextSchema.max(HARNESS_MODEL_REF_MAX_LENGTH).optional(),
     resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
     /** Optional opaque selection for this same Model with priority processing enabled. */
     fastModel: harnessModelRefSchema.optional(),
@@ -97,20 +107,28 @@ export const harnessModelCatalogSchema = z
   })
   .strict()
   .superRefine((catalog, context) => {
-    const refs = new Set<string>();
-    const thinkingIds = new Set(catalog.thinkingOptions.map(({ id }) => id));
+    const modelRefIds = new Set<string>(
+      catalog.models.flatMap(({ ref, fastModel }) =>
+        fastModel ? [ref.id, fastModel.id] : [ref.id],
+      ),
+    );
+    const seenRefs = new Set<string>();
+    const modelNativeIds = new Set<string>();
+    const thinkingIds = new Set<string>(catalog.thinkingOptions.map(({ id }) => id));
+    const thinkingNativeIds = new Set<string>();
+
     for (const [index, model] of catalog.models.entries()) {
-      if (refs.has(model.ref.id)) {
+      if (seenRefs.has(model.ref.id)) {
         context.addIssue({
           code: "custom",
           message: "Model Catalog refs must be unique",
           path: ["models", index, "ref", "id"],
         });
       }
-      refs.add(model.ref.id);
+      seenRefs.add(model.ref.id);
       if (model.fastModel) {
         if (
-          refs.has(model.fastModel.id) ||
+          seenRefs.has(model.fastModel.id) ||
           catalog.models.some((entry) => entry.ref.id === model.fastModel?.id)
         ) {
           context.addIssue({
@@ -119,7 +137,23 @@ export const harnessModelCatalogSchema = z
             path: ["models", index, "fastModel"],
           });
         }
-        refs.add(model.fastModel.id);
+        seenRefs.add(model.fastModel.id);
+      }
+      if (model.nativeId !== undefined) {
+        if (modelNativeIds.has(model.nativeId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Model native IDs must be unique",
+            path: ["models", index, "nativeId"],
+          });
+        } else if (modelRefIds.has(model.nativeId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Model native ID must not match a different Model ref",
+            path: ["models", index, "nativeId"],
+          });
+        }
+        modelNativeIds.add(model.nativeId);
       }
       const supportedThinkingIds = new Set<string>();
       for (const [optionIndex, optionId] of (model.supportedThinkingOptionIds ?? []).entries()) {
@@ -140,7 +174,25 @@ export const harnessModelCatalogSchema = z
         }
       }
     }
-    if (catalog.defaultModel && !refs.has(catalog.defaultModel.id)) {
+    for (const [index, option] of catalog.thinkingOptions.entries()) {
+      if (option.nativeId !== undefined) {
+        if (thinkingNativeIds.has(option.nativeId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Thinking option native IDs must be unique",
+            path: ["thinkingOptions", index, "nativeId"],
+          });
+        } else if (thinkingIds.has(option.nativeId)) {
+          context.addIssue({
+            code: "custom",
+            message: "Thinking option native ID must not match a different Thinking option ID",
+            path: ["thinkingOptions", index, "nativeId"],
+          });
+        }
+        thinkingNativeIds.add(option.nativeId);
+      }
+    }
+    if (catalog.defaultModel && !seenRefs.has(catalog.defaultModel.id)) {
       context.addIssue({
         code: "custom",
         message: "Default Model must exist in the Model Catalog",

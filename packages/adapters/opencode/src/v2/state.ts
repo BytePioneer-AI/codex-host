@@ -89,6 +89,7 @@ export function v2Catalog(
   return harnessModelCatalogSchema.parse({
     models: enabled.map((model) => ({
       ref: ref(model),
+      nativeId: `${model.providerID}/${model.id}`,
       label: `${model.providerID} / ${model.name}`,
       resolvedModelLabel: `${model.providerID}/${model.id}`,
       supportedThinkingOptionIds: [
@@ -101,6 +102,7 @@ export function v2Catalog(
       : {}),
     thinkingOptions: [undefined, ...variants].map((v) => ({
       id: encodeOpenCodeVariant(v),
+      ...(v ? { nativeId: v } : {}),
       label: v ?? "Default",
     })),
     defaultThinkingOptionId: encodeOpenCodeVariant(undefined),

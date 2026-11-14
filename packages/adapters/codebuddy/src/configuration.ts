@@ -67,11 +67,13 @@ export function configuration(
   const models = rows(model.options).map((option) => ({
     ref: modelRef(text(option.value)),
     label: text(option.name),
+    nativeId: text(option.value),
   }));
   const currentModelRef = modelRef(text(model.currentValue));
   let currentModel = models.find((item) => item.ref.id === currentModelRef.id);
   if (!currentModel && profile.allowUnlistedModelSelection) {
-    currentModel = { ref: currentModelRef, label: text(model.currentValue) };
+    const nativeValue = text(model.currentValue);
+    currentModel = { ref: currentModelRef, label: nativeValue, nativeId: nativeValue };
     models.push(currentModel);
   }
   if (!currentModel)

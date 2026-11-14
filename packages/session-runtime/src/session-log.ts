@@ -337,7 +337,9 @@ export class SessionLog {
       epoch: this.epoch,
       ...(canResume ? { resumedAfter: resume.cursor } : {}),
       header: this.header,
-      cursor: this.lastSeq,
+      // The wire's empty-journal cursor is -1 whatever this journal's rendering origin is;
+      // the first entry then arrives as a gap that the client repairs with a page read.
+      cursor: this.events.length === 0 ? -1 : this.lastSeq,
       records: this.events
         .slice(window.start, this.events.length)
         .map((event) => ({ type: "event", event })),

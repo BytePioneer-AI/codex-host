@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstat, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import type { Writable } from "node:stream";
+import { Writable } from "node:stream";
 
+import { officialLoopbackListenerArguments } from "./remote-app-server.js";
 import {
   OfficialProcessLifecycle,
   OfficialProcessStopTimeoutError,
@@ -379,4 +380,34 @@ export function createLoopbackOfficialAppServerListener(input: {
       return closing;
     },
   };
+}
+
+/** Creates a loopback WebSocket official app-server listener authenticated by a per-process capability token. */
+export function createAuthenticatedLoopbackOfficialAppServerListener(input: {
+  cwd?: string;
+  stockCodexPath: string;
+  arguments: readonly string[];
+  environment: NodeJS.ProcessEnv;
+  spawnOfficial?: typeof spawn;
+  closeTimeoutMs?: number;
+  listenTimeoutMs?: number;
+}): { capabilityToken: string; listener: LoopbackOfficialAppServerListener } {
+  const capabilityToken = randomBytes(32).toString("base64url");
+  const listener = createLoopbackOfficialAppServerListener({
+    ...input,
+    arguments: [
+      ...officialLoopbackListenerArguments(input.arguments),
+      "--ws-auth",
+      "capability-token",
+      "--ws-token-sha256",
+      createHash("sha256").update(capabilityToken).digest("hex"),
+    ],
+    // Managed stderr may carry credential-bearing errors. Never forward raw bytes.
+    diagnosticOutput: new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    }),
+  });
+  return { capabilityToken, listener };
 }

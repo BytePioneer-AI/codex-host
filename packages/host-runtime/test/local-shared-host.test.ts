@@ -167,7 +167,7 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
   }
 });
 
-it("forwards Desktop's app tools pipe to the shared official Codex startup", async () => {
+it("forwards Desktop's app tools pipe and loopback official spawner to shared Codex startup", async () => {
   const pipe = path.join(tmpdir(), "codex-app-tools-synthetic.sock");
   const f = await setup((streams, request) =>
     sharedHostDesktop(
@@ -198,12 +198,20 @@ it("forwards Desktop's app tools pipe to the shared official Codex startup", asy
     diagnosticOutput: new PassThrough(),
     deferStart: true,
   });
-  const configured: NodeJS.ProcessEnv[] = [];
-  vi.spyOn(official, "configureStartup").mockImplementation(async ({ environment }) => {
-    configured.push(environment);
-    // Stop after admission; only the forwarded startup environment matters here.
-    throw new CodexRuntimeFilesRemovedError();
-  });
+  const configured: Array<{
+    environment: NodeJS.ProcessEnv;
+    officialSpawner?: { port: number; token: string };
+  }> = [];
+  vi.spyOn(official, "configureStartup").mockImplementation(
+    async ({ environment, officialSpawner }) => {
+      configured.push({
+        environment,
+        ...(officialSpawner ? { officialSpawner } : {}),
+      });
+      // Stop after admission; only the forwarded startup environment and spawner matter here.
+      throw new CodexRuntimeFilesRemovedError();
+    },
+  );
   const stdin = vi.spyOn(process.stdin, "pipe").mockImplementation((destination) => destination);
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   try {
@@ -219,8 +227,10 @@ it("forwards Desktop's app tools pipe to the shared official Codex startup", asy
       ["app-server"],
     );
     expect(configured).toHaveLength(1);
-    expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
-    expect(configured[0]).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
+    expect(configured[0]?.environment.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
+    expect(configured[0]?.environment).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
+    expect(configured[0]?.officialSpawner?.port).toBeTypeOf("number");
+    expect(configured[0]?.officialSpawner?.token.length).toBeGreaterThan(0);
   } finally {
     stdin.mockRestore();
     stderr.mockRestore();

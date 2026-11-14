@@ -1,10 +1,8 @@
 import type { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { Writable } from "node:stream";
+import type { Writable } from "node:stream";
 
-import { officialLoopbackListenerArguments } from "../remote-app-server.js";
 import {
-  createLoopbackOfficialAppServerListener,
+  createAuthenticatedLoopbackOfficialAppServerListener,
   createRemoteOfficialAppServerListener,
 } from "../remote-official-app-server.js";
 import { createRemoteOfficialAppServerConnection } from "../remote-official-connection.js";
@@ -24,23 +22,7 @@ export function createOwnedLoopbackBackend(input: {
   environment: NodeJS.ProcessEnv;
   spawnOfficial?: typeof spawn;
 }): OwnedOfficialBackend {
-  const capabilityToken = randomBytes(32).toString("base64url");
-  const listener = createLoopbackOfficialAppServerListener({
-    ...input,
-    arguments: [
-      ...officialLoopbackListenerArguments(input.arguments),
-      "--ws-auth",
-      "capability-token",
-      "--ws-token-sha256",
-      createHash("sha256").update(capabilityToken).digest("hex"),
-    ],
-    // Managed stderr may carry credential-bearing errors. Never forward raw bytes.
-    diagnosticOutput: new Writable({
-      write(_chunk, _encoding, callback) {
-        callback();
-      },
-    }),
-  });
+  const { capabilityToken, listener } = createAuthenticatedLoopbackOfficialAppServerListener(input);
   let endpoint: string | undefined;
   return {
     get processId() {

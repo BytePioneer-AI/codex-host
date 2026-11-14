@@ -19,15 +19,24 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import { isDesktopContextVariable } from "./desktop-context-environment.js";
+import {
+  isDesktopOfficialBackendSpawnerDescriptor,
+  type DesktopOfficialBackendSpawnerDescriptor,
+} from "./codex-runtime/desktop-official-backend-spawner.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
  * cannot change the service's data root, native account home or execution owner. */
 function desktopContext(
   base: NodeJS.ProcessEnv,
   request?: IncomingMessage,
-): { environment: NodeJS.ProcessEnv; arguments: string[] | undefined } {
+): {
+  environment: NodeJS.ProcessEnv;
+  arguments: string[] | undefined;
+  officialSpawner: DesktopOfficialBackendSpawnerDescriptor | undefined;
+} {
   const raw = request?.headers["x-codexhost-desktop-context"];
-  if (raw === undefined) return { environment: base, arguments: undefined };
+  if (raw === undefined)
+    return { environment: base, arguments: undefined, officialSpawner: undefined };
   if (typeof raw !== "string" || raw.length > 16_000)
     throw new Error("Invalid Desktop runtime context");
   const value: unknown = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
@@ -43,6 +52,11 @@ function desktopContext(
     Array.isArray(envelope.environment)
   )
     throw new Error("Invalid Desktop runtime context");
+  if (
+    envelope.officialSpawner !== undefined &&
+    !isDesktopOfficialBackendSpawnerDescriptor(envelope.officialSpawner)
+  )
+    throw new Error("Invalid Desktop runtime context");
   const context: NodeJS.ProcessEnv = {};
   for (const [key, entry] of Object.entries(envelope.environment)) {
     if (!isDesktopContextVariable(key) || typeof entry !== "string")
@@ -51,6 +65,7 @@ function desktopContext(
   }
   return {
     arguments: envelope.arguments as string[],
+    officialSpawner: envelope.officialSpawner,
     environment: {
       ...base,
       ...context,
@@ -80,7 +95,11 @@ export function sharedHostDesktop(
   streams: RemoteAppServerSessionStreams,
   request?: IncomingMessage,
 ): RemoteAppServerSession {
-  const { environment, arguments: nativeArguments } = desktopContext(options.environment, request);
+  const {
+    environment,
+    arguments: nativeArguments,
+    officialSpawner,
+  } = desktopContext(options.environment, request);
   let startup: Promise<void> | undefined;
   if (nativeArguments) {
     const stockCodexPath = environment.CODEXHOST_STOCK_CODEX_PATH ?? options.stockCodex;
@@ -90,6 +109,7 @@ export function sharedHostDesktop(
       stockCodexPath,
       arguments: nativeArguments,
       environment,
+      ...(officialSpawner ? { officialSpawner } : {}),
     });
   }
   const runtime = environment.CODEXHOST_HOST_RUNTIME_PATH;

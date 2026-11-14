@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
+  THREAD_CATALOG_READ_METHOD,
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
@@ -948,7 +949,30 @@ export class ChSessions {
       this.threads.setHarness(id, harnessId);
     }
     await this.owner(id);
-    await this.host.request(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
+    try {
+      await this.host.request(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
+    } catch (error) {
+      if (!archived) throw error;
+      // A retry can reject an already-archived rollout. Confirm the desired state
+      // independently; failed reads or an exhausted search preserve the native error.
+      let confirmed = false;
+      let cursor: string | undefined;
+      do {
+        const catalog = await this.host
+          .request<Pick<CatalogPage, "archivedThreadIds" | "officialCursor">>(
+            THREAD_CATALOG_READ_METHOD,
+            {
+              includeArchived: true,
+              ...(cursor ? { officialCursor: { live: null, archived: cursor } } : {}),
+            },
+          )
+          .catch(() => undefined);
+        if (!catalog) throw error;
+        confirmed = catalog.archivedThreadIds.some((archivedId) => archivedId === id);
+        cursor = catalog.officialCursor?.archived ?? undefined;
+      } while (!confirmed && cursor);
+      if (!confirmed) throw error;
+    }
     // Finish any pre-write catalog read before confirming from a fresh Host snapshot.
     // A read failure cannot turn an acknowledged mutation into a rejected write.
     await this.refreshing?.catch(() => undefined);

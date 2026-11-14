@@ -218,10 +218,34 @@ export function filterExternalThreadListRecords(
   );
 }
 
-/** External Threads that match a list query's filters, projected as list rows (unsorted). */
-export function externalThreadListEntries(input: ExternalThreadListInput): ThreadListEntry[] {
-  const sessionIds = resolveExternalSessionTreeIds(input.records);
-  return filterExternalThreadListRecords(input).map((record): ThreadListEntry => {
+/** A filtered record with its sort key; projected to a list row only if it is returned. */
+interface ExternalListCandidate {
+  entry: ThreadListEntry;
+  record?: StoredThreadSummaryV1;
+}
+
+function externalListCandidates(input: ExternalThreadListInput): ExternalListCandidate[] {
+  return filterExternalThreadListRecords(input).map((record) => ({
+    record,
+    entry: {
+      source: "external",
+      // Sorting and anchors read only the id; the full row is built on projection.
+      thread: { id: record.hostThreadId },
+      timestamp:
+        input.query.sortKey === "created_at"
+          ? unixTimestamp(record.createdAt, "createdAt")
+          : unixTimestamp(record.updatedAt, "updatedAt"),
+    },
+  }));
+}
+
+function externalListProjector(
+  input: ExternalThreadListInput,
+): (candidate: ExternalListCandidate) => ThreadListEntry {
+  let sessionIds: Map<string, string> | undefined;
+  return ({ entry, record }) => {
+    if (!record) return entry;
+    sessionIds ??= resolveExternalSessionTreeIds(input.records);
     const runtime = input.runtimeFor(record.hostThreadId);
     const sessionId = sessionIds.get(record.hostThreadId);
     if (!sessionId) throw new Error("External Thread Session tree could not be resolved");
@@ -233,15 +257,13 @@ export function externalThreadListEntries(input: ExternalThreadListInput): Threa
       ...(runtime ? { running: runtime.running } : { loaded: false }),
       ...(placement ? { placement } : {}),
     });
-    return {
-      source: "external",
-      thread,
-      timestamp:
-        input.query.sortKey === "created_at"
-          ? unixTimestamp(record.createdAt, "createdAt")
-          : unixTimestamp(record.updatedAt, "updatedAt"),
-    };
-  });
+    return { ...entry, thread };
+  };
+}
+
+/** External Threads that match a list query's filters, projected as list rows (unsorted). */
+export function externalThreadListEntries(input: ExternalThreadListInput): ThreadListEntry[] {
+  return externalListCandidates(input).map(externalListProjector(input));
 }
 
 export function listExternalThreadMetadata(
@@ -256,25 +278,25 @@ export function listExternalThreadMetadata(
     return { data: [], hasMore: false };
   }
   const sortKey = input.query.sortKey;
-  const shared = (input.sharedThreads ?? []).map((thread): ThreadListEntry => ({
-    source: "external",
-    thread,
-    timestamp: threadListTimestamp(thread, sortKey),
+  const shared = (input.sharedThreads ?? []).map((thread): ExternalListCandidate => ({
+    entry: { source: "external", thread, timestamp: threadListTimestamp(thread, sortKey) },
   }));
-  const sharedIds = new Set(shared.map((entry) => entry.thread.id));
-  const entries = [
-    ...externalThreadListEntries(input).filter((entry) => !sharedIds.has(entry.thread.id)),
+  const sharedIds = new Set(shared.map(({ entry }) => entry.thread.id));
+  const candidates = [
+    ...externalListCandidates(input).filter(({ entry }) => !sharedIds.has(entry.thread.id)),
     ...shared,
   ]
-    .sort((left, right) => compareThreadListEntries(left, right, input.query.sortDirection))
+    .sort((left, right) =>
+      compareThreadListEntries(left.entry, right.entry, input.query.sortDirection),
+    )
     .filter(
-      (entry) =>
+      ({ entry }) =>
         !input.anchor || compareExternalAnchor(entry, input.anchor, input.query.sortDirection) > 0,
     );
   const limit = input.limit ?? input.query.limit;
   return {
-    data: entries.slice(0, limit),
-    hasMore: entries.length > limit,
+    data: candidates.slice(0, limit).map(externalListProjector(input)),
+    hasMore: candidates.length > limit,
   };
 }
 

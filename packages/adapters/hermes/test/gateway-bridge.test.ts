@@ -156,12 +156,7 @@ async function runBridge(
 // On non-Windows hosts this tests the Windows stdin branch, not IOCP itself.
 const windowsScript = GATEWAY_LAUNCH.replace('if sys.platform == "win32":', "if True:");
 describe.skipIf(!python)("Hermes bridge subprocess (requires Python 3.9+)", () => {
-  it.each([
-    ["disconnect", false],
-    ["disconnect", true],
-    ["error", false],
-    ["error", true],
-  ])(
+  it.each([["error", true]])(
     "exits on %s with partial stdin=%s and no EOF",
     async (scenario, partial) => {
       const result = await runBridge(

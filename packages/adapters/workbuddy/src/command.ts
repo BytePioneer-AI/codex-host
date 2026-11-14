@@ -163,7 +163,10 @@ export function workBuddyInvocation(
   ephemeral: boolean,
   dependenciesOrArguments: WorkBuddyInvocationDependencies | string[] = {},
   argumentsOverride?: string[],
-): ReturnType<CodeBuddyInvocationFactory> {
+): ReturnType<CodeBuddyInvocationFactory> & {
+  /** App-owned CLI script, separate from the Electron executable and preload arguments. */
+  bundledCliPath?: string;
+} {
   const dependencies = Array.isArray(dependenciesOrArguments) ? {} : dependenciesOrArguments;
   const nativeArguments = Array.isArray(dependenciesOrArguments)
     ? dependenciesOrArguments
@@ -238,5 +241,6 @@ export function workBuddyInvocation(
       platform,
     ),
     environment: childEnvironment,
+    ...(bundle ? { bundledCliPath: bundle.cli } : {}),
   };
 }

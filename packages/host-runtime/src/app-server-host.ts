@@ -5133,8 +5133,13 @@ export class AppServerHost {
       started.gate.resolve();
       return started.turnId;
     } catch (error) {
-      if (error instanceof ExternalSteerError && error.notStarted) {
-        throw new DelegationControlError("DELEGATION_FAILED", error.message, { notStarted: true });
+      // The public send contract keeps `notStarted` only when the input was proven not taken.
+      if (error instanceof ExternalSteerError) {
+        throw new DelegationControlError(
+          "DELEGATION_FAILED",
+          error.message,
+          error.notStarted ? { notStarted: true } : undefined,
+        );
       }
       throw error;
     } finally {

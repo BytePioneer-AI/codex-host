@@ -1,6 +1,7 @@
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
+import type { HostCommand } from "@codexhost/harness-adapter";
 import type { DelegationControlApi } from "../src/delegation-types.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { runDelegationCli } from "../src/delegation-cli.js";
@@ -99,4 +100,49 @@ describe("Delegation steering through CLI and Host", () => {
       }
     },
   );
+
+  it("reports an unknown steering outcome without claiming it was not started", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (value) => {
+        api = value;
+        return undefined;
+      },
+    });
+    fixture.adapter.supportsSteer = true;
+    const threadId = await startPiThread(fixture);
+    await startPiTurn(fixture, threadId);
+    if (!api) throw new Error("Missing Delegation API");
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Missing Session");
+    const execute = session.execute.bind(session);
+    vi.spyOn(session, "execute").mockImplementation(async (command: HostCommand) => {
+      if (command.type === "turn.steer") {
+        await execute(command);
+        throw new Error("native reply lost");
+      }
+      throw new Error(`Unexpected command: ${command.type}`);
+    });
+    const server = await startDelegationControlServer({ token: "test-token", api });
+    try {
+      const diagnostics = new PassThrough();
+      expect(
+        await runDelegationCli({
+          arguments: ["thread", "send", threadId, "--message", "adjust", "--steer", "true"],
+          environment: {
+            CODEXHOST_RUNTIME_ENDPOINT: server.endpoint,
+            CODEXHOST_RUNTIME_TOKEN: "test-token",
+          },
+          output: new PassThrough(),
+          diagnosticOutput: diagnostics,
+        }),
+      ).toBe(1);
+      expect(JSON.parse(String(diagnostics.read()))).toEqual({
+        error: { code: "DELEGATION_FAILED", message: "native reply lost" },
+      });
+    } finally {
+      await server.close();
+      await stopFixture(fixture);
+    }
+  });
 });

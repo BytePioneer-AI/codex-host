@@ -32,11 +32,13 @@ HTTP 与 MCP 的以下参数及 JSON 结果和 CLI 对齐（HTTP 用 `threadId`�
 
 | HTTP | MCP | 参数与结果 |
 | --- | --- | --- |
-| `POST /v1/thread/send` | `thread_send` | `message`、可选布尔值 `interrupt`、`watch` 及正整数 `watchTimeoutMs` |
+| `POST /v1/thread/send` | `thread_send` | `message`、可选布尔值 `interrupt` 与 `steer`、`watch` 及正整数 `watchTimeoutMs` |
 | `POST /v1/delegate/start` | `delegate_start` | 可选 `worktree`（新分支名）、`base`（Git ref）、`watch` 及 `watchTimeoutMs` |
 | `POST /v1/thread/watches` | `thread_watches` | 原样返回 Host 的 watches，含 `taskName`、`threadStatus`、`watchedForMs` |
 
 `interrupt: true` 先取消活动 Turn、确认空闲后只发送一次，读取、取消和等待停下共用 30 秒期限；取消失败或超时不发送。目标空闲时直接发送，不排队、不自动重试，保留已有 watch 并抑制临时停下通知。省略或 `false` 保持普通 send 行为。
+
+`steer: true` 与 CLI 的 `--steer true` 相同：空闲 Thread 启动新 Turn；运行中 Thread 复用 Desktop 的调整方向操作，原生 Codex 使用 `turn/steer`，外部 Harness 按能力原生接受或沿既有停止后重发路径。成功回执只表示已接受输入，不表示已在当前轮执行或任务完成。`steer: true` 与 `interrupt: true` 互斥，同时请求在发送前以 `INVALID_ARGUMENT` 拒绝。省略或 `false` 保留忙时 `THREAD_BUSY`。
 
 `watch: true` 在成功 start / send 后观察，默认 29 分钟；`watchTimeoutMs` 必须是正整数。为兼容 CLI 控制协议，单独提供 `watchTimeoutMs` 也会启用 watch；显式 `watch: false` 时不能提供超时。响应的 `watch` 与 CLI 相同：`watching` / `alreadyTerminal`（含 Thread、通知目标、状态、超时），或 `{state: "notRegistered", reason}`。watch 注册失败不撤销成功的消息提交；未请求时不增加 `watch` 字段。无父 Thread 的委派和未指定通知 Thread 的 send 均向调用客户端的事件日志投递，不启动通知 Turn。见 [Thread watch](thread-watch.md)。
 

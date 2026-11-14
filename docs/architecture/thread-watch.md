@@ -39,7 +39,7 @@
 
 watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 与 `thread send --watch true` 都先提交消息；watch 注册失败不会让已经成功的提交变成失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。两者沿用相同的 JSON / compact watch 字段形态；未请求 watch 时不增加字段。`--watch-timeout-ms` 仅能与 `--watch true` 同用，默认 29 分钟。
 
-外部 HTTP `/v1/delegate/start`、`/v1/thread/send` 与 MCP `delegate_start`、`thread_send` 都接受 `watch: true` 和可选正整数 `watchTimeoutMs`，默认同为 29 分钟，返回相同 `watch` 字段。为兼容 CLI 控制协议，仅提供 `watchTimeoutMs` 也会注册 watch；显式 `watch: false` 不能同时提供超时。外部客户端未指定通知 Thread 时以自身事件日志为通知目标。`thread_send` / `/v1/thread/send` 还接受布尔值 `interrupt`，先停再发、保留现有 watch 的语义与 CLI 一致。
+外部 HTTP `/v1/delegate/start`、`/v1/thread/send` 与 MCP `delegate_start`、`thread_send` 都接受 `watch: true` 和可选正整数 `watchTimeoutMs`，默认同为 29 分钟，返回相同 `watch` 字段。为兼容 CLI 控制协议，仅提供 `watchTimeoutMs` 也会注册 watch；显式 `watch: false` 不能同时提供超时。外部客户端未指定通知 Thread 时以自身事件日志为通知目标。`thread_send` / `/v1/thread/send` 还接受布尔值 `interrupt` 与 `steer`：`interrupt` 先停再发、保留现有 watch，语义与 CLI 一致；`steer` 与 CLI 的 `--steer true` 相同，`steer: true` 与 `interrupt: true` 互斥，同时请求在发送前以 `INVALID_ARGUMENT` 拒绝。
 
 ### CLI 长文本输入
 

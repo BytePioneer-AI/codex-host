@@ -659,6 +659,10 @@ describe("delegation CLI", () => {
     ["missing send message", ["thread", "send", "thread-1"]],
     ["invalid steer", ["thread", "send", "thread-1", "--message", "adjust", "--steer", "yes"]],
     ["missing steer value", ["thread", "send", "thread-1", "--message", "adjust", "--steer"]],
+    [
+      "steer with interrupt",
+      ["thread", "send", "thread-1", "--message", "adjust", "--steer", "true", "--interrupt"],
+    ],
     ["cancel option", ["thread", "cancel", "thread-1", "--message", "no"]],
     ["invalid list limit", ["thread", "list", "--limit", "101"]],
     ["invalid sort", ["thread", "list", "--sort", "newest"]],

@@ -1874,114 +1874,144 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("forks an exact Native prefix from a worktree while later source history continues", async () => {
-    const { adapter, dependencies } = fixture();
-    vi.mocked(dependencies.getSessionInfo).mockResolvedValueOnce({
-      cwd: "/synthetic/.claude/worktrees/topic",
-    });
-    const sourceRef = nativeSessionRefSchema.parse({
-      harnessId: "claude-code",
-      nativeSessionId: "source-session",
-      formatVersion: 1,
-    });
-    const checkpoint = nativeCheckpointRefSchema.parse({
-      harnessId: "claude-code",
-      nativeSessionId: "source-session",
-      checkpointId: "source-assistant-1",
-      formatVersion: 1,
-    });
-    const histories = new Map<string, unknown[]>([
-      [
-        "source-session",
+  it.each(["later turn", "interruption", "later assistant message"])(
+    "forks an exact Native worktree prefix despite a %s",
+    async (suffix) => {
+      const { adapter, dependencies } = fixture();
+      vi.mocked(dependencies.getSessionInfo).mockResolvedValueOnce({
+        cwd: "/synthetic/.claude/worktrees/topic",
+      });
+      const sourceRef = nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "source-session",
+        formatVersion: 1,
+      });
+      const checkpoint = nativeCheckpointRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "source-session",
+        checkpointId: "source-assistant-1",
+        formatVersion: 1,
+      });
+      const histories = new Map<string, unknown[]>([
         [
+          "source-session",
+          [
+            {
+              type: "user",
+              uuid: "source-user-1",
+              promptId: "source-prompt-1",
+              session_id: "source-session",
+              message: { role: "user", content: "first prompt" },
+            },
+            {
+              type: "assistant",
+              uuid: "source-assistant-1",
+              session_id: "source-session",
+              message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
+            },
+            ...(suffix === "interruption"
+              ? [
+                  {
+                    type: "user",
+                    uuid: "source-interruption",
+                    session_id: "source-session",
+                    promptId: "source-prompt-1",
+                    message: {
+                      role: "user",
+                      content: [{ type: "text", text: "[Request interrupted by user]" }],
+                    },
+                  },
+                ]
+              : suffix === "later assistant message"
+                ? [
+                    {
+                      type: "assistant",
+                      uuid: "source-assistant-later",
+                      session_id: "source-session",
+                      message: {
+                        role: "assistant",
+                        content: [{ type: "text", text: "outside requested boundary" }],
+                      },
+                    },
+                  ]
+                : []),
+            {
+              type: "user",
+              uuid: "source-user-2",
+              session_id: "source-session",
+              message: { role: "user", content: "second prompt" },
+            },
+            {
+              type: "assistant",
+              uuid: "source-assistant-2",
+              session_id: "source-session",
+              message: { role: "assistant", content: [{ type: "text", text: "second response" }] },
+            },
+          ],
+        ],
+      ]);
+      vi.mocked(dependencies.readSessionMessages).mockImplementation(async ({ sessionId }) =>
+        structuredClone(histories.get(sessionId) ?? []),
+      );
+      vi.mocked(dependencies.forkSession).mockImplementationOnce(async () => {
+        histories.get("source-session")?.push(
           {
             type: "user",
-            uuid: "source-user-1",
+            uuid: "source-user-3",
             session_id: "source-session",
+            message: { role: "user", content: "active prompt" },
+          },
+          {
+            type: "assistant",
+            uuid: "source-assistant-3",
+            session_id: "source-session",
+            message: { role: "assistant", content: [{ type: "text", text: "active response" }] },
+          },
+        );
+        histories.set("derived-session", [
+          {
+            type: "user",
+            uuid: "derived-user-1",
+            session_id: "derived-session",
             message: { role: "user", content: "first prompt" },
           },
           {
             type: "assistant",
-            uuid: "source-assistant-1",
-            session_id: "source-session",
+            uuid: "derived-assistant-1",
+            session_id: "derived-session",
             message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
           },
-          {
-            type: "user",
-            uuid: "source-user-2",
-            session_id: "source-session",
-            message: { role: "user", content: "second prompt" },
-          },
-          {
-            type: "assistant",
-            uuid: "source-assistant-2",
-            session_id: "source-session",
-            message: { role: "assistant", content: [{ type: "text", text: "second response" }] },
-          },
-        ],
-      ],
-    ]);
-    vi.mocked(dependencies.readSessionMessages).mockImplementation(async ({ sessionId }) =>
-      structuredClone(histories.get(sessionId) ?? []),
-    );
-    vi.mocked(dependencies.forkSession).mockImplementationOnce(async () => {
-      histories.get("source-session")?.push(
-        {
-          type: "user",
-          uuid: "source-user-3",
-          session_id: "source-session",
-          message: { role: "user", content: "active prompt" },
-        },
-        {
-          type: "assistant",
-          uuid: "source-assistant-3",
-          session_id: "source-session",
-          message: { role: "assistant", content: [{ type: "text", text: "active response" }] },
-        },
-      );
-      histories.set("derived-session", [
-        {
-          type: "user",
-          uuid: "derived-user-1",
-          session_id: "derived-session",
-          message: { role: "user", content: "first prompt" },
-        },
-        {
-          type: "assistant",
-          uuid: "derived-assistant-1",
-          session_id: "derived-session",
-          message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
-        },
-      ]);
-      return { sessionId: "derived-session" };
-    });
+        ]);
+        return { sessionId: "derived-session" };
+      });
 
-    const opened = await adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint });
-    if (!opened.ok) throw new Error(opened.error.message);
-    expect(opened.value.initialState).toMatchObject({
-      nativeRef: { nativeSessionId: "derived-session" },
-    });
-    await expect(opened.value.readSnapshot()).resolves.toMatchObject({
-      ok: true,
-      value: {
-        turns: [
-          {
-            nativeTurnRef: { nativeTurnKey: "derived-user-1" },
-            checkpoint: { checkpointId: "derived-assistant-1" },
-            input: [{ text: "first prompt" }],
-          },
-        ],
-      },
-    });
-    expect(dependencies.forkSession).toHaveBeenCalledWith({
-      checkpointId: "source-assistant-1",
-      cwd: path.resolve("/synthetic"),
-      sourceSessionId: "source-session",
-    });
-    expect(dependencies.deleteSession).not.toHaveBeenCalled();
-    expect(dependencies.createTransport).not.toHaveBeenCalled();
-    await opened.value.close();
-  });
+      const opened = await adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint });
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(opened.value.initialState).toMatchObject({
+        nativeRef: { nativeSessionId: "derived-session" },
+      });
+      await expect(opened.value.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              nativeTurnRef: { nativeTurnKey: "derived-user-1" },
+              checkpoint: { checkpointId: "derived-assistant-1" },
+              input: [{ text: "first prompt" }],
+            },
+          ],
+        },
+      });
+      expect(dependencies.forkSession).toHaveBeenCalledWith({
+        checkpointId: "source-assistant-1",
+        cwd: path.resolve("/synthetic"),
+        sourceSessionId: "source-session",
+      });
+      expect(dependencies.deleteSession).not.toHaveBeenCalled();
+      expect(dependencies.createTransport).not.toHaveBeenCalled();
+      await opened.value.close();
+    },
+  );
 
   it("rejects missing resumed history and stale Fork Checkpoints without a Native Fork", async () => {
     const { adapter, dependencies, history } = fixture();
@@ -2033,6 +2063,14 @@ describe("Claude Code HarnessAdapter", () => {
     );
     await expect(
       adapter.open({ kind: "fork", cwd: "/synthetic", sourceRef, checkpoint }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    await expect(
+      adapter.open({
+        kind: "fork",
+        cwd: "/synthetic",
+        sourceRef,
+        checkpoint: { ...checkpoint, checkpointId: "source-user" },
+      }),
     ).resolves.toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
     expect(dependencies.forkSession).not.toHaveBeenCalled();
     expect(dependencies.createTransport).not.toHaveBeenCalled();

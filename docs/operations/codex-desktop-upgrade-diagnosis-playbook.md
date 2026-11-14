@@ -115,6 +115,44 @@ const match = processes.match(
 const inspectorEndpoint = `http://127.0.0.1:${match[1]}`;
 ```
 
+### Windows：Host chain 未启动（AppX 容器被提前销毁）
+
+若启动在约 30 秒后以 exit code 1 结束，日志停在
+
+```text
+controller: installing Renderer Session
+launcher: waiting for Host chain
+codexhost launcher: Codex Desktop did not start the codexhost Host chain before timeout
+```
+
+且 `~/.codexhost/logs/` 下没有产生新的 `host-runtime-*.log`，说明失败在最外层：Desktop 已经被拉起，但注入从未建立，Host 根本没有启动。此时不要先怀疑网络、账号、Harness 或 Renderer 代码。
+
+按以下三步确认：
+
+1. 记录版本：`(Get-AppxPackage -Name OpenAI.Codex).Version`。已有报告涉及 `26.1023` 起的版本；当前仅实测 `26.1027.6604.0`，`26.1023` 至 `26.1026` 未逐一验证。
+2. 看存活的主进程命令行：`Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'"`。若命令行里没有 `--remote-debugging-port=`，说明 Desktop Controller 的连接目标并不存在。
+3. 查容器生命周期：事件日志 `Microsoft-Windows-AppModel-Runtime/Admin` 的事件 217。若出现“已销毁 …OpenAI.Codex… 的桌面 AppX 容器”，且时间只比激活晚一秒左右，而 Desktop Controller 要 +1 秒才 ready，则注入窗口本来就不存在。
+
+对应 issue：#637、#566、#532、#361。
+
+**临时规避（生效条件尚未确认）**：当前 Windows Launcher 根据安装身份中的 `appx_activation` 选择 AppX 激活或直接 spawn 打包 exe；`CODEXHOST_STOCK_CODEX_PATH` 本身不参与该分支。已有实机曾在该变量存在时观察到直接 spawn 后恢复正常，但当前代码没有建立二者之间的自动关联，不能把它当作通用的 AppX 绕过开关。
+
+本次实机使用的命令仅作为现场复现记录：
+
+```bat
+for /f "delims=" %%p in ('powershell -NoProfile -Command "(Get-AppxPackage -Name OpenAI.Codex).InstallLocation" 2^>nul') do set "CODEXHOST_STOCK_CODEX_PATH=%%p\app\ChatGPT.exe"
+```
+
+不要写死 `WindowsApps` 目录名，它随每次 Codex 更新变化。如需稳定走直接 spawn，应先确认安装是否通过 `CODEXHOST_INSTALL_ROOT` 被识别为便携 / 未打包安装，并验证该路径对已安装 MSIX 包是否适用，再整理为受支持的步骤。
+
+实测（Windows 11 x64 / Desktop `26.1027.6604.0` / codexhost `0.17.0`）：
+
+- 直接 spawn 打包 exe 并带 CDP 参数时，调试端口返回 `Chrome/156.0.8078.79`，容器不再被销毁；
+- 设置该变量后，Launcher 日志出现 `launcher: Host chain ready`（约 +5.7 秒）与 `controller: Renderer Session installed`，并正常生成 `host-runtime-*.log`；
+- 主进程命令行带上 `--remote-debugging-address=127.0.0.1 --remote-debugging-port=<port>`，`launch-managed.ps1` 仍能把它识别为托管实例。
+
+边界：上面的实机结果说明“直接 spawn 打包 exe”在该环境中恢复了 Host chain，但不能证明 `CODEXHOST_STOCK_CODEX_PATH` 是触发原因，也不能证明该做法适用于其他安装方式或版本。该规避不修复容器生命周期本身；根因修复后应删除，回归默认激活路径。
+
 ## 三、第二步：建立最小的真实反馈闭环
 
 排查前先建立一个能复现用户具体症状的闭环。不要只运行单元测试或只读取 Adapter status。

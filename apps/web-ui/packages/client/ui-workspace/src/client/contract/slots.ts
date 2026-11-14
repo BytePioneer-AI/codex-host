@@ -291,6 +291,8 @@ export type WorkspaceBrowserInjected = {
   startSession: (workspaceId?: WorkspaceId) => void;
   /** Open a real Session. */
   open: (sessionId: SessionId) => void;
+  /** Acknowledge unread completion reminders for the given Sessions without opening them. */
+  markCompletionsRead?: ((sessionIds: Iterable<SessionId>) => void) | undefined;
   /**
    * Search current visible conversation messages. The Host fixes the result
    * bound; `hasMore` means the query needs narrowing.

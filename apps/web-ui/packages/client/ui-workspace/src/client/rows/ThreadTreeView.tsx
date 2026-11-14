@@ -21,6 +21,7 @@ const ThreadTreeContext = createContext<{
   expansion: Readonly<Record<string, boolean>>;
   rows: (roots: readonly SessionNode[]) => SessionNode[];
   toggle: (id: string, expanded: boolean, occurrence?: string) => void;
+  markCompletionsRead: (sessionIds: Iterable<SessionId>) => void;
   collapseStyle: ThreadTreeCollapseStyle;
   stylePrompt: string | undefined;
   dismissStylePrompt: () => void;
@@ -34,6 +35,7 @@ const ThreadTreeContext = createContext<{
   expansion: EMPTY_EXPANSION,
   rows: (roots) => visibleThreadRows(roots, EMPTY_EXPANSION),
   toggle: () => {},
+  markCompletionsRead: () => {},
   collapseStyle: "summary",
   stylePrompt: undefined,
   dismissStylePrompt: () => {},
@@ -143,6 +145,7 @@ export function ThreadTreeViewProvider({
         if (expanded && occurrence !== undefined && !explicitlyChosen)
           setPromptOccurrence(occurrence);
       },
+      markCompletionsRead: browser.markCompletionsRead ?? (() => {}),
       collapseStyle,
       stylePrompt: explicitlyChosen ? undefined : promptOccurrence,
       dismissStylePrompt,
@@ -154,6 +157,7 @@ export function ThreadTreeViewProvider({
     }),
     [
       browser.t,
+      browser.markCompletionsRead,
       actions,
       expansion,
       targets,

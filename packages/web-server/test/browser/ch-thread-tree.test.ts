@@ -911,10 +911,10 @@ it(
 );
 
 it(
-  "clicking the icon of a parent folds it without opening the session",
+  "clicking the icon of a parent folds it without opening the session, and clicking a selected parent row toggles its fold and clears descendant unread completions",
   { timeout: 60_000 },
   async (t) => {
-    const { page } = await threadTreeBrowser(t, 1280);
+    const { page, host } = await threadTreeBrowser(t, 1280);
     const parent = threadRow(page, "parent");
     await parent.waitFor();
     const selectionBefore = await parent.getAttribute("aria-selected");
@@ -932,5 +932,39 @@ it(
         "false",
     );
     assert.equal(await page.locator('[data-conversation-session="parent"]').count(), 0);
+    // First click on an unselected parent opens the session and preserves its fold state.
+    const grandchild = host.threads.get("grandchild");
+    assert.ok(grandchild);
+    grandchild.status = { type: "idle" };
+    host.changed("grandchild", "turn/completed");
+    await parent.locator('[data-thread-summary] [data-thread-tree-activity="completed"]').waitFor();
+    assert.equal(
+      await parent.locator("[data-thread-summary]").innerText(),
+      "4 child sessions · 1 unread",
+    );
+    await parent.locator("[data-thread-summary]").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-row-key$=":parent"]')?.getAttribute("aria-expanded") ===
+        "true",
+    );
+    await parent.locator("[data-session-title]").click();
+    await page.locator('[data-conversation-session="parent"] [data-composer-input]').waitFor();
+    assert.equal(await parent.getAttribute("aria-selected"), "true");
+    assert.equal(await parent.getAttribute("aria-expanded"), "true");
+    // Clicking the already-selected parent row folds its children and clears descendant unread completions.
+    await parent.locator("[data-session-title]").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-row-key$=":parent"]')?.getAttribute("aria-expanded") ===
+        "false",
+    );
+    assert.equal(await parent.locator("[data-thread-summary]").innerText(), "4 child sessions");
+    await parent.locator("[data-session-title]").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-row-key$=":parent"]')?.getAttribute("aria-expanded") ===
+        "true",
+    );
   },
 );

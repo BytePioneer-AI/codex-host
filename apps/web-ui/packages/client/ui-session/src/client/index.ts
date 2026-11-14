@@ -414,6 +414,18 @@ export class UiSession extends Service {
     return (interaction, delegate) => domain.publish(interaction, delegate);
   }
 
+  /**
+   * Acknowledge unread completion reminders for the given Sessions without opening them.
+   * @param sessionIds - Session identities whose completion reminders should be cleared.
+   */
+  markCompletionsRead(sessionIds: Iterable<SessionId>): void {
+    let changed = false;
+    for (const sessionId of sessionIds) {
+      if (this.completionUnread.delete(sessionId)) changed = true;
+    }
+    if (changed) this.publishStatus();
+  }
+
   private rebuildBindings(): void {
     const absent = this.materializeAbsent();
     const updates = [...this.bindings.values].map((record) => ({

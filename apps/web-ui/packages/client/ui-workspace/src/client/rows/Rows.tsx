@@ -492,7 +492,7 @@ export function SessionNodeItem({
   | "sidebar.session.row.hover"
 >) {
   const row = node;
-  const { expansion, toggle, collapseStyle } = useThreadTreeView();
+  const { expansion, toggle, markCompletionsRead, collapseStyle } = useThreadTreeView();
   const childGroupId = useThreadChildGroup();
   const depth = node.tree?.depth ?? 0;
   const expanded = expansion[node.id] === true;
@@ -566,7 +566,13 @@ export function SessionNodeItem({
         dragged.current = false;
       }}
       onClick={() => {
-        if (!dragged.current) onOpen(node.id);
+        if (dragged.current) return;
+        if (selected && !row.archived && node.tree?.descendantCount) {
+          if (expanded) markCompletionsRead(node.tree.descendantIds);
+          toggle(node.id, !expanded, childGroupId);
+          return;
+        }
+        onOpen(node.id);
       }}
       draggable={draggable}
       onDragStart={

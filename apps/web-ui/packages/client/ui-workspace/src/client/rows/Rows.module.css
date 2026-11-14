@@ -207,6 +207,18 @@
   cursor: pointer;
 }
 
+.identityButton::after {
+  content: "";
+  position: absolute;
+  inset: -6px -4px -6px -8px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .sessionRow:not(:has(> [data-thread-summary])) .identityButton::after {
+    inset: -12px -6px -12px -8px;
+  }
+}
+
 .foldChevron {
   position: absolute;
   inset: 0;

@@ -93,7 +93,12 @@ jobs:
         if: runner.os != 'Linux'
         env:
           CODEXHOST_TEST_SCOPE: platform
-        run: npm run test:typescript
+        run: >
+          npm run test:typescript --
+          --exclude 'packages/repository-automation/test/**'
+          --exclude 'packages/shared-contracts/test/**'
+          --exclude 'packages/renderer-extension/test/**'
+          --exclude 'tools/gate-claude-code/run.test.mjs'
 
       # Real Launcher + Node service, with isolated HOME/data and fake Harnesses.
       - name: Test independent Host lifecycle

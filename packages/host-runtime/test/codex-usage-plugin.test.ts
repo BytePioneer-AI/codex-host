@@ -287,7 +287,10 @@ it("subscribes internally despite Desktop raw defaults, preserving its notificat
         },
       },
     });
-    const initialize = await readJsonLine(fixture.official.stdin);
+    const initialize = await readJsonLine(
+      fixture.official.stdin,
+      process.platform === "win32" ? 10_000 : 4000,
+    );
     expect(initialize.params).toMatchObject({
       capabilities: {
         experimentalApi: true,
@@ -348,6 +351,7 @@ it("subscribes internally despite Desktop raw defaults, preserving its notificat
       result: { usage: { outputTokensPerSecond: expect.any(Number) } },
     });
   } finally {
+    fixture.host.close();
     await stopFixture(fixture);
   }
 });

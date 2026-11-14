@@ -95,6 +95,10 @@ Success is written to stdout; errors {"error":{"code":"...","message":"...","det
 read/wait are non-consuming. Native Codex callers need local Runtime access; RUNTIME_UNREACHABLE requires the Host-provided environment and a sandbox that permits that connection.
 Native Codex shell commands also need the Host-provided CODEXHOST_* environment variables. If shell_environment_policy filters them, prefer inherit = "all" with ignore_default_excludes = true and a narrow include_only containing "CODEXHOST_RUNTIME_ENDPOINT" and "CODEXHOST_RUNTIME_TOKEN" plus the variables required by the platform and invoked tools. Avoid unconstrained inherit = "all", which forwards unrelated ambient variables.`;
 
+const COMMAND_TAIL = `Thread references accept a bare ID or codex://threads/<id>.
+Options accept --name <value> or --name=<value>. --task, --task-name, and --message take the next argument verbatim, even when it is empty or starts with --.
+Output formats, errors and environment requirements: codexhost delegate --help.`;
+
 export const DELEGATION_HELP = `usage:
   codexhost host info
   codexhost project list
@@ -131,7 +135,7 @@ export function delegationCliHelp(arguments_: readonly string[]): string | undef
   const [group, command, ...rest] = arguments_;
   if (!group || group === "--help" || group === "-h") return DELEGATION_HELP;
   if (group === "events" && hasHelpOption([command ?? "", ...rest]))
-    return `${COMMAND_HELP.events}\n\n${COMMON_HELP}\n`;
+    return `${COMMAND_HELP.events}\n\n${COMMAND_TAIL}\n`;
   if (!command || command === "--help" || command === "-h" || command === "help") {
     if (group === "delegate") return DELEGATION_HELP;
     if (
@@ -144,13 +148,13 @@ export function delegationCliHelp(arguments_: readonly string[]): string | undef
       const usages = Object.entries(COMMAND_HELP)
         .filter(([name]) => name.startsWith(`${group} `))
         .map(([, help]) => help.split("\n")[0]);
-      return `${usages.join("\n")}\n\n${COMMON_HELP}\n`;
+      return `${usages.join("\n")}\n\n${COMMAND_TAIL}\n`;
     }
   }
   if (hasHelpOption(rest)) {
     const name = `${group} ${command}`;
     if (Object.hasOwn(COMMAND_HELP, name)) {
-      return `${COMMAND_HELP[name as DelegationCliCommand]}\n\n${COMMON_HELP}\n`;
+      return `${COMMAND_HELP[name as DelegationCliCommand]}\n\n${COMMAND_TAIL}\n`;
     }
   }
   return undefined;

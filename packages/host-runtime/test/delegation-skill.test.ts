@@ -104,14 +104,14 @@ describe("delegation Skill installation", () => {
 
   it("uses existing Threads directly and keeps viewing requests read-only", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("For a new delegation, create an independent");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread\ndirectly");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread directly");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("is ambiguous, ask the user to identify it");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session read-only");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("short task name that tells it apart");
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 13");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 14");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
@@ -120,8 +120,8 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain('"%CODEXHOST_CLI_PATH%" delegate --help');
     expect(CODEXHOST_DELEGATION_SKILL).toContain("If CODEXHOST_CLI_PATH is unset, try");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("CODEXHOST_CLI_NODE_PATH");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up message");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel,");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");
   });
 });

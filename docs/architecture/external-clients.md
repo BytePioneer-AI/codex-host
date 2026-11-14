@@ -26,6 +26,24 @@ codexhost thread watches --format text
 
 `client` 和 `events` 不支持 `--format text`，执行前返回明确错误，不自动回退。所有格式的错误都保持 JSON 写入 stderr、退出码 1；成功输出写入 stdout、退出码 0，任务自身的失败状态不改变此约定。HTTP / MCP 的结构化响应不受 CLI text 格式影响。
 
+### 发送、watch 与 worktree
+
+HTTP 与 MCP 的以下参数及 JSON 结果和 CLI 对齐（HTTP 用 `threadId`，MCP 用 `thread`）：
+
+| HTTP | MCP | 参数与结果 |
+| --- | --- | --- |
+| `POST /v1/thread/send` | `thread_send` | `message`、可选布尔值 `interrupt`、`watch` 及正整数 `watchTimeoutMs` |
+| `POST /v1/delegate/start` | `delegate_start` | 可选 `worktree`（新分支名）、`base`（Git ref）、`watch` 及 `watchTimeoutMs` |
+| `POST /v1/thread/watches` | `thread_watches` | 原样返回 Host 的 watches，含 `taskName`、`threadStatus`、`watchedForMs` |
+
+`interrupt: true` 先取消活动 Turn、确认空闲后只发送一次，读取、取消和等待停下共用 30 秒期限；取消失败或超时不发送。目标空闲时直接发送，不排队、不自动重试，保留已有 watch 并抑制临时停下通知。省略或 `false` 保持普通 send 行为。
+
+`watch: true` 在成功 start / send 后观察，默认 29 分钟；`watchTimeoutMs` 必须是正整数。为兼容 CLI 控制协议，单独提供 `watchTimeoutMs` 也会启用 watch；显式 `watch: false` 时不能提供超时。响应的 `watch` 与 CLI 相同：`watching` / `alreadyTerminal`（含 Thread、通知目标、状态、超时），或 `{state: "notRegistered", reason}`。watch 注册失败不撤销成功的消息提交；未请求时不增加 `watch` 字段。无父 Thread 的委派和未指定通知 Thread 的 send 均向调用客户端的事件日志投递，不启动通知 Turn。见 [Thread watch](thread-watch.md)。
+
+`worktree` 在接收请求的 Host 上创建，源目录必须是请求显式给出的绝对 `cwd`（有父 Thread 也必须提供），拒绝相对路径；`base` 仅与 worktree 同用，默认源 checkout 的 HEAD。创建路径、分支校验及目录净化与 CLI 共用实现；返回 `worktree: {path, branch, base}`（base 是提交 SHA）。创建后委派失败时保留分支和目录，错误保留原代码及 details，并附 `details.worktree`、`details.worktreeRetained: true`。不会自动合并、清理或复用已有分支；`requestId` 不使 worktree 创建幂等。CLI 仍在本地创建，以 `--cwd` 或调用进程 cwd 为源目录。见 [委派 worktree](delegation-worktrees.md)。
+
+`taskName` 为当前或最后已知标题，无法读取 Thread 时省略 `threadStatus`；`watchedForMs` 含 Host 停机时间。MCP 不重新投影 watch 列表。文件输入 `--task-file` / `--message-file` 和 `--format text` 属于 CLI 本地功能，HTTP / MCP 直接传文本并返回 JSON。
+
 ### Thread 读取视图
 
 CLI、HTTP、MCP 共用 `thread read` / `wait` 的读取投影：

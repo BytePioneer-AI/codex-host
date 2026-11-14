@@ -1,4 +1,5 @@
 import type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
+import type { DelegationWorktree } from "./delegation-worktree.js";
 import type { RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
@@ -133,6 +134,8 @@ export interface DelegationStartResult {
   refs?: string[];
   /** Present only when the caller asked `delegate start` to also watch the child. */
   watch?: ThreadWatchResult | { state: "notRegistered"; reason: string };
+  /** Present when start prepared an isolated Git checkout. */
+  worktree?: DelegationWorktree;
   next: { read: string; wait: string };
 }
 

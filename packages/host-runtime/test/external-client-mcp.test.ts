@@ -123,6 +123,30 @@ describe("external client MCP endpoint", () => {
       "thread_watches",
       "events_poll",
     ]);
+    expect(tools.find((tool) => tool.name === "thread_send")).toMatchObject({
+      description: expect.stringContaining("interrupt=true"),
+      inputSchema: {
+        properties: {
+          interrupt: { type: "boolean" },
+          watch: { type: "boolean" },
+          watchTimeoutMs: { type: "integer", minimum: 1 },
+        },
+      },
+    });
+    expect(tools.find((tool) => tool.name === "delegate_start")).toMatchObject({
+      description: expect.stringContaining("details.worktree"),
+      inputSchema: {
+        properties: {
+          worktree: { type: "string" },
+          base: { type: "string" },
+          watch: { type: "boolean" },
+          watchTimeoutMs: { type: "integer", minimum: 1 },
+        },
+      },
+    });
+    expect(tools.find((tool) => tool.name === "thread_watches")?.description).toContain(
+      "watchedForMs",
+    );
     await client.close();
   });
 

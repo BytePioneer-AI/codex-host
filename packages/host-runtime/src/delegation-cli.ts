@@ -9,7 +9,7 @@ import {
 } from "./delegation-cli-options.js";
 import { compactDelegationOutput } from "./delegation-cli-output.js";
 import { resolveCliTextInput } from "./delegation-cli-text-input.js";
-import { startWithDelegationWorktree } from "./delegation-cli-worktree.js";
+import { startWithDelegationWorktree } from "./delegation-worktree.js";
 import { assertDelegationTextCommand, textDelegationOutput } from "./delegation-cli-text.js";
 import { resolveRuntimeConnection, usesExternalClient } from "./delegation-runtime-connection.js";
 import { runClientCommand } from "./external-client-cli.js";
@@ -447,7 +447,11 @@ export async function runDelegationCli(input: {
       writeResult(
         "delegate start",
         await startWithDelegationWorktree(
-          { cwd: body.cwd, branch: value(parsed, "--worktree"), base: value(parsed, "--base") },
+          {
+            cwd: body.cwd ?? (value(parsed, "--worktree") ? process.cwd() : undefined),
+            branch: value(parsed, "--worktree"),
+            base: value(parsed, "--base"),
+          },
           (cwd) =>
             requestRuntime({
               environment,

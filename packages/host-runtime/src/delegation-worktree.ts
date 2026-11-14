@@ -148,17 +148,23 @@ async function createWorktree(input: {
   }
 }
 
-/** CLI-owned filesystem preparation; the Runtime receives only the effective cwd. */
+/** Shared CLI/Host filesystem preparation; callers must resolve their own source cwd. */
 export async function startWithDelegationWorktree(
   input: { cwd?: string | undefined; branch?: string | undefined; base?: string | undefined },
   start: (cwd: string | undefined) => Promise<unknown>,
 ): Promise<unknown> {
-  if (!input.branch) {
+  if (input.branch === undefined) {
     if (input.base !== undefined) throw invalid("--base requires --worktree");
     return start(input.cwd);
   }
+  if (typeof input.branch !== "string" || !input.branch.trim())
+    throw invalid("worktree must be a non-empty branch name");
+  if (input.base !== undefined && (typeof input.base !== "string" || !input.base.trim()))
+    throw invalid("base must be a non-empty ref");
+  if (typeof input.cwd !== "string" || !path.isAbsolute(input.cwd))
+    throw invalid("--worktree requires an absolute cwd");
   const worktree = await createWorktree({
-    cwd: input.cwd ?? process.cwd(),
+    cwd: path.resolve(input.cwd),
     branch: input.branch,
     base: input.base,
   });
@@ -168,7 +174,7 @@ export async function startWithDelegationWorktree(
       throw new DelegationControlError("INTERNAL_ERROR", "Invalid delegation start response");
     return { ...result, worktree };
   } catch (error) {
-    // The request may have started a Thread even if its response never reached the CLI.
+    // A failed response does not prove that the Thread never started.
     throw retainedError(error, worktree);
   }
 }

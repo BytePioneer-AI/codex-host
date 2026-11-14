@@ -1,5 +1,4 @@
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
-import type { DelegationWorktree } from "./delegation-cli-worktree.js";
 import {
   type DelegationStartResult,
   type DelegationThreadListResult,
@@ -112,7 +111,7 @@ export function compactDelegationOutput(
     case "harness inspect":
       return inspectOutput(body as HarnessInspectResult);
     case "delegate start": {
-      const result = body as DelegationStartResult & { worktree?: DelegationWorktree };
+      const result = body as DelegationStartResult;
       const effective = result.configuration?.effective;
       return {
         thread: result.deepLink,

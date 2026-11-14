@@ -35,9 +35,11 @@
 | `thread send <thread> ... --watch true` | 成功发送新消息后观察，通知解析出的调用方 |
 | `thread watches` | 列出尚未送达的 watch |
 
-`thread watches` 的 JSON / compact 条目在原有字段外提供 `taskName`（当前标题；无法读取时使用登记或观察时保存的标题）、`threadStatus`（查询时读取的 Thread 当前状态，读取失败时省略）、`watchedForMs`（自登记以来的毫秒数，包含 Host 停机时间，不因重复登记重置）。Thread 当前状态与 watch 的 `state` / 已观察到的 `outcome` 不同：通知待送达时 Thread 可能已启动新 Turn。查询只读取信息，不推进观察或投递；同一被观察 Thread 在一次查询中只读一次。无法读取某个 Thread 不会让其 watch 从列表消失。`--format text` 每个 watch 一行，保留 compact 信息。
+`thread watches`、HTTP `/v1/thread/watches` 和 MCP `thread_watches` 共用 Host 查询方法，不做字段裁剪。JSON / compact 条目在原有字段外提供 `taskName`（当前标题；无法读取时使用登记或观察时保存的标题）、`threadStatus`（查询时读取的 Thread 当前状态，读取失败时省略）、`watchedForMs`（自登记以来的毫秒数，包含 Host 停机时间，不因重复登记重置）。Thread 当前状态与 watch 的 `state` / 已观察到的 `outcome` 不同：通知待送达时 Thread 可能已启动新 Turn。查询只读取信息，不推进观察或投递；同一被观察 Thread 在一次查询中只读一次。无法读取某个 Thread 不会让其 watch 从列表消失。`--format text` 每个 watch 一行，保留 compact 信息。
 
 watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 与 `thread send --watch true` 都先提交消息；watch 注册失败不会让已经成功的提交变成失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。两者沿用相同的 JSON / compact watch 字段形态；未请求 watch 时不增加字段。`--watch-timeout-ms` 仅能与 `--watch true` 同用，默认 29 分钟。
+
+外部 HTTP `/v1/delegate/start`、`/v1/thread/send` 与 MCP `delegate_start`、`thread_send` 都接受 `watch: true` 和可选正整数 `watchTimeoutMs`，默认同为 29 分钟，返回相同 `watch` 字段。为兼容 CLI 控制协议，仅提供 `watchTimeoutMs` 也会注册 watch；显式 `watch: false` 不能同时提供超时。外部客户端未指定通知 Thread 时以自身事件日志为通知目标。`thread_send` / `/v1/thread/send` 还接受布尔值 `interrupt`，先停再发、保留现有 watch 的语义与 CLI 一致。
 
 ### CLI 长文本输入
 

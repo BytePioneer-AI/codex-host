@@ -20,6 +20,7 @@ import type { HostInventory } from "./host-inventory.js";
 import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { readThreadResultFile } from "./thread-result-file.js";
 import { validateReadOptions } from "./delegation-snapshot.js";
+import { startWithDelegationWorktree } from "./delegation-worktree.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -145,10 +146,25 @@ export async function routeDelegationRequest(
       return handlers.api.listHarnesses(body as HarnessListInput);
     case "/v1/harness/inspect":
       return handlers.api.inspect(body as unknown as HarnessInspectInput);
-    case "/v1/delegate/start":
-      return body.watchTimeoutMs === undefined
-        ? handlers.api.start(body as unknown as DelegationStartInput)
-        : startWithWatch(handlers.api, watchApi(handlers.watchApi), body);
+    case "/v1/delegate/start": {
+      const { worktree, base, ...start } = body;
+      return startWithDelegationWorktree(
+        {
+          cwd: start.cwd as string | undefined,
+          branch: worktree as string | undefined,
+          base: base as string | undefined,
+        },
+        (cwd) => {
+          const input: Record<string, unknown> = {
+            ...start,
+            ...(cwd !== undefined ? { cwd } : {}),
+          };
+          return input.watchTimeoutMs === undefined
+            ? handlers.api.start(input as unknown as DelegationStartInput)
+            : startWithWatch(handlers.api, watchApi(handlers.watchApi), input);
+        },
+      );
+    }
     case "/v1/thread/send":
       return body.watchTimeoutMs === undefined
         ? handlers.api.send(body as unknown as ThreadSendInput)

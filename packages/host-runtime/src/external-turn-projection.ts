@@ -66,6 +66,7 @@ export interface ExternalTurnProjectionHost {
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
+  touchThread(thread: ExternalThread): Promise<void>;
   persistTerminalIdentity(
     thread: ExternalThread,
     event: Parameters<ExternalThreadRuntime["persistTerminalIdentity"]>[1],
@@ -176,6 +177,8 @@ export class ExternalTurnProjection {
         thread.clientCommand.subsequentTurnId ??= event.turnId;
       // A successor Turn ends the attribution window of every earlier Turn.
       this.#dropSettledTurnProjections(thread, event.turnId);
+      // Not awaited: the write must not delay the Turn's first output.
+      void this.#host.touchThread(thread);
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
@@ -196,6 +199,8 @@ export class ExternalTurnProjection {
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
+      // Before any completion message, so a client acting on it reads the touched record.
+      await this.#host.touchThread(thread);
       // Detached Items (native background commands) and idle background output
       // settle on the completed Turn later; keep its projector so late events
       // still project instead of failing on a missing Turn.

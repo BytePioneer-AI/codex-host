@@ -27,17 +27,20 @@ import {
   type HarnessThinkingOptionId,
 } from "@codexhost/shared-contracts";
 
+import type { AntigravityAcpAvailableModel, AntigravityAcpConfigOption } from "./acp-types.js";
+
 /** Effort suffixes the CLI uses, ordered from least to most reasoning. */
 const EFFORT_LABELS = new Map<string, string>([
   ["low", "Low"],
   ["medium", "Medium"],
   ["high", "High"],
+  ["xhigh", "XHigh"],
 ]);
 
-const EFFORT_SUFFIX_PATTERN = /^(?<base>.+)-(?<effort>low|medium|high)$/u;
+const EFFORT_SUFFIX_PATTERN = /^(?<base>.+)-(?<effort>low|medium|high|xhigh)$/u;
 
 /** Trailing effort in the CLI's display label, e.g. `Gemini 3.1 Pro (Low)`. */
-const EFFORT_LABEL_SUFFIX_PATTERN = /\s*\((?:low|medium|high)\)$/iu;
+const EFFORT_LABEL_SUFFIX_PATTERN = /\s*\((?:low|medium|high|xhigh)\)$/iu;
 
 interface ListedModel {
   readonly baseId: string;
@@ -144,4 +147,40 @@ export function antigravityAvailableThinkingOptions(
     return option ? [option] : [];
   });
   return options.length > 0 ? options : undefined;
+}
+
+export interface AntigravityAcpEffectiveModelState {
+  effectiveModel?: HarnessModelRef;
+  resolvedModelLabel?: string;
+  effectiveThinkingOptionId?: HarnessThinkingOptionId;
+  availableThinkingOptions?: HarnessThinkingOption[];
+}
+
+export function parseAntigravityAcpModelCatalog(
+  _availableModels: readonly AntigravityAcpAvailableModel[],
+  _configOptions?: readonly AntigravityAcpConfigOption[],
+): HarnessModelCatalog {
+  throw new Error("parseAntigravityAcpModelCatalog stub");
+}
+
+export function readAcpEffectiveModelState(
+  _configOptions: readonly AntigravityAcpConfigOption[] | undefined,
+  _catalog?: HarnessModelCatalog,
+): AntigravityAcpEffectiveModelState {
+  throw new Error("readAcpEffectiveModelState stub");
+}
+
+export function splitAntigravityModelAndEffort(rawModelId: string): {
+  modelRef: HarnessModelRef;
+  effort?: HarnessThinkingOptionId;
+} {
+  const match = EFFORT_SUFFIX_PATTERN.exec(rawModelId.trim());
+  if (match?.groups?.base && match.groups.effort) {
+    const baseRef = harnessModelRefSchema.safeParse({ id: match.groups.base });
+    const effortId = harnessThinkingOptionIdSchema.safeParse(match.groups.effort);
+    if (baseRef.success && effortId.success) {
+      return { modelRef: baseRef.data, effort: effortId.data };
+    }
+  }
+  return { modelRef: harnessModelRefSchema.parse({ id: rawModelId.trim() }) };
 }

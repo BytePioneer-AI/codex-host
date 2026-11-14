@@ -6,6 +6,8 @@ import type {
   UserMessageNode,
 } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import { isAppendSurfaceEvent, isReplacementSurfaceEvent } from "@deepseek-ai/dsh-session/surface";
+import { responseAnnotationsOf } from "@codexhost/shared-contracts";
+import type { ResponseAnnotation } from "@codexhost/shared-contracts";
 import type { InboxState } from "./inbox.ts";
 import { chatNode } from "./common.ts";
 import { contextForm, contextProducer } from "./event-projection.ts";
@@ -15,6 +17,8 @@ interface ReferencedUserMessageNode extends UserMessageNode {
   readonly referenceLabels?: readonly string[];
   /** Skill names the same step's `skill-invocation` injections loaded. */
   readonly skillNames?: readonly string[];
+  /** Selected passages this message carried, in attachment order. */
+  readonly responseAnnotations?: readonly ResponseAnnotation[];
 }
 
 interface ReferencedSteeringMessageNode extends SteeringMessageNode {
@@ -22,6 +26,8 @@ interface ReferencedSteeringMessageNode extends SteeringMessageNode {
   readonly referenceLabels?: readonly string[];
   /** Skill names the same step's `skill-invocation` injections loaded. */
   readonly skillNames?: readonly string[];
+  /** Selected passages this message carried, in attachment order. */
+  readonly responseAnnotations?: readonly ResponseAnnotation[];
 }
 
 type MessageNode =
@@ -130,14 +136,34 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
       context.state.kind === "context" &&
       context.start?.event.type === "user/message" &&
       context.state.waking === true;
+    // Annotations ride the message text; the reply that answers it resolves
+    // its citations against them.
+    const state =
+      context.state.kind === "user" || context.state.kind === "steering"
+        ? {
+            ...context.state,
+            ...annotationsOf(context.state),
+          }
+        : context.state;
     return chatNode(
       context,
       waking ? "turn-trigger" : context.state.kind,
       context.state.seq,
-      context.state,
+      state,
     );
   },
 };
+
+/** Attach the message's annotation block when it carries one; absent otherwise. */
+function annotationsOf(state: ReferencedUserMessageNode | ReferencedSteeringMessageNode): {
+  readonly responseAnnotations?: readonly ResponseAnnotation[];
+} {
+  const text = state.content
+    .flatMap((block) => (block.type === "text" ? [block.text] : []))
+    .join("\n");
+  const responseAnnotations = responseAnnotationsOf(text);
+  return responseAnnotations.length === 0 ? {} : { responseAnnotations };
+}
 
 /** Developer history uses the input-message lifecycle and context presentation. */
 export const developerMessageDefinition: ConversationNodeDefinition<MessageNode> = {

@@ -1,6 +1,7 @@
 /** Chat-owned Slot declarations and composed component props. */
 import type { ReactNode } from "react";
 import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
+import type { ResponseAnnotation } from "@codexhost/shared-contracts";
 import type { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
 import type {
   CommandNode,
@@ -245,6 +246,12 @@ export interface ChatNodeOwnerProps {
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined;
   /** Turn-process state when this Node belongs to a projected Turn. */
   turnProcess?: TurnProcessOwnerProps | undefined;
+  /**
+   * Annotations of the user message this Node's Turn answers, in attachment
+   * order; empty when the Turn answers a message without any. The seat resolves
+   * them per Node, so every renderer receives the array it actually reads.
+   */
+  responseAnnotations: readonly ResponseAnnotation[];
 }
 
 /** Shared presentation state for one Turn-process answer generation. */

@@ -6,6 +6,8 @@ import type {
   TurnTailOwnerProps,
 } from "../contract/slots.ts";
 import { AssistantMarkdown } from "./AssistantMarkdown.tsx";
+import { annotationLabels } from "../markdown-labels.ts";
+import type { MarkdownResponseAnnotations } from "@deepseek-ai/dsh-client-ui-primitives";
 
 type AssistantNodeViewProps = ChatNodeViewProps<"assistant-step"> &
   InjectFace<PresentationInjected>;
@@ -20,6 +22,7 @@ export const AssistantNodeView = memo(function AssistantNodeView({
   openFile,
   renderMessageImages,
   fileMentions,
+  responseAnnotations,
   usePresentation,
   t,
 }: AssistantNodeViewProps) {
@@ -45,19 +48,35 @@ export const AssistantNodeView = memo(function AssistantNodeView({
   const revealProcess = useCallback(() => {
     turnProcess?.setOpen(true);
   }, [turnProcess]);
+  // Stable pair for the Markdown cache: a new identity would discard the
+  // streaming render mid-message, so it changes only with content or locale.
+  const citationLabels = useMemo(() => annotationLabels(t), [t]);
+  const citations = useMemo<MarkdownResponseAnnotations>(
+    () => ({
+      labels: citationLabels,
+      resolve: (index) => responseAnnotations[index - 1],
+    }),
+    [citationLabels, responseAnnotations],
+  );
   return (
-    <AssistantMarkdown
-      blocks={data.blocks}
-      groupPart={groupPart}
-      useDisclosure={useDisclosure}
-      streaming={data.status === "running"}
-      interrupted={data.status === "interrupted"}
-      renderMessageImages={renderMessageImages}
-      reasoningHidden={reasoningHidden}
-      usePresentation={usePresentation}
-      revealProcess={revealProcess}
-      mentions={mentions}
-      t={t}
-    />
+    <div
+      data-selection-answer=""
+      data-selection-answer-streaming={data.status === "running" || undefined}
+    >
+      <AssistantMarkdown
+        blocks={data.blocks}
+        groupPart={groupPart}
+        useDisclosure={useDisclosure}
+        streaming={data.status === "running"}
+        interrupted={data.status === "interrupted"}
+        renderMessageImages={renderMessageImages}
+        reasoningHidden={reasoningHidden}
+        usePresentation={usePresentation}
+        revealProcess={revealProcess}
+        mentions={mentions}
+        responseAnnotations={citations}
+        t={t}
+      />
+    </div>
   );
 });

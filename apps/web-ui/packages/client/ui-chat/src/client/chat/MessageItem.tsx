@@ -1,6 +1,9 @@
 import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import { parseThreadWatchNotice } from "@codexhost/shared-contracts";
+import { parseAnnotatedMessage, parseThreadWatchNotice } from "@codexhost/shared-contracts";
+import type { ResponseAnnotation } from "@codexhost/shared-contracts";
+import { ResponseAnnotationChip } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { ResponseAnnotationLabels } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   PendingSubmission,
   PendingSubmissionAttachment,
@@ -23,6 +26,7 @@ import type {
   ChatNodeViewProps,
   ChatViewSlotProps,
 } from "../contract/slots.ts";
+import { annotationLabels } from "../markdown-labels.ts";
 import type { ModelRetryNode, TurnErrorNode, UserMessageNode } from "../contract/snapshot.ts";
 import { ThreadWatchNotice } from "./ThreadWatchNotice.tsx";
 import { CompactionItem } from "./CompactionItem.tsx";
@@ -74,7 +78,10 @@ function contentParts(content: readonly unknown[]): {
   const rest: unknown[] = [];
   for (const block of content) {
     const b = block as { type?: string; text?: string; attachment?: unknown };
-    if (b.type === "text" && typeof b.text === "string") texts.push(b.text);
+    // The annotation block is context for the model, shown as chips beside
+    // the bubble instead of raw JSON inside it.
+    if (b.type === "text" && typeof b.text === "string")
+      texts.push(parseAnnotatedMessage(b.text).body);
     else if (b.type === "image" && b.attachment !== undefined) {
       attachments.push({ type: "image", image: { attachment: (b as UserImage).attachment } });
     } else if (b.type === "file" && b.attachment !== undefined) {
@@ -213,6 +220,7 @@ function UserStyleBubble({
   echo = false,
   referenceLabels = [],
   skillNames = [],
+  responseAnnotations = [],
   previewAttachments,
   references,
   links,
@@ -220,6 +228,8 @@ function UserStyleBubble({
   t,
 }: {
   content: readonly unknown[];
+  /** Selected passages the message carried, shown above the bubble. */
+  responseAnnotations?: readonly ResponseAnnotation[] | undefined;
   links?: ChatLinks | undefined;
   editor?: ReactNode;
   renderMessageImages: ChatNodeOwnerProps["renderMessageImages"];
@@ -251,6 +261,18 @@ function UserStyleBubble({
       data-submission-echo={echo || undefined}
     >
       <div className={notice ? css.noticeStack : css.userStack}>
+        {responseAnnotations.length > 0 && (
+          <div className={css.annotationRow} data-message-annotations>
+            {responseAnnotations.map((annotation, index) => (
+              <ResponseAnnotationChip
+                key={`${String(index)}:${annotation.text}`}
+                index={index + 1}
+                annotation={annotation}
+                labels={annotationLabels(t)}
+              />
+            ))}
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className={css.attachmentRow} data-message-attachments>
             {attachments.map((attachment, index) => (
@@ -440,6 +462,7 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
       references={{ openFile, openSkill }}
       links={links}
       renderMessageImages={renderMessageImages}
+      responseAnnotations={data.responseAnnotations}
       {...(data.referenceLabels === undefined ? {} : { referenceLabels: data.referenceLabels })}
       {...(data.skillNames === undefined ? {} : { skillNames: data.skillNames })}
       t={t}

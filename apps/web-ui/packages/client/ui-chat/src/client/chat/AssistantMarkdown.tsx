@@ -9,6 +9,7 @@ import {
 import type {
   MarkdownFileMentions,
   MarkdownPathImages,
+  MarkdownResponseAnnotations,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   ChatNodeOwnerProps,
@@ -66,6 +67,8 @@ export interface AssistantMarkdownProps {
   revealProcess?: (() => void) | undefined;
   /** Resolved prose file mentions for this Assistant's closing turn. */
   mentions?: MarkdownFileMentions | undefined;
+  /** How the reply's annotation citations resolve, when its Turn carries any. */
+  responseAnnotations?: MarkdownResponseAnnotations | undefined;
   /** The owning view's locale seat, passed down as a plain prop. */
   t: ChatViewSlotProps["t"];
 }
@@ -82,6 +85,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   usePresentation,
   revealProcess,
   mentions,
+  responseAnnotations,
   t,
 }: AssistantMarkdownProps) {
   // Stable per locale revision (t identity changes on switch): a fresh object
@@ -115,6 +119,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
             labels={labels}
             fileMentions={mentions}
             pathImages={pathImages}
+            responseAnnotations={responseAnnotations}
           />,
         );
         break;

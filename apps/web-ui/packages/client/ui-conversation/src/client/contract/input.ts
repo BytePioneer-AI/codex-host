@@ -7,6 +7,7 @@
  * here is the submit plane (phase, claim, attempt) alone.
  */
 import type { Context } from "@deepseek-ai/cordis";
+import type { ResponseAnnotation } from "@codexhost/shared-contracts";
 import type { SessionBinding } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { InboxState } from "@deepseek-ai/dsh-agent/types";
 import type { ObservableSnapshot, SnapshotStore } from "@deepseek-ai/dsh-client-store";
@@ -175,6 +176,11 @@ declare module "@deepseek-ai/cordis" {
 /** Browser-runtime identity of one unsent attachment draft. */
 export type DraftAttachmentId = Branded<"DraftAttachmentId">;
 
+/** One annotation attached to the next message, with its draft-local identity. */
+export interface DraftResponseAnnotation extends ResponseAnnotation {
+  readonly id: DraftAttachmentId;
+}
+
 /**
  * The scoped-event application verbs: the hub's bail listeners call these,
  * and the boolean answer IS the event's bail value (true ⟺ the editor
@@ -197,6 +203,10 @@ export interface SessionInput extends InputTarget {
   removeAttachment(id: DraftAttachmentId): boolean;
   /** Drop ids whose browser-owned objects no longer exist. */
   pruneAttachments(ids: readonly DraftAttachmentId[]): void;
+  /** Attach one selected passage to the next message; busy admission phases refuse. */
+  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined;
+  /** Remove one attached annotation; busy admission phases refuse. @returns whether the id was removed. */
+  removeResponseAnnotation(id: DraftAttachmentId): boolean;
   /**
    * THE complexity sink: enter adjudication, submit transaction, and the default sink live inside.
    * @param mode - delivery intent retained through asynchronous adjudication and serialization.
@@ -293,6 +303,14 @@ export interface InputActions {
   removeAttachment(id: DraftAttachmentId): void;
   /** Drop ids whose browser-owned objects no longer exist. */
   pruneAttachments(ids: readonly DraftAttachmentId[]): void;
+  /**
+   * Attach one selected passage to the next message, in attachment order.
+   * @param annotation - selected text and its optional comment.
+   * @returns the new draft identity, or undefined while a submission holds the draft.
+   */
+  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined;
+  /** Remove one attached annotation by draft identity; busy admission phases refuse. */
+  removeResponseAnnotation(id: DraftAttachmentId): void;
   /** Enter submission (adjudication / claim transaction / default sink inside). */
   submit(): void;
 }
@@ -313,6 +331,8 @@ export interface InputState {
   readonly draft: string;
   /** Ordered runtime-only attachment ids; browser objects stay in ConversationController. */
   readonly attachmentIds: readonly DraftAttachmentId[];
+  /** Selected passages attached to the next message, in attachment order. */
+  readonly responseAnnotations: readonly DraftResponseAnnotation[];
   /** Monotonic editor revision (span CAS compares against this). */
   readonly draftRev: number;
   /** Mounted input extension's primary-send action; absent restores the default button. */
@@ -365,6 +385,8 @@ export type InputEvent =
       readonly type: "enter";
       readonly mode: InputSubmitMode;
       readonly draft: string;
+      /** Whether attached response annotations make an otherwise empty draft sendable. */
+      readonly annotated: boolean;
       readonly submission?: MessageSubmission;
     }
   | { readonly type: "adjudicated"; readonly attempt: SubmitAttempt; readonly outcome: PickOutcome }

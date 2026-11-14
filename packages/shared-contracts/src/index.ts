@@ -383,6 +383,21 @@ export {
 } from "./thread-watch-notice.js";
 
 export {
+  RESPONSE_ANNOTATIONS_CLOSE,
+  RESPONSE_ANNOTATIONS_GUIDANCE,
+  RESPONSE_ANNOTATIONS_HEADER,
+  RESPONSE_ANNOTATIONS_OPEN,
+  RESPONSE_ANNOTATIONS_REQUEST_HEADER,
+  composeAnnotatedMessage,
+  formatResponseAnnotations,
+  parseAnnotatedMessage,
+  responseAnnotationIndex,
+  responseAnnotationsOf,
+  type ParsedAnnotatedMessage,
+  type ResponseAnnotation,
+} from "./response-annotation.js";
+
+export {
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupParamsSchema,
   remoteSshSetupResultSchema,

@@ -42,6 +42,7 @@ import { mergeTurnRailItems } from "./turn-rail-items.ts";
 import { useChatScroll } from "./use-chat-scroll.ts";
 import { fileMediaUrl, resolveWorkspacePath } from "@deepseek-ai/dsh-util-workspace-path";
 import { useSentMessageEditing } from "./SentMessageEditor.tsx";
+import { SelectionActions } from "./SelectionActions.tsx";
 import css from "./ChatView.module.css";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -192,6 +193,7 @@ export function ChatView({
   fileMentions,
   usePresentation,
   useProjection,
+  inputActions,
   t,
 }: ChatViewSlotProps) {
   const order = useChat((s) => s.order);
@@ -238,6 +240,14 @@ export function ChatView({
       },
     }),
     [cwd, remote, t],
+  );
+  // The transcript column holds every rendered answer: a selection is offered
+  // the attach action only when it stays inside one of them.
+  const attachSelection = useCallback(
+    (text: string) => {
+      inputActions?.addResponseAnnotation({ text });
+    },
+    [inputActions],
   );
   const running = useSession((s) => s.running);
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
@@ -475,6 +485,11 @@ export function ChatView({
           </div>
         </div>
       </div>
+      <SelectionActions
+        labels={{ addToChat: t("selection.addToChat") }}
+        onAdd={attachSelection}
+        container={() => scroll.columnRef.current}
+      />
       {!scroll.followingTail && (
         <div className={css.toBottomSlot}>
           <button

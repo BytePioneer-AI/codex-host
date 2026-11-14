@@ -238,7 +238,7 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** 它 MUST NOT 仅以自由文本表述成败
 
 ### Requirement: 调用方可显式注册一次性 Thread 停下通知
-系统 SHALL 提供 `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` 与 `codexhost thread watches`。watch 在被观察 Thread 停下或到期时，SHALL 通过与 `thread send` 相同的路径在被通知 Thread 中启动一个新 Turn，作为一次性通知。被观察 Thread 与被通知 Thread 可以是任意两个不同的 Thread，不要求委派血缘。通知 SHALL 只报告执行状态与 Thread 链接，MUST NOT 携带或摘要会话内容，也 MUST NOT 被表述为工作已验收。watch SHALL 只保存在 Host Runtime 内存中，不提供取消操作。
+系统 SHALL 提供 `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` 与 `codexhost thread watches`。watch 在被观察 Thread 停下或到期时，SHALL 通过 `thread send` 的 `steer: true` 路径提交一次通知：原生 Codex 复用 `turn/steer`，外部 Harness 复用 Desktop 的送达操作，空闲 Thread 开始新 Turn。被观察 Thread 与被通知 Thread 可以是任意两个不同的 Thread，不要求委派血缘。通知 SHALL 只报告执行状态与 Thread 链接，MUST NOT 携带或摘要会话内容，也 MUST NOT 被表述为工作已验收。watch SHALL 只保存在 Host Runtime 内存中，不提供取消操作。
 
 #### Scenario: 注册后立即返回
 - **WHEN** 调用方对一个运行中的 Thread 执行 `thread watch`
@@ -275,18 +275,18 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 
 #### Scenario: 被通知 Thread 正忙
 - **WHEN** 通知到期时被通知 Thread 有活跃 Turn
-- **THEN** 通知 SHALL 保持待送达并在最长 6 小时内重试
-- **AND** `THREAD_BUSY` MUST NOT 被视为已送达
+- **THEN** 若它当前能接受输入，Host SHALL 通过同一 steering 操作把通知提交到当前 Turn
+- **AND** 暂不能接受输入时通知 SHALL 保持待送达，`THREAD_BUSY` MUST NOT 被视为已送达
 - **AND** `thread send` 自身 MUST NOT 因此改为排队
 - **AND** 每次投递 SHALL 合并该接收方当前所有待投递通知，包括此前轮询积累的通知
 
-#### Scenario: 已确认未启动的投递失败
-- **WHEN** 投递失败且调用链确认未启动 Turn，例如 resume 校验失败或原生明确拒绝启动
+#### Scenario: 已确认输入未被接受的投递失败
+- **WHEN** 投递失败且调用链确认输入未被接受，例如 resume 校验失败、原生明确拒绝，或替换开始前停止超时
 - **THEN** Host SHALL 在投递期限内保留通知并重试
 - **AND** 接收方已不存在或只读时 SHALL 直接标记 `undeliverable`
 
 #### Scenario: 投递结果未知
-- **WHEN** 投递失败且调用链不能证明未启动 Turn，例如 Harness 启动确认超时
+- **WHEN** 投递失败且调用链不能证明输入未被接受，例如输入提交后 Harness 确认超时
 - **THEN** Host MUST NOT 重试该投递
 - **AND** SHALL 将 watch 标记为 `undeliverable` 并保留结果未知的原因
 
@@ -410,7 +410,7 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 - **AND** 相同请求在 Thread 未变化时 SHALL 返回语义相同的结果
 
 ### Requirement: 调用方可向已有可写 Thread 发送后续消息
-系统 SHALL 提供 `codexhost thread send <thread> --message <text>`，在用户明确指定的普通可写 Thread 中启动新的 Turn 并立即返回。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread，并接受裸 Thread ID 或 `codex://threads/<id>`。
+系统 SHALL 提供 `codexhost thread send <thread> --message <text> [--steer true|false]`，在用户明确指定的普通可写 Thread 中提交输入并立即返回。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread，并接受裸 Thread ID 或 `codex://threads/<id>`。省略 `--steer` 或传 `false` SHALL 保留空闲发送、忙时拒绝的行为。CLI、HTTP 与 MCP SHALL 提供同一 `steer` 契约。
 
 #### Scenario: 向已完成的委派 Thread 发送第二轮消息
 - **WHEN** 调用方对没有活跃 Turn 的委派子 Thread 执行 `thread send`
@@ -424,9 +424,25 @@ Thread 观察命令 SHALL 接受裸 Thread 标识与 Codex 深度链接两种形
 - **AND** 裸 ID SHALL 得到等价结果
 
 #### Scenario: Thread 正在运行
-- **WHEN** 调用方对已有活跃 Turn 的 Thread 执行 `thread send`
+- **WHEN** 调用方对已有活跃 Turn 的 Thread 执行 `thread send`，且没有开启 `--steer true`
 - **THEN** 命令 SHALL 以 `THREAD_BUSY` 失败
 - **AND** MUST NOT 排队、取消旧 Turn 或启动并发 Turn
+
+#### Scenario: 调用方显式调整运行中任务
+- **WHEN** 调用方执行 `thread send --steer true`，或通过 HTTP `/v1/thread/send`、MCP `thread_send` 传 `steer: true`
+- **THEN** 空闲 Thread SHALL 启动新 Turn；运行中 Thread SHALL 复用 Desktop 的同一个调整方向操作
+- **AND** 原生 Codex SHALL 使用 `turn/steer`；外部 Harness SHALL 按 Session 能力选择原生接受或既有停止后重发
+- **AND** 入口 SHALL 只校验和传递参数，不先探测忙碌状态，不新增队列或重试
+- **AND** 成功回执 SHALL 不被解释为已在当前轮执行或任务完成；回执不额外暴露送达方式，调用方通过 read/wait 观察后续结果
+
+#### Scenario: steer 与 interrupt 互斥
+- **WHEN** 调用方同时请求 `steer` 与 `interrupt`
+- **THEN** 入口 SHALL 在发送前以 `INVALID_ARGUMENT` 拒绝，且 MUST NOT 启动 Turn 或取消现有 Turn
+- **AND** CLI、HTTP 与 MCP SHALL 返回相同的错误代码
+
+#### Scenario: steer 参数非法
+- **WHEN** `steer` 的值不是布尔值（CLI 的 `--steer` 不是 `true` 或 `false`）
+- **THEN** 入口 SHALL 在发送请求前以 `INVALID_ARGUMENT` 失败
 
 ### Requirement: 调用方可取消已有 Thread 的当前 Turn
 系统 SHALL 提供 `codexhost thread cancel <thread>`，请求取消目标 Thread 当前活跃 Turn，同时保留 Thread、既有消息和持久化映射。该操作 SHALL 同时支持外部 Harness Thread 与原生 Codex Thread。

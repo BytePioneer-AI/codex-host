@@ -445,6 +445,69 @@ describe("delegation CLI", () => {
     expect(JSON.parse(String(cancelCall[1]?.body))).toEqual({ threadId: "child-1" });
   });
 
+  it.each([undefined, "true", "false"])(
+    "sends steer=%s without a preliminary read",
+    async (steer) => {
+      const fetchImpl = successfulFetch({
+        threadId: "child-1",
+        turnId: "turn-1",
+        status: "running",
+      });
+      expect(
+        await runDelegationCli({
+          arguments: [
+            "thread",
+            "send",
+            "codex://threads/child-1",
+            "--message",
+            "adjust",
+            ...(steer === undefined ? [] : ["--steer", steer]),
+          ],
+          environment: {
+            [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+            [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+          },
+          output: new PassThrough(),
+          fetchImpl,
+        }),
+      ).toBe(0);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(fetchImpl).mock.calls[0];
+      expect(String(call?.[0])).toContain("/v1/thread/send");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        threadId: "child-1",
+        message: "adjust",
+        ...(steer === undefined ? {} : { steer: steer === "true" }),
+      });
+    },
+  );
+
+  it("reports a rejected steer without retrying", async () => {
+    const error = {
+      code: "DELEGATION_FAILED",
+      message: "Native steer rejected",
+      details: { notStarted: true },
+    };
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ error }), { status: 409 }),
+    ) as unknown as typeof fetch;
+    const diagnosticOutput = new PassThrough();
+    expect(
+      await runDelegationCli({
+        arguments: ["thread", "send", "child", "--message", "adjust", "--steer", "true"],
+        environment: {
+          [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
+          [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
+        },
+        output: new PassThrough(),
+        diagnosticOutput,
+        fetchImpl,
+      }),
+    ).toBe(1);
+    expect(JSON.parse(outputText(diagnosticOutput))).toEqual({ error });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects Turn ranges on the default result view", async () => {
     const diagnosticOutput = new PassThrough();
     await expect(
@@ -594,6 +657,12 @@ describe("delegation CLI", () => {
       ["thread", "read", "thread-1", "--view", "messages", "--limit", "101"],
     ],
     ["missing send message", ["thread", "send", "thread-1"]],
+    ["invalid steer", ["thread", "send", "thread-1", "--message", "adjust", "--steer", "yes"]],
+    ["missing steer value", ["thread", "send", "thread-1", "--message", "adjust", "--steer"]],
+    [
+      "steer with interrupt",
+      ["thread", "send", "thread-1", "--message", "adjust", "--steer", "true", "--interrupt"],
+    ],
     ["cancel option", ["thread", "cancel", "thread-1", "--message", "no"]],
     ["invalid list limit", ["thread", "list", "--limit", "101"]],
     ["invalid sort", ["thread", "list", "--sort", "newest"]],

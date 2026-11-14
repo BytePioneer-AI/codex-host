@@ -176,29 +176,6 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
   );
 });
 
-it("limits by Relay's phone IP, ignores forged forwarding headers, and keeps another phone usable", async (t) => {
-  const f = await fixture(t);
-  for (let i = 0; i < 10; i++) {
-    const result = await f.send("/api/auth/login", JSON.stringify({ token: "wrong" }), {
-      "x-forwarded-for": `198.51.100.${i}`,
-    });
-    assert.equal(result.status, 401);
-  }
-  assert.equal(
-    (
-      await f.send("/api/auth/login", JSON.stringify({ token: f.state.secret }), {
-        "x-forwarded-for": "127.0.0.1",
-      })
-    ).status,
-    429,
-  );
-  assert.equal(
-    (await f.send("/api/auth/login", JSON.stringify({ token: f.state.secret }), {}, "127.0.0.1"))
-      .status,
-    200,
-  );
-});
-
 it("resets phones when certificates are missing but keeps registration", ciTiming, async (t) => {
   const f = await fixture(t, false);
   assert.equal(

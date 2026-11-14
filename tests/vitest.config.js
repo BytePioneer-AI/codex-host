@@ -91,7 +91,15 @@ export default defineConfig({
       "packages/web-server/test/**",
       // Native service tests use Node's runner after building the Rust Launcher.
       "packages/host-runtime/test/native/**",
-      ...(platformOnly ? platformIndependentFiles() : []),
+      ...(platformOnly
+        ? [
+            ...platformIndependentFiles(),
+            "packages/repository-automation/test/**",
+            "packages/shared-contracts/test/**",
+            "packages/renderer-extension/test/**",
+            "tools/gate-claude-code/run.test.mjs",
+          ]
+        : []),
     ],
     maxWorkers: 4,
     passWithNoTests: false,

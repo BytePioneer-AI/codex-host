@@ -27,6 +27,7 @@ export type NativeClientReply =
 
 export interface NativeClientChannelDependencies {
   readonly events: ClientChannelEvents;
+  readonly asyncQuestions?: NativeAsyncQuestions;
   request(method: string, params: JsonObject): Promise<NativeClientReply>;
   respond(
     requestId: string | number,
@@ -392,7 +393,8 @@ export class NativeClientChannel {
   readonly #resumedThreads = new Set<string>();
   readonly #configuration = new Map<string, ReturnType<typeof nativeThreadConfiguration>>();
   readonly #items = new NativeClientItems();
-  readonly #asyncQuestions = new NativeAsyncQuestions();
+  readonly #asyncQuestions: NativeAsyncQuestions;
+  readonly #ownsAsyncQuestions: boolean;
   readonly #pending = new Map<string, PendingNativeInteraction>();
   readonly #pendingNativeIds = new Map<string, string>();
   readonly #unconfirmedResponses = new Set<string>();
@@ -401,6 +403,8 @@ export class NativeClientChannel {
 
   constructor(host: NativeClientChannelDependencies) {
     this.#host = host;
+    this.#ownsAsyncQuestions = host.asyncQuestions === undefined;
+    this.#asyncQuestions = host.asyncQuestions ?? new NativeAsyncQuestions();
   }
 
   noteThread(threadId: string): void {
@@ -418,6 +422,18 @@ export class NativeClientChannel {
       if (value.method === "thread/settings/updated" && isJsonObject(params.threadSettings))
         this.#configuration.set(threadId, nativeThreadConfiguration(params.threadSettings));
       if (value.method === "thread/closed") this.#resumedThreads.delete(threadId);
+      const endedTurn =
+        value.method === "turn/completed" && isRecord(params.turn) ? params.turn.id : undefined;
+      if (value.method === "thread/closed" || typeof endedTurn === "string") {
+        for (const pending of this.#pending.values()) {
+          if (
+            pending.kind === "question" &&
+            pending.threadId === threadId &&
+            (value.method === "thread/closed" || pending.params.turnId === endedTurn)
+          )
+            this.#deletePending(pending.requestId);
+        }
+      }
       if (value.method === "turn/started") this.#interactionErrors.delete(threadId);
       this.#host.events.changed(threadId, value.method);
       if (asyncQuestionsChanged)
@@ -734,7 +750,7 @@ export class NativeClientChannel {
     this.#interactionErrors.clear();
     this.#configuration.clear();
     this.#items.clear();
-    this.#asyncQuestions.clear();
+    if (this.#ownsAsyncQuestions) this.#asyncQuestions.clear();
     for (const threadId of threads) this.#host.events.changed(threadId, "thread/status/changed");
   }
 

@@ -55,6 +55,7 @@ import {
   writeSupersededSessionsFile,
   type StoredSupersededSessionV1,
 } from "./superseded-sessions.js";
+import { createLockFile, removeStaleLock } from "./lock-file.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -372,7 +373,6 @@ export class MappingStore {
   // ponytail: A Store-wide queue caps write concurrency at one; shard only if measured throughput requires it.
   #writeTail: Promise<void> = Promise.resolve();
   #initialized = false;
-  #lockHandle: FileHandle | null = null;
 
   constructor(options: MappingStoreOptions) {
     this.#directory = path.resolve(options.directory);
@@ -1111,10 +1111,7 @@ export class MappingStore {
 
   async close(): Promise<void> {
     await this.#writeTail;
-    const handle = this.#lockHandle;
-    this.#lockHandle = null;
     this.#initialized = false;
-    if (handle) await handle.close().catch(() => undefined);
     try {
       const current = JSON.parse(await readFile(this.#lockPath, "utf8")) as Partial<LockRecord>;
       if (current.instanceId === this.#instanceId) await rm(this.#lockPath, { force: true });
@@ -1369,7 +1366,7 @@ export class MappingStore {
       ...metadataNames
         .filter((name) => name.includes(".tmp-"))
         .map((name) => rm(path.join(this.#metadataDirectory, name), { force: true })),
-      // Renamed aside by #acquireLock; nothing reads them back, and they accumulate one per run.
+      // Stale locks renamed aside by older releases are no longer needed.
       ...rootNames
         .filter((name) => name.startsWith(`${path.basename(this.#lockPath)}.stale-`))
         .map((name) => rm(path.join(this.#directory, name), { force: true })),
@@ -1377,8 +1374,7 @@ export class MappingStore {
   }
 
   async #acquireLock(): Promise<void> {
-    const attempt = async (): Promise<FileHandle> => {
-      const handle = await open(this.#lockPath, "wx", constants.S_IRUSR | constants.S_IWUSR);
+    const attempt = async (): Promise<void> => {
       const lock: LockRecord = {
         pid: process.pid,
         instanceId: this.#instanceId,
@@ -1386,19 +1382,18 @@ export class MappingStore {
         executablePath: process.execPath,
         processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
       };
-      await handle.writeFile(`${JSON.stringify(lock)}\n`, "utf8");
-      await handle.sync();
-      return handle;
+      return createLockFile(this.#lockPath, `${JSON.stringify(lock)}\n`);
     };
     try {
-      this.#lockHandle = await attempt();
+      await attempt();
       return;
     } catch (error) {
       if (systemErrorCode(error) !== "EEXIST") throw error;
     }
     let existing: Partial<LockRecord> = {};
+    const inspected = await readFile(this.#lockPath, "utf8").catch(() => null);
     try {
-      existing = JSON.parse(await readFile(this.#lockPath, "utf8")) as Partial<LockRecord>;
+      existing = JSON.parse(inspected ?? "") as Partial<LockRecord>;
     } catch {
       // An invalid lock cannot prove a live owner and is treated as stale.
     }
@@ -1408,11 +1403,13 @@ export class MappingStore {
         `Another codexhost process owns Mapping Store at ${this.#directory} (owner PID ${existing.pid}; startedAt: ${typeof existing.startedAt === "string" ? existing.startedAt : "unknown"})`,
       );
     }
-    await rename(this.#lockPath, `${this.#lockPath}.stale-${this.#now().getTime()}`).catch(
-      () => undefined,
-    );
     try {
-      this.#lockHandle = await attempt();
+      if (inspected !== null) {
+        await removeStaleLock(this.#lockPath, inspected, (pid, processStartedAt) =>
+          lockOwnerIsLive({ pid, processStartedAt }),
+        );
+      }
+      await attempt();
     } catch (error) {
       throw new MappingStoreError("STORE_LOCKED", "Mapping Store lock could not be acquired", {
         cause: error,

@@ -62,6 +62,22 @@ const TRANSIENT_INSTALL_RETRY_MS = 250;
 const RECOVERY_RETRY_INITIAL_MS = 30_000;
 const RECOVERY_RETRY_MAX_MS = 300_000;
 const REMOTE_CONNECTION_RECOVERY_INTERVAL_MS = 5_000;
+// Below `npm stop`'s 10s exit bound, so a stuck Renderer evaluation cannot hold the controller.
+const SHUTDOWN_OPERATION_WAIT_MS = 3_000;
+
+async function settleWithin(promise: Promise<unknown>, milliseconds: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const startupTraceStartedAt = Date.now();
 
 function startupTrace(stage: string, detail?: unknown): void {
@@ -370,7 +386,10 @@ export async function runDesktopController(
     }
   } finally {
     await attachmentServer?.close();
-    await operation;
+    // Closing the session below releases an evaluation still waiting on the Renderer.
+    await settleWithin(operation, SHUTDOWN_OPERATION_WAIT_MS);
     resetSession();
+    // An operation that outlives the wait may still open a session; close it once it settles.
+    void operation.then(resetSession);
   }
 }

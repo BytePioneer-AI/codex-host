@@ -2,6 +2,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   identifyStopTarget,
+  isRemoteAppServerListener,
   launcherProcess,
   listUserProcesses,
   stopProcess,
@@ -59,6 +60,15 @@ export async function stopDevelopment({
   log(
     "codexhost stop: stopping local services across worktrees; running tasks will be interrupted",
   );
+  // An SSH client's listener is not stopped here, but it relaunches the shared Host on demand.
+  const remoteListeners = processes.filter(isRemoteAppServerListener);
+  for (const listener of remoteListeners) {
+    log(
+      `codexhost stop: an SSH client is connected through remote listener PID ${listener.pid}; ` +
+        "it restarts the shared Host until that client disconnects",
+    );
+  }
+  const failures = [];
   // Stop Web supervisors before their children so a child exit cannot restart Web.
   for (const kind of [
     "watch",
@@ -71,18 +81,30 @@ export async function stopDevelopment({
   ]) {
     for (const target of targets.filter((candidate) => candidate.kind === kind)) {
       log(`codexhost stop: stopping ${kind} (PID ${target.pid})`);
-      await stop(target, { list });
-      const supervisor = supervisors.get(target.pid);
-      // Controller exit closes its managed Desktop; Host exit reaps its Harness tree.
-      if (supervisor) await wait(supervisor, { list });
+      // One stuck service must not leave every later service running.
+      try {
+        await stop(target, { list });
+        const supervisor = supervisors.get(target.pid);
+        // Controller exit closes its managed Desktop; Host exit reaps its Harness tree.
+        if (supervisor) await wait(supervisor, { list });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        log(`codexhost stop: ${kind} (PID ${target.pid}) was not stopped: ${reason}`);
+        failures.push(`${kind} PID ${target.pid}`);
+      }
     }
+  }
+  if (failures.length) {
+    throw new Error(`Some services were not stopped: ${failures.join(", ")}`);
   }
   const remaining = (
     await Promise.all((await list()).map((candidate) => identify(candidate)))
   ).filter(Boolean);
   if (remaining.length) {
     throw new Error(
-      "Managed services are still running or were started during stop; do not start interfaces concurrently",
+      remoteListeners.length
+        ? "Managed services are still running; disconnect the SSH client, then stop again"
+        : "Managed services are still running or were started during stop; do not start interfaces concurrently",
     );
   }
   log("codexhost stop: local services stopped; session data and configuration were preserved");

@@ -157,6 +157,51 @@ describe("production Desktop Controller", () => {
     expect(attach).toEqual(expect.any(Function));
   });
 
+  it("stops within its shutdown bound while an attachment operation never settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const abort = new AbortController();
+      const snapshot = controllerSnapshot();
+      const close = vi.fn();
+      const session: RendererCdpControlSession = {
+        snapshot,
+        ensureInstalled: vi.fn(async () => snapshot),
+        activateDesktop: vi.fn(() => new Promise<number>(() => undefined)),
+        executeRenderer: vi.fn(),
+        close,
+      };
+      const server = attachmentServer();
+      let attach: (() => Promise<void>) | undefined;
+      const run = runDesktopController(controllerOptions(), abort.signal, {
+        readRenderer: vi.fn(async () => "production renderer"),
+        install: vi.fn(async () => session),
+        startAttachmentServer: vi.fn(async (options) => {
+          attach = options.attach;
+          return server;
+        }),
+        ready: vi.fn(),
+        sleep: vi.fn(async () => {
+          void attach?.();
+          abort.abort();
+        }),
+        monitorIntervalMs: 1,
+      });
+      let finished = false;
+      void run.then(() => {
+        finished = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(server.close).toHaveBeenCalledOnce();
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await run;
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("publishes readiness before a pending Renderer install finishes", async () => {
     const abort = new AbortController();
     const close = vi.fn();

@@ -135,6 +135,11 @@ describe("Antigravity usage statistics", () => {
         ...identity,
         inputTokens: 221499,
         cachedInputTokens: 219282,
+        ...("provider" in identity && identity.provider === "google"
+          ? { cacheWriteInputTokens: 0 }
+          : "model" in identity && identity.model.startsWith("gpt-")
+            ? { cacheWriteInputTokens: 0 }
+            : {}),
         outputTokens: 436,
         sessionId: "conv-models",
       })),

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
@@ -67,6 +67,7 @@ import { AntigravityAcpTransport } from "./acp-transport.js";
 import {
   ANTIGRAVITY_MIN_ACP_VERSION,
   AntigravityTransportError,
+  type AntigravityAcpAvailableModel,
   type AntigravityAcpConfigOption,
   type AntigravityAcpEvent,
   type AntigravityAcpSessionOpenResult,
@@ -185,6 +186,76 @@ function runCli(
     );
   });
 }
+function runQuotaCli(
+  executable: string,
+  args: readonly string[],
+  cwd: string,
+  environment: NodeJS.ProcessEnv,
+  timeout: number,
+  signal: AbortSignal,
+): Promise<string> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
+  const invocation = commandInvocation(executable, [...args], environment);
+  return new Promise((resolve, reject) => {
+    const child = spawn(invocation.command, invocation.arguments, {
+      cwd,
+      env: environment,
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    });
+    let stdout = "";
+    let settled = false;
+    const maxBytes = 4 * 1024 * 1024;
+    const finish = (done: () => void) => {
+      if (settled) return;
+      settled = true;
+      done();
+    };
+    const onAbort = () => {
+      child.kill("SIGKILL");
+      finish(() => reject(signal.reason ?? new Error("Aborted")));
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() => reject(new Error("Antigravity quota command timed out")));
+    }, timeout);
+    timer.unref?.();
+    signal.addEventListener("abort", onAbort, { once: true });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      finish(() => reject(error));
+    });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      if (settled) return;
+      stdout += chunk;
+      if (Buffer.byteLength(stdout, "utf8") > maxBytes) {
+        child.kill("SIGKILL");
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        finish(() => reject(new Error("Antigravity quota output exceeded 4 MiB")));
+        return;
+      }
+      if (stdout.includes("\n") && stdout.includes('"command_result"')) {
+        for (const line of stdout.split(/\r?\n/u).slice(0, -1)) {
+          if (line.includes('"command_result"')) {
+            child.unref();
+            finish(() => resolve(stdout));
+            return;
+          }
+        }
+      }
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      if (code === 0) finish(() => resolve(stdout));
+      else finish(() => reject(new Error(`Antigravity quota exited with code ${code ?? "null"}`)));
+    });
+  });
+}
 interface RequestedConfiguration {
   model?: HarnessModelRef | undefined;
   thinkingOptionId?: HarnessThinkingOptionId | undefined;
@@ -235,6 +306,7 @@ export class AntigravitySession implements HarnessSession {
   #transport: AntigravityAcpTransportLike | undefined;
   readonly #readers = new Set<AntigravityAcpTransportLike>();
   #opening: Promise<void> | undefined;
+  #availableModels: AntigravityAcpAvailableModel[] = [];
   #configOptions: AntigravityAcpConfigOption[] = [];
   #catalog: HarnessModelCatalog | undefined;
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
@@ -379,12 +451,28 @@ export class AntigravitySession implements HarnessSession {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
       });
-      if (this.#requested.model) await this.#setConfig("model", this.#requested.model.id);
-      if (this.#requested.thinkingOptionId)
+      if (this.#requested.model) {
+        const applied = await this.#setModelConfig(
+          this.#requested.model.id,
+          this.#requested.thinkingOptionId,
+        );
+        if (!applied.bakedInThinking) {
+          if (this.#requested.thinkingOptionId) {
+            await this.#setConfig("thinking", this.#requested.thinkingOptionId);
+          } else if (
+            applied.impliedThinking &&
+            this.#hasConfigChoice("thinking", applied.impliedThinking)
+          ) {
+            await this.#setConfig("thinking", applied.impliedThinking);
+          }
+        }
+      } else if (this.#requested.thinkingOptionId) {
         await this.#setConfig("thinking", this.#requested.thinkingOptionId);
+      }
       if (!skip && this.#requested.permissionModeId) {
         await transport.setMode(this.#requested.permissionModeId);
         this.#state.effectivePermissionModeId = this.#requested.permissionModeId;
+        this.#setLocatorPermissionMode(this.#requested.permissionModeId);
       }
       if (!this.#usage) {
         const context = replayedEvents.findLast((event) => event.type === "usage.context");
@@ -404,11 +492,27 @@ export class AntigravitySession implements HarnessSession {
       throw error;
     }
   }
+  #setLocatorPermissionMode(permissionModeId: string): void {
+    const ref = this.#state.nativeRef;
+    if (!ref) return;
+    const locator =
+      ref.locator && typeof ref.locator === "object" && !Array.isArray(ref.locator)
+        ? ref.locator
+        : {};
+    this.#state = {
+      ...this.#state,
+      nativeRef: { ...ref, locator: { ...locator, permissionModeId } },
+    };
+  }
   #applyOpened(opened: AntigravityAcpSessionOpenResult, skip: boolean): void {
+    this.#availableModels = opened.models?.availableModels
+      ? [...opened.models.availableModels]
+      : [];
     this.#configOptions = opened.configOptions ?? [];
-    this.#catalog = opened.models?.availableModels.length
-      ? parseAntigravityAcpModelCatalog(opened.models.availableModels, this.#configOptions)
-      : undefined;
+    this.#catalog =
+      this.#availableModels.length || this.#configOptions.some((entry) => entry.id === "model")
+        ? parseAntigravityAcpModelCatalog(this.#availableModels, this.#configOptions)
+        : undefined;
     const savedLocator = this.#options.nativeRef?.locator;
     const locator = {
       ...(savedLocator && typeof savedLocator === "object" && !Array.isArray(savedLocator)
@@ -433,6 +537,13 @@ export class AntigravitySession implements HarnessSession {
   }
   #applyConfig(config: AntigravityAcpConfigOption[]): void {
     this.#configOptions = config;
+    if (this.#availableModels.length || config.some((entry) => entry.id === "model")) {
+      try {
+        this.#catalog = parseAntigravityAcpModelCatalog(this.#availableModels, config);
+      } catch {
+        // Keep previous catalog when partial test fixtures omit model options.
+      }
+    }
     const { nativeRef, effectivePermissionModeId } = this.#state;
     this.#state = {
       ...(nativeRef ? { nativeRef } : {}),
@@ -441,13 +552,63 @@ export class AntigravitySession implements HarnessSession {
     };
     this.#publishState();
   }
-  async #setConfig(category: "model" | "thinking", value: string): Promise<void> {
-    const option = this.#configOptions.find(
+  #findConfigOption(category: "model" | "thinking"): AntigravityAcpConfigOption | undefined {
+    return this.#configOptions.find(
       (entry) =>
         entry.category === category ||
         entry.id === category ||
         (category === "thinking" && entry.id === "thought_level"),
     );
+  }
+  #hasConfigChoice(category: "model" | "thinking", value: string): boolean {
+    const option = this.#findConfigOption(category);
+    return !!option?.options.some((choice) => choice.value === value);
+  }
+  async #setModelConfig(
+    requestedModelId: string,
+    requestedThinking?: HarnessThinkingOptionId,
+  ): Promise<{ impliedThinking?: HarnessThinkingOptionId; bakedInThinking: boolean }> {
+    const option = this.#findConfigOption("model");
+    if (!option) {
+      throw new AntigravityTransportError(
+        "unsupported",
+        `Antigravity does not offer model=${requestedModelId}`,
+      );
+    }
+    let targetValue = requestedModelId;
+    let impliedThinking: HarnessThinkingOptionId | undefined;
+    let bakedInThinking = false;
+    if (!option.options.some((choice) => choice.value === requestedModelId)) {
+      const split = splitAntigravityModelAndEffort(requestedModelId);
+      if (split.effort && option.options.some((choice) => choice.value === split.modelRef.id)) {
+        targetValue = split.modelRef.id;
+        impliedThinking = split.effort;
+      } else if (
+        requestedThinking &&
+        option.options.some((choice) => choice.value === `${requestedModelId}-${requestedThinking}`)
+      ) {
+        targetValue = `${requestedModelId}-${requestedThinking}`;
+        bakedInThinking = true;
+      } else {
+        const variants = option.options.filter(
+          (choice) =>
+            choice.value.startsWith(`${requestedModelId}-`) &&
+            /^(?:low|medium|high|xhigh)$/u.test(choice.value.slice(requestedModelId.length + 1)),
+        );
+        if (!requestedThinking && variants.length === 1 && variants[0]) {
+          targetValue = variants[0].value;
+          bakedInThinking = true;
+        }
+      }
+    }
+    await this.#setConfig("model", targetValue);
+    return {
+      ...(impliedThinking ? { impliedThinking } : {}),
+      bakedInThinking,
+    };
+  }
+  async #setConfig(category: "model" | "thinking", value: string): Promise<void> {
+    const option = this.#findConfigOption(category);
     if (!option || !option.options.some((choice) => choice.value === value))
       throw new AntigravityTransportError(
         "unsupported",
@@ -474,6 +635,7 @@ export class AntigravitySession implements HarnessSession {
           this.#state.effectivePermissionModeId = harnessPermissionModeIdSchema.parse(
             event.currentModeId,
           );
+          this.#setLocatorPermissionMode(event.currentModeId);
           this.#publishState();
         }
         break;
@@ -677,18 +839,34 @@ export class AntigravitySession implements HarnessSession {
     }
     this.#configuring = true;
     try {
-      if (!this.#transport && !this.#options.nativeRef) {
-        return err(
-          "invalidState",
-          "Native Session is not established; supply draft configuration through open(create)",
-        );
+      const openingFromCold = !this.#transport;
+      const previousPermissionMode = this.#requested.permissionModeId;
+      if (openingFromCold && command.type === "permissionMode.select") {
+        this.#requested.permissionModeId = command.permissionModeId;
       }
-      await this.initialize();
+      try {
+        await this.initialize();
+      } catch (error) {
+        if (openingFromCold && command.type === "permissionMode.select") {
+          this.#requested.permissionModeId = previousPermissionMode;
+        }
+        throw error;
+      }
       const transport = this.#transport;
       if (!transport || this.#closed || this.#faulted)
         return err("invalidState", "Native Session is not connected");
+      if (openingFromCold && command.type === "permissionMode.select") {
+        return ok({ completed: true });
+      }
       if (command.type === "model.select") {
-        await this.#setConfig("model", command.model.id);
+        const applied = await this.#setModelConfig(command.model.id);
+        if (
+          !applied.bakedInThinking &&
+          applied.impliedThinking &&
+          this.#hasConfigChoice("thinking", applied.impliedThinking)
+        ) {
+          await this.#setConfig("thinking", applied.impliedThinking);
+        }
         this.#requested.model = this.#state.effectiveModel;
         this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
       } else if (command.type === "thinking.select") {
@@ -728,6 +906,7 @@ export class AntigravitySession implements HarnessSession {
         } else if (!nextSkip) {
           await transport.setMode(command.permissionModeId);
           this.#state.effectivePermissionModeId = command.permissionModeId;
+          this.#setLocatorPermissionMode(command.permissionModeId);
           this.#requested.permissionModeId = command.permissionModeId;
           this.#publishState();
         }
@@ -834,6 +1013,7 @@ export class AntigravitySession implements HarnessSession {
           };
           const update = await this.#usage.collectNewTranscriptRequests({
             ...timing,
+            ...(result.usage ? { promptUsage: result.usage } : {}),
             signal: this.#abort.signal,
           });
           const recorded = this.#usage.recordTurnPromptUsage({
@@ -968,10 +1148,12 @@ export class AntigravitySession implements HarnessSession {
     )
       return Promise.resolve({ action: "cancel" });
     const interactionId = hostInteractionIdSchema.parse(randomUUID());
-    const rawInput =
+    const toolCallId =
       "toolCallId" in request && typeof request.toolCallId === "string"
-        ? turn.tracker?.rawToolInput(request.toolCallId)
+        ? request.toolCallId
         : undefined;
+    const itemId = toolCallId ? turn.tracker?.activeToolItemId(toolCallId) : undefined;
+    const rawInput = toolCallId ? turn.tracker?.rawToolInput(toolCallId) : undefined;
     const rawQuestions =
       rawInput && typeof rawInput === "object" && "questions" in rawInput
         ? rawInput.questions
@@ -980,6 +1162,7 @@ export class AntigravitySession implements HarnessSession {
       interactionId,
       sessionId: ref.nativeSessionId,
       turnId: turn.turnId,
+      ...(itemId ? { itemId } : {}),
       request,
       ...(rawQuestions !== undefined ? { rawQuestions } : {}),
     });
@@ -1106,7 +1289,7 @@ export class AntigravityAdapter implements HarnessAdapter {
   #quotaRefresh: Promise<AntigravityQuotaSnapshot | null> | undefined;
   #quotaCwd = process.cwd();
   constructor(readonly options: AntigravityAdapterOptions = {}) {
-    this.#environment = { ...process.env, ...options.environment };
+    this.#environment = options.environment ?? process.env;
     this.sessionImport = new AntigravitySessionImport(this.#environment);
     this.usageStatistics = createAntigravityUsageStatistics(this.#environment);
   }
@@ -1328,12 +1511,12 @@ export class AntigravityAdapter implements HarnessAdapter {
       });
       const quota = command
         ? await fetchAntigravityQuota((args) =>
-            runCli(
+            runQuotaCli(
               command,
               args,
               this.#quotaCwd,
               this.#environment,
-              Math.min(this.options.inspectTimeoutMs ?? 20_000, 10_000),
+              this.options.inspectTimeoutMs ?? 20_000,
               this.#abort.signal,
             ),
           )

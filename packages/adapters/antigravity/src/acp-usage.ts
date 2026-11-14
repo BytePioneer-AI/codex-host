@@ -38,6 +38,13 @@ export function normalizeAntigravityUsageModel(rawModel: unknown): {
   return { model };
 }
 
+export function hasImplicitZeroCacheWrite(identity: {
+  model?: string;
+  provider?: string;
+}): boolean {
+  return identity.provider === "google" || Boolean(identity.model?.startsWith("gpt-"));
+}
+
 function count(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -79,19 +86,24 @@ function timing(input: { firstOutputAtMs?: number; completedAtMs?: number }): {
 }
 
 function requestUsage(requests: readonly HostUsageRequest[]): HostUsage {
-  const usage: HostUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let inputTokens = 0;
+  let outputTokens = 0;
   for (const request of requests) {
-    usage.inputTokens! += request.inputTokens;
-    usage.outputTokens! += request.outputTokens;
+    inputTokens += request.inputTokens;
+    outputTokens += request.outputTokens;
   }
-  usage.totalTokens = usage.inputTokens! + usage.outputTokens!;
+  const usage: HostUsage = {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+  };
   for (const field of [
     "cachedInputTokens",
     "cacheWriteInputTokens",
     "reasoningOutputTokens",
   ] as const) {
     if (requests.every((request) => request[field] !== undefined))
-      usage[field] = requests.reduce((sum, request) => sum + request[field]!, 0);
+      usage[field] = requests.reduce((sum, request) => sum + (request[field] ?? 0), 0);
   }
   return parseHostUsage(usage);
 }
@@ -125,10 +137,15 @@ export class AntigravitySessionUsageTracker {
       "logs",
       "transcript.jsonl",
     );
-    this.recordContextWindow(
-      options.initialContextUsedTokens!,
-      options.initialContextWindowTokens!,
-    );
+    if (
+      options.initialContextUsedTokens !== undefined &&
+      options.initialContextWindowTokens !== undefined
+    ) {
+      this.recordContextWindow(
+        options.initialContextUsedTokens,
+        options.initialContextWindowTokens,
+      );
+    }
   }
 
   currentUsage(): HostUsage | null {
@@ -149,7 +166,7 @@ export class AntigravitySessionUsageTracker {
       usage.sessionCacheUsage = {
         inputTokens: this.#requests.reduce((sum, request) => sum + request.inputTokens, 0),
         cachedInputTokens: this.#requests.reduce(
-          (sum, request) => sum + request.cachedInputTokens!,
+          (sum, request) => sum + (request.cachedInputTokens ?? 0),
           0,
         ),
       };
@@ -224,6 +241,7 @@ export class AntigravitySessionUsageTracker {
     input: {
       firstOutputAtMs?: number;
       completedAtMs?: number;
+      promptUsage?: AntigravityPromptUsage;
       signal?: AbortSignal;
     } = {},
   ): Promise<{
@@ -237,10 +255,44 @@ export class AntigravitySessionUsageTracker {
     ).length;
     const requests = this.#consume(transcript, false);
     this.#lastCollectionRequests = requests.length;
-    if (requests.length === 1 && this.#lastCollectionSteps === 1 && transcript.complete) {
-      Object.assign(requests[0]!, timing(input));
-      requests[0] = parseHostUsageRequest(requests[0]);
-      this.#recordOutputSpeed(requests[0].outputTokens, requests[0]);
+    const baseIndex = this.#requests.length - requests.length;
+    const promptCacheWrite = count(input.promptUsage?.cachedWriteTokens)
+      ? input.promptUsage.cachedWriteTokens
+      : undefined;
+    if (promptCacheWrite === 0) {
+      for (const [index, request] of requests.entries()) {
+        if (
+          request.cachedInputTokens !== undefined &&
+          request.cacheWriteInputTokens === undefined
+        ) {
+          const updated = parseHostUsageRequest({ ...request, cacheWriteInputTokens: 0 });
+          requests[index] = updated;
+          this.#requests[baseIndex + index] = updated;
+        }
+      }
+    }
+    const single = requests[0];
+    if (requests.length === 1 && single && this.#lastCollectionSteps === 1 && transcript.complete) {
+      const extraCacheWrite =
+        promptCacheWrite !== undefined &&
+        promptCacheWrite > 0 &&
+        single.cachedInputTokens !== undefined &&
+        single.cacheWriteInputTokens === undefined
+          ? promptCacheWrite
+          : undefined;
+      const updated = parseHostUsageRequest({
+        ...single,
+        ...(extraCacheWrite !== undefined
+          ? {
+              inputTokens: single.inputTokens + extraCacheWrite,
+              cacheWriteInputTokens: extraCacheWrite,
+            }
+          : {}),
+        ...timing(input),
+      });
+      requests[0] = updated;
+      this.#requests[baseIndex] = updated;
+      this.#recordOutputSpeed(updated.outputTokens, updated);
     }
     return { requests, complete: this.#complete, usage: this.currentUsage() };
   }
@@ -312,16 +364,23 @@ export class AntigravitySessionUsageTracker {
         }
         let request: HostUsageRequest | null = null;
         try {
+          const identity = normalizeAntigravityUsageModel(record.model);
+          const cacheRead = count(record.cache_read_tokens) ? record.cache_read_tokens : undefined;
+          const cacheWrite = count(record.cache_write_tokens)
+            ? record.cache_write_tokens
+            : cacheRead !== undefined && hasImplicitZeroCacheWrite(identity)
+              ? 0
+              : undefined;
           request = parseHostUsageRequest({
             requestId: `step:${record.step_index}`,
-            ...normalizeAntigravityUsageModel(record.model),
+            ...identity,
             inputTokens: count(record.input_tokens)
-              ? record.input_tokens +
-                (count(record.cache_read_tokens) ? record.cache_read_tokens : 0)
+              ? record.input_tokens + (cacheRead ?? 0) + (cacheWrite ?? 0)
               : undefined,
             ...(record.cache_read_tokens !== undefined
               ? { cachedInputTokens: record.cache_read_tokens }
               : {}),
+            ...(cacheWrite !== undefined ? { cacheWriteInputTokens: cacheWrite } : {}),
             outputTokens: record.output_tokens,
           });
         } catch {

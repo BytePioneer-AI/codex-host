@@ -29,14 +29,19 @@ const options: AntigravityAcpConfigOption[] = [
 ];
 
 describe("Antigravity model catalog", () => {
-  it("preserves xhigh in CLI model suffixes and sorts reasoning options", () => {
+  it("preserves xhigh in CLI model suffixes, sorts reasoning options, and keeps single-variant models unsplit", () => {
     const catalog = parseAntigravityModels(
-      "gemini-4-xhigh\tGemini 4 (XHigh)\ngemini-4-low\tGemini 4 (Low)\ngemini-4-high\tGemini 4 (High)\nplain\tPlain\n",
+      "gemini-4-xhigh\tGemini 4 (XHigh)\ngemini-4-low\tGemini 4 (Low)\ngemini-4-high\tGemini 4 (High)\ngpt-oss-120b-medium\tGPT-OSS 120B (Medium)\nplain\tPlain\n",
     );
     expect(catalog.models[0]).toMatchObject({
       ref: { id: "gemini-4" },
       label: "Gemini 4",
       supportedThinkingOptionIds: ["low", "high", "xhigh"],
+    });
+    expect(catalog.models[1]).toEqual({
+      ref: { id: "gpt-oss-120b-medium" },
+      label: "GPT-OSS 120B (Medium)",
+      resolvedModelLabel: "GPT-OSS 120B (Medium)",
     });
     expect(catalog.defaultThinkingOptionId).toBe("xhigh");
   });

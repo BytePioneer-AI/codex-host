@@ -30,6 +30,7 @@ import {
   nativeTurnRefSchema,
   type HarnessCommandCatalog,
   type HostInteractionId,
+  type HostItemId,
   type HostTurnId,
   type JsonValue,
   type NativeTurnRef,
@@ -203,6 +204,7 @@ export function projectAcpQuestionInteraction(params: {
   interactionId: HostInteractionId;
   sessionId: string;
   turnId: HostTurnId;
+  itemId?: HostItemId;
   request: CreateElicitationRequest;
   rawQuestions?: unknown;
 }): { interaction: HostQuestionInteraction; fieldMap: AntigravityElicitationFieldMap } {
@@ -278,6 +280,7 @@ export function projectAcpQuestionInteraction(params: {
       type: "question",
       interactionId: params.interactionId,
       turnId: params.turnId,
+      ...(params.itemId ? { itemId: params.itemId } : {}),
       title: text(schema.title) || text(request.message) || "Question",
       questions,
     },
@@ -337,6 +340,13 @@ export class AntigravityToolTracker {
     return event?.args ?? event?.rawInput;
   }
 
+  activeToolItemId(toolCallId: string): HostItemId | undefined {
+    const state = this.#tools.get(toolCallId);
+    return state && !state.snapshot && state.item?.type === "toolExecution"
+      ? state.item.itemId
+      : undefined;
+  }
+
   handleToolEvent(event: ToolEvent): void {
     let state = this.#tools.get(event.toolCallId);
     if (state?.snapshot) return;
@@ -354,7 +364,6 @@ export class AntigravityToolTracker {
       } as ToolEvent;
     const tool = state.event;
     const name = tool.name ?? tool.title ?? "Tool";
-    if (compactToolName(name) === "askquestion") return;
     const itemId = hostItemIdSchema.parse(
       `tool-${this.options.turnId}-${createHash("sha256").update(event.toolCallId).digest("hex").slice(0, 20)}`,
     );

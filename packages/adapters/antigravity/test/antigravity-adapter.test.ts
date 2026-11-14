@@ -14,7 +14,7 @@ import {
   nativeSessionRefSchema,
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAdapter, normalizeAntigravityError } from "../src/antigravity-adapter.js";
 import {
   AntigravityTransportError,
@@ -28,8 +28,6 @@ import {
   type AntigravityPromptResult,
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
-import * as projection from "../src/acp-projection.js";
-import * as models from "../src/model-catalog.js";
 import * as nativeFork from "../src/fork.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 
@@ -175,51 +173,6 @@ async function completed(outputs: HarnessOutput[], id = "t1") {
     ).toHaveLength(1),
   );
 }
-beforeEach(() => {
-  vi.spyOn(models, "readAcpEffectiveModelState").mockImplementation((entries) => {
-    const selectedModel = entries?.find((entry) => entry.id === "model")?.currentValue;
-    const effort = entries?.find((entry) => entry.id === "thought_level")?.currentValue;
-    return {
-      ...(selectedModel ? { effectiveModel: model(selectedModel) } : {}),
-      ...(effort ? { effectiveThinkingOptionId: thinking(effort) } : {}),
-    };
-  });
-  vi.spyOn(projection, "projectReplayedEventsToTurns").mockImplementation(
-    ({ nativeSessionId, events: replay, knownTurnRefs }) =>
-      replay
-        .filter((event) => event.type === "user.text")
-        .map((event, index) => ({
-          nativeTurnRef: knownTurnRefs?.[index] ?? {
-            ...ref(nativeSessionId),
-            nativeTurnKey: `turn-${index}`,
-          },
-          input: [{ type: "text", text: event.text }],
-          items: [],
-          outcome: { status: "succeeded" },
-        })),
-  );
-  vi.spyOn(projection.AntigravityToolTracker.prototype, "finishPending").mockImplementation(
-    () => {},
-  );
-  vi.spyOn(projection.AntigravityToolTracker.prototype, "handleToolEvent").mockImplementation(
-    () => {},
-  );
-  vi.spyOn(AntigravitySessionUsageTracker.prototype, "replayHistoricalRequests").mockResolvedValue({
-    requests: [],
-    complete: true,
-    usage: null,
-  });
-  vi.spyOn(
-    AntigravitySessionUsageTracker.prototype,
-    "collectNewTranscriptRequests",
-  ).mockResolvedValue({ requests: [], complete: true, usage: null });
-  vi.spyOn(AntigravitySessionUsageTracker.prototype, "recordTurnPromptUsage").mockReturnValue({
-    usage: { inputTokens: 10, outputTokens: 2 },
-  });
-  vi.spyOn(AntigravitySessionUsageTracker.prototype, "recordContextWindow").mockImplementation(
-    (used, size) => ({ contextUsedTokens: used, contextWindowTokens: size }),
-  );
-});
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.close()));
   await Promise.all(
@@ -242,24 +195,70 @@ describe("Antigravity ACP Session", () => {
       error: { code: "invalidState" },
     });
   });
-  it("does not claim native confirmation for configuration on an unopened draft", async () => {
+  it("keeps unopened drafts unconfirmed until configured or started, and opens once on pre-Turn config", async () => {
     const { adapter, transports } = fixture();
-    const { session } = await sessionOf(
+    const { session, outputs } = await sessionOf(
       await adapter.open({ kind: "create", cwd: process.cwd(), model: model("claude") }),
     );
-    expect(await session.execute({ type: "model.select", model: model("gemini") })).toMatchObject({
-      ok: false,
-      error: { code: "invalidState" },
-    });
     expect(session.initialState.effectiveModel).toBeUndefined();
     expect(transports).toHaveLength(0);
+    expect(
+      await session.execute({
+        type: "permissionMode.select",
+        permissionModeId: mode("dangerously-skip-permissions"),
+      }),
+    ).toEqual({ ok: true, value: { completed: true } });
+    expect(transports).toHaveLength(1);
+    expect(transports[0]?.skipPermissions).toBe(true);
+    expect(transports[0]?.setConfigOption).toHaveBeenCalledWith("model", "claude");
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model("claude"),
+      effectivePermissionModeId: "dangerously-skip-permissions",
+    });
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "session.state.changed",
+        state: expect.objectContaining({
+          effectiveModel: model("claude"),
+          effectivePermissionModeId: "dangerously-skip-permissions",
+        }),
+      }),
+    );
+  });
+  it("reconciles effort-suffixed and single-variant ACP model IDs", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd(), model: model("gemini-high") }),
+    );
     const transport = await start(session, transports);
-    expect(transport.setConfigOption).toHaveBeenCalledWith("model", "claude");
-    expect(session.initialState.effectiveModel).toEqual(model("claude"));
+    expect(transport.setConfigOption.mock.calls).toEqual([
+      ["model", "gemini"],
+      ["thought_level", "high"],
+    ]);
+    transport.config = [
+      {
+        id: "model",
+        category: "model",
+        name: "Model",
+        currentValue: "gemini",
+        options: [
+          { value: "gemini", name: "Gemini" },
+          { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+        ],
+      },
+    ];
+    transport.eventHandler?.({ type: "config.update", configOptions: transport.config });
+    expect(await session.execute({ type: "model.select", model: model("gpt-oss-120b") })).toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    expect(session.initialState.effectiveModel).toEqual(model("gpt-oss-120b-medium"));
+    expect(session.initialState.availableThinkingOptions).toEqual([]);
   });
   it("does not let usage observation failure turn a successful prompt into failure", async () => {
-    vi.mocked(
-      AntigravitySessionUsageTracker.prototype.collectNewTranscriptRequests,
+    vi.spyOn(
+      AntigravitySessionUsageTracker.prototype,
+      "collectNewTranscriptRequests",
     ).mockRejectedValueOnce(new Error("unreadable transcript"));
     const { adapter, transports } = fixture();
     const { session, outputs } = await sessionOf(
@@ -371,12 +370,19 @@ describe("Antigravity ACP Session", () => {
     });
     expect(stream).toContainEqual({
       type: "session.usage.changed",
-      usage: { contextUsedTokens: 10, contextWindowTokens: 100 },
+      usage: { contextUsagePercent: 10, contextUsedTokens: 10, contextWindowTokens: 100 },
     });
-    expect(AntigravitySessionUsageTracker.prototype.recordTurnPromptUsage).toHaveBeenCalledWith(
+    expect(stream).toContainEqual(
       expect.objectContaining({
-        firstOutputAtMs: expect.any(Number),
-        completedAtMs: expect.any(Number),
+        type: "session.usage.changed",
+        observedForTurnId: "t1",
+        usage: expect.objectContaining({
+          inputTokens: 10,
+          outputTokens: 2,
+          totalTokens: 12,
+          contextUsedTokens: 10,
+          contextWindowTokens: 100,
+        }),
       }),
     );
     const terminal = stream.find((event) => event.type === "turn.completed");
@@ -713,52 +719,6 @@ describe("Antigravity ACP Session", () => {
 });
 
 describe("ACP interaction round trips", () => {
-  beforeEach(() => {
-    vi.spyOn(projection.AntigravityToolTracker.prototype, "rawToolInput").mockReturnValue({
-      questions: [{ prompt: "Which?" }],
-    });
-    vi.spyOn(projection, "projectAcpApprovalInteraction").mockImplementation(
-      ({ interactionId, turnId }) => ({
-        interaction: {
-          type: "approval",
-          interactionId,
-          turnId,
-          title: "Run",
-          subject: { type: "nativeAction" },
-          actions: [{ id: "allow", label: "Allow", effect: "allowOnce" }],
-        },
-        actionToOptionId: new Map([["allow", "allow_once"]]),
-      }),
-    );
-    vi.spyOn(projection, "buildAcpPermissionResponse").mockReturnValue({
-      outcome: { outcome: "selected", optionId: "allow_once" },
-    });
-    vi.spyOn(projection, "projectAcpQuestionInteraction").mockImplementation(
-      ({ interactionId, turnId }) => ({
-        interaction: {
-          type: "question",
-          interactionId,
-          turnId,
-          questions: [
-            {
-              id: "q",
-              type: "choice",
-              prompt: "Which?",
-              options: [{ value: "yes", label: "Yes" }],
-              multiple: false,
-              allowOther: false,
-              optional: false,
-            },
-          ],
-        },
-        fieldMap: { questions: [] },
-      }),
-    );
-    vi.spyOn(projection, "buildAcpElicitationResponse").mockReturnValue({
-      action: "accept",
-      content: { q: "yes" },
-    });
-  });
   it.each(["approval", "question"] as const)(
     "validates and resolves %s exactly once",
     async (kind) => {
@@ -767,20 +727,37 @@ describe("ACP interaction round trips", () => {
         await adapter.open({ kind: "create", cwd: process.cwd() }),
       );
       const transport = await start(session, transports);
+      if (kind === "question") {
+        required(transport.handler).onEvent({
+          type: "tool.call",
+          toolCallId: "question-tool",
+          name: "ask_question",
+          args: { questions: [{ question: "Which?" }] },
+        });
+      }
       const reply =
         kind === "approval"
           ? required(transport.handler).onPermission({
               sessionId: required(transport.sessionId),
-              toolCall: { toolCallId: "tool" },
-              options: [],
+              toolCall: { toolCallId: "tool", title: "Run" },
+              options: [{ optionId: "allow_once", name: "Allow", kind: "allow_once" }],
             })
           : required(transport.handler).onElicitation({
               mode: "form",
               sessionId: required(transport.sessionId),
               toolCallId: "question-tool",
               message: "Question",
-              requestedSchema: { type: "object", properties: {} },
-            });
+              requestedSchema: {
+                type: "object",
+                required: ["q"],
+                properties: {
+                  q: {
+                    type: "string",
+                    oneOf: [{ const: "yes", title: "Yes" }],
+                  },
+                },
+              },
+            } as unknown as Parameters<AntigravityActivePromptHandler["onElicitation"]>[0]);
       await vi.waitFor(() =>
         expect(outputs.some((output) => output.kind === "interaction")).toBe(true),
       );
@@ -799,7 +776,7 @@ describe("ACP interaction round trips", () => {
       ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
       const valid =
         kind === "approval"
-          ? { type: "approval" as const, actionId: "allow" }
+          ? { type: "approval" as const, actionId: "allow_once" }
           : { type: "question" as const, answers: { q: ["yes"] } };
       expect(
         (
@@ -810,10 +787,13 @@ describe("ACP interaction round trips", () => {
           })
         ).ok,
       ).toBe(true);
-      if (kind === "question")
-        expect(projection.projectAcpQuestionInteraction).toHaveBeenCalledWith(
-          expect.objectContaining({ rawQuestions: [{ prompt: "Which?" }] }),
-        );
+      if (kind === "question") {
+        expect(interaction.interaction).toMatchObject({
+          type: "question",
+          itemId: expect.stringMatching(/^tool-/u),
+          questions: [expect.objectContaining({ id: "q", prompt: "Which?" })],
+        });
+      }
       expect(await reply).toEqual(
         kind === "approval"
           ? { outcome: { outcome: "selected", optionId: "allow_once" } }
@@ -944,6 +924,33 @@ describe("inspection and errors", () => {
         status: "unavailable",
         error: { message: expect.stringContaining("1.5.8") },
       });
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "resolves inspectAccount on the usage command_result line before CLI teardown",
+    async () => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agy-quota-"));
+      directories.push(home);
+      const command = path.join(home, "agy");
+      await writeFile(
+        command,
+        [
+          "#!/bin/sh",
+          'printf \'%s\\n\' \'{"event":"command_result","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":0.75,"reset_time":"2026-11-14T20:16:50Z"}]}]}}}\'',
+          "sleep 3",
+          "",
+        ].join("\n"),
+      );
+      await chmod(command, 0o755);
+      const { adapter } = fixture({ command, inspectTimeoutMs: 5_000 });
+      const started = Date.now();
+      const account = await adapter.inspectAccount();
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(account).toMatchObject({
+        credits: { usedPercent: 25, periodType: "five_hour" },
+      });
+      expect(adapter.credits()?.usedPercent).toBe(25);
+      await adapter.close();
     },
   );
 });

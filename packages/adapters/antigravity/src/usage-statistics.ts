@@ -15,7 +15,7 @@ import {
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
-import { normalizeAntigravityUsageModel } from "./acp-usage.js";
+import { hasImplicitZeroCacheWrite, normalizeAntigravityUsageModel } from "./acp-usage.js";
 import { nativeBrainRoot } from "./fork.js";
 
 function count(value: unknown): number | null {
@@ -107,15 +107,21 @@ export async function readAntigravityUsage(
     const cached = count(record.cache_read_tokens);
     const at = nativeTimeMs(record.created_at);
     if (step === null || input === null || output === null || at === null) continue;
+    const identity = normalizeAntigravityUsageModel(record.model);
     requests.set(
       step,
       withUsageSession(
         {
           id: `${String(record.created_at)}:${step}:${input}:${cached ?? "-"}:${output}`,
           occurredAtMs: at,
-          ...normalizeAntigravityUsageModel(record.model),
+          ...identity,
           inputTokens: input + (cached ?? 0),
-          ...(cached !== null ? { cachedInputTokens: cached } : {}),
+          ...(cached !== null
+            ? {
+                cachedInputTokens: cached,
+                ...(hasImplicitZeroCacheWrite(identity) ? { cacheWriteInputTokens: 0 } : {}),
+              }
+            : {}),
           outputTokens: output,
         },
         { sessionId },

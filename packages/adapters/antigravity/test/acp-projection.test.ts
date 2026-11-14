@@ -419,7 +419,7 @@ describe("tool lifecycle and file changes", () => {
       outcome: { status: "failed" },
     });
   });
-  it("suppresses ask_question cards but retains input for elicitation details", () => {
+  it("projects ask_question as an active toolExecution item and exposes itemId + raw input for elicitation", () => {
     const { tools, events } = tracker();
     tools.handleToolEvent({
       type: "tool.call",
@@ -427,11 +427,30 @@ describe("tool lifecycle and file changes", () => {
       name: "ask_question",
       args: { questions: [{ question: "Q?" }] },
     });
-    tools.handleToolEvent({ type: "tool.update", toolCallId: "q", status: "completed" });
-    tools.finishPending({ status: "succeeded" });
-    expect(events).toEqual([]);
-    expect(tools.completedSnapshots()).toEqual([]);
+    const activeItemId = tools.activeToolItemId("q");
+    expect(activeItemId).toMatch(/^tool-/u);
     expect(tools.rawToolInput("q")).toEqual({ questions: [{ question: "Q?" }] });
+    tools.handleToolEvent({
+      type: "tool.update",
+      toolCallId: "q",
+      status: "completed",
+      rawOutput: "Alpha",
+    });
+    expect(tools.activeToolItemId("q")).toBeUndefined();
+    expect(events.map((event) => event.type)).toEqual([
+      "item.started",
+      "item.updated",
+      "item.completed",
+    ]);
+    expect(tools.completedSnapshots()[0]).toMatchObject({
+      item: {
+        type: "toolExecution",
+        itemId: activeItemId,
+        toolName: "ask_question",
+        output: { content: [{ type: "text", text: "Alpha" }] },
+      },
+      outcome: { status: "succeeded" },
+    });
   });
   it.each([
     [undefined, "new\n", "add"],

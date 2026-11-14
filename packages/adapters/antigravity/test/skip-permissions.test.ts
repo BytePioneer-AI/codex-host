@@ -4,32 +4,19 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { harnessPermissionModeIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import type {
   AntigravityAcpTransportLike,
   AntigravityAcpTransportOptions,
 } from "../src/acp-types.js";
-import * as projection from "../src/acp-projection.js";
-import * as models from "../src/model-catalog.js";
-import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import { antigravityDelegationInstructions } from "../src/delegation.js";
 import { minimalTrajectoryMetadataBlob, nativeConversationDbPath } from "../src/fork.js";
 const adapters: AntigravityAdapter[] = [];
 const homes: string[] = [];
-beforeEach(() => {
-  vi.spyOn(projection, "projectReplayedEventsToTurns").mockReturnValue([]);
-  vi.spyOn(models, "readAcpEffectiveModelState").mockReturnValue({});
-  vi.spyOn(AntigravitySessionUsageTracker.prototype, "replayHistoricalRequests").mockResolvedValue({
-    requests: [],
-    complete: true,
-    usage: null,
-  });
-});
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.close()));
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
-  vi.restoreAllMocks();
 });
 describe("unattended native policy", () => {
   it.each(["resume", "fork", "rollbackLastTurn"] as const)(

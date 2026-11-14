@@ -41,15 +41,15 @@
 
 ## Harness 专项
 
-[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，以及 Pi 权限模式、Antigravity 审批与压缩等剩余缺口。
+[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，以及 Pi 权限模式、Antigravity ACP 审批/派生/压缩等边界。
 
 ### Antigravity
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/antigravity/antigravity-tool-approval.md`](harnesses/antigravity/antigravity-tool-approval.md) | agy 的危险跳过权限、旧模式拒绝和问题桥边界；修改权限或交互时阅读。 |
-| [`harnesses/antigravity/antigravity-subagents.md`](harnesses/antigravity/antigravity-subagents.md) | agy 原生 Subagent 生命周期、Transcript 和公共投影；修改 Subagent 支持时阅读。 |
-| [`harnesses/antigravity/antigravity-question-interaction-postmortem.md`](harnesses/antigravity/antigravity-question-interaction-postmortem.md) | Ask Question 失败历史、后续 Hook 桥实测和限制；排查 agy 提问交互时阅读。 |
+| [`harnesses/antigravity/antigravity-tool-approval.md`](harnesses/antigravity/antigravity-tool-approval.md) | `agy acp` 权限模式、原生 `session/request_permission` 工具审批与 `elicitation/create` 提问边界；修改权限或交互时阅读。 |
+| [`harnesses/antigravity/antigravity-subagents.md`](harnesses/antigravity/antigravity-subagents.md) | `agy acp` 原生 Subagent 生命周期、`conversation_summaries.db` 状态观测、Transcript 和公共投影；修改 Subagent 支持时阅读。 |
+| [`harnesses/antigravity/antigravity-question-interaction-postmortem.md`](harnesses/antigravity/antigravity-question-interaction-postmortem.md) | 历史归档：早期 PrintMode 下 Ask Question 失败复盘与旧 Hook 桥记录（现行实现已改用原生 ACP `elicitation/create`）。 |
 
 ### Claude Code
 

@@ -43,6 +43,8 @@ const EFFORT_SUFFIX_PATTERN = /^(?<base>.+)-(?<effort>low|medium|high|xhigh)$/u;
 const EFFORT_LABEL_SUFFIX_PATTERN = /\s*\((?:low|medium|high|xhigh)\)$/iu;
 
 interface ListedModel {
+  readonly rawId: string;
+  readonly rawLabel: string;
   readonly baseId: string;
   readonly baseLabel: string;
   readonly effort: string | null;
@@ -55,8 +57,12 @@ function listedModel(line: string): ListedModel | null {
   const label = line.slice(separator + 1).trim();
   if (!id || !label) return null;
   const match = EFFORT_SUFFIX_PATTERN.exec(id);
-  if (!match?.groups) return { baseId: id, baseLabel: label, effort: null };
+  if (!match?.groups) {
+    return { rawId: id, rawLabel: label, baseId: id, baseLabel: label, effort: null };
+  }
   return {
+    rawId: id,
+    rawLabel: label,
     baseId: match.groups.base as string,
     baseLabel: label.replace(EFFORT_LABEL_SUFFIX_PATTERN, "").trim() || label,
     effort: match.groups.effort as string,
@@ -64,12 +70,20 @@ function listedModel(line: string): ListedModel | null {
 }
 
 export function parseAntigravityModels(output: string): HarnessModelCatalog {
-  const grouped = new Map<string, { label: string; efforts: HarnessThinkingOptionId[] }>();
+  const grouped = new Map<
+    string,
+    { label: string; efforts: HarnessThinkingOptionId[]; rows: ListedModel[] }
+  >();
   for (const line of output.split(/\r?\n/u)) {
     const listed = listedModel(line.trim());
     if (!listed) continue;
     if (!harnessModelRefSchema.safeParse({ id: listed.baseId }).success) continue;
-    const entry = grouped.get(listed.baseId) ?? { label: listed.baseLabel, efforts: [] };
+    const entry = grouped.get(listed.baseId) ?? {
+      label: listed.baseLabel,
+      efforts: [],
+      rows: [],
+    };
+    entry.rows.push(listed);
     if (listed.effort) {
       const effortId = harnessThinkingOptionIdSchema.safeParse(listed.effort);
       if (effortId.success && !entry.efforts.includes(effortId.data)) {
@@ -81,7 +95,18 @@ export function parseAntigravityModels(output: string): HarnessModelCatalog {
 
   const models: HarnessModel[] = [];
   const thinkingOptions = new Map<HarnessThinkingOptionId, HarnessThinkingOption>();
-  for (const [id, { label, efforts }] of grouped) {
+  for (const [id, { label, efforts, rows }] of grouped) {
+    // Single-variant models (such as `gpt-oss-120b-medium`) are exposed in ACP
+    // under their unsplit ID with no `thought_level` selector.
+    const soleRow = rows.length === 1 ? rows[0] : undefined;
+    if (soleRow?.effort && harnessModelRefSchema.safeParse({ id: soleRow.rawId }).success) {
+      models.push({
+        ref: harnessModelRefSchema.parse({ id: soleRow.rawId }),
+        label: soleRow.rawLabel,
+        resolvedModelLabel: soleRow.rawLabel,
+      });
+      continue;
+    }
     const ordered = [...EFFORT_LABELS.keys()].flatMap((effort) => {
       const match = efforts.find((candidate) => candidate === effort);
       return match ? [match] : [];

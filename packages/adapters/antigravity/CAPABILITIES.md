@@ -54,32 +54,34 @@
 | C4 | 首次安装 | 可选 | P2 | 支持 | `src/plugin.ts` | `test/plugin.test.ts` | 使用 `createHarnessInstaller` 调用官方安装脚本 |
 | C5 | 自定义启动路径 | 条件必做 | P1 | 不适用 | — | `agy` 为独立命令行工具而非桌面应用私藏二进制；另支持 `CODEXHOST_ANTIGRAVITY_COMMAND` 环境变量覆盖 | |
 | C6 | 会话导入 | 可选 | P2 | 支持 | `src/session-import.ts` | `test/session-import.test.ts` | 只读扫描 `conversation_summaries.db` 与 `conversations/<id>.db`，过滤空会话与子代理 |
-| C7 | 全局用量统计 | 可选 | P2 | 支持 | `src/usage-statistics.ts` | `test/usage-statistics.test.ts` | 只读解析 `brain/<id>/.system_generated/logs/transcript.jsonl`，提取 `1.5.9` `model` 与 Token |
-| C8 | 账号额度 | 可选 | P2 | 支持 | `src/quota.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts` | 通过 `agy --print=/usage` 查询配额窗口并维护独立账号缓存 |
-| D1 | Workspace / 构建 | 预装时必做 | P1 | 支持 | `tsconfig.json`、`package-lock.json` | `npx tsc -b packages/adapters/antigravity` | 已在根工程引用中注册 |
-| D2 | 预装清单 | 预装时必做 | P1 | 支持 | `scripts/release/harness-plugins.json` | Bundle / Loader 检查 | `@agentclientprotocol/sdk` 与 `diff` 已在 `runtimePackages` |
-| D3 | 加载测试 | 预装时必做 | P1 | 支持 | `packages/host-runtime/test/installed-harness-plugins.test.ts` | Vitest 加载测试 | 真实 Loader 加载验证 |
-| D4 | 文档 | 预装时必做 | P1 | 支持 | `docs/harnesses/antigravity/`、`docs/harnesses/capability-boundaries.md`、`docs/product/usage-metering.md` | 文档与链接核查 | 同步 ACP 现行架构与请求级计量清单 |
-| D5 | 其他 | 可选 | P2 | 支持 | `packages/host-runtime/test/antigravity-*.real.test.ts` | 按需实测 | 保持真实环境回归测试兼容 |
+| C7 | 全局用量统计 | 可选 | P2 | 支持 | `src/usage-statistics.ts` | `test/usage-statistics.test.ts`；实测跨会话分叉去重 | 只读解析 `brain/<id>/.system_generated/logs/transcript.jsonl`，归一 `1.5.9` `model` 并按 Gemini/GPT 隐式零缓存写与 Claude 未知缓存写区分计价 |
+| C8 | 账号额度 | 可选 | P2 | 支持 | `src/quota.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts`；实测 `accounts/inspect` | 通过 `agy --print=/usage` 流式读取 `command_result` 配额窗口并维护独立账号缓存 |
+| D1 | Workspace / 构建 | 预装时必做 | P1 | 支持 | `tsconfig.json`、`package-lock.json` | `npm run typecheck`、`npm run build:typescript` | 已在根工程引用中注册 |
+| D2 | 预装清单 | 预装时必做 | P1 | 支持 | `scripts/release/harness-plugins.json` | `npm run build:typescript`（含 `build:plugins`） | `@agentclientprotocol/sdk` 与 `diff` 已在 `runtimePackages` |
+| D3 | 加载测试 | 预装时必做 | P1 | 支持 | `packages/host-runtime/test/installed-harness-plugins.test.ts` | `npx vitest run -c tests/vitest.config.js packages/host-runtime/test/installed-harness-plugins.test.ts` | 真实 Loader 加载验证通过 |
+| D4 | 文档 | 预装时必做 | P1 | 支持 | `docs/harnesses/antigravity/`、`docs/harnesses/capability-boundaries.md`、`docs/architecture/`、`docs/product/`、`docs/index.md` | 文档与链接核查 | 同步 ACP 现行架构、命令目录与请求级计量口径 |
+| D5 | 其他 | 可选 | P2 | 支持 | `packages/host-runtime/test/antigravity-*.real.test.ts` | `CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL=1` 实测通过 | 真实 `elicitation/create` 问答、取消与恢复测试兼容 |
 
 ## 受限与已知缺口
 
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
 - Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
+- 只读快照（`session/load`）重放历史 `tool_call` 的名称、参数与终态，不重放历史工具输出正文；实时 Turn 内工具输出完整流式上报。
 
 ## 插件外改动
 
 - `package-lock.json`：`@codexhost/adapter-antigravity` 增加工作区已有的 `@agentclientprotocol/sdk@1.3.0` 与 `diff@8.0.2` 依赖声明。
-- 文档同步：`docs/harnesses/antigravity/`、`docs/harnesses/capability-boundaries.md`、`docs/product/usage-metering.md`、`docs/index.md`（交付前更新）。
+- `packages/host-runtime/test/antigravity-question.real.test.ts`：对齐原生 ACP `session/load` 历史工具快照（校验实时 `item.completed` 与快照 `ask_question` 参数/终态）并清理测试在 `conversation_summaries.db` 中产生的临时记录。
+- 文档同步：`docs/harnesses/antigravity/`、`docs/harnesses/capability-boundaries.md`、`docs/architecture/harness-plugin-runtime.md`、`docs/architecture/harness-command-integration.md`、`docs/product/usage-metering.md`、`docs/product/usage-statistics.md`、`docs/index.md`。
 
 ## 验证记录
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | 待集成后填写 | |
+| Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 18 个测试文件、288 项测试全部通过 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |
-| 插件加载 | 待集成后填写 | |
-| Host 集成 | 待集成后填写 | |
-| 真实原生验收 | 待集成后填写 | |
-| Desktop / 委派 | 待集成后填写 | |
+| 插件加载 | `npm run build:typescript && npx vitest run -c tests/vitest.config.js packages/host-runtime/test/installed-harness-plugins.test.ts` | 插件打包与真实 Cordis Loader 加载通过 |
+| Host 集成 | 独立 `CODEXHOST_DATA_DIR` 下 `HostRuntime` 全链路隔离验收（预热草稿配置选择、多轮对话、文件 Diff 与审批、Host 重启冷恢复、跨目录 Fork、Rollback、会话导入、会话与全局用量计价） | 5 阶段全链路实测全部通过，退出后 `agy acp` 残留进程为 0 |
+| 真实原生验收 | `CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL=1 npx vitest run -c tests/vitest.config.js packages/host-runtime/test/antigravity-question.real.test.ts` | 1/1 通过（真实 `elicitation/create` 回答、中途取消 `interaction.closed` 顺序、`session/resume` 恢复） |
+| Desktop / 委派 | 向下委派（`CODEXHOST_*` 环境变量与 `_meta.antigravity.systemPrompt.append`）与无人值守接收委派（`unattended-full-access` + `session/resume`）单测及 Host 协议投影校验 | 通过（未改动用户正在运行的 Desktop 进程） |

@@ -83,7 +83,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       );
       const child = spawn(invocation.command, invocation.arguments, {
         cwd: this.options.cwd,
-        env: { ...process.env, ...this.options.environment },
+        env: this.options.environment ?? process.env,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,

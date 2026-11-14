@@ -221,6 +221,7 @@ describe("Antigravity Session usage", () => {
         provider: "google",
         inputTokens: 150,
         cachedInputTokens: 50,
+        cacheWriteInputTokens: 0,
         outputTokens: 30,
       },
       {
@@ -283,8 +284,12 @@ describe("Antigravity Session usage", () => {
     await tracker.replayHistoricalRequests();
     await transcript(planner(1));
     const result = await tracker.collectNewTranscriptRequests(clock);
-    expect(result.requests[0]?.startedAtMs).toBe(hasTiming ? clock.firstOutputAtMs : undefined);
-    expect(result.requests[0]?.completedAtMs).toBe(hasTiming ? clock.completedAtMs : undefined);
+    expect(result.requests[0]?.startedAtMs).toBe(
+      hasTiming && "firstOutputAtMs" in clock ? clock.firstOutputAtMs : undefined,
+    );
+    expect(result.requests[0]?.completedAtMs).toBe(
+      hasTiming && "completedAtMs" in clock ? clock.completedAtMs : undefined,
+    );
     expect(result.usage?.outputTokensPerSecond).toBe(tps);
     const promptResult = tracker.recordTurnPromptUsage({ usage: prompt, ...clock });
     expect(promptResult.fallbackRequest).toBeUndefined();
@@ -416,5 +421,45 @@ describe("Antigravity Session usage", () => {
     await expect(
       tracker.collectNewTranscriptRequests({ signal: AbortSignal.abort() }),
     ).rejects.toThrow();
+  });
+
+  it("sets implicit zero cacheWrite for Gemini/GPT and reconciles live PromptResponse cacheWrite for Claude", async () => {
+    await transcript(
+      planner(1, { model: "claude-sonnet-5-5-medium", input_tokens: 100, cache_read_tokens: 20 }),
+    );
+    const coldClaude = await tracker.replayHistoricalRequests();
+    expect(coldClaude.requests[0]).not.toHaveProperty("cacheWriteInputTokens");
+
+    await appendFile(
+      file,
+      `${planner(3, { model: "claude-sonnet-5-5-medium", input_tokens: 100, cache_read_tokens: 20 })}\n`,
+    );
+    const liveClaudeZero = await tracker.collectNewTranscriptRequests({
+      promptUsage: {
+        inputTokens: 100,
+        cachedReadTokens: 20,
+        cachedWriteTokens: 0,
+        outputTokens: 20,
+      },
+    });
+    expect(liveClaudeZero.requests[0]?.cacheWriteInputTokens).toBe(0);
+
+    await appendFile(
+      file,
+      `${planner(5, { model: "claude-sonnet-5-5-medium", input_tokens: 100, cache_read_tokens: 20 })}\n`,
+    );
+    const liveClaudeWrite = await tracker.collectNewTranscriptRequests({
+      promptUsage: {
+        inputTokens: 100,
+        cachedReadTokens: 20,
+        cachedWriteTokens: 15,
+        outputTokens: 20,
+      },
+    });
+    expect(liveClaudeWrite.requests[0]).toMatchObject({
+      inputTokens: 135,
+      cachedInputTokens: 20,
+      cacheWriteInputTokens: 15,
+    });
   });
 });

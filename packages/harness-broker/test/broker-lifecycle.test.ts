@@ -168,7 +168,7 @@ describe("on-demand Aqua Harness broker lifecycle", () => {
     const firstOpen = vi.spyOn(firstAdapter, "open");
     const replacementOpen = vi.spyOn(replacementAdapter, "open");
     let first: HarnessBrokerServer | undefined;
-    const retired = Promise.withResolvers<void>();
+    const retired = Promise.withResolvers<undefined>();
     const start = vi.fn(async () => {
       if (!first) {
         // A retiring broker keeps its connection open briefly (the grace period).
@@ -177,7 +177,7 @@ describe("on-demand Aqua Harness broker lifecycle", () => {
           adapter: firstAdapter,
           idle: {
             timeoutMs: 50,
-            onRetire: retired.resolve,
+            onRetire: () => retired.resolve(undefined),
           },
         });
         servers.push(first);

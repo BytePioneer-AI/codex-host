@@ -139,7 +139,10 @@ async function runBridge(
     const code = await Promise.race([
       closed,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Bridge did not exit: ${stderr}`)), 5000);
+        timer = setTimeout(
+          () => reject(new Error(`Bridge did not exit: ${stderr}`)),
+          BRIDGE_EXIT_DEADLINE_MS,
+        );
       }),
     ]);
     const summary: unknown = JSON.parse(stdout.trim() || "[]");
@@ -153,25 +156,31 @@ async function runBridge(
   }
 }
 
+// Slow CI runners can take several seconds to start Python. Every test in the
+// subprocess suite allows longer than this deadline, so the deadline reports first.
+const BRIDGE_EXIT_DEADLINE_MS = 15_000;
+const timeout = BRIDGE_EXIT_DEADLINE_MS + 5_000;
+
 // On non-Windows hosts this tests the Windows stdin branch, not IOCP itself.
 const windowsScript = GATEWAY_LAUNCH.replace('if sys.platform == "win32":', "if True:");
-describe.skipIf(!python)("Hermes bridge subprocess (requires Python 3.9+)", () => {
-  it.each([["error", true]])(
-    "exits on %s with partial stdin=%s and no EOF",
-    async (scenario, partial) => {
-      const result = await runBridge(
-        windowsScript,
-        Buffer.from(partial ? '{"partial":' : ""),
-        scenario,
-        true,
-      );
-      expect(result.code).toBe(scenario === "error" ? 1 : 0);
-      expect(result.sent).toEqual([]);
-      if (scenario === "error") expect(result.stderr).toContain("fixture gateway disconnected");
-      else expect(result.stderr).toBe("");
-    },
-    10_000,
-  );
+describe.skipIf(!python)("Hermes bridge subprocess (requires Python 3.9+)", { timeout }, () => {
+  it.each([
+    ["disconnect", false],
+    ["disconnect", true],
+    ["error", false],
+    ["error", true],
+  ])("exits on %s with partial stdin=%s and no EOF", async (scenario, partial) => {
+    const result = await runBridge(
+      windowsScript,
+      Buffer.from(partial ? '{"partial":' : ""),
+      scenario,
+      true,
+    );
+    expect(result.code).toBe(scenario === "error" ? 1 : 0);
+    expect(result.sent).toEqual([]);
+    if (scenario === "error") expect(result.stderr).toContain("fixture gateway disconnected");
+    else expect(result.stderr).toBe("");
+  });
 
   for (const [name, script] of [
     ["native", GATEWAY_LAUNCH],
@@ -201,19 +210,15 @@ describe.skipIf(!python)("Hermes bridge subprocess (requires Python 3.9+)", () =
         });
       });
 
-      it.each(["\n", ""])(
-        "accepts exactly 8 MiB of content followed by %j",
-        async (ending) => {
-          const raw = Buffer.from('{"text":"' + "x".repeat(limit - 11) + '"}');
-          expect(raw.length).toBe(limit);
-          expect(await runBridge(script, Buffer.concat([raw, Buffer.from(ending)]))).toEqual({
-            code: 0,
-            sent: [{ bytes: limit, digest: digest(raw) }],
-            stderr: "",
-          });
-        },
-        10_000,
-      );
+      it.each(["\n", ""])("accepts exactly 8 MiB of content followed by %j", async (ending) => {
+        const raw = Buffer.from('{"text":"' + "x".repeat(limit - 11) + '"}');
+        expect(raw.length).toBe(limit);
+        expect(await runBridge(script, Buffer.concat([raw, Buffer.from(ending)]))).toEqual({
+          code: 0,
+          sent: [{ bytes: limit, digest: digest(raw) }],
+          stderr: "",
+        });
+      });
     });
   }
 
@@ -239,5 +244,5 @@ describe.skipIf(!python)("Hermes bridge subprocess (requires Python 3.9+)", () =
     expect(result.code).toBe(1);
     expect(result.sent).toEqual([]);
     expect(result.stderr).toContain("stdin line exceeds the 8 MiB bridge limit");
-  }, 10_000);
+  });
 });

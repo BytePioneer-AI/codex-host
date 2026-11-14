@@ -5,6 +5,7 @@ import {
   THREAD_MANUAL_COMPACTION_STARTED_METHOD,
   harnessCommandDescriptorSchema,
   hostItemIdSchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -39,7 +40,7 @@ describe("AppServerHost replayed external item events", () => {
     const fixture = createFixture();
     try {
       const parentThreadId = await startPiThread(fixture);
-      const turnId = await startPiTurn(fixture, parentThreadId);
+      const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, parentThreadId));
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));

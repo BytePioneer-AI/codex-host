@@ -20,6 +20,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
+import { externalClientMcp } from "../src/external-client-mcp.js";
+import { externalClientRouter } from "../src/external-client-routes.js";
+import { startExternalClientServer } from "../src/external-client-server.js";
+import { ExternalClientRegistry } from "../src/external-clients.js";
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime, type ExternalThread } from "../src/external-thread-runtime.js";
@@ -114,6 +118,22 @@ class RecordingAdapter extends FakeHarnessAdapter {
     this.openInputs.push(input);
     return super.open(input);
   }
+}
+
+function nativeSelectionCatalog() {
+  return harnessModelCatalogSchema.parse({
+    models: [
+      {
+        ref: { id: "encoded-model" },
+        nativeId: "provider/model-a",
+        label: "Model A",
+        supportedThinkingOptionIds: ["encoded-thinking"],
+      },
+    ],
+    defaultModel: { id: "encoded-model" },
+    thinkingOptions: [{ id: "encoded-thinking", nativeId: "reasoning=high", label: "High" }],
+    defaultThinkingOptionId: "encoded-thinking",
+  });
 }
 
 class FailingTurnAdapter extends FakeHarnessAdapter {
@@ -531,6 +551,98 @@ describe("HarnessDelegationCoordinator", () => {
       expect(result.configuration?.requested).toEqual({ model, thinkingOptionId });
       expect((await value.repository.list())[0]?.transportModelId).not.toBe("codexhost/pi-native");
     } finally {
+      await value.close();
+    }
+  });
+
+  it("resolves explicit native Model and Thinking selectors from HTTP delegate start", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"), nativeSelectionCatalog());
+    const value = await fixture(adapter);
+    const server = await startDelegationControlServer({
+      token: "test-token",
+      api: value.coordinator,
+    });
+    try {
+      const response = await fetch(`${server.endpoint}/v1/delegate/start`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+        body: JSON.stringify({
+          harnessId: "pi",
+          task: "review auth",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+          model: "provider/model-a",
+          thinking: "reasoning=high",
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(
+        ((await response.json()) as { configuration?: { requested?: unknown } }).configuration
+          ?.requested,
+      ).toEqual({ model: { id: "encoded-model" }, thinkingOptionId: "encoded-thinking" });
+      expect(adapter.openInputs[0]).toMatchObject({
+        model: { id: "encoded-model" },
+        thinkingOptionId: "encoded-thinking",
+      });
+    } finally {
+      await server.close();
+      await value.close();
+    }
+  });
+
+  it("resolves explicit native Model and Thinking selectors from MCP delegate_start", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"), nativeSelectionCatalog());
+    const value = await fixture(adapter);
+    const clients = new ExternalClientRegistry(path.join(value.directory, "external-clients.json"));
+    const { token } = await clients.add("selection-client");
+    const route = externalClientRouter({ api: value.coordinator });
+    const server = await startExternalClientServer({
+      port: 0,
+      clients,
+      route,
+      streams: { "/mcp": externalClientMcp(route) },
+      descriptorPath: path.join(value.directory, "endpoint.json"),
+    });
+    if (!server) throw new Error("external client listener did not start");
+    try {
+      const response = await fetch(new URL("/mcp", server.endpoint), {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "delegate_start",
+            arguments: {
+              harnessId: "pi",
+              task: "review auth",
+              cwd: "/synthetic",
+              parentThread: "parent-thread",
+              model: "provider/model-a",
+              thinking: "reasoning=high",
+            },
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        result: {
+          isError: boolean;
+          structuredContent: { configuration?: { requested?: unknown } };
+        };
+      };
+      expect(body.result.isError).toBe(false);
+      expect(body.result.structuredContent.configuration?.requested).toEqual({
+        model: { id: "encoded-model" },
+        thinkingOptionId: "encoded-thinking",
+      });
+      expect(adapter.openInputs[0]).toMatchObject({
+        model: { id: "encoded-model" },
+        thinkingOptionId: "encoded-thinking",
+      });
+    } finally {
+      await server.close();
       await value.close();
     }
   });

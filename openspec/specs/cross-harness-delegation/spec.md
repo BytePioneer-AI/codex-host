@@ -241,6 +241,18 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** `availability` SHALL 为 `pending`、`available` 或 `unavailable`
 - **AND** 它 MUST NOT 仅以自由文本表述成败
 
+### Requirement: 委派的 CLI、HTTP 与 MCP 入口共享 Model 与 Thinking 选择器契约
+`delegate start --model/--thinking`、HTTP `POST /v1/delegate/start` 的 `model`/`thinking` 与 MCP `delegate_start` 的 `model`/`thinking` SHALL 使用同一契约：值为目标 Catalog 的 ID 或条目声明的 `nativeId` 字符串，由 Host 解析为 opaque Model Ref 与 Thinking Option ID 后交给同一 Adapter seam；省略时保持 Harness 默认。HTTP SHALL 在委派开始前以 `INVALID_ARGUMENT` 拒绝非字符串 `model`/`thinking` 与已移除的 `thinkingOptionId`，MUST NOT 猜测对象形状或静默忽略选择。
+
+#### Scenario: 三个入口解析同一显式选择
+- **WHEN** CLI、HTTP 或 MCP 调用方为同一 Harness 指定相同的 Catalog ID 或 `nativeId` 作为 Model 与 Thinking
+- **THEN** Host SHALL 解析出相同的 Model Ref 与 Thinking Option ID，并以相同配置创建 Thread
+
+#### Scenario: HTTP 拒绝旧选择器形状
+- **WHEN** HTTP 请求使用 `model: {id}` 或 `thinkingOptionId`
+- **THEN** Host SHALL 以 `INVALID_ARGUMENT` 拒绝
+- **AND** MUST NOT 启动委派或创建 worktree
+
 ### Requirement: 调用方可显式注册一次性 Thread 停下通知
 系统 SHALL 提供 `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` 与 `codexhost thread watches`。watch 在被观察 Thread 停下或到期时，SHALL 通过与 `thread send` 相同的路径在被通知 Thread 中启动一个新 Turn，作为一次性通知。被观察 Thread 与被通知 Thread 可以是任意两个不同的 Thread，不要求委派血缘。通知 SHALL 只报告执行状态与 Thread 链接，MUST NOT 携带或摘要会话内容，也 MUST NOT 被表述为工作已验收。watch SHALL 只保存在 Host Runtime 内存中，不提供取消操作。
 

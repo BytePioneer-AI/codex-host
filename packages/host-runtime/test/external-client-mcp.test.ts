@@ -225,6 +225,7 @@ describe("external client MCP endpoint", () => {
         cwd: "/w",
         refs: ["https://e.com/1"],
         model: "m",
+        thinking: "high",
       },
     });
     expect(started).toMatchObject({
@@ -235,7 +236,8 @@ describe("external client MCP endpoint", () => {
       expect.objectContaining({
         parentThreadId: "client:grok-bot",
         refs: ["https://e.com/1"],
-        model: { id: "m" },
+        model: "m",
+        thinking: "high",
       }),
     );
     // Waits are capped so a tool call never outlives the client's timeout.

@@ -33,8 +33,10 @@ HTTP 与 MCP 的以下参数及 JSON 结果和 CLI 对齐（HTTP 用 `threadId`�
 | HTTP | MCP | 参数与结果 |
 | --- | --- | --- |
 | `POST /v1/thread/send` | `thread_send` | `message`、可选布尔值 `interrupt`、`watch` 及正整数 `watchTimeoutMs` |
-| `POST /v1/delegate/start` | `delegate_start` | 可选 `worktree`（新分支名）、`base`（Git ref）、`watch` 及 `watchTimeoutMs` |
+| `POST /v1/delegate/start` | `delegate_start` | 可选 `model` / `thinking`（Catalog ID 或 `nativeId`）、`worktree`（新分支名）、`base`（Git ref）、`watch` 及 `watchTimeoutMs` |
 | `POST /v1/thread/watches` | `thread_watches` | 原样返回 Host 的 watches，含 `taskName`、`threadStatus`、`watchedForMs` |
+
+`model`、`thinking` 与 CLI 的 `--model`、`--thinking` 使用同一契约：值为 `harness inspect` 返回的 Catalog ID 或条目声明的 `nativeId`，由 Host 按目标 Harness 的 Catalog 解析后再交给 Adapter；省略时保持 Harness 的默认选择。HTTP 是外部客户端边界，已移除的 `model: {id}` 与 `thinkingOptionId` 形状以 `INVALID_ARGUMENT` 明确拒绝，不猜测对象形状、不静默忽略 Thinking 选择，也不会先创建 worktree。
 
 `interrupt: true` 先取消活动 Turn、确认空闲后只发送一次，读取、取消和等待停下共用 30 秒期限；取消失败或超时不发送。目标空闲时直接发送，不排队、不自动重试，保留已有 watch 并抑制临时停下通知。省略或 `false` 保持普通 send 行为。
 

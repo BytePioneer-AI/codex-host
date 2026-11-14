@@ -228,6 +228,71 @@ it("retains the confirmed archive set on failed reads/writes and never replays a
   assert.equal(writes, before + 1);
 });
 
+it("converges Web archive state when native archive rejects an already-archived Thread", async (t) => {
+  const host = nativeCodex(new FakeChHost());
+  const bench = setup(t, host);
+  const id = "native-already-archived";
+  host.add(id, bench.root).modelProvider = "openai";
+  host.archivedIds.add(id);
+  await bench.call("session/list");
+  assert.equal(bench.workspaces.isArchived(id), false);
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/archive" && params.threadId === id) {
+      host.requests.push({ method, params: structuredClone(params) });
+      throw new RpcError("host/rejected", `no rollout found for thread id ${id}`, {
+        hostCode: -32600,
+      });
+    }
+    return request<T>(method, params);
+  };
+  assert.deepEqual(await bench.call("workspace/archiveSession", { sessionId: id }), {
+    archivedSessionIds: ["archived", id],
+  });
+  assert.equal(bench.workspaces.isArchived(id), true);
+  assert.equal(host.requests.filter((r) => r.method === "thread/archive").length, 1);
+  assert.ok(
+    host.requests.some(
+      (r) => r.method === "codexhost/thread/catalog/read" && r.params.includeArchived === true,
+    ),
+  );
+});
+
+it("preserves the native archive error when the catalog does not confirm archived membership", async (t) => {
+  const host = nativeCodex(new FakeChHost());
+  const bench = setup(t, host);
+  const id = "native-unconfirmed";
+  host.add(id, bench.root).modelProvider = "openai";
+  await bench.call("session/list");
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/archive" && params.threadId === id) {
+      host.requests.push({ method, params: structuredClone(params) });
+      throw new RpcError("host/rejected", `no rollout found for thread id ${id}`, {
+        hostCode: -32600,
+      });
+    }
+    return request<T>(method, params);
+  };
+  const result = await bench.rpc.dispatch("workspace/archiveSession", {
+    args: { request: { sessionId: id } },
+  });
+  assert.deepEqual(result, {
+    ok: false,
+    error: {
+      code: "host/rejected",
+      message: `no rollout found for thread id ${id}`,
+      details: { hostCode: -32600 },
+    },
+  });
+  assert.equal(bench.workspaces.isArchived(id), false);
+  assert.ok(
+    host.requests.some(
+      (r) => r.method === "codexhost/thread/catalog/read" && r.params.includeArchived === true,
+    ),
+  );
+});
+
 it("reconciles GUI archive/unarchive notifications and reconnect without opening history", async (t) => {
   const host = new FakeChChannel();
   const bench = setup(t, host);

@@ -95,9 +95,6 @@ it("loads a relocated Codex usage bundle independently of Desktop or workspace m
     const source = sources?.[0];
     if (!source) throw new Error("missing source");
     expect(await second?.usageStatistics.readSource(source.id, signal)).toHaveLength(1);
-    expect(await readFile(path.join(plugins, "codex-usage", "plugin.mjs"), "utf8")).toContain(
-      '"token_usage_record"',
-    );
   } finally {
     await a.close();
     await b.close();

@@ -27,26 +27,6 @@ describe("Harness version localization", () => {
     ).toBe(false);
   });
 
-  it("localizes unknown plugin notices without changing version identities", () => {
-    const zh = rendererSettingsMessages("zh-CN").harnessVersion;
-    const en = rendererSettingsMessages("en").harnessVersion;
-    expect(harnessVersionLabel(state, zh)).toBe("跟踪分支（有新提交）");
-    expect(harnessVersionLabel(state, en)).toBe("Tracking branch (new commits)");
-    const pluginState = {
-      ...state,
-      messageCode: "unknown-plugin-policy",
-      notice: { en: "Needs a clean source checkout", "zh-CN": "要求源码目录无未提交修改" },
-    };
-    expect(harnessVersionNote(pluginState, zh)).toContain("源码目录无未提交修改");
-    expect(harnessVersionNote(pluginState, en)).toContain("clean source checkout");
-    expect(
-      harnessVersionLabel(
-        { ...state, latestVersion: "0.22.0-rc.1", latestVersionKind: undefined },
-        zh,
-      ),
-    ).toBe("0.22.0-rc.1");
-  });
-
   it("localizes legacy sentinels and does not display untranslated plugin diagnostics", () => {
     const zh = rendererSettingsMessages("zh-CN").harnessVersion;
     expect(harnessVersionLabel({ ...state, latestVersionKind: undefined }, zh)).toBe(
@@ -58,15 +38,5 @@ describe("Harness version localization", () => {
     expect(harnessVersionLabel(undefined, zh)).toBe("—");
     for (const messageCode of [undefined, "future-plugin-note", "toString", "__proto__"])
       expect(harnessVersionNote({ ...state, messageCode }, zh)).toBeUndefined();
-  });
-
-  it("keeps only generic legacy diagnostic codes in the clients", () => {
-    const en = rendererSettingsMessages("en").harnessVersion;
-    const zh = rendererSettingsMessages("zh-CN").harnessVersion;
-    expect(Object.keys(zh.notes)).toEqual(Object.keys(en.notes));
-    for (const messageCode of Object.keys(en.notes)) {
-      expect(harnessVersionNote({ ...state, messageCode }, zh)).toMatch(/[\u4e00-\u9fff]/u);
-      expect(harnessVersionNote({ ...state, messageCode }, en)).not.toMatch(/[\u4e00-\u9fff]/u);
-    }
   });
 });

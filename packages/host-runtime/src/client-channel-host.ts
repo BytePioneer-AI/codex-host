@@ -78,7 +78,7 @@ export interface PendingClientInteraction {
 /** Pending interactions keyed by Host request ID, answered through the Desktop response path. */
 export interface ClientInteractionSource {
   readonly approvals: ReadonlyMap<number, PendingClientInteraction>;
-  readonly questions: ReadonlyMap<number, PendingClientInteraction>;
+  questions(): ReadonlyMap<number, PendingClientInteraction>;
   isApprovalRequestId(value: unknown): value is number;
   isQuestionRequestId(value: unknown): value is number;
   respondApproval(response: JsonValue): Promise<boolean>;
@@ -159,6 +159,24 @@ export class ClientChannelHost {
   resetNativeSession(): void {
     this.#titles?.reset();
     this.#native?.resetGeneration();
+  }
+
+  nativeQuestions(threadId: string) {
+    return (this.#native?.interactions(threadId) ?? []).flatMap((pending) => {
+      const params = pending.request.params;
+      return pending.kind === "question" &&
+        pending.request.method === "item/tool/requestUserInput" &&
+        typeof pending.requestId === "string" &&
+        isRecord(params) &&
+        typeof params.turnId === "string"
+        ? [{ requestId: pending.requestId, turnId: params.turnId, request: params as JsonObject }]
+        : [];
+    });
+  }
+
+  nativeChannel(): NativeClientChannel {
+    if (!this.#native) throw new Error("Native client channel is unavailable");
+    return this.#native;
   }
 
   /** Route only to the confirmed external owner or this service's shared native client. */
@@ -436,7 +454,7 @@ export class ClientChannelHost {
           interaction: pending.interaction,
           request: pending.projection.request,
         })),
-      ...[...this.#host.interactions.questions]
+      ...[...this.#host.interactions.questions()]
         .filter(([, pending]) => pending.thread === thread)
         .map(([requestId, pending]) => ({
           requestId,
@@ -500,7 +518,7 @@ export class ClientChannelHost {
       ? interactions.approvals.get(id)
       : undefined;
     const question = interactions.isQuestionRequestId(id)
-      ? interactions.questions.get(id)
+      ? interactions.questions().get(id)
       : undefined;
     const pending = approval ?? question;
     if (!pending) {

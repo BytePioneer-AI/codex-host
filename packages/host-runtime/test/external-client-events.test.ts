@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import {
   DelegationControlError,
+  type DelegationPendingQuestion,
   type DelegationThreadSnapshot,
   type DelegationThreadStatus,
 } from "../src/delegation-types.js";
@@ -54,6 +55,50 @@ describe("client event log", () => {
     expect(await log.read("bot", need(second).id)).toEqual({ events: [], cursor: need(second).id });
     // Each client sees only its own log.
     expect((await log.read("other", 0)).events).toEqual([]);
+  });
+
+  it("persists the captured Question identity in a named client's needsInput event", async () => {
+    const log = new ClientEventLog({ directory, retentionDays: 7 });
+    let pending: DelegationPendingQuestion[] = [];
+    const fake = {
+      read: vi.fn(async () => ({
+        threadId: "child",
+        harnessId: "pi" as const,
+        status: "running" as const,
+        turn: { turnId: "current-turn", status: "running" as const },
+        progress: [],
+        result: { availability: "pending" as const },
+        pendingQuestions: pending,
+      })),
+      send: vi.fn(),
+    };
+    const service = new DelegationWatchService(fake, { pollIntervalMs: 10, clientEvents: log });
+    try {
+      await service.watch({ threadId: "child", notifyThreadId: "client:bot", timeoutMs: 60_000 });
+      pending = [
+        {
+          interactionId: "captured-question",
+          kind: "requestUserInput",
+          turnId: "question-turn",
+          request: {},
+        },
+      ];
+      await vi.waitFor(async () => {
+        expect((await log.read("bot", 0)).events).toMatchObject([
+          {
+            type: "watch",
+            threadId: "child",
+            outcome: "needsInput",
+            turnId: "question-turn",
+            interactionId: "captured-question",
+          },
+        ]);
+      });
+      expect(fake.send).not.toHaveBeenCalled();
+      expect((await service.watches()).watches).toEqual([]);
+    } finally {
+      await service.close();
+    }
   });
 
   it("continues above earlier ids after a restart, even with a slower clock", async () => {

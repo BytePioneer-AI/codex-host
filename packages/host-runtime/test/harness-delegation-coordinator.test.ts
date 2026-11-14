@@ -20,6 +20,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
+import type { DelegationPendingQuestion } from "../src/delegation-types.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime, type ExternalThread } from "../src/external-thread-runtime.js";
 
@@ -42,6 +43,7 @@ async function fixture(
   const notifications: unknown[] = [];
   const treeChanged = vi.fn<(threadId: string) => void>();
   const delivered: string[] = [];
+  const pending: DelegationPendingQuestion[] = [];
   const runtime = new ExternalThreadRuntime({
     adapters,
     environment,
@@ -86,6 +88,7 @@ async function fixture(
     },
     activeOfficialParents: () => [],
     externalThreadBusy,
+    pendingQuestions: () => [...pending],
   });
   return {
     adapter,
@@ -94,6 +97,7 @@ async function fixture(
     delivered,
     notifications,
     treeChanged,
+    pending,
     registered,
     repository,
     runtime,
@@ -167,7 +171,12 @@ describe("HarnessDelegationCoordinator", () => {
     const value = await fixture(undefined, async () => ({ title: "Main project" }));
     const server = await startDelegationControlServer({
       token: "test-token",
-      api: value.coordinator,
+      api: Object.assign(value.coordinator, {
+        // AppServerHost wires Questions separately; this fixture only creates Threads.
+        answer: async () => {
+          throw new Error("No Question responder in this fixture");
+        },
+      }),
     });
     try {
       const output = new PassThrough();
@@ -1019,6 +1028,46 @@ describe("HarnessDelegationCoordinator", () => {
           sort: "created-desc",
         }),
       ).resolves.toMatchObject({ threads: [{ threadId: result.threadId }] });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("reports pending Questions in read and returns from wait without waiting", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "work",
+        parentThreadId: "parent",
+      });
+      value.pending.push({
+        kind: "requestUserInput",
+        interactionId: "interaction-1",
+        turnId: started.turnId,
+        request: {
+          questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+        },
+      });
+
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).resolves.toMatchObject({
+        status: "running",
+        pendingQuestions: [{ interactionId: "interaction-1" }],
+      });
+      // A pending Question is a ready condition, not a timeout.
+      await expect(
+        value.coordinator.wait({ threadId: started.threadId, view: "result", timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({
+        timedOut: false,
+        pendingQuestions: [{ interactionId: "interaction-1" }],
+      });
+
+      value.pending.length = 0;
+      await expect(
+        value.coordinator.wait({ threadId: started.threadId, view: "result", timeoutMs: 10 }),
+      ).resolves.toMatchObject({ timedOut: true, pendingQuestions: [] });
     } finally {
       await value.close();
     }

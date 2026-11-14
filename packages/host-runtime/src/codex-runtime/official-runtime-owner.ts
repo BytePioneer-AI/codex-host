@@ -452,6 +452,8 @@ export class OfficialRuntimeOwner {
           frame: Buffer.from(`${JSON.stringify(projected)}\n`),
         });
       }
+      // A client can retire only a request identity it was shown.
+      return;
     }
     if (typeof value.id === "string" || typeof value.id === "number") {
       if (typeof value.method === "string") {

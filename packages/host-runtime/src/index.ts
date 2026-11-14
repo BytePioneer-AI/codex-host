@@ -51,10 +51,13 @@ export {
 } from "./delegation-types.js";
 export type {
   DelegationControlApi,
+  DelegationPendingQuestion,
   DelegationStartInput,
   DelegationStartResult,
   DelegationThreadListResult,
   DelegationThreadSnapshot,
+  ThreadAnswerInput,
+  ThreadAnswerResult,
   ThreadListInput,
   ThreadReadInput,
   ThreadWaitInput,

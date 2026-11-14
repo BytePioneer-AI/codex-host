@@ -320,6 +320,28 @@ const TOOLS: Tool[] = [
     }),
   },
   {
+    name: "thread_answer",
+    description:
+      "Answer one pending Question returned by thread_read. Use its interactionId and original request to supply result: the existing reply result for requestUserInput, or {answer: string} for requestUserInputAsync. Submission is not task completion; read or watch again afterwards.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        thread,
+        interactionId: string("Opaque interactionId from thread_read pendingQuestions"),
+        result: { type: "object", description: "The Question's reply result" },
+      },
+      required: ["thread", "interactionId", "result"],
+    },
+    call: (args) => ({
+      route: "/v1/thread/answer",
+      body: {
+        threadId: threadId(args),
+        interactionId: text(args, "interactionId", true),
+        result: args.result,
+      },
+    }),
+  },
+  {
     name: "thread_cancel",
     description: "Cancel a Thread's active Turn, keeping the Thread and its history.",
     inputSchema: { type: "object", properties: { thread }, required: ["thread"] },

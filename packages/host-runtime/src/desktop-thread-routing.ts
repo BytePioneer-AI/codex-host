@@ -81,7 +81,10 @@ export interface DesktopThreadRoutingHost {
   };
   readonly routeObservationTracker: RequestRouteObservationTracker;
   /** Native Turn starts awaiting their response, keyed by JSON-RPC request ID. */
-  readonly pendingOfficialTurnStarts: Map<unknown, string>;
+  readonly pendingOfficialTurnStarts: Map<
+    unknown,
+    { threadId: string; completedTurnIds: Set<string> }
+  >;
   locateExternalThread(threadId: string): Promise<ExternalThreadLocation>;
   resolveExternalThread(threadId: string): Promise<ExternalThreadResolution>;
   /** Answers the request when the Thread could not be resolved; returns whether it did. */
@@ -558,7 +561,10 @@ export class DesktopThreadRouting {
         return true;
       }
       if (typeof threadId === "string") {
-        this.#host.pendingOfficialTurnStarts.set(request.id, threadId);
+        this.#host.pendingOfficialTurnStarts.set(request.id, {
+          threadId,
+          completedTurnIds: new Set(),
+        });
       }
     }
     if (request.method === "turn/steer") {

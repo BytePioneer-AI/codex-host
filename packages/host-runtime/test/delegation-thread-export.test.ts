@@ -48,6 +48,7 @@ function registration(directory: string): DelegationControlRegistration {
   return {
     listHarnesses: vi.fn(),
     inspect: vi.fn(),
+    answer: vi.fn(),
     start: vi.fn(),
     send: vi.fn(),
     cancel: vi.fn(),

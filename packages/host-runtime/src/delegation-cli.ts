@@ -1,4 +1,6 @@
+import type { JsonValue } from "@codexhost/protocol-core";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import type { Readable, Writable } from "node:stream";
 
 import { delegationCliHelp, type DelegationCliCommand } from "./delegation-cli-help.js";
@@ -71,6 +73,18 @@ function positiveInteger(value: string | undefined, name: string, maximum?: numb
     );
   }
   return number;
+}
+
+/** Load the existing reply result; its owner interprets and validates it. */
+function questionReply(source: string, path: string): JsonValue {
+  try {
+    return JSON.parse(source) as JsonValue;
+  } catch (error) {
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      `Answers file '${path}' is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function value(parsed: DelegationCliArguments, name: string): string | undefined {
@@ -631,6 +645,46 @@ export async function runDelegationCli(input: {
         command === "read" ? "thread read" : "thread wait",
         command === "read" ? await request(body) : await waitInSlices(body, request),
         view,
+      );
+      return 0;
+    }
+    if (group === "thread" && command === "answer") {
+      rejectUnknown(parsed, ["--interaction", "--answers-file"]);
+      if (parsed.positionals.length !== 1)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "thread answer requires one Thread identifier",
+        );
+      const threadId = parsed.positionals[0];
+      const interactionId = value(parsed, "--interaction");
+      const answersFile = value(parsed, "--answers-file");
+      if (!threadId || !interactionId?.trim() || !answersFile) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "Thread identifier, --interaction <id>, and --answers-file <file> are required",
+        );
+      }
+      let source: string;
+      try {
+        source = await readFile(answersFile, "utf8");
+      } catch (error) {
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          `Answers file '${answersFile}' could not be read: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      writeResult(
+        "thread answer",
+        await requestRuntime({
+          environment,
+          path: "/v1/thread/answer",
+          body: {
+            threadId: normalizeThreadId(threadId),
+            interactionId,
+            result: questionReply(source, answersFile),
+          },
+          ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}),
+        }),
       );
       return 0;
     }

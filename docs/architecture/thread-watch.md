@@ -1,13 +1,13 @@
-# Thread watch：一次性的 Thread 停下通知
+# Thread watch：一次性的 Thread 停下或等待回答通知
 
-`codexhost thread watch` 让一个 Thread 在另一个 Thread **停下（不再运行）时收到一次通知**。调用方注册后立即返回，可以继续工作或结束自己的 Turn，不需要等待或轮询。
+`codexhost thread watch` 让一个 Thread 在另一个 Thread **停下（不再运行）或等待回答问题**时收到一次通知。调用方注册后立即返回，可以继续工作或结束自己的 Turn，不需要等待或轮询。
 
-它是显式选择的能力：不调用时，Host 不会因为子任务终态而主动向任何 Thread 提交输入。同一变更中的忙碌判断修正（见“实现与边界”）不依赖 watch，也作用于普通的 `thread read`、`wait`、`send`。
+它是显式选择的能力：不调用时，Host 不会因为子任务终态或提问而主动向任何 Thread 提交输入。同一变更中的忙碌判断修正（见“实现与边界”）不依赖 watch，也作用于普通的 `thread read`、`wait`、`send`。
 
 ## 模型
 
 - 只有两个 Thread：被观察的 Thread 和被通知的 Thread。与委派的父子关系无关，任意两个不同的 Thread 都可以。
-- 一次性。被观察 Thread 停下，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有独立退订命令；主动 `thread cancel` 成功接受取消请求时，会删除被取消 Thread 上的全部 watch（含内存和存盘记录），不再投递其通知。取消失败或返回 `cancelled=false` 时保留 watch；想继续等就再注册一次。
+- 一次性。被观察 Thread 停下、出现待回答的问题，或 watch 到期，哪个先到就通知一次，随后 watch 消失。换了一个仍在运行的 Turn 不会通知。没有独立退订命令；主动 `thread cancel` 成功接受取消请求时，会删除被取消 Thread 上的全部 watch（含内存和存盘记录），不再投递其通知。取消失败或返回 `cancelled=false` 时保留 watch；想继续等就再注册一次。
 - 每次注册各自兑现。同一对 Thread 仍在观察中时重复注册，返回已有的 watch；该 watch 已停下、通知仍在待送达时再次注册（例如 Thread 又开始了新一轮），会新建一个 watch 观察下一次停下，旧通知照常送达，不会被替换或丢弃。
 - 通知只报告执行状态：Thread 链接和结果，不注明 Turn；同一 Thread 不同轮次的结果以 `thread read` 读到的为准。通知不包含会话正文或摘要，也不代表工作被验收。接收方应自行 `thread read`。
 
@@ -62,13 +62,16 @@ EOF
 | 结果 | 含义 |
 | --- | --- |
 | `completed` / `failed` / `interrupted` | Thread 停下时的终态 |
+| `needsInput` | Thread 尚非终态且有待回答的问题；通知给出问题请求 ID 与 Turn |
 | `timedOut` | 到期时 Thread 仍未停下；也覆盖 Harness 停止但没有报告的情况 |
 | `unreadable` | 连续 60 秒读取失败，状态未知 |
 | `notFound` | Thread 已不存在 |
 
 默认观察 29 分钟，`--timeout-ms` 可调整；到期报告 `timedOut`，需要继续等待时再注册一次。
 
-注册时 Thread 已是终态则返回 `alreadyTerminal`：不注册、不通知，调用方直接读取即可。
+注册和轮询都优先判断终态：已是终态时返回 `alreadyTerminal` 或报告终态结果；只有非终态且有待答题时，才返回 `alreadyNeedsInput` 或报告 `needsInput`。`alreadyNeedsInput` 响应带上 `pendingQuestions`；两种即时返回都不注册、不通知。回答问题后可再次注册，等待下一个问题或终态。
+
+问题请求本身来自结构化原生请求，读取与回答方式见[委派问题交互](delegation-questions.md)；题目不改变 Thread 的实际执行状态。异步题可以在 Thread 空闲时仍待答；此时终态优先，调用方应在收到终态通知或 `alreadyTerminal` 后 read，查看并处理仍未答的题目。
 
 ## 送达
 
@@ -99,7 +102,7 @@ EOF
 
 ## 实现与边界
 
-- `packages/host-runtime/src/delegation-watch.ts` 只依赖公开的 `read` 与 `send`，每轮完成后间隔 2 秒继续轮询（现有 `thread wait` 同样基于轮询）。它不依赖具体 Harness、Desktop、Renderer 或委派血缘。
+- `packages/host-runtime/src/delegation-watch.ts` 只依赖公开的 `read` 与 `send`，每轮完成后间隔 2 秒继续轮询（现有 `thread wait` 同样基于轮询）。它不依赖具体 Harness、Desktop、Renderer 或委派血缘；就绪条件为终态或 `pendingQuestions` 非空。
 - 服务由 `DelegationControlRegistry` 持有，位于各 Host 会话之上，因此两端可以属于不同的 Host 会话。CLI 与 Runtime 控制接口的 cancel 都经此入口：取消结果未定时暂停该 Thread 的通知投递，接受后删除所有通知目标的 watch，否则恢复投递。异步观察和投递准备在继续时检查 watch 是否仍有效；已经发起的投递无法撤回，仍按原有规则清理。
 - watch 持久保存在 `<数据目录>/delegation-watches/`（默认 `~/.codexhost`），每个 watch 一个仅当前用户可读写的记录，只含 Thread 标识、状态、期限与原因。Runtime 重启后恢复观察与投递，调用方无需重新注册；期限按绝对时间计算，停机时间计入。
 - 多个 Runtime 进程可共用数据目录（例如 Desktop 与远程监听同时运行）。每个进程只写自己的记录；启动时接管已退出进程（或上次开机遗留）的记录，以原子重命名认领，同一记录只被一个进程接管。

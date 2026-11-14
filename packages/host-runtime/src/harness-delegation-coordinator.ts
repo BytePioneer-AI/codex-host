@@ -27,6 +27,7 @@ import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
   type DelegationConfigurationResult,
+  type DelegationPendingQuestion,
   type DelegationStartInput,
   type DelegationStartResult,
   type DelegationThreadListResult,
@@ -153,6 +154,7 @@ export class HarnessDelegationCoordinator {
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
   readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
+  readonly #pendingQuestions: (threadId: string) => DelegationPendingQuestion[];
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
@@ -184,6 +186,7 @@ export class HarnessDelegationCoordinator {
     officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
     activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
+    pendingQuestions(threadId: string): DelegationPendingQuestion[];
   }) {
     this.#adapters = input.adapters;
     this.#environment = input.environment;
@@ -203,6 +206,7 @@ export class HarnessDelegationCoordinator {
     this.#officialThreadMetadata = input.officialThreadMetadata;
     this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
+    this.#pendingQuestions = input.pendingQuestions;
   }
 
   async listHarnesses(): Promise<HarnessListResult> {
@@ -523,7 +527,9 @@ export class HarnessDelegationCoordinator {
   async #read(input: ThreadReadInput): Promise<DelegationThreadSnapshot> {
     validateReadOptions(input);
     const location = await this.#externalRuntime.locate(input.threadId);
-    if (location.kind === "official") return this.#readOfficial(input);
+    if (location.kind === "official") {
+      return this.#withPendingQuestions(await this.#readOfficial(input), input.threadId);
+    }
     if (location.kind === "error")
       throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
     const { thread, turns, busy } = await this.#readExternalThread(input.threadId);
@@ -544,7 +550,7 @@ export class HarnessDelegationCoordinator {
     if (delegation && delegation.status !== status) {
       await this.#repository.setDelegationStatus(delegation.delegationId, status);
     }
-    return snapshot;
+    return this.#withPendingQuestions(snapshot, thread.id);
   }
 
   async exportThread(input: ThreadExportInput): Promise<ThreadExportResult> {
@@ -607,6 +613,17 @@ export class HarnessDelegationCoordinator {
     return { thread, turns, busy: this.#externalThreadBusy(thread) };
   }
 
+  /**
+   * Questions come from the owning Host session's single pending-Question state,
+   * so `thread read` reports them whether the Thread is external or native.
+   */
+  #withPendingQuestions(
+    snapshot: DelegationThreadSnapshot,
+    threadId: string,
+  ): DelegationThreadSnapshot {
+    return { ...snapshot, pendingQuestions: this.#pendingQuestions(threadId) };
+  }
+
   async wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }> {
     if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0) {
       throw new DelegationControlError("INVALID_ARGUMENT", "timeoutMs must be a positive integer");
@@ -614,7 +631,11 @@ export class HarnessDelegationCoordinator {
     const deadline = Date.now() + input.timeoutMs;
     while (true) {
       const snapshot = await this.read(input);
-      if (terminal(snapshot.status)) return { ...snapshot, timedOut: false };
+      // Questions are ready conditions even when an async question lets the
+      // native Turn continue working without its answer.
+      if (terminal(snapshot.status) || snapshot.pendingQuestions?.length) {
+        return { ...snapshot, timedOut: false };
+      }
       const remaining = deadline - Date.now();
       if (remaining <= 0) return { ...snapshot, timedOut: true };
       await delay(Math.min(100, remaining));

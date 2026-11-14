@@ -55,6 +55,7 @@ function persisted(watch: Watch): PersistedWatch {
     state,
     outcome,
     turnId,
+    interactionId,
     reason,
     registeredAt,
     timeoutMs,
@@ -76,6 +77,7 @@ function persisted(watch: Watch): PersistedWatch {
     deadline,
     ...(outcome ? { outcome } : {}),
     ...(turnId ? { turnId } : {}),
+    ...(interactionId ? { interactionId } : {}),
     ...(reason ? { reason } : {}),
     ...(deliveryDeadline !== undefined ? { deliveryDeadline } : {}),
     ...(delivering ? { delivering } : {}),
@@ -122,6 +124,13 @@ function duration(milliseconds: number): string {
 
 function noticeNote(watch: Watch): string | undefined {
   switch (watch.outcome) {
+    case "needsInput": {
+      // The request ID lets the receiver answer without guessing which Question fired.
+      const request = watch.interactionId
+        ? `, request ${watch.interactionId}${watch.turnId ? `, Turn ${watch.turnId}` : ""}`
+        : "";
+      return `Waiting for an answer${request}. Read the current Question with 'codexhost thread read ${watch.threadId}' and answer it with 'codexhost thread answer <thread> --interaction <id> --answers-file <file>'.`;
+    }
     case "timedOut":
       return `Not stopped after ${duration(watch.timeoutMs)}; run 'codexhost thread watch' again to keep waiting.`;
     case "unreadable":
@@ -222,6 +231,15 @@ export class DelegationWatchService {
       timeoutMs: input.timeoutMs,
     };
     if (terminal(target.status)) return { ...result, state: "alreadyTerminal" };
+    // A Question already waiting needs no watch: report it once, immediately,
+    // instead of registering a notification the caller would get anyway.
+    if (target.pendingQuestions?.length) {
+      return {
+        ...result,
+        state: "alreadyNeedsInput",
+        pendingQuestions: target.pendingQuestions,
+      };
+    }
     const existing = this.#watches.find(
       (watch) =>
         watch.state === "watching" &&
@@ -273,7 +291,17 @@ export class DelegationWatchService {
       watches: watches
         .filter((watch) => this.#watches.includes(watch))
         .map(
-          ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt, title }) => {
+          ({
+            threadId,
+            notifyThreadId,
+            state,
+            outcome,
+            turnId,
+            interactionId,
+            reason,
+            registeredAt,
+            title,
+          }) => {
             const snapshot = snapshots.get(threadId);
             const taskName = snapshot?.title || title;
             const registeredMs = Date.parse(registeredAt);
@@ -283,6 +311,7 @@ export class DelegationWatchService {
               state,
               ...(outcome ? { outcome } : {}),
               ...(turnId ? { turnId } : {}),
+              ...(interactionId ? { interactionId } : {}),
               ...(reason ? { reason } : {}),
               registeredAt,
               ...(taskName ? { taskName } : {}),
@@ -399,11 +428,12 @@ export class DelegationWatchService {
         generation !== watch.observationGeneration
       )
         continue;
-      const { outcome, turnId, restartNote } = observed;
+      const { outcome, turnId, restartNote, interactionId } = observed;
       if (restartNote) watch.restartNote = restartNote;
       watch.state = "pendingDelivery";
       watch.outcome = outcome;
       if (turnId) watch.turnId = turnId;
+      if (interactionId) watch.interactionId = interactionId;
       watch.deliveryDeadline = Date.now() + DELIVERY_WINDOW_MS;
       await this.#persist(watch);
     }
@@ -420,7 +450,10 @@ export class DelegationWatchService {
 
   async #observe(
     watch: Watch,
-  ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string; restartNote?: string } | undefined> {
+  ): Promise<
+    | { outcome: ThreadWatchOutcome; turnId?: string; restartNote?: string; interactionId?: string }
+    | undefined
+  > {
     try {
       const snapshot = await this.#api.read({ threadId: watch.threadId, view: "result" });
       delete watch.observeGraceUntil;
@@ -443,6 +476,16 @@ export class DelegationWatchService {
         return {
           outcome: snapshot.status as ThreadWatchOutcome,
           ...(turnId ? { turnId } : {}),
+        };
+      }
+      const pending = snapshot.pendingQuestions?.[0];
+      if (pending) {
+        // A Question outranks the deadline even when its native Turn can keep
+        // working; the request names the Turn that can receive the answer.
+        return {
+          outcome: "needsInput",
+          interactionId: pending.interactionId,
+          turnId: pending.turnId,
         };
       }
       delete watch.unreadableSince;
@@ -527,6 +570,9 @@ export class DelegationWatchService {
           outcome: watch.outcome ?? "notFound",
           deepLink: threadLink(watch.threadId),
           ...(watch.turnId ? { turnId: watch.turnId } : {}),
+          ...(watch.outcome === "needsInput" && watch.interactionId
+            ? { interactionId: watch.interactionId }
+            : {}),
           ...(watch.harnessId ? { harnessId: watch.harnessId } : {}),
           ...(watch.refs?.length ? { refs: watch.refs } : {}),
           ...(watch.restartNote ? { note: watch.restartNote } : {}),

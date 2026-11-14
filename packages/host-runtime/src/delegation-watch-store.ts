@@ -51,6 +51,7 @@ const OUTCOMES = new Set<ThreadWatchOutcome>([
   "completed",
   "failed",
   "interrupted",
+  "needsInput",
   "timedOut",
   "unreadable",
   "notFound",
@@ -108,6 +109,7 @@ function parseWatchFile(text: string): WatchFile {
     !STATES.has(watch.state as string) ||
     (watch.outcome !== undefined && !OUTCOMES.has(watch.outcome)) ||
     !optionalString(watch.turnId) ||
+    !optionalString(watch.interactionId) ||
     !optionalString(watch.reason) ||
     !Number.isSafeInteger(watch.timeoutMs) ||
     !Number.isFinite(watch.deadline) ||

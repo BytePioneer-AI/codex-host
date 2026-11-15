@@ -21,15 +21,15 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function installation() {
+async function installation(binDirectory = "bin") {
   const home = await mkdtemp(path.join(tmpdir(), "official-codex-command-"));
   directories.push(home);
-  const bin = path.join(home, "bin");
-  await mkdir(bin);
-  const command = path.join(bin, process.platform === "win32" ? "codex.CMD" : "codex");
+  const bin = path.join(home, binDirectory);
+  await mkdir(bin, { recursive: true });
+  const command = path.join(bin, process.platform === "win32" ? "codex.exe" : "codex");
   await writeFile(command, process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n");
   await chmod(command, 0o700);
-  return { command, environment: { HOME: home, PATH: bin } };
+  return { command, environment: { HOME: home, PATH: bin, PATHEXT: ".exe" } };
 }
 
 it("prefers the Desktop program over a locally installed codex", async () => {
@@ -61,6 +61,128 @@ it("rejects a local codex below 0.161.0", async () => {
   const { environment } = await installation();
   vi.mocked(runInstallationCommand).mockResolvedValueOnce("codex-cli 0.160.0");
   expect(await resolveOfficialCodexExecutable("", environment)).toBeUndefined();
+});
+
+it.skipIf(process.platform === "win32")(
+  "continues past a Remote Shim copy that exits nonzero without CODEXHOST_STOCK_CODEX_PATH",
+  async () => {
+    const remote = await installation(".codexhost/remote/bin");
+    const official = await installation();
+    await writeFile(
+      remote.command,
+      '#!/bin/sh\n[ -n "${CODEXHOST_STOCK_CODEX_PATH:-}" ] || exit 1\nprintf "codex-cli 0.169.0\\n"\n',
+    );
+    const actual = await vi.importActual<typeof HarnessDiscovery>("@codexhost/harness-discovery");
+    vi.mocked(runInstallationCommand).mockImplementationOnce(actual.runInstallationCommand);
+    const environment = {
+      ...remote.environment,
+      PATH: [remote.environment.PATH, official.environment.PATH].join(path.delimiter),
+    };
+    expect(await resolveOfficialCodexExecutable("", environment)).toBe(official.command);
+    expect(vi.mocked(runInstallationCommand).mock.calls.map(([command]) => command)).toEqual([
+      remote.command,
+      official.command,
+    ]);
+  },
+);
+
+it.skipIf(process.platform === "win32").each([".codexhost/remote/bin", "custom-remote/bin"])(
+  "rejects the managed Remote proxy in %s even with a stale stock environment variable",
+  async (binDirectory) => {
+    const remote = await installation(binDirectory);
+    const official = await installation();
+    const root = path.dirname(path.dirname(remote.command));
+    await writeFile(
+      path.join(root, "manifest.json"),
+      JSON.stringify({
+        format: 1,
+        wrapperPath: remote.command,
+        profilePath: path.join(remote.environment.HOME, ".profile"),
+        stockCodexPath: path.join(root, "manifest-only-codex"),
+        nodePath: process.execPath,
+        shimPath: path.join(root, "codexhost-shim"),
+        hostRuntimePath: path.join(root, "host-runtime.mjs"),
+        dataDirectory: path.join(root, "data"),
+      }),
+    );
+    const environment = {
+      ...remote.environment,
+      CODEXHOST_STOCK_CODEX_PATH: remote.command,
+      PATH: [remote.environment.PATH, official.environment.PATH].join(path.delimiter),
+    };
+    expect(await resolveOfficialCodexExecutable(remote.command, environment)).toBeUndefined();
+    expect(runInstallationCommand).not.toHaveBeenCalled();
+    expect(await resolveOfficialCodexExecutable("", environment)).toBe(official.command);
+    expect(runInstallationCommand).toHaveBeenCalledExactlyOnceWith(
+      official.command,
+      ["--version"],
+      environment,
+    );
+  },
+);
+
+it.each(["{", "null", '{"format":2}', '{"format":1,"wrapperPath":"/other/bin/codex"}'])(
+  "does not reject a real codex because of an unrelated or malformed manifest: %s",
+  async (manifest) => {
+    const { command, environment } = await installation();
+    await writeFile(path.join(environment.HOME, "manifest.json"), manifest);
+    expect(await resolveOfficialCodexExecutable("", environment)).toBe(command);
+  },
+);
+
+it.each(["probe failure", "old version", "invalid version"])(
+  "continues past %s and probes duplicate PATH candidates only once",
+  async (failure) => {
+    const broken = await installation();
+    const official = await installation();
+    const environment = {
+      ...official.environment,
+      PATH: [
+        broken.environment.PATH,
+        `${broken.environment.PATH}${path.sep}.`,
+        official.environment.PATH,
+      ].join(path.delimiter),
+    };
+    if (failure === "probe failure")
+      vi.mocked(runInstallationCommand).mockRejectedValueOnce(new Error("command failed"));
+    else
+      vi.mocked(runInstallationCommand).mockResolvedValueOnce(
+        failure === "old version" ? "codex-cli 0.160.0" : "not a version",
+      );
+    expect(await resolveOfficialCodexExecutable("", environment)).toBe(official.command);
+    expect(vi.mocked(runInstallationCommand).mock.calls.map(([command]) => command)).toEqual([
+      broken.command,
+      official.command,
+    ]);
+  },
+);
+
+it("continues to install roots after a failed PATH candidate", async () => {
+  const broken = await installation();
+  const official = await installation(".local/bin");
+  vi.mocked(runInstallationCommand).mockRejectedValueOnce(new Error("command failed"));
+  expect(
+    await resolveOfficialCodexExecutable("", {
+      ...official.environment,
+      PATH: broken.environment.PATH,
+    }),
+  ).toBe(official.command);
+});
+
+it.skipIf(process.platform === "win32")("skips non-executable files", async () => {
+  const broken = await installation();
+  const official = await installation();
+  await chmod(broken.command, 0o600);
+  const environment = {
+    ...official.environment,
+    PATH: [broken.environment.PATH, official.environment.PATH].join(path.delimiter),
+  };
+  expect(await resolveOfficialCodexExecutable("", environment)).toBe(official.command);
+  expect(runInstallationCommand).toHaveBeenCalledExactlyOnceWith(
+    official.command,
+    ["--version"],
+    environment,
+  );
 });
 
 describe("Windows npm shim discovery", () => {

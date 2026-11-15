@@ -1,7 +1,8 @@
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import {
-  resolveHarnessExecutable,
+  harnessCandidates,
+  isExecutableFile,
   targetPath,
   runInstallationCommand,
   versionFromOutput,
@@ -90,7 +91,25 @@ function isDesktopProxy(command: string, environment: NodeJS.ProcessEnv): boolea
   const proxyName = /codexhost|(?:^|[-_.])shim(?:[-_.]|$)/iu;
   if ([command, canonicalCommand].some((path) => proxyName.test(basename(path)))) return true;
   const routed = environment.CODEX_CLI_PATH;
-  return typeof routed === "string" && routed !== "" && canonical(routed) === canonicalCommand;
+  if (typeof routed === "string" && routed !== "" && canonical(routed) === canonicalCommand)
+    return true;
+  for (const candidate of [command, canonicalCommand]) {
+    if (basename(candidate) !== "codex" || basename(dirname(candidate)) !== "bin") continue;
+    try {
+      const manifest = JSON.parse(
+        readFileSync(resolve(dirname(candidate), "..", "manifest.json"), "utf8"),
+      ) as { format?: unknown; wrapperPath?: unknown } | null;
+      if (
+        manifest?.format === 1 &&
+        typeof manifest.wrapperPath === "string" &&
+        canonical(manifest.wrapperPath) === canonicalCommand
+      )
+        return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
 }
 
 /** Desktop discovery is supplied by the native launcher; PATH is the fallback. */
@@ -100,17 +119,26 @@ export async function resolveOfficialCodexExecutable(
 ): Promise<string | undefined> {
   if (stockCodexPath)
     return isDesktopProxy(stockCodexPath, environment) ? undefined : stockCodexPath;
-  const resolution = resolveHarnessExecutable(CODEX_DISCOVERY_SPEC, { environment });
-  if (!resolution) return undefined;
-  const command = resolve(resolution.executable);
-  if (isDesktopProxy(command, environment)) return undefined;
-  try {
-    const version = versionFromOutput(
-      await runInstallationCommand(command, ["--version"], environment),
-    );
-    if (newerInstallationVersion(version, "0.161.0")) return undefined;
-    return command;
-  } catch {
-    return undefined;
+  const platform = process.platform;
+  const isExecutable = (candidate: string) => isExecutableFile(candidate, platform);
+  const runnable = CODEX_DISCOVERY_SPEC.runnableCandidate ?? ((candidate: string) => candidate);
+  const seen = new Set<string>();
+  for (const { candidate } of harnessCandidates(CODEX_DISCOVERY_SPEC, { environment })) {
+    const executable = runnable(candidate, { platform, isExecutable });
+    if (executable === undefined) continue;
+    const command = resolve(executable);
+    if (seen.has(command)) continue;
+    seen.add(command);
+    if (!isExecutable(command) || isDesktopProxy(command, environment)) continue;
+    try {
+      const version = versionFromOutput(
+        await runInstallationCommand(command, ["--version"], environment),
+      );
+      if (newerInstallationVersion(version, "0.161.0")) continue;
+      return command;
+    } catch {
+      continue;
+    }
   }
+  return undefined;
 }

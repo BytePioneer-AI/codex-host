@@ -2,7 +2,6 @@ import {
   usageMeasurementsSchema,
   type UsageMeasurementsSnapshot,
 } from "@codexhost/shared-contracts";
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -55,7 +54,13 @@ import {
   writeSupersededSessionsFile,
   type StoredSupersededSessionV1,
 } from "./superseded-sessions.js";
-import { createLockFile, removeStaleLock } from "./lock-file.js";
+import {
+  createLockFile,
+  currentLockIdentity,
+  lockOwnerIsLive,
+  removeStaleLock,
+  type LockRecord,
+} from "./lock-file.js";
 
 export type MappingStoreErrorCode =
   | "STORE_LOCKED"
@@ -86,19 +91,6 @@ export interface MappingStoreOptions {
   instanceId?: string;
   now?: () => Date;
   beforeReplace?: (record: StoredThreadRecordV1) => Promise<void> | void;
-}
-
-interface LockRecord {
-  pid: number;
-  instanceId: string;
-  startedAt: string;
-  executablePath?: string;
-  processStartedAt?: string;
-}
-
-interface ProcessIdentity {
-  executablePath: string | null;
-  startedAt: number | null;
 }
 
 function cloneRecord<T>(record: T): T {
@@ -234,133 +226,6 @@ async function exists(file: string): Promise<boolean> {
     if (systemErrorCode(error) === "ENOENT") return false;
     throw error;
   }
-}
-
-function processIdentity(pid: number): ProcessIdentity | null {
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if (systemErrorCode(error) !== "EPERM") return null;
-  }
-
-  if (process.platform !== "win32" && process.platform !== "darwin") {
-    return { executablePath: null, startedAt: null };
-  }
-
-  try {
-    if (process.platform === "darwin") {
-      // PID existence is insufficient after reuse. Query only on lock contention;
-      // lstart has second precision, covered by the existing start-time tolerance.
-      const result = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        env: { ...process.env, LC_ALL: "C" },
-        timeout: 1_000,
-      }).trim();
-      const startedAt = Date.parse(result);
-      return { executablePath: null, startedAt: Number.isFinite(startedAt) ? startedAt : null };
-    }
-    // CIM can expose CreationDate for a reused system PID even when Get-Process cannot
-    // read its Path/StartTime. Serialize UTC explicitly: Windows PowerShell's default
-    // DateTime JSON representation is not an ISO timestamp that Date.parse can read.
-    const query = [
-      "$ErrorActionPreference = 'Stop'",
-      `$process = Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}'`,
-      "if ($null -ne $process) { [pscustomobject]@{ " +
-        "Path = $process.ExecutablePath; " +
-        "StartTime = $(if ($null -ne $process.CreationDate) { " +
-        "$process.CreationDate.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture) " +
-        "} else { $null }) } | ConvertTo-Json -Compress }",
-    ].join("; ");
-    const result = execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", query],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        windowsHide: true,
-        timeout: 5_000,
-      },
-    ).trim();
-    if (!result) return { executablePath: null, startedAt: null };
-    const parsed = JSON.parse(result) as { Path?: unknown; StartTime?: unknown };
-    const executablePath = typeof parsed.Path === "string" ? parsed.Path : null;
-    const startedAt = typeof parsed.StartTime === "string" ? Date.parse(parsed.StartTime) : NaN;
-    return { executablePath, startedAt: Number.isFinite(startedAt) ? startedAt : null };
-  } catch {
-    // If process metadata cannot be queried, preserve the live-lock failure mode.
-    return { executablePath: null, startedAt: null };
-  }
-}
-
-function normalizeExecutablePath(value: string): string {
-  return process.platform === "win32" ? value.replaceAll("/", "\\").toLowerCase() : value;
-}
-
-function isNodeExecutable(value: string): boolean {
-  const normalized = normalizeExecutablePath(value);
-  return normalized.endsWith("\\node.exe") || normalized.endsWith("/node");
-}
-
-function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
-  if (typeof lock.pid !== "number") return false;
-  if (lock.pid === process.pid) {
-    if (
-      lock.executablePath &&
-      normalizeExecutablePath(lock.executablePath) !== normalizeExecutablePath(process.execPath)
-    ) {
-      return false;
-    }
-    if (lock.processStartedAt) {
-      const expected = Date.parse(lock.processStartedAt);
-      const actual = Date.now() - process.uptime() * 1_000;
-      if (Number.isFinite(expected) && Math.abs(actual - expected) > 5_000) return false;
-    }
-    return true;
-  }
-  const identity = processIdentity(lock.pid);
-  if (!identity) return false;
-  if (process.platform !== "win32" && process.platform !== "darwin") return true;
-
-  if (identity.executablePath && lock.executablePath) {
-    if (
-      normalizeExecutablePath(identity.executablePath) !==
-      normalizeExecutablePath(lock.executablePath)
-    ) {
-      return false;
-    }
-  } else if (
-    identity.executablePath &&
-    !lock.executablePath &&
-    !isNodeExecutable(identity.executablePath)
-  ) {
-    // Legacy locks have no executable identity. A reused PID owned by a non-Node
-    // process cannot be a live Host Runtime lock.
-    return false;
-  }
-
-  if (lock.processStartedAt && identity.startedAt !== null) {
-    const expected = Date.parse(lock.processStartedAt);
-    if (Number.isFinite(expected) && Math.abs(identity.startedAt - expected) > 5_000) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/**
- * Claim and publish links name their creator by PID and start time only. Any
- * executable may own them (node, codexhost.exe), so match the start time and
- * never apply the legacy-lock executable-name inference.
- */
-function contenderIsLive(pid: number, processStartedAt: string): boolean {
-  const expected = Date.parse(processStartedAt);
-  if (pid === process.pid) {
-    return Math.abs(Date.now() - process.uptime() * 1_000 - expected) <= 5_000;
-  }
-  const identity = processIdentity(pid);
-  if (!identity) return false;
-  return identity.startedAt === null || Math.abs(identity.startedAt - expected) <= 5_000;
 }
 
 export class MappingStore {
@@ -1395,7 +1260,7 @@ export class MappingStore {
         instanceId: this.#instanceId,
         startedAt: this.#now().toISOString(),
         executablePath: process.execPath,
-        processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+        ...currentLockIdentity(),
       };
       return createLockFile(this.#lockPath, `${JSON.stringify(lock)}\n`);
     };
@@ -1420,7 +1285,7 @@ export class MappingStore {
     }
     try {
       if (inspected !== null) {
-        await removeStaleLock(this.#lockPath, inspected, contenderIsLive);
+        await removeStaleLock(this.#lockPath, inspected);
       }
       await attempt();
     } catch (error) {

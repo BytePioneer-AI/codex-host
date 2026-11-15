@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MappingStore } from "../src/index.js";
+import { createLockFile, removeStaleLock } from "../src/lock-file.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof fs>();
@@ -83,6 +84,43 @@ describe("Mapping Store stale lock takeover", () => {
     await fs.rm(competing);
     await second.initialize();
   });
+
+  it.each(["claim", "publish"])(
+    "preserves a generated live %s link when the clock jumps before and after creation",
+    async (kind) => {
+      const platform = Object.getOwnPropertyDescriptor(process, "platform");
+      if (!platform) throw new Error("Missing process.platform descriptor");
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+      let competing = "";
+      vi.mocked(fs.rm).mockImplementation(async (...args: Parameters<typeof fs.rm>) => {
+        if (String(args[0]).startsWith(`${lock}.${kind}-`)) {
+          competing = String(args[0]);
+          return;
+        }
+        return actual.rm(...args);
+      });
+      try {
+        if (kind === "publish") {
+          await actual.rm(lock);
+          await createLockFile(lock, stale);
+        } else {
+          await actual.link(lock, `${lock}.claim-unknown`);
+          await expect(removeStaleLock(lock, stale)).rejects.toThrow();
+          await actual.rm(`${lock}.claim-unknown`);
+        }
+        expect(competing).not.toBe("");
+        vi.mocked(fs.rm).mockImplementation(actual.rm);
+        clock.mockReturnValue(Date.now() - 120_000);
+        await expect(first.initialize()).rejects.toMatchObject({ code: "STORE_LOCKED" });
+        expect(await fs.readFile(competing, "utf8")).toBe(stale);
+        expect(await fs.readFile(lock, "utf8")).toBe(stale);
+      } finally {
+        clock.mockRestore();
+        Object.defineProperty(process, "platform", platform);
+      }
+    },
+  );
 
   it("does not mistake two remaining snapshots for a snapshot and the canonical stale lock", async () => {
     let intercepted = false;

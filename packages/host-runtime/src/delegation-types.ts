@@ -144,6 +144,8 @@ export interface ThreadSendInput {
   message: string;
   /** Stop the current Turn and confirm idle before sending; preserve existing watches. */
   interrupt?: boolean;
+  /** Use the existing steering operation when running; idle Threads start a Turn. */
+  steer?: boolean;
 }
 
 export interface ThreadSendResult {

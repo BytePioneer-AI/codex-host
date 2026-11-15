@@ -468,6 +468,7 @@ export async function runDelegationCli(input: {
         "--message",
         "--message-file",
         "--interrupt",
+        "--steer",
         "--watch",
         "--watch-timeout-ms",
       ]);
@@ -485,9 +486,17 @@ export async function runDelegationCli(input: {
           "Thread identifier and either --message or --message-file are required",
         );
       }
+      const steer = value(parsed, "--steer");
+      if (steer !== undefined && steer !== "true" && steer !== "false")
+        throw new DelegationControlError("INVALID_ARGUMENT", "--steer must be true or false");
       const interrupt = value(parsed, "--interrupt");
       if (interrupt !== undefined && interrupt !== "true" && interrupt !== "false")
         throw new DelegationControlError("INVALID_ARGUMENT", "--interrupt must be true or false");
+      if (steer === "true" && interrupt === "true")
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "--steer and --interrupt are mutually exclusive",
+        );
       const watch = value(parsed, "--watch");
       if (watch !== undefined && watch !== "true" && watch !== "false")
         throw new DelegationControlError("INVALID_ARGUMENT", "--watch must be true or false");
@@ -506,6 +515,7 @@ export async function runDelegationCli(input: {
             threadId: normalizeThreadId(threadId),
             message,
             ...(interrupt === "true" ? { interrupt: true } : {}),
+            ...(steer !== undefined ? { steer: steer === "true" } : {}),
             ...(watch === "true"
               ? {
                   ...(parentThread ? { notifyThreadId: normalizeThreadId(parentThread) } : {}),

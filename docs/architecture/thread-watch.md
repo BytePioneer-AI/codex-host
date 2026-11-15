@@ -39,7 +39,7 @@
 
 watch 首次持久化失败时不保留内存注册，`thread watch` 返回错误，调用方可稍后重试。`delegate start` 与 `thread send --watch true` 都先提交消息；watch 注册失败不会让已经成功的提交变成失败，而是在返回的 `watch` 字段里报告 `notRegistered` 和原因。两者沿用相同的 JSON / compact watch 字段形态；未请求 watch 时不增加字段。`--watch-timeout-ms` 仅能与 `--watch true` 同用，默认 29 分钟。
 
-外部 HTTP `/v1/delegate/start`、`/v1/thread/send` 与 MCP `delegate_start`、`thread_send` 都接受 `watch: true` 和可选正整数 `watchTimeoutMs`，默认同为 29 分钟，返回相同 `watch` 字段。为兼容 CLI 控制协议，仅提供 `watchTimeoutMs` 也会注册 watch；显式 `watch: false` 不能同时提供超时。外部客户端未指定通知 Thread 时以自身事件日志为通知目标。`thread_send` / `/v1/thread/send` 还接受布尔值 `interrupt`，先停再发、保留现有 watch 的语义与 CLI 一致。
+外部 HTTP `/v1/delegate/start`、`/v1/thread/send` 与 MCP `delegate_start`、`thread_send` 都接受 `watch: true` 和可选正整数 `watchTimeoutMs`，默认同为 29 分钟，返回相同 `watch` 字段。为兼容 CLI 控制协议，仅提供 `watchTimeoutMs` 也会注册 watch；显式 `watch: false` 不能同时提供超时。外部客户端未指定通知 Thread 时以自身事件日志为通知目标。`thread_send` / `/v1/thread/send` 还接受布尔值 `interrupt` 与 `steer`：`interrupt` 先停再发、保留现有 watch，语义与 CLI 一致；`steer` 与 CLI 的 `--steer true` 相同，`steer: true` 与 `interrupt: true` 互斥，同时请求在发送前以 `INVALID_ARGUMENT` 拒绝。
 
 ### CLI 长文本输入
 
@@ -72,13 +72,13 @@ EOF
 
 ## 送达
 
-- 通知通过普通的 `send` 在被通知 Thread 中启动一个新 Turn，外部 Harness 与原生 Codex 使用同一路径；不做同轮注入。
-- 被通知 Thread 正忙时通知保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；`thread send` 自身“不排队”的语义不变。
-- 投递失败只有在调用链能证明没有启动 Turn 时才重试：
-  - `THREAD_BUSY`（启动前判定），或错误带 `notStarted`（例如原生 Codex 的 resume 校验失败，或 `turn/start` 明确返回错误）：保持待送达并重试；
+- 通知通过 `send({ steer: true })` 复用现有送达操作：原生 Codex 使用 `turn/steer`，外部 Harness 使用与 Desktop 相同的 `ExternalTurnSteering`；空闲时开始新 Turn，运行时按原生能力同轮插入或沿既有停止后重发路径。
+- 被通知 Thread 暂不能接纳输入时通知保持待送达并重试，最长 6 小时。`THREAD_BUSY` 从不被当作已送达；`thread send` 自身“不排队”的语义不变。
+- 投递失败只有在调用链能证明输入未被接受 时才重试：
+  - `THREAD_BUSY`（启动前判定），或错误带 `notStarted`（例如原生 Codex 的 resume 校验失败、`turn/start`、`turn/steer` 明确返回错误，或外部 steer 在送达前发现目标 Turn 已结束）：保持待送达并重试；
   - 被通知 Thread 不存在或只读：立即标记 `undeliverable`；
-  - 其他失败都视为结果未知，包括 Harness 启动确认超时后包装成的 `DELEGATION_FAILED`：原生可能已经启动了 Turn，为避免重复唤醒不再重试，标记 `undeliverable` 并在原因中说明。
-- 每次投递将同一个被通知 Thread 当前所有待送达通知合并为一条消息，包括此前轮询积累的通知，只启动一个 Turn。
+  - 其他失败都视为结果未知，包括 Harness 启动确认超时后包装成的 `DELEGATION_FAILED`：原生可能已经接受了输入，为避免重复唤醒不再重试，标记 `undeliverable` 并在原因中说明。
+- 每次投递将同一个被通知 Thread 当前所有待送达通知合并为一条消息，包括此前轮询积累的通知，只提交一次输入。
 - 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达时，watch 标记为 `undeliverable` 并保留原因，可由 `thread watches` 查看；最多保留最近 50 条无法送达记录。
 
 ## 与 Stop 的关系

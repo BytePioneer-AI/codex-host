@@ -19,6 +19,7 @@ import {
   type JsonValue,
 } from "@codexhost/protocol-core";
 import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_QUESTIONS_LIST_METHOD,
   THREAD_QUESTION_RESPOND_METHOD,
   harnessCommandsInspectParamsSchema,
@@ -95,6 +96,7 @@ export interface DesktopThreadRoutingHost {
   inspectThread(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
   listThreadOwnership(request: JsonRpcRequest): Promise<void>;
+  confirmThreadArchived(request: JsonRpcRequest): Promise<void>;
   inspectThreadSteering(request: JsonRpcRequest): Promise<void>;
   handleSharedQuestionRequest(request: JsonRpcRequest): Promise<void>;
   selectThreadModel(request: JsonRpcRequest): Promise<void>;
@@ -200,6 +202,10 @@ export class DesktopThreadRouting {
     frame: Buffer<ArrayBufferLike>,
     origin: HostRequestOrigin,
   ): Promise<boolean> {
+    if (request.method === THREAD_ARCHIVE_CONFIRM_METHOD) {
+      this.#host.dispatchReply(request, () => this.#host.confirmThreadArchived(request));
+      return true;
+    }
     if (request.method === "codexhost/thread/fork") {
       await this.#host.forkExternalThreadFromRenderer(request);
       return true;

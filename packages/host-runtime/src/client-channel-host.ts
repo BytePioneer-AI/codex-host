@@ -3,6 +3,8 @@ import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/
 import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  threadArchiveConfirmParamsSchema,
   clientThreadSnapshotSchema,
   threadTitleInputSchema,
   clientProjectlessWorkspaceSchema,
@@ -169,6 +171,12 @@ export class ClientChannelHost {
     if (!parsed.success || !isRecord(parsed.data.params))
       return { error: { code: -32602, message: "Invalid client parameters" } };
     const params = parsed.data.params as JsonObject;
+    if (method === THREAD_ARCHIVE_CONFIRM_METHOD) {
+      const confirm = threadArchiveConfirmParamsSchema.safeParse(params);
+      if (!confirm.success)
+        return { error: { code: -32602, message: "Invalid archive confirmation params" } };
+      return this.#host.submit(method, confirm.data, undefined);
+    }
     if (method === "codexhost/thread/title/generate") {
       const title = threadTitleInputSchema.safeParse(params);
       if (!title.success)

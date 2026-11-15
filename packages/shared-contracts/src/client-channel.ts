@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "./harness-models.js";
 import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
+import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
@@ -28,6 +29,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/name/set",
   "codexhost/thread/title/generate",
   "thread/archive",
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   "thread/unarchive",
   "turn/start",
   "turn/interrupt",

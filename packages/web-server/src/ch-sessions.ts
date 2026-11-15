@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
@@ -11,6 +12,7 @@ import {
   harnessPluginRouteSchema,
   harnessModelSelectionStateSchema,
   threadInspectionSchema,
+  threadArchiveConfirmResultSchema,
   threadUsageInspectionSchema,
   type HarnessDisplayEntries,
 } from "@codexhost/shared-contracts";
@@ -92,6 +94,7 @@ export class ChSessions {
   private refreshingCatalog = false;
   private refreshingArchives = false;
   private refreshingArchiveChanges: Map<string, boolean> | undefined;
+  private readonly archiveOperations = new Map<string, symbol>();
   private refreshingTiming: SessionListTiming | undefined;
   private catalogReadAt = -Infinity;
   private timer?: NodeJS.Timeout;
@@ -165,16 +168,23 @@ export class ChSessions {
           catalog: async () => {
             await this.refresh();
           },
-          archived: (id, archived) => this.updateArchive(id, archived),
+          archived: (id, archived) => {
+            this.archiveOperations.delete(id);
+            this.updateArchive(id, archived);
+          },
           connection: (online) => {
             this.hostOnline = online;
-            if (!online) this.interactions?.clear();
+            if (!online) {
+              this.archiveOperations.clear();
+              this.interactions?.clear();
+            }
             for (const [, view] of this.threads.views())
               view.log.setProjection("nativeConnection", {
                 state: online ? "connected" : "reconnecting",
               });
           },
           reset: (epoch, full) => {
+            this.archiveOperations.clear();
             if (full && this.hostEpoch === epoch) this.threads.forgetKnownTurns();
             if (this.hostEpoch && this.hostEpoch !== epoch) {
               this.interactions?.clear();
@@ -937,22 +947,57 @@ export class ChSessions {
 
   private async setArchived(sessionId: string, archived: boolean): Promise<void> {
     const id = this.id(sessionId);
-    if (this.drafts.has(id))
-      throw new RpcError(
-        "session/not-started",
-        "Send the first message before archiving this Thread.",
-      );
-    if (!this.threads.hasHarness(id)) {
-      const { thread, harnessId } = await this.readThread(id);
-      this.rows.set(id, thread);
-      this.threads.setHarness(id, harnessId);
+    const operation = Symbol();
+    this.archiveOperations.set(id, operation);
+    try {
+      if (this.drafts.has(id))
+        throw new RpcError(
+          "session/not-started",
+          "Send the first message before archiving this Thread.",
+        );
+      if (!this.threads.hasHarness(id)) {
+        const { thread, harnessId } = await this.readThread(id);
+        this.rows.set(id, thread);
+        this.threads.setHarness(id, harnessId);
+      }
+      const owner = await this.owner(id);
+      if (this.archiveOperations.get(id) !== operation) return;
+      try {
+        await this.host.request(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
+      } catch (error) {
+        if (
+          !archived ||
+          owner.owner !== "codex" ||
+          !(error instanceof RpcError) ||
+          error.code !== "host/rejected" ||
+          !("hostCode" in error.details) ||
+          error.details.hostCode !== -32600 ||
+          error.message !== `no rollout found for thread id ${id}`
+        )
+          throw error;
+        // Drain older catalog merges before the final, native-only confirmation.
+        await this.refreshing?.catch(() => undefined);
+        if (this.archiveOperations.get(id) !== operation) throw error;
+        const confirmation = await this.host
+          .request(THREAD_ARCHIVE_CONFIRM_METHOD, { threadId: id })
+          .then((value) => threadArchiveConfirmResultSchema.safeParse(value))
+          .catch(() => undefined);
+        if (
+          !confirmation?.success ||
+          !confirmation.data.confirmed ||
+          this.archiveOperations.get(id) !== operation
+        )
+          throw error;
+        this.updateArchive(id, true);
+        return;
+      }
+      // A failed read cannot reject an acknowledged mutation. Newer operations
+      // and realtime notifications, however, supersede this completion.
+      await this.refreshing?.catch(() => undefined);
+      if (this.archiveOperations.get(id) === operation) this.updateArchive(id, archived);
+    } finally {
+      if (this.archiveOperations.get(id) === operation) this.archiveOperations.delete(id);
     }
-    await this.owner(id);
-    await this.host.request(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
-    // Finish any pre-write catalog read before confirming from a fresh Host snapshot.
-    // A read failure cannot turn an acknowledged mutation into a rejected write.
-    await this.refreshing?.catch(() => undefined);
-    this.updateArchive(id, archived);
   }
 
   private async readThread(id: string) {
@@ -1466,6 +1511,7 @@ export class ChSessions {
     ] as const)
       rpc.register(method, async (args) => {
         const { sessionId } = requestOf<{ sessionId: string }>(args);
+        this.archiveOperations.delete(this.id(sessionId));
         try {
           await this.tree.archive(
             this.id(sessionId),
@@ -1698,6 +1744,7 @@ export class ChSessions {
     this.fileReferences.close();
     this.skills.close();
     this.closed = true;
+    this.archiveOperations.clear();
     this.titleRequests.clear();
     this.pins.close();
     this.realtime?.close();

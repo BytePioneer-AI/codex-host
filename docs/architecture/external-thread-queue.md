@@ -22,7 +22,7 @@ Desktop 在 Turn 运行中提交的跟进消息，经官方 app-server 的 `thre
 - 停止后重发已停止旧轮、替换启动失败且替换仍有效时，Host 在释放替换预留后继续推进队列。用户明确停止、Session fault 或过期/无效的 steer 请求不会解除暂停；等待命令目录期间发生的停止同样有效。
 - 运行中点击“引导”时，Desktop 先发 `turn/steer`，再 `thread/queue/delete`；投递方式由外部 steering 决定，见 `external-thread-steering.md`。
 - 开始失败时，提交放回原位置并再次发出 `thread/queue/changed`。
-- Desktop 只为自己 `turn/start` 的输入做本地乐观展示。由队列开始的 Turn 由 Host 投影带 `clientId` 的 userMessage，否则该轮用户消息不显示。
+- 带 `clientUserMessageId` 的 `turn/start` 和由队列开始的 Turn，均由 Host 投影带 `clientId` 的 userMessage，供 Desktop 去重；普通文本和已注册 Harness 命令使用同一规则。不带该 ID 的 Desktop `turn/start` 保留原生本地展示，Host-only 接口仍由 Host 投影输入。
 
 ## 边界
 

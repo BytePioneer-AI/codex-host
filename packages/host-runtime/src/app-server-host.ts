@@ -3759,6 +3759,7 @@ export class AppServerHost {
     arguments_: JsonObject | undefined,
     requestedTurnId?: HostTurnId,
     sourceHostId?: unknown,
+    projectedInput?: { text: string; clientUserMessageId?: string },
   ): Promise<{ turnId: HostTurnId; turn: JsonObject; gate: TurnProjectionGate }> {
     const commands = thread.session.commands;
     if (!commands) {
@@ -3779,6 +3780,14 @@ export class AppServerHost {
         turnId,
         cwd: thread.cwd,
         startedAtMs: Date.now(),
+        ...(projectedInput
+          ? {
+              initialInput: [{ type: "text" as const, text: projectedInput.text }],
+              ...(projectedInput.clientUserMessageId
+                ? { clientUserMessageId: projectedInput.clientUserMessageId }
+                : {}),
+            }
+          : {}),
       }),
     };
     const gate = turnProjectionGate();
@@ -5075,6 +5084,9 @@ export class AppServerHost {
         command.arguments,
         undefined,
         sourceHostId,
+        this.#options.externalOnly || projectInput
+          ? { text, ...(clientUserMessageId ? { clientUserMessageId } : {}) }
+          : undefined,
       );
     } catch (error) {
       if (error instanceof ExternalCommandError || error instanceof ExternalSteerError) throw error;

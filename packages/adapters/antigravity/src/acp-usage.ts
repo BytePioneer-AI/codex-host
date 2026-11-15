@@ -10,6 +10,10 @@ import {
 } from "@codexhost/harness-adapter";
 
 import type { AntigravityPromptUsage } from "./acp-types.js";
+import {
+  readAntigravityRequestTimings,
+  type AntigravityRequestTiming,
+} from "./native-request-timing.js";
 
 export interface AntigravitySessionUsageTrackerOptions {
   nativeSessionId: string;
@@ -62,7 +66,8 @@ function promptUsage(raw: AntigravityPromptUsage | undefined): HostUsage | null 
   if (count(raw.cachedReadTokens)) usage.cachedInputTokens = raw.cachedReadTokens;
   if (count(raw.cachedWriteTokens)) usage.cacheWriteInputTokens = raw.cachedWriteTokens;
   if (count(raw.outputTokens)) {
-    usage.outputTokens = raw.outputTokens + (count(raw.thoughtTokens) ? raw.thoughtTokens : 0);
+    // Native ModelUsageStats.output_tokens already includes thinking_output_tokens.
+    usage.outputTokens = raw.outputTokens;
   }
   if (count(raw.thoughtTokens)) usage.reasoningOutputTokens = raw.thoughtTokens;
   if (count(raw.totalTokens)) usage.totalTokens = raw.totalTokens;
@@ -147,6 +152,7 @@ function usageMatches(actual: HostUsage, expected: HostUsage, exact: boolean): b
 interface TranscriptRequests {
   steps: Map<number, HostUsageRequest | null>;
   complete: boolean;
+  timings: Map<number, AntigravityRequestTiming> | null;
 }
 interface PendingUsage {
   base: HostUsage;
@@ -156,6 +162,9 @@ interface PendingUsage {
 
 export class AntigravitySessionUsageTracker {
   readonly #file: string;
+  readonly #nativeSessionId: string;
+  readonly #home: string;
+  #turnStartedAtMs = 0;
   readonly #consumed = new Map<number, HostUsageRequest>();
   readonly #requests = new Map<number, HostUsageRequest>();
   readonly #expectedInitialTurns: number;
@@ -170,6 +179,8 @@ export class AntigravitySessionUsageTracker {
   readonly #turnCollectionSteps = new Set<number>();
 
   constructor(options: AntigravitySessionUsageTrackerOptions) {
+    this.#nativeSessionId = options.nativeSessionId;
+    this.#home = options.homedir;
     this.#expectedInitialTurns = options.expectedInitialTurns ?? 0;
     this.#file = path.join(
       options.homedir,
@@ -236,7 +247,8 @@ export class AntigravitySessionUsageTracker {
     return this.currentUsage();
   }
 
-  beginTurn(): void {
+  beginTurn(startedAtMs = Date.now()): void {
+    this.#turnStartedAtMs = startedAtMs;
     this.#turnBase = this.#pending
       ? addUsage(this.#pending.base, this.#pending.usage)
       : requestUsage([...this.#requests.values()]);
@@ -291,7 +303,7 @@ export class AntigravitySessionUsageTracker {
     complete: boolean;
     usage: HostUsage | null;
   }> {
-    const transcript = await this.#read(signal);
+    const transcript = await this.#read(signal, false);
     const requests = this.#consume(transcript, true);
     this.#reconcile();
     return { requests, complete: this.#historyComplete(), usage: this.currentUsage() };
@@ -302,6 +314,7 @@ export class AntigravitySessionUsageTracker {
       firstOutputAtMs?: number;
       completedAtMs?: number;
       promptUsage?: AntigravityPromptUsage;
+      hasToolCalls?: boolean;
       signal?: AbortSignal;
     } = {},
   ): Promise<{
@@ -322,11 +335,18 @@ export class AntigravitySessionUsageTracker {
       usage && this.#pending
         ? addUsage(this.#pending.usage, usage)
         : (usage ?? this.#pending?.usage);
-    const requests = this.#consume(transcript, false, cacheUsage);
+    const requests = this.#consume(
+      transcript,
+      false,
+      cacheUsage,
+      input.completedAtMs !== undefined,
+    );
     const single = requests[0];
     const step = [...this.#turnCollectionSteps][0];
     if (
       !hadPending &&
+      !input.hasToolCalls &&
+      transcript.timings === null &&
       usage?.inputTokens !== undefined &&
       usage.outputTokens !== undefined &&
       requests.length === 1 &&
@@ -340,32 +360,35 @@ export class AntigravitySessionUsageTracker {
       const updated = parseHostUsageRequest({ ...single, ...timing(input) });
       requests[0] = updated;
       this.#requests.set(step, updated);
-      this.#recordOutputSpeed(updated.outputTokens, updated);
     }
+    this.#recordTurnOutputSpeed();
     this.#reconcile();
     return { requests, complete: this.#historyComplete(), usage: this.currentUsage() };
   }
 
-  #recordOutputSpeed(
-    outputTokens: number | undefined,
-    clock: Pick<HostUsageRequest, "startedAtMs" | "completedAtMs">,
-  ): void {
-    if (
-      clock.startedAtMs !== undefined &&
-      clock.completedAtMs !== undefined &&
-      clock.completedAtMs > clock.startedAtMs &&
-      outputTokens !== undefined &&
-      outputTokens > 0
-    ) {
-      this.#outputTokensPerSecond =
-        outputTokens / ((clock.completedAtMs - clock.startedAtMs) / 1000);
+  #recordTurnOutputSpeed(): void {
+    let tokens = 0;
+    let milliseconds = 0;
+    for (const step of this.#turnCollectionSteps) {
+      const request = this.#requests.get(step);
+      if (
+        request?.startedAtMs === undefined ||
+        request.completedAtMs === undefined ||
+        request.completedAtMs <= request.startedAtMs ||
+        request.outputTokens <= 0
+      )
+        continue;
+      tokens += request.outputTokens;
+      milliseconds += request.completedAtMs - request.startedAtMs;
     }
+    if (milliseconds > 0) this.#outputTokensPerSecond = tokens / (milliseconds / 1000);
   }
 
   #consume(
     transcript: TranscriptRequests,
     historical: boolean,
     cacheUsage?: HostUsage | null,
+    finalizing = false,
   ): HostUsageRequest[] {
     this.#complete = transcript.complete;
     const requests: HostUsageRequest[] = [];
@@ -419,7 +442,22 @@ export class AntigravitySessionUsageTracker {
         this.#complete = false;
         continue;
       }
-      parsed = parseHostUsageRequest({ ...parsed, ...(historical ? { historical: true } : {}) });
+      const candidate = transcript.timings?.get(step);
+      const clock =
+        !historical &&
+        candidate &&
+        candidate.startedAtMs >= this.#turnStartedAtMs &&
+        candidate.completedAtMs <= Date.now()
+          ? candidate
+          : undefined;
+      // Let an in-flight native metadata commit supply timing before publishing the stable ID.
+      if (!historical && this.#turnActive && !finalizing && transcript.timings !== null && !clock)
+        continue;
+      parsed = parseHostUsageRequest({
+        ...parsed,
+        ...(historical ? { historical: true } : {}),
+        ...clock,
+      });
       this.#consumed.set(step, request);
       this.#requests.set(step, parsed);
       requests.push(parsed);
@@ -427,11 +465,11 @@ export class AntigravitySessionUsageTracker {
     return requests;
   }
 
-  async #read(signal?: AbortSignal): Promise<TranscriptRequests> {
+  async #read(signal?: AbortSignal, withTimings = true): Promise<TranscriptRequests> {
     signal?.throwIfAborted();
     const stream = createReadStream(this.#file, { encoding: "utf8", signal });
     const lines = createInterface({ input: stream, crlfDelay: Infinity });
-    const result: TranscriptRequests = { steps: new Map(), complete: true };
+    const result: TranscriptRequests = { steps: new Map(), complete: true, timings: null };
     try {
       for await (const line of lines) {
         signal?.throwIfAborted();
@@ -487,6 +525,15 @@ export class AntigravitySessionUsageTracker {
     result.complete &&=
       [...result.steps.values()].every((request) => request !== null) &&
       [...this.#consumed.keys()].every((step) => result.steps.has(step));
+    const unseen = new Set([...result.steps.keys()].filter((step) => !this.#consumed.has(step)));
+    if (withTimings && unseen.size > 0)
+      result.timings = await readAntigravityRequestTimings(
+        this.#nativeSessionId,
+        this.#home,
+        result.steps,
+        unseen,
+      );
+    signal?.throwIfAborted();
     return result;
   }
 }

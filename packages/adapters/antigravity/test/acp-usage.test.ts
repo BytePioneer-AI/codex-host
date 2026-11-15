@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { parseHostUsage, parseHostUsageRequest } from "@codexhost/harness-adapter";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
 
 import {
   AntigravitySessionUsageTracker,
@@ -83,6 +85,165 @@ describe("Antigravity usage model identity", () => {
 });
 
 describe("Antigravity Session usage", () => {
+  it("sums native per-request generation intervals without tool waits", async () => {
+    await transcript(planner(1), planner(3, { output_tokens: 30 }));
+    await writeNativeTimingDatabase(home, [
+      { step: 1 },
+      { step: 3, created: 10000, started: 12000, completed: 13000, output: 30 },
+    ]);
+    tracker.beginTurn(1000);
+    const usage = {
+      inputTokens: 200,
+      cachedReadTokens: 100,
+      cachedWriteTokens: 0,
+      outputTokens: 50,
+      thoughtTokens: 10,
+    };
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 3000,
+      completedAtMs: 18000,
+      hasToolCalls: true,
+    });
+    expect(
+      update.requests.map(({ startedAtMs, completedAtMs }) => ({ startedAtMs, completedAtMs })),
+    ).toEqual([
+      { startedAtMs: 3000, completedAtMs: 5000 },
+      { startedAtMs: 12000, completedAtMs: 13000 },
+    ]);
+    const result = tracker.recordTurnPromptUsage({ usage });
+    expect(result.complete).toBe(true);
+    expect(result.usage?.outputTokensPerSecond).toBeCloseTo(50 / 3);
+  });
+
+  it("waits for pending native timing until final collection without publishing a duplicate request", async () => {
+    await transcript(planner(1));
+    const database = await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const db = new DatabaseSync(database);
+    try {
+      db.exec("DELETE FROM gen_metadata");
+    } finally {
+      db.close();
+    }
+    tracker.beginTurn(1000);
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const completed = await tracker.collectNewTranscriptRequests({
+      promptUsage: nativePrompt,
+      completedAtMs: 8000,
+    });
+    expect(completed.requests).toHaveLength(1);
+    expect(completed.requests[0]).toMatchObject({ startedAtMs: 3000, completedAtMs: 5000 });
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    expect(tracker.recordTurnPromptUsage({ usage: nativePrompt }).complete).toBe(true);
+  });
+
+  it("still publishes accounting at Turn end when optional native timing never arrives", async () => {
+    await transcript(planner(1));
+    const file = await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("DELETE FROM gen_metadata");
+    } finally {
+      db.close();
+    }
+    tracker.beginTurn(1000);
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: nativePrompt,
+      completedAtMs: 8000,
+    });
+    expect(update.requests).toHaveLength(1);
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    const result = tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    expect(result.complete).toBe(true);
+    expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
+  });
+
+  it("does not backfill live speed when replaying historical native timings", async () => {
+    await transcript(planner(1));
+    await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const history = await tracker.replayHistoricalRequests();
+    expect(history.complete).toBe(true);
+    expect(history.requests[0]).toMatchObject({ historical: true });
+    expect(history.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(history.usage).not.toHaveProperty("outputTokensPerSecond");
+  });
+
+  it("does not reuse inherited or delayed prior-turn intervals for the current speed", async () => {
+    tracker.beginTurn(1000);
+    tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    tracker.beginTurn(10000);
+    await transcript(planner(1), planner(3, { output_tokens: 30 }));
+    await writeNativeTimingDatabase(home, [
+      { step: 1 },
+      { step: 3, created: 10000, started: 12000, completed: 13000, output: 30 },
+    ]);
+    const usage = { ...nativePrompt, outputTokens: 30 };
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      completedAtMs: 15000,
+    });
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.requests[1]).toMatchObject({ startedAtMs: 12000, completedAtMs: 13000 });
+    expect(tracker.recordTurnPromptUsage({ usage }).usage?.outputTokensPerSecond).toBe(30);
+  });
+
+  it("does not time a tool-bearing single-request Turn using the whole prompt interval", async () => {
+    await transcript(planner(1));
+    tracker.beginTurn();
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: nativePrompt,
+      firstOutputAtMs: 1000,
+      completedAtMs: 3000,
+      hasToolCalls: true,
+    });
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
+  });
+
+  it("does not replace rejected native retry timing with whole-turn timing", async () => {
+    await transcript(planner(1));
+    await writeNativeTimingDatabase(home, [{ step: 1, retries: 1 }]);
+    tracker.beginTurn(1000);
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: nativePrompt,
+      firstOutputAtMs: 3000,
+      completedAtMs: 18000,
+    });
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
+    expect(tracker.recordTurnPromptUsage({ usage: nativePrompt }).complete).toBe(true);
+  });
+
+  it("does not add thoughtTokens twice to native output, history reconciliation or single-request TPS", async () => {
+    await transcript(planner(1, { input_tokens: 13035, cache_read_tokens: 0, output_tokens: 146 }));
+    const usage = {
+      inputTokens: 13035,
+      cachedReadTokens: 0,
+      cachedWriteTokens: 0,
+      outputTokens: 146,
+      thoughtTokens: 107,
+      totalTokens: 13181,
+    };
+    tracker.beginTurn();
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 1000,
+      completedAtMs: 3000,
+    });
+    const result = tracker.recordTurnPromptUsage({ usage });
+    expect(update.requests).toHaveLength(1);
+    expect(result.complete).toBe(true);
+    expect(result.usage).toMatchObject({
+      inputTokens: 13035,
+      outputTokens: 146,
+      totalTokens: 13181,
+      outputTokensPerSecond: 73,
+      sessionCacheUsage: { inputTokens: 13035, cachedInputTokens: 0 },
+    });
+  });
+
   it("combines uncached input, cache reads/writes and reasoning in a validated snapshot", () => {
     tracker.recordContextWindow(9762, 1048576);
     tracker.beginTurn();
@@ -119,9 +280,9 @@ describe("Antigravity Session usage", () => {
       inputTokens: 18788,
       cachedInputTokens: 8097,
       cacheWriteInputTokens: 3,
-      outputTokens: 153,
+      outputTokens: 151,
       reasoningOutputTokens: 2,
-      totalTokens: 18941,
+      totalTokens: 18939,
       contextWindowTokens: 1048576,
     });
     expect(next.usage).not.toHaveProperty("outputTokensPerSecond");

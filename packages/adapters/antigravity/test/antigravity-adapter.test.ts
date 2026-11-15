@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -35,6 +35,7 @@ import {
 import * as nativeFork from "../src/fork.js";
 import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
+import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
 
 const mode = harnessPermissionModeIdSchema.parse;
 const model = (id: string) => harnessModelRefSchema.parse({ id });
@@ -494,6 +495,77 @@ describe("Antigravity ACP Session", () => {
     await forked;
     await start(session, transports);
   });
+  it("publishes native request timing once and completes metering with output that includes reasoning", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-native-metering-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
+    const transport = await start(session, transports);
+    const sessionId = required(transport.sessionId);
+    const created = Date.now();
+    await writeNativeTimingDatabase(
+      home,
+      [
+        {
+          step: 1,
+          input: 13035,
+          cached: 0,
+          output: 146,
+          created,
+          started: created + 1,
+          completed: created + 3,
+        },
+      ],
+      sessionId,
+    );
+    const log = path.join(
+      home,
+      ".gemini/antigravity-cli/brain",
+      sessionId,
+      ".system_generated/logs/transcript.jsonl",
+    );
+    await mkdir(path.dirname(log), { recursive: true });
+    await writeFile(
+      log,
+      JSON.stringify({
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        step_index: 1,
+        model: "gemini-4-carbon-medium",
+        input_tokens: 13035,
+        cache_read_tokens: 0,
+        output_tokens: 146,
+      }) + "\n",
+    );
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThanOrEqual(created + 3));
+    required(transport.handler).onEvent({ type: "usage.context", used: 13181, size: 1048576 });
+    await vi.waitFor(() =>
+      expect(events(outputs).filter((event) => event.type === "usage.request")).toHaveLength(1),
+    );
+    transport.result.resolve({
+      stopReason: "end_turn",
+      usage: {
+        inputTokens: 13035,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 0,
+        outputTokens: 146,
+        thoughtTokens: 107,
+        totalTokens: 13181,
+      },
+    });
+    await completed(outputs);
+    expect(events(outputs).filter((event) => event.type === "usage.request")).toMatchObject([
+      {
+        request: { outputTokens: 146, startedAtMs: created + 1, completedAtMs: created + 3 },
+      },
+    ]);
+    expect(
+      events(outputs)
+        .filter((event) => event.type === "usage.history")
+        .at(-1),
+    ).toEqual({ type: "usage.history", complete: true });
+  });
+
   it("streams ordered text/reasoning, usage and stable Turn identity", async () => {
     const { adapter, transports } = fixture();
     const { session, outputs } = await sessionOf(

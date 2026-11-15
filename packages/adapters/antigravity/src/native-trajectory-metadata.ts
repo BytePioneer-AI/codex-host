@@ -1,3 +1,5 @@
+import { decodeVarint } from "./native-protobuf.js";
+
 const DEFAULT_CLI_PROJECT_ID = "default-cli-project";
 
 function encodeVarint(value: number): Buffer {
@@ -9,17 +11,6 @@ function encodeVarint(value: number): Buffer {
   }
   bytes.push(remaining);
   return Buffer.from(bytes);
-}
-
-function decodeVarint(buffer: Uint8Array, start: number): [bigint, number] | null {
-  let value = 0n;
-  for (let index = 0; index < 10; index++) {
-    const byte = buffer[start + index];
-    if (byte === undefined || (index === 9 && byte > 1)) return null;
-    value |= BigInt(byte & 0x7f) << BigInt(index * 7);
-    if ((byte & 0x80) === 0) return [value, start + index + 1];
-  }
-  return null;
 }
 
 function encodeLengthDelimited(fieldNumber: number, payload: Uint8Array): Buffer {

@@ -45,7 +45,7 @@
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 支持 | `src/subagents.ts`、`src/subagent-transcript.ts` | `test/subagents.test.ts` | 识别 `invoke_subagent` 工具调用，结合 `conversation_summaries.db` 与 `brain/<id>` 读取状态与 Transcript |
 | B12 | 自主 Turn | 原生有则必做 | P1 | 不适用 | — | 实测 `agy acp` 1.5.9 为请求驱动 `session/prompt`，不在空闲态主动发起无请求 Turn | 后台子代理更新通过 `subagent.*` 事件独立上报 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 支持 | `src/acp-usage.ts` | `test/acp-usage.test.ts`；实测 `PromptResponse.usage` 与 `usage_update` | 合并缓存输入与推理输出口径，实时上报上下文窗口与 Token 快照 |
-| B14 | 请求级计量 | 原生有则必做 | P2 | 支持 | `src/acp-usage.ts` | `test/acp-usage.test.ts`；实测 `transcript.jsonl` | 重放 `PLANNER_RESPONSE` 历史请求并附带实时流式首尾时间戳计算 TPS/TTFT/费用 |
+| B14 | 请求级计量 | 原生有则必做 | P2 | 支持 | `src/acp-usage.ts`、`src/native-request-timing.ts` | `test/acp-usage.test.ts`、`test/native-request-timing.test.ts`；真实转录与 SQLite 只读回放 | 输出已含思考；按原生逐请求生成区间交给公共计量器计算 TPS，排除工具与用户等待，重复回放不重复计费 |
 | B15 | 接收委派 | 必做（验证项） | P1 | 支持 | `src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts` | 满足 A8 可写恢复 + B4 无人值守执行 + 环境变量传播 |
 | B16 | 向下委派 | 原生有则必做 | P2 | 支持 | `src/delegation.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts`；实测 `_meta.antigravity.systemPrompt.append` | 注入环境变量并通过原生 `systemPrompt.append` 告知变量名 |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | `manifest.json`、`src/permission-modes.ts` | `test/plugin.test.ts` | 含图标、链接与中英文权限模式文案 |
@@ -80,7 +80,8 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 18 个测试文件、335 项测试全部通过 |
+| Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 19 个测试文件、368 项测试全部通过（Node 22、Node 24） |
+| 用量对账与计时 | 既有测试会话的原生 SQLite / 转录只读回放，经过共享 `UsageMeter` | 单请求、多请求、原生问答及重复回放通过；无新增模型调用 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |
 | 插件加载 | `npm run build:typescript && npx vitest run -c tests/vitest.config.js packages/host-runtime/test/installed-harness-plugins.test.ts` | 插件打包与真实 Cordis Loader 加载通过 |
 | Host 集成 | 独立 `CODEXHOST_DATA_DIR` 下 `HostRuntime` 全链路隔离验收（预热草稿配置选择、多轮对话、文件 Diff 与审批、Host 重启冷恢复、跨目录 Fork、Rollback、会话导入、会话与全局用量计价） | 5 阶段全链路实测全部通过，退出后 `agy acp` 残留进程为 0 |

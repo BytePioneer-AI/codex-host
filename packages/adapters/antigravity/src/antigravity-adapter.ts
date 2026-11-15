@@ -275,6 +275,7 @@ interface ActiveTurn {
   ended: boolean;
   promptSubmitted?: boolean;
   firstOutputAtMs?: number;
+  hasToolCalls?: boolean;
   tracker?: AntigravityToolTracker;
   textItem?:
     | {
@@ -646,6 +647,7 @@ export class AntigravitySession implements HarnessSession {
       case "usage.context": {
         const usage = this.#usage?.recordContextWindow(event.used, event.size);
         if (usage) this.#emit({ type: "session.usage.changed", usage });
+        if (this.#active?.promptSubmitted) void this.refreshUsage();
         break;
       }
     }
@@ -962,13 +964,20 @@ export class AntigravitySession implements HarnessSession {
               event.text,
             );
           } else if (event.type === "tool.call" || event.type === "tool.update") {
+            turn.hasToolCalls = true;
             turn.firstOutputAtMs ??= Date.now();
             this.#completeText(turn, { status: "succeeded" });
             turn.tracker?.handleToolEvent(event);
           } else this.#sessionEvent(event);
         },
-        onPermission: (request) => this.#permission(turn, request),
-        onElicitation: (request) => this.#question(turn, request),
+        onPermission: (request) => {
+          turn.hasToolCalls = true;
+          return this.#permission(turn, request);
+        },
+        onElicitation: (request) => {
+          turn.hasToolCalls = true;
+          return this.#question(turn, request);
+        },
       });
       turn.promptSubmitted = false;
       const completedAtMs = Date.now();
@@ -1017,6 +1026,7 @@ export class AntigravitySession implements HarnessSession {
           };
           const update = await this.#usage.collectNewTranscriptRequests({
             ...timing,
+            ...(turn.hasToolCalls ? { hasToolCalls: true } : {}),
             ...(result.usage ? { promptUsage: result.usage } : {}),
             signal: this.#abort.signal,
           });

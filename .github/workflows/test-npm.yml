@@ -1,0 +1,117 @@
+name: Test npm packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "test/npm-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-npm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Test npm ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.97.1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: windows-latest
+            rustTarget: x86_64-pc-windows-msvc
+            package: cli-win32-x64
+            executable: codexhost.exe
+          - target: macos-arm64
+            runner: macos-26
+            rustTarget: aarch64-apple-darwin
+            package: cli-darwin-arm64
+            executable: codexhost
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout test commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global --prefer-offline npm@11.8.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.rustTarget }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-npm-${{ matrix.target }}
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: Prepare runner-only test version
+        id: metadata
+        run: |
+          version=$(node -p 'require("./package.json").version.split("-")[0] + "-test." + process.env.GITHUB_RUN_ID + "." + process.env.GITHUB_RUN_ATTEMPT')
+          npm run release:prepare -- "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Test version: $version; source: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build shared application code
+        run: npm run build:typescript && npm run build:renderer
+
+      - name: Build native npm executables
+        run: >
+          cargo build --release --locked --target ${{ matrix.rustTarget }}
+          --package codexhost-launcher --package codexhost-shim --package codexhost-updater
+
+      - name: Pack platform and CLI npm packages
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          npm run release:npm -- --target ${{ matrix.target }} --version "$VERSION" --pack --skip-build
+          npm run release:npm:meta -- --version "$VERSION" --pack
+
+      - name: Verify offline npm installation
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          PLATFORM_PACKAGE: ${{ matrix.package }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/codexhost-npm-test"
+          npm install --prefix "$prefix" --offline --no-audit --no-fund \
+            "build/npm/$VERSION/$TARGET/codexhost-cli-$VERSION-$TARGET.tgz" \
+            "build/npm/$VERSION/meta/codexhost-cli-$VERSION.tgz"
+          test "$(node "$prefix/node_modules/@codexhost/cli/bin/codexhost.js" --version)" = "$VERSION"
+          test "$("$prefix/node_modules/@codexhost/$PLATFORM_PACKAGE/bin/$EXECUTABLE" --version)" = "$VERSION"
+          echo "Offline npm installation and CLI/native versions verified for $TARGET." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test npm packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codexhost-npm-test-${{ matrix.target }}
+          path: |
+            build/npm/${{ steps.metadata.outputs.version }}/${{ matrix.target }}/*.tgz
+            build/npm/${{ steps.metadata.outputs.version }}/meta/*.tgz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

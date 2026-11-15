@@ -114,6 +114,23 @@ npm 发布受阻时，可从默认分支手动运行 `Release packages`，指定
 
 标签推送使用标签提交里的工作流定义，新校验不会追溯改写旧标签的发布逻辑。这不是不可绕过的权限控制；未设置分支、标签或发布环境保护。
 
+## 发布前快速 npm 试包
+
+`.github/workflows/test-npm.yml` 的 `Test npm packages` 独立于正式发布，只构建 Windows x64 和 macOS ARM64。手动运行时使用所选分支的提交；推送 `test/npm-*` 分支也会触发这两路构建，不触发仅监听 `main push` 的全平台 CI。它不等待 CI、不创建 Tag、不发布 npm 或 GitHub Release，也不构建 Linux、EXE 或 DMG 安装器。
+
+每次运行以源码版本为基础，在 runner 内生成 `<版本>-test.<run-id>.<attempt>`，同步 npm/Cargo 版本，不提交版本变更。构建复用正式 npm 打包脚本及产物校验，随后离线安装并核对 CLI 和原生程序版本；这不等于完整 CI 或 Desktop/Web 运行验收。
+
+Actions 的两个 `codexhost-npm-test-<平台>` Artifact 各包含 CLI 元包和对应平台包，保留 7 天。下载并解压对应平台的 Artifact 后，将下面的 `<版本>` 替换成 Actions Summary 中的测试版本，在该目录安装：
+
+```bash
+# Windows x64
+npm install -g --offline ./codexhost-cli-<版本>-windows-x64.tgz ./codexhost-cli-<版本>.tgz
+# macOS ARM64（Apple 芯片）
+npm install -g --offline ./codexhost-cli-<版本>-macos-arm64.tgz ./codexhost-cli-<版本>.tgz
+```
+
+两份 tarball 必须同时安装，避免从 registry 获取另一版本的平台包。此命令会替换当前 npm 全局安装，先关闭其运行中的界面；测试包沿用用户原有配置和数据，不是隔离运行环境。不需要覆盖全局安装时，可用 `npm install --prefix ./npm-test --offline <平台包路径> <CLI元包路径>` 安装到独立目录，再运行该目录内的 CLI。
+
 ## 验证
 
 ```bash

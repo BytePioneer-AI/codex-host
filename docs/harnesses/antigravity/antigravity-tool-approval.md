@@ -28,7 +28,7 @@ Actual permission evaluation belongs entirely to `agy acp`; `codexhost` does not
 
 The Adapter declares `clientCapabilities.elicitation: { form: {} }` during ACP initialization. When the model invokes `ask_question`, `agy acp` sends `elicitation/create` (`mode: "form"`):
 
-- Single-choice (`oneOf` / `enum`), multi-select (`type: "array"`), free-text (`<key>_other`), and text/password fields are projected into `HostQuestionInteraction` and bound to the active `ask_question` `toolExecution` item when present.
+- Single-choice (`oneOf` / `enum`), multi-select (`type: "array"`), free-text (`<key>_other`), and text/password fields are projected into `HostQuestionInteraction` (honoring `required` when listed and keeping unlisted fields optional) and bound to the active `ask_question` `toolExecution` item when present.
 - User answers map back to `{ action: "accept", content }`; Turn cancellation or explicit dismissal maps to `{ action: "cancel" }`.
 
 ## Validation

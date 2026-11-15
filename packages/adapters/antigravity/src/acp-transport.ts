@@ -299,7 +299,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       return await this.#request(
         connection.prompt({ sessionId, prompt: [...parts] }) as Promise<AntigravityPromptResult>,
         "session/prompt",
-        undefined,
+        null,
         interrupted.signal,
       );
     } finally {
@@ -386,7 +386,11 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   }
 
   #dispatch(event: AntigravityAcpEvent): void {
-    if (["config.update", "mode.update", "commands.update", "session.info"].includes(event.type)) {
+    if (
+      ["config.update", "mode.update", "commands.update", "session.info", "usage.context"].includes(
+        event.type,
+      )
+    ) {
       if (this.#sessionHandler) this.#sessionHandler(event);
       else this.#pendingEvents.push(event);
     } else this.#active?.onEvent(event);
@@ -420,7 +424,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   async #request<T>(
     promise: Promise<T>,
     operation: string,
-    timeoutMs = this.options.commandTimeoutMs ?? 30_000,
+    timeoutMs: number | null = this.options.commandTimeoutMs ?? 30_000,
     signal?: AbortSignal,
   ): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
@@ -431,17 +435,18 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       if (signals.some((candidate) => candidate.aborted)) abort();
       else
         for (const candidate of signals) candidate.addEventListener("abort", abort, { once: true });
-      timer = setTimeout(
-        () =>
-          reject(
-            new AntigravityTransportError(
-              "unavailable",
-              `${operation} timed out after ${timeoutMs}ms`,
-              { diagnostic: this.#stderr },
+      if (timeoutMs !== null)
+        timer = setTimeout(
+          () =>
+            reject(
+              new AntigravityTransportError(
+                "unavailable",
+                `${operation} timed out after ${timeoutMs}ms`,
+                { diagnostic: this.#stderr },
+              ),
             ),
-          ),
-        timeoutMs,
-      );
+          timeoutMs,
+        );
     });
     try {
       return await Promise.race([promise, interrupted]);

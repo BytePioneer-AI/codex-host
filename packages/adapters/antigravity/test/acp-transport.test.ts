@@ -37,6 +37,7 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
   }
   if (req.method === 'session/new') {
     if (scenario === 'session-auth') return send({id:req.id,error:{code:-32000,message:'Credentials needed'}});
+    if (scenario === 'initial-usage') update({sessionUpdate:'usage_update',used:40,size:1000});
     update({sessionUpdate:'available_commands_update',availableCommands:[{name:'quota',description:'Quota'}]});
     return result(req.id,{sessionId:'native',models:{currentModelId:'gemini-4-carbon',availableModels:[{modelId:'gemini-4-carbon',name:JSON.stringify(req.params)}]},modes:{currentModeId:'default',availableModes:[]},configOptions:[],_meta:{antigravity:{tier:{id:'pro',name:'Pro',upgradeUri:'https://example.com'}}}});
   }
@@ -49,7 +50,10 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     update({sessionUpdate:'session_info_update',title:'History'},req.params.sessionId);
     return result(req.id,{configOptions:[]});
   }
-  if (req.method === 'session/resume') return result(req.id,{configOptions:[],modes:{currentModeId:'plan',availableModes:[]}});
+  if (req.method === 'session/resume') {
+    if (scenario === 'initial-usage') update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
+    return result(req.id,{configOptions:[],modes:{currentModeId:'plan',availableModes:[]}});
+  }
   if (req.method === 'session/set_mode') return result(req.id,{});
   if (req.method === 'session/set_config_option') {
     if (req.params.value === 'stall') return;
@@ -289,19 +293,45 @@ describe("native ACP stdio transport", () => {
     expect(onFault.mock.calls[0]?.[0].diagnostic).toContain("[redacted]");
     expect(onFault.mock.calls[0]?.[0].diagnostic).not.toContain("super-secret-token");
   });
-  it.each(["stall-init", "stall-prompt"])(
-    "times out %s and retires the process",
-    async (scenario) => {
-      const value = transport(scenario, { commandTimeoutMs: 200 });
-      if (scenario === "stall-init") await expect(value.initialize()).rejects.toThrow("timed out");
-      else {
-        await open(value);
-        await expect(value.prompt([{ type: "text", text: "Hi" }], handler())).rejects.toThrow(
-          "timed out",
-        );
-      }
-      await value.close();
-      expect(value.isClosed).toBe(true);
+  it("times out initialization and retires the process", async () => {
+    const value = transport("stall-init", { commandTimeoutMs: 200 });
+    await expect(value.initialize()).rejects.toThrow("timed out");
+    expect(value.isClosed).toBe(true);
+  });
+  it("does not apply the command timeout while waiting for a user answer", async () => {
+    const value = transport("callbacks", { commandTimeoutMs: 300 });
+    await open(value);
+    const onElicitation = vi.fn(() => new Promise<never>(() => {}));
+    let settled = false;
+    const pending = value.prompt([], { ...handler(), onElicitation });
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(onElicitation).toHaveBeenCalledOnce());
+    await delay(450);
+    expect(settled).toBe(false);
+    expect(value.isClosed).toBe(false);
+    await value.cancel();
+    expect((await pending).stopReason).toBe("cancelled");
+  });
+  it.each(["create", "resume"] as const)(
+    "preserves context sent before %s returns",
+    async (kind) => {
+      const value = transport("initial-usage");
+      const opened = await value.openSession({
+        kind,
+        cwd: process.cwd(),
+        ...(kind === "resume" ? { sessionId: "saved" } : {}),
+      });
+      expect(opened.replayedEvents).toEqual([]);
+      const events: AntigravityAcpEvent[] = [];
+      value.setSessionEventHandler((event) => events.push(event));
+      expect(events).toContainEqual({ type: "usage.context", used: 40, size: 1000 });
     },
   );
   it("retire-on-timeout applies to config requests too", async () => {
@@ -413,7 +443,7 @@ describe("native ACP stdio transport", () => {
     const first = value.close();
     expect(value.close()).toBe(first);
     await first;
-    expect(child?.signalCode).toBe("SIGKILL");
+    expect(child?.signalCode).toBe(process.platform === "win32" ? "SIGTERM" : "SIGKILL");
     expect(value.sessionId).toBeNull();
     await expect(value.initialize()).rejects.toThrow("closed");
   });

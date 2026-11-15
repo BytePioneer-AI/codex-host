@@ -15,7 +15,7 @@ The Antigravity Adapter emits the standard `subagentDelegation`, `subagent.state
 
 When `AntigravityToolTracker` observes `invoke_subagent` or `send_message` with a valid child UUID, `AntigravitySubagents` tracks the child against the parent's `nativeSessionId` and polls native storage read-only:
 
-- Child run status is read from `conversation_summaries.db` after verifying `parent_conversation_id === parentId`. Missing rows or transient SQLite read failures preserve the last known status rather than fabricating completion.
+- Child run status is read from `conversation_summaries.db` after verifying `parent_conversation_id === parentId`. Rows owned by another conversation transition immediately to `interrupted` without reading `transcript.jsonl` or publishing `resultSummary`. Missing rows, transient SQLite read failures, or `CASCADE_RUN_STATUS_IDLE` with an unreadable transcript preserve `running` briefly and settle to `interrupted` after a 30-second observation timeout so polling stops cleanly, while confirmed `CASCADE_RUN_STATUS_RUNNING` stays active even if the transcript is missing or exceeds 8 MiB.
 - Child progress and `subagents.readSnapshot` read only `~/.gemini/antigravity-cli/brain/<child-id>/.system_generated/logs/transcript.jsonl` (never arbitrary `log_uri` paths), rejecting symlinked directories and logs exceeding 8 MiB, and retrying incomplete trailing JSONL lines on subsequent reads.
 - Only explicit user input, visible model responses, and tool calls/results are projected; internal thinking and injected system metadata are omitted from child conversation messages. Item and Turn IDs incorporate the native child identity so they remain stable across refreshes and Host restarts.
 

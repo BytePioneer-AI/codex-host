@@ -99,7 +99,7 @@ describe("Antigravity read-only Session import", () => {
   });
 
   it("lists and resolves root Sessions using native identity, timestamps and running status", async () => {
-    const idle = await conversation({ title: "  Hello\n\0world  " });
+    const idle = await conversation({ title: "  Hello\nworld  " });
     const running = await conversation({ status: "CASCADE_RUN_STATUS_RUNNING" });
     const unknown = await conversation({ status: "UNRECOGNIZED" });
     const listing = await discovery.listCandidates();

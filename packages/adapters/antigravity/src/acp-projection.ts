@@ -246,7 +246,7 @@ export function projectAcpQuestionInteraction(params: {
       text(request.message) ||
       key;
     const otherKey = properties[`${key}_other`] ? `${key}_other` : undefined;
-    const optional = required ? !required.has(key) : false;
+    const optional = required ? !required.has(key) : true;
     mappings.push({
       questionId: key,
       selectKey: key,
@@ -435,8 +435,9 @@ export class AntigravityToolTracker {
           },
         ],
       };
-      if (nativeId && !this.#spawned.has(nativeId)) {
-        this.#spawned.add(nativeId);
+      const observationKey = `${event.toolCallId}:${nativeId}`;
+      if (nativeId && !this.#spawned.has(observationKey)) {
+        this.#spawned.add(observationKey);
         this.options.onSubagentSpawned?.(nativeId, { item: state.item, outcome });
       }
     } else {

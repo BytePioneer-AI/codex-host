@@ -29,7 +29,6 @@ import {
   type HostItemOutcome,
   type HostThreadSnapshot,
   type HostUsage,
-  type HostUsageRequest,
   type InspectHarnessInput,
   type OpenSessionInput,
   type TurnOutcome,
@@ -274,8 +273,8 @@ interface ActiveTurn {
   turnId: HostTurnId;
   cancelled: boolean;
   ended: boolean;
+  promptSubmitted?: boolean;
   firstOutputAtMs?: number;
-  model?: string;
   tracker?: AntigravityToolTracker;
   textItem?:
     | {
@@ -334,6 +333,7 @@ export class AntigravitySession implements HarnessSession {
       cwd: options.cwd,
       home: antigravityHome(options.environment),
       outputLimit: options.adapter.toolOutputLimit ?? 64_000,
+      observationTimeoutMs: options.adapter.subagentObservationTimeoutMs ?? 30_000,
       emit: (event) => this.#emit(event),
     });
   }
@@ -447,6 +447,18 @@ export class AntigravitySession implements HarnessSession {
           ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
         }).length;
       }
+      if (!this.#usage) {
+        const context = replayedEvents.findLast((event) => event.type === "usage.context");
+        this.#usage = new AntigravitySessionUsageTracker({
+          nativeSessionId: opened.sessionId,
+          homedir: antigravityHome(this.#options.environment),
+          expectedInitialTurns: this.#turnCount,
+          ...(context
+            ? { initialContextUsedTokens: context.used, initialContextWindowTokens: context.size }
+            : {}),
+        });
+        this.#usageWork = this.#replayUsage();
+      }
       transport.setSessionEventHandler((event) => {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
@@ -473,17 +485,6 @@ export class AntigravitySession implements HarnessSession {
         await transport.setMode(this.#requested.permissionModeId);
         this.#state.effectivePermissionModeId = this.#requested.permissionModeId;
         this.#setLocatorPermissionMode(this.#requested.permissionModeId);
-      }
-      if (!this.#usage) {
-        const context = replayedEvents.findLast((event) => event.type === "usage.context");
-        this.#usage = new AntigravitySessionUsageTracker({
-          nativeSessionId: opened.sessionId,
-          homedir: antigravityHome(this.#options.environment),
-          ...(context
-            ? { initialContextUsedTokens: context.used, initialContextWindowTokens: context.size }
-            : {}),
-        });
-        this.#usageWork = this.#replayUsage();
       }
       this.#publishState();
     } catch (error) {
@@ -800,7 +801,7 @@ export class AntigravitySession implements HarnessSession {
             turn.cancelled = true;
             this.#closeInteractions("cancelled");
             try {
-              await this.#transport?.cancel();
+              if (turn.promptSubmitted) await this.#transport?.cancel();
             } catch (error) {
               this.handleTransportFault(
                 new AntigravityTransportError(
@@ -921,6 +922,7 @@ export class AntigravitySession implements HarnessSession {
     let nativeTurnRef: NativeTurnRef | undefined;
     try {
       await this.initialize();
+      await this.#usageWork;
       if (!this.#isCurrent(turn)) return;
       if (turn.cancelled) {
         this.#finish(turn, { status: "cancelled" });
@@ -943,12 +945,12 @@ export class AntigravitySession implements HarnessSession {
         },
         onSubagentSpawned: (id, item) => this.#subagents.track(id, item),
       });
-      if (this.#state.effectiveModel) turn.model = this.#state.effectiveModel.id;
       const transport = this.#transport;
       const ref = this.nativeRef;
       if (!transport || !ref)
         throw new AntigravityTransportError("unavailable", "Native Session is not connected");
       this.#usage?.beginTurn();
+      turn.promptSubmitted = true;
       const result = await transport.prompt(promptParts(command), {
         onEvent: (event) => {
           if (!this.#isCurrent(turn) || turn.cancelled) return;
@@ -968,6 +970,7 @@ export class AntigravitySession implements HarnessSession {
         onPermission: (request) => this.#permission(turn, request),
         onElicitation: (request) => this.#question(turn, request),
       });
+      turn.promptSubmitted = false;
       const completedAtMs = Date.now();
       if (!this.#isCurrent(turn)) return;
       outcome =
@@ -1019,20 +1022,14 @@ export class AntigravitySession implements HarnessSession {
           });
           const recorded = this.#usage.recordTurnPromptUsage({
             ...(result.usage ? { usage: result.usage } : {}),
-            ...(turn.model ? { model: turn.model } : {}),
             ...timing,
           });
           if (!this.#isCurrent(turn)) return;
-          const requests: HostUsageRequest[] = update.requests.length
-            ? update.requests
-            : recorded.fallbackRequest
-              ? [recorded.fallbackRequest]
-              : [];
-          for (const request of requests) this.#emit({ type: "usage.request", request });
-          this.#emit({ type: "usage.history", complete: update.complete });
+          for (const request of update.requests) this.#emit({ type: "usage.request", request });
+          this.#emit({ type: "usage.history", complete: recorded.complete });
           this.#emit({
             type: "session.usage.changed",
-            usage: recorded.usage ?? update.usage,
+            usage: recorded.usage,
             observedForTurnId: turn.turnId,
           });
         } catch {
@@ -1051,6 +1048,8 @@ export class AntigravitySession implements HarnessSession {
       outcome = turn.cancelled
         ? { status: "cancelled" }
         : { status: "failed", error: normalizeAntigravityError(error) };
+    } finally {
+      this.#usage?.endTurn();
     }
     if (this.#isCurrent(turn)) this.#finish(turn, outcome, nativeTurnRef);
   }

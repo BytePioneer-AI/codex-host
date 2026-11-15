@@ -15,6 +15,7 @@ afterEach(async () => {
   await Promise.all(observers.splice(0).map((observer) => observer.close()));
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 const transcript = (text: string) =>
   [
@@ -36,7 +37,7 @@ const transcript = (text: string) =>
   ]
     .map((step) => JSON.stringify(step))
     .join("\n") + "\n";
-async function fixture() {
+async function fixture(observationTimeoutMs = 30_000) {
   const home = await mkdtemp(path.join(os.tmpdir(), "agy-subagents-"));
   homes.push(home);
   const parentId = randomUUID();
@@ -66,6 +67,7 @@ async function fixture() {
     cwd: home,
     outputLimit: 1000,
     pollIntervalMs: 100,
+    observationTimeoutMs,
     emit: (event) => events.push(event),
   });
   observers.push(observer);
@@ -158,6 +160,131 @@ describe("native ACP Subagent observation", () => {
     await f.observer.refresh();
     expect(f.observer.running).toBe(true);
   });
+  it("does not read or publish another parent's child transcript", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare("UPDATE conversation_summaries SET parent_conversation_id = ?").run(randomUUID());
+    db.close();
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.running).toBe(false);
+    expect(f.observer.state(f.childId)).not.toHaveProperty("resultSummary");
+    expect(f.events.some((event) => event.type === "subagent.transcript.changed")).toBe(false);
+    expect(f.events).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: f.childId,
+      status: "interrupted",
+    });
+  });
+  it("stops the timer after terminal transcript synchronization and restarts it on a send", async () => {
+    vi.useFakeTimers();
+    const f = await fixture();
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(vi.getTimerCount()).toBe(1);
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare("UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE'").run();
+    db.close();
+    await f.observer.refresh();
+    expect(f.observer.running).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    f.observer.track(f.childId, f.item);
+    expect(f.observer.running).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    await f.observer.refresh();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("recovers failed status when a retry completes between observations", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare("UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE'").run();
+    db.close();
+    await writeFile(
+      f.log,
+      transcript("before") +
+        JSON.stringify({
+          step_index: 2,
+          source: "MODEL",
+          type: "ERROR",
+          status: "ERROR",
+          content: "failed",
+        }) +
+        "\n",
+    );
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.state(f.childId)?.status).toBe("failed");
+    const retry =
+      [
+        { step_index: 3, source: "USER", type: "USER_INPUT", status: "DONE", content: "retry" },
+        {
+          step_index: 4,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          content: "success",
+        },
+      ]
+        .map((step) => JSON.stringify(step))
+        .join("\n") + "\n";
+    await writeFile(f.log, transcript("before") + retry);
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.state(f.childId)).toMatchObject({
+      status: "completed",
+      resultSummary: "success",
+    });
+  });
+  it.each(["status", "transcript"])(
+    "bounds unavailable %s without inventing successful completion",
+    async (missing) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      const f = await fixture(100);
+      f.observer.track(f.childId, f.item);
+      await f.observer.refresh();
+      if (missing === "status") await rm(nativeConversationSummariesDbPath(f.home));
+      else {
+        const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+        db.prepare("UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE'").run();
+        db.close();
+        await rm(f.log);
+      }
+      await f.observer.refresh();
+      expect(f.observer.running).toBe(true);
+      vi.setSystemTime(1101);
+      await f.observer.refresh();
+      expect(f.observer.state(f.childId)).toMatchObject({
+        status: "interrupted",
+        resultSummary: "Native Subagent status could not be confirmed",
+      });
+      expect(f.observer.running).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+  it.each(["missing", "oversized"])(
+    "keeps confirmed native RUNNING active with a %s transcript beyond the observation timeout",
+    async (kind) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      const f = await fixture(100);
+      if (kind === "missing") await rm(f.log);
+      else await writeFile(f.log, "x".repeat(8 * 1024 * 1024 + 1));
+      f.observer.track(f.childId, f.item);
+      await f.observer.refresh();
+      expect(f.observer.running).toBe(true);
+      vi.setSystemTime(1200);
+      await f.observer.refresh();
+      expect(f.observer.running).toBe(true);
+      expect(f.observer.state(f.childId)?.status).toBe("running");
+      expect(
+        f.events.some(
+          (event) => event.type === "subagent.state.changed" && event.status === "interrupted",
+        ),
+      ).toBe(false);
+      expect(vi.getTimerCount()).toBe(1);
+    },
+  );
   it("stops polling and publishing on close, including an in-flight refresh", async () => {
     vi.useFakeTimers();
     const f = await fixture();

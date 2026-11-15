@@ -15,7 +15,11 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AntigravityAdapter, normalizeAntigravityError } from "../src/antigravity-adapter.js";
+import {
+  AntigravityAdapter,
+  AntigravitySession,
+  normalizeAntigravityError,
+} from "../src/antigravity-adapter.js";
 import {
   AntigravityTransportError,
   type AntigravityAcpConfigOption,
@@ -29,6 +33,7 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
+import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 
 const mode = harnessPermissionModeIdSchema.parse;
@@ -79,6 +84,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
     return this.options.skipPermissions === true;
   }
   eventHandler: AntigravitySessionEventHandler | null = null;
+  queuedSessionEvents: AntigravityAcpEvent[] = [];
   handler?: AntigravityActivePromptHandler;
   parts?: readonly AntigravityPromptInputPart[];
   result = deferred<AntigravityPromptResult>();
@@ -91,6 +97,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
   }));
   setSessionEventHandler(handler: AntigravitySessionEventHandler | null) {
     this.eventHandler = handler;
+    if (handler) for (const event of this.queuedSessionEvents.splice(0)) handler(event);
   }
   openSession = vi.fn(async (input: AntigravityOpenAcpSessionInput) => {
     this.sessionId = input.sessionId ?? randomUUID();
@@ -254,6 +261,152 @@ describe("Antigravity ACP Session", () => {
     });
     expect(session.initialState.effectiveModel).toEqual(model("gpt-oss-120b-medium"));
     expect(session.initialState.availableThinkingOptions).toEqual([]);
+  });
+  it("cancels during initialize without faulting the Session or cancelling an unopened native Session", async () => {
+    const gate = deferred<InitializeResponse>();
+    let transport: FakeTransport | undefined;
+    const { adapter, transports } = fixture();
+    adapter.options.createTransport = (options) => {
+      transport = new FakeTransport(options);
+      transports.push(transport);
+      transport.initialize.mockReturnValue(gate.promise);
+      return transport;
+    };
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    await session.execute({
+      type: "turn.start",
+      turnId: turnId("cancel-init"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    await vi.waitFor(() => expect(transport).toBeDefined());
+    expect(await session.execute({ type: "turn.cancel", turnId: turnId("cancel-init") })).toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    expect(required(transport).cancel).not.toHaveBeenCalled();
+    gate.resolve({ protocolVersion: 1, agentCapabilities: {} });
+    await completed(outputs, "cancel-init");
+    expect(events(outputs).some((e) => e.type === "session.faulted")).toBe(false);
+    const next = await start(session, transports, "after-cancel");
+    next.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "after-cancel");
+  });
+  it("waits for historical usage replay before submitting a new prompt", async () => {
+    const gate =
+      deferred<Awaited<ReturnType<AntigravitySessionUsageTracker["replayHistoricalRequests"]>>>();
+    const replay = vi
+      .spyOn(AntigravitySessionUsageTracker.prototype, "replayHistoricalRequests")
+      .mockReturnValueOnce(gate.promise);
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    await session.execute({
+      type: "turn.start",
+      turnId: turnId("replay"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    await vi.waitFor(() => expect(replay).toHaveBeenCalledOnce());
+    expect(transports[0]?.prompt).not.toHaveBeenCalled();
+    gate.resolve({ requests: [], complete: true, usage: null });
+    await vi.waitFor(() => expect(transports[0]?.prompt).toHaveBeenCalledOnce());
+    required(transports[0]).result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "replay");
+  });
+  it.each([
+    ["create", undefined, 40],
+    ["resume", undefined, 40],
+    ["create", "claude", 80],
+    ["resume", "claude", 80],
+  ] as const)(
+    "keeps initial and configuration context updates for %s (model %s)",
+    async (kind, selected, used) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agy-context-open-"));
+      directories.push(home);
+      const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+      adapter.options.createTransport = (options) => {
+        const transport = new FakeTransport(options);
+        transports.push(transport);
+        transport.queuedSessionEvents.push({ type: "usage.context", used: 40, size: 100 });
+        transport.setConfigOption.mockImplementation(async (id, value) => {
+          transport.config = transport.config.map((entry) =>
+            entry.id === id ? { ...entry, currentValue: value } : entry,
+          );
+          transport.eventHandler?.({ type: "usage.context", used: 80, size: 100 });
+          return transport.config;
+        });
+        return transport;
+      };
+      const input = { cwd: home, ...(selected ? { model: model(selected) } : {}) };
+      const { session, outputs } = await sessionOf(
+        await adapter.open(
+          kind === "create" ? { kind, ...input } : { kind, ...input, nativeRef: ref() },
+        ),
+      );
+      if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+      await session.initialize();
+      expect(session.initialUsage).toMatchObject({
+        contextUsedTokens: used,
+        contextWindowTokens: 100,
+      });
+      await session.refreshUsage();
+      const usageEvents = events(outputs).filter((event) => event.type === "session.usage.changed");
+      expect(usageEvents.at(-1)).toMatchObject({
+        usage: { contextUsedTokens: used, contextWindowTokens: 100 },
+      });
+    },
+  );
+  it("marks missing derived history incomplete instead of publishing an empty zero-cost ledger", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-derived-usage-"));
+    directories.push(home);
+    vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockResolvedValue(3);
+    const { adapter } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", nativeRef: ref(), cwd: home }),
+    );
+    await session.refreshUsage?.();
+    const history = events(outputs).filter((event) => event.type === "usage.history");
+    expect(history.length).toBeGreaterThan(0);
+    expect(history.every((event) => event.complete === false)).toBe(true);
+    expect(events(outputs).some((event) => event.type === "usage.request")).toBe(false);
+    expect(history.every((event) => Object.keys(event).sort().join(",") === "complete,type")).toBe(
+      true,
+    );
+  });
+  it("clears active usage state after prompt throws and allows idle refresh and the next Turn", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-failed-usage-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    adapter.options.createTransport = (options) => {
+      const transport = new FakeTransport(options);
+      transports.push(transport);
+      transport.prompt.mockRejectedValueOnce(new Error("prompt failed"));
+      return transport;
+    };
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
+    await session.execute({
+      type: "turn.start",
+      turnId: turnId("throws"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    await completed(outputs, "throws");
+    await session.refreshUsage?.();
+    expect(
+      events(outputs)
+        .filter((event) => event.type === "usage.history")
+        .at(-1),
+    ).toMatchObject({ complete: true });
+    const next = await start(session, transports, "after-throw");
+    next.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "after-throw");
+    await session.refreshUsage?.();
+    expect(
+      events(outputs)
+        .filter((event) => event.type === "usage.history")
+        .at(-1),
+    ).toMatchObject({ complete: true });
   });
   it("does not let usage observation failure turn a successful prompt into failure", async () => {
     vi.spyOn(

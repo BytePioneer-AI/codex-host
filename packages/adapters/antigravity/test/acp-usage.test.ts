@@ -45,6 +45,13 @@ async function transcript(...lines: string[]): Promise<void> {
   await writeFile(file, `${lines.join("\n")}\n`);
 }
 
+const nativePrompt = {
+  inputTokens: 100,
+  cachedReadTokens: 50,
+  cachedWriteTokens: 0,
+  outputTokens: 20,
+};
+
 const prompt = {
   inputTokens: 10678,
   outputTokens: 147,
@@ -78,9 +85,9 @@ describe("Antigravity usage model identity", () => {
 describe("Antigravity Session usage", () => {
   it("combines uncached input, cache reads/writes and reasoning in a validated snapshot", () => {
     tracker.recordContextWindow(9762, 1048576);
+    tracker.beginTurn();
     const result = tracker.recordTurnPromptUsage({
       usage: prompt,
-      model: "gemini-4-carbon-high",
       firstOutputAtMs: 1000,
       completedAtMs: 3000,
     });
@@ -94,23 +101,11 @@ describe("Antigravity Session usage", () => {
       outputTokens: 147,
       reasoningOutputTokens: 0,
       totalTokens: 18922,
-      outputTokensPerSecond: 73.5,
-      cacheHitRatePercent: (8097 / 18775) * 100,
-      sessionCacheUsage: { inputTokens: 18775, cachedInputTokens: 8097 },
     });
     expect(parseHostUsage(result.usage)).toEqual(result.usage);
-    expect(parseHostUsageRequest(result.fallbackRequest)).toEqual({
-      requestId: "prompt:1",
-      model: "gemini-4-carbon",
-      provider: "google",
-      inputTokens: 18775,
-      cachedInputTokens: 8097,
-      cacheWriteInputTokens: 0,
-      outputTokens: 147,
-      reasoningOutputTokens: 0,
-      startedAtMs: 1000,
-      completedAtMs: 3000,
-    });
+    expect(result).not.toHaveProperty("fallbackRequest");
+    expect(result.complete).toBe(false);
+    tracker.beginTurn();
     const next = tracker.recordTurnPromptUsage({
       usage: {
         inputTokens: 10,
@@ -127,44 +122,44 @@ describe("Antigravity Session usage", () => {
       outputTokens: 153,
       reasoningOutputTokens: 2,
       totalTokens: 18941,
-      cacheHitRatePercent: 0,
-      sessionCacheUsage: { inputTokens: 18788, cachedInputTokens: 8097 },
       contextWindowTokens: 1048576,
     });
-    expect(next.usage?.outputTokensPerSecond).toBe(73.5);
+    expect(next.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 
   it("keeps unknown fields absent and known cache zero explicit", () => {
     expect(tracker.currentUsage()).toBeNull();
-    expect(tracker.recordTurnPromptUsage({ usage: {} })).toEqual({ usage: null });
+    expect(tracker.recordTurnPromptUsage({ usage: {} })).toMatchObject({ usage: null });
+    tracker.beginTurn();
     const unknown = tracker.recordTurnPromptUsage({ usage: { inputTokens: 5, outputTokens: 2 } });
     expect(unknown.usage).toEqual({ inputTokens: 5, outputTokens: 2, totalTokens: 7 });
-    expect(unknown.fallbackRequest).not.toHaveProperty("cachedInputTokens");
+    expect(unknown).not.toHaveProperty("fallbackRequest");
+    tracker.beginTurn();
     const zero = tracker.recordTurnPromptUsage({
       usage: { inputTokens: 5, outputTokens: 2, cachedReadTokens: 0 },
     });
-    expect(zero.fallbackRequest).toHaveProperty("cachedInputTokens", 0);
+    expect(zero).not.toHaveProperty("fallbackRequest");
+    expect(zero.complete).toBe(false);
     expect(zero.usage).toEqual({
       inputTokens: 10,
       outputTokens: 4,
       totalTokens: 14,
-      cacheHitRatePercent: 0,
     });
     expect(zero.usage).not.toHaveProperty("cachedInputTokens");
     expect(zero.usage).not.toHaveProperty("sessionCacheUsage");
-    expect(tracker.recordTurnPromptUsage({ usage: { totalTokens: 9 } })).toEqual({
+    expect(tracker.recordTurnPromptUsage({ usage: { totalTokens: 9 } })).toMatchObject({
       usage: zero.usage,
     });
   });
 
   it("uses a partial PromptResponse only before any request is available", async () => {
-    expect(tracker.recordTurnPromptUsage({ usage: { totalTokens: 9 } })).toEqual({
+    expect(tracker.recordTurnPromptUsage({ usage: { totalTokens: 9 } })).toMatchObject({
       usage: { totalTokens: 9 },
     });
     await transcript(planner(1));
     const history = await tracker.replayHistoricalRequests();
     expect(history.usage).toMatchObject({ inputTokens: 150, outputTokens: 20, totalTokens: 170 });
-    expect(tracker.recordTurnPromptUsage({ usage: { totalTokens: 1 } })).toEqual({
+    expect(tracker.recordTurnPromptUsage({ usage: { totalTokens: 1 } })).toMatchObject({
       usage: history.usage,
     });
   });
@@ -181,7 +176,7 @@ describe("Antigravity Session usage", () => {
     const result = await tracker.collectNewTranscriptRequests();
     if (ch === undefined) expect(result.usage).not.toHaveProperty("cacheHitRatePercent");
     else expect(result.usage?.cacheHitRatePercent).toBe(ch);
-    expect(tracker.recordTurnPromptUsage({ usage: prompt }).usage).toEqual(result.usage);
+    expect(tracker.recordTurnPromptUsage({}).usage).toEqual(result.usage);
   });
 
   it("requires paired valid context facts and clamps the context percentage", () => {
@@ -213,6 +208,7 @@ describe("Antigravity Session usage", () => {
     );
     const history = await tracker.replayHistoricalRequests();
     expect(history.complete).toBe(true);
+    expect(parseHostUsageRequest(history.requests[0])).toEqual(history.requests[0]);
     expect(history.requests).toEqual([
       {
         requestId: "step:1",
@@ -254,7 +250,7 @@ describe("Antigravity Session usage", () => {
       cacheHitRatePercent: (50 / 150) * 100,
       sessionCacheUsage: { inputTokens: 305, cachedInputTokens: 100 },
     });
-    expect(tracker.recordTurnPromptUsage({ usage: prompt })).toEqual({ usage: live.usage });
+    expect(tracker.recordTurnPromptUsage({})).toMatchObject({ usage: live.usage });
     expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
   });
 
@@ -283,7 +279,10 @@ describe("Antigravity Session usage", () => {
   ])("bounds single-request timing: %j", async (clock, hasTiming, tps) => {
     await tracker.replayHistoricalRequests();
     await transcript(planner(1));
-    const result = await tracker.collectNewTranscriptRequests(clock);
+    const result = await tracker.collectNewTranscriptRequests({
+      ...clock,
+      promptUsage: nativePrompt,
+    });
     expect(result.requests[0]?.startedAtMs).toBe(
       hasTiming && "firstOutputAtMs" in clock ? clock.firstOutputAtMs : undefined,
     );
@@ -291,40 +290,59 @@ describe("Antigravity Session usage", () => {
       hasTiming && "completedAtMs" in clock ? clock.completedAtMs : undefined,
     );
     expect(result.usage?.outputTokensPerSecond).toBe(tps);
-    const promptResult = tracker.recordTurnPromptUsage({ usage: prompt, ...clock });
-    expect(promptResult.fallbackRequest).toBeUndefined();
-    expect(promptResult.usage?.outputTokensPerSecond).toBe(tps === undefined ? undefined : 73.5);
+    const promptResult = tracker.recordTurnPromptUsage({ usage: nativePrompt, ...clock });
+    expect(promptResult).not.toHaveProperty("fallbackRequest");
+    expect(promptResult.usage?.outputTokensPerSecond).toBe(tps);
   });
 
   it("retains the latest valid TPS across untimed, invalid and multi-step rounds", async () => {
     await transcript(planner(1));
     await tracker.replayHistoricalRequests();
+    tracker.beginTurn();
     await appendFile(file, `${planner(3)}\n`);
     const clock = { firstOutputAtMs: 1000, completedAtMs: 3000 };
-    const timed = await tracker.collectNewTranscriptRequests(clock);
+    const timed = await tracker.collectNewTranscriptRequests({
+      ...clock,
+      promptUsage: nativePrompt,
+    });
     expect(timed.usage?.outputTokensPerSecond).toBe(10);
     expect(timed.usage).toMatchObject({ inputTokens: 300, outputTokens: 40, totalTokens: 340 });
+    tracker.recordTurnPromptUsage({ usage: nativePrompt, ...clock });
 
     tracker.beginTurn();
     await appendFile(file, `${planner(5)}\n`);
     expect((await tracker.collectNewTranscriptRequests()).usage?.outputTokensPerSecond).toBe(10);
-    expect(tracker.recordTurnPromptUsage({ usage: prompt }).usage?.outputTokensPerSecond).toBe(10);
+    expect(
+      tracker.recordTurnPromptUsage({ usage: nativePrompt }).usage?.outputTokensPerSecond,
+    ).toBe(10);
 
     tracker.beginTurn();
     await appendFile(file, `${planner(7)}\n${planner(9)}\n`);
-    const multi = await tracker.collectNewTranscriptRequests(clock);
+    const multiPrompt = {
+      inputTokens: 200,
+      cachedReadTokens: 100,
+      cachedWriteTokens: 0,
+      outputTokens: 40,
+    };
+    const multi = await tracker.collectNewTranscriptRequests({
+      ...clock,
+      promptUsage: multiPrompt,
+    });
     expect(multi.usage?.outputTokensPerSecond).toBe(10);
     expect(
-      tracker.recordTurnPromptUsage({ usage: prompt, ...clock }).usage?.outputTokensPerSecond,
+      tracker.recordTurnPromptUsage({ usage: multiPrompt, ...clock }).usage?.outputTokensPerSecond,
     ).toBe(10);
 
     tracker.beginTurn();
     await appendFile(file, `${planner(11, { output_tokens: 0 })}\n`);
-    const zero = await tracker.collectNewTranscriptRequests(clock);
+    const zero = await tracker.collectNewTranscriptRequests({
+      ...clock,
+      promptUsage: { ...nativePrompt, outputTokens: 0 },
+    });
     expect(zero.usage?.outputTokensPerSecond).toBe(10);
     expect(
-      tracker.recordTurnPromptUsage({ usage: { inputTokens: 100, outputTokens: 0 }, ...clock })
-        .usage?.outputTokensPerSecond,
+      tracker.recordTurnPromptUsage({ usage: { ...nativePrompt, outputTokens: 0 }, ...clock }).usage
+        ?.outputTokensPerSecond,
     ).toBe(10);
 
     tracker.beginTurn();
@@ -332,11 +350,15 @@ describe("Antigravity Session usage", () => {
     const invalid = await tracker.collectNewTranscriptRequests({
       firstOutputAtMs: 4000,
       completedAtMs: 4000,
+      promptUsage: nativePrompt,
     });
     expect(invalid.usage?.outputTokensPerSecond).toBe(10);
     expect(
-      tracker.recordTurnPromptUsage({ usage: prompt, firstOutputAtMs: 4000, completedAtMs: 3999 })
-        .usage?.outputTokensPerSecond,
+      tracker.recordTurnPromptUsage({
+        usage: nativePrompt,
+        firstOutputAtMs: 4000,
+        completedAtMs: 3999,
+      }).usage?.outputTokensPerSecond,
     ).toBe(10);
 
     tracker.beginTurn();
@@ -344,6 +366,7 @@ describe("Antigravity Session usage", () => {
     const updated = await tracker.collectNewTranscriptRequests({
       firstOutputAtMs: 6000,
       completedAtMs: 7000,
+      promptUsage: { ...nativePrompt, outputTokens: 40 },
     });
     expect(updated.usage).toMatchObject({
       inputTokens: 1200,
@@ -351,6 +374,7 @@ describe("Antigravity Session usage", () => {
       totalTokens: 1360,
       outputTokensPerSecond: 40,
     });
+    tracker.recordTurnPromptUsage({ usage: { ...nativePrompt, outputTokens: 40 } });
     expect(tracker.recordContextWindow(50, 100)?.outputTokensPerSecond).toBe(40);
     expect((await tracker.replayHistoricalRequests()).usage?.outputTokensPerSecond).toBe(40);
   });
@@ -358,6 +382,7 @@ describe("Antigravity Session usage", () => {
   it.each([1, 2])("does not bill %i refreshed requests again at Turn completion", async (steps) => {
     await tracker.replayHistoricalRequests();
     await transcript();
+    tracker.beginTurn();
     for (let step = 1; step <= steps; step++) {
       await appendFile(file, `${planner(step)}\n`);
       expect((await tracker.collectNewTranscriptRequests()).requests).toHaveLength(1);
@@ -373,7 +398,7 @@ describe("Antigravity Session usage", () => {
       },
       ...clock,
     });
-    expect(result.fallbackRequest).toBeUndefined();
+    expect(result).not.toHaveProperty("fallbackRequest");
     expect(result.usage).toMatchObject({
       inputTokens: 150 * steps,
       outputTokens: 20 * steps,
@@ -386,7 +411,8 @@ describe("Antigravity Session usage", () => {
     const next = tracker.recordTurnPromptUsage({
       usage: { inputTokens: 10, cachedReadTokens: 0, cachedWriteTokens: 0, outputTokens: 2 },
     });
-    expect(next.fallbackRequest).toBeDefined();
+    expect(next).not.toHaveProperty("fallbackRequest");
+    expect(next.complete).toBe(false);
     expect(next.usage).toMatchObject({
       inputTokens: 150 * steps + 10,
       outputTokens: 20 * steps + 2,
@@ -418,7 +444,7 @@ describe("Antigravity Session usage", () => {
     }
     expect(collected.usage).not.toHaveProperty("outputTokensPerSecond");
     const result = tracker.recordTurnPromptUsage({ usage: prompt, ...clock });
-    expect(result.fallbackRequest).toBeUndefined();
+    expect(result).not.toHaveProperty("fallbackRequest");
     expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 
@@ -450,12 +476,13 @@ describe("Antigravity Session usage", () => {
     const result = await tracker.collectNewTranscriptRequests({
       firstOutputAtMs: 0,
       completedAtMs: 1000,
+      promptUsage: { ...nativePrompt, outputTokens: 0 },
     });
     expect(result.requests[0]).toMatchObject({ startedAtMs: 0, completedAtMs: 1000 });
     expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 
-  it("handles a missing or empty new transcript and suppresses a delayed fallback duplicate", async () => {
+  it("uses missing-log PromptResponse only for native tokens and bills the late native request once", async () => {
     expect(await tracker.replayHistoricalRequests()).toEqual({
       requests: [],
       complete: true,
@@ -463,14 +490,292 @@ describe("Antigravity Session usage", () => {
     });
     await transcript();
     expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    tracker.beginTurn();
     const result = tracker.recordTurnPromptUsage({
       usage: { inputTokens: 100, cachedReadTokens: 50, outputTokens: 20 },
     });
-    expect(result.fallbackRequest?.requestId).toBe("prompt:1");
+    expect(result).not.toHaveProperty("fallbackRequest");
+    expect(result.complete).toBe(false);
     await transcript(planner(1));
     const delayed = await tracker.collectNewTranscriptRequests();
-    expect(delayed.requests).toEqual([]);
+    expect(delayed.requests.map((request) => request.requestId)).toEqual(["step:1"]);
+    expect(delayed.complete).toBe(true);
     expect(delayed.usage?.sessionCacheUsage).toEqual({ inputTokens: 150, cachedInputTokens: 50 });
+  });
+
+  it.each(["RUNNING", undefined])("waits for a terminal native step (%s)", async (status) => {
+    await transcript(planner(1, { status }));
+    expect(await tracker.replayHistoricalRequests()).toMatchObject({
+      requests: [],
+      complete: false,
+    });
+    await appendFile(file, `${planner(1)}\n`);
+    const final = await tracker.collectNewTranscriptRequests();
+    expect(final.complete).toBe(true);
+    expect(final.requests.map((request) => request.requestId)).toEqual(["step:1"]);
+  });
+
+  it.each([
+    { model: "gemini-other" },
+    { input_tokens: 101 },
+    { output_tokens: 21 },
+    { cache_read_tokens: 51 },
+    { cache_write_tokens: 1 },
+  ])("permanently invalidates changed published usage: %j", async (fields) => {
+    await transcript(planner(1));
+    await tracker.replayHistoricalRequests();
+    await appendFile(file, `${planner(1, fields)}\n`);
+    const changed = await tracker.collectNewTranscriptRequests();
+    expect(changed.requests).toEqual([]);
+    expect(changed.complete).toBe(false);
+    await appendFile(file, `${planner(1)}\n`);
+    expect((await tracker.collectNewTranscriptRequests()).complete).toBe(false);
+  });
+
+  it("does not call a derived Session with missing initial logs an empty complete history", async () => {
+    const derived = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session",
+      homedir: home,
+      expectedInitialTurns: 3,
+    });
+    expect(await derived.replayHistoricalRequests()).toEqual({
+      requests: [],
+      complete: false,
+      usage: null,
+    });
+    expect((await derived.collectNewTranscriptRequests()).complete).toBe(false);
+    expect((await tracker.replayHistoricalRequests()).complete).toBe(true);
+  });
+
+  it("does not use USER_INPUT row counts as a second Turn identity", async () => {
+    tracker = new AntigravitySessionUsageTracker({
+      nativeSessionId: "session",
+      homedir: home,
+      expectedInitialTurns: 4,
+    });
+    await transcript(planner(1));
+    await tracker.replayHistoricalRequests();
+    tracker.beginTurn();
+    await appendFile(
+      file,
+      `${JSON.stringify({ type: "USER_INPUT", step_index: 2 })}\n${planner(3)}\n`,
+    );
+    await tracker.collectNewTranscriptRequests({ promptUsage: nativePrompt });
+    const result = tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    expect(result.complete).toBe(true);
+    expect(result.usage).toMatchObject({ inputTokens: 300, outputTokens: 40 });
+  });
+
+  it.each([0, 15])(
+    "defers live Claude requests until cacheWrite=%i is known",
+    async (cacheWrite) => {
+      await transcript(planner(1));
+      await tracker.replayHistoricalRequests();
+      tracker.beginTurn();
+      await appendFile(
+        file,
+        `${planner(3, { model: "claude-opus-4-6", cache_read_tokens: 20 })}\n`,
+      );
+      const early = await tracker.collectNewTranscriptRequests();
+      expect(early.requests).toEqual([]);
+      expect(early.complete).toBe(false);
+      const usage = {
+        inputTokens: 100,
+        cachedReadTokens: 20,
+        cachedWriteTokens: cacheWrite,
+        outputTokens: 20,
+      };
+      const final = await tracker.collectNewTranscriptRequests({
+        promptUsage: usage,
+        firstOutputAtMs: 1000,
+        completedAtMs: 3000,
+      });
+      expect(final.requests).toHaveLength(1);
+      expect(final.requests[0]).toMatchObject({
+        inputTokens: 120 + cacheWrite,
+        cacheWriteInputTokens: cacheWrite,
+        startedAtMs: 1000,
+        completedAtMs: 3000,
+      });
+      expect(tracker.recordTurnPromptUsage({ usage })).toMatchObject({
+        complete: true,
+        usage: { inputTokens: 270 + cacheWrite, outputTokens: 40 },
+      });
+      const repeated = await tracker.collectNewTranscriptRequests();
+      expect(repeated.requests).toEqual([]);
+      expect(repeated.complete).toBe(true);
+    },
+  );
+
+  it.each([0, 15])(
+    "settles a completely late Claude request using cacheWrite=%i without a billable fallback",
+    async (write) => {
+      tracker.beginTurn();
+      tracker.recordTurnPromptUsage({
+        usage: {
+          inputTokens: 100,
+          cachedReadTokens: 20,
+          cachedWriteTokens: write,
+          outputTokens: 20,
+        },
+      });
+      await transcript(planner(1, { model: "claude-opus-4-6", cache_read_tokens: 20 }));
+      const late = await tracker.collectNewTranscriptRequests();
+      expect(late.complete).toBe(true);
+      expect(late.requests).toHaveLength(1);
+      expect(late.requests[0]).toMatchObject({
+        requestId: "step:1",
+        inputTokens: 120 + write,
+        cacheWriteInputTokens: write,
+      });
+      expect(late.usage).toMatchObject({ inputTokens: 120 + write, outputTokens: 20 });
+      expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    },
+  );
+
+  it("fills explicit zero writes for all deferred requests without splitting positive writes", async () => {
+    tracker.beginTurn();
+    await transcript(
+      planner(1, { model: "claude-opus-4-6" }),
+      planner(3, { model: "claude-opus-4-6" }),
+    );
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    const usage = {
+      inputTokens: 200,
+      cachedReadTokens: 100,
+      cachedWriteTokens: 0,
+      outputTokens: 40,
+    };
+    const final = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 1000,
+      completedAtMs: 3000,
+    });
+    expect(final.requests).toHaveLength(2);
+    expect(
+      final.requests.every(
+        (request) => request.cacheWriteInputTokens === 0 && request.startedAtMs === undefined,
+      ),
+    ).toBe(true);
+    expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+  });
+
+  it("retains a partial Turn gap and native totals until its late request arrives", async () => {
+    tracker.beginTurn();
+    await transcript(planner(1));
+    expect((await tracker.collectNewTranscriptRequests()).requests).toHaveLength(1);
+    const usage = {
+      inputTokens: 200,
+      cachedReadTokens: 100,
+      cachedWriteTokens: 0,
+      outputTokens: 40,
+    };
+    const final = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 1000,
+      completedAtMs: 3000,
+    });
+    expect(final.requests).toEqual([]);
+    expect(tracker.recordTurnPromptUsage({ usage })).toMatchObject({
+      complete: false,
+      usage: { inputTokens: 300, outputTokens: 40 },
+    });
+    expect((await tracker.collectNewTranscriptRequests()).complete).toBe(false);
+    await appendFile(file, `${planner(3)}\n`);
+    const late = await tracker.collectNewTranscriptRequests();
+    expect(late.complete).toBe(true);
+    expect(late.requests.map((request) => request.requestId)).toEqual(["step:3"]);
+    expect(late.usage).toMatchObject({ inputTokens: 300, outputTokens: 40 });
+    expect(late.usage).not.toHaveProperty("outputTokensPerSecond");
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+  });
+
+  it("does not add a whole-Turn fallback to two completely delayed requests", async () => {
+    tracker.beginTurn();
+    tracker.recordTurnPromptUsage({
+      usage: { inputTokens: 200, cachedReadTokens: 100, cachedWriteTokens: 0, outputTokens: 40 },
+    });
+    await transcript(planner(1), planner(3));
+    const late = await tracker.collectNewTranscriptRequests();
+    expect(late.requests.map((request) => request.requestId)).toEqual(["step:1", "step:3"]);
+    expect(late.complete).toBe(true);
+    expect(late.usage).toMatchObject({ inputTokens: 300, outputTokens: 40 });
+  });
+
+  it("recovers multiple delayed Turns without matching unrelated equal-token requests", async () => {
+    tracker.beginTurn();
+    tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    tracker.beginTurn();
+    tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    await transcript(planner(1));
+    const partial = await tracker.collectNewTranscriptRequests();
+    expect(partial.complete).toBe(false);
+    expect(partial.usage).toMatchObject({ inputTokens: 300, outputTokens: 40 });
+    await appendFile(file, `${planner(3)}\n`);
+    const full = await tracker.collectNewTranscriptRequests();
+    expect(full.complete).toBe(true);
+    expect(full.requests.map((request) => request.requestId)).toEqual(["step:3"]);
+    expect(full.usage).toMatchObject({ inputTokens: 300, outputTokens: 40 });
+  });
+
+  it("keeps latest-request CH in native step order when an earlier Turn's request arrives last", async () => {
+    tracker.beginTurn();
+    tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    tracker.beginTurn();
+    await transcript(planner(3, { input_tokens: 80, cache_read_tokens: 120, output_tokens: 10 }));
+    await tracker.collectNewTranscriptRequests();
+    tracker.recordTurnPromptUsage({
+      usage: { inputTokens: 80, cachedReadTokens: 120, cachedWriteTokens: 0, outputTokens: 10 },
+    });
+    await appendFile(file, `${planner(1)}\n`);
+    const result = await tracker.collectNewTranscriptRequests();
+    expect(result.complete).toBe(true);
+    expect(result.usage).toMatchObject({
+      inputTokens: 350,
+      outputTokens: 30,
+      cacheHitRatePercent: 60,
+    });
+  });
+
+  it.each([undefined, {}, { totalTokens: 9 }])(
+    "does not retain a cancelled/refused Turn gap for invalid PromptResponse usage %j",
+    async (usage) => {
+      tracker.beginTurn();
+      await transcript(JSON.stringify({ type: "USER_INPUT", step_index: 0 }));
+      await tracker.collectNewTranscriptRequests();
+      tracker.recordTurnPromptUsage(usage === undefined ? {} : { usage });
+      expect((await tracker.collectNewTranscriptRequests()).complete).toBe(true);
+      tracker.beginTurn();
+      await appendFile(file, `${planner(3)}\n`);
+      await tracker.collectNewTranscriptRequests({ promptUsage: nativePrompt });
+      expect(tracker.recordTurnPromptUsage({ usage: nativePrompt })).toMatchObject({
+        complete: true,
+        usage: { inputTokens: 150, outputTokens: 20 },
+      });
+    },
+  );
+
+  it.each([{}, { totalTokens: 170 }, { inputTokens: 100 }, { outputTokens: 20 }])(
+    "does not time a request against an incomplete PromptResponse %j",
+    async (usage) => {
+      tracker.beginTurn();
+      await transcript(planner(1));
+      const result = await tracker.collectNewTranscriptRequests({
+        promptUsage: usage,
+        firstOutputAtMs: 1000,
+        completedAtMs: 3000,
+      });
+      expect(result.requests[0]).not.toHaveProperty("startedAtMs");
+      expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
+      tracker.recordTurnPromptUsage({ usage });
+      expect((await tracker.collectNewTranscriptRequests()).complete).toBe(true);
+    },
+  );
+
+  it("ends a throwing Turn without leaving usage refresh in a running state", async () => {
+    tracker.beginTurn();
+    tracker.endTurn();
+    expect((await tracker.collectNewTranscriptRequests()).complete).toBe(true);
   });
 
   it("honors an aborted read", async () => {
@@ -501,6 +806,9 @@ describe("Antigravity Session usage", () => {
       },
     });
     expect(liveClaudeZero.requests[0]?.cacheWriteInputTokens).toBe(0);
+    tracker.recordTurnPromptUsage({
+      usage: { inputTokens: 100, cachedReadTokens: 20, cachedWriteTokens: 0, outputTokens: 20 },
+    });
 
     await appendFile(
       file,

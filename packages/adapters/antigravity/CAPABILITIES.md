@@ -72,6 +72,7 @@
 ## 插件外改动
 
 - `package-lock.json`：`@codexhost/adapter-antigravity` 增加工作区已有的 `@agentclientprotocol/sdk@1.3.0` 与 `diff@8.0.2` 依赖声明。
+- `packages/host-runtime/src/usage-statistics.ts`：提升全局用量统计文件缓存版本号（`CACHE_VERSION` 至 `8`），使升级后重建 Antigravity 模型归一与隐式缓存写入统计。
 - `packages/host-runtime/test/antigravity-question.real.test.ts`：对齐原生 ACP `session/load` 历史工具快照（校验实时 `item.completed` 与快照 `ask_question` 参数/终态）并清理测试在 `conversation_summaries.db` 中产生的临时记录。
 - 文档同步：`docs/harnesses/antigravity/`、`docs/harnesses/capability-boundaries.md`、`docs/architecture/harness-plugin-runtime.md`、`docs/architecture/harness-command-integration.md`、`docs/product/usage-metering.md`、`docs/product/usage-statistics.md`、`docs/index.md`。
 
@@ -79,7 +80,7 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 18 个测试文件、288 项测试全部通过 |
+| Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 18 个测试文件、335 项测试全部通过 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |
 | 插件加载 | `npm run build:typescript && npx vitest run -c tests/vitest.config.js packages/host-runtime/test/installed-harness-plugins.test.ts` | 插件打包与真实 Cordis Loader 加载通过 |
 | Host 集成 | 独立 `CODEXHOST_DATA_DIR` 下 `HostRuntime` 全链路隔离验收（预热草稿配置选择、多轮对话、文件 Diff 与审批、Host 重启冷恢复、跨目录 Fork、Rollback、会话导入、会话与全局用量计价） | 5 阶段全链路实测全部通过，退出后 `agy acp` 残留进程为 0 |

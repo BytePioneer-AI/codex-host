@@ -16,6 +16,7 @@ export interface AntigravitySessionUsageTrackerOptions {
   homedir: string;
   initialContextUsedTokens?: number;
   initialContextWindowTokens?: number;
+  expectedInitialTurns?: number;
 }
 
 export function normalizeAntigravityUsageModel(rawModel: unknown): {
@@ -108,25 +109,68 @@ function requestUsage(requests: readonly HostUsageRequest[]): HostUsage {
   return parseHostUsage(usage);
 }
 
+function addUsage(left: HostUsage, right: HostUsage): HostUsage {
+  const usage: HostUsage = {};
+  for (const field of [
+    "inputTokens",
+    "outputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "reasoningOutputTokens",
+  ] as const) {
+    if (left[field] !== undefined && right[field] !== undefined)
+      usage[field] = left[field] + right[field];
+  }
+  if (usage.inputTokens !== undefined && usage.outputTokens !== undefined)
+    usage.totalTokens = usage.inputTokens + usage.outputTokens;
+  return parseHostUsage(usage);
+}
+
+function usageMatches(actual: HostUsage, expected: HostUsage, exact: boolean): boolean {
+  const compare = (value: number | undefined, target: number | undefined) =>
+    target === undefined || (value !== undefined && (exact ? value === target : value >= target));
+  return (
+    compare(
+      actual.inputTokens === undefined
+        ? undefined
+        : actual.inputTokens - (actual.cacheWriteInputTokens ?? 0),
+      expected.inputTokens === undefined
+        ? undefined
+        : expected.inputTokens - (expected.cacheWriteInputTokens ?? 0),
+    ) &&
+    (["outputTokens", "cachedInputTokens", "cacheWriteInputTokens"] as const).every((field) =>
+      compare(actual[field], expected[field]),
+    )
+  );
+}
+
 interface TranscriptRequests {
   steps: Map<number, HostUsageRequest | null>;
   complete: boolean;
 }
+interface PendingUsage {
+  base: HostUsage;
+  usage: HostUsage;
+  steps: Set<number>;
+}
 
 export class AntigravitySessionUsageTracker {
   readonly #file: string;
-  readonly #consumed = new Set<number>();
-  readonly #requests: HostUsageRequest[] = [];
-  readonly #pendingFallbacks: HostUsageRequest[] = [];
-  #fallbackSequence = 0;
+  readonly #consumed = new Map<number, HostUsageRequest>();
+  readonly #requests = new Map<number, HostUsageRequest>();
+  readonly #expectedInitialTurns: number;
+  #invalidated = false;
+  #turnActive = false;
+  #turnBase: HostUsage = requestUsage([]);
+  #pending: PendingUsage | undefined;
   #context: HostUsage = {};
   #tokens: HostUsage = {};
   #outputTokensPerSecond?: number;
   #complete = true;
   readonly #turnCollectionSteps = new Set<number>();
-  #turnCollectionRequests = 0;
 
   constructor(options: AntigravitySessionUsageTrackerOptions) {
+    this.#expectedInitialTurns = options.expectedInitialTurns ?? 0;
     this.#file = path.join(
       options.homedir,
       ".gemini",
@@ -149,9 +193,16 @@ export class AntigravitySessionUsageTracker {
   }
 
   currentUsage(): HostUsage | null {
-    const tokens = this.#requests.length ? requestUsage(this.#requests) : this.#tokens;
+    const recorded = [...this.#requests]
+      .sort(([left], [right]) => left - right)
+      .map(([, request]) => request);
+    const tokens = this.#pending
+      ? addUsage(this.#pending.base, this.#pending.usage)
+      : recorded.length
+        ? requestUsage(recorded)
+        : this.#tokens;
     const usage: HostUsage = { ...tokens, ...this.#context };
-    const latest = this.#requests.at(-1);
+    const latest = recorded.at(-1);
     if (latest?.cachedInputTokens !== undefined && latest.inputTokens > 0) {
       usage.cacheHitRatePercent = (latest.cachedInputTokens / latest.inputTokens) * 100;
     }
@@ -159,13 +210,13 @@ export class AntigravitySessionUsageTracker {
       usage.outputTokensPerSecond = this.#outputTokensPerSecond;
     }
     if (
-      this.#complete &&
-      this.#requests.length > 0 &&
-      this.#requests.every((request) => request.cachedInputTokens !== undefined)
+      this.#historyComplete() &&
+      recorded.length > 0 &&
+      recorded.every((request) => request.cachedInputTokens !== undefined)
     ) {
       usage.sessionCacheUsage = {
-        inputTokens: this.#requests.reduce((sum, request) => sum + request.inputTokens, 0),
-        cachedInputTokens: this.#requests.reduce(
+        inputTokens: recorded.reduce((sum, request) => sum + request.inputTokens, 0),
+        cachedInputTokens: recorded.reduce(
           (sum, request) => sum + (request.cachedInputTokens ?? 0),
           0,
         ),
@@ -186,50 +237,53 @@ export class AntigravitySessionUsageTracker {
   }
 
   beginTurn(): void {
+    this.#turnBase = this.#pending
+      ? addUsage(this.#pending.base, this.#pending.usage)
+      : requestUsage([...this.#requests.values()]);
     this.#turnCollectionSteps.clear();
-    this.#turnCollectionRequests = 0;
+    this.#turnActive = true;
+  }
+
+  endTurn(): void {
+    this.#turnActive = false;
+  }
+
+  #historyComplete(): boolean {
+    return this.#complete && !this.#invalidated && !this.#turnActive && !this.#pending;
+  }
+
+  #reconcile(): void {
+    // Cancellation can add native requests without PromptResponse usage; the target is a lower bound.
+    if (
+      this.#pending &&
+      usageMatches(
+        requestUsage([...this.#requests.values()]),
+        addUsage(this.#pending.base, this.#pending.usage),
+        false,
+      )
+    )
+      this.#pending = undefined;
   }
 
   recordTurnPromptUsage(input: {
     usage?: AntigravityPromptUsage;
-    model?: string;
     firstOutputAtMs?: number;
     completedAtMs?: number;
-  }): {
-    usage: HostUsage | null;
-    fallbackRequest?: HostUsageRequest;
-  } {
+  }): { usage: HostUsage | null; complete: boolean } {
+    this.endTurn();
     const usage = promptUsage(input.usage);
-    if (!usage) return { usage: this.currentUsage() };
-    if (this.#requests.length === 0) this.#tokens = usage;
-    const clock = this.#turnCollectionSteps.size <= 1 ? timing(input) : {};
-    this.#recordOutputSpeed(usage.outputTokens, clock);
-    if (
-      this.#turnCollectionRequests > 0 ||
-      usage.inputTokens === undefined ||
-      usage.outputTokens === undefined
-    ) {
-      return { usage: this.currentUsage() };
+    if (usage) {
+      if (this.#requests.size === 0) this.#tokens = usage;
+      if (usage.inputTokens !== undefined && usage.outputTokens !== undefined) {
+        this.#pending = {
+          base: this.#pending?.base ?? this.#turnBase,
+          usage: this.#pending ? addUsage(this.#pending.usage, usage) : usage,
+          steps: new Set([...(this.#pending?.steps ?? []), ...this.#turnCollectionSteps]),
+        };
+        this.#reconcile();
+      }
     }
-    const fallbackRequest = parseHostUsageRequest({
-      requestId: `prompt:${++this.#fallbackSequence}`,
-      ...normalizeAntigravityUsageModel(input.model),
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      ...(usage.cachedInputTokens !== undefined
-        ? { cachedInputTokens: usage.cachedInputTokens }
-        : {}),
-      ...(usage.cacheWriteInputTokens !== undefined
-        ? { cacheWriteInputTokens: usage.cacheWriteInputTokens }
-        : {}),
-      ...(usage.reasoningOutputTokens !== undefined
-        ? { reasoningOutputTokens: usage.reasoningOutputTokens }
-        : {}),
-      ...clock,
-    });
-    this.#requests.push(fallbackRequest);
-    this.#pendingFallbacks.push(fallbackRequest);
-    return { usage: this.currentUsage(), fallbackRequest };
+    return { usage: this.currentUsage(), complete: this.#historyComplete() };
   }
 
   async replayHistoricalRequests(signal?: AbortSignal): Promise<{
@@ -239,7 +293,8 @@ export class AntigravitySessionUsageTracker {
   }> {
     const transcript = await this.#read(signal);
     const requests = this.#consume(transcript, true);
-    return { requests, complete: this.#complete, usage: this.currentUsage() };
+    this.#reconcile();
+    return { requests, complete: this.#historyComplete(), usage: this.currentUsage() };
   }
 
   async collectNewTranscriptRequests(
@@ -256,55 +311,39 @@ export class AntigravitySessionUsageTracker {
   }> {
     const transcript = await this.#read(input.signal);
     for (const step of transcript.steps.keys()) {
-      if (!this.#consumed.has(step)) this.#turnCollectionSteps.add(step);
-    }
-    const requests = this.#consume(transcript, false);
-    this.#turnCollectionRequests += requests.length;
-    const baseIndex = this.#requests.length - requests.length;
-    const promptCacheWrite = count(input.promptUsage?.cachedWriteTokens)
-      ? input.promptUsage.cachedWriteTokens
-      : undefined;
-    if (promptCacheWrite === 0) {
-      for (const [index, request] of requests.entries()) {
-        if (
-          request.cachedInputTokens !== undefined &&
-          request.cacheWriteInputTokens === undefined
-        ) {
-          const updated = parseHostUsageRequest({ ...request, cacheWriteInputTokens: 0 });
-          requests[index] = updated;
-          this.#requests[baseIndex + index] = updated;
-        }
+      if (!this.#consumed.has(step)) {
+        this.#turnCollectionSteps.add(step);
+        this.#pending?.steps.add(step);
       }
     }
+    const usage = promptUsage(input.promptUsage);
+    const hadPending = this.#pending !== undefined;
+    const cacheUsage =
+      usage && this.#pending
+        ? addUsage(this.#pending.usage, usage)
+        : (usage ?? this.#pending?.usage);
+    const requests = this.#consume(transcript, false, cacheUsage);
     const single = requests[0];
+    const step = [...this.#turnCollectionSteps][0];
     if (
+      !hadPending &&
+      usage?.inputTokens !== undefined &&
+      usage.outputTokens !== undefined &&
       requests.length === 1 &&
       single &&
+      step !== undefined &&
       this.#turnCollectionSteps.size === 1 &&
-      transcript.complete
+      transcript.complete &&
+      !this.#invalidated &&
+      usageMatches(requestUsage([single]), usage, true)
     ) {
-      const extraCacheWrite =
-        promptCacheWrite !== undefined &&
-        promptCacheWrite > 0 &&
-        single.cachedInputTokens !== undefined &&
-        single.cacheWriteInputTokens === undefined
-          ? promptCacheWrite
-          : undefined;
-      const updated = parseHostUsageRequest({
-        ...single,
-        ...(extraCacheWrite !== undefined
-          ? {
-              inputTokens: single.inputTokens + extraCacheWrite,
-              cacheWriteInputTokens: extraCacheWrite,
-            }
-          : {}),
-        ...timing(input),
-      });
+      const updated = parseHostUsageRequest({ ...single, ...timing(input) });
       requests[0] = updated;
-      this.#requests[baseIndex] = updated;
+      this.#requests.set(step, updated);
       this.#recordOutputSpeed(updated.outputTokens, updated);
     }
-    return { requests, complete: this.#complete, usage: this.currentUsage() };
+    this.#reconcile();
+    return { requests, complete: this.#historyComplete(), usage: this.currentUsage() };
   }
 
   #recordOutputSpeed(
@@ -323,28 +362,66 @@ export class AntigravitySessionUsageTracker {
     }
   }
 
-  #consume(transcript: TranscriptRequests, historical: boolean): HostUsageRequest[] {
+  #consume(
+    transcript: TranscriptRequests,
+    historical: boolean,
+    cacheUsage?: HostUsage | null,
+  ): HostUsageRequest[] {
     this.#complete = transcript.complete;
     const requests: HostUsageRequest[] = [];
+    const steps = new Set([...(this.#pending?.steps ?? []), ...this.#turnCollectionSteps]);
     for (const [step, request] of transcript.steps) {
-      if (!request || this.#consumed.has(step)) continue;
-      this.#consumed.add(step);
-      // A delayed single-step transcript must not bill a PromptResponse fallback twice.
-      const fallback = this.#pendingFallbacks[0];
-      if (
-        fallback &&
-        fallback.inputTokens === request.inputTokens &&
-        fallback.outputTokens === request.outputTokens &&
-        fallback.cachedInputTokens === request.cachedInputTokens
-      ) {
-        this.#pendingFallbacks.shift();
+      if (!request) continue;
+      const previous = this.#consumed.get(step);
+      if (previous) {
+        if (
+          (
+            [
+              "model",
+              "provider",
+              "inputTokens",
+              "outputTokens",
+              "cachedInputTokens",
+              "cacheWriteInputTokens",
+              "reasoningOutputTokens",
+            ] as const
+          ).some((field) => previous[field] !== request[field])
+        )
+          this.#invalidated = true;
         continue;
       }
-      const parsed = parseHostUsageRequest({
-        ...request,
-        ...(historical ? { historical: true } : {}),
-      });
-      this.#requests.push(parsed);
+      let parsed = request;
+      if (
+        !historical &&
+        request.cachedInputTokens !== undefined &&
+        request.cacheWriteInputTokens === undefined
+      ) {
+        const write = cacheUsage?.cacheWriteInputTokens;
+        const singleMatches =
+          steps.size === 1 &&
+          cacheUsage?.inputTokens !== undefined &&
+          request.inputTokens === cacheUsage.inputTokens - (write ?? 0) &&
+          request.outputTokens === cacheUsage.outputTokens &&
+          (cacheUsage.cachedInputTokens === undefined ||
+            request.cachedInputTokens === cacheUsage.cachedInputTokens);
+        if (write === 0 || (write !== undefined && singleMatches && transcript.complete))
+          parsed = parseHostUsageRequest({
+            ...request,
+            inputTokens: request.inputTokens + (write ?? 0),
+            cacheWriteInputTokens: write,
+          });
+      }
+      if (
+        !historical &&
+        parsed.cacheWriteInputTokens === undefined &&
+        (this.#turnActive || this.#pending?.steps.has(step))
+      ) {
+        this.#complete = false;
+        continue;
+      }
+      parsed = parseHostUsageRequest({ ...parsed, ...(historical ? { historical: true } : {}) });
+      this.#consumed.set(step, request);
+      this.#requests.set(step, parsed);
       requests.push(parsed);
     }
     return requests;
@@ -374,6 +451,7 @@ export class AntigravitySessionUsageTracker {
         }
         let request: HostUsageRequest | null = null;
         try {
+          if (record.status !== "DONE" && record.status !== "ERROR") throw new Error();
           const identity = normalizeAntigravityUsageModel(record.model);
           const cacheRead = count(record.cache_read_tokens) ? record.cache_read_tokens : undefined;
           const cacheWrite = count(record.cache_write_tokens)
@@ -400,14 +478,15 @@ export class AntigravitySessionUsageTracker {
       }
     } catch (error) {
       signal?.throwIfAborted();
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") result.complete = false;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || this.#expectedInitialTurns > 0)
+        result.complete = false;
     } finally {
       lines.close();
       stream.destroy();
     }
     result.complete &&=
       [...result.steps.values()].every((request) => request !== null) &&
-      [...this.#consumed].every((step) => result.steps.has(step));
+      [...this.#consumed.keys()].every((step) => result.steps.has(step));
     return result;
   }
 }

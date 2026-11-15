@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { CreateElicitationRequest, RequestPermissionRequest } from "@agentclientprotocol/sdk";
 import { validateHostInteractionResponse, type HostEvent } from "@codexhost/harness-adapter";
 import {
@@ -22,7 +23,8 @@ import type { AntigravityAcpEvent } from "../src/acp-types.js";
 
 const turnId = hostTurnIdSchema.parse("turn-live");
 const interactionId = hostInteractionIdSchema.parse("interaction-live");
-const base = { turnId, interactionId, sessionId: "native", cwd: "/repo" };
+const cwd = path.resolve("/repo");
+const base = { turnId, interactionId, sessionId: "native", cwd };
 function form(properties: Record<string, unknown>, required?: string[]): CreateElicitationRequest {
   return {
     sessionId: "native",
@@ -41,7 +43,7 @@ function tracker(outputLimit?: number) {
   const spawned = vi.fn();
   const tools = new AntigravityToolTracker({
     turnId,
-    cwd: "/repo",
+    cwd,
     emit: (event) => events.push(event),
     onSubagentSpawned: spawned,
     parentConfiguration: { model: "parent", reasoningEffort: "high" },
@@ -176,10 +178,13 @@ describe("elicitation form mapping", () => {
   it("maps real single choice + Other without rendering a separate Other question", () => {
     const projected = projectAcpQuestionInteraction({
       ...base,
-      request: form({
-        q1: { type: "string", title: "Pick a color", oneOf: choices },
-        q1_other: { type: "string", title: "Other" },
-      }),
+      request: form(
+        {
+          q1: { type: "string", title: "Pick a color", oneOf: choices },
+          q1_other: { type: "string", title: "Other" },
+        },
+        ["q1"],
+      ),
       rawQuestions: [
         {
           question: "Pick a color",
@@ -266,7 +271,7 @@ describe("elicitation form mapping", () => {
     ).toEqual({ action: "accept", content: { q1_other: "Green" } });
   });
   it.each(["choice", "text", "multiple"])(
-    "requires an answer for %s when native schema omits required",
+    "accepts an empty answer for %s when native schema omits required",
     (kind) => {
       const prop =
         kind === "choice"
@@ -278,10 +283,10 @@ describe("elicitation form mapping", () => {
         ...base,
         request: form({ q1: prop }),
       });
-      expect(interaction.questions[0]?.optional).toBe(false);
+      expect(interaction.questions[0]?.optional).toBe(true);
       expect(
         validateHostInteractionResponse(interaction, { type: "question", answers: {} }),
-      ).toMatchObject({ code: "invalidRequest" });
+      ).toBeNull();
     },
   );
   it("honors an explicit required list, including an empty list", () => {
@@ -374,7 +379,7 @@ describe("tool lifecycle and file changes", () => {
       item: {
         type: "commandExecution",
         command: "pwd",
-        cwd: "/repo/src",
+        cwd: path.resolve(cwd, "src"),
         output: "abcd",
         outputTruncated: true,
         exitCode: 0,
@@ -500,12 +505,31 @@ describe("tool lifecycle and file changes", () => {
     expect(file.changes).toHaveLength(2);
     expect(file.changes[0]?.unifiedDiff).toContain("[diff truncated]");
     expect(file.changes[0]?.unifiedDiff.length).toBeLessThan(110);
-    expect(file.changes[1]?.path).toBe("/outside");
+    expect(file.changes[1]?.path).toBe(path.resolve(cwd, "../outside").replaceAll("\\", "/"));
     expect(
       events.some(
         (event) => event.type === "item.updated" && event.update.type === "fileChanges.replace",
       ),
     ).toBe(true);
+  });
+  it("rearms child observation for a new send to the same child within a Turn", () => {
+    const { tools, spawned } = tracker();
+    const id = "11111111-1111-4111-8111-111111111111";
+    tools.handleToolEvent({
+      type: "tool.call",
+      toolCallId: "spawn",
+      name: "invoke_subagent",
+      args: { subagent_id: id },
+    });
+    tools.handleToolEvent({ type: "tool.update", toolCallId: "spawn", status: "completed" });
+    tools.handleToolEvent({
+      type: "tool.call",
+      toolCallId: "send",
+      name: "send_message",
+      args: { subagent_id: id, message: "retry" },
+    });
+    tools.handleToolEvent({ type: "tool.update", toolCallId: "send", status: "completed" });
+    expect(spawned).toHaveBeenCalledTimes(2);
   });
   it("emits generic tool output and closes pending items on cancellation", () => {
     const { tools, events } = tracker();

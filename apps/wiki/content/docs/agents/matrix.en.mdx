@@ -1,0 +1,50 @@
+---
+title: Agent Support & Capability Matrix
+description: Side-by-side comparison of what each of the 16+ supported Agents can do in CodexHost, plus practical usage notes.
+full: true
+---
+
+CodexHost connects to each Agent through its own official interface—**preserving everything the tool genuinely supports (like Thinking levels, slash commands, or context compaction), without inventing fake UI toggles for features an Agent doesn't actually have.**
+
+Quick glossary for the columns below:
+
+- **Edit Diff**: Inspect file changes in the side-by-side Diff review panel;
+- **Approvals / Permission Modes**: Prompt before running commands/edits, or switch session modes like Read-Only / Ask / Auto;
+- **`#` Delegation**: Hand off subtasks to other Agents inline;
+- **Fork**: Branch a brand-new session starting from any earlier message in the chat.
+
+> Legend: `✅` Supported · `◐` Partial or conditional · `—` Not supported by this Agent
+
+## Capability Comparison
+
+| Agent                 | Streaming | Tool Status | Edit Diff | Questions / Cancel | Model / Thinking | Approvals | Permission Modes | `#` Delegation | Usage | Fork | Compaction | `/` Commands | Edit Last Msg |
+| :-------------------- | :-------: | :---------: | :-------: | :----------------: | :--------------: | :-------: | :--------------: | :------------: | :---: | :--: | :--------: | :----------: | :-----------: |
+| **Pi**                |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        —         |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **Oh My Pi (OMP)**    |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **Claude Code**       |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **OpenCode**          |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **Grok**              |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **DSH (DeepSeek)**    |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **Antigravity (AGY)** |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     —      |      ✅      |      ✅       |
+| **CodeBuddy**         |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **WorkBuddy**         |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       —        |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **Cursor CLI**        |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |   —   |  ✅  |     —      |      ✅      |      ✅       |
+| **Hermes**            |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **Qoder / Qoder CN**  |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      ✅      |      ✅       |
+| **Kimi Code**         |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ◐   |     ✅     |      ✅      |      ✅       |
+| **Copilot**           |    ✅     |     ✅      |    ✅     |         ✅         |        ✅        |    ✅     |        ✅        |       ✅       |  ✅   |  ✅  |     ✅     |      —       |      ✅       |
+| **Qwen Code**         |    ✅     |     ✅      |     —     |         ✅         |      ✅ / —      |    ✅     |        ✅        |       ✅       |  ✅   |  —   |     —      |      —       |       —       |
+| **Devin CLI**         |    ✅     |     ✅      |    ✅     |       — / ✅       |      ✅ / ◐      |    ✅     |        ✅        |       ◐        |   —   |  ◐   |     —      |      —       |       ◐       |
+
+> CodexHost also ships built-in adapters for **ZCode** and **Kiro CLI**—once installed locally, you can enable them right from **Settings → Connections**.
+
+---
+
+## Practical Notes & Caveats
+
+- **Pi**: Why is there no Permission Mode dropdown for Pi? Pi core doesn't have session-level Read-Only / Ask / Auto modes, so CodexHost doesn't fake one. Native Pi extension prompts work normally, and a **Fast lightning toggle** appears automatically on supported Codex models.
+- **Cursor CLI**: A Cursor session can delegate work **outward** to other Agents, **but cannot receive unattended `#cursor` tasks from other sessions** (team policies can silently downgrade `--force`, so CodexHost cannot guarantee unattended execution won't stall). Forking and editing the last message work on macOS and Linux, not yet on Windows.
+- **Antigravity (AGY)**: Requires `agy >= 1.5.8`. Supports `default`, `accept-edits`, `auto`, and `plan` permission modes, native tool approvals, and question forms. Forking is available whenever the session is idle.
+- **Kimi Code**: Available Thinking options update dynamically depending on the selected model; supports exit-plan confirmation cards and unattended `#` delegation.
+- **Hermes**: Connects via the official Hermes Gateway; Forking and message editing work on any history prior to context compaction.
+- **WorkBuddy & ZCode**: Install and sign in to the corresponding desktop app (**WorkBuddy Desktop** or **ZCode Desktop**) first—CodexHost talks directly to the CLI bundled inside each app.

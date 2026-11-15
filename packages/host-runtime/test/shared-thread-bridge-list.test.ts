@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import type { SharedThreadPeer } from "../src/shared-thread-peer.js";
@@ -9,6 +9,7 @@ function fakePeer(total: number) {
   const rows = Array.from({ length: total }, (_, index) => ({ id: `shared-${index}` }));
   const listeners = new Set<(message: JsonObject) => void>();
   const listCalls: JsonObject[] = [];
+  const ended = Promise.withResolvers<undefined>();
   let fail = false;
   const peer: SharedThreadPeer = {
     request: async (method, params) => {
@@ -24,8 +25,11 @@ function fakePeer(total: number) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    closed: new Promise(() => undefined),
-    close: () => undefined,
+    closed: ended.promise,
+    close: () => {
+      listeners.clear();
+      ended.resolve(undefined);
+    },
   };
   return {
     peer,
@@ -53,8 +57,8 @@ const query = { archived: false, useStateDbOnly: true };
 it("serves every page of a client catalog from one shared walk", async () => {
   const shared = fakePeer(1_000);
   const bridge = bridgeFor(shared.peer);
-  // The first connection announces existing Threads with its own walk.
   expect(await bridge.list({ ...query, cursor: null, limit: 200 })).toHaveLength(1_000);
+  expect(shared.listCalls).toHaveLength(5);
   shared.listCalls.length = 0;
 
   for (let page = 0; page < 5; page += 1) {
@@ -62,6 +66,75 @@ it("serves every page of a client catalog from one shared walk", async () => {
     expect(rows).toHaveLength(1_000);
   }
   expect(shared.listCalls).toHaveLength(0);
+});
+
+it("reads a large history without publishing it as newly started Threads", async () => {
+  const shared = fakePeer(3_000);
+  const bridge = bridgeFor(shared.peer);
+  const publish = vi.fn();
+  bridge.start(publish);
+  try {
+    expect(await bridge.list(query)).toHaveLength(3_000);
+    expect(shared.listCalls).toHaveLength(15);
+    expect(publish).not.toHaveBeenCalled();
+
+    const created = {
+      method: "thread/started",
+      params: { thread: { id: "new-thread", modelProvider: "codexhost" } },
+    };
+    shared.notify(created);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(created);
+  } finally {
+    bridge.close();
+  }
+});
+
+it("reads history after late discovery without synthesizing creation events", async () => {
+  const shared = fakePeer(1_000);
+  let available: SharedThreadPeer | null = null;
+  const bridge = new SharedThreadBridge({
+    connect: async () => available,
+    delegateCreates: true,
+    diagnose: () => undefined,
+  });
+  const publish = vi.fn();
+  bridge.start(publish);
+  try {
+    expect(await bridge.list(query)).toEqual([]);
+    available = shared.peer;
+    expect(await bridge.list(query)).toHaveLength(1_000);
+    expect(publish).not.toHaveBeenCalled();
+  } finally {
+    bridge.close();
+  }
+});
+
+it("refreshes history on reconnection and forwards new events once", async () => {
+  const first = fakePeer(1_000);
+  const second = fakePeer(1_001);
+  let available = first.peer;
+  const bridge = new SharedThreadBridge({
+    connect: async () => available,
+    delegateCreates: true,
+    diagnose: () => undefined,
+  });
+  const publish = vi.fn();
+  bridge.start(publish);
+  try {
+    expect(await bridge.list(query)).toHaveLength(1_000);
+    first.peer.close();
+    await first.peer.closed;
+    available = second.peer;
+    expect(await bridge.list(query)).toHaveLength(1_001);
+    expect(publish).not.toHaveBeenCalled();
+
+    const renamed = { method: "thread/name/updated", params: { threadId: "shared-0" } };
+    first.notify(renamed);
+    second.notify(renamed);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(renamed);
+  } finally {
+    bridge.close();
+  }
 });
 
 it("shares one in-flight walk between concurrent pages", async () => {

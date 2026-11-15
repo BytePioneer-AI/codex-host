@@ -84,8 +84,12 @@ import {
   projectReplayedEventsToTurns,
 } from "./acp-projection.js";
 import { AntigravitySessionUsageTracker } from "./acp-usage.js";
+import {
+  createAntigravityBackgroundMcpServer,
+  isAntigravityBackgroundWaitTool,
+} from "./background-wait-mcp.js";
 import { resolveAntigravityExecutable } from "./command.js";
-import { antigravityDelegationInstructions } from "./delegation.js";
+import { antigravityDelegationInstructions, antigravitySessionInstructions } from "./delegation.js";
 import { forkAntigravitySession, nativeConversationDbPath, validNativeSessionRef } from "./fork.js";
 import {
   parseAntigravityModels,
@@ -410,11 +414,13 @@ export class AntigravitySession implements HarnessSession {
         return;
       }
       const ref = this.nativeRef ?? this.#options.nativeRef;
+      const home = antigravityHome(this.#options.environment);
       const { opened, replayedEvents } = await transport.openSession({
         kind: ref ? "resume" : "create",
         ...(ref ? { sessionId: ref.nativeSessionId } : {}),
         cwd: this.#options.cwd,
-        ...this.#delegationPrompt(),
+        mcpServers: [createAntigravityBackgroundMcpServer(home, ref?.nativeSessionId)],
+        systemPromptAppend: antigravitySessionInstructions(this.#options.environment),
       });
       if (ref && opened.sessionId !== ref.nativeSessionId)
         throw new AntigravityTransportError(
@@ -1120,6 +1126,17 @@ export class AntigravitySession implements HarnessSession {
       request.sessionId !== ref.nativeSessionId
     )
       return Promise.resolve({ outcome: { outcome: "cancelled" } });
+    const rawToolCall = request.toolCall as Record<string, unknown>;
+    const toolName = typeof rawToolCall.name === "string" ? rawToolCall.name : "";
+    if (
+      this.#state.effectivePermissionModeId !== "plan" &&
+      isAntigravityBackgroundWaitTool(toolName)
+    ) {
+      const allowOnce = request.options.find((option) => option.kind === "allow_once");
+      if (allowOnce) {
+        return Promise.resolve({ outcome: { outcome: "selected", optionId: allowOnce.optionId } });
+      }
+    }
     const interactionId = hostInteractionIdSchema.parse(randomUUID());
     const projected = projectAcpApprovalInteraction({
       interactionId,

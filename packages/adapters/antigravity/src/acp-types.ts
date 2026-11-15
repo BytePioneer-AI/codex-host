@@ -3,6 +3,7 @@ import type {
   CreateElicitationRequest,
   CreateElicitationResponse,
   InitializeResponse,
+  McpServer,
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
@@ -163,6 +164,7 @@ export interface AntigravityOpenAcpSessionInput {
   kind: "create" | "resume" | "load";
   sessionId?: string;
   cwd: string;
+  mcpServers?: readonly McpServer[];
   systemPromptAppend?: string;
   additionalDirectories?: string[];
 }

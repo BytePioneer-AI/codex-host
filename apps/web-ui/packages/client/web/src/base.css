@@ -32,6 +32,34 @@ body {
   text-autospace: normal;
 }
 
+#ios-pwa-top-edge {
+  display: none;
+}
+
+/* WebKit's fixedContainerEdges recognizes backdrop-filter layers at the top edge.
+   A zero-radius filter preserves page pixels while marking the edge (WebKit 329103).
+   Keep 6px for edge sampling even when safe-area-inset-top is zero. */
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: standalone) {
+    /* Keep system chrome dark across app theme changes; body owns the app palette. */
+    html {
+      background-color: #151517;
+    }
+
+    #ios-pwa-top-edge {
+      display: block;
+      position: fixed;
+      inset: 0 0 auto;
+      height: 6px;
+      background: transparent;
+      -webkit-backdrop-filter: blur(0px);
+      backdrop-filter: blur(0px);
+      z-index: 2147483647;
+      pointer-events: none;
+    }
+  }
+}
+
 /* macOS desktop (the Electron preload sets data-platform): the window's
    sidebar vibrancy shows only through a transparent page background. */
 html[data-platform="darwin"],

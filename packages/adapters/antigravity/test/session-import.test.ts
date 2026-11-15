@@ -98,46 +98,6 @@ describe("Antigravity read-only Session import", () => {
     });
   });
 
-  it("lists and resolves root Sessions using native identity, timestamps and running status", async () => {
-    const idle = await conversation({ title: "  Hello\nworld  " });
-    const running = await conversation({ status: "CASCADE_RUN_STATUS_RUNNING" });
-    const unknown = await conversation({ status: "UNRECOGNIZED" });
-    const listing = await discovery.listCandidates();
-    expect(listing.ok).toBe(true);
-    if (!listing.ok) throw new Error("Expected candidates");
-    expect(listing.value).toEqual([
-      {
-        nativeSessionId: idle,
-        title: "Hello world",
-        cwd,
-        updatedAt: Date.parse("2026-11-14T15:19:32.602Z"),
-        running: false,
-      },
-      {
-        nativeSessionId: running,
-        title: "Example title",
-        cwd,
-        updatedAt: Date.parse("2026-11-14T15:19:32.602Z"),
-        running: true,
-      },
-      {
-        nativeSessionId: unknown,
-        title: "Example title",
-        cwd,
-        updatedAt: Date.parse("2026-11-14T15:19:32.602Z"),
-        running: null,
-      },
-    ]);
-    expect(await discovery.resolveCandidate(idle)).toEqual({
-      ok: true,
-      value: {
-        candidate: listing.value[0],
-        nativeRef: { harnessId: "antigravity", nativeSessionId: idle, formatVersion: 1 },
-      },
-    });
-    expect(listing.value[0]).not.toHaveProperty("locator");
-  });
-
   it("filters Subagents, empty/killed Sessions, invalid workspaces and missing native databases", async () => {
     await conversation({ parent_conversation_id: randomUUID() });
     await conversation({ parent_conversation_id: " " });

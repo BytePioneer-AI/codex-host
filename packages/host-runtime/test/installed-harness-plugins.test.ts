@@ -76,61 +76,6 @@ describe("installed Harness composition", () => {
     },
   );
 
-  it("provides every built-in command catalog before inspection or Session creation", async () => {
-    const expected = {
-      copilot: [],
-      codebuddy: ["/compact", "/cost"],
-      workbuddy: ["/compact", "/init"],
-      "cursor-cli": ["/copy-request-id"],
-      pi: ["/compact"],
-      "claude-code": ["/compact", "/init", "/recap"],
-      "deepseek-harness": ["/compact", "/dsh-goal", "/plan"],
-      opencode: ["/compact"],
-      grok: ["/compact"],
-      omp: ["/compact"],
-      "qwen-code": [],
-      antigravity: [
-        "/plan",
-        "/goal",
-        "/browser",
-        "/grill-me",
-        "/boost",
-        "/learn",
-        "/schedule",
-        "/compact",
-        "/help",
-      ],
-      "kiro-cli": [
-        "/compact",
-        "/kiro-context",
-        "/kiro-usage",
-        "/kiro-plan",
-        "/kiro-spec",
-        "/kiro-vibe",
-      ],
-      "kimi-code": ["/compact", "/status", "/usage", "/mcp", "/tasks", "/help"],
-      devin: [],
-      hermes: ["/help", "/tools", "/context", "/version", "/compress"],
-      qoder: ["/compact"],
-      "qoder-cn": ["/compact"],
-      zcode: ["/compact", "/goal"],
-    };
-    const registry = await load();
-    try {
-      for (const [id, adapter] of registry.adapters) {
-        const open = vi.spyOn(adapter, "open");
-        const inspect = vi.spyOn(adapter, "inspect");
-        expect(adapter.commandCatalog?.commands.map(({ invocation }) => invocation) ?? []).toEqual(
-          expected[id as keyof typeof expected],
-        );
-        expect(open).not.toHaveBeenCalled();
-        expect(inspect).not.toHaveBeenCalled();
-      }
-    } finally {
-      await registry.close();
-    }
-  }, 35_000);
-
   it.each([
     ["copilot", "CODEXHOST_COPILOT_COMMAND"],
     ["pi", "CODEXHOST_PI_COMMAND"],

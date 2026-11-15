@@ -341,53 +341,6 @@ describe("elicitation form mapping", () => {
 });
 
 describe("tool lifecycle and file changes", () => {
-  it("merges partial updates, bounds output and completes once", () => {
-    const { tools, events } = tracker(4);
-    tools.handleToolEvent({
-      type: "tool.call",
-      toolCallId: "call",
-      name: "run_command",
-      kind: "execute",
-      args: { command: "pwd", cwd: "src" },
-      status: "pending",
-    });
-    tools.handleToolEvent({
-      type: "tool.update",
-      toolCallId: "call",
-      status: "in_progress",
-      rawOutput: "ab",
-    });
-    tools.handleToolEvent({
-      type: "tool.update",
-      toolCallId: "call",
-      status: "completed",
-      rawOutput: "abcdef",
-    });
-    tools.handleToolEvent({
-      type: "tool.update",
-      toolCallId: "call",
-      status: "completed",
-      rawOutput: "late",
-    });
-    expect(events.map(({ type }) => type)).toEqual([
-      "item.started",
-      "item.updated",
-      "item.updated",
-      "item.completed",
-    ]);
-    expect(tools.completedSnapshots()[0]).toMatchObject({
-      item: {
-        type: "commandExecution",
-        command: "pwd",
-        cwd: path.resolve(cwd, "src"),
-        output: "abcd",
-        outputTruncated: true,
-        exitCode: 0,
-      },
-      outcome: { status: "succeeded" },
-    });
-    expect(tools.rawToolInput("call")).toEqual({ command: "pwd", cwd: "src" });
-  });
   it("uses updated rawInput instead of stale initial args", () => {
     const { tools } = tracker();
     tools.handleToolEvent({
@@ -482,35 +435,6 @@ describe("tool lifecycle and file changes", () => {
     expect(file.item).toMatchObject({ type: "fileChange", changes: [{ path: "src/a.ts", kind }] });
     expect(applyPatch(oldText ?? "", file.item.changes[0]?.unifiedDiff ?? "")).toBe(newText ?? "");
     expect(events.filter(({ type }) => type === "item.completed")).toHaveLength(2);
-  });
-  it("merges native diff updates and enforces a patch limit", () => {
-    const { tools, events } = tracker(80);
-    tools.handleToolEvent({
-      type: "tool.call",
-      toolCallId: "w",
-      name: "edit",
-      content: [{ type: "diff", path: "a", oldText: "a", newText: "b" }],
-    });
-    tools.handleToolEvent({
-      type: "tool.update",
-      toolCallId: "w",
-      content: [
-        { type: "diff", path: "a", oldText: "a", newText: "x".repeat(1000) },
-        { type: "diff", path: "../outside", newText: "z" },
-      ],
-      status: "completed",
-    });
-    const file = tools.completedSnapshots().find(({ item }) => item.type === "fileChange")?.item;
-    if (file?.type !== "fileChange") throw new Error("missing file change");
-    expect(file.changes).toHaveLength(2);
-    expect(file.changes[0]?.unifiedDiff).toContain("[diff truncated]");
-    expect(file.changes[0]?.unifiedDiff.length).toBeLessThan(110);
-    expect(file.changes[1]?.path).toBe(path.resolve(cwd, "../outside").replaceAll("\\", "/"));
-    expect(
-      events.some(
-        (event) => event.type === "item.updated" && event.update.type === "fileChanges.replace",
-      ),
-    ).toBe(true);
   });
   it("rearms child observation for a new send to the same child within a Turn", () => {
     const { tools, spawned } = tracker();

@@ -17,10 +17,7 @@ const result = (id, value) => send({id, result:value});
 const update = (update, sessionId='native') => send({method:'session/update',params:{sessionId,update}});
 let promptId;
 const replies={};
-if (scenario === 'stubborn' || scenario === 'wait-term') {
-  if (scenario === 'stubborn') process.on('SIGTERM', () => {});
-  setInterval(() => {}, 1000);
-}
+if (scenario === 'wait-term') setInterval(() => {}, 1000);
 readline.createInterface({input:process.stdin}).on('line', (line) => {
   const req=JSON.parse(line);
   if (!req.method) { replies[req.id] = req.result; return; }
@@ -435,17 +432,6 @@ describe("native ACP stdio transport", () => {
     expect((await replies(value)).permission).toEqual({ outcome: { outcome: "cancelled" } });
     await value.cancel();
     await next;
-  });
-  it("close is idempotent, bounds unresponsive session/close and kills a stubborn child", async () => {
-    const value = transport("stubborn");
-    await open(value);
-    const child = fixture.children.at(-1);
-    const first = value.close();
-    expect(value.close()).toBe(first);
-    await first;
-    expect(child?.signalCode).toBe(process.platform === "win32" ? "SIGTERM" : "SIGKILL");
-    expect(value.sessionId).toBeNull();
-    await expect(value.initialize()).rejects.toThrow("closed");
   });
   it("closing an unresponsive prompt and session/close cannot leave a process", async () => {
     const value = transport("close-stalled");

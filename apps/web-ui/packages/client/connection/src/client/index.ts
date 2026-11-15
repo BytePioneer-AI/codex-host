@@ -204,26 +204,32 @@ function watchBrowserNetwork(controller: ConnectionController): () => void {
   };
   const document = browser.document;
   let wasHidden = document?.visibilityState === "hidden";
+  let resumed = false;
   let restoreTimer: ReturnType<typeof setTimeout> | undefined;
   // Both tab return and cache restoration check the carrier before replacing it.
   const restore = (): void => {
     if (document?.visibilityState === "hidden") return;
+    // Only an observed hidden-to-visible transition may bypass retry backoff.
+    resumed ||= wasHidden;
+    wasHidden = false;
     if (restoreTimer !== undefined) return;
     const available = browser.navigator?.onLine !== false;
     controller.setNetworkAvailable(available);
-    if (!available) return;
+    if (!available) {
+      resumed = false;
+      return;
+    }
     restoreTimer = setTimeout(() => {
       restoreTimer = undefined;
+      const foregroundReturn = resumed;
+      resumed = false;
       if (document?.visibilityState === "hidden" || browser.navigator?.onLine === false) return;
-      controller.revalidate();
+      controller.revalidate(foregroundReturn);
     }, 0);
   };
   const visible = (): void => {
     if (document?.visibilityState === "hidden") wasHidden = true;
-    else if (wasHidden) {
-      wasHidden = false;
-      restore();
-    }
+    else if (wasHidden) restore();
   };
   const shown = (event: Event): void => {
     if ((event as PageTransitionEvent).persisted) restore();

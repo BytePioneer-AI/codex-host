@@ -13,6 +13,7 @@ const cleanup: Array<() => void> = [];
 afterEach(() => {
   cleanup.splice(0).forEach((dispose) => dispose());
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -51,11 +52,11 @@ it("hides brief recovery and keeps offline, sustained recovery and Host failures
   act(() => container.querySelector("button")!.click());
   expect(reconnect).toHaveBeenCalledOnce();
   act(() => state.set("connecting"));
-  act(() => vi.advanceTimersByTime(999));
+  act(() => vi.advanceTimersByTime(4_999));
   expect(container.querySelector('[role="status"]')).toBeNull();
   act(() => state.set("connected"));
   act(() => state.set("connecting"));
-  act(() => vi.advanceTimersByTime(999));
+  act(() => vi.advanceTimersByTime(4_999));
   expect(container.querySelector('[role="status"]')).toBeNull();
   act(() => vi.advanceTimersByTime(1));
   expect(container.querySelector('[data-web-connection="reconnecting"]')).not.toBeNull();
@@ -69,6 +70,54 @@ it("hides brief recovery and keeps offline, sustained recovery and Host failures
   expect(container.querySelector('[data-web-connection="host"]')).not.toBeNull();
   expect(container.querySelector('[data-native-connection="reconnecting"]')).not.toBeNull();
 });
+
+it.each([false, true])(
+  "gives recovery five fresh visible seconds after backgrounding (starts hidden: %s)",
+  (startsHidden) => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = startsHidden ? "hidden" : "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const { container, root } = mount();
+    const state = createSnapshotStore<ConnectionState>("connecting");
+    const props = {
+      sessionId: undefined,
+      useSession: () => undefined,
+      list: createSnapshotStore({ byId: {} }),
+      connection: { state, reconnect: vi.fn() },
+      t: (key: keyof typeof en) => en[key],
+    } as unknown as ComponentProps<typeof HostConnectionStatus>;
+    const setVisibility = (next: DocumentVisibilityState) => {
+      visibility = next;
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+    };
+    act(() => root.render(createElement(HostConnectionStatus, props)));
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(container.querySelector('[role="status"]') !== null).toBe(!startsHidden);
+    setVisibility("hidden");
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    setVisibility("visible");
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    act(() => vi.advanceTimersByTime(1_000));
+    // Repeated visible events must not extend the grace period.
+    setVisibility("visible");
+    act(() => vi.advanceTimersByTime(3_999));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(container.querySelector('[data-web-connection="reconnecting"]')).not.toBeNull();
+
+    setVisibility("hidden");
+    setVisibility("visible");
+    act(() => vi.advanceTimersByTime(4_999));
+    act(() => state.set("connected"));
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    // Known offline status still bypasses the recovery grace period.
+    act(() => state.set("disconnected"));
+    expect(container.querySelector('[data-web-connection="offline"]')).not.toBeNull();
+  },
+);
 
 it("shows connection failure without a selected session", () => {
   const { container, root } = mount();

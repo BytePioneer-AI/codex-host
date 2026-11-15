@@ -125,10 +125,16 @@ export class ConnectionController {
     this.retryDelay?.abort(MANUAL_RECONNECT);
   }
 
-  /** Check an established carrier or recover an absent one, without interrupting ongoing recovery. */
-  revalidate(): void {
-    // An in-flight attempt or its backoff already owns recovery.
-    if (!this.running || this.lastState === undefined || this.lastState === "connecting") return;
+  /** Check the carrier; a foreground return may skip backoff, but never an active handshake. */
+  revalidate(resumed = false): void {
+    if (!this.running || this.lastState === undefined) return;
+    if (this.lastState === "connecting") {
+      if (resumed && this.networkAvailable && this.retryDelay !== null) {
+        this.immediateRetry = true;
+        this.retryDelay.abort();
+      }
+      return;
+    }
     let probing = false;
     if (this.lastState === "connected") {
       this.callSink(() => {

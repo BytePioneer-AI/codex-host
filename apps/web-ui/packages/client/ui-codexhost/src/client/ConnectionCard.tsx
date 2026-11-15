@@ -6,7 +6,6 @@ import {
   IconChevronDownOutlineRegular,
   IconShieldOutlineRegular,
   Menu,
-  Modal,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState, WebNetworkAccessUrl } from "@codexhost/shared-contracts";
@@ -94,7 +93,7 @@ export function ConnectionCard({
     ) ??
     (addresses.some((entry) => entry.kind === "lan") ? "lan" : "tailscale-https");
   const [selectedUrl, setSelectedUrl] = useState<string>();
-  const [enlargedLink, setEnlargedLink] = useState<string>();
+  const [revealedLink, setRevealedLink] = useState<string>();
   const [addressMenu, setAddressMenu] = useState(false);
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
   const group = useId();
@@ -107,6 +106,7 @@ export function ConnectionCard({
     selected !== undefined &&
     networkUrls.some((entry) => entry.url === selected.url);
   const link = ready ? `${selected.url}#token=${secret}` : undefined;
+  const revealed = link !== undefined && revealedLink === link;
   const hint = ready ? HINT[method] : undefined;
   const https = method === "tailscale-https";
   const direct = method === "lan" || method === "tailscale" || method === "virtual";
@@ -131,7 +131,7 @@ export function ConnectionCard({
 
   useEffect(() => {
     setCopied("idle");
-    setEnlargedLink(undefined);
+    setRevealedLink(undefined);
   }, [link]);
   useEffect(() => {
     if (copied === "idle") return;
@@ -186,16 +186,26 @@ export function ConnectionCard({
             <button
               type="button"
               className={css.qrButton}
-              aria-label={t("connectDevices.viewQr")}
+              aria-label={t(revealed ? "connectDevices.hideQr" : "connectDevices.viewQr")}
+              aria-pressed={revealed}
               disabled={busy}
-              onClick={() => setEnlargedLink(link)}
+              onClick={() => setRevealedLink(revealed ? undefined : link)}
             >
-              <QrCode value={link} label={t("connectDevices.qrLabel")} className={css.qr} />
-              <span className={css.qrCover} aria-hidden="true">
-                <IconShieldOutlineRegular size={24} />
-                <span>{t("connectDevices.viewQr")}</span>
-                <small>{t("connectDevices.qrSensitive")}</small>
+              <span className={css.qrFrame}>
+                <QrCode
+                  value={link}
+                  label={t("connectDevices.qrLabel")}
+                  className={revealed ? css.qr : `${css.qr} ${css.qrObscured}`}
+                />
+                {!revealed && (
+                  <span className={css.qrCover} aria-hidden="true">
+                    <IconShieldOutlineRegular size={24} />
+                    <span>{t("connectDevices.viewQr")}</span>
+                    <small>{t("connectDevices.qrSensitive")}</small>
+                  </span>
+                )}
               </span>
+              {revealed && <span className={css.qrAction}>{t("connectDevices.hideQr")}</span>}
             </button>
           ) : (
             <div className={css.qrPlaceholder}>
@@ -413,21 +423,6 @@ export function ConnectionCard({
           </details>
         )}
       </div>
-      {link !== undefined && enlargedLink === link && (
-        <Modal
-          open
-          onClose={() => setEnlargedLink(undefined)}
-          title={t("connectDevices.scan")}
-          closeLabel={t("connectDevices.close")}
-          className={css.qrModal}
-        >
-          <p className={css.notice}>{t("connectDevices.qrSensitive")}</p>
-          <QrCode value={link} label={t("connectDevices.qrLabel")} className={css.largeQr} />
-          <Button variant="outline" onClick={() => setEnlargedLink(undefined)}>
-            {t("connectDevices.hideQr")}
-          </Button>
-        </Modal>
-      )}
     </section>
   );
 }

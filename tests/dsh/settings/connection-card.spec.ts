@@ -56,3 +56,72 @@ it.each([
   expect(routes[0].querySelector<HTMLInputElement>("input")!.checked).toBe(true);
   expect(props.onRelay).not.toHaveBeenCalled();
 });
+
+it.each([
+  { name: "en", locale: en },
+  { name: "zh", locale: zh },
+])("reveals and hides the QR code in place without opening a modal ($name)", ({ locale }) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  cleanups.push(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+  const props: Props = {
+    data: {
+      secret: "test-token",
+      lastUsedAt: null,
+      networkUrls: [
+        { kind: "lan", url: "http://192.168.1.2:4400/" },
+        { kind: "tailscale", url: "http://100.64.0.1:4400/" },
+      ],
+      tailscale: { status: "not-installed" },
+    },
+    busy: false,
+    restarting: false,
+    onEnable: vi.fn(),
+    onRelay: vi.fn(),
+    onRefresh: vi.fn(),
+    t: ((key: keyof typeof en) => locale[key]) as Props["t"],
+  };
+  act(() => root.render(createElement(ConnectionCard, props)));
+
+  const qrButton = (): HTMLButtonElement => {
+    const button = container.querySelector<HTMLButtonElement>("button[aria-pressed]");
+    expect(button).not.toBeNull();
+    return button!;
+  };
+  expect(qrButton().getAttribute("aria-label")).toBe(locale["connectDevices.viewQr"]);
+  expect(qrButton().getAttribute("aria-pressed")).toBe("false");
+  expect(qrButton().textContent).toContain(locale["connectDevices.viewQr"]);
+  expect(qrButton().textContent).toContain(locale["connectDevices.qrSensitive"]);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+  act(() => qrButton().click());
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(qrButton().getAttribute("aria-label")).toBe(locale["connectDevices.hideQr"]);
+  expect(qrButton().getAttribute("aria-pressed")).toBe("true");
+  expect(qrButton().textContent).toContain(locale["connectDevices.hideQr"]);
+  expect(qrButton().textContent).not.toContain(locale["connectDevices.qrSensitive"]);
+  expect(
+    container.querySelector(`[role="img"][aria-label="${locale["connectDevices.qrLabel"]}"]`),
+  ).not.toBeNull();
+
+  act(() => qrButton().click());
+  expect(qrButton().getAttribute("aria-label")).toBe(locale["connectDevices.viewQr"]);
+  expect(qrButton().getAttribute("aria-pressed")).toBe("false");
+  expect(qrButton().textContent).toContain(locale["connectDevices.qrSensitive"]);
+
+  // Switching to a different connection method hides a previously revealed QR code.
+  act(() => qrButton().click());
+  expect(qrButton().getAttribute("aria-pressed")).toBe("true");
+  act(() => {
+    container
+      .querySelector<HTMLInputElement>('[data-connect-route="lan"] input[type="radio"]')!
+      .click();
+  });
+  expect(qrButton().getAttribute("aria-pressed")).toBe("false");
+  expect(qrButton().getAttribute("aria-label")).toBe(locale["connectDevices.viewQr"]);
+});

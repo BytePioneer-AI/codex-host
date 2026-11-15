@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, type Writable } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -44,16 +44,19 @@ function sharedViewer(
   framing: "messages" | "ndjson",
 ) {
   const outputErrors: Error[] = [];
+  let output: Writable | undefined;
   const binding = attachRemoteAppServerSession({
     socket: socket as unknown as WebSocket,
     framing,
     diagnosticOutput: new PassThrough(),
     createSession: (streams) => {
+      output = streams.output;
       streams.output.on("error", (error) => outputErrors.push(error));
       return owner.createSession(streams);
     },
   });
-  return { ...binding, outputErrors };
+  if (!output) throw new Error("Missing viewer output");
+  return { ...binding, output, outputErrors };
 }
 
 async function fixture(finishAfterQueue = false) {
@@ -116,6 +119,38 @@ async function fixture(finishAfterQueue = false) {
 }
 
 describe("remote app-server output backpressure", () => {
+  it("releases sent notification waiters while a slow viewer's queue stays nonempty", async () => {
+    const owner = new SharedThreadOwner();
+    const socket = new ControlledSocket();
+    const viewer = sharedViewer(owner, socket, "ndjson");
+    const frame = JSON.stringify({ method: "progress", params: { text: "x".repeat(1024) } }) + "\n";
+    const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const listeners = () =>
+      ["drain", "error", "close"].map((event) => viewer.output.listenerCount(event));
+    try {
+      for (let index = 0; index < 128; index++) owner.output.write(frame);
+      await tick();
+      const queued = viewer.output.writableLength;
+      const before = listeners();
+      expect(queued).toBeGreaterThan(viewer.output.writableHighWaterMark);
+      for (let index = 0; index < 300; index++) {
+        socket.release();
+        await tick();
+        owner.output.write(frame);
+        await tick();
+      }
+      expect(viewer.output.writableLength).toBe(queued);
+      expect(socket.frames).toHaveLength(301);
+      expect(listeners()).toEqual(before);
+      expect(socket.readyState).toBe(socket.OPEN);
+      expect(viewer.outputErrors).toEqual([]);
+    } finally {
+      viewer.close();
+      await viewer.running;
+      owner.close();
+    }
+  });
+
   it.each(["messages", "ndjson"] as const)(
     "allows one large %s response to wait behind a small notification",
     async (framing) => {

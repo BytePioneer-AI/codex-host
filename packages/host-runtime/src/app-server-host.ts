@@ -643,7 +643,9 @@ class OrderedWriter {
 
   private write(frame: Buffer<ArrayBufferLike>): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.stream.write(frame, (error) => (error ? reject(error) : resolve()));
+      // Accepted writes must not hold Host state updates until a next-tick callback.
+      // A backpressured write waits only for its own completion, not a global drain.
+      if (this.stream.write(frame, (error) => (error ? reject(error) : resolve()))) resolve();
     });
   }
 }

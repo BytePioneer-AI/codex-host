@@ -645,7 +645,15 @@ class OrderedWriter {
     return new Promise((resolve, reject) => {
       // Accepted writes must not hold Host state updates until a next-tick callback.
       // A backpressured write waits only for its own completion, not a global drain.
-      if (this.stream.write(frame, (error) => (error ? reject(error) : resolve()))) resolve();
+      const closed = () =>
+        reject(new Error("Protocol stream closed before pending write completed"));
+      const accepted = this.stream.write(frame, (error) => {
+        this.stream.off("close", closed);
+        if (error) reject(error);
+        else resolve();
+      });
+      if (accepted) resolve();
+      else this.stream.once("close", closed);
     });
   }
 }

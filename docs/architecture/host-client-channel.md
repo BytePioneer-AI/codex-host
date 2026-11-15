@@ -78,7 +78,7 @@ Host 只监听 `127.0.0.1`，使用随机 Bearer token，拒绝带 Origin 的直
 
 服务还提供认证的 Host-private `/v1/desktop` WebSocket 和 `/v1/shutdown` 管理入口，不通过 Web 网关公开。Desktop 连接携带有界、版本化的运行时上下文，不能改写后台的存储目录、Codex home 或委派认证。Web 发行包携带原生 Launcher 和同一 Host bundle；它不是纯浏览器即可启动的后台，也不包含 Node 或 Harness CLI。
 
-Desktop、共享 external 与 SSH WebSocket 的输出流按发送完成回调推进，顺序和排队由同一 Writable 维护。Host 对未触发背压的写入立即推进状态，触发背压时等待本次写入完成；共享查看端的通知也按单次写入释放回调，不为每条通知等待整个队列排空。每个查看端允许一个大于 8 MiB 的响应处于排队或发送中，另有最多 8 MiB 的普通消息等待队列；正在发送的普通消息不计入等待队列，因此小通知后跟随一个大响应也可正常发送。第二个大响应或普通队列超限时只断开该查看端，不关闭共享执行所有者或取消原生 Turn。查看端离开后剩余输出继续排空；正常结束等待输出流完成，监听器关闭则解除发送等待并释放所属连接。
+Desktop、共享 external 与 SSH WebSocket 的输出流按发送完成回调推进，顺序和排队由同一 Writable 维护。Host 对未触发背压的写入立即推进状态，触发背压时等待本次写入完成；输出流提前关闭则结束等待并报告写入失败。共享查看端的通知也按单次写入释放回调，不为每条通知等待整个队列排空。每个查看端允许一个大于 8 MiB 的响应处于排队或发送中，另有最多 8 MiB 的普通消息等待队列；正在发送的普通消息不计入等待队列，因此小通知后跟随一个大响应也可正常发送。第二个大响应或普通队列超限时只断开该查看端，不关闭共享执行所有者或取消原生 Turn。查看端离开后剩余输出继续排空；正常结束等待输出流完成，监听器关闭则解除发送等待并释放所属连接。
 
 POST 使用 JSON，正文上限 128 MiB（`CLIENT_REQUEST_LIMIT_BYTES`，与桌面 WebSocket 一致，可容纳内联图片）；返回 `{result: …}` 或 `{error: {code, message}}`。RPC 参数为 `{method, params}`，快照参数为 `{threadId, knownTurns?, truncateToolOutput?}`（可选项见下文“快照的可选精简”），回答参数为 `{epoch, threadId, requestId, result}`。可用 RPC 在 `CLIENT_CHANNEL_METHODS` 中；支持官方 Codex 创建、恢复、Fork 及本地 external Thread 操作，不开放官方历史回退。具体 Harness 能力仍须通过已有 inspect 契约查询，不能因 RPC 在名单内便假定该 Harness 支持它。
 

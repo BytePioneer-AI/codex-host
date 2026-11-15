@@ -49,6 +49,11 @@ export class CodeBuddySubagents {
   begin(turnId: HostTurnId) {
     this.#turnId = turnId;
   }
+  hasItem(itemId: string): boolean {
+    return [...this.#calls.values()].some(
+      (call) => call.turnId === this.#turnId && call.item.itemId === itemId,
+    );
+  }
   state(id: string) {
     return [...this.#calls.values()]
       .map((call) => call.item.subagents[0])

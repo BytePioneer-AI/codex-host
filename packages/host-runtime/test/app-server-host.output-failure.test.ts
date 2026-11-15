@@ -19,6 +19,44 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost output failure", () => {
+  it("diagnoses duplicate starts with Harness, Thread and Item identity without tool input", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw Error("Fake Pi Session was not opened");
+      const close = vi.spyOn(session, "close");
+      const item = {
+        type: "toolExecution" as const,
+        itemId: hostItemIdSchema.parse("replayed-tool"),
+        toolName: "Read",
+        arguments: { prompt: "private tool input" },
+      };
+      session.emitEvent({ type: "item.started", turnId, item });
+      session.emitEvent({ type: "item.started", turnId, item });
+      const completed = await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", turnId),
+      );
+      expect(completed).toMatchObject({
+        params: {
+          turn: {
+            status: "failed",
+            error: { message: expect.stringContaining("Host Item started more than once") },
+          },
+        },
+      });
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      const diagnostic = fixture.diagnosticOutput.read()?.toString() ?? "";
+      expect(diagnostic).toContain(
+        `External Harness output failed (harnessId=pi, threadId=${threadId}): Host Item started more than once (replayed-tool: existing toolExecution, incoming toolExecution)`,
+      );
+      expect(diagnostic).not.toContain("private tool input");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("fails the Turn and closes its Session when an Item changes type at completion", async () => {
     const permissionModes = harnessPermissionModeCatalogSchema.parse({
       modes: [{ id: "auto", label: "Auto" }],

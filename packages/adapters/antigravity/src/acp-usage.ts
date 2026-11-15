@@ -151,6 +151,7 @@ function usageMatches(actual: HostUsage, expected: HostUsage, exact: boolean): b
 
 interface TranscriptRequests {
   steps: Map<number, HostUsageRequest | null>;
+  toolCallSteps: Set<number>;
   complete: boolean;
   timings: Map<number, AntigravityRequestTiming> | null;
 }
@@ -303,7 +304,7 @@ export class AntigravitySessionUsageTracker {
     complete: boolean;
     usage: HostUsage | null;
   }> {
-    const transcript = await this.#read(signal, false);
+    const transcript = await this.#read(signal);
     const requests = this.#consume(transcript, true);
     this.#reconcile();
     return { requests, complete: this.#historyComplete(), usage: this.currentUsage() };
@@ -352,6 +353,7 @@ export class AntigravitySessionUsageTracker {
       requests.length === 1 &&
       single &&
       step !== undefined &&
+      !transcript.toolCallSteps.has(step) &&
       this.#turnCollectionSteps.size === 1 &&
       transcript.complete &&
       !this.#invalidated &&
@@ -444,14 +446,20 @@ export class AntigravitySessionUsageTracker {
       }
       const candidate = transcript.timings?.get(step);
       const clock =
-        !historical &&
         candidate &&
-        candidate.startedAtMs >= this.#turnStartedAtMs &&
+        (historical || candidate.startedAtMs >= this.#turnStartedAtMs) &&
         candidate.completedAtMs <= Date.now()
           ? candidate
           : undefined;
       // Let an in-flight native metadata commit supply timing before publishing the stable ID.
-      if (!historical && this.#turnActive && !finalizing && transcript.timings !== null && !clock)
+      if (
+        !historical &&
+        this.#turnActive &&
+        !finalizing &&
+        transcript.timings !== null &&
+        !clock &&
+        !transcript.toolCallSteps.has(step)
+      )
         continue;
       parsed = parseHostUsageRequest({
         ...parsed,
@@ -469,7 +477,12 @@ export class AntigravitySessionUsageTracker {
     signal?.throwIfAborted();
     const stream = createReadStream(this.#file, { encoding: "utf8", signal });
     const lines = createInterface({ input: stream, crlfDelay: Infinity });
-    const result: TranscriptRequests = { steps: new Map(), complete: true, timings: null };
+    const result: TranscriptRequests = {
+      steps: new Map(),
+      toolCallSteps: new Set(),
+      complete: true,
+      timings: null,
+    };
     try {
       for await (const line of lines) {
         signal?.throwIfAborted();
@@ -513,6 +526,12 @@ export class AntigravitySessionUsageTracker {
           // The latest version of a step is authoritative, even when it lacks usage.
         }
         result.steps.set(record.step_index, request);
+        if (
+          record.tool_calls !== undefined &&
+          (!Array.isArray(record.tool_calls) || record.tool_calls.length > 0)
+        )
+          result.toolCallSteps.add(record.step_index);
+        else result.toolCallSteps.delete(record.step_index);
       }
     } catch (error) {
       signal?.throwIfAborted();
@@ -525,7 +544,12 @@ export class AntigravitySessionUsageTracker {
     result.complete &&=
       [...result.steps.values()].every((request) => request !== null) &&
       [...this.#consumed.keys()].every((step) => result.steps.has(step));
-    const unseen = new Set([...result.steps.keys()].filter((step) => !this.#consumed.has(step)));
+    // Tool-call viewable_at can describe a fully assembled payload, not generation start.
+    const unseen = new Set(
+      [...result.steps.keys()].filter(
+        (step) => !this.#consumed.has(step) && !result.toolCallSteps.has(step),
+      ),
+    );
     if (withTimings && unseen.size > 0)
       result.timings = await readAntigravityRequestTimings(
         this.#nativeSessionId,

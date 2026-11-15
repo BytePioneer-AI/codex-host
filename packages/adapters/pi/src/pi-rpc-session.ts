@@ -594,6 +594,7 @@ export class PiRpcSession {
   #autonomousLifecycleHandler: ((update: PiAutonomousTurnLifecycle) => void) | null = null;
   #usageHandler: ((observation: PiUsageObservation) => void) | null = null;
   #usageRequestStartedAtMs: number | null = null;
+  #usageRequestTimingUnavailable = false;
   // Pieces of the unterminated frame; joined once at its newline so a large frame (a long
   // Session's get_entries) costs linear rather than quadratic copying on the Host event loop.
   #buffer: Buffer<ArrayBufferLike>[] = [];
@@ -694,21 +695,39 @@ export class PiRpcSession {
   /** Every finished assistant message is one model request, with or without an active Turn. */
   #observeUsage(value: Record<string, unknown>): void {
     if (value.type === "message_start") {
-      if (isRecord(value.message) && value.message.role === "assistant")
+      if (isRecord(value.message) && value.message.role === "assistant") {
         this.#usageRequestStartedAtMs = null;
+        this.#usageRequestTimingUnavailable = false;
+      }
       return;
     }
-    // Generation starts at the first output token: the first thinking, text or tool-call block
-    // or delta. Prefill before it is excluded, as in DeepSeek dsh's decode time.
     if (value.type === "message_update") {
       const event = value.assistantMessageEvent;
       if (
         this.#usageRequestStartedAtMs === null &&
+        !this.#usageRequestTimingUnavailable &&
         isRecord(event) &&
-        typeof event.type === "string" &&
-        /^(text|thinking|reasoning|thought|toolcall)_(start|delta)$/u.test(event.type)
+        typeof event.type === "string"
       ) {
-        this.#usageRequestStartedAtMs = Date.now();
+        if (
+          /^(text|thinking|reasoning|thought)_delta$/u.test(event.type) &&
+          typeof event.delta === "string" &&
+          event.delta.length > 0
+        )
+          this.#usageRequestStartedAtMs = Date.now();
+        else if (
+          event.type === "toolcall_delta" &&
+          typeof event.delta === "string" &&
+          event.delta.length > 0
+        ) {
+          // Some providers synthesize start/delta/end after assembling the entire arguments.
+          try {
+            JSON.parse(event.delta);
+            this.#usageRequestTimingUnavailable = true;
+          } catch {
+            this.#usageRequestStartedAtMs = Date.now();
+          }
+        } else if (event.type === "toolcall_end") this.#usageRequestTimingUnavailable = true;
       }
       return;
     }

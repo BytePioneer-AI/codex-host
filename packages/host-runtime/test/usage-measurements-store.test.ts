@@ -58,7 +58,12 @@ it("merges concurrent observers and migrates a legacy log only when saving", asy
   await writeFile(
     join(folder, key + ".jsonl"),
     [
-      JSON.stringify({ version: 1, turnId: "t", at: 10, values: { outputTokensPerSecond: 10 } }),
+      JSON.stringify({
+        version: 1,
+        turnId: "t",
+        at: 10,
+        values: { outputTokensPerSecond: 10, timeToFirstOutputMs: 60 },
+      }),
       "invalid record",
       JSON.stringify({ version: 1, turnId: "t", at: 20, values: { outputTokensPerSecond: 20 } }),
     ].join("\n") + "\n",
@@ -66,17 +71,15 @@ it("merges concurrent observers and migrates a legacy log only when saving", asy
   const a = new UsageMeasurementsStore(directory, () => {}),
     b = new UsageMeasurementsStore(directory, () => {});
   try {
-    expect(await a.read("scope", "session", new Set(["t"]))).toMatchObject({
-      outputTokensPerSecond: { value: 20 },
-    });
+    const legacy = await a.read("scope", "session", new Set(["t"]));
+    expect(legacy.outputTokensPerSecond).toBeUndefined();
+    expect(legacy.timeToFirstOutputMs).toMatchObject({ value: 60 });
     expect(await readdir(folder)).toEqual([key + ".jsonl"]);
     b.record("scope", "session", "t", 30, { timeToFirstOutputMs: 50 });
     await Promise.all([a.flush("scope", "session"), b.flush("scope", "session")]);
     const disk = JSON.parse(await readFile(join(folder, key + ".json"), "utf8"));
-    expect(disk.values).toMatchObject({
-      outputTokensPerSecond: { value: 20 },
-      timeToFirstOutputMs: { value: 50 },
-    });
+    expect(disk.values.outputTokensPerSecond).toBeUndefined();
+    expect(disk.values).toMatchObject({ timeToFirstOutputMs: { value: 50 } });
     expect(await readdir(folder)).toEqual([key + ".json"]);
   } finally {
     await a.close();

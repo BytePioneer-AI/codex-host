@@ -1,5 +1,6 @@
 import {
   usageMeasurementsSchema,
+  mergeUsageOutputTimings,
   type UsageMeasurementsSnapshot,
 } from "@codexhost/shared-contracts";
 import { randomUUID } from "node:crypto";
@@ -753,6 +754,13 @@ export class MappingStore {
         if (value && retained.has(value.turnId) && (!merged[field] || value.at >= merged[field].at))
           merged[field] = value;
       }
+      const outputTimings = mergeUsageOutputTimings(
+        prior && sameJson(prior.nativeSessionRef, expectedNativeSessionRef)
+          ? prior.values.outputTimings
+          : undefined,
+        parsed.outputTimings,
+      ).filter((value) => retained.has(value.turnId));
+      if (outputTimings.length) merged.outputTimings = outputTimings;
       const next = { ...current };
       if (Object.keys(merged).length)
         next.usageMeasurements = { nativeSessionRef: expectedNativeSessionRef, values: merged };

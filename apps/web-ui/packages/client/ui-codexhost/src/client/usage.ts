@@ -8,6 +8,7 @@ export interface HostThreadUsage {
   readonly cacheWriteInputTokens?: number;
   readonly outputTokens?: number;
   readonly outputTokensPerSecond?: number;
+  readonly sessionOutputTokensPerSecond?: number;
   readonly apiOutputTokensPerSecond?: number;
   readonly reasoningOutputTokens?: number;
   readonly totalTokens?: number;

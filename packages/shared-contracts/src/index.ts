@@ -429,7 +429,12 @@ export {
   type ThreadTitleInput,
 } from "./thread-title.js";
 
-export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";
+export {
+  usageMeasurementsSchema,
+  mergeUsageOutputTimings,
+  type UsageMeasurementsSnapshot,
+  type UsageOutputTiming,
+} from "./thread-usage.js";
 
 export {
   webUiExtensionIdSchema,

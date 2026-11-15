@@ -38,7 +38,7 @@
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 受限 | pi-gotgenes-subagents / extension / history | 公开服务、事件、真实父子 JSONL、定向回归 | 身份、状态、只读 transcript；GUI 由集成负责人验收 |
 | B12 | 自主 Turn | 原生有则必做 | P1 | 受限 | Pi RPC / adapter lifecycle | 原生 agent_start 到终态组合回归 | 实时观察、稳定身份；应用后 Desktop 验收待完成 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
-| B14 | 请求级计量 | 原生有则必做 | P2 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
+| B14 | 请求级计量 | 原生有则必做 | P2 | 受限 | `pi-rpc-session.ts`、`pi-usage.ts` | RPC 请求级计时回归；Google Provider 完整参数事件源码 | 仅在可确认增量输出起点时计速；完整参数整块交付仍保留用量，不计 TPS 或均值 |
 | B15 | 接收委派 | 必做（验证项） | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 | B16 | 向下委派 | 原生有则必做 | P2 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |
 | C1 | 展示元数据 | 必做 | P1 | 待验证 | 既有 Adapter | 本次未重验 | 只验 B11 及受影响路径 |

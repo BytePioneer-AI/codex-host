@@ -131,6 +131,8 @@ function summaryParts(usage: HostThreadUsage | null, t: Translate): string[] {
     cost(usage),
   ].filter((value): value is string => value !== null);
   if (result.length > 0) return result;
+  if (usage.sessionOutputTokensPerSecond !== undefined)
+    return [tokenRate(usage.sessionOutputTokensPerSecond, t)];
   if (usage.totalTokens !== undefined)
     return [`${tokenCount(usage.totalTokens)} ${t("usage.unit.tokens")}`];
   const context = contextPercent(usage);
@@ -157,6 +159,12 @@ function usageGroups(usage: HostThreadUsage | null, t: Translate): DetailGroup[]
       session.push({
         label: t("usage.cache.average"),
         value: percent(usage.sessionCacheHitRatePercent),
+      });
+    if (usage.sessionOutputTokensPerSecond !== undefined)
+      session.push({
+        label: t("usage.speed.average"),
+        value: tokenRate(usage.sessionOutputTokensPerSecond, t),
+        note: t("usage.speed.average.note"),
       });
     if (usage.cacheHitRatePercent !== undefined)
       session.push({

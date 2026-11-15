@@ -825,6 +825,9 @@ export class ExternalThreadRuntime {
     const retained = new Set<string>(
       thread.record.turnMappings.map((mapping) => mapping.hostTurnId),
     );
+    thread.usageMeter.restoreOutputTimings(
+      saved.values.outputTimings?.filter((value) => retained.has(value.turnId)) ?? [],
+    );
     for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
       const value = saved.values[field];
       if (value && retained.has(value.turnId))

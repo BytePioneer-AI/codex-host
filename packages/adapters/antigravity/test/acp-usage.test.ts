@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { parseHostUsage, parseHostUsageRequest } from "@codexhost/harness-adapter";
+import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
@@ -85,6 +86,74 @@ describe("Antigravity usage model identity", () => {
 });
 
 describe("Antigravity Session usage", () => {
+  it.each([false, true])(
+    "keeps tool-call accounting but excludes its buffered timing (historical=%s)",
+    async (historical) => {
+      await transcript(
+        planner(1),
+        planner(3, {
+          output_tokens: 1730,
+          tool_calls: [{ name: "edit_file", args: { Path: "test" } }],
+        }),
+      );
+      await writeNativeTimingDatabase(home, [
+        { step: 1 },
+        { step: 3, created: 10000, started: 12000, completed: 12004, output: 1730 },
+      ]);
+      const meter = new UsageMeter();
+      meter.turnStarted("t", 1000);
+      if (!historical) tracker.beginTurn(1000);
+      const update = historical
+        ? await tracker.replayHistoricalRequests()
+        : await tracker.collectNewTranscriptRequests();
+      expect(update.requests).toHaveLength(2);
+      expect(update.requests[0]).toMatchObject({ startedAtMs: 3000, completedAtMs: 5000 });
+      expect(update.requests[1]).toMatchObject({ outputTokens: 1730 });
+      expect(update.requests[1]).not.toHaveProperty("startedAtMs");
+      for (const request of update.requests) meter.recordRequest(request, historical ? null : "t");
+      meter.recordHistory(
+        historical ? update.complete : tracker.recordTurnPromptUsage({}).complete,
+      );
+      const usage = meter.derive(update.usage, {
+        find: () => ({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1 }),
+      });
+      expect(usage).toMatchObject({ outputTokens: 1750, sessionOutputTokensPerSecond: 10 });
+      expect(usage?.totalCostUsd).toBeCloseTo(2050 / 1_000_000);
+      expect(usage?.outputTokensPerSecond).toBe(historical ? undefined : 10);
+    },
+  );
+
+  it("does not fall back to prompt timing for a complete tool call when native timing is absent", async () => {
+    await transcript(planner(1, { tool_calls: [{ name: "read_file", args: { Path: "test" } }] }));
+    tracker.beginTurn(1000);
+    const update = await tracker.collectNewTranscriptRequests({
+      firstOutputAtMs: 7996,
+      completedAtMs: 8000,
+      promptUsage: nativePrompt,
+    });
+    expect(update.requests).toHaveLength(1);
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.usage?.outputTokens).toBe(20);
+    expect(update.usage?.outputTokensPerSecond).toBeUndefined();
+  });
+
+  it("retains the last reliable speed when the next Turn only emits assembled tool calls", async () => {
+    await transcript(planner(1));
+    await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    tracker.beginTurn(1000);
+    expect((await tracker.collectNewTranscriptRequests()).usage?.outputTokensPerSecond).toBe(10);
+    tracker.endTurn();
+    tracker.beginTurn(10000);
+    await appendFile(
+      file,
+      planner(3, { tool_calls: [{ name: "read_file", args: { Path: "test" } }] }) + "\n",
+    );
+    const update = await tracker.collectNewTranscriptRequests();
+    expect(update.requests).toHaveLength(1);
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.usage).toMatchObject({ outputTokens: 40, outputTokensPerSecond: 10 });
+  });
+
   it("sums native per-request generation intervals without tool waits", async () => {
     await transcript(planner(1), planner(3, { output_tokens: 30 }));
     await writeNativeTimingDatabase(home, [
@@ -165,8 +234,11 @@ describe("Antigravity Session usage", () => {
     await writeNativeTimingDatabase(home, [{ step: 1 }]);
     const history = await tracker.replayHistoricalRequests();
     expect(history.complete).toBe(true);
-    expect(history.requests[0]).toMatchObject({ historical: true });
-    expect(history.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(history.requests[0]).toMatchObject({
+      historical: true,
+      startedAtMs: 3000,
+      completedAtMs: 5000,
+    });
     expect(history.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 

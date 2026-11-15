@@ -5,12 +5,14 @@ import { createInterface } from "node:readline";
 import { join } from "node:path";
 import {
   usageMeasurementsSchema,
+  mergeUsageOutputTimings,
   type UsageMeasurementsSnapshot,
 } from "@codexhost/shared-contracts";
 
 const fields = ["outputTokensPerSecond", "timeToFirstOutputMs"] as const;
 type Field = (typeof fields)[number];
-export type UsageMeasurements = Partial<Record<Field, number>>;
+export type UsageMeasurements = Partial<Record<Field, number>> &
+  Pick<UsageMeasurementsSnapshot, "outputTimings">;
 export type StoredUsageMeasurements = UsageMeasurementsSnapshot;
 interface BufferedSnapshot {
   values: StoredUsageMeasurements;
@@ -21,7 +23,7 @@ interface BufferedSnapshot {
 // Several native Desktop connections may observe the same Thread in one Host process.
 const writes = new Map<string, Promise<void>>();
 
-/** Latest native-session display snapshot. record() is memory-only; no timers or append writes. */
+/** Native-session measurement snapshot. record() is memory-only; no timers or append writes. */
 export class UsageMeasurementsStore {
   private readonly snapshots = new Map<string, BufferedSnapshot>();
   private readonly pending = new Set<Promise<void>>();
@@ -49,6 +51,8 @@ export class UsageMeasurementsStore {
     return state;
   }
   private merge(target: StoredUsageMeasurements, source: StoredUsageMeasurements): void {
+    const outputTimings = mergeUsageOutputTimings(target.outputTimings, source.outputTimings);
+    if (outputTimings.length) target.outputTimings = outputTimings;
     for (const field of fields) {
       const value = source[field];
       if (value && (!target[field] || value.at > target[field].at)) target[field] = value;
@@ -120,10 +124,32 @@ export class UsageMeasurementsStore {
   ): void {
     if (this.closed) return;
     const state = this.state(this.file(scope, sessionId));
+    if (values.outputTimings) {
+      const parsed = usageMeasurementsSchema.safeParse({ outputTimings: values.outputTimings });
+      if (parsed.success) {
+        const merged = mergeUsageOutputTimings(
+          state.values.outputTimings,
+          parsed.data.outputTimings,
+        );
+        if (
+          merged.length &&
+          JSON.stringify(merged) !== JSON.stringify(state.values.outputTimings)
+        ) {
+          state.values.outputTimings = merged;
+          state.revision++;
+          state.dirty = true;
+        }
+      }
+    }
     for (const field of fields) {
       if (values[field] === undefined) continue;
       const parsed = usageMeasurementsSchema.safeParse({
-        [field]: { value: values[field], turnId, at },
+        [field]: {
+          value: values[field],
+          turnId,
+          at,
+          ...(field === "outputTokensPerSecond" ? { version: 2 } : {}),
+        },
       });
       if (!parsed.success) continue;
       const next = parsed.data[field],
@@ -202,13 +228,16 @@ export class UsageMeasurementsStore {
       this.diagnose(error);
       return {};
     }
-    return structuredClone(
-      Object.fromEntries(
-        Object.entries(state.values).filter(
-          ([, value]) => value && retainedTurns.has(value.turnId),
-        ),
-      ),
+    const values: StoredUsageMeasurements = {};
+    for (const field of fields) {
+      const value = state.values[field];
+      if (value && retainedTurns.has(value.turnId)) values[field] = value;
+    }
+    const outputTimings = state.values.outputTimings?.filter((value) =>
+      retainedTurns.has(value.turnId),
     );
+    if (outputTimings?.length) values.outputTimings = outputTimings;
+    return structuredClone(values);
   }
   close(): Promise<void> {
     this.closed = true;

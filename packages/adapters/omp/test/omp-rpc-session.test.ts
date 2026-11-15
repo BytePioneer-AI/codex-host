@@ -339,6 +339,89 @@ class FakeOmpProcess extends EventEmitter {
 }
 
 describe("OMP RPC session", () => {
+  it.each([
+    { name: "tool block alone", events: [{ type: "toolcall_start" }], timed: false },
+    {
+      name: "empty output blocks",
+      events: [{ type: "text_start" }, { type: "thinking_start" }],
+      timed: false,
+    },
+    {
+      name: "assembled arguments",
+      events: [
+        { type: "toolcall_start" },
+        { type: "toolcall_delta", delta: '{"path":"file"}' },
+        { type: "toolcall_end" },
+        { type: "text_delta", delta: "later text" },
+      ],
+      timed: false,
+    },
+    {
+      name: "completed tool before text",
+      events: [
+        { type: "toolcall_start" },
+        { type: "toolcall_end" },
+        { type: "text_delta", delta: "later text" },
+      ],
+      timed: false,
+    },
+    {
+      name: "incremental arguments",
+      events: [
+        { type: "toolcall_start" },
+        { type: "toolcall_delta", delta: '{"path":' },
+        { type: "toolcall_delta", delta: '"file"}' },
+        { type: "toolcall_end" },
+      ],
+      timed: true,
+    },
+    {
+      name: "thinking before assembled tool",
+      events: [
+        { type: "thinking_delta", delta: "thinking" },
+        { type: "toolcall_delta", delta: '{"path":"file"}' },
+      ],
+      timed: true,
+    },
+  ])("only times observable generation: $name", async ({ events, timed }) => {
+    const process = new FakeOmpProcess();
+    const onUsage = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onUsage },
+      { spawn: () => process as never },
+    );
+    await session.start();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const message = { role: "assistant", responseId: "tool-only", content: [] };
+      process.sendFrame({ type: "message_start", message });
+      clock.mockReturnValue(2000);
+      for (const event of events)
+        process.sendFrame({
+          type: "message_update",
+          assistantMessageEvent: { ...event, contentIndex: 0 },
+          message,
+        });
+      clock.mockReturnValue(3000);
+      process.sendFrame({ type: "message_end", message });
+      expect(onUsage.mock.calls[0]?.[0]).toMatchObject({
+        startedAtMs: timed ? 2000 : null,
+        completedAtMs: 3000,
+      });
+      process.sendFrame({ type: "message_start", message });
+      process.sendFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "fresh request" },
+        message,
+      });
+      clock.mockReturnValue(4000);
+      process.sendFrame({ type: "message_end", message });
+      expect(onUsage.mock.calls[1]?.[0]).toMatchObject({ startedAtMs: 3000, completedAtMs: 4000 });
+    } finally {
+      clock.mockRestore();
+      await session.close();
+    }
+  });
   it("faults the Session instead of throwing when the child closes stdin", async () => {
     const process = new FakeOmpProcess();
     const onFault = vi.fn();

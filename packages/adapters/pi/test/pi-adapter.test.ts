@@ -4194,6 +4194,37 @@ describe("Pi HarnessAdapter Session", () => {
 });
 
 describe("Pi native steer delivery", () => {
+  it("does not advertise or deliver native steer during manual compaction", async () => {
+    const transport = new FakePiTransport();
+    const compaction = Promise.withResolvers<PiCompactResult>();
+    transport.compact.mockImplementationOnce(() => compaction.promise);
+    const steer = vi.fn(async () => undefined);
+    Object.assign(transport, { steer });
+    const adapter = new PiAdapter({}, { createTransport: () => transport });
+    const session = await openSession(adapter);
+    const turnId = hostTurnIdSchema.parse("manual-compact-steer");
+    try {
+      const commands = session.commands;
+      if (!commands) throw new Error("Pi Session did not expose commands");
+      expect(await commands.execute({ turnId, commandId: "pi.compact" })).toEqual({
+        ok: true,
+        value: { turnId },
+      });
+      expect.soft(session.capabilities.steer).toBe(false);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "new direction" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(steer).not.toHaveBeenCalled();
+    } finally {
+      compaction.resolve({ outcome: "succeeded" });
+      await adapter.close();
+    }
+  });
+
   it("rejects completion without a newly persisted User Entry", async () => {
     const f = fixture();
     try {

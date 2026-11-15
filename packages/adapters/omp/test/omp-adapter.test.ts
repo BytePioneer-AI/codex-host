@@ -2006,6 +2006,39 @@ describe("OMP Adapter Subagents", () => {
 });
 
 describe("OMP native steer delivery", () => {
+  it("does not advertise or deliver native steer during manual compaction", async () => {
+    const transport = new FakeOmpTransport();
+    const compaction = Promise.withResolvers<OmpCompactResult>();
+    vi.spyOn(transport, "compact").mockImplementationOnce(() => compaction.promise);
+    const steer = vi.fn(async () => undefined);
+    Object.assign(transport, { steer });
+    const adapter = new OmpAdapter({}, { createTransport: () => transport });
+    const turnId = "manual-compact-steer" as HostTurnId;
+    try {
+      const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const session = opened.value;
+      const commands = session.commands;
+      if (!commands) throw new Error("Omp Session did not expose commands");
+      expect(await commands.execute({ turnId, commandId: "omp.compact" })).toEqual({
+        ok: true,
+        value: { turnId },
+      });
+      expect.soft(session.capabilities.steer).toBe(false);
+      expect(
+        await session.execute({
+          type: "turn.steer",
+          turnId,
+          input: [{ type: "text", text: "new direction" }],
+        }),
+      ).toMatchObject({ ok: false, error: { code: "invalidState" } });
+      expect(steer).not.toHaveBeenCalled();
+    } finally {
+      compaction.resolve({ outcome: "succeeded" });
+      await adapter.close();
+    }
+  });
+
   it.each([false, true])(
     "keeps the starting identity after two native steers (cancelled=%s)",
     async (cancelled) => {

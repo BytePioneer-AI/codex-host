@@ -731,11 +731,12 @@ class OmpHarnessSession implements HarnessSession {
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
-      // Native input is unavailable during cancellation or completion settlement.
+      // Only a prompted Turn owns native steering, not a manual Harness command.
       get steer(): boolean {
         return (
           session.#transport?.steer !== undefined &&
           session.#active !== null &&
+          session.#active.command.input.length > 0 &&
           !session.#active.cancellationRequested &&
           !session.#active.settling
         );
@@ -1402,6 +1403,9 @@ class OmpHarnessSession implements HarnessSession {
         ok: false,
         error: invalidState("Omp steer must reference the active Turn"),
       };
+    }
+    if (active.command.input.length === 0) {
+      return { ok: false, error: invalidState("Omp steer requires an active prompt") };
     }
     if (active.cancellationRequested) {
       return {

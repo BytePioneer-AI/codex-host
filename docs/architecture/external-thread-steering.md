@@ -5,7 +5,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - **原生同轮插入**：Session 此刻声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
 - **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。不支持原生插入，或原生明确拒绝且输入未送达时走这条路径；写入后回执不确定时不自动重发。
 
-用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、OMP 和 Pi 会声明 `capabilities.steer`：Claude Code 的条件与原生依据见 [`../harnesses/claude-code/claude-code-steer.md`](../harnesses/claude-code/claude-code-steer.md)；OMP/Pi 使用原生 `steer` RPC，已请求取消的 Turn 不接受原生插入。其他 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
+用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、OMP 和 Pi 会声明 `capabilities.steer`：Claude Code 的条件与原生依据见 [`../harnesses/claude-code/claude-code-steer.md`](../harnesses/claude-code/claude-code-steer.md)；OMP/Pi 使用原生 `steer` RPC，仅接受仍在执行的 Prompt Turn；手动压缩等 Harness 命令、Pi 自主运行、已请求取消或正在记录完成历史的 Turn 不接受原生插入。其他 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
 
 ## 原生同轮插入
 

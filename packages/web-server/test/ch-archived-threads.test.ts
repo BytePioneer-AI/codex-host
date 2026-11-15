@@ -598,6 +598,50 @@ for (const archived of [true, false]) {
     assert.equal(bench.frames.length, count, "an older acknowledgement must not rebroadcast");
     assert.equal(bench.sessions["archiveOperations"].size, 0);
   });
+
+  it(`does not send an obsolete ${archived ? "archive" : "unarchive"} after a delayed owner response`, async (t) => {
+    const host = nativeCodex(new FakeChHost());
+    const bench = setup(t, host);
+    const id = "native-owner-race";
+    host.add(id, bench.root).modelProvider = "openai";
+    if (archived) host.archivedIds.add(id);
+    await bench.call("session/list", { includeArchived: true });
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    t.after(() => release.resolve(undefined));
+    const request = host.request.bind(host);
+    let held = false;
+    host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+      const result = await request<T>(method, params);
+      if (method === "codexhost/thread/inspect" && params.threadId === id && !held) {
+        held = true;
+        entered.resolve(undefined);
+        await release.promise;
+      }
+      return result;
+    };
+    const oldWrite = bench.call(archived ? "session/archive" : "session/unarchive", {
+      sessionId: id,
+    });
+    await entered.promise;
+    await bench.call(archived ? "session/unarchive" : "session/archive", { sessionId: id });
+    assert.equal(host.archivedIds.has(id), !archived);
+    assert.equal(bench.workspaces.isArchived(id), !archived);
+    release.resolve(undefined);
+    await oldWrite;
+    assert.equal(host.archivedIds.has(id), !archived);
+    assert.equal(bench.workspaces.isArchived(id), !archived);
+    assert.deepEqual(
+      host.requests
+        .filter(
+          (r) =>
+            r.params.threadId === id &&
+            (r.method === "thread/archive" || r.method === "thread/unarchive"),
+        )
+        .map((r) => r.method),
+      [archived ? "thread/unarchive" : "thread/archive"],
+    );
+  });
 }
 
 it("drains an existing refresh before requesting native archive confirmation", async (t) => {

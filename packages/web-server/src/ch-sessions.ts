@@ -961,6 +961,7 @@ export class ChSessions {
         this.threads.setHarness(id, harnessId);
       }
       const owner = await this.owner(id);
+      if (this.archiveOperations.get(id) !== operation) return;
       try {
         await this.host.request(archived ? "thread/archive" : "thread/unarchive", { threadId: id });
       } catch (error) {

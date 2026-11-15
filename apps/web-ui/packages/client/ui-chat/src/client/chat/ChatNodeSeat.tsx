@@ -20,9 +20,10 @@ import {
 } from "../contract/turn-process.ts";
 import { storedTurnProcessEntry } from "../stores.ts";
 import { useSearchableHidden } from "./searchable-hidden.ts";
+import { useTurnAnnotations } from "./turn-annotations.ts";
 import css from "./ChatView.module.css";
 
-interface ChatNodeSeatProps extends ChatNodeOwnerProps {
+interface ChatNodeSeatProps extends Omit<ChatNodeOwnerProps, "responseAnnotations"> {
   readonly nodeKey: string;
   /** A replaced Builder must rebind keyed hooks even when references and keys survive. */
   readonly nodeStore: ChatNodeStore;
@@ -64,6 +65,7 @@ function isIndependentProcessToolNode(node: ChatNode | undefined): boolean {
 export const ChatNodeSeat = memo(function ChatNodeSeat({
   nodeKey,
   groupPart,
+  nodeStore,
   useChatNode,
   useChatNodeProcess,
   usePresentation,
@@ -162,6 +164,8 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
   }, [processMember, setOpen]);
   const wrapperRef = useSearchableHidden(processHidden, revealProcess);
   const [disclosureReset] = useState(() => createSnapshotStore(0));
+  // A reply resolves its annotation citations against the message it answers.
+  const responseAnnotations = useTurnAnnotations(nodeStore, turn);
   const turnData = turnDataOf(routedNode);
   const hookContext = useMemo<ChatNodeHookContext>(
     () => ({ turnData, disclosureReset }),
@@ -189,6 +193,7 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
             renderMessageImages,
             fileMentions,
             turnProcess,
+            responseAnnotations,
           },
     [
       node,
@@ -204,6 +209,7 @@ export const ChatNodeSeat = memo(function ChatNodeSeat({
       renderMessageImages,
       fileMentions,
       turnProcess,
+      responseAnnotations,
     ],
   );
   if (routedNode === undefined || owner === null) return null;

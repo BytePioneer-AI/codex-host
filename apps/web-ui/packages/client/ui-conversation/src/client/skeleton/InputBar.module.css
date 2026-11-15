@@ -621,3 +621,22 @@
   flex: 1;
   min-width: 0;
 }
+
+/* Attached response annotations: one row above the draft, scrollable
+   sideways when many are pending (the rail grows with the message). */
+.annotations {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  overflow-x: auto;
+  padding: 8px 12px 0;
+  scrollbar-width: none;
+}
+
+.annotations::-webkit-scrollbar {
+  display: none;
+}
+
+.annotations > * {
+  flex: none;
+}

@@ -23,6 +23,7 @@ import type {
   DraftAttachmentId,
   DraftInitializationOptions,
   DraftInitializationResult,
+  DraftResponseAnnotation,
   InputActions,
   InputEffect,
   InputNotice,
@@ -53,6 +54,7 @@ import { SubmitMachine } from "./machine.ts";
 import { resolveDraftInput, snapshotDraft } from "../draft.ts";
 import { DraftEditorRuntime } from "./editor/runtime.ts";
 import type { EditorProjection } from "./editor/projection.ts";
+import { composeAnnotatedMessage, type ResponseAnnotation } from "@codexhost/shared-contracts";
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -134,6 +136,7 @@ interface DetachedDraft {
   readonly draft: string;
   readonly occurrences: readonly Occurrence[];
   readonly attachmentIds: readonly DraftAttachmentId[];
+  readonly responseAnnotations: readonly DraftResponseAnnotation[];
 }
 
 /**
@@ -193,6 +196,10 @@ export class SessionInputShell implements SessionInput {
     pruneAttachments: (ids) => {
       this.pruneAttachments(ids);
     },
+    addResponseAnnotation: (annotation) => this.addResponseAnnotation(annotation),
+    removeResponseAnnotation: (id) => {
+      this.removeResponseAnnotation(id);
+    },
     submit: () => {
       this.submit("queue");
     },
@@ -210,6 +217,11 @@ export class SessionInputShell implements SessionInput {
   private lastPublishedDraft: DraftSnapshot | undefined;
   private draftSnapshotCache: { revision: number; value: DraftSnapshot } | undefined;
   private attachmentIds: readonly DraftAttachmentId[] = [];
+  /** Selected passages attached to the next message, in attachment order. */
+  private responseAnnotations: readonly DraftResponseAnnotation[] = [];
+  private annotationSeq = 0;
+  /** Failure restoration must not mutate the draft captured by an async adjudication. */
+  private adjudication: Promise<PickOutcome> | undefined;
   private disposed = false;
   /** Conversation store writer for the current semantic document. */
   private persistDraft: ((draft: DraftSnapshot) => void) | undefined;
@@ -222,7 +234,8 @@ export class SessionInputShell implements SessionInput {
   /** Revision of the last automatic failure restoration. */
   private failedRestoreRev: number | undefined;
   /** New user input stays ahead of failed sends even when failures arrive out of order. */
-  private failedRestorePrefix: Pick<DetachedDraft, "draft" | "occurrences"> | undefined;
+  private failedRestorePrefix:
+    Pick<DetachedDraft, "draft" | "occurrences" | "responseAnnotations"> | undefined;
   private restoringFailures = false;
   private attachmentFlightSeq = 0;
   /** Attachment-only sends retained until admission settles or scope disposal releases their attachments. */
@@ -419,6 +432,63 @@ export class SessionInputShell implements SessionInput {
   }
 
   /**
+   * Attach one selected passage to the next message; busy admission phases refuse.
+   * @param annotation - selected text and its optional comment.
+   * @returns the draft identity, or undefined when the draft is locked.
+   */
+  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined {
+    if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
+      return undefined;
+    this.annotationSeq += 1;
+    const id = `response-annotation-${String(this.annotationSeq)}` as DraftAttachmentId;
+    this.responseAnnotations = [
+      ...this.responseAnnotations,
+      {
+        id,
+        text: annotation.text.trim(),
+        ...(annotation.annotation === undefined ? {} : { annotation: annotation.annotation }),
+      },
+    ];
+    this.publish();
+    return id;
+  }
+
+  /**
+   * Remove one attached annotation by draft identity.
+   * @param id - draft identity from {@link addResponseAnnotation}.
+   * @returns whether an annotation was removed.
+   */
+  removeResponseAnnotation(id: DraftAttachmentId): boolean {
+    if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
+      return false;
+    const next = this.responseAnnotations.filter((annotation) => annotation.id !== id);
+    if (next.length === this.responseAnnotations.length) return false;
+    this.responseAnnotations = next;
+    // A failed send's record still holds what it tried to send: dropping the
+    // annotation from the draft drops it from that record too, so a later
+    // failure cannot put back what the user just removed.
+    this.forgetFailedAnnotation(id);
+    this.publish();
+    return true;
+  }
+
+  /** Remove one annotation from every failed-send record that still mentions it. */
+  private forgetFailedAnnotation(id: DraftAttachmentId): void {
+    if (this.failedRestorePrefix !== undefined)
+      this.failedRestorePrefix = {
+        ...this.failedRestorePrefix,
+        responseAnnotations: this.failedRestorePrefix.responseAnnotations.filter(
+          (annotation) => annotation.id !== id,
+        ),
+      };
+    for (const [seq, record] of this.failedDetached) {
+      const kept = record.responseAnnotations.filter((annotation) => annotation.id !== id);
+      if (kept.length === record.responseAnnotations.length) continue;
+      this.failedDetached.set(seq, { ...record, responseAnnotations: kept });
+    }
+  }
+
+  /**
    * Clear the draft as a successful-send commit: the editor empties (no undo
    * unit) and the undo history is cut, so Ctrl/Cmd-Z cannot resurrect sent
    * content (the command path gets the same discipline from submit-settled).
@@ -453,7 +523,9 @@ export class SessionInputShell implements SessionInput {
     let state: MessageSubmissionState | undefined;
     if (
       this.snapshot.phase === "plain" &&
-      (this.snapshot.draft.trim() !== "" || this.attachmentIds.length > 0)
+      (this.snapshot.draft.trim() !== "" ||
+        this.attachmentIds.length > 0 ||
+        this.responseAnnotations.length > 0)
     ) {
       try {
         state = this.deps.submissionState?.();
@@ -467,7 +539,11 @@ export class SessionInputShell implements SessionInput {
       ...(source === undefined ? {} : { source }),
       ...(state === undefined ? {} : { state }),
     });
-    if (this.snapshot.draft.trim() === "" && this.attachmentIds.length > 0) {
+    if (
+      this.snapshot.draft.trim() === "" &&
+      this.attachmentIds.length > 0 &&
+      this.responseAnnotations.length === 0
+    ) {
       if (this.snapshot.phase === "plain") {
         const attachmentIds = [...this.attachmentIds];
         const controller = new AbortController();
@@ -508,7 +584,13 @@ export class SessionInputShell implements SessionInput {
       );
       return;
     }
-    this.dispatchRun({ type: "enter", mode, draft: this.projection.clipboardText, submission });
+    this.dispatchRun({
+      type: "enter",
+      mode,
+      draft: this.projection.clipboardText,
+      annotated: this.responseAnnotations.length > 0,
+      submission,
+    });
     const phase = this.snapshot.phase;
     if (phase === "adjudicating" || phase === "submitting") {
       this.deps.popup?.()?.dismiss();
@@ -820,19 +902,27 @@ export class SessionInputShell implements SessionInput {
     this.notifySubmission(attempt.submission);
     const attachmentIds = [...this.attachmentIds];
     this.attachmentIds = [];
+    const responseAnnotations = [...this.responseAnnotations];
+    this.responseAnnotations = [];
     const occurrences = this.projection.occurrences;
-    const record = { draft, occurrences, attachmentIds };
+    const record = { draft, occurrences, attachmentIds, responseAnnotations };
     this.detachedDrafts.set(attempt.seq, record);
     if (this.failedRestoreRev === this.rev) {
       this.failedDetached.clear();
       this.failedRestorePrefix = undefined;
       this.failedRestoreRev = undefined;
     }
-    if (occurrences.length === 0) {
-      this.settleSink(
-        attempt,
-        this.deps.defaultSink(draft.trim(), attachmentIds, mode, attempt.signal),
+    // Only the body is trimmed: the annotation block carries the Desktop
+    // contract's own leading and trailing newlines.
+    const send = (text: string): Promise<SubmitOutcome> =>
+      this.deps.defaultSink(
+        composeAnnotatedMessage(responseAnnotations, text.trim()),
+        attachmentIds,
+        mode,
+        attempt.signal,
       );
+    if (occurrences.length === 0) {
+      this.settleSink(attempt, send(draft));
       return;
     }
     const inputTriggers = this.deps.inputTriggers?.();
@@ -859,10 +949,7 @@ export class SessionInputShell implements SessionInput {
           cursor = part.offset + part.length;
         }
         out += draft.slice(cursor);
-        this.settleSink(
-          attempt,
-          this.deps.defaultSink(out.trim(), attachmentIds, mode, attempt.signal),
-        );
+        this.settleSink(attempt, send(out));
       },
       (error: unknown) => {
         if (this.dead(attempt)) return;
@@ -902,16 +989,32 @@ export class SessionInputShell implements SessionInput {
 
   /** Restore one failed detached send without overwriting text entered after a restoration. */
   private settleDetachedFailure(attempt: SubmitAttempt, message?: string): void {
+    if (this.adjudication !== undefined) {
+      const restore = (): void => {
+        if (!this.dead(attempt)) this.settleDetachedFailure(attempt, message);
+      };
+      void this.adjudication.then(restore, restore);
+      return;
+    }
     const record = this.detachedDrafts.get(attempt.seq);
     if (record === undefined) return;
     this.detachedDrafts.delete(attempt.seq);
     this.restoreAttachments(record.attachmentIds);
+    const incomplete =
+      record.draft !== "" ||
+      record.responseAnnotations.length > 0 ||
+      this.failedRestorePrefix !== undefined;
     const current = this.projection.clipboardText;
-    if (current !== "" && this.failedRestoreRev !== this.rev) {
+    if (current !== "" && this.failedRestoreRev !== this.rev && incomplete) {
       this.failedDetached.clear();
-      this.failedRestorePrefix = { draft: current, occurrences: this.projection.occurrences };
+      this.failedRestorePrefix = {
+        draft: current,
+        occurrences: this.projection.occurrences,
+        responseAnnotations: [],
+      };
     }
-    this.failedDetached.set(attempt.seq, record);
+    if (record.draft !== "" || record.responseAnnotations.length > 0)
+      this.failedDetached.set(attempt.seq, record);
     this.restoreFailedDrafts();
     this.dispatchRun({
       type: "sink-settled",
@@ -921,7 +1024,11 @@ export class SessionInputShell implements SessionInput {
     });
   }
 
-  /** Rebuild all currently failed snapshots in submission order. */
+  /**
+   * Rebuild all currently failed snapshots in submission order: the body and
+   * the attached annotations are one draft, so they come back together in the
+   * order the sends were attempted, ahead of anything attached afterwards.
+   */
   private restoreFailedDrafts(): void {
     const records = [
       ...(this.failedRestorePrefix === undefined ? [] : [this.failedRestorePrefix]),
@@ -931,7 +1038,9 @@ export class SessionInputShell implements SessionInput {
     const separator = "\n\n";
     let draft = "";
     const occurrences: Occurrence[] = [];
+    const restored: DraftResponseAnnotation[] = [];
     for (const record of records) {
+      restored.push(...record.responseAnnotations);
       if (record.draft === "") continue;
       const base = draft.length + (draft === "" ? 0 : separator.length);
       if (draft !== "") draft += separator;
@@ -940,6 +1049,11 @@ export class SessionInputShell implements SessionInput {
         occurrences.push({ ...occurrence, offset: base + occurrence.offset });
       }
     }
+    const current = new Set(restored.map((annotation) => annotation.id));
+    this.responseAnnotations = [
+      ...restored,
+      ...this.responseAnnotations.filter((annotation) => !current.has(annotation.id)),
+    ];
     this.restoringFailures = true;
     try {
       this.draftEditor.restoreDraft(draft, occurrences);
@@ -948,6 +1062,7 @@ export class SessionInputShell implements SessionInput {
     } finally {
       this.restoringFailures = false;
     }
+    this.publish();
   }
 
   /** Return failed-send attachments to the head of the rail; release happens only after success. */
@@ -968,19 +1083,22 @@ export class SessionInputShell implements SessionInput {
       this.dispatchRun({ type: "adjudicated", attempt, outcome: undefined });
       return;
     }
-    inputTriggers
-      .adjudicate(draft.trim(), attempt.signal, { attachments: this.attachmentIds.length })
-      .then(
-        (outcome: PickOutcome) => {
-          if (this.dead(attempt)) return;
-          this.dispatchRun({ type: "adjudicated", attempt, outcome });
-        },
-        (error: unknown) => {
-          if (this.dead(attempt)) return;
-          const message = error instanceof Error ? error.message : String(error);
-          this.dispatchRun({ type: "adjudication-failed", attempt, message });
-        },
-      );
+    this.adjudication = inputTriggers.adjudicate(draft.trim(), attempt.signal, {
+      attachments: this.attachmentIds.length,
+    });
+    this.adjudication.then(
+      (outcome: PickOutcome) => {
+        this.adjudication = undefined;
+        if (this.dead(attempt)) return;
+        this.dispatchRun({ type: "adjudicated", attempt, outcome });
+      },
+      (error: unknown) => {
+        this.adjudication = undefined;
+        if (this.dead(attempt)) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.dispatchRun({ type: "adjudication-failed", attempt, message });
+      },
+    );
   }
 
   /**
@@ -1046,6 +1164,7 @@ export class SessionInputShell implements SessionInput {
     return {
       draft: this.projection.clipboardText,
       attachmentIds: this.attachmentIds,
+      responseAnnotations: this.responseAnnotations,
       draftRev: this.rev,
       ...(this.primaryAction !== undefined ? { primaryAction: this.primaryAction } : {}),
       phase: core.phase,

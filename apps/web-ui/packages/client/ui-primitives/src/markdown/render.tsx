@@ -32,10 +32,21 @@ import { LinkIconMedium, classifyLinkPath } from "../LinkIcon.tsx";
 import { useMarkdownDelegate } from "./MarkdownDelegate.tsx";
 import { MarkdownAnchor, MarkdownTextLinks, sanitizeMarkdownUrl } from "./MarkdownAnchor.tsx";
 import { HoverCard } from "../HoverCard.tsx";
+import { responseAnnotationIndex } from "@codexhost/shared-contracts";
+import { ResponseAnnotationLabel } from "../ResponseAnnotation.tsx";
+import type { ResponseAnnotationLabels, ResponseAnnotationView } from "../ResponseAnnotation.tsx";
 import { ImageLightbox } from "../ImageLightbox.tsx";
 import { ImagePreview } from "../ImagePreview.tsx";
 import type { PositionedBlock } from "./incremental.ts";
 import css from "./MarkdownText.module.css";
+
+/** One annotation a reply may cite, already resolved from the message that carried it. */
+export interface MarkdownResponseAnnotations {
+  /** Localized card headings. */
+  readonly labels: ResponseAnnotationLabels;
+  /** @param index - one-based attachment position in the annotating message. */
+  readonly resolve: (index: number) => ResponseAnnotationView | undefined;
+}
 
 /** Copy-button labels forwarded to fence CodeBlocks (this package is cordis-free, so copy arrives via props). */
 export interface MarkdownCodeLabels {
@@ -187,6 +198,11 @@ export interface MarkdownRenderContext {
   readonly inBlockquote?: boolean;
   /** Inline-code file mentions; absent wherever no opener vocabulary exists. */
   readonly fileMentions: MarkdownFileMentions | undefined;
+  /**
+   * Response-annotation citations: turns `:codex-annotation{index="N"}` inline
+   * code into the annotation's inline label; absent leaves the token as code.
+   */
+  readonly responseAnnotations?: MarkdownResponseAnnotations | undefined;
   /** Local-path image vocabulary; absent wherever no rewriting owner exists. */
   readonly pathImages: MarkdownPathImages | undefined;
   /** Inside an anchor's children: interactive mentions must not nest there. */
@@ -332,6 +348,24 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
         );
       }
       return <code key={key}>{value}</code>;
+    }
+    case "codexAnnotation": {
+      const citations = context.responseAnnotations;
+      const index = responseAnnotationIndex(node.index);
+      const annotation = index === undefined ? undefined : citations?.resolve(index);
+      // Desktop draws a label only for a canonical index whose annotation this
+      // Turn still resolves; inside an anchor the reference keeps only its text.
+      if (citations === undefined || index === undefined || annotation === undefined) return null;
+      if (context.inLink === true) return citations.labels.label(index);
+      return (
+        <span key={key} className={css.annotationCitation}>
+          <ResponseAnnotationLabel
+            index={index}
+            annotation={annotation}
+            labels={citations.labels}
+          />
+        </span>
+      );
     }
     case "html":
       // No HTML parser enters the pipeline: raw HTML stays literal text.

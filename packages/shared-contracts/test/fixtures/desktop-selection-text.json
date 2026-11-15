@@ -1,0 +1,41 @@
+{
+  "source": "Codex Desktop 26.1106 selection serializer (xprp.jt), executed under jsdom",
+  "binary": "26.1106.51428",
+  "cases": [
+    {
+      "name": "paragraphs",
+      "html": "<div id='whole'><p>alpha</p><p>beta</p></div>",
+      "desktop": "alpha\n\nbeta"
+    },
+    {
+      "name": "list and table",
+      "html": "<div id='whole'><ul><li>one</li><li>two</li></ul><table><tr><td>a</td><td>b</td></tr></table></div>",
+      "desktop": "one\ntwo\na\tb"
+    },
+    {
+      "name": "ordered list with start and value",
+      "html": "<div id='whole'><ol start='3'><li>one</li><li value='9'>two</li></ol></div>",
+      "desktop": "one\ntwo"
+    },
+    {
+      "name": "table",
+      "html": "<div id='whole'><table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table></div>",
+      "desktop": "a\tb\nc\td"
+    },
+    {
+      "name": "line break in a paragraph",
+      "html": "<div id='whole'><p>alpha<br>beta</p></div>",
+      "desktop": "alpha\nbeta"
+    },
+    {
+      "name": "code block",
+      "html": "<div id='whole'><pre><code>  alpha\n  beta\n</code></pre></div>",
+      "desktop": "alpha\n  beta"
+    },
+    {
+      "name": "nested list",
+      "html": "<div id='whole'><ul><li>one<ul><li>deep</li></ul></li><li>two</li></ul></div>",
+      "desktop": "one\ndeep\n\ntwo"
+    }
+  ]
+}

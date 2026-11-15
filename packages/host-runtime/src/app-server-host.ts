@@ -5558,7 +5558,9 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#externalRuntime.idleRelease.outputFailed(thread);
-      this.#diagnose(error);
+      this.#diagnose(
+        `External Harness output failed (harnessId=${thread.harnessId}, threadId=${thread.id}): ${errorMessage(error)}`,
+      );
       this.#externalSteering.fault(thread.id, new Error(errorMessage(error)));
       await settleExternalOutputFailure(
         thread,

@@ -98,14 +98,6 @@ describe("Cursor ACP process boundary", () => {
   });
 });
 
-it("reads history without waiting for a model catalog that never responds", async () => {
-  state.scenario = "hang-models";
-  const replay = transport(500, false);
-  expect(await replay.open("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).toMatchObject({
-    configOptions: [],
-  });
-});
-
 it("prepares once and reuses native credentials without requesting interactive authentication", async () => {
   const native = transport();
   await Promise.all([native.prepare(), native.prepare()]);

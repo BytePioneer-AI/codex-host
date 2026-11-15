@@ -122,13 +122,11 @@ export class SharedThreadOwner {
     let detached = false;
     const send = (message: JsonObject): void => {
       if (detached || streams.output.destroyed) return;
-      // Detach if the session's output stream stops draining.
-      if (streams.output.writableLength > 8 * 1024 * 1024) {
+      // The viewer transport bounds its queue independently of an in-flight frame.
+      void writeJsonFrame(streams.output, message).catch(() => {
         peer.close();
         streams.input.destroy();
-        return;
-      }
-      void writeJsonFrame(streams.output, message).catch(() => peer.close());
+      });
     };
     const unsubscribe = peer.subscribe(send);
     return {

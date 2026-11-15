@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import type { HarnessSession } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
+import type { JsonObject } from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
@@ -8,6 +10,8 @@ import {
 } from "@codexhost/shared-contracts";
 import {
   createFixture,
+  messageParams,
+  method,
   requestId,
   startExternalThread,
   startPiThread,
@@ -167,6 +171,226 @@ describe("AppServerHost output failure", () => {
       ).toMatchObject({
         params: { turn: { status: "completed" } },
       });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("settles the active Turn when the Harness output stream ends without a terminal event", async () => {
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [{ id: "auto", label: "Auto" }],
+      defaultModeId: "auto",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    try {
+      // Wrap each opened Session's output stream so it can be ended without a
+      // terminal Turn event, mimicking a natively killed Harness subagent.
+      const kills: Array<{ killed: boolean }> = [];
+      const wrapOutputs = (session: HarnessSession) => {
+        const real = session.outputs;
+        const state = { killed: false };
+        kills.push(state);
+        Object.defineProperty(session, "outputs", {
+          value: {
+            [Symbol.asyncIterator]() {
+              const inner = real[Symbol.asyncIterator]();
+              return {
+                next: async () => {
+                  if (state.killed) return { done: true as const, value: undefined };
+                  const output = await inner.next();
+                  if (state.killed) return { done: true as const, value: undefined };
+                  return output;
+                },
+              };
+            },
+          },
+        });
+      };
+      const nativeOpen = adapter.open.bind(adapter);
+      vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+        // Resume of a natively killed Session must open a fresh native process.
+        if (input.kind === "resume") {
+          const restored = new FakeHarnessSession(
+            adapter.harnessId,
+            adapter.catalog,
+            undefined,
+            input.nativeRef,
+            undefined,
+            true,
+            input.cwd,
+            true,
+            undefined,
+            null,
+            permissionModes,
+          );
+          wrapOutputs(restored);
+          return { ok: true, value: restored };
+        }
+        const result = await nativeOpen(input);
+        if (result.ok) wrapOutputs(result.value);
+        return result;
+      });
+
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+
+      // End the output stream without emitting turn.completed.
+      const kill = kills[0];
+      if (!kill) throw new Error("Session output stream was not wrapped");
+      kill.killed = true;
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      session.emitEvent({
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: hostItemIdSchema.parse("killed-item"), text: "Working" },
+      });
+
+      const completed = await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", turnId),
+      );
+      expect(completed).toMatchObject({
+        params: {
+          turn: {
+            status: "failed",
+            error: { message: expect.stringContaining("output ended") },
+          },
+        },
+      });
+      await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
+
+      // The Thread must accept a new submission instead of failing with
+      // "External Thread already has an active Turn".
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "synthetic" }] },
+      });
+      const retry = await fixture.collector.waitFor((message) => requestId(message, 3));
+      expect(retry.error).toBeUndefined();
+      const retryTurn = (retry.result as JsonObject).turn as JsonObject;
+      expect(typeof retryTurn.id).toBe("string");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("retires a running Subagent when the parent's output stream ends and pauses the queue once", async () => {
+    const permissionModes = harnessPermissionModeCatalogSchema.parse({
+      modes: [{ id: "auto", label: "Auto" }],
+      defaultModeId: "auto",
+    });
+    const adapter = new FakeHarnessAdapter(
+      harnessIdSchema.parse("pi"),
+      undefined,
+      true,
+      true,
+      null,
+      permissionModes,
+    );
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    try {
+      // Wrap each opened Session's output stream before the Host's output pump
+      // consumes it, so it can be ended without a terminal Turn event.
+      const kill = { killed: false };
+      const wrapOutputs = (session: HarnessSession) => {
+        const real = session.outputs;
+        Object.defineProperty(session, "outputs", {
+          value: {
+            [Symbol.asyncIterator]() {
+              const inner = real[Symbol.asyncIterator]();
+              return {
+                next: async () => {
+                  if (kill.killed) return { done: true as const, value: undefined };
+                  const output = await inner.next();
+                  if (kill.killed) return { done: true as const, value: undefined };
+                  return output;
+                },
+              };
+            },
+          },
+        });
+      };
+      const nativeOpen = adapter.open.bind(adapter);
+      vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+        const result = await nativeOpen(input);
+        if (result.ok) wrapOutputs(result.value);
+        return result;
+      });
+
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+
+      // A running native Subagent is tracked Host-side while the child Session
+      // (for example a Claude Code ReadonlySnapshotSession) never ends its own
+      // output stream.
+      session.startSubagentDelegation({
+        subagentId: "call-child",
+        nativeSubagentId: "native-child",
+        description: "Child worker",
+        background: false,
+        status: "running",
+      });
+      const childThread = await fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/started") &&
+          (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+      );
+      const childId = (messageParams(childThread).thread as JsonObject).id as string;
+
+      // Queue one submission so the settle path pauses and publishes the queue.
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "thread/queue/add",
+        params: { threadId, input: [{ type: "text", text: "queued" }] },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+        result: { queuedSubmission: { id: expect.any(String) } },
+      });
+      await fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
+      );
+      const queueChangesBeforeKill = fixture.collector.messages.filter(
+        (message) =>
+          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
+      ).length;
+
+      // Kill the parent's output stream without a terminal Turn event.
+      kill.killed = true;
+      session.emitEvent({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "reasoning",
+          itemId: hostItemIdSchema.parse("killed-parent"),
+          text: "Working",
+        },
+      });
+
+      await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
+      // The Subagent must be retired even though its own output stream never ends.
+      await fixture.collector.waitFor((message) => threadStatus(message, childId, "idle"));
+
+      // Exactly one pause publication: the settled failure's "failed" pause from
+      // the Turn projection, without a second inconsistent "outcome-unknown" one.
+      const queueChanges = fixture.collector.messages.filter(
+        (message) =>
+          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
+      );
+      expect(queueChanges).toHaveLength(queueChangesBeforeKill + 1);
     } finally {
       await stopFixture(fixture);
     }

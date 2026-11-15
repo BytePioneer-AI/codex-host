@@ -2,6 +2,7 @@
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
   harnessSessionImportResultSchema,
+  updateCheckResultSchema,
   voiceStatusResultSchema,
   voiceTranscribeResultSchema,
   harnessSessionImportSourcesResultSchema,
@@ -63,6 +64,23 @@ async function call<T>(method: string, args: Record<string, unknown>): Promise<T
     throw new ApiError(message, code, details);
   }
   return envelope.result.value;
+}
+
+export async function checkHostUpdate(signal: AbortSignal) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method: "codexhost/update/check", params: {} }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    result?: unknown;
+    error?: { message?: string };
+  };
+  if (reply.error) throw new Error(reply.error.message ?? "Update check failed");
+  return updateCheckResultSchema.parse(reply.result);
 }
 
 export const voiceApi = {

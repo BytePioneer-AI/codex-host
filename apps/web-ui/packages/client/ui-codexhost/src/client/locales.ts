@@ -24,6 +24,8 @@ export const en = {
   "discovery.failed": "Native command catalog unavailable:",
 
   remoteAccess: "Remote access",
+  "settings.open": "Settings",
+  "settings.updateAvailable": "Settings · A new version is available",
   "settings.extensions": "Interface extensions",
   "settings.connections": "Connections",
   "settings.resources": "Resources",
@@ -490,6 +492,8 @@ export const zh: Record<ImportLocaleKey, string> = {
   "discovery.failed": "原生命令目录不可用：",
 
   remoteAccess: "远程访问",
+  "settings.open": "设置",
+  "settings.updateAvailable": "设置 · 有新版本可用",
   "settings.extensions": "界面扩展",
   "settings.connections": "连接",
   "settings.resources": "资源管理",

@@ -63,6 +63,7 @@ import type {} from "@deepseek-ai/dsh-client-web";
 import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
+import { SettingsLauncher, type SettingsLauncherFace } from "./SettingsLauncher.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
 import { en, zh, type ImportLocaleKey } from "./locales.ts";
 
@@ -304,6 +305,19 @@ export function apply(ctx: ClientContext): void {
     ),
   );
   ctx.inject(["settingsNavigation"], (scope) => {
+    scope.slots.inject("settings.launcher", () =>
+      scope.slots.register(
+        {
+          name: "settings.launcher",
+          locale: NS,
+          inject: (): SettingsLauncherFace => ({
+            connection: scope.get("connection") as ConnectionHandle,
+            openSection: (id) => scope.settingsNavigation.openSection(id),
+          }),
+        },
+        SettingsLauncher,
+      ),
+    );
     scope.slots.inject("sidebar.primary.action", () =>
       scope.slots.register(
         {

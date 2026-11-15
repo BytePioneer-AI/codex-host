@@ -1,13 +1,14 @@
 /**
  * Reads plan quota from the Antigravity CLI's own `/usage` command.
  *
- * `/usage` is answered by the CLI, not the Model, so it is unavailable on
- * `--input-format stream-json` and must run as its own `--print=/usage`
- * invocation. The CLI reports it as a `command_result` event whose payload
+ * `/usage` is answered by the CLI, not the Model, in a separate
+ * `--print=/usage` invocation. Its `command_result` payload
  * carries one bucket per limit window.
  */
 
-import { isRecord, parseAntigravityStreamLine } from "./stream-events.js";
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /** Runs the Antigravity CLI with the given arguments and resolves stdout. */
 export type AntigravityCommandRunner = (arguments_: readonly string[]) => Promise<string>;
@@ -165,10 +166,14 @@ export async function fetchAntigravityQuota(
   }
   const fetchedAt = now.toISOString();
   for (const line of stdout.split(/\r?\n/u)) {
-    const event = parseAntigravityStreamLine(line);
-    if (event?.event !== "command_result") continue;
-    const snapshot = parseAntigravityUsageCommand(event.command, fetchedAt);
-    if (snapshot) return snapshot;
+    try {
+      const event: unknown = JSON.parse(line);
+      if (!isRecord(event) || event.event !== "command_result") continue;
+      const snapshot = parseAntigravityUsageCommand(event.command, fetchedAt);
+      if (snapshot) return snapshot;
+    } catch {
+      // The CLI can interleave diagnostics with structured command results.
+    }
   }
   return null;
 }

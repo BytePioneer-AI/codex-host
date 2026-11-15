@@ -1,351 +1,206 @@
-import {
-  subagentConfiguration,
-  inheritSubagentConfiguration,
-  type SubagentConfiguration,
-} from "@codexhost/harness-adapter";
-import { randomUUID } from "node:crypto";
-
 import type {
   HostEvent,
-  HostItem,
-  HostItemOutcome,
   HostItemSnapshot,
-  HostSubagentDelegationItem,
   HostSubagentState,
+  HostSubagentStatus,
 } from "@codexhost/harness-adapter";
-import { hostItemIdSchema, type HostTurnId } from "@codexhost/shared-contracts";
-import { z } from "zod";
+import { nativeConversationSummariesDbPath } from "./fork.js";
+import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
 
-import type { AntigravityStepUpdateEvent } from "./stream-events.js";
-import {
-  nativeSubagentIdSchema,
-  readSubagentTranscript,
-  subagentRpc,
-  subagentRunStatus,
-} from "./subagent-transcript.js";
+type NativeSubagentState =
+  | { ownership: "matched"; status: HostSubagentStatus | null }
+  | { ownership: "foreign" | "unavailable" };
 
-const infoSchema = z.object({
-  subagents: z
-    .array(
-      z.object({
-        conversation_id: nativeSubagentIdSchema,
-        type_name: z.string().max(256).optional(),
-        role: z.string().max(2048).optional(),
-        model: z.string().max(512).optional().catch(undefined),
-        reasoningEffort: z.string().max(128).optional().catch(undefined),
-        reasoning_effort: z.string().max(128).optional().catch(undefined),
-        thinking: z.string().max(128).optional().catch(undefined),
-        initial_prompt: z.string().max(128_000).optional(),
-      }),
-    )
-    .max(32),
-});
-
-interface Delegation {
-  item: HostSubagentDelegationItem;
-  completed: boolean;
+/** Native ownership must be confirmed before reading a child's transcript. */
+async function readNativeSubagentState(
+  home: string,
+  parentId: string,
+  childId: string,
+): Promise<NativeSubagentState> {
+  const { DatabaseSync } = await import("node:sqlite");
+  let db;
+  try {
+    db = new DatabaseSync(nativeConversationSummariesDbPath(home), { readOnly: true });
+    const row = db
+      .prepare(
+        "SELECT status, parent_conversation_id FROM conversation_summaries WHERE conversation_id = ?",
+      )
+      .get(childId);
+    if (!row) return { ownership: "unavailable" };
+    if (row.parent_conversation_id !== parentId) return { ownership: "foreign" };
+    return {
+      ownership: "matched",
+      status:
+        row.status === "CASCADE_RUN_STATUS_RUNNING"
+          ? "running"
+          : row.status === "CASCADE_RUN_STATUS_IDLE"
+            ? "completed"
+            : null,
+    };
+  } catch {
+    return { ownership: "unavailable" };
+  } finally {
+    db?.close();
+  }
 }
 
-interface SubagentOptions {
-  turnId: HostTurnId;
+export async function readNativeSubagentStatus(
+  home: string,
+  parentId: string,
+  childId: string,
+): Promise<HostSubagentStatus | null> {
+  const state = await readNativeSubagentState(home, parentId, childId);
+  return state.ownership === "matched" ? state.status : null;
+}
+
+export interface AntigravitySubagentOptions {
   parentId(): string | undefined;
-  port(): Promise<number | null>;
+  home: string;
   cwd: string;
   outputLimit: number;
-  observationTimeoutMs: number;
-  parentConfiguration?: SubagentConfiguration;
-  initialStates?: HostSubagentState[];
+  pollIntervalMs?: number;
+  observationTimeoutMs?: number;
   emit(event: HostEvent): void;
-  complete(snapshot: HostItemSnapshot): void;
-  schedule(work: () => Promise<void>): void;
 }
 
 export class AntigravitySubagents {
   readonly #states = new Map<string, HostSubagentState>();
-  readonly #lastObservedAt = new Map<string, number>();
   readonly #transcripts = new Map<string, string>();
-  readonly #items = new Map<number, Delegation>();
-  readonly #options: SubagentOptions;
+  readonly #unavailableSince = new Map<string, number>();
   #timer: ReturnType<typeof setInterval> | undefined;
-  #queued = false;
-  #ended = false;
+  #refreshing: Promise<void> | undefined;
   #stopped = false;
-  #cancellation: Promise<void> | undefined;
-  #settled: (() => void) | undefined;
-  readonly settled = new Promise<void>((resolve) => {
-    this.#settled = resolve;
-  });
-
-  constructor(options: SubagentOptions) {
-    this.#options = options;
-    for (const state of options.initialStates ?? []) {
-      if (state.nativeSubagentId) this.#states.set(state.nativeSubagentId, { ...state });
-    }
-    if (this.#states.size > 0) this.#watch();
-  }
-
+  constructor(readonly options: AntigravitySubagentOptions) {}
   get running(): boolean {
     return [...this.#states.values()].some(
-      ({ status }) => status === "pending" || status === "running",
+      (state) => state.status === "running" || state.status === "pending",
     );
   }
-
   state(id: string): HostSubagentState | undefined {
     return this.#states.get(id);
   }
 
-  snapshot(item: HostItem): HostItem {
-    return item.type === "subagentDelegation"
-      ? {
-          ...item,
-          subagents: item.subagents.map(
-            (subagent) => this.#states.get(subagent.nativeSubagentId ?? "") ?? subagent,
-          ),
-        }
-      : item;
+  track(id: string, snapshot: HostItemSnapshot): void {
+    if (this.#stopped || !nativeSubagentIdSchema.safeParse(id).success) return;
+    const item = snapshot.item;
+    const child =
+      item.type === "subagentDelegation"
+        ? item.subagents.find((state) => state.nativeSubagentId === id)
+        : undefined;
+    this.#states.set(id, {
+      subagentId: id,
+      nativeSubagentId: id,
+      description: "Antigravity Subagent",
+      background: true,
+      ...this.#states.get(id),
+      ...child,
+      status: "running",
+    });
+    this.#unavailableSince.delete(id);
+    if (!this.#timer) {
+      this.#timer = setInterval(() => {
+        void this.refresh();
+      }, this.options.pollIntervalMs ?? 750);
+      this.#timer.unref();
+    }
+    void this.refresh();
   }
-
-  handle(step: AntigravityStepUpdateEvent["step_update"]): boolean {
-    if (step.step_type !== "subagent") return false;
-    if (this.#stopped) return true;
-    let delegation = this.#items.get(step.step_index);
-    if (delegation?.completed) return true;
-    if (!delegation) {
-      const parsed = infoSchema.safeParse(step.subagent_info);
-      if (!parsed.success || parsed.data.subagents.length === 0) {
-        if (step.state === "ERROR") return false;
-        return true;
+  refresh(): Promise<void> {
+    if (this.#stopped) return Promise.resolve();
+    return (this.#refreshing ??= this.#read().finally(() => {
+      this.#refreshing = undefined;
+      if (!this.running) {
+        clearInterval(this.#timer);
+        this.#timer = undefined;
       }
-      const subagents = parsed.data.subagents.map((child): HostSubagentState => {
-        const state: HostSubagentState = inheritSubagentConfiguration(
-          {
-            subagentId: child.conversation_id,
-            nativeSubagentId: child.conversation_id,
-            description: child.role || child.type_name || "Antigravity Subagent",
-            ...(child.type_name ? { role: child.type_name } : {}),
-            ...subagentConfiguration(child),
-            background: true,
-            status: "running",
-          },
-          this.#options.parentConfiguration ?? {},
-        );
-        this.#states.set(child.conversation_id, state);
-        return state;
-      });
-      delegation = {
-        item: {
-          type: "subagentDelegation",
-          itemId: hostItemIdSchema.parse(randomUUID()),
-          operation: "spawn",
-          prompt: parsed.data.subagents.map((child) => child.initial_prompt ?? "").join("\n"),
-          subagents,
-        },
-        completed: false,
-      };
-      this.#items.set(step.step_index, delegation);
-      this.#options.emit({
-        type: "item.started",
-        turnId: this.#options.turnId,
-        item: delegation.item,
-      });
-      this.#watch();
-    }
-    if (step.state === "DONE" || step.state === "ERROR") {
-      this.#complete(
-        delegation,
-        step.state === "ERROR"
-          ? {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: "Subagent invocation failed",
-                retryable: false,
-              },
-            }
-          : { status: "succeeded" },
-      );
-    }
+    }));
+  }
+  #publish(id: string, state: HostSubagentState): void {
+    this.#states.set(id, state);
+    this.options.emit({
+      type: "subagent.state.changed",
+      nativeSubagentId: id,
+      status: state.status,
+      ...(state.resultSummary ? { resultSummary: state.resultSummary } : {}),
+    });
+  }
+  #expireUnavailable(id: string, previous: HostSubagentState): boolean {
+    const since = this.#unavailableSince.get(id) ?? Date.now();
+    this.#unavailableSince.set(id, since);
+    if (Date.now() - since < (this.options.observationTimeoutMs ?? 30_000)) return false;
+    this.#publish(id, {
+      ...previous,
+      status: "interrupted",
+      resultSummary: "Native Subagent status could not be confirmed",
+    });
     return true;
   }
-
-  async refresh(): Promise<void> {
-    if (this.#stopped) return;
-    const parentId = this.#options.parentId();
-    const port = await this.#options.port();
-    if (!parentId || port === null) {
-      for (const id of this.#states.keys()) this.#expireUnobserved(id);
-      if (this.#ended && !this.running) this.stop();
-      return;
-    }
+  async #read(): Promise<void> {
+    const parentId = this.options.parentId();
     for (const [id, previous] of this.#states) {
       if (this.#stopped) return;
-      let status = previous.status;
-      let statusObserved = false;
-      try {
-        const value = await subagentRpc(port, id, "GetCascadeTrajectory");
-        const observed = subagentRunStatus(value, parentId);
-        // Idle is also the state of a cancelled child. Only a new running observation
-        // can reactivate it; do not turn yesterday's cancellation into today's success.
-        if (observed !== "completed" || (status !== "interrupted" && status !== "failed")) {
-          status = observed ?? status;
-        }
-        statusObserved = observed !== null;
-        if (statusObserved) this.#lastObservedAt.set(id, Date.now());
-      } catch {
-        // A transient read failure is not evidence that the native child finished.
+      if (previous.status !== "running" && previous.status !== "pending") continue;
+      const observed = parentId
+        ? await readNativeSubagentState(this.options.home, parentId, id)
+        : { ownership: "unavailable" as const };
+      if (this.#stopped) return;
+      if (this.#states.get(id) !== previous) continue;
+      if (observed.ownership === "foreign") {
+        const state = { ...previous, status: "interrupted" as const };
+        delete state.resultSummary;
+        this.#publish(id, state);
+        continue;
       }
+      if (observed.ownership !== "matched" || observed.status === null) {
+        const expired = this.#expireUnavailable(id, previous);
+        if (observed.ownership !== "matched" || expired) continue;
+      }
+      if (!parentId) continue;
       const transcript = await readSubagentTranscript({
         parentId,
         childId: id,
-        status,
-        cwd: this.#options.cwd,
-        outputLimit: this.#options.outputLimit,
+        status: observed.status ?? previous.status,
+        cwd: this.options.cwd,
+        outputLimit: this.options.outputLimit,
+        home: this.options.home,
       });
       if (this.#stopped) return;
+      if (this.#states.get(id) !== previous) continue;
+      if (observed.status === "running") this.#unavailableSince.delete(id);
+      else if (!transcript.ok && this.#expireUnavailable(id, previous)) continue;
+      if (transcript.ok && observed.status !== null) this.#unavailableSince.delete(id);
+      // A terminal status is settled only after its final transcript is readable.
+      let status = transcript.ok ? (observed.status ?? previous.status) : previous.status;
+      if (
+        status === "completed" &&
+        transcript.ok &&
+        transcript.value.turns.at(-1)?.outcome.status === "failed"
+      )
+        status = "failed";
       const last = transcript.ok
         ? transcript.value.turns.at(-1)?.items.findLast(({ item }) => item.type === "agentMessage")
             ?.item
         : undefined;
       const resultSummary =
         last?.type === "agentMessage" ? last.text.slice(0, 2000) : previous.resultSummary;
-      const next = { ...previous, status, ...(resultSummary ? { resultSummary } : {}) };
-      if (status !== previous.status || resultSummary !== previous.resultSummary) {
-        this.#states.set(id, next);
-        this.#options.emit({
-          type: "subagent.state.changed",
-          nativeSubagentId: id,
-          status,
-          ...(resultSummary ? { resultSummary } : {}),
-        });
-      }
+      if (status !== previous.status || resultSummary !== previous.resultSummary)
+        this.#publish(id, { ...previous, status, ...(resultSummary ? { resultSummary } : {}) });
       if (transcript.ok) {
         const content = JSON.stringify(transcript.value);
         if (content !== this.#transcripts.get(id)) {
           this.#transcripts.set(id, content);
-          this.#options.emit({ type: "subagent.transcript.changed", nativeSubagentId: id });
+          this.options.emit({ type: "subagent.transcript.changed", nativeSubagentId: id });
         }
       }
-      // Only a failed observation can expire this child. A slow transcript read
-      // or subsequent RPCs for other children must not invalidate a valid status.
-      if (!statusObserved) this.#expireUnobserved(id);
     }
-    if (this.#ended && !this.running) this.stop();
   }
-
-  finish(outcome: HostItemOutcome): void {
-    for (const delegation of this.#items.values()) {
-      if (!delegation.completed) this.#complete(delegation, outcome);
-    }
-    this.#ended = true;
-    const now = Date.now();
-    for (const [id, state] of this.#states) {
-      if (state.status === "running" || state.status === "pending") {
-        this.#lastObservedAt.set(id, now);
-      }
-    }
-    if (!this.running) this.stop();
-  }
-
-  #expireUnobserved(id: string): void {
-    if (!this.#ended || this.#stopped) return;
-    const state = this.#states.get(id);
-    if (!state || (state.status !== "running" && state.status !== "pending")) return;
-    const now = Date.now();
-    if (now - (this.#lastObservedAt.get(id) ?? now) < this.#options.observationTimeoutMs) return;
-    const resultSummary =
-      "Observation timed out; native Subagent completion could not be confirmed.";
-    this.#states.set(id, { ...state, status: "interrupted", resultSummary });
-    this.#options.emit({
-      type: "subagent.state.changed",
-      nativeSubagentId: id,
-      status: "interrupted",
-      resultSummary,
-    });
-    this.#options.emit({ type: "subagent.transcript.changed", nativeSubagentId: id });
-    this.#lastObservedAt.delete(id);
-  }
-
-  cancel(): Promise<void> {
-    return (this.#cancellation ??= this.#cancelNative());
-  }
-
-  async #cancelNative(): Promise<void> {
-    this.#stopped = true;
-    clearInterval(this.#timer);
-    const port = await this.#options.port();
-    const parentId = this.#options.parentId();
-    // Stop the parent generator before cancelling children so it cannot schedule
-    // another child between the cancellation request and process shutdown.
-    if (port !== null && parentId && this.#states.size > 0) {
-      await subagentRpc(port, parentId, "CancelCascadeInvocation").catch(() => undefined);
-    }
-    for (const [id, state] of this.#states) {
-      let confirmed = false;
-      let wasRunning = state.status === "running" || state.status === "pending";
-      try {
-        if (port !== null && parentId) {
-          const value = await subagentRpc(port, id, "GetCascadeTrajectory");
-          const observed = subagentRunStatus(value, parentId);
-          wasRunning ||= observed === "running";
-          if (!wasRunning) continue;
-          if (observed !== null) {
-            if (observed === "running") {
-              await subagentRpc(port, id, "CancelCascadeInvocation");
-              const final = await subagentRpc(port, id, "GetCascadeTrajectory");
-              const finalStatus = subagentRunStatus(final, parentId);
-              confirmed = finalStatus === "completed" || finalStatus === "failed";
-            } else {
-              confirmed = true;
-            }
-          }
-        }
-      } catch {
-        // Report loss of observation distinctly from a confirmed native cancellation.
-      }
-      if (!wasRunning) continue;
-      const resultSummary = confirmed
-        ? "Cancelled by user"
-        : "Observation interrupted; native Subagent cancellation could not be confirmed.";
-      this.#states.set(id, { ...state, status: "interrupted", resultSummary });
-      this.#options.emit({
-        type: "subagent.state.changed",
-        nativeSubagentId: id,
-        status: "interrupted",
-        resultSummary,
-      });
-      this.#options.emit({ type: "subagent.transcript.changed", nativeSubagentId: id });
-    }
-    this.stop();
-  }
-
   stop(): void {
     this.#stopped = true;
     clearInterval(this.#timer);
-    this.#lastObservedAt.clear();
-    this.#settled?.();
+    this.#timer = undefined;
   }
-
-  #watch(): void {
-    if (this.#timer) return;
-    this.#timer = setInterval(() => {
-      if (this.#queued || this.#stopped) return;
-      this.#queued = true;
-      this.#options.schedule(async () => {
-        try {
-          await this.refresh();
-        } finally {
-          this.#queued = false;
-        }
-      });
-    }, 750);
-    this.#timer.unref();
-  }
-
-  #complete(delegation: Delegation, outcome: HostItemOutcome): void {
-    delegation.completed = true;
-    const item = this.snapshot(delegation.item);
-    const snapshot = { item, outcome };
-    this.#options.complete(snapshot);
-    this.#options.emit({ type: "item.completed", turnId: this.#options.turnId, snapshot });
+  async close(): Promise<void> {
+    this.stop();
+    await this.#refreshing;
   }
 }

@@ -15,6 +15,7 @@ import {
   withUsageSession,
 } from "@codexhost/harness-adapter/usage-statistics";
 
+import { hasImplicitZeroCacheWrite, normalizeAntigravityUsageModel } from "./acp-usage.js";
 import { nativeBrainRoot } from "./fork.js";
 
 function count(value: unknown): number | null {
@@ -86,10 +87,9 @@ async function listTranscripts(
 /**
  * Every model request in one Conversation's `transcript.jsonl`: agy writes one `PLANNER_RESPONSE`
  * step per request with its `input_tokens`, `cache_read_tokens`, `output_tokens` and UTC
- * `created_at`. Verified on Antigravity CLI 1.4.6 transcripts: `input_tokens` excludes cache reads
- * (a follow-up request's `cache_read_tokens` is about the previous request's whole prompt), so
- * input is recombined to include them. The transcript records neither the model, cache writes,
- * thinking tokens nor the working directory; they stay unknown. The entry ID leaves out the
+ * `created_at`. `input_tokens` excludes cache reads, so input is recombined to include them.
+ * CLI 1.5.9 also records the model; older transcripts leave it unknown. Cache writes, thinking
+ * tokens and the working directory stay unknown. The entry ID leaves out the
  * Conversation, so a copy of a request in a derived Conversation deduplicates with the original.
  */
 export async function readAntigravityUsage(
@@ -107,14 +107,21 @@ export async function readAntigravityUsage(
     const cached = count(record.cache_read_tokens);
     const at = nativeTimeMs(record.created_at);
     if (step === null || input === null || output === null || at === null) continue;
+    const identity = normalizeAntigravityUsageModel(record.model);
     requests.set(
       step,
       withUsageSession(
         {
           id: `${String(record.created_at)}:${step}:${input}:${cached ?? "-"}:${output}`,
           occurredAtMs: at,
+          ...identity,
           inputTokens: input + (cached ?? 0),
-          ...(cached !== null ? { cachedInputTokens: cached } : {}),
+          ...(cached !== null
+            ? {
+                cachedInputTokens: cached,
+                ...(hasImplicitZeroCacheWrite(identity) ? { cacheWriteInputTokens: 0 } : {}),
+              }
+            : {}),
           outputTokens: output,
         },
         { sessionId },

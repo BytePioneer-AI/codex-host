@@ -24,7 +24,7 @@ Standalone Web 的共享 CH 模式直接读取同一个 Host 的 `codexhost/thre
 
 ## 已接入的 Harness
 
-Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）、CodeBuddy、WorkBuddy、ZCode。其余 Harness 继续显示原生费用，后续分批接入；OpenCode v1 不接入。
+Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）、CodeBuddy、WorkBuddy、ZCode、Antigravity。其余 Harness 继续显示原生费用，后续分批接入；OpenCode v1 不接入。
 
 接入的 Adapter 在每次打开会话时回放原生历史中的全部请求，再声明历史是否完整；运行中每完成一次模型请求发布一条请求记录。费用、Token 和缓存率仍按历史请求重新计量，不缓存旧总数；速度与 TTFT 通过最新指标快照恢复。原生提供可靠速度的 Harness 也沿用同一元数据保存入口，不改变其原生费用口径。
 
@@ -67,6 +67,7 @@ Pi、OMP、OpenCode v2、Claude Code、DeepSeek Harness（dsh）、CodeBuddy、W
 - Grok：新建、恢复及切换模型时，对原生 `contextWindows` 明确包含 500,000 的模型，默认通过 `session/set_model` 的 `_meta.contextWindow` 选择 500K；原生配置成功后同步上下文上限，不改全局配置，不对其他模型强制设置。尚未取得上下文已用量时不伪造零占用。保留原生 `costUsdTicks` 费用，不使用公开价格重算。每次模型响应完成后异步查询 `_x.ai/session/usage` 刷新费用，不轮询、不阻塞工具或轮末结算。查询值是本次原生进程附着后的累计，按“打开时历史费用基线 + 当前原生累计”计算，不累加各次快照；忽略乱序、已结束轮次的迟到响应及缺失/不完整费用。查询失败保留上一有效值，仍由轮末原生历史核对。接收 `_x.ai/session_notification` 的 `response_completed`，每完成一次模型请求即更新本轮 TPS、最近请求缓存命中及累计 Token，无需等工具或整轮结束。该事件的输入是未缓存部分，须加缓存读/写后归一；输出已含推理，不重复加算。首个非空思考、正文或工具参数增量至该次响应完成构成客户端观测时窗；只累计有输出用量且时长为正的请求，排除工具、审批和结算 I/O。取消/失败不丢弃此前已完成请求的有效计时，无有效计时的新轮结束时清除旧速度。隐藏推理开始不可见时从首个实际输出起算，不宣称服务端完整生成速率，也不使用 API 耗时。完整原生历史和实时请求提供 `sessionCacheUsage` 事实，由 Host 独立计算平均缓存命中；不完整则省略。轮末历史用于校准累计 Token 和原生费用，不覆盖实时最近请求缓存率。历史不重建 TPS，也不把整轮缓存率伪装成最近请求缓存率；冷恢复只有整轮记录时省略最近值。TTFT 继续由 Host 观测。
 - CodeBuddy / WorkBuddy：ACP 不上报逐次请求用量，打开会话、收到原生用量通知、浮窗请求刷新和每轮结束时，从原生历史的全部分支读取已落盘请求并按请求 ID 去重，不必等待工具执行或权限审批结束。读取失败不影响对话，由下次刷新重试；没有可靠的逐请求计时，因此不显示输出速度。WorkBuddy 自动路由的 `default-model` 不是具体模型，无法计价。最近 CH 按当前原生历史分支最后一次已记录请求的缓存读取除以输入总数（已含缓存）计算，不使用会话累计平均值。
 - ZCode：恢复时从原生 `session/resume` 快照回放每条 assistant 消息；实时按主请求边界关联 `assistantMessageId`，轮末用 `session/read` 快照补齐并核对。输入已含缓存，输出已含思考；`v4/conversation/usage` 的输入是上下文增量累计，不能作为费用或平均缓存的分母，原生 Token 展示仍保留该口径。流事件缓存字段不全时延迟到轮末计量；未知口径或矛盾记录使会话级指标失效。失败/取消只有零占位、没有 Provider 用量时不计入。协议没有思考开始事件，明确带思考 Token 的请求暂不计速度；其他请求使用原生流事件时间，不拿包含工具执行的消息落盘时间作终点。Host 已计入的请求会触发界面刷新；流中缺缓存明细的请求仍需等轮末补齐。
+- Antigravity：实时接收 ACP `usage_update`（上下文窗口 `used` / `size`）与 `PromptResponse.usage`，并在打开会话、收到用量更新及每轮结束时核对 `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl` 中已完成的 `PLANNER_RESPONSE`（`DONE` / `ERROR`）请求。`input_tokens` 不含缓存读取，按统一口径加上缓存读取与缓存写入；转录 `output_tokens` 与 ACP `outputTokens` 都已包含思考，`thoughtTokens` 仅为其中的拆分，不再重复相加。Google Gemini 与 GPT 系列采用隐式缓存，已知缓存读取时 `cacheWriteInputTokens` 记为 `0`；实时轮次在 `PromptResponse.usage.cachedWriteTokens` 为 `0` 时标记本轮各步缓存写入为 `0`，非零时仅对齐单请求轮次，多步非零或冷恢复下缺少缓存写入明细的 Anthropic Claude 请求将缓存写入保持未知而不猜测费用。转录尚未追上本轮 `PromptResponse.usage`、存在历史轮次但转录文件缺失、或已上报步骤在磁盘上被改写时，`usage.history` 声明不完整，不补造合成请求记录。输出速度（TPS）优先只读原生会话 SQLite 的步骤与生成元数据：用会话 ID、步骤索引及生成记录索引关联请求，核对 Token、首字时长和流式时长后，将首个可观测输出至模型生成结束的逐请求时间区间交给公共计量器；同轮按总输出除以总有效生成时长计算，不包含预填充、工具执行或用户回答等待。缺少计时存储时，只有不含工具或交互、且用量精确匹配的单请求轮次可使用客户端观测区间；重试、关联冲突或时间不一致时不补造速度。计时元数据尚在落盘时暂缓发布请求，轮末仍不可用则保留请求计量但省略计时；冷恢复历史不回补 TPS。TTFT 由 Host 观测。
 - 不计入：子代理、原生不给出模型的后台请求（如 OpenCode v2 的标题生成与压缩）、按次收费项目和长上下文分档价格。
 - 分叉会话按原生历史计算，包含从父会话复制来的轮次；撤销上一轮后，被撤销轮次不再计入。
 

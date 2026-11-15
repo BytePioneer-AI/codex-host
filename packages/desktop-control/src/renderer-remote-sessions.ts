@@ -166,6 +166,19 @@ export async function rendererRemoteSession(
   const route = routing.forHost(operation.hostId);
   const manager = route?.manager;
   if (!route || !manager) throw connectionError("Remote Host is offline");
+  const read = async (request: () => unknown) => {
+    let result: unknown;
+    try {
+      result = await request();
+    } catch (error) {
+      if (routing.forHost(operation.hostId) !== route)
+        throw connectionError("Remote connection changed during read", true);
+      throw error;
+    }
+    if (routing.forHost(operation.hostId) !== route)
+      throw connectionError("Remote connection changed during read", true);
+    return result;
+  };
   let generation = state.managers.get(route);
   if (!generation) {
     generation = { epoch: crypto.randomUUID(), answered: new Set() };
@@ -174,34 +187,36 @@ export async function rendererRemoteSession(
   if ("epoch" in operation && operation.epoch !== generation.epoch)
     throw connectionError("Remote connection changed; refresh before operating", true);
   if (operation.kind === "list")
-    return manager.sendRequest("thread/list", {
-      cursor: operation.cursor,
-      archived: operation.archived,
-      limit: 100,
-    });
+    return read(() =>
+      manager.sendRequest("thread/list", {
+        cursor: operation.cursor,
+        archived: operation.archived,
+        limit: 100,
+      }),
+    );
   const threadId = operation.threadId;
   if (operation.kind === "status") {
-    const result = (await manager.sendRequest("thread/read", {
-      threadId,
-      includeTurns: false,
-    })) as {
+    const result = (await read(() =>
+      manager.sendRequest("thread/read", {
+        threadId,
+        includeTurns: false,
+      }),
+    )) as {
       thread?: { id?: string; status?: { type?: string } };
     };
-    if (routing.forHost(operation.hostId) !== route)
-      throw connectionError("Remote connection changed during status read", true);
     if (result.thread?.id !== threadId || typeof result.thread.status?.type !== "string")
       throw new Error("Invalid remote Thread status");
     let turnId: string | null = null;
     if (result.thread.status.type === "active") {
-      const page = (await manager.sendRequest("thread/turns/list", {
-        threadId,
-        cursor: null,
-        limit: 1,
-        sortDirection: "desc",
-        itemsView: "notLoaded",
-      })) as { data?: Array<{ id?: string; status?: string }> };
-      if (routing.forHost(operation.hostId) !== route)
-        throw connectionError("Remote connection changed during status read", true);
+      const page = (await read(() =>
+        manager.sendRequest("thread/turns/list", {
+          threadId,
+          cursor: null,
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "notLoaded",
+        }),
+      )) as { data?: Array<{ id?: string; status?: string }> };
       if (!Array.isArray(page.data)) throw new Error("Invalid remote Turn status");
       const latest = page.data[0];
       if (latest?.status === "inProgress" && typeof latest.id === "string") turnId = latest.id;
@@ -209,10 +224,8 @@ export async function rendererRemoteSession(
     return { threadId, status: result.thread.status.type, turnId, epoch: generation.epoch };
   }
   const pendingRequests = async (): Promise<Request[]> => {
-    const conversation = (await manager.getConversation?.(threadId)) as
+    const conversation = (await read(() => manager.getConversation?.(threadId))) as
       { requests?: Request[] } | undefined;
-    if (routing.forHost(operation.hostId) !== route)
-      throw connectionError("Remote connection changed during interaction read", true);
     return Array.isArray(conversation?.requests) ? conversation.requests : [];
   };
   if (operation.kind === "read") {
@@ -223,9 +236,9 @@ export async function rendererRemoteSession(
       );
     // Paginated external history rejects includeTurns=true. Read its header first;
     // native/legacy history keeps the official full-read behavior.
-    let result = await manager.sendRequest("thread/read", { threadId, includeTurns: false });
-    if (routing.forHost(operation.hostId) !== route)
-      throw connectionError("Remote connection changed during read", true);
+    let result = await read(() =>
+      manager.sendRequest("thread/read", { threadId, includeTurns: false }),
+    );
     const header = result as {
       thread?: {
         historyMode?: string;
@@ -237,18 +250,19 @@ export async function rendererRemoteSession(
       };
     };
     let nextCursor: string | null = null;
-    if (header.thread?.historyMode === "paginated" && operation.page) {
-      let limit = operation.page.limit ?? 20;
+    const requestedPage = operation.page;
+    if (header.thread?.historyMode === "paginated" && requestedPage) {
+      let limit = requestedPage.limit ?? 20;
       for (;;) {
-        const response = (await manager.sendRequest("thread/turns/list", {
-          threadId,
-          cursor: operation.page.cursor,
-          limit,
-          sortDirection: operation.page.sortDirection ?? "asc",
-          itemsView: "full",
-        })) as { data?: unknown[]; nextCursor?: string | null };
-        if (routing.forHost(operation.hostId) !== route)
-          throw connectionError("Remote connection changed during read", true);
+        const response = (await read(() =>
+          manager.sendRequest("thread/turns/list", {
+            threadId,
+            cursor: requestedPage.cursor,
+            limit,
+            sortDirection: requestedPage.sortDirection ?? "asc",
+            itemsView: "full",
+          }),
+        )) as { data?: unknown[]; nextCursor?: string | null };
         if (
           !Array.isArray(response.data) ||
           (response.nextCursor !== null &&
@@ -281,13 +295,15 @@ export async function rendererRemoteSession(
       for (let page = 0; page < 100; page++) {
         if (routing.forHost(operation.hostId) !== route)
           throw connectionError("Remote connection changed during read", true);
-        const response = (await manager.sendRequest("thread/turns/list", {
-          threadId,
-          cursor,
-          limit: 50,
-          sortDirection: "asc",
-          itemsView: "full",
-        })) as { data?: unknown[]; nextCursor?: string | null };
+        const response = (await read(() =>
+          manager.sendRequest("thread/turns/list", {
+            threadId,
+            cursor,
+            limit: 50,
+            sortDirection: "asc",
+            itemsView: "full",
+          }),
+        )) as { data?: unknown[]; nextCursor?: string | null };
         if (
           !Array.isArray(response.data) ||
           (response.nextCursor !== null && typeof response.nextCursor !== "string")
@@ -306,7 +322,10 @@ export async function rendererRemoteSession(
       }
       if (!complete) throw new Error("Remote history exceeds the page limit");
       result = { ...(result as object), thread: { ...header.thread, turns } };
-    } else result = await manager.sendRequest("thread/read", { threadId, includeTurns: true });
+    } else
+      result = await read(() =>
+        manager.sendRequest("thread/read", { threadId, includeTurns: true }),
+      );
     if (routing.forHost(operation.hostId) !== route)
       throw connectionError("Remote connection changed during read", true);
     let metadata: Record<string, unknown> = {};

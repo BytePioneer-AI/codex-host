@@ -79,39 +79,48 @@ function followFixture(call: (operation: RemoteSessionOperation) => Promise<unkn
   rpc.register("session/cancel", () => {
     throw new Error("must not route locally");
   });
-  const frames: unknown[] = [],
-    closed: Array<() => void> = [];
-  let isClosed = false;
-  const sink: StreamSink = {
-    id: "follow",
-    get closed() {
-      return isClosed;
-    },
-    push: (frame) => frames.push(frame),
-    end() {},
-    fail() {},
-    onClose: (close) => closed.push(close),
-  };
   const id = remoteSessionId(identity.hostId, identity.threadId);
-  return {
-    remote,
-    rpc,
-    id,
-    frames,
-    async open() {
-      assert.ok(route);
-      await route(
-        "session/follow",
-        { request: { address: { sessionId: id } } },
-        sink,
-        async () => {},
-      );
-    },
-    close() {
+  let viewers = 0;
+  function viewer() {
+    const frames: unknown[] = [],
+      closed: Array<() => void> = [];
+    let isClosed = false;
+    const close = () => {
+      if (isClosed) return;
       isClosed = true;
-      for (const close of closed) close();
-    },
-  };
+      for (const listener of closed.splice(0)) listener();
+    };
+    const sink: StreamSink = {
+      id: `follow-${++viewers}`,
+      get closed() {
+        return isClosed;
+      },
+      push: (frame) => {
+        if (!isClosed) frames.push(frame);
+      },
+      end: close,
+      fail: close,
+      onClose: (listener) => {
+        if (isClosed) listener();
+        else closed.push(listener);
+      },
+    };
+    return {
+      frames,
+      sink,
+      async open() {
+        assert.ok(route);
+        await route(
+          "session/follow",
+          { request: { address: { sessionId: id } } },
+          sink,
+          async () => {},
+        );
+      },
+      close,
+    };
+  }
+  return { remote, rpc, id, viewer, ...viewer() };
 }
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -214,6 +223,153 @@ it("pauses oversized history polling and allows an explicit fresh follow to reco
   t.after(() => recovered.remote.close());
   await recovered.open();
   assert.match(JSON.stringify(recovered.frames), /"remoteHistoryError"[^}]*null/);
+});
+
+it("resumes a paused follower after a successful independent history read", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = fixture([turn("head")]);
+  const follow = followFixture(f.call);
+  t.after(() => follow.remote.close());
+  await follow.open();
+  f.failRead(new RemoteSessionError(-32094, "Turn too large"));
+  t.mock.timers.tick(1500);
+  await flush();
+  f.calls.length = 0;
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(f.calls.filter((call) => call.kind === "read").length, 0);
+  f.failRead();
+  await follow.remote.read(follow.id);
+  f.calls.length = 0;
+  f.thread.turns.push(turn("next", "inProgress", "progress after recovery"));
+  t.mock.timers.tick(1500);
+  await flush();
+  assert.ok(f.calls.some((call) => call.kind === "read"));
+  assert.match(JSON.stringify(follow.frames), /progress after recovery/);
+});
+
+it("honors a shared permanent failure during another viewer's initial retry delay", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const f = fixture([turn("head")]);
+  f.failRead(new RemoteSessionError(-32603, "temporary failure"));
+  const follow = followFixture(f.call);
+  t.after(() => follow.remote.close());
+  const opening = assert.rejects(follow.open(), /Turn too large/);
+  await flush();
+  f.failRead(new RemoteSessionError(-32094, "Turn too large"));
+  await assert.rejects(follow.viewer().open(), /Turn too large/);
+  f.calls.length = 0;
+  t.mock.timers.tick(1500);
+  await opening;
+  assert.equal(f.calls.filter((call) => call.kind === "read").length, 0);
+  f.failRead();
+  const recovered = follow.viewer();
+  await recovered.open();
+  assert.match(JSON.stringify(recovered.frames), /snapshot/);
+});
+
+it("shares recovery between viewers and releases retired and closed subscriptions", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = fixture([turn("head")]);
+  const follow = followFixture(f.call);
+  t.after(() => follow.remote.close());
+  const second = follow.viewer();
+  await follow.open();
+  await second.open();
+  f.failRead(new RemoteSessionError(-32094, "Turn too large"));
+  t.mock.timers.tick(1500);
+  await flush();
+  assert.match(JSON.stringify(follow.frames), /Turn too large/);
+  assert.match(JSON.stringify(second.frames), /Turn too large/);
+  f.calls.length = 0;
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(f.calls.length, 0);
+
+  second.close();
+  const retry = follow.viewer();
+  f.failRead();
+  await retry.open();
+  f.thread.turns.push(turn("live", "inProgress", "shared recovery"));
+  t.mock.timers.tick(1500);
+  await flush();
+  for (const viewer of [follow, retry])
+    assert.match(JSON.stringify(viewer.frames), /shared recovery/);
+  assert.doesNotMatch(JSON.stringify(second.frames), /shared recovery/);
+
+  f.reconnect();
+  await follow.remote.read(follow.id);
+  assert.equal(follow.sink.closed, true);
+  assert.equal(retry.sink.closed, true);
+  f.calls.length = 0;
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(f.calls.length, 0);
+  const reopened = follow.viewer();
+  await reopened.open();
+  const liveItem = f.thread.turns.at(-1)?.items[0];
+  assert.ok(liveItem);
+  liveItem.text = "shared recovery after reconnect";
+  t.mock.timers.tick(1500);
+  await flush();
+  assert.match(JSON.stringify(reopened.frames), /after reconnect/);
+  reopened.close();
+  f.calls.length = 0;
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(f.calls.length, 0);
+});
+
+it("rejects a view removed between reading and registering its follower", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval", "Date"] });
+  const f = fixture([turn("head")]);
+  let removed = false;
+  const follow = followFixture(async (operation) =>
+    removed && operation.kind === "list" ? { data: [], nextCursor: null } : f.call(operation),
+  );
+  t.after(() => follow.remote.close());
+  const read = follow.remote.read.bind(follow.remote);
+  follow.remote.read = async (id) => {
+    const view = await read(id);
+    removed = true;
+    await follow.remote.refresh();
+    return view;
+  };
+  await assert.rejects(follow.open(), { code: "remote/connection-changed" });
+  assert.equal(follow.frames.length, 0);
+  f.calls.length = 0;
+  t.mock.timers.tick(60_000);
+  await flush();
+  assert.equal(f.calls.length, 0);
+});
+
+it("stops without awaiting an already pending full history read", { timeout: 3000 }, async (t) => {
+  const f = fixture([turn("current", "inProgress")]);
+  f.thread.status.type = "active";
+  const started = Promise.withResolvers<undefined>();
+  const release = Promise.withResolvers<undefined>();
+  t.after(() => release.resolve(undefined));
+  const follow = followFixture(async (operation) => {
+    if (operation.kind === "read") {
+      started.resolve(undefined);
+      await release.promise;
+    }
+    return f.call(operation);
+  });
+  t.after(() => follow.remote.close());
+  const reading = follow.remote.read(follow.id);
+  await started.promise;
+  f.calls.length = 0;
+  const stopped = await follow.rpc.dispatch("session/cancel", {
+    args: { request: { sessionId: follow.id } },
+  });
+  assert.equal(stopped.ok, true);
+  assert.deepEqual(
+    f.calls.map((call) => call.kind),
+    ["status", "interrupt"],
+  );
+  release.resolve(undefined);
+  await reading;
 });
 
 it("stops once using fresh lightweight status despite unreadable history", async (t) => {

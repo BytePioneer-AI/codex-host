@@ -378,6 +378,17 @@ export class RemoteSessions {
     }
     if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
     const current = entry;
+    const requireCurrent = () => {
+      const active = this.entries.get(id);
+      if (this.closed || !active)
+        throw new RpcError("remote/not-found", "Remote Thread is no longer available");
+      if (active !== current)
+        throw new RpcError(
+          "remote/connection-changed",
+          "Remote Thread changed during history read",
+        );
+    };
+    requireCurrent();
     const configurationRevision = current.configurationRevision;
     current.reading ??= (async () => {
       try {
@@ -394,7 +405,8 @@ export class RemoteSessions {
               }
             : undefined,
         );
-        if (this.closed || snapshot.result.thread.id !== identity.threadId)
+        requireCurrent();
+        if (snapshot.result.thread.id !== identity.threadId)
           throw new Error("Remote identity mismatch");
         if (configurationRevision !== current.configurationRevision) {
           const view = current.view;
@@ -474,6 +486,7 @@ export class RemoteSessions {
         this.events.emit("api-session/status", id, summary.running);
         return current.view;
       } catch (error) {
+        requireCurrent();
         if (error instanceof RpcError && error.code === "remote/offline") this.offline(current);
         else if (!this.closed) {
           if (error instanceof RpcError && error.code === "remote/connection-changed")
@@ -626,6 +639,8 @@ export class RemoteSessions {
         sink,
         requestOf(args),
         this.followLifetime.signal,
+        () => this.entries.get(id)?.historyError,
+        (view) => this.entries.get(id)?.view === view,
       );
       return true;
     });

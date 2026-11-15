@@ -3,9 +3,9 @@ import type { ChThreadView } from "./ch-thread-view.ts";
 import { RpcError, type StreamSink } from "./transport.ts";
 import { toolOutputSink } from "./tool-output.ts";
 
-function permanent(error: unknown): boolean {
+function permanent(error: { code: string } | undefined): boolean {
   return (
-    error instanceof RpcError &&
+    error !== undefined &&
     [
       "remote/history-too-large",
       "remote/controller-rejected",
@@ -21,6 +21,8 @@ export async function followRemoteHistory(
   sink: StreamSink,
   request: Parameters<ChThreadView["log"]["follow"]>[1],
   shutdown: AbortSignal,
+  failure: () => { code: string; message: string } | undefined,
+  isCurrent: (view: ChThreadView) => boolean,
 ): Promise<void> {
   const lifetime = new AbortController();
   let timer: NodeJS.Timeout | undefined;
@@ -35,11 +37,13 @@ export async function followRemoteHistory(
   try {
     let view: ChThreadView | undefined;
     for (let attempt = 0; !lifetime.signal.aborted; attempt++) {
+      const shared = attempt > 0 ? failure() : undefined;
+      if (shared && permanent(shared)) throw new RpcError(shared.code, shared.message);
       try {
         view = await read();
         break;
       } catch (error) {
-        if (permanent(error) || attempt >= 2) throw error;
+        if ((error instanceof RpcError && permanent(error)) || attempt >= 2) throw error;
         await timers.setTimeout(1500 * 2 ** attempt, undefined, {
           signal: lifetime.signal,
           ref: false,
@@ -47,12 +51,15 @@ export async function followRemoteHistory(
       }
     }
     if (!view || lifetime.signal.aborted) return;
+    if (!isCurrent(view))
+      throw new RpcError("remote/connection-changed", "Remote history changed before subscribing");
     view.log.follow(toolOutputSink(view.log, sink), request);
+    if (lifetime.signal.aborted) return;
     let busy = false,
       failures = 0,
       retryAt = 0;
     timer = setInterval(() => {
-      if (busy || lifetime.signal.aborted || Date.now() < retryAt) return;
+      if (busy || lifetime.signal.aborted || permanent(failure()) || Date.now() < retryAt) return;
       busy = true;
       void read()
         .then(
@@ -61,9 +68,18 @@ export async function followRemoteHistory(
             retryAt = 0;
           },
           (error: unknown) => {
-            // read() publishes the error. A permanent failure waits for explicit history retry.
-            if (permanent(error)) {
-              clearInterval(timer);
+            if (
+              error instanceof RpcError &&
+              ["remote/not-found", "remote/identity-invalid"].includes(error.code)
+            ) {
+              sink.fail(error.code, error.message);
+              close();
+              return;
+            }
+            // The source owns recovery: another viewer or an explicit read can clear its error.
+            if (error instanceof RpcError && permanent(error)) {
+              failures = 0;
+              retryAt = 0;
               return;
             }
             failures = Math.min(failures + 1, 5);

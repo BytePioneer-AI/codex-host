@@ -1282,7 +1282,7 @@ describe("mapping-store package", () => {
     await mkdir(directory, { recursive: true });
     await writeFile(path.join(directory, "store.lock.stale-1"), "{}\n", "utf8");
     await writeFile(path.join(directory, "store.lock.stale-2"), "{}\n", "utf8");
-    // An unparsable lock cannot prove a live owner, so initialization renames it aside.
+    // An unparsable lock cannot prove a live owner, so initialization reclaims it.
     await writeFile(path.join(directory, "store.lock"), "not json\n", "utf8");
 
     const store = new MappingStore({ directory, instanceId: "recovered" });

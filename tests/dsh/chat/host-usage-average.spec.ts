@@ -48,7 +48,7 @@ it.each([en, zh])("shows session average separately from current Turn TPS and TT
   );
   expect(session?.textContent).toContain(locale["usage.speed.average"]);
   expect(session?.textContent).toContain("40 tok/s");
-  expect(session?.textContent).toContain(locale["usage.speed.average.note"]);
+  expect(session?.querySelector("p")).toBeNull();
   expect(turn?.textContent).toContain("25.1 tok/s");
   expect(turn?.textContent).toContain("18.9");
   expect(turn?.textContent).not.toContain(locale["usage.speed.average"]);

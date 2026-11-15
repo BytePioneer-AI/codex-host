@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -156,6 +156,23 @@ describe("Windows Mapping Store lock identity (simulated OS replies)", () => {
     reply(null, reusedStart);
     await writeLock();
     await expectRecovered();
+  });
+
+  it("keeps a live contender's claim link even when it runs as codexhost.exe", async () => {
+    const contenderPid = ownerPid + 2 === process.pid ? ownerPid + 3 : ownerPid + 2;
+    const contenderStart = Date.parse(recordedStart);
+    vi.mocked(execFileSync).mockImplementation((_file, args) => {
+      const query = args?.at(-1) ?? "";
+      return query.includes(`ProcessId = ${contenderPid}`)
+        ? JSON.stringify({ Path: "C:\\codexhost\\bin\\codexhost.exe", StartTime: recordedStart })
+        : JSON.stringify({ Path: nodePath, StartTime: reusedStart });
+    });
+    const content = await writeLock();
+    const lock = path.join(directory, "store.lock");
+    const claim = `${lock}.claim-${contenderPid}-${contenderStart}-contender`;
+    await link(lock, claim);
+    await expectPreserved(content);
+    expect(await readFile(claim, "utf8")).toBe(content);
   });
 
   it("recovers a dead owner's lock without querying CIM", async () => {

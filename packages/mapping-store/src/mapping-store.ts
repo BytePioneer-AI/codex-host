@@ -348,6 +348,21 @@ function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
   return true;
 }
 
+/**
+ * Claim and publish links name their creator by PID and start time only. Any
+ * executable may own them (node, codexhost.exe), so match the start time and
+ * never apply the legacy-lock executable-name inference.
+ */
+function contenderIsLive(pid: number, processStartedAt: string): boolean {
+  const expected = Date.parse(processStartedAt);
+  if (pid === process.pid) {
+    return Math.abs(Date.now() - process.uptime() * 1_000 - expected) <= 5_000;
+  }
+  const identity = processIdentity(pid);
+  if (!identity) return false;
+  return identity.startedAt === null || Math.abs(identity.startedAt - expected) <= 5_000;
+}
+
 export class MappingStore {
   readonly #backupsDirectory: string;
   readonly #delegationsDirectory: string;
@@ -1405,9 +1420,7 @@ export class MappingStore {
     }
     try {
       if (inspected !== null) {
-        await removeStaleLock(this.#lockPath, inspected, (pid, processStartedAt) =>
-          lockOwnerIsLive({ pid, processStartedAt }),
-        );
+        await removeStaleLock(this.#lockPath, inspected, contenderIsLive);
       }
       await attempt();
     } catch (error) {

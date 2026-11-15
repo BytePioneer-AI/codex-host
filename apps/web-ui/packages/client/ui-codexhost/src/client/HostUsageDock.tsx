@@ -17,6 +17,7 @@ import {
 
 import {
   formatAccountCreditsCompactCountdown,
+  formatAccountCreditsCompactExpiry,
   formatAccountCreditsResetCountdown,
   groupAccountCreditsWindows,
 } from "@codexhost/shared-contracts";
@@ -89,7 +90,11 @@ function credits(value: number, t: Translate): string {
   return `${amount} ${t("usage.unit.credits")}`;
 }
 
-function resetTime(value: string | number | undefined, t: Translate): string | null {
+function resetTime(
+  value: string | number | undefined,
+  t: Translate,
+  key: "usage.reset.at" | "usage.expires.at" = "usage.reset.at",
+): string | null {
   if (value === undefined) return null;
   const date = new Date(typeof value === "number" ? value * 1_000 : value);
   if (Number.isNaN(date.getTime())) return null;
@@ -109,7 +114,7 @@ function resetTime(value: string | number | undefined, t: Translate): string | n
         hour: "numeric",
         minute: "2-digit",
       });
-  return t("usage.reset.at", { time });
+  return t(key, { time });
 }
 
 function quotaValue(used: number | undefined, limit: number | undefined, unit?: string): string {
@@ -217,6 +222,16 @@ function quotaColor(remaining: number): string {
   return remaining <= 10 ? "#c45c4a" : remaining <= 30 ? "#c9a227" : "#3d9a64";
 }
 
+function resetCreditsColor(nextExpiresAt: string | undefined, nowMs: number): string {
+  if (!nextExpiresAt) return "#3d9a64";
+  const timestamp = Date.parse(nextExpiresAt);
+  if (!Number.isFinite(timestamp)) return "#3d9a64";
+  const remainingMs = timestamp - nowMs;
+  if (remainingMs <= 8 * 60 * 60 * 1_000) return "#c45c4a";
+  if (remainingMs <= 24 * 60 * 60 * 1_000) return "#c9a227";
+  return "#3d9a64";
+}
+
 function quotaGroups(
   usage: HostThreadUsage | null,
   account: HostAccountCredits | undefined,
@@ -302,15 +317,6 @@ function quotaGroups(
           ...(note ? { note } : {}),
           ...(at.title ? { noteTitle: at.title } : {}),
         });
-        if (window.isPrimary && account.resetCredits) {
-          const expires = resetSummary(account.resetCredits.nextExpiresAt);
-          accountRows.push({
-            label: t("usage.resetCredits"),
-            value: String(account.resetCredits.availableCount),
-            ...(expires.text ? { note: expires.text } : {}),
-            ...(expires.title ? { noteTitle: expires.title } : {}),
-          });
-        }
       }
       if (accountRows.length) {
         groups.push({
@@ -326,6 +332,45 @@ function quotaGroups(
     }
   }
   return groups;
+}
+
+function ResetCreditsFooter({
+  resetCredits,
+  t,
+  nowMs,
+}: {
+  resetCredits: NonNullable<HostAccountCredits["resetCredits"]>;
+  t: Translate;
+  nowMs: number;
+}) {
+  const locale = t("usage.dateLocale");
+  const exactExpiry = resetTime(resetCredits.nextExpiresAt, t, "usage.expires.at") ?? undefined;
+  const compactExpiry =
+    resetCredits.nextExpiresAt !== undefined
+      ? (formatAccountCreditsCompactExpiry(resetCredits.nextExpiresAt, locale, nowMs) ??
+        exactExpiry)
+      : null;
+  const color = resetCreditsColor(resetCredits.nextExpiresAt, nowMs);
+  return (
+    <div
+      className={css.resetCreditsFooter}
+      style={{ "--reset-credits-color": color } as CSSProperties}
+    >
+      <span className={css.resetCreditsLeft} title={exactExpiry}>
+        <svg className={css.resetCreditsIcon} viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.25 5.25a1 1 0 0 1 1-1h9.5a1 1 0 0 1 1 1v1.45a1.3 1.3 0 0 0 0 2.6v1.45a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1V9.3a1.3 1.3 0 0 0 0-2.6V5.25Z" />
+          <path d="M6 4.5v7" strokeDasharray="1.5 1.8" />
+        </svg>
+        <span className={css.resetCreditsCopy}>
+          <span>{t("usage.resetCredits.short")}</span>
+          {compactExpiry && <span className={css.resetCreditsExpiry}> · {compactExpiry}</span>}
+        </span>
+      </span>
+      <span className={css.resetCreditsPill}>
+        {t("usage.resetCredits.count", { count: String(resetCredits.availableCount) })}
+      </span>
+    </div>
+  );
 }
 
 function ContextSummary({ usage, t }: { usage: HostThreadUsage | null; t: Translate }) {
@@ -490,6 +535,9 @@ export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
               ))}
             </section>
           ))}
+          {account?.resetCredits && (
+            <ResetCreditsFooter resetCredits={account.resetCredits} t={t} nowMs={nowMs} />
+          )}
         </UsagePopover>
       )}
       {summary.length > 0 && (groups.length > 0 || hasContext) && (

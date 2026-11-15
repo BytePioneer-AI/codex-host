@@ -302,6 +302,64 @@
   background: var(--quota-color);
 }
 
+.resetCreditsFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  font-size: 12px;
+}
+
+.resetCreditsLeft {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.resetCreditsIcon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: color-mix(in srgb, currentColor 62%, transparent);
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.resetCreditsCopy {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, currentColor 88%, transparent);
+}
+
+.resetCreditsExpiry {
+  color: color-mix(in srgb, currentColor 54%, transparent);
+  font-size: 10.5px;
+}
+
+.resetCreditsPill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--reset-credits-color) 86%, currentColor);
+  background: color-mix(in srgb, var(--reset-credits-color) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--reset-credits-color) 28%, transparent);
+}
+
 @media (max-width: 640px) {
   .anchor {
     max-width: min(280px, 56vw);

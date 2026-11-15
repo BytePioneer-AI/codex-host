@@ -165,6 +165,22 @@ describe.each(["HTTP", "MCP"] as const)("external client parity: %s", (transport
     },
   );
 
+  it.each([true, false])("forwards steer=%s without changing the send result", async (steer) => {
+    expect(await call("thread_send", { thread: "child", message: "adjust", steer })).toEqual({
+      threadId: "child",
+      turnId: "turn-2",
+      harnessId: "pi",
+      status: "running",
+      next,
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith({
+      threadId: "child",
+      message: "adjust",
+      steer,
+    });
+    expect(watch).not.toHaveBeenCalled();
+  });
+
   it("returns interrupt failures without registering a new watch", async () => {
     send.mockRejectedValueOnce(new DelegationControlError("THREAD_BUSY", "Stop timed out"));
     expect(

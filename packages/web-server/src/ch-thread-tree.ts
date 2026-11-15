@@ -1,4 +1,8 @@
-import { clientThreadTreeSchema } from "@codexhost/shared-contracts";
+import {
+  clientThreadTreeSchema,
+  THREAD_CATALOG_READ_METHOD,
+  type ThreadCatalogReadResult,
+} from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import type { ChThread } from "./ch-thread-view.ts";
 import { RpcError } from "./transport.ts";
@@ -50,6 +54,25 @@ export class ChThreadTree {
     }
   }
 
+  private async readArchivedIds(): Promise<ReadonlySet<string>> {
+    const ids = new Set<string>();
+    const seen = new Set<string>();
+    let archived: string | undefined;
+    for (;;) {
+      const page = await this.host.request<ThreadCatalogReadResult>(THREAD_CATALOG_READ_METHOD, {
+        includeArchived: true,
+        officialCursor: { live: null, ...(archived === undefined ? {} : { archived }) },
+      });
+      for (const id of page.archivedThreadIds) ids.add(id);
+      const next = page.officialCursor?.archived;
+      if (next == null) return ids;
+      if (seen.has(next))
+        throw new RpcError("host/catalog-invalid", "Host archive cursor did not advance.");
+      seen.add(next);
+      archived = next;
+    }
+  }
+
   async archive(
     id: string,
     archived: boolean,
@@ -66,12 +89,18 @@ export class ChThreadTree {
     const queue = [id];
     const visited = new Set<string>();
     const failedSessionIds: string[] = [];
+    let confirmedArchiveIds: Promise<ReadonlySet<string>> | undefined;
     for (const next of queue) {
       if (visited.has(next)) continue;
       visited.add(next);
       queue.push(...(children.get(next) ?? []));
-      if (next !== id && archivedIds.has(next) === archived) continue;
+      if (next !== id && archived && archivedIds.has(next)) continue;
       try {
+        if (next !== id && !archived && !archivedIds.has(next)) {
+          // Native archive IDs cover only loaded pages; absence needs a complete archive read.
+          confirmedArchiveIds ??= this.readArchivedIds();
+          if (!(await confirmedArchiveIds).has(next)) continue;
+        }
         await setArchived(next);
       } catch (error) {
         if (next === id) throw error;

@@ -295,7 +295,7 @@ const TOOLS: Tool[] = [
   {
     name: "thread_send",
     description:
-      "Start a new Turn. Without interrupt=true, a busy Thread returns THREAD_BUSY; messages are never queued or retried. interrupt=true cancels the active Turn and confirms idle before sending (30-second stop deadline); cancellation failure or timeout sends nothing. Existing watches are preserved and temporary stop notifications suppressed. watch=true watches after sending and defaults to this client's event log (events_poll or SSE). Returns watch in the same shape as delegate_start, including notRegistered if registration fails after a successful send.",
+      "Start a new Turn. Without interrupt=true or steer=true, a busy Thread returns THREAD_BUSY; messages are never queued or retried. interrupt=true cancels the active Turn and confirms idle before sending (30-second stop deadline); cancellation failure or timeout sends nothing. steer=true uses the same adjustment operation as Desktop: native steering where supported, otherwise stop and resend; an idle Thread starts a new Turn. steer=true and interrupt=true are mutually exclusive. An interrupt preserves existing watches and suppresses the temporary stop notification. watch=true watches after sending and defaults to this client's event log (events_poll or SSE). Returns watch in the same shape as delegate_start, including notRegistered if registration fails after a successful send.",
     inputSchema: {
       type: "object",
       properties: {
@@ -304,6 +304,10 @@ const TOOLS: Tool[] = [
         interrupt: {
           type: "boolean",
           description: "Stop an active Turn before sending; preserve watches",
+        },
+        steer: {
+          type: "boolean",
+          description: "Adjust a running Turn; an idle Thread starts a new Turn",
         },
         watch: { type: "boolean", description: "Record an event when the Thread stops" },
         watchTimeoutMs: { ...integer("How long to watch; default 29 minutes"), minimum: 1 },
@@ -315,7 +319,7 @@ const TOOLS: Tool[] = [
       body: {
         threadId: threadId(args),
         message: text(args, "message", true),
-        ...pick(args, ["interrupt", "watch", "watchTimeoutMs"]),
+        ...pick(args, ["interrupt", "steer", "watch", "watchTimeoutMs"]),
       },
     }),
   },

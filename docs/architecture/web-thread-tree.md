@@ -20,6 +20,7 @@ Web 侧栏把本机 Host 的 Thread 显示成可以展开、收起的树。树�
 - 每次刷新列表都读取完整的 `parents`。本机 CH 会话摘要的投影 `threadTreeParent` 为显示父 Thread ID 或 `null`；草稿和远程 Host 会话没有该字段。
 - 已加载行的祖先不在当前页时，Web Server 按 ID 单独读取并一起返回，最多向上 64 层。遇到环或无法确认的祖先时停止，子 Thread 显示在顶层。
 - 侧栏的归档与恢复（`workspace/archiveSession`、`workspace/unarchiveSession`、`session/archive`、`session/unarchive`）级联到全部后代，包括未加载的后代：先父后子，跳过已处于目标状态的后代，最后只刷新一次列表。用户直接操作的 Thread 写入失败时返回它自己的错误，不处理后代；只有后代失败时返回 `session/archive-partial`，`details.failedSessionIds` 列出失败的 Thread，已成功的不回滚。
+- 恢复时，已知归档的后代直接恢复；未出现在 Web 已加载归档集合中的后代，先通过包含归档的 Host 目录确认状态，并跟随 `officialCursor.archived` 直到归档分支结束。整个级联共用一次确认，不读取官方活动分支；确认未归档的后代才会跳过。确认读取失败或游标重复时，相应后代按恢复失败报告，不把未知状态当作已恢复。
 - 原生 Codex 的归档重试仅在所有者已确认、官方明确返回该 Thread 的 `no rollout found`（`-32600`）时，调用 Host 的有界归档确认接口。确认成功才修复 Web 归档投影，不重试写操作；无法确认时保留原始错误。取消归档、外部 Harness 与其他错误不走该补偿。
 - 每次归档／恢复操作在异步工作前登记身份；同一 Thread 的后续操作、归档／恢复通知及连接失效会使旧操作失效。补偿在最后一次等待后同步检查身份并更新投影，过期确认不写入正在刷新列表的归档变更集合。该保护不提供跨 Desktop 与 Web 的原子归档事务。
 

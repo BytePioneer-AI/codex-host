@@ -40,7 +40,7 @@ it(
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let holdHistory = false;
@@ -128,10 +128,7 @@ it(
     assert.ok(
       bounds && bounds.x >= 0 && bounds.x + bounds.width <= 391 && bounds.y >= 0 && bounds.y < 200,
     );
-    await page
-      .getByText("Connection interrupted; task status unconfirmed", { exact: true })
-      .last()
-      .waitFor();
+    await page.getByText("Task status unconfirmed", { exact: true }).last().waitFor();
     assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);
     assert.equal(await composer.innerText(), "Keep this mobile draft");
     historyHeld = Promise.withResolvers<undefined>();
@@ -234,7 +231,7 @@ it(
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
     // Records every status that appears, including one too short to be caught by polling.
     await page.addInitScript(`
       window.__visibility = "visible";

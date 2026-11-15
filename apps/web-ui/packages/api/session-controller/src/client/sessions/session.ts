@@ -568,16 +568,17 @@ export class Session implements SessionFace {
     return this.jumpPromise;
   }
 
-  /** Rebuild an opened history source after address replacement.
+  /** Rebuild an opened history source after address replacement or explicit retry.
    *  Invalidates any in-flight open first; projection state belongs to the independently
    *  reconnecting control stream and remains untouched. */
   async resync(): Promise<void> {
     if (this.openState === "cold") return; // never opened: no window to rebuild (doOpen flips to 'loading' synchronously, so cold implies no in-flight open)
-    this.openGeneration++;
+    const generation = ++this.openGeneration;
     const events = this.events;
     this.cachedJournal = events?.capture() ?? this.cachedJournal;
     this.events = undefined;
     await events?.dispose();
+    if (generation !== this.openGeneration) return;
     this.openPromise = null;
     this.openState = "cold";
     this.openError = null;

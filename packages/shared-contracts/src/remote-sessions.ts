@@ -17,13 +17,28 @@ const thread = { ...target, threadId: identity };
 /** Operations on existing Desktop connections; no connection or credential management. */
 export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("hosts") }),
+  z.strictObject({ kind: z.literal("status"), ...thread }),
   z.strictObject({
     kind: z.literal("list"),
     ...target,
     cursor: z.string().nullable(),
     archived: z.boolean(),
   }),
-  z.strictObject({ kind: z.literal("read"), ...thread }),
+  z.strictObject({
+    kind: z.literal("read"),
+    ...thread,
+    page: z
+      .strictObject({
+        cursor: z.string().min(1).max(8192).nullable(),
+        epoch: identity.optional(),
+        sortDirection: z.enum(["asc", "desc"]).optional(),
+        limit: z.number().int().min(1).max(20).optional(),
+      })
+      .refine((page) => page.cursor === null || page.epoch !== undefined, {
+        message: "A history continuation requires its connection epoch",
+      })
+      .optional(),
+  }),
   z
     .strictObject({
       kind: z.literal("configure"),

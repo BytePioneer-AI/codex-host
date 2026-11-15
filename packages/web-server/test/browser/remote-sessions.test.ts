@@ -163,6 +163,10 @@ it(
     const sent = new Map<string, string>();
     const archived = new Set<string>();
     const requestIds = new Map<string, string>();
+    let historyFailure: string | undefined;
+    let historyFailureCode = -32094;
+    let active = false;
+    let liveTurn = false;
     const timestamp = Math.floor(Date.now() / 1000);
     const row = (hostId: string) => ({
       id: "same",
@@ -171,7 +175,7 @@ it(
       modelProvider: remoteModels.get(hostId)?.harnessId ?? "openai",
       createdAt: timestamp,
       updatedAt: timestamp + (sent.has(hostId) ? 1 : 0),
-      status: { type: "idle" },
+      status: { type: active ? "active" : "idle" },
       turns: [
         {
           id: "turn",
@@ -216,6 +220,15 @@ it(
               },
             ]
           : []),
+        ...(liveTurn
+          ? [
+              {
+                id: "live",
+                status: active ? "inProgress" : "completed",
+                items: [{ id: "live-answer", type: "agentMessage", text: "Live remote progress" }],
+              },
+            ]
+          : []),
       ],
     });
     const controller = createServer((socket) => {
@@ -227,6 +240,12 @@ it(
         const input = JSON.parse(text.slice(`REMOTE ${nonce} `.length));
         const operation = input.operation;
         calls.push(operation);
+        if (operation.kind === "read" && historyFailure) {
+          socket.end(
+            JSON.stringify({ error: { code: historyFailureCode, message: historyFailure } }) + "\n",
+          );
+          return;
+        }
         if (operation.kind === "archive") {
           if (operation.archived) archived.add(operation.hostId);
           else archived.delete(operation.hostId);
@@ -257,6 +276,7 @@ it(
                 ? {
                     result: { thread: row(operation.hostId) },
                     epoch: "fixture-epoch",
+                    nextCursor: null,
                     ...remoteControls(operation.hostId),
                     requests: [],
                   }
@@ -325,6 +345,10 @@ it(
     const browser = await chromium.launch();
     t.after(() => browser.close());
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+    let carrierCount = 0;
+    page.on("websocket", () => {
+      carrierCount++;
+    });
     const catalogSessionIds: Array<string | undefined> = [];
     const selectionRequests: Array<Record<string, unknown>> = [];
     let localCatalogCalls = 0;
@@ -527,6 +551,48 @@ it(
       calls.filter((call) => call.kind === "archive").map((call) => call.hostId),
       ["remote-control:b", "remote-control:b"],
     );
+    liveTurn = true;
+    active = true;
+    const running = page.locator("[data-chat-running]");
+    await running.waitFor();
+    historyFailureCode = -32090;
+    historyFailure = "Remote Host unavailable";
+    const hostNotice = page.locator('[data-native-connection="reconnecting"]');
+    await hostNotice.waitFor();
+    assert.match(await running.innerText(), /Task status unconfirmed/);
+    historyFailure = undefined;
+    await hostNotice.waitFor({ state: "detached" });
+    historyFailureCode = -32094;
+    historyFailure = "A remote Turn exceeds the history page limit; open it in Codex Desktop.";
+    const notice = page.locator('[data-remote-history-error="remote/history-too-large"]');
+    await notice.waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(10_000);
+    assert.equal(await notice.isVisible(), true);
+    const noticeBounds = await notice.boundingBox();
+    assert.ok(noticeBounds && noticeBounds.x >= 0 && noticeBounds.x + noticeBounds.width <= 391);
+    assert.match(await running.innerText(), /Task status unconfirmed/);
+    assert.equal(await running.locator("svg").count(), 0);
+    if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
+      mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });
+      await page.screenshot({
+        path: join(process.env.CODEXHOST_TEST_SCREENSHOTS, "remote-history-error.png"),
+        animations: "disabled",
+      });
+    }
+    const carriersBeforeRetry = carrierCount;
+    historyFailure = undefined;
+    await notice.getByRole("button", { name: "Retry history", exact: true }).click();
+    await notice.waitFor({ state: "detached" });
+    assert.equal(carrierCount, carriersBeforeRetry);
+    assert.equal(calls.filter((call) => call.kind === "prompt").length, 1);
+    historyFailure = "A remote Turn exceeds the history page limit; open it in Codex Desktop.";
+    await notice.waitFor();
+    historyFailure = undefined;
+    active = false;
+    await notice.getByRole("button", { name: "Retry history", exact: true }).click();
+    await notice.waitFor({ state: "detached" });
+    await running.waitFor({ state: "detached" });
     if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
       mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });
       await page.screenshot({

@@ -49,7 +49,10 @@ export async function rendererRemoteSession(
   operation: RemoteSessionOperation,
 ): Promise<unknown> {
   const routing = target.__codexhostHostRoutingV1;
-  if (!routing) throw new Error("Desktop remote session routing is unavailable");
+  if (!routing)
+    throw Object.assign(new Error("Desktop remote session routing is unavailable"), {
+      code: -32090,
+    });
   const ids = [...new Set(routing.knownHostIds?.() ?? [])].filter((id) =>
     /^remote-(?:ssh(?:-|:)|control:)/u.test(id),
   );
@@ -154,18 +157,22 @@ export async function rendererRemoteSession(
       }),
     );
   }
+  const connectionError = (message: string, changed = false) =>
+    Object.assign(new Error(message), {
+      code: changed && routing.forHost(operation.hostId) ? -32095 : -32090,
+    });
   if (!ids.includes(operation.hostId))
-    throw new Error("Remote Host is offline or no longer known to Desktop");
+    throw connectionError("Remote Host is offline or no longer known to Desktop");
   const route = routing.forHost(operation.hostId);
   const manager = route?.manager;
-  if (!route || !manager) throw new Error("Remote Host is offline");
+  if (!route || !manager) throw connectionError("Remote Host is offline");
   let generation = state.managers.get(route);
   if (!generation) {
     generation = { epoch: crypto.randomUUID(), answered: new Set() };
     state.managers.set(route, generation);
   }
   if ("epoch" in operation && operation.epoch !== generation.epoch)
-    throw new Error("Remote connection changed; refresh before operating");
+    throw connectionError("Remote connection changed; refresh before operating", true);
   if (operation.kind === "list")
     return manager.sendRequest("thread/list", {
       cursor: operation.cursor,
@@ -173,19 +180,52 @@ export async function rendererRemoteSession(
       limit: 100,
     });
   const threadId = operation.threadId;
+  if (operation.kind === "status") {
+    const result = (await manager.sendRequest("thread/read", {
+      threadId,
+      includeTurns: false,
+    })) as {
+      thread?: { id?: string; status?: { type?: string } };
+    };
+    if (routing.forHost(operation.hostId) !== route)
+      throw connectionError("Remote connection changed during status read", true);
+    if (result.thread?.id !== threadId || typeof result.thread.status?.type !== "string")
+      throw new Error("Invalid remote Thread status");
+    let turnId: string | null = null;
+    if (result.thread.status.type === "active") {
+      const page = (await manager.sendRequest("thread/turns/list", {
+        threadId,
+        cursor: null,
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      })) as { data?: Array<{ id?: string; status?: string }> };
+      if (routing.forHost(operation.hostId) !== route)
+        throw connectionError("Remote connection changed during status read", true);
+      if (!Array.isArray(page.data)) throw new Error("Invalid remote Turn status");
+      const latest = page.data[0];
+      if (latest?.status === "inProgress" && typeof latest.id === "string") turnId = latest.id;
+    }
+    return { threadId, status: result.thread.status.type, turnId, epoch: generation.epoch };
+  }
   const pendingRequests = async (): Promise<Request[]> => {
     const conversation = (await manager.getConversation?.(threadId)) as
       { requests?: Request[] } | undefined;
     if (routing.forHost(operation.hostId) !== route)
-      throw new Error("Remote connection changed during interaction read");
+      throw connectionError("Remote connection changed during interaction read", true);
     return Array.isArray(conversation?.requests) ? conversation.requests : [];
   };
   if (operation.kind === "read") {
+    if (operation.page?.epoch !== undefined && operation.page.epoch !== generation.epoch)
+      throw connectionError(
+        "Remote connection changed during history pagination; refresh and retry",
+        true,
+      );
     // Paginated external history rejects includeTurns=true. Read its header first;
     // native/legacy history keeps the official full-read behavior.
     let result = await manager.sendRequest("thread/read", { threadId, includeTurns: false });
     if (routing.forHost(operation.hostId) !== route)
-      throw new Error("Remote connection changed during read");
+      throw connectionError("Remote connection changed during read", true);
     const header = result as {
       thread?: {
         historyMode?: string;
@@ -196,7 +236,43 @@ export async function rendererRemoteSession(
         serviceTier?: unknown;
       };
     };
-    if (header.thread?.historyMode === "paginated") {
+    let nextCursor: string | null = null;
+    if (header.thread?.historyMode === "paginated" && operation.page) {
+      let limit = operation.page.limit ?? 20;
+      for (;;) {
+        const response = (await manager.sendRequest("thread/turns/list", {
+          threadId,
+          cursor: operation.page.cursor,
+          limit,
+          sortDirection: operation.page.sortDirection ?? "asc",
+          itemsView: "full",
+        })) as { data?: unknown[]; nextCursor?: string | null };
+        if (routing.forHost(operation.hostId) !== route)
+          throw connectionError("Remote connection changed during read", true);
+        if (
+          !Array.isArray(response.data) ||
+          (response.nextCursor !== null &&
+            (typeof response.nextCursor !== "string" || response.nextCursor.length === 0))
+        )
+          throw new Error("Invalid remote history page");
+        // Leave room for the Thread header, pending requests, and optional controls
+        // in the Controller's 16 MiB reply. Shrinking a read never replays a Turn.
+        if (new TextEncoder().encode(JSON.stringify(response.data)).byteLength > 14 * 1024 * 1024) {
+          if (response.data.length <= 1 || limit === 1)
+            throw Object.assign(
+              new Error(
+                "A remote Turn exceeds the history page limit; open this chat in Codex Desktop.",
+              ),
+              { code: -32094 },
+            );
+          limit = Math.max(1, Math.floor(Math.min(limit, response.data.length) / 2));
+          continue;
+        }
+        result = { ...(result as object), thread: { ...header.thread, turns: response.data } };
+        nextCursor = response.nextCursor;
+        break;
+      }
+    } else if (header.thread?.historyMode === "paginated") {
       const turns: unknown[] = [],
         cursors = new Set<string>();
       let cursor: string | null = null,
@@ -204,7 +280,7 @@ export async function rendererRemoteSession(
         complete = false;
       for (let page = 0; page < 100; page++) {
         if (routing.forHost(operation.hostId) !== route)
-          throw new Error("Remote connection changed during read");
+          throw connectionError("Remote connection changed during read", true);
         const response = (await manager.sendRequest("thread/turns/list", {
           threadId,
           cursor,
@@ -232,7 +308,7 @@ export async function rendererRemoteSession(
       result = { ...(result as object), thread: { ...header.thread, turns } };
     } else result = await manager.sendRequest("thread/read", { threadId, includeTurns: true });
     if (routing.forHost(operation.hostId) !== route)
-      throw new Error("Remote connection changed during read");
+      throw connectionError("Remote connection changed during read", true);
     let metadata: Record<string, unknown> = {};
     if (header.thread) {
       const cwd = header.thread.cwd;
@@ -241,7 +317,7 @@ export async function rendererRemoteSession(
           threadId,
         })) as { owner?: string; harnessId?: string };
         if (routing.forHost(operation.hostId) !== route)
-          throw new Error("Remote connection changed during read");
+          throw connectionError("Remote connection changed during read", true);
         metadata = {
           configuration,
           ...(configuration.owner === "codex"
@@ -263,7 +339,7 @@ export async function rendererRemoteSession(
               }
             | undefined;
           if (routing.forHost(operation.hostId) !== route)
-            throw new Error("Remote connection changed during read");
+            throw connectionError("Remote connection changed during read", true);
           const settings = conversation?.latestThreadSettings;
           // Native Thread headers omit serviceTier on older servers. Desktop's
           // confirmed settings supply Fast/effort only for the same model.
@@ -293,7 +369,7 @@ export async function rendererRemoteSession(
             const loading = Promise.all([
               Promise.resolve().then(() => {
                 if (routing.forHost(operation.hostId) !== route)
-                  throw new Error("Remote connection changed during read");
+                  throw connectionError("Remote connection changed during read", true);
                 return manager.sendRequest("codexhost/harness/inspect", {
                   harnessId,
                   ...(cwd ? { cwd: cwd } : {}),
@@ -302,7 +378,7 @@ export async function rendererRemoteSession(
               Promise.resolve()
                 .then(() => {
                   if (routing.forHost(operation.hostId) !== route)
-                    throw new Error("Remote connection changed during read");
+                    throw connectionError("Remote connection changed during read", true);
                   return manager.sendRequest("codexhost/harness/plugins/list", {});
                 })
                 .catch(() => null),
@@ -340,12 +416,13 @@ export async function rendererRemoteSession(
       }
     }
     if (routing.forHost(operation.hostId) !== route)
-      throw new Error("Remote connection changed during read");
+      throw connectionError("Remote connection changed during read", true);
     const requests = await pendingRequests();
     return {
       result,
       ...metadata,
       epoch: generation.epoch,
+      ...(operation.page ? { nextCursor } : {}),
       interactionsAvailable:
         !!manager.getConversation &&
         !!manager.replyWithCommandExecutionApprovalDecision &&

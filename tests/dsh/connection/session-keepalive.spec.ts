@@ -331,3 +331,36 @@ it("recovers failed background opens on reconnect without hot-looping or warming
   expect(f.sessions.binding(SessionId("0"))).toBeUndefined();
   expect(f.sessions.retainInfo(SessionId("0")).getSnapshot().referenceCount).toBe(0);
 });
+
+it("retries one retained history without reconnecting or replacing its binding", async () => {
+  const f = await fixture();
+  const a = await f.open("0");
+  const b = await f.open("1");
+  f.failing.add("1");
+  const count = () =>
+    f.requests.filter((r) => r.address.kind === "session" && r.address.sessionId === "0").length;
+  const originalCount = count();
+  await f.sessions.retryHistory(SessionId("1"));
+  await flush();
+  expect(b.session.getSnapshot().openState).toBe("error");
+  expect(b.eventSource.getSnapshot().entries).toHaveLength(1);
+  f.failing.delete("1");
+  await f.sessions.retryHistory(SessionId("1"));
+  await flush();
+  expect(f.sessions.binding(SessionId("1"))).toBe(b);
+  expect(b.session.getSnapshot().openState).toBe("open");
+  expect(count()).toBe(originalCount);
+  expect(f.sessions.binding(SessionId("0"))).toBe(a);
+  await f.append("1", "after local retry");
+  expect(b.eventSource.getSnapshot().entries.at(-1)?.event.data).toEqual({
+    text: "after local retry",
+  });
+  await expect(f.sessions.retryHistory(SessionId("unknown"))).rejects.toThrow("no longer retained");
+  const openedBeforeClose = f.requests.length;
+  const retry = f.sessions.retryHistory(SessionId("1"));
+  await b.ctx.fiber.dispose();
+  await retry;
+  await flush();
+  expect(f.requests.length).toBe(openedBeforeClose);
+  expect(f.sessions.binding(SessionId("1"))).toBeUndefined();
+});

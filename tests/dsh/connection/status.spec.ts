@@ -132,6 +132,92 @@ it("shows connection failure without a selected session", () => {
   expect(container.textContent).toContain("Network appears offline");
 });
 
+it("keeps history failures visible until recovery, retries locally and shows recurring errors", async () => {
+  vi.useFakeTimers();
+  const { container, root } = mount();
+  const message = "A remote Turn exceeds the history page limit";
+  const list = createSnapshotStore({
+    byId: {
+      thread: {
+        projectionValues: {
+          nativeConnection: { state: "connected" },
+          remoteHistoryError: { code: "remote/history-too-large", message } as {
+            code: string;
+            message: string;
+          } | null,
+        },
+      },
+    },
+  });
+  const reconnect = vi.fn();
+  const retryHistory = vi.fn(async () => {});
+  const props = {
+    sessionId: "thread",
+    useSession: (select: (value: { openState: string }) => unknown) =>
+      select({ openState: "open" }),
+    list,
+    connection: { state: createSnapshotStore("connected"), reconnect },
+    retryHistory,
+    t: (key: keyof typeof en) => en[key],
+  } as unknown as ComponentProps<typeof HostConnectionStatus>;
+  act(() => root.render(createElement(HostConnectionStatus, props)));
+  expect(document.body.textContent).toContain(message);
+  expect(container.querySelector("[data-web-connection]")).toBeNull();
+  act(() => vi.advanceTimersByTime(60_000));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+  await act(async () => container.querySelector("button")?.click());
+  expect(retryHistory).toHaveBeenCalledExactlyOnceWith("thread");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+  act(() =>
+    list.set({
+      byId: {
+        thread: {
+          projectionValues: {
+            nativeConnection: { state: "connected" },
+            remoteHistoryError: null,
+          },
+        },
+      },
+    }),
+  );
+  expect(document.body.textContent).not.toContain(message);
+  act(() =>
+    list.set({
+      byId: {
+        thread: {
+          projectionValues: {
+            nativeConnection: { state: "connected" },
+            remoteHistoryError: { code: "remote/history-too-large", message },
+          },
+        },
+      },
+    }),
+  );
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+  expect(reconnect).not.toHaveBeenCalled();
+});
+
+it("retries a failed initial history open without reconnecting the healthy carrier", async () => {
+  const { container, root } = mount();
+  const reconnect = vi.fn(),
+    retryHistory = vi.fn(async () => {});
+  const props = {
+    sessionId: "thread",
+    useSession: (
+      select: (value: { openState: string; openError: { message: string } }) => unknown,
+    ) => select({ openState: "error", openError: { message: "History unavailable" } }),
+    list: createSnapshotStore({ byId: {} }),
+    connection: { state: createSnapshotStore("connected"), reconnect },
+    retryHistory,
+    t: (key: keyof typeof en) => en[key],
+  } as unknown as ComponentProps<typeof HostConnectionStatus>;
+  act(() => root.render(createElement(HostConnectionStatus, props)));
+  expect(container.textContent).toContain("History unavailable");
+  await act(async () => container.querySelector("button")?.click());
+  expect(retryHistory).toHaveBeenCalledExactlyOnceWith("thread");
+  expect(reconnect).not.toHaveBeenCalled();
+});
+
 it("does not animate or advance the running clock while the task status is unconfirmed", () => {
   const { container, root } = mount();
   const props = {
@@ -140,7 +226,7 @@ it("does not animate or advance the running clock while the task status is uncon
     t: (key: keyof typeof chatEn) => chatEn[key],
   } as unknown as ComponentProps<typeof RunningStatus>;
   act(() => root.render(createElement(RunningStatus, props)));
-  expect(container.textContent).toContain("task status unconfirmed");
+  expect(container.textContent).toContain("Task status unconfirmed");
   expect(container.textContent).not.toContain("Working");
   expect(container.querySelector("svg")).toBeNull();
 });

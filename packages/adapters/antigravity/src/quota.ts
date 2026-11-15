@@ -6,6 +6,8 @@
  * carries one bucket per limit window.
  */
 
+import type { HarnessLocalizations } from "@codexhost/shared-contracts";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -13,10 +15,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Runs the Antigravity CLI with the given arguments and resolves stdout. */
 export type AntigravityCommandRunner = (arguments_: readonly string[]) => Promise<string>;
 
+export interface AntigravityQuotaScope {
+  id: string;
+  label: string;
+  localizations?: HarnessLocalizations;
+}
+
 export interface AntigravityQuotaBucket {
   product: string;
   periodType?: AntigravityQuotaSnapshot["periodType"];
-  scope?: { id: string; label: string };
+  scope?: AntigravityQuotaScope;
   usagePercent: number;
   resetsAt?: string;
 }
@@ -27,7 +35,7 @@ export interface AntigravityQuotaBucket {
  */
 export interface AntigravityQuotaSnapshot {
   label?: string;
-  scope?: { id: string; label: string };
+  scope?: AntigravityQuotaScope;
   usedPercent: number;
   periodType: "weekly" | "five_hour" | "unknown";
   resetsAt?: string;
@@ -37,14 +45,22 @@ export interface AntigravityQuotaSnapshot {
 
 interface ParsedBucket extends AntigravityQuotaBucket {
   window: string;
+  groupOrder: number;
 }
 
 const USAGE_ARGUMENTS = ["--print=/usage", "--output-format", "stream-json"] as const;
 
+const GROUP_LOCALIZATIONS: Readonly<Record<string, HarnessLocalizations>> = {
+  "gemini models": { "zh-CN": { label: "Gemini 模型" } },
+  "claude and gpt models": { "zh-CN": { label: "Claude 与 GPT 模型" } },
+};
+
 function usedPercentFrom(remainingFraction: unknown): number | null {
   if (typeof remainingFraction !== "number" || !Number.isFinite(remainingFraction)) return null;
-  const used = (1 - Math.min(1, Math.max(0, remainingFraction))) * 100;
-  return Math.round(used * 100) / 100;
+  const clamped = Math.min(1, Math.max(0, remainingFraction));
+  if (clamped <= 0) return 100;
+  if (clamped >= 1) return 0;
+  return Math.min(99, Math.round((1 - clamped) * 100));
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -71,11 +87,20 @@ function windowLabel(window: string, bucketId: string | undefined): string | und
   return bucketId;
 }
 
+function periodRank(periodType: AntigravityQuotaSnapshot["periodType"] | undefined): number {
+  if (periodType === "five_hour") return 0;
+  if (periodType === "weekly") return 1;
+  return 2;
+}
+
 function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
   const buckets: ParsedBucket[] = [];
+  let groupOrder = 0;
   for (const group of groups) {
     if (!isRecord(group) || !Array.isArray(group.buckets)) continue;
     const groupName = nonEmptyString(group.name);
+    const localizations = groupName ? GROUP_LOCALIZATIONS[groupName.toLowerCase()] : undefined;
+    const currentGroupOrder = groupOrder++;
     for (const bucket of group.buckets) {
       if (!isRecord(bucket)) continue;
       const usagePercent = usedPercentFrom(bucket.remaining_fraction);
@@ -87,9 +112,18 @@ function parseBuckets(groups: readonly unknown[]): ParsedBucket[] {
       buckets.push({
         product: groupName ? `${groupName} · ${label}` : label,
         periodType: periodTypeFrom(window),
-        ...(groupName ? { scope: { id: groupName, label: groupName } } : {}),
+        ...(groupName
+          ? {
+              scope: {
+                id: groupName,
+                label: groupName,
+                ...(localizations ? { localizations } : {}),
+              },
+            }
+          : {}),
         usagePercent,
         window,
+        groupOrder: currentGroupOrder,
         ...(resetsAt ? { resetsAt } : {}),
       });
     }
@@ -129,7 +163,15 @@ export function parseAntigravityUsageCommand(
   const buckets = parseBuckets(groups);
   const leading = leadingBucket(buckets);
   if (!leading) return null;
-  const others = buckets.filter((bucket) => bucket !== leading);
+  const others = buckets
+    .filter((bucket) => bucket !== leading)
+    .sort((left, right) => {
+      const leftSameGroup = left.groupOrder === leading.groupOrder;
+      const rightSameGroup = right.groupOrder === leading.groupOrder;
+      if (leftSameGroup !== rightSameGroup) return Number(rightSameGroup) - Number(leftSameGroup);
+      if (left.groupOrder !== right.groupOrder) return left.groupOrder - right.groupOrder;
+      return periodRank(left.periodType) - periodRank(right.periodType);
+    });
   return {
     ...(leading.scope || periodTypeFrom(leading.window) === "unknown"
       ? { label: leading.product }

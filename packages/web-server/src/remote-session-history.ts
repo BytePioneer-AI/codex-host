@@ -70,6 +70,23 @@ type Previous = {
   thread: Pick<ChThread, "turns" | "historyMode" | "parentThreadId" | "canAcceptDirectInput">;
 };
 
+// Parsed Turns are retained by identity until a fresh native snapshot replaces them.
+// Weak keys release the byte counts with the corresponding history view.
+const turnBytes = new WeakMap<ChTurn, number>();
+
+function historyBytes(turns: ChTurn[]): number {
+  let bytes = 2 + Math.max(0, turns.length - 1);
+  for (const turn of turns) {
+    let size = turnBytes.get(turn);
+    if (size === undefined) {
+      size = Buffer.byteLength(JSON.stringify(turn));
+      turnBytes.set(turn, size);
+    }
+    bytes += size;
+  }
+  return bytes;
+}
+
 function settled(turn: ChTurn): boolean {
   return (
     ["completed", "failed", "interrupted"].includes(turn.status) &&
@@ -92,7 +109,7 @@ export async function readRemoteHistory(
     const turns = snapshot.result.thread.turns;
     if (new Set(turns.map((turn) => turn.id)).size !== turns.length)
       invalid("Remote history repeats a Turn; refresh and retry.");
-    if (turns.length > 5000 || Buffer.byteLength(JSON.stringify(turns)) > 128 * 1024 * 1024)
+    if (turns.length > 5000 || historyBytes(turns) > 128 * 1024 * 1024)
       throw new RpcError(
         "remote/history-too-large",
         "Remote history exceeds the Web history limit.",
@@ -147,7 +164,7 @@ export async function readRemoteHistory(
         );
       return full();
     }
-    bytes += Buffer.byteLength(JSON.stringify(snapshot.result.thread.turns));
+    bytes += historyBytes(snapshot.result.thread.turns);
     if (bytes > 128 * 1024 * 1024)
       throw new RpcError(
         "remote/history-too-large",

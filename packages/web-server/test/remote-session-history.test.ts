@@ -457,6 +457,67 @@ it("refreshes live output without transferring a large settled prefix again", as
   });
 });
 
+it("does not reserialize a retained prefix while checking refreshed history limits", async () => {
+  const f = fixture([
+    turn("old", "completed", "x".repeat(1024 * 1024)),
+    turn("live", "inProgress"),
+  ]);
+  let previous = await readRemoteHistory(f.call, identity);
+  const oldItem = previous.result.thread.turns[0]?.items[0];
+  assert.ok(oldItem);
+  const text = oldItem.text;
+  let textReads = 0;
+  Object.defineProperty(oldItem, "text", {
+    enumerable: true,
+    get: () => {
+      textReads++;
+      return text;
+    },
+  });
+  for (const update of ["new tail", 'new tail with 中文 and \\" escapes']) {
+    f.thread.turns[1] = turn("live", "inProgress", update);
+    previous = await readRemoteHistory(f.call, identity, {
+      epoch: previous.epoch,
+      fullReadAt: previous.fullReadAt,
+      owner: "codex",
+      thread: previous.result.thread,
+    });
+    assert.equal(previous.result.thread.turns[0]?.items[0], oldItem);
+    assert.equal(previous.result.thread.turns[1]?.items[0]?.text, update);
+  }
+  assert.equal(textReads, 0);
+});
+
+it("counts JSON array delimiters and UTF-8 tail growth against the full history byte limit", async () => {
+  const old = turn("old"),
+    live = turn("live", "inProgress", "");
+  const oldItem = old.items[0];
+  assert.ok(oldItem);
+  oldItem.text = "";
+  const overhead = Buffer.byteLength(JSON.stringify([old, live]));
+  oldItem.text = "x".repeat(128 * 1024 * 1024 - overhead);
+  const f = fixture([old, live]);
+  const previous = await readRemoteHistory(f.call, identity);
+  f.thread.turns[1] = turn("live", "inProgress", "é");
+  await assert.rejects(
+    readRemoteHistory(f.call, identity, {
+      epoch: previous.epoch,
+      fullReadAt: previous.fullReadAt,
+      owner: "codex",
+      thread: previous.result.thread,
+    }),
+    { code: "remote/history-too-large" },
+  );
+  assert.equal(previous.result.thread.turns[1]?.items[0]?.text, "");
+});
+
+it("keeps the Turn-count limit when sizing histories by individual Turns", async () => {
+  const f = fixture(Array.from({ length: 5000 }, (_, index) => turn(String(index))));
+  await readRemoteHistory(f.call, identity);
+  f.thread.turns.push(turn("overflow"));
+  await assert.rejects(readRemoteHistory(f.call, identity), { code: "remote/history-too-large" });
+});
+
 it("reads new Turns back to the known tail and replaces a rolled-back suffix", async () => {
   const f = fixture([turn("old"), turn("previous", "inProgress")]);
   const previous = await readRemoteHistory(f.call, identity);

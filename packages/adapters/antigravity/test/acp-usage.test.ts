@@ -305,10 +305,12 @@ describe("Antigravity Session usage", () => {
     expect(timed.usage?.outputTokensPerSecond).toBe(10);
     expect(timed.usage).toMatchObject({ inputTokens: 300, outputTokens: 40, totalTokens: 340 });
 
+    tracker.beginTurn();
     await appendFile(file, `${planner(5)}\n`);
     expect((await tracker.collectNewTranscriptRequests()).usage?.outputTokensPerSecond).toBe(10);
     expect(tracker.recordTurnPromptUsage({ usage: prompt }).usage?.outputTokensPerSecond).toBe(10);
 
+    tracker.beginTurn();
     await appendFile(file, `${planner(7)}\n${planner(9)}\n`);
     const multi = await tracker.collectNewTranscriptRequests(clock);
     expect(multi.usage?.outputTokensPerSecond).toBe(10);
@@ -316,6 +318,7 @@ describe("Antigravity Session usage", () => {
       tracker.recordTurnPromptUsage({ usage: prompt, ...clock }).usage?.outputTokensPerSecond,
     ).toBe(10);
 
+    tracker.beginTurn();
     await appendFile(file, `${planner(11, { output_tokens: 0 })}\n`);
     const zero = await tracker.collectNewTranscriptRequests(clock);
     expect(zero.usage?.outputTokensPerSecond).toBe(10);
@@ -324,6 +327,7 @@ describe("Antigravity Session usage", () => {
         .usage?.outputTokensPerSecond,
     ).toBe(10);
 
+    tracker.beginTurn();
     await appendFile(file, `${planner(13)}\n`);
     const invalid = await tracker.collectNewTranscriptRequests({
       firstOutputAtMs: 4000,
@@ -335,6 +339,7 @@ describe("Antigravity Session usage", () => {
         .usage?.outputTokensPerSecond,
     ).toBe(10);
 
+    tracker.beginTurn();
     await appendFile(file, `${planner(15, { output_tokens: 40 })}\n`);
     const updated = await tracker.collectNewTranscriptRequests({
       firstOutputAtMs: 6000,
@@ -348,6 +353,58 @@ describe("Antigravity Session usage", () => {
     });
     expect(tracker.recordContextWindow(50, 100)?.outputTokensPerSecond).toBe(40);
     expect((await tracker.replayHistoricalRequests()).usage?.outputTokensPerSecond).toBe(40);
+  });
+
+  it.each([1, 2])("does not bill %i refreshed requests again at Turn completion", async (steps) => {
+    await tracker.replayHistoricalRequests();
+    await transcript();
+    for (let step = 1; step <= steps; step++) {
+      await appendFile(file, `${planner(step)}\n`);
+      expect((await tracker.collectNewTranscriptRequests()).requests).toHaveLength(1);
+    }
+    const clock = { firstOutputAtMs: 1000, completedAtMs: 3000 };
+    expect((await tracker.collectNewTranscriptRequests(clock)).requests).toEqual([]);
+    const result = tracker.recordTurnPromptUsage({
+      usage: {
+        inputTokens: 100 * steps,
+        cachedReadTokens: 50 * steps,
+        cachedWriteTokens: 0,
+        outputTokens: 20 * steps,
+      },
+      ...clock,
+    });
+    expect(result.fallbackRequest).toBeUndefined();
+    expect(result.usage).toMatchObject({
+      inputTokens: 150 * steps,
+      outputTokens: 20 * steps,
+      totalTokens: 170 * steps,
+    });
+    if (steps > 1) expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
+
+    tracker.beginTurn();
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    const next = tracker.recordTurnPromptUsage({
+      usage: { inputTokens: 10, cachedReadTokens: 0, cachedWriteTokens: 0, outputTokens: 2 },
+    });
+    expect(next.fallbackRequest).toBeDefined();
+    expect(next.usage).toMatchObject({
+      inputTokens: 150 * steps + 10,
+      outputTokens: 20 * steps + 2,
+    });
+  });
+
+  it("does not time the final request as a single-request Turn after an earlier refresh", async () => {
+    await transcript(planner(1));
+    await tracker.collectNewTranscriptRequests();
+    await appendFile(file, `${planner(3)}\n`);
+    const clock = { firstOutputAtMs: 1000, completedAtMs: 3000 };
+    const collected = await tracker.collectNewTranscriptRequests(clock);
+    expect(collected.requests).toHaveLength(1);
+    expect(collected.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(collected.usage).not.toHaveProperty("outputTokensPerSecond");
+    expect(tracker.recordTurnPromptUsage({ usage: prompt, ...clock }).usage).not.toHaveProperty(
+      "outputTokensPerSecond",
+    );
   });
 
   it("does not assign whole-turn timing to requests in a multi-step tool loop", async () => {
@@ -434,6 +491,7 @@ describe("Antigravity Session usage", () => {
       file,
       `${planner(3, { model: "claude-sonnet-5-5-medium", input_tokens: 100, cache_read_tokens: 20 })}\n`,
     );
+    tracker.beginTurn();
     const liveClaudeZero = await tracker.collectNewTranscriptRequests({
       promptUsage: {
         inputTokens: 100,
@@ -448,6 +506,7 @@ describe("Antigravity Session usage", () => {
       file,
       `${planner(5, { model: "claude-sonnet-5-5-medium", input_tokens: 100, cache_read_tokens: 20 })}\n`,
     );
+    tracker.beginTurn();
     const liveClaudeWrite = await tracker.collectNewTranscriptRequests({
       promptUsage: {
         inputTokens: 100,

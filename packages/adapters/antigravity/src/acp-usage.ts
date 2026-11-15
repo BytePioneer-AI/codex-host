@@ -123,8 +123,8 @@ export class AntigravitySessionUsageTracker {
   #tokens: HostUsage = {};
   #outputTokensPerSecond?: number;
   #complete = true;
-  #lastCollectionSteps = 0;
-  #lastCollectionRequests = 0;
+  readonly #turnCollectionSteps = new Set<number>();
+  #turnCollectionRequests = 0;
 
   constructor(options: AntigravitySessionUsageTrackerOptions) {
     this.#file = path.join(
@@ -185,6 +185,11 @@ export class AntigravitySessionUsageTracker {
     return this.currentUsage();
   }
 
+  beginTurn(): void {
+    this.#turnCollectionSteps.clear();
+    this.#turnCollectionRequests = 0;
+  }
+
   recordTurnPromptUsage(input: {
     usage?: AntigravityPromptUsage;
     model?: string;
@@ -197,10 +202,10 @@ export class AntigravitySessionUsageTracker {
     const usage = promptUsage(input.usage);
     if (!usage) return { usage: this.currentUsage() };
     if (this.#requests.length === 0) this.#tokens = usage;
-    const clock = this.#lastCollectionSteps <= 1 ? timing(input) : {};
+    const clock = this.#turnCollectionSteps.size <= 1 ? timing(input) : {};
     this.#recordOutputSpeed(usage.outputTokens, clock);
     if (
-      this.#lastCollectionRequests > 0 ||
+      this.#turnCollectionRequests > 0 ||
       usage.inputTokens === undefined ||
       usage.outputTokens === undefined
     ) {
@@ -250,11 +255,11 @@ export class AntigravitySessionUsageTracker {
     usage: HostUsage | null;
   }> {
     const transcript = await this.#read(input.signal);
-    this.#lastCollectionSteps = [...transcript.steps.keys()].filter(
-      (step) => !this.#consumed.has(step),
-    ).length;
+    for (const step of transcript.steps.keys()) {
+      if (!this.#consumed.has(step)) this.#turnCollectionSteps.add(step);
+    }
     const requests = this.#consume(transcript, false);
-    this.#lastCollectionRequests = requests.length;
+    this.#turnCollectionRequests += requests.length;
     const baseIndex = this.#requests.length - requests.length;
     const promptCacheWrite = count(input.promptUsage?.cachedWriteTokens)
       ? input.promptUsage.cachedWriteTokens
@@ -272,7 +277,12 @@ export class AntigravitySessionUsageTracker {
       }
     }
     const single = requests[0];
-    if (requests.length === 1 && single && this.#lastCollectionSteps === 1 && transcript.complete) {
+    if (
+      requests.length === 1 &&
+      single &&
+      this.#turnCollectionSteps.size === 1 &&
+      transcript.complete
+    ) {
       const extraCacheWrite =
         promptCacheWrite !== undefined &&
         promptCacheWrite > 0 &&

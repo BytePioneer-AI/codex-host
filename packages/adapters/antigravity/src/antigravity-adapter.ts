@@ -948,6 +948,7 @@ export class AntigravitySession implements HarnessSession {
       const ref = this.nativeRef;
       if (!transport || !ref)
         throw new AntigravityTransportError("unavailable", "Native Session is not connected");
+      this.#usage?.beginTurn();
       const result = await transport.prompt(promptParts(command), {
         onEvent: (event) => {
           if (!this.#isCurrent(turn) || turn.cancelled) return;

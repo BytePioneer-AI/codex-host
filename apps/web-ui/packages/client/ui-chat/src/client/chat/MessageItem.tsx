@@ -477,7 +477,9 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
                 className={css.editAction}
                 aria-label={t("message.edit")}
                 title={t("message.edit")}
-                onClick={() => messageEditing.begin(data.seq, text, data.content)}
+                onClick={() =>
+                  messageEditing.begin(data.seq, text, data.content, data.responseAnnotations)
+                }
               >
                 <IconEditOutlineRegular />
               </button>
@@ -507,6 +509,7 @@ export function SentMessageRecovery({
   return (
     <UserStyleBubble
       content={editing.draft?.content ?? []}
+      responseAnnotations={editing.draft?.responseAnnotations}
       renderMessageImages={renderMessageImages}
       editor={<SentMessageEditor editing={editing} t={t} />}
       t={t}

@@ -10,9 +10,9 @@ import type { ResponseAnnotation } from "@codexhost/shared-contracts";
 import type { ObservableSnapshot } from "@deepseek-ai/dsh-client-store";
 import type { ChatNodeStore } from "../contract/snapshot.ts";
 
-/** Structural slice of a message node's payload this module reads. */
-interface AnnotatedNode {
-  readonly data?: { readonly responseAnnotations?: readonly ResponseAnnotation[] };
+/** Message data read from the Turn's user source. */
+interface AnnotatedMessage {
+  readonly responseAnnotations?: readonly ResponseAnnotation[];
 }
 
 const NOTHING: readonly ResponseAnnotation[] = [];
@@ -22,28 +22,20 @@ const EMPTY_SOURCE: ObservableSnapshot<readonly ResponseAnnotation[]> = {
   subscribe: () => () => {},
 };
 
-/** Subscribe to a Turn's annotated messages, with an identity stable until their content is. */
+/** Subscribe to a Turn's user annotations, with an identity stable until their content is. */
 function sourceOf(
-  users: ObservableSnapshot<readonly AnnotatedNode[]>,
-  steerings: ObservableSnapshot<readonly AnnotatedNode[]>,
+  users: ObservableSnapshot<readonly AnnotatedMessage[]>,
 ): ObservableSnapshot<readonly ResponseAnnotation[]> {
   let cached: readonly ResponseAnnotation[] = NOTHING;
   return {
     getSnapshot: () => {
-      const next = [...users.getSnapshot(), ...steerings.getSnapshot()].flatMap(
-        (node) => node.data?.responseAnnotations ?? [],
-      );
+      const next = users.getSnapshot().flatMap((message) => message.responseAnnotations ?? []);
       if (next.length === cached.length && next.every((entry, at) => entry === cached[at]))
         return cached;
       cached = next.length === 0 ? NOTHING : next;
       return cached;
     },
-    subscribe: (listener) => {
-      const off = [users.subscribe(listener), steerings.subscribe(listener)];
-      return () => {
-        for (const dispose of off) dispose();
-      };
-    },
+    subscribe: users.subscribe,
   };
 }
 
@@ -58,15 +50,7 @@ export function useTurnAnnotations(
   turn: number | undefined,
 ): readonly ResponseAnnotation[] {
   const source = useMemo(
-    () =>
-      turn === undefined
-        ? EMPTY_SOURCE
-        : sourceOf(
-            nodeStore.turnDataSource(turn, "user") as ObservableSnapshot<readonly AnnotatedNode[]>,
-            nodeStore.turnDataSource(turn, "steering") as ObservableSnapshot<
-              readonly AnnotatedNode[]
-            >,
-          ),
+    () => (turn === undefined ? EMPTY_SOURCE : sourceOf(nodeStore.turnDataSource(turn, "user"))),
     [nodeStore, turn],
   );
   return useSyncExternalStore(source.subscribe, source.getSnapshot);

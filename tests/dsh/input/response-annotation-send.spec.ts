@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { SessionInputShell } from "../../../apps/web-ui/packages/client/ui-conversation/src/client/input/facade.ts";
+import type {
+  InputTriggerController,
+  PickOutcome,
+} from "../../../apps/web-ui/packages/client/ui-conversation/src/client/contract/input.ts";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -27,6 +31,56 @@ function fixture(sinkResult: () => Promise<{ kind: "success" } | { kind: "error"
   });
   return { shell, sent };
 }
+
+it.each(["ordinary", "failed adjudication", "handled"])(
+  "does not restore a failed send into another message during %s adjudication",
+  async (outcome) => {
+    const first = Promise.withResolvers<{ kind: "error"; text: string }>();
+    const adjudication = Promise.withResolvers<PickOutcome>();
+    const sent: string[] = [];
+    const shell = new SessionInputShell({
+      actx: {} as never,
+      defaultSink: (text) => {
+        sent.push(text);
+        return sent.length === 1 ? first.promise : Promise.resolve({ kind: "success" });
+      },
+      inputTriggers: () =>
+        ({
+          adjudicate: () => adjudication.promise,
+          lexicon: { getSnapshot: () => new Map(), subscribe: () => () => {} },
+          track() {},
+        }) as InputTriggerController,
+    });
+    cleanup.push(() => shell.dispose());
+    shell.addResponseAnnotation({ text: "A" });
+    shell.actions.setDraft("first body");
+    shell.submit("queue", "click");
+    await flush();
+    shell.addResponseAnnotation({ text: "B" });
+    shell.actions.setDraft("/second body");
+    shell.submit("queue", "click");
+    expect(shell.snapshot.phase).toBe("adjudicating");
+    first.resolve({ kind: "error", text: "failed A" });
+    await flush();
+    expect(shell.snapshot.responseAnnotations.map((a) => a.text)).toEqual(["B"]);
+    expect(shell.snapshot.draft).toBe("/second body");
+    expect(shell.addResponseAnnotation({ text: "locked" })).toBeUndefined();
+    if (outcome === "failed adjudication") adjudication.reject(new Error("not available"));
+    else adjudication.resolve(outcome === "handled" ? "handled" : undefined);
+    await flush();
+    if (outcome === "ordinary") {
+      expect(sent).toHaveLength(2);
+      expect(sent[1]).toContain('"B"');
+      expect(sent[1]).not.toContain('"A"');
+      expect(shell.snapshot.responseAnnotations.map((a) => a.text)).toEqual(["A"]);
+      expect(shell.snapshot.draft).toBe("first body");
+    } else {
+      expect(sent).toHaveLength(1);
+      expect(shell.snapshot.responseAnnotations.map((a) => a.text)).toEqual(["A", "B"]);
+      expect(shell.snapshot.draft).toBe("/second body\n\nfirst body");
+    }
+  },
+);
 
 /** Prompts Codex Desktop composes for the same cases, from its own assembly. */
 const GOLDEN = JSON.parse(

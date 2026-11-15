@@ -128,7 +128,8 @@ function serializeNode(node: Node, parent: Element): string {
       return Array.from(node.querySelectorAll("tr")).map(serializeRow).join("\n");
     case "TD":
     case "TH":
-      return serialize(node).trimEnd();
+      // A range between cell text nodes clones the cells without their row.
+      return `${node.previousElementSibling?.matches("td, th") ? "\t" : ""}${serialize(node).trimEnd()}`;
     case "TR":
       return serializeRow(node);
     case "THEAD":
@@ -201,7 +202,7 @@ function placeSelection(rect: DOMRect): {
 /**
  * Watch answers for selections and offer the attach action next to them.
  * @param props.labels - localized action copy.
- * @param props.onAdd - receives the selected text when the action is chosen.
+ * @param props.onAdd - attaches the selected text; false keeps the selection available.
  * @param props.container - transcript element whose answers participate.
  * @returns the popover, or null while nothing is selected.
  */
@@ -211,7 +212,7 @@ export function SelectionActions({
   container,
 }: {
   labels: SelectionActionsLabels;
-  onAdd: (text: string) => void;
+  onAdd: (text: string) => boolean;
   container: () => Element | null;
 }): ReactNode {
   const [selection, setSelection] = useState<AnswerSelection | null>(null);
@@ -259,15 +260,21 @@ export function SelectionActions({
       }
       schedule();
     };
+    const onScroll = (): void => {
+      setSelection(null);
+    };
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("pointerup", onPointerUp, true);
     document.addEventListener("selectionchange", onSelectionChange);
     window.addEventListener("keyup", schedule);
+    // Capture also observes non-bubbling scrolls in the containing chat scrollport.
+    window.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("pointerup", onPointerUp, true);
       document.removeEventListener("selectionchange", onSelectionChange);
       window.removeEventListener("keyup", schedule);
+      window.removeEventListener("scroll", onScroll, true);
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     };
@@ -297,7 +304,7 @@ export function SelectionActions({
           event.stopPropagation();
         }}
         onClick={() => {
-          onAdd(selection.text);
+          if (!onAdd(selection.text)) return;
           window.getSelection()?.removeAllRanges();
           setSelection(null);
         }}

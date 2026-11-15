@@ -103,7 +103,7 @@ function transcript() {
   return column;
 }
 
-async function mount(onAdd: (text: string) => void) {
+async function mount(onAdd: (text: string) => boolean | void) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -115,7 +115,7 @@ async function mount(onAdd: (text: string) => void) {
     root.render(
       createElement(SelectionActions, {
         labels,
-        onAdd,
+        onAdd: (text: string) => onAdd(text) ?? true,
         container: () => document.querySelector("[data-selection-answer]")?.parentElement ?? null,
       }) as ReactElement,
     );
@@ -296,6 +296,65 @@ it("ignores a selection that starts in code-block chrome", async () => {
   await mount(() => {});
   await select("chrome");
   expect(action()).toBeNull();
+});
+
+it("keeps the selection and action when the draft refuses the attachment", async () => {
+  stubFrames();
+  stubGeometry();
+  stubPointer(false);
+  transcript();
+  const onAdd = vi.fn(() => false);
+  await mount(onAdd);
+  await select("done");
+  await act(async () => action()?.click());
+  expect(onAdd).toHaveBeenCalledWith("A finished answer body.");
+  expect(window.getSelection()?.toString()).toBe("A finished answer body.");
+  expect(action()).not.toBeNull();
+});
+
+it.each(["td", "th"])("preserves tabs between partially selected %s cells", async (tag) => {
+  stubFrames();
+  stubGeometry();
+  stubPointer(false);
+  const column = transcript();
+  const host = column.querySelector("[data-selection-answer]")!;
+  host.innerHTML = `<table><tr><${tag}>alpha</${tag}><${tag}>beta</${tag}></tr></table>`;
+  const onAdd = vi.fn();
+  await mount(onAdd);
+  const cells = host.querySelectorAll(tag);
+  const range = document.createRange();
+  range.setStart(cells[0]!.firstChild!, 2);
+  range.setEnd(cells[1]!.firstChild!, 2);
+  expect(range.cloneContents().querySelector("tr")).toBeNull();
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(range);
+  await act(async () => {
+    document.dispatchEvent(new Event("pointerup"));
+  });
+  await act(async () => action()?.click());
+  expect(onAdd).toHaveBeenCalledWith("pha\tbe");
+});
+
+it("dismisses the action on ancestor scroll and removes the listener on unmount", async () => {
+  stubFrames();
+  stubGeometry();
+  stubPointer(false);
+  const column = transcript();
+  const remove = vi.spyOn(window, "removeEventListener");
+  await mount(() => true);
+  await select("done");
+  expect(action()).not.toBeNull();
+  // Scroll does not bubble; the transcript may sit inside a shared scrollport.
+  await act(async () => {
+    column.dispatchEvent(new Event("scroll"));
+  });
+  expect(action()).toBeNull();
+  cleanups
+    .splice(0)
+    .reverse()
+    .forEach((dispose) => dispose());
+  expect(remove).toHaveBeenCalledWith("scroll", expect.any(Function), true);
+  remove.mockRestore();
 });
 
 it("withdraws the action when the pointer goes down elsewhere", async () => {

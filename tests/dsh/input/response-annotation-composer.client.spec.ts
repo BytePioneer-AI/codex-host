@@ -138,19 +138,26 @@ it("removing a chip detaches that annotation from the draft", async () => {
   expect(input.snapshot.responseAnnotations.map((entry) => entry.text)).toEqual(["second"]);
 });
 
-it("opens the annotation card from its chip", async () => {
-  stubGeometry();
-  const input = shell();
-  input.addResponseAnnotation({ text: "keep the drain loop", annotation: "why we keep it" });
-  const container = await mount(propsOf(input, en));
-  const chip = container.querySelector<HTMLButtonElement>("[data-composer-annotations] button");
-  await act(async () => chip?.click());
-  const card = document.querySelector("[role='dialog']");
-  expect(card?.textContent).toContain("Selected text:");
-  expect(card?.textContent).toContain("keep the drain loop");
-  expect(card?.textContent).toContain("Your comment:");
-  expect(card?.textContent).toContain("why we keep it");
-});
+it.each([
+  [en, "Selected text:", "Your comment:"],
+  [zh, "选中文字：", "你的批注："],
+] as const)(
+  "opens an accessibly named annotation card",
+  async (dictionary, selectedText, userComment) => {
+    stubGeometry();
+    const input = shell();
+    input.addResponseAnnotation({ text: "keep the drain loop", annotation: "why we keep it" });
+    const container = await mount(propsOf(input, dictionary));
+    const chip = container.querySelector<HTMLButtonElement>("[data-composer-annotations] button");
+    await act(async () => chip?.click());
+    const card = document.querySelector("[role='dialog']");
+    expect(card?.getAttribute("aria-label")).toBe(selectedText);
+    expect(card?.textContent).toContain(selectedText);
+    expect(card?.textContent).toContain("keep the drain loop");
+    expect(card?.textContent).toContain(userComment);
+    expect(card?.textContent).toContain("why we keep it");
+  },
+);
 
 it("renders no annotation row without annotations", async () => {
   stubGeometry();

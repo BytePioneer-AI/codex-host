@@ -220,6 +220,8 @@ export class SessionInputShell implements SessionInput {
   /** Selected passages attached to the next message, in attachment order. */
   private responseAnnotations: readonly DraftResponseAnnotation[] = [];
   private annotationSeq = 0;
+  /** Failure restoration must not mutate the draft captured by an async adjudication. */
+  private adjudication: Promise<PickOutcome> | undefined;
   private disposed = false;
   /** Conversation store writer for the current semantic document. */
   private persistDraft: ((draft: DraftSnapshot) => void) | undefined;
@@ -987,6 +989,13 @@ export class SessionInputShell implements SessionInput {
 
   /** Restore one failed detached send without overwriting text entered after a restoration. */
   private settleDetachedFailure(attempt: SubmitAttempt, message?: string): void {
+    if (this.adjudication !== undefined) {
+      const restore = (): void => {
+        if (!this.dead(attempt)) this.settleDetachedFailure(attempt, message);
+      };
+      void this.adjudication.then(restore, restore);
+      return;
+    }
     const record = this.detachedDrafts.get(attempt.seq);
     if (record === undefined) return;
     this.detachedDrafts.delete(attempt.seq);
@@ -1074,19 +1083,22 @@ export class SessionInputShell implements SessionInput {
       this.dispatchRun({ type: "adjudicated", attempt, outcome: undefined });
       return;
     }
-    inputTriggers
-      .adjudicate(draft.trim(), attempt.signal, { attachments: this.attachmentIds.length })
-      .then(
-        (outcome: PickOutcome) => {
-          if (this.dead(attempt)) return;
-          this.dispatchRun({ type: "adjudicated", attempt, outcome });
-        },
-        (error: unknown) => {
-          if (this.dead(attempt)) return;
-          const message = error instanceof Error ? error.message : String(error);
-          this.dispatchRun({ type: "adjudication-failed", attempt, message });
-        },
-      );
+    this.adjudication = inputTriggers.adjudicate(draft.trim(), attempt.signal, {
+      attachments: this.attachmentIds.length,
+    });
+    this.adjudication.then(
+      (outcome: PickOutcome) => {
+        this.adjudication = undefined;
+        if (this.dead(attempt)) return;
+        this.dispatchRun({ type: "adjudicated", attempt, outcome });
+      },
+      (error: unknown) => {
+        this.adjudication = undefined;
+        if (this.dead(attempt)) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.dispatchRun({ type: "adjudication-failed", attempt, message });
+      },
+    );
   }
 
   /**

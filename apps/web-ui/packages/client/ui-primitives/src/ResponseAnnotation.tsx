@@ -193,6 +193,7 @@ export function ResponseAnnotationPopover({
             ref={cardRef}
             className={css.popover}
             role="dialog"
+            aria-label={labels.selectedText}
             style={{
               left: position.left,
               top: position.top,

@@ -197,11 +197,17 @@ export interface SentMessageEditing {
     seq: number;
     text: string;
     content: readonly unknown[];
+    responseAnnotations: readonly ResponseAnnotation[];
     pending: boolean;
     blocked: boolean;
     error?: string;
   } | null;
-  begin(seq: number, text: string, content: readonly unknown[]): void;
+  begin(
+    seq: number,
+    text: string,
+    content: readonly unknown[],
+    responseAnnotations?: readonly ResponseAnnotation[],
+  ): void;
   change(text: string): void;
   cancel(): void;
   send(): void;

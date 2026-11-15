@@ -38,11 +38,24 @@ function linuxIdentity(pid: number): ProcessIdentity | null {
             .split(/\s+/);
     if (fields[0] === "Z") return null;
     if (fields[19] && /^\d+$/.test(fields[19])) startTicks = fields[19];
-  } catch {
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      try {
+        process.kill(pid, 0);
+      } catch (probeError) {
+        if (!(
+          probeError &&
+          typeof probeError === "object" &&
+          "code" in probeError &&
+          probeError.code === "EPERM"
+        ))
+          return null;
+      }
+    }
     // Unreadable metadata cannot disprove the PID's identity.
   }
   try {
-    executablePath = readlinkSync(`/proc/${pid}/exe`);
+    executablePath = readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "");
   } catch {
     // Executable paths can be restricted even when the PID exists.
   }
@@ -132,6 +145,16 @@ export function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
   const identity = processIdentity(lock.pid);
   if (!identity) return false;
 
+  if (
+    process.platform === "linux" &&
+    typeof lock.processStartTicks === "string" &&
+    /^\d+$/.test(lock.processStartTicks) &&
+    identity.startTicks
+  ) {
+    // Monotonic start ticks identify the process even when its executable is replaced.
+    return lock.processStartTicks === identity.startTicks;
+  }
+
   if (identity.executablePath && lock.executablePath) {
     if (
       normalizeExecutablePath(identity.executablePath) !==
@@ -152,12 +175,7 @@ export function lockOwnerIsLive(lock: Partial<LockRecord>): boolean {
 
   if (process.platform === "linux") {
     // ISO-only locks have no comparable monotonic identity; wall time cannot disprove them.
-    return !(
-      typeof lock.processStartTicks === "string" &&
-      /^\d+$/.test(lock.processStartTicks) &&
-      identity.startTicks &&
-      lock.processStartTicks !== identity.startTicks
-    );
+    return true;
   }
   if (lock.processStartedAt && identity.startedAt !== null) {
     const expected = Date.parse(lock.processStartedAt);

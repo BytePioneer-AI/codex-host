@@ -126,6 +126,50 @@ describe("Linux Mapping Store lock identity (simulated procfs)", () => {
     await expectPreserved(await writeLock());
   });
 
+  it.each([
+    [startTicks, "/usr/bin/replaced-node (deleted)"],
+    [startTicks, `${process.execPath} (deleted)`],
+    [undefined, `${process.execPath} (deleted)`],
+  ])("preserves a live owner with ticks %s and executable %s", async (ticks, executable) => {
+    vi.mocked(readlinkSync).mockReturnValue(executable);
+    await expectPreserved(await writeLock({ processStartTicks: ticks }));
+  });
+
+  it("recovers an owner that exits between the PID probe and reading procfs", async () => {
+    let probes = 0;
+    vi.mocked(process.kill).mockImplementation((pid) => {
+      if (pid === ownerPid && ++probes > 1)
+        throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+      return true;
+    });
+    vi.mocked(readFileSync).mockImplementation((file) => {
+      if (file === `/proc/${ownerPid}/stat`)
+        throw Object.assign(new Error("No such file"), { code: "ENOENT" });
+      return procStat();
+    });
+    await writeLock();
+    await expectRecovered();
+    expect(probes).toBe(2);
+  });
+
+  it.each(["live", "EPERM"])(
+    "preserves an owner without procfs when the second PID probe reports %s",
+    async (result) => {
+      let probes = 0;
+      vi.mocked(process.kill).mockImplementation((pid) => {
+        if (pid === ownerPid && ++probes > 1 && result === "EPERM")
+          throw Object.assign(new Error("Permission denied"), { code: "EPERM" });
+        return true;
+      });
+      vi.mocked(readFileSync).mockImplementation(() => {
+        throw Object.assign(new Error("No such file"), { code: "ENOENT" });
+      });
+      vi.mocked(readlinkSync).mockImplementation(denied);
+      await expectPreserved(await writeLock());
+      expect(probes).toBe(2);
+    },
+  );
+
   it("recovers a reused PID with the same executable and different start ticks", async () => {
     await writeLock({ processStartTicks: "12345678901234568" });
     await expectRecovered();

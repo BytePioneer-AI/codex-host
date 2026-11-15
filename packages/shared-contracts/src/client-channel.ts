@@ -259,7 +259,14 @@ export const clientThreadSnapshotSchema = z.object({
   /** Current interruptible Host Turn, including command Turns omitted from client history. */
   activeTurnId: z.string().min(1).nullable().optional(),
   /** Most recent explicit command in this Host process; not native conversation history. */
-  command: z.object({ name: z.string().min(1), turn: clientTurnSchema }).optional(),
+  command: z
+    .object({
+      name: z.string().min(1),
+      turn: clientTurnSchema,
+      /** First ordinary Turn started after this command; its retained result is not a new event. */
+      subsequentTurnId: z.string().min(1).optional(),
+    })
+    .optional(),
   thread: z
     .object({
       id: z.string().min(1),

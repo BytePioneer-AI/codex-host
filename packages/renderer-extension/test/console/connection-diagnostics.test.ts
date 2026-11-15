@@ -59,11 +59,19 @@ describe("console connection diagnostics", () => {
       availability: "error",
       error: { message: "Host request failed", stage: "request" },
     });
-    expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "pi", refresh: false });
+    expect(inspectHarness).toHaveBeenCalledWith({
+      harnessId: "pi",
+      refresh: false,
+      purpose: "availability",
+    });
     expect(updates).toHaveBeenCalled();
 
     await diagnostics.refresh();
-    expect(inspectHarness).toHaveBeenCalledWith({ harnessId: "pi", refresh: true });
+    expect(inspectHarness).toHaveBeenCalledWith({
+      harnessId: "pi",
+      refresh: true,
+      purpose: "availability",
+    });
   });
 
   it.each(["install", "check", "update"] as const)(

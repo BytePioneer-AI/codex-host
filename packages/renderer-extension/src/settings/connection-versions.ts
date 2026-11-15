@@ -1,33 +1,72 @@
 import type { ExternalRendererAgent } from "../agent-selection-state.js";
 import type { RendererConnectionDiagnostics } from "./connections-page.js";
-import { createHarnessVersionPanel, type HarnessVersionPanel } from "./harness-version-panel.js";
+import {
+  createHarnessVersionPanel,
+  createHarnessVersionSession,
+  type HarnessVersionPanel,
+  type HarnessVersionSession,
+} from "./harness-version-panel.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
-/** One automatic check per Host/Harness for the lifetime of the Connections page. */
+const sessionStores = new WeakMap<
+  RendererConnectionDiagnostics,
+  Map<string, HarnessVersionSession>
+>();
+
+function getSessionStore(
+  diagnostics: RendererConnectionDiagnostics,
+): Map<string, HarnessVersionSession> {
+  let store = sessionStores.get(diagnostics);
+  if (!store) {
+    store = new Map();
+    sessionStores.set(diagnostics, store);
+  }
+  return store;
+}
+
+/**
+ * Connection-owned version sessions outlive individual page mounts so an
+ * in-flight update keeps reporting its progress when Settings is reopened.
+ */
 export function createConnectionVersions(
   document: Document,
   messages: RendererSettingsMessages,
   signal: AbortSignal,
   diagnostics: RendererConnectionDiagnostics | null,
   onChange: () => void,
-): { get(hostId: string, agent: ExternalRendererAgent): HarnessVersionPanel | undefined } {
+): {
+  get(hostId: string, agent: ExternalRendererAgent): HarnessVersionPanel | undefined;
+  isUpdating(hostId: string, agent: ExternalRendererAgent): boolean;
+} {
   const panels = new Map<string, HarnessVersionPanel>();
   const installation = diagnostics?.installation?.bind(diagnostics);
+  const sessions = diagnostics ? getSessionStore(diagnostics) : null;
+  const sessionKey = (hostId: string, agent: ExternalRendererAgent): string =>
+    JSON.stringify([hostId, agent]);
+
   return {
+    isUpdating(hostId, agent) {
+      return Boolean(sessions?.get(sessionKey(hostId, agent))?.updating);
+    },
     get(hostId, agent) {
       if (!installation || signal.aborted) return undefined;
-      const key = JSON.stringify([hostId, agent]);
+      const key = sessionKey(hostId, agent);
       let panel = panels.get(key);
       if (!panel) {
+        const run = (action: "check" | "update") => installation(hostId, agent, action);
+        let session = sessions?.get(key);
+        if (!session) {
+          session = createHarnessVersionSession({ run });
+          sessions?.set(key, session);
+        }
         panel = createHarnessVersionPanel(
           document,
           messages,
           signal,
           agent,
-          {
-            run: (action) => installation(hostId, agent, action),
-          },
+          { run },
           onChange,
+          session,
         );
         panels.set(key, panel);
       }

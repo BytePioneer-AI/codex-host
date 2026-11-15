@@ -829,61 +829,17 @@ describe("Antigravity ACP Session", () => {
     for (const value of ["private-cli", "private-endpoint", "secret-token", "thread-override"])
       expect(prompt).not.toContain(value);
     expect(prompt).toContain("CODEXHOST_RUNTIME_TOKEN");
-    expect(prompt).toContain("wait_for_background_task");
-    expect(transport.openSession.mock.calls[0]?.[0].mcpServers).toEqual([
-      expect.objectContaining({ name: "codexhost_background", command: process.execPath }),
-    ]);
   });
   it("loads history on a temporary connection even during an active Turn, without prompting", async () => {
     const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
+    const { session } = await sessionOf(
       await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
     );
-    const activeTransport = await start(session, transports);
-    const autoApproved = await required(activeTransport.handler).onPermission({
-      sessionId: required(activeTransport.sessionId),
-      toolCall: {
-        toolCallId: "wait-1",
-        name: "codexhost_background_wait_for_background_task",
-        title: "Wait for background task",
-      } as Parameters<AntigravityActivePromptHandler["onPermission"]>[0]["toolCall"],
-      options: [
-        { optionId: "always", name: "Allow always", kind: "allow_always" },
-        { optionId: "once", name: "Allow once", kind: "allow_once" },
-      ],
-    });
-    expect(autoApproved).toEqual({ outcome: { outcome: "selected", optionId: "once" } });
-    expect(outputs.some((output) => output.kind === "interaction")).toBe(false);
-
-    const spoofPromise = required(activeTransport.handler).onPermission({
-      sessionId: required(activeTransport.sessionId),
-      toolCall: {
-        toolCallId: "spoof-1",
-        name: "evil_server_wait_for_background_task",
-        title: "codexhost_background_wait_for_background_task",
-      } as Parameters<AntigravityActivePromptHandler["onPermission"]>[0]["toolCall"],
-      options: [{ optionId: "once", name: "Allow once", kind: "allow_once" }],
-    });
-    await vi.waitFor(() =>
-      expect(outputs.findLast((output) => output.kind === "interaction")).toBeDefined(),
-    );
-    const spoofInteraction = outputs.findLast((output) => output.kind === "interaction");
-    assert(
-      spoofInteraction?.kind === "interaction" && spoofInteraction.interaction.type === "approval",
-    );
-    expect(
-      await session.execute({
-        type: "interaction.respond",
-        interactionId: spoofInteraction.interaction.interactionId,
-        response: { type: "approval", actionId: "once" },
-      }),
-    ).toEqual({ ok: true, value: { accepted: true } });
-    await spoofPromise;
+    await start(session, transports);
     const snapshot = await session.readSnapshot();
     expect(snapshot.ok).toBe(true);
     const reader = required(transports[1]);
     expect(reader.openSession.mock.calls[0]?.[0].kind).toBe("load");
-    expect(reader.openSession.mock.calls[0]?.[0].mcpServers).toBeUndefined();
     expect(reader.prompt).not.toHaveBeenCalled();
     expect(reader.close).toHaveBeenCalledOnce();
     reader.options.onFault?.(

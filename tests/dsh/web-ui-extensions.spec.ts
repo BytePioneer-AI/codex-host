@@ -92,16 +92,14 @@ async function selectRegistry(value: string): Promise<void> {
   });
 }
 
-it("shows local-access guidance instead of installation controls", async () => {
+it("shows auth-disabled notice instead of installation controls", async () => {
   vi.mocked(uiExtensionsApi.list).mockRejectedValue(
-    new ApiError("Local access required", "auth/local-access-required", {
-      url: "http://127.0.0.1:4400",
-    }),
+    new ApiError("Authentication is not enabled", "auth/disabled", {}),
   );
   const { container } = await mount();
-  expect(
-    container.querySelector('[data-web-extensions-notice="non-local"]')?.textContent,
-  ).toContain("http://127.0.0.1:4400");
+  expect(container.querySelector('[data-web-extensions-notice="disabled"]')?.textContent).toContain(
+    "Authentication must be enabled to manage interface extensions.",
+  );
   expect(container.querySelector("form")).toBeNull();
   expect(container.querySelector("button")).toBeNull();
 });
@@ -341,14 +339,14 @@ it("sends installation requests through the shared RPC envelope and validates re
   await expect(api.list()).rejects.toThrow();
 });
 
-it("preserves local-access error details even when the RPC returns HTTP 403", async () => {
+it("preserves RPC error details even when the RPC returns HTTP 403", async () => {
   const { uiExtensionsApi: api } = await vi.importActual<
     typeof import("../../apps/web-ui/packages/client/ui-codexhost/src/client/ui-extensions-api.ts")
   >("../../apps/web-ui/packages/client/ui-codexhost/src/client/ui-extensions-api.ts");
   const error = {
-    message: "Local access required",
-    code: "auth/local-access-required",
-    details: { url: "http://127.0.0.1:4400" },
+    message: "Authentication disabled",
+    code: "auth/disabled",
+    details: { hint: "no-auth" },
   };
   vi.stubGlobal(
     "fetch",

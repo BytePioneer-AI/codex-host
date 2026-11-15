@@ -9,6 +9,7 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { WebAccessState, WebNetworkAccessUrl } from "@codexhost/shared-contracts";
+import { copyText } from "./api.ts";
 import { QrCode } from "./QrCode.tsx";
 import { RelayControl } from "./RelayControl.tsx";
 import { SelfHostedRelayHelp } from "./SelfHostedRelayHelp.tsx";
@@ -358,7 +359,7 @@ export function ConnectionCard({
                   variant="outline"
                   disabled={busy}
                   onClick={() => {
-                    void navigator.clipboard.writeText(link).then(
+                    void copyText(link).then(
                       () => setCopied("copied"),
                       () => setCopied("failed"),
                     );

@@ -290,8 +290,7 @@ export const en = {
 
   "extensions.description":
     "Add DSH themes and panels to Web. Extensions are shared by everyone connected to this Web service. After installing, enable the extension here.",
-  "extensions.localOnly":
-    "Extensions can only be managed on the computer running Web. Open {url} on that computer to manage them.",
+  "extensions.authDisabled": "Authentication must be enabled to manage interface extensions.",
   "extensions.loading": "Loading extensions…",
   "extensions.loadFailed": "Could not load extensions: {message}",
   "extensions.actionFailed": "That did not work: {message}",
@@ -741,7 +740,7 @@ export const zh: Record<ImportLocaleKey, string> = {
 
   "extensions.description":
     "为 Web 添加 DSH 主题和面板。扩展对连接此 Web 服务的所有页面生效，安装后可在这里启用。",
-  "extensions.localOnly": "界面扩展只能在运行 Web 的电脑上管理。请在该电脑上打开 {url}。",
+  "extensions.authDisabled": "未启用访问认证时不能管理界面扩展。",
   "extensions.loading": "正在加载界面扩展…",
   "extensions.loadFailed": "无法加载界面扩展：{message}",
   "extensions.actionFailed": "操作失败：{message}",

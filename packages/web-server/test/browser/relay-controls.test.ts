@@ -147,8 +147,12 @@ it(
       .getByRole("dialog")
       .getByRole("button", { name: "Remote access", exact: true })
       .click();
-    await phone.locator('[data-connect-notice="non-local"]').waitFor();
-    assert.equal(await phone.locator('[data-connect-route="relay"]').count(), 0);
+    await phone.locator('[data-connect-route="relay"]').waitFor();
+    assert.equal(await phone.locator('[data-connect-notice="non-local"]').count(), 0);
+    assert.equal(
+      await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
   },
 );
 

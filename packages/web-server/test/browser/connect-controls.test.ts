@@ -8,7 +8,7 @@ import { serveStatus, SERVE_HOST } from "../support/tailscale.ts";
 async function openConnect(page: Page) {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page
-    .getByRole("dialog")
+    .getByRole("dialog", { name: "Settings" })
     .getByRole("button", { name: "Remote access", exact: true })
     .click();
   await page.locator("[data-connect-devices]").waitFor();
@@ -134,11 +134,11 @@ it(
       .getByRole("dialog")
       .getByRole("button", { name: "Remote access", exact: true })
       .click();
-    await phone.locator('[data-connect-notice="non-local"]').waitFor();
-    assert.equal(await phone.getByRole("button", { name: "Copy token" }).count(), 0);
-    const before = cli.mutations();
+    await phone.locator("[data-connect-devices]").waitFor();
+    assert.equal(await phone.locator('[data-connect-notice="non-local"]').count(), 0);
+    await phone.getByRole("button", { name: "Copy token" }).waitFor();
     for (const enabled of [true, false]) {
-      const rejected = await phone.evaluate(async (enabled) => {
+      const reply = await phone.evaluate(async (enabled) => {
         const method = "codexhost/tailscaleServeSet";
         return (
           await (
@@ -150,9 +150,8 @@ it(
           ).json()
         ).result;
       }, enabled);
-      assert.equal(rejected.error.code, "auth/local-access-required");
+      assert.equal(reply.ok, true);
     }
-    assert.deepEqual(cli.mutations(), before);
     await page.setViewportSize({ width: 375, height: 700 });
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),

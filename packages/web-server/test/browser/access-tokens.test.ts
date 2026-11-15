@@ -45,7 +45,7 @@ async function start(
 async function openConnectPage(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page
-    .getByRole("dialog")
+    .getByRole("dialog", { name: "Settings" })
     .getByRole("button", { name: "Remote access", exact: true })
     .click();
 }
@@ -74,7 +74,7 @@ async function regenerate(page: Page): Promise<string> {
 }
 
 it(
-  "copies the token locally through More and only offers guidance and sign-out elsewhere",
+  "shows full connection management and sign-out from remote browsers",
   { timeout: 90_000 },
   async (t) => {
     const { local, remote, browser } = await start(t);
@@ -116,14 +116,20 @@ it(
       .click({ timeout: 2_000 })
       .catch(() => undefined);
     await openConnectPage(phonePage);
-    const notice = phonePage.locator('[data-connect-notice="non-local"]');
-    await notice.waitFor();
-    assert.match(
-      (await notice.textContent()) ?? "",
-      new RegExp(`http://127\\.0\\.0\\.1:${local.port}`, "u"),
-    );
-    assert.equal(await phonePage.getByRole("textbox", { name: "Access token" }).count(), 0);
-    assert.equal(await phonePage.getByRole("button", { name: "Regenerate…" }).count(), 0);
+    await phonePage.locator("[data-connect-devices]").waitFor();
+    assert.equal(await phonePage.locator('[data-connect-notice="non-local"]').count(), 0);
+    // Remote plain-HTTP browsers fall back when navigator.clipboard is absent.
+    const copyToken = phonePage.getByRole("button", { name: "Copy token", exact: true });
+    await copyToken.waitFor();
+    await copyToken.click();
+    await phonePage.getByRole("button", { name: "Copied", exact: true }).waitFor();
+    await phonePage.getByRole("button", { name: "Regenerate…" }).waitFor();
+    const phoneOverflow = await phonePage.evaluate(() => {
+      const section = document.querySelector("[data-connect-devices]");
+      const rect = section?.getBoundingClientRect();
+      return rect === undefined ? 0 : rect.right - window.innerWidth;
+    });
+    assert.ok(phoneOverflow <= 0, `phone page overflows by ${String(phoneOverflow)}px`);
 
     // Signing out warns first, returns to sign-in, and leaves the token valid.
     await phonePage.getByRole("button", { name: "Sign out…" }).click();
@@ -171,10 +177,11 @@ it(
     const qr = page.getByRole("img", { name: "Sign-in QR code" });
     await qr.waitFor();
     assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "blur(10px)");
-    const qrDialog = page.getByRole("dialog", { name: "Scan with your phone camera" });
-    assert.equal(await qrDialog.count(), 0);
+    assert.equal(await page.getByRole("dialog").count(), 1);
     const viewQr = page.getByRole("button", { name: "Click to view QR code" });
+    const hideQr = page.getByRole("button", { name: "Hide QR code" });
     await viewQr.waitFor();
+    await page.getByText("Contains an access token. Do not share.").waitFor();
     const address = page.getByLabel("Connection address", { exact: true });
     const first = await addressValue(address);
     assert.equal(first.includes("#token="), false);
@@ -198,30 +205,35 @@ it(
       assert.notEqual(await addressValue(address), first);
     }
 
-    const small = await qr.boundingBox();
+    const beforeReveal = await qr.boundingBox();
     await viewQr.click();
-    const revealedQr = qrDialog.getByRole("img", { name: "Sign-in QR code" });
-    await revealedQr.waitFor();
-    const large = await revealedQr.boundingBox();
-    assert.ok((large?.width ?? 0) > (small?.width ?? Infinity));
-    assert.equal(await revealedQr.evaluate((image) => getComputedStyle(image).filter), "none");
-    await qrDialog.getByText("Contains an access token. Do not share.").waitFor();
-    await qrDialog.getByRole("button", { name: "Hide QR code" }).click();
-    await qrDialog.waitFor({ state: "detached" });
+    await hideQr.waitFor();
+    assert.equal(await page.getByRole("dialog").count(), 1);
+    const afterReveal = await qr.boundingBox();
+    assert.equal(afterReveal?.width, beforeReveal?.width);
+    assert.equal(afterReveal?.height, beforeReveal?.height);
+    assert.equal(afterReveal?.x, beforeReveal?.x);
+    assert.equal(afterReveal?.y, beforeReveal?.y);
+    assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "none");
+    assert.equal(await page.getByText("Contains an access token. Do not share.").count(), 0);
+    await hideQr.click();
+    await viewQr.waitFor();
     assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "blur(10px)");
 
     // Revealing is keyboard accessible and never persists across page visits.
     await viewQr.focus();
     await page.keyboard.press("Enter");
-    await revealedQr.waitFor();
-    await page.keyboard.press("Escape");
-    await qrDialog.waitFor({ state: "detached" });
+    await hideQr.waitFor();
+    assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "none");
+    await page.keyboard.press("Enter");
+    await viewQr.waitFor();
+    assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "blur(10px)");
     await viewQr.click();
-    await revealedQr.waitFor();
+    await hideQr.waitFor();
     await page.reload();
     await openConnectPage(page);
     await viewQr.waitFor();
-    assert.equal(await qrDialog.count(), 0);
+    assert.equal(await page.getByRole("dialog").count(), 1);
     assert.equal(await qr.evaluate((image) => getComputedStyle(image).filter), "blur(10px)");
   },
 );
@@ -380,6 +392,35 @@ it(
     await other.waitForTimeout(1_000);
     assert.equal(await other.getByPlaceholder("Access token").count(), 0);
     await other.getByRole("button", { name: "Settings", exact: true }).waitFor();
+
+    // Regenerating from an authenticated remote browser keeps it signed in while revoking peers.
+    const remoteAdmin = await signIn(third);
+    const remotePeer = await signIn(third);
+    await remoteAdmin
+      .getByRole("button", { name: "Open sidebar" })
+      .click({ timeout: 2_000 })
+      .catch(() => undefined);
+    await openConnectPage(remoteAdmin);
+    await remoteAdmin.getByRole("button", { name: "Regenerate…" }).click();
+    const regenDialog = remoteAdmin.getByRole("dialog", { name: "Regenerate the access token?" });
+    await regenDialog.getByRole("button", { name: "Regenerate", exact: true }).click();
+    await regenDialog.waitFor({ state: "detached" });
+    await remotePeer.getByPlaceholder("Access token").waitFor({ timeout: 20_000 });
+    await remoteAdmin.waitForTimeout(500);
+    assert.equal(await remoteAdmin.getByPlaceholder("Access token").count(), 0);
+    assert.deepEqual(
+      await remoteAdmin.evaluate(async () =>
+        (await fetch("api/auth/status", { credentials: "same-origin" })).json(),
+      ),
+      { authenticated: true, local: false },
+    );
+    await owner.reload();
+    await openConnectPage(owner);
+    const fourth = await tokenOnPage(owner);
+    assert.notEqual(fourth, third);
+    await remotePeer.getByPlaceholder("Access token").fill(fourth);
+    await remotePeer.getByRole("button", { name: "Continue" }).click();
+    await remotePeer.getByRole("button", { name: "Settings", exact: true }).waitFor();
   },
 );
 

@@ -251,8 +251,14 @@ it(
     let pings = 0;
     let subscriptions = 0;
     let dropPongs = false;
+    let closeSocket: (() => void) | undefined;
+    let authProbes = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/auth/status") authProbes++;
+    });
     await page.routeWebSocket("**/api/remote.mux", (socket) => {
       sockets++;
+      closeSocket = () => socket.close({ code: 1001, reason: "test suspension" });
       const server = socket.connectToServer();
       socket.onMessage((message) => {
         const frame = JSON.parse(String(message));
@@ -308,6 +314,29 @@ it(
     assert.equal(sockets, 2);
     assert.ok(Date.now() - started < 4000, "foreground recovery must use the short deadline");
     await page.locator("[data-web-connection]").waitFor({ state: "hidden", timeout: 5000 });
+    await page.waitForTimeout(500);
+
+    // A real carrier closure while hidden must not trigger retries or offline probes.
+    await page.evaluate(`
+      window.__visibility = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+    `);
+    const backgroundSockets = sockets;
+    const backgroundProbes = authProbes;
+    assert.ok(closeSocket);
+    closeSocket();
+    await page.waitForTimeout(11_000);
+    assert.equal(sockets, backgroundSockets);
+    assert.equal(authProbes, backgroundProbes);
+    assert.equal(await page.locator('[data-web-connection="computer"]').count(), 0);
+    await page.evaluate("window.__statuses = []");
+    await returnToTab();
+    const returnDeadline = Date.now() + 4000;
+    while (sockets === backgroundSockets && Date.now() < returnDeadline)
+      await page.waitForTimeout(50);
+    assert.equal(sockets, backgroundSockets + 1);
+    await page.waitForTimeout(500);
+    assert.equal(await page.locator("[data-web-connection]").count(), 0);
     assert.equal(await composer.innerText(), "Keep this tab draft");
     assert.equal(await page.evaluate("window.__samePage"), true);
     assert.equal(await page.getByText("existing CH answer", { exact: true }).count(), 1);

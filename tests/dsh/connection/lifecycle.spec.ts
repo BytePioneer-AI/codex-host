@@ -191,13 +191,15 @@ it("skips background retry backoff once on foreground return without interruptin
   try {
     await vi.advanceTimersByTimeAsync(0);
     expect(connection.state.getSnapshot()).toBe("connected");
-    setVisibility("hidden");
     attempts[0]!.fail();
     await vi.advanceTimersByTimeAsync(0);
     expect(attempts).toHaveLength(2); // First reconnect is already immediate.
     attempts[1]!.fail();
     await vi.advanceTimersByTimeAsync(0);
     expect(attempts).toHaveLength(2); // Now waiting for retry backoff.
+    setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(attempts).toHaveLength(2);
 
     // Cache restoration and visibility events may arrive in either order.
     visibility = "visible";

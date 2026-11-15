@@ -148,7 +148,7 @@ export class UsageMeasurementsStore {
           value: values[field],
           turnId,
           at,
-          ...(field === "outputTokensPerSecond" ? { version: 2 } : {}),
+          ...(field === "outputTokensPerSecond" ? { version: 3 } : {}),
         },
       });
       if (!parsed.success) continue;

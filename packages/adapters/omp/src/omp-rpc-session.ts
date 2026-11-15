@@ -1383,9 +1383,11 @@ export class OmpRpcSession {
         typeof event.type === "string"
       ) {
         if (
-          /^(text|thinking|reasoning|thought)_delta$/u.test(event.type) &&
-          typeof event.delta === "string" &&
-          event.delta.length > 0
+          // Native thinking starts can precede visible text by seconds; output usage includes it.
+          /^(thinking|reasoning|thought)_start$/u.test(event.type) ||
+          (/^(text|thinking|reasoning|thought)_delta$/u.test(event.type) &&
+            typeof event.delta === "string" &&
+            event.delta.length > 0)
         )
           this.#usageRequestStartedAtMs = Date.now();
         else if (

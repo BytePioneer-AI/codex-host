@@ -2077,8 +2077,8 @@ describe("Pi RPC Turn aggregation", () => {
   it.each([
     { name: "tool block alone", events: [{ type: "toolcall_start" }], timed: false },
     {
-      name: "empty output blocks",
-      events: [{ type: "text_start" }, { type: "thinking_start" }],
+      name: "empty text block",
+      events: [{ type: "text_start" }],
       timed: false,
     },
     {
@@ -2108,6 +2108,11 @@ describe("Pi RPC Turn aggregation", () => {
         { type: "toolcall_delta", delta: '"file"}' },
         { type: "toolcall_end" },
       ],
+      timed: true,
+    },
+    {
+      name: "hidden thinking before assembled tool",
+      events: [{ type: "thinking_start" }, { type: "toolcall_delta", delta: '{"path":"file"}' }],
       timed: true,
     },
     {
@@ -2168,6 +2173,45 @@ describe("Pi RPC Turn aggregation", () => {
       await rpc.close();
     }
   });
+
+  it.each(["thinking_start", "reasoning_start", "thought_start"])(
+    "includes hidden thinking time from %s",
+    async (type) => {
+      const { rpc, process: fakeProcess } = autonomousSession();
+      const observations: PiUsageObservation[] = [];
+      rpc.setUsageHandler((observation) => observations.push(observation));
+      await rpc.start();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(0);
+      try {
+        const message = {
+          role: "assistant",
+          responseId: "hidden-thinking",
+          content: [],
+          usage: { input: 1, output: 1200, reasoning: 800, cacheRead: 0, cacheWrite: 0 },
+        };
+        fakeProcess().emitFrame({ type: "message_start", message });
+        clock.mockReturnValue(1000);
+        fakeProcess().emitFrame({
+          type: "message_update",
+          assistantMessageEvent: { type, contentIndex: 0 },
+          message,
+        });
+        clock.mockReturnValue(21_000);
+        fakeProcess().emitFrame({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta: "answer", contentIndex: 1 },
+          message,
+        });
+        clock.mockReturnValue(31_000);
+        fakeProcess().emitFrame({ type: "message_end", message });
+        expect(observations).toHaveLength(1);
+        expect(observations[0]).toMatchObject({ startedAtMs: 1000, completedAtMs: 31_000 });
+      } finally {
+        clock.mockRestore();
+        await rpc.close();
+      }
+    },
+  );
 
   it("uses the persisted custom Entry identity rather than a provider response ID", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();

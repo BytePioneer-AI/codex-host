@@ -14,6 +14,7 @@ description: 审查 codexhost 的 Pull Request 或本地 diff 的正确性与边
 1. 确认基线与 head：`git fetch` 后用 `git diff <base>...<head> --stat`；PR 用 `gh pr view` / `gh pr diff`。基线变化后重新确认。
 2. 按改动路径归属到包或 crate，读其公共导出、契约和测试，再读 diff。归属见 [AGENTS.md](../../../AGENTS.md) 的 Code Layout。
 3. 以 [AGENTS.md](../../../AGENTS.md)、[领域术语表](../../../docs/project/领域术语表.md)、`tools/check-boundaries.mjs`、[docs/index.md](../../../docs/index.md) 中对应功能文档为事实来源。
+4. 审查以静态阅读真实 diff、周边调用链与既有验证记录为主：远端 CI 或受委派子 Thread 已在同一 HEAD 提交上通过的构建、测试、lint 与格式检查，不在本地重复执行；仅在需要复现可疑缺陷或补验未覆盖缺口时，运行最小聚焦检查。
 
 ## 阻断项
 

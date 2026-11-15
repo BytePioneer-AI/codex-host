@@ -43,7 +43,7 @@ description: 发布 codexhost 正式版、预览版，编写或确认 Release No
 1. 检查工作区、当前分支、远端与已有标签；快进同步 `main`，不覆盖无关修改。
 2. 检查目标版本是否已存在于 npm 或 GitHub，是否有正在运行的发布。已推送标签不等于已发布；取消发布也不保证 npm 从未接受某个平台包。
 3. 新版本用 `npm run release:prepare -- <version>` 同步四个版本文件，检查 diff。
-4. 执行 `npm run check`。已有无关问题阻断时，报告具体文件、步骤和未执行检查，不顺手修复；不得声称全部通过。
+4. 默认走远端 CI 门禁（`skip_ci=false`）时，仅核对四个版本文件的 diff，不在本地跑全套 `npm run check`；仅在用户明确选择 `skip_ci=true` 跳过远端 CI 时，才在本地执行 `npm run check` 兜底（已有无关问题阻断时，报告具体文件、步骤和未执行检查，不顺手修复；不得声称全部通过）。
 5. 只提交四个版本文件，使用 `chore: prepare v<version>`，推送 `main`。
 6. 默认确认**标签目标 SHA 对应的 `main push` CI**成功，包含四个基线 job。不能用另一提交的 CI、本地检查、PR CI 或手动单平台 CI 代替。用户明确选择不等待且不校验 CI 时，使用下述手动发布选项；不得将跳过报告为通过。
 

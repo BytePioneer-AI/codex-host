@@ -126,7 +126,7 @@ Host 包及其 tsconfig 不增加具体 Adapter 的依赖；`tools/check-boundar
 
 按改动范围执行：
 
-- 改动或新增的代码：类型检查、ESLint、Prettier（只针对修改过的文件）、边界检查、`git diff --check`。实际命令以根 `package.json` 的 scripts 为准。
+- 改动或新增的代码：类型检查（`npm run typecheck`）、针对改动文件的 `npx eslint <changed-files>` 与 `npx prettier --check <changed-files>`、边界检查（`node tools/check-boundaries.mjs`）、`git diff --check`；不在本地跑全仓 `npm run lint` 或 `npm run format:check`。
 - 指定具体文件运行测试：`vitest run --config tests/vitest.config.js <测试文件...>`。
 - 真实原生验收要记录：Harness 版本、平台、认证条件、Model、权限、运行环境（local/SSH/Remote Control），以及成功、失败、取消、恢复的结果。
 

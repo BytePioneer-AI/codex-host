@@ -250,10 +250,12 @@ fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
 fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
     let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
     validate_installation(options)?;
-    desktop_attachment::stop_managed(&options.data)?;
-    web_service::stop(options)?;
+    desktop_attachment::stop_managed(&options.data)
+        .map_err(|error| format!("stopping Desktop failed: {error}"))?;
+    web_service::stop(options).map_err(|error| format!("stopping Web failed: {error}"))?;
     if host_service::current_runtime(&options.data).is_some() {
-        host_service::run(&options.host_arguments("stop"))?;
+        host_service::run(&options.host_arguments("stop"))
+            .map_err(|error| format!("stopping Host failed: {error}"))?;
     }
     Ok(())
 }

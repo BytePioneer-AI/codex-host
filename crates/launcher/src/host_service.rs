@@ -333,7 +333,28 @@ pub(super) fn wait_for_shutdown(
             return Ok(());
         }
         if started.elapsed() >= timeout {
-            return Err("Service shutdown timed out".into());
+            // SIGTERM alone can leave a stalled service alive (for example a
+            // Desktop Controller finishing asynchronous cleanup, #861). Callers
+            // pass identities that were validated to belong to this installation
+            // before the stop request, so escalating termination on the waited
+            // target is bounded and owned. Report the timeout only if the target
+            // survives even the forced termination.
+            codexhost_platform::terminate_process_identity(target, true)?;
+            let escalation_deadline = started.elapsed() + Duration::from_secs(2);
+            while started.elapsed() < escalation_deadline {
+                if codexhost_platform::process_instance(target.id, target.started_at_micros)
+                    .is_none()
+                {
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            return Err(format!(
+                "Service shutdown timed out after {}s; forced termination of process {} did not complete",
+                timeout.as_secs(),
+                target.id
+            )
+            .into());
         }
         // A stalled Node may retain native children. Let its supervisor finish
         // cleanup after terminating the owner captured before the stop request.

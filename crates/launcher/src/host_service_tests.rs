@@ -140,8 +140,52 @@ fn stalled_shutdown_terminates_the_captured_fixture_process() {
         thread::sleep(Duration::from_millis(20));
     }
     let owner = codexhost_platform::process_identity(child.id()).unwrap();
-    assert!(wait_for_shutdown(Some(&owner), None, Duration::from_millis(1)).is_err());
-    wait_for_shutdown(Some(&owner), None, Duration::from_secs(5)).unwrap();
+    // A timed-out wait escalates to forced termination of the waited target
+    // instead of failing, so a short timeout is enough to stop the stalled
+    // fixture and confirm shutdown.
+    wait_for_shutdown(Some(&owner), None, Duration::from_millis(1)).unwrap();
+    assert!(!child.wait().unwrap().success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stalled_supervisor_shutdown_is_escalated_when_no_owner_was_captured() {
+    const TEST: &str =
+        "host_service::tests::stalled_shutdown_terminates_the_captured_fixture_process";
+    if let Some(root) = env::var_os("CODEXHOST_STOP_TEST_ROOT") {
+        fs::write(std::path::PathBuf::from(root).join("started"), "started").unwrap();
+        loop {
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = env::temp_dir().join(format!(
+        "codexhost-stalled-supervisor-{}-{nonce}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let mut child = Command::new(env::current_exe().unwrap())
+        .args(["--exact", TEST])
+        .env("CODEXHOST_STOP_TEST_ROOT", &root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !root.join("started").exists() {
+        assert!(Instant::now() < deadline, "fixture did not start");
+        assert!(child.try_wait().unwrap().is_none());
+        thread::sleep(Duration::from_millis(20));
+    }
+    let supervisor = codexhost_platform::process_identity(child.id()).unwrap();
+    // The Desktop stop path passes no captured owner: the waited supervisor is
+    // the validated Launcher identity, and the timed-out wait must escalate
+    // termination on it (#861) rather than only reporting a timeout.
+    wait_for_shutdown(None, Some(&supervisor), Duration::from_millis(1)).unwrap();
     assert!(!child.wait().unwrap().success());
     fs::remove_dir_all(root).unwrap();
 }

@@ -233,7 +233,7 @@ fn delegation_node(bundled: &Path, host_node: Option<OsString>) -> Result<PathBu
     }
 }
 
-fn startup_trace(stage: &str) {
+pub(crate) fn startup_trace(stage: &str) {
     startup_record::stage(stage);
     if env::var_os(STARTUP_TRACE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;

@@ -56,6 +56,14 @@ export type InputBarProps = ComposerBarProps;
 /** Stable empty value: a session without attached annotations shares one frozen array. */
 const EMPTY_ANNOTATIONS: readonly DraftResponseAnnotation[] = [];
 
+/**
+ * Delay between clearing the persistent live region and restoring the notice
+ * text: identical consecutive texts produce no DOM text change (React skips
+ * equal string children), and the clear-then-restore dance is what gives the
+ * region a second mutation for screen readers to announce.
+ */
+const ANNOUNCE_RESTORE_DELAY_MS = 100;
+
 export const InputBar = memo(function InputBar({
   useSession,
   useInput,
@@ -181,6 +189,36 @@ export const InputBar = memo(function InputBar({
   useEffect(() => {
     if (notice?.level === "error") showToast(notice.text);
   }, [notice, showToast]);
+  // Announcement for info notices rides the persistent live region below.
+  // Identical consecutive texts would produce no DOM text change (React skips
+  // equal string children), so each new notice clears the region first and
+  // restores the text in a follow-up task; expiry clears it outright, and a
+  // newer notice or unmount cancels the pending restore.
+  const [announcement, setAnnouncement] = useState("");
+  const announceRestore = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const liveNoticeSeq = notice?.level === "info" ? notice.seq : undefined;
+  const liveNoticeText = notice?.level === "info" ? notice.text : "";
+  useEffect(() => {
+    if (announceRestore.current !== undefined) {
+      clearTimeout(announceRestore.current);
+      announceRestore.current = undefined;
+    }
+    if (liveNoticeSeq === undefined) {
+      setAnnouncement("");
+      return;
+    }
+    setAnnouncement("");
+    announceRestore.current = setTimeout(() => {
+      announceRestore.current = undefined;
+      setAnnouncement(liveNoticeText);
+    }, ANNOUNCE_RESTORE_DELAY_MS);
+    return () => {
+      if (announceRestore.current !== undefined) {
+        clearTimeout(announceRestore.current);
+        announceRestore.current = undefined;
+      }
+    };
+  }, [liveNoticeSeq, liveNoticeText]);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [toolbarLayout, setToolbarLayout] = useState<ControlRowLayout>({
     phone: false,
@@ -495,10 +533,12 @@ export const InputBar = memo(function InputBar({
       {/* Persistent, initially-empty live region (ARIA22): the status
           container exists before any notice text is inserted, so screen
           readers announce the change reliably — the visible toast mounts
-          together with its text and cannot serve as one. Announcement rides
-          this region alone; the visible toast below is purely visual. */}
+          together with its text and cannot serve as one. The rendered text
+          clears and restores per notice (see ANNOUNCE_RESTORE_DELAY_MS) so
+          identical successors are announced too. Announcement rides this
+          region alone; the visible toast below is purely visual. */}
       <div className={css.liveRegion} role="status">
-        {notice?.level === "info" ? notice.text : ""}
+        {announcement}
       </div>
       {/* Info notices are one-shot confirmations (e.g. the reference action's
           "added to the current draft"): rendered as the shared success toast,

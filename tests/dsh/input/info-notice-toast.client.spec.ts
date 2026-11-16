@@ -202,7 +202,12 @@ it("equal seqs across shells never share a toast: a switch remounts with the new
   await act(async () => {
     a.notify("info", "from A");
   });
+  // Clear-then-restore: A's text lands after the announce restore delay:
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
   expect(document.body.querySelector("[role='none']")?.textContent).toContain("from A");
+  expect(document.body.querySelector("[role='status']")?.textContent).toContain("from A");
   // One second of the fake clock passes before B's notice exists, so the two
   // shells hold the same seq but staggered deadlines:
   act(() => vi.advanceTimersByTime(1000));
@@ -213,20 +218,27 @@ it("equal seqs across shells never share a toast: a switch remounts with the new
   // owner-prefixed key — B's text, B's own timing:
   await render(createElement(InputBar, propsOf(b)));
   expect(document.body.querySelector("[role='none']")?.textContent).toContain("from B");
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
+  expect(document.body.querySelector("[role='status']")?.textContent).toContain("from B");
   // A's expiry lands at its own deadline and only clears A's store:
   await act(async () => {
-    vi.advanceTimersByTime(3000);
+    vi.advanceTimersByTime(2800);
   });
   await render(createElement(InputBar, propsOf(b)));
   expect(a.notices.getSnapshot()).toBeNull();
   expect(b.notices.getSnapshot()?.text).toBe("from B");
   expect(document.body.querySelector("[role='none']")?.textContent).toContain("from B");
+  expect(document.body.querySelector("[role='status']")?.textContent).toContain("from B");
   // B then expires on its own full window:
   await act(async () => {
-    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(1200);
   });
   await render(createElement(InputBar, propsOf(b)));
   expect(document.body.querySelector("[role='none']")).toBeNull();
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
   expect(b.notices.getSnapshot()).toBeNull();
 });
 
@@ -242,12 +254,16 @@ it("announces info through the persistent live region and renders a visual toast
   await act(async () => {
     input.notify("info", "Added to the current draft");
   });
-  // The persistent region carries the text (announcement source); the visible
-  // success toast is role=none (purely visual, no second announcement):
-  expect(document.body.querySelector("[role='status']")?.textContent).toContain(
+  // The region is cleared first, then the text is restored on a follow-up
+  // task; the visible success toast is role=none (purely visual):
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
+  expect(document.body.querySelector("[role='none']")?.textContent).toContain(
     "Added to the current draft",
   );
-  expect(document.body.querySelector("[role='none']")?.textContent).toContain(
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
+  expect(document.body.querySelector("[role='status']")?.textContent).toContain(
     "Added to the current draft",
   );
   expect(input.notices.getSnapshot()?.level).toBe("info");
@@ -255,11 +271,44 @@ it("announces info through the persistent live region and renders a visual toast
   // either path must leave no resident banner behind, and the region returns
   // to its empty pre-notice state:
   await act(async () => {
-    vi.advanceTimersByTime(4100);
+    vi.advanceTimersByTime(4000);
   });
   await render(createElement(InputBar, propsOf(input)));
   expect(document.body.querySelector("[role='none']")).toBeNull();
   expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
+  expect(input.notices.getSnapshot()).toBeNull();
+});
+
+it("re-announces identical consecutive texts via clear-then-restore", async () => {
+  vi.useFakeTimers();
+  stubGeometry();
+  const input = shell();
+  const { render } = await mount(createElement(InputBar, propsOf(input)));
+  const regionText = () => document.body.querySelector("[role='status']")?.textContent ?? "";
+  await act(async () => {
+    input.notify("info", "Added");
+  });
+  expect(regionText()).toBe("");
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
+  expect(regionText()).toBe("Added");
+  // Same text again: only the seq changed. The region must still mutate —
+  // clear now, restore on the follow-up task — for a second announcement:
+  await act(async () => {
+    input.notify("info", "Added");
+  });
+  expect(regionText()).toBe("");
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
+  expect(regionText()).toBe("Added");
+  // Then the ordinary expiry clears it outright:
+  await act(async () => {
+    vi.advanceTimersByTime(4100);
+  });
+  await render(createElement(InputBar, propsOf(input)));
+  expect(regionText()).toBe("");
   expect(input.notices.getSnapshot()).toBeNull();
 });
 
@@ -277,15 +326,19 @@ it("suppresses the info toast while the error toast owns the top slot", async ()
     input.notify("info", "Added to the current draft");
   });
   expect(document.body.querySelector("[role='alert']")?.textContent).toContain("boom");
-  // The visual toast is suppressed, but the persistent live region still
-  // carries the notice for announcement:
+  // The visual toast is suppressed; the persistent live region is cleared
+  // first and still restores the notice text for announcement:
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
+  expect(document.body.querySelector("[role='none']")).toBeNull();
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
   expect(document.body.querySelector("[role='status']")?.textContent).toContain(
     "Added to the current draft",
   );
-  expect(document.body.querySelector("[role='none']")).toBeNull();
   // The suppressed notice still expires on schedule:
   await act(async () => {
-    vi.advanceTimersByTime(4100);
+    vi.advanceTimersByTime(4000);
   });
   await render(createElement(InputBar, propsOf(input)));
   expect(input.notices.getSnapshot()).toBeNull();

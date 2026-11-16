@@ -229,15 +229,30 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
 }
 
 fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
-    if let Some((runtime, _)) = host_service::current_runtime(&options.data)
-        && runtime.canonicalize()? != options.host_runtime.canonicalize()?
-    {
-        return Err("The running Host belongs to a different installation".into());
+    if let Some((runtime, _)) = host_service::current_runtime(&options.data) {
+        let runtime = runtime
+            .canonicalize()
+            .map_err(|error| format!("Host: canonicalizing runtime failed: {error}"))?;
+        let expected = options
+            .host_runtime
+            .canonicalize()
+            .map_err(|error| format!("Host: canonicalizing host runtime failed: {error}"))?;
+        if runtime != expected {
+            return Err("The running Host belongs to a different installation".into());
+        }
     }
-    if let Some(owner) = web_service::owner(&options.data)?
-        && owner.runtime.canonicalize()? != options.runtime.canonicalize()?
-    {
-        return Err("The running Web belongs to a different installation".into());
+    if let Some(owner) = web_service::owner(&options.data)? {
+        let runtime = owner
+            .runtime
+            .canonicalize()
+            .map_err(|error| format!("Web: canonicalizing runtime failed: {error}"))?;
+        let expected = options
+            .runtime
+            .canonicalize()
+            .map_err(|error| format!("Web: canonicalizing runtime failed: {error}"))?;
+        if runtime != expected {
+            return Err("The running Web belongs to a different installation".into());
+        }
     }
     if let Some((launcher, _)) = desktop_attachment::managed_processes(&options.data)?
         && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?

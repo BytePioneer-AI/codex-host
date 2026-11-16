@@ -321,7 +321,10 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
-import { externalThreadListEntries } from "./external-thread-list.js";
+import {
+  externalThreadListEntries,
+  type ExternalThreadListRuntimeState,
+} from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { UsageMeasurementsStore } from "./usage-measurements-store.js";
 import { ObservedSessionUsage } from "./observed-session-usage.js";
@@ -2814,11 +2817,18 @@ export class AppServerHost {
     }
   }
 
-  #listRuntimeState(threadId: string): { running: boolean } | null {
+  #listRuntimeState(threadId: string): ExternalThreadListRuntimeState | null {
     const subagentStatus = this.#subagentThreadStatuses.get(threadId);
     if (subagentStatus) return { running: subagentStatus === "active" };
     const thread = this.#externalRuntime.get(threadId);
-    return thread ? { running: thread.running } : null;
+    return thread
+      ? {
+          running: thread.running,
+          hasSubmittedTurn:
+            !thread.unsubmittedPrewarm &&
+            (thread.activeTurnId !== null || thread.projectedTerminalTurnId !== null),
+        }
+      : null;
   }
 
   /** `section_position` lists merge External section placements into the official order. */

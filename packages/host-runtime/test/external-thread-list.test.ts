@@ -109,6 +109,36 @@ describe("External Thread metadata catalog", () => {
     });
   });
 
+  it("keeps submitted runtime Threads visible before native identity, including failed starts", () => {
+    const records = ["unsubmitted", "submitted", "failed", "archived"].map((id) =>
+      record(id, {
+        state: "creating",
+        nativeSessionRef: undefined,
+        archived: id === "archived",
+      }),
+    );
+    const runtimeFor = (id: string) => ({
+      running: id !== "failed",
+      hasSubmittedTurn: id !== "unsubmitted",
+    });
+    const page = listExternalThreadMetadata({ records, query: query(), runtimeFor });
+    expect(page.data.map(({ thread }) => thread.id)).toEqual(["failed", "submitted"]);
+    expect(page.data.map(({ thread }) => thread.status)).toEqual([
+      { type: "idle" },
+      { type: "active", activeFlags: [] },
+    ]);
+    expect(
+      listExternalThreadMetadata({
+        records,
+        query: query({ archived: true }),
+        runtimeFor,
+      }).data.map(({ thread }) => thread.id),
+    ).toEqual(["archived"]);
+    expect(
+      listExternalThreadMetadata({ records, query: query(), runtimeFor: () => null }).data,
+    ).toEqual([]);
+  });
+
   it("uses current runtime state without reading a Snapshot", () => {
     const page = listExternalThreadMetadata({
       records: [record("loaded")],

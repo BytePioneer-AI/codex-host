@@ -7,6 +7,8 @@ export interface HostUsage {
   cacheWriteInputTokens?: number;
   outputTokens?: number;
   outputTokensPerSecond?: number;
+  /** Host-derived: timed request output / generation time across the retained Session. */
+  sessionOutputTokensPerSecond?: number;
   /** Latest Turn output / native API duration, including first-output wait; not generation TPS. */
   apiOutputTokensPerSecond?: number;
   reasoningOutputTokens?: number;
@@ -46,6 +48,7 @@ export type HostUsageCostSource = "publicPrice" | "native";
 /** Fields only Host metering may publish; Adapter snapshots carrying them are stripped by Host. */
 export const hostDerivedUsageFields = [
   "sessionCacheHitRatePercent",
+  "sessionOutputTokensPerSecond",
   "timeToFirstOutputMs",
   "costSource",
   "unpricedModels",
@@ -85,6 +88,7 @@ const usageFields = new Set<keyof HostUsage>([
   "totalCredits",
   "contextUsagePercent",
   "outputTokensPerSecond",
+  "sessionOutputTokensPerSecond",
   "apiOutputTokensPerSecond",
   "costSource",
   "unpricedModels",
@@ -110,6 +114,7 @@ export function parseHostUsage(value: unknown): HostUsage {
   for (const field of [
     "totalCredits",
     "contextUsagePercent",
+    "sessionOutputTokensPerSecond",
     "apiOutputTokensPerSecond",
   ] as const) {
     const candidate = value[field];

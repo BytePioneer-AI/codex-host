@@ -153,6 +153,25 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("lists Thread summaries without Turn mappings as independent copies", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await createReady(store);
+
+    const [full] = await store.listThreads();
+    const [summary] = await store.listThreadSummaries();
+    if (!full || !summary) throw new Error("expected one stored Thread");
+    const { turnMappings, ...expected } = full;
+    expect(turnMappings).toHaveLength(1);
+    expect(summary).toEqual(expected);
+    expect(summary).not.toHaveProperty("turnMappings");
+
+    summary.title = "Changed by caller";
+    await expect(store.getThread(threadId)).resolves.toMatchObject({ title: "External Thread" });
+    await store.close();
+  });
+
   it("serializes competing Native Session commits across Host Threads", async () => {
     const directory = await temporaryStoreDirectory();
     const firstReadyEntered = Promise.withResolvers<undefined>();
@@ -1223,48 +1242,38 @@ describe("mapping-store package", () => {
     const first = new MappingStore({ directory, instanceId: "first" });
     const second = new MappingStore({ directory, instanceId: "second" });
     await first.initialize();
-    await expect(second.initialize()).rejects.toEqual(
-      expect.objectContaining<Partial<MappingStoreError>>({ code: "STORE_LOCKED" }),
-    );
-    await first.close();
-  });
-
-  it("names the live owner when another process holds the lock", async () => {
-    const directory = await temporaryStoreDirectory();
-    const first = new MappingStore({
-      directory,
-      instanceId: "listener",
-      ownerRole: "remote app-server listener",
-    });
-    const second = new MappingStore({ directory, instanceId: "desktop" });
-    await first.initialize();
     try {
-      const lock = JSON.parse(await readFile(path.join(directory, "store.lock"), "utf8")) as {
-        pid: number;
-        role?: string;
-        startedAt: string;
-      };
-      expect(lock).toMatchObject({ pid: process.pid, role: "remote app-server listener" });
-      await expect(second.initialize()).rejects.toMatchObject({
-        code: "STORE_LOCKED",
-        message: `Another codexhost process owns Mapping Store at ${path.resolve(directory)} (PID ${process.pid}, remote app-server listener, started ${lock.startedAt})`,
-      });
+      const lockPath = path.join(directory, "store.lock");
+      const lock = await readFile(lockPath, "utf8");
+      const { startedAt } = JSON.parse(lock) as { startedAt: string };
+      await expect(second.initialize()).rejects.toEqual(
+        expect.objectContaining<Partial<MappingStoreError>>({
+          code: "STORE_LOCKED",
+          message: expect.stringContaining(`PID ${process.pid}`),
+        }),
+      );
+      await expect(second.initialize()).rejects.toThrow(startedAt);
+      await expect(second.initialize()).rejects.toThrow(directory);
+      expect(await readFile(lockPath, "utf8")).toBe(lock);
     } finally {
+      await second.close();
       await first.close();
     }
   });
 
-  it("describes a live legacy lock owner without a recorded role", async () => {
+  it("reports a live legacy lock without dumping unrelated lock fields", async () => {
     const directory = await temporaryStoreDirectory();
-    const first = new MappingStore({ directory, instanceId: "legacy" });
-    const second = new MappingStore({ directory, instanceId: "desktop" });
-    await first.initialize();
+    const lockPath = path.join(directory, "store.lock");
+    const lock = JSON.stringify({ pid: process.pid, instanceId: "legacy", token: "not-for-logs" });
+    await writeFile(lockPath, lock);
+    const store = new MappingStore({ directory });
     try {
-      await expect(second.initialize()).rejects.toThrow(
-        new RegExp(`\\(PID ${process.pid}, started [^,)]+\\)$`, "u"),
+      await expect(store.initialize()).rejects.toThrow(
+        `Another codexhost process owns Mapping Store at ${directory} (owner PID ${process.pid}; startedAt: unknown)`,
       );
+      expect(await readFile(lockPath, "utf8")).toBe(lock);
     } finally {
-      await first.close();
+      await store.close();
     }
   });
 
@@ -1273,7 +1282,7 @@ describe("mapping-store package", () => {
     await mkdir(directory, { recursive: true });
     await writeFile(path.join(directory, "store.lock.stale-1"), "{}\n", "utf8");
     await writeFile(path.join(directory, "store.lock.stale-2"), "{}\n", "utf8");
-    // An unparsable lock cannot prove a live owner, so initialization renames it aside.
+    // An unparsable lock cannot prove a live owner, so initialization reclaims it.
     await writeFile(path.join(directory, "store.lock"), "not json\n", "utf8");
 
     const store = new MappingStore({ directory, instanceId: "recovered" });
@@ -1334,8 +1343,18 @@ it("stores latest measurements only in existing metadata without changing identi
   const before = await store.getThread(threadId);
   const core = await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8");
   const values = {
-    outputTokensPerSecond: { value: 100, turnId: "turn-1", at: 100 },
+    outputTokensPerSecond: { version: 3 as const, value: 100, turnId: "turn-1", at: 100 },
     timeToFirstOutputMs: { value: 50, turnId: "turn-1", at: 90 },
+    outputTimings: [
+      {
+        version: 3 as const,
+        requestId: "one",
+        turnId: "turn-1",
+        outputTokens: 100,
+        startedAtMs: 1000,
+        completedAtMs: 2000,
+      },
+    ],
   };
   const saved = await store.saveUsageMeasurements(threadId, nativeRef, values);
   expect(saved).toMatchObject({

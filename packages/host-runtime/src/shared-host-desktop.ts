@@ -18,6 +18,7 @@ import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
+import { isDesktopContextVariable } from "./desktop-context-environment.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
  * cannot change the service's data root, native account home or execution owner. */
@@ -44,7 +45,7 @@ function desktopContext(
     throw new Error("Invalid Desktop runtime context");
   const context: NodeJS.ProcessEnv = {};
   for (const [key, entry] of Object.entries(envelope.environment)) {
-    if (!key.startsWith("CODEXHOST_") || typeof entry !== "string")
+    if (!isDesktopContextVariable(key) || typeof entry !== "string")
       throw new Error("Invalid Desktop runtime context field");
     context[key] = entry;
   }
@@ -96,53 +97,66 @@ export function sharedHostDesktop(
   const entry = runtimePath ? consoleEntrypoint(runtimePath) : null;
   const delegation = options.delegation();
   const webOpener = createHostWebOpener(options.environment);
-  const host = new AppServerHost({
-    stockCodexPath: options.stockCodex,
-    arguments: [],
-    environment,
-    desktopInput: streams.input,
-    desktopOutput: streams.output,
-    diagnosticOutput: streams.diagnosticOutput,
-    officialRuntimeScope: options.official.officialRuntimeScope,
-    accountControl: options.official.accountControl,
-    mappingStore: options.store,
-    closeMappingStoreOnExit: false,
-    modelPrices: options.prices,
-    sharedThreads: new SharedThreadBridge({
-      connect: async () => options.owner.connect(),
-      delegateCreates: true,
-      diagnose: (error) => streams.diagnosticOutput.write(`Shared Host: ${String(error)}\n`),
-    }),
-    ...(delegation ? { sharedDelegation: delegation } : {}),
-    ...installedHarnessPluginOptions(
+  const createHost = () =>
+    new AppServerHost({
+      stockCodexPath: options.stockCodex,
+      arguments: [],
       environment,
-      false,
-      runtimePath ? pathToFileURL(runtimePath).href : options.runtimeUrl,
-    ),
-    ...(runtimePath
-      ? { runtimeMaintenance: new RuntimeMaintenance({ runtimePath, remote: false, environment }) }
-      : {}),
-    ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
-    ...(entry
-      ? { consoleOpener: createHostConsoleOpener({ entrypoint: entry, environment }) }
-      : {}),
-    ...(webOpener ? { webOpener } : {}),
-    onDelegationApi: options.register,
-  });
+      desktopInput: streams.input,
+      desktopOutput: streams.output,
+      diagnosticOutput: streams.diagnosticOutput,
+      officialRuntimeScope: options.official.officialRuntimeScope,
+      accountControl: options.official.accountControl,
+      mappingStore: options.store,
+      closeMappingStoreOnExit: false,
+      modelPrices: options.prices,
+      sharedThreads: new SharedThreadBridge({
+        connect: async () => options.owner.connect(),
+        delegateCreates: true,
+        diagnose: (error) => streams.diagnosticOutput.write(`Shared Host: ${String(error)}\n`),
+      }),
+      ...(delegation ? { sharedDelegation: delegation } : {}),
+      ...installedHarnessPluginOptions(
+        environment,
+        false,
+        runtimePath ? pathToFileURL(runtimePath).href : options.runtimeUrl,
+      ),
+      ...(runtimePath
+        ? {
+            runtimeMaintenance: new RuntimeMaintenance({ runtimePath, remote: false, environment }),
+          }
+        : {}),
+      ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
+      ...(entry
+        ? { consoleOpener: createHostConsoleOpener({ entrypoint: entry, environment }) }
+        : {}),
+      ...(webOpener ? { webOpener } : {}),
+      onDelegationApi: options.register,
+    });
+  let host: AppServerHost | undefined;
+  let closed = false;
   return {
     run: async () => {
       await startup;
-      options.connected.add(host);
-      const running = host.run();
+      if (closed) return 0;
+      const active = (host = createHost());
+      options.connected.add(active);
+      const running = active.run();
       options.running.add(running);
       try {
         return await running;
       } finally {
-        options.connected.delete(host);
+        options.connected.delete(active);
         options.running.delete(running);
       }
     },
-    disconnect: () => host.disconnect(),
-    close: () => host.close(),
+    disconnect: () => {
+      closed = true;
+      host?.disconnect();
+    },
+    close: () => {
+      closed = true;
+      host?.close();
+    },
   };
 }

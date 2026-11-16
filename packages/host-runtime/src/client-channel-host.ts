@@ -3,7 +3,10 @@ import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/
 import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  threadArchiveConfirmParamsSchema,
   clientThreadSnapshotSchema,
+  threadTitleInputSchema,
   clientProjectlessWorkspaceSchema,
   harnessModelRefSchema,
   restoreHarnessCommandMentions,
@@ -13,6 +16,7 @@ import {
   type ClientSnapshotOptions,
   type ClientThreadSnapshot,
 } from "@codexhost/shared-contracts";
+import { NativeThreadTitles } from "./native-thread-title.js";
 
 import type { ConsoleHostReply } from "./app-server-host.js";
 import { transcribeVoice, voiceStatus } from "./voice-transcription.js";
@@ -76,7 +80,7 @@ export interface PendingClientInteraction {
 /** Pending interactions keyed by Host request ID, answered through the Desktop response path. */
 export interface ClientInteractionSource {
   readonly approvals: ReadonlyMap<number, PendingClientInteraction>;
-  readonly questions: ReadonlyMap<number, PendingClientInteraction>;
+  questions(): ReadonlyMap<number, PendingClientInteraction>;
   isApprovalRequestId(value: unknown): value is number;
   isQuestionRequestId(value: unknown): value is number;
   respondApproval(response: JsonValue): Promise<boolean>;
@@ -113,12 +117,14 @@ export class ClientChannelHost {
   readonly clientEvents: ClientChannelEvents;
   readonly #host: ClientChannelHostDependencies;
   readonly #native: NativeClientChannel | undefined;
+  readonly #titles: NativeThreadTitles | undefined;
   readonly #clientOwnedThreads = new Set<string>();
   readonly #clientReceipts = new ClientCommandReceipts();
 
   constructor(host: ClientChannelHostDependencies) {
     this.#host = host;
     this.#native = host.native ? new NativeClientChannel(host.native) : undefined;
+    this.#titles = host.native ? new NativeThreadTitles(host.native) : undefined;
     this.clientEvents = host.events;
   }
 
@@ -148,11 +154,31 @@ export class ClientChannelHost {
   /** Native app-server notifications are invalidations and server requests for
    * the same Web snapshot/response boundary. */
   observeNativeMessage(value: JsonValue): void {
+    if (this.#titles?.observe(value)) return;
     this.#native?.observeMessage(value);
   }
 
   resetNativeSession(): void {
+    this.#titles?.reset();
     this.#native?.resetGeneration();
+  }
+
+  nativeQuestions(threadId: string) {
+    return (this.#native?.interactions(threadId) ?? []).flatMap((pending) => {
+      const params = pending.request.params;
+      return pending.kind === "question" &&
+        pending.request.method === "item/tool/requestUserInput" &&
+        typeof pending.requestId === "string" &&
+        isRecord(params) &&
+        typeof params.turnId === "string"
+        ? [{ requestId: pending.requestId, turnId: params.turnId, request: params as JsonObject }]
+        : [];
+    });
+  }
+
+  nativeChannel(): NativeClientChannel {
+    if (!this.#native) throw new Error("Native client channel is unavailable");
+    return this.#native;
   }
 
   /** Route only to the confirmed external owner or this service's shared native client. */
@@ -163,6 +189,18 @@ export class ClientChannelHost {
     if (!parsed.success || !isRecord(parsed.data.params))
       return { error: { code: -32602, message: "Invalid client parameters" } };
     const params = parsed.data.params as JsonObject;
+    if (method === THREAD_ARCHIVE_CONFIRM_METHOD) {
+      const confirm = threadArchiveConfirmParamsSchema.safeParse(params);
+      if (!confirm.success)
+        return { error: { code: -32602, message: "Invalid archive confirmation params" } };
+      return this.#host.submit(method, confirm.data, undefined);
+    }
+    if (method === "codexhost/thread/title/generate") {
+      const title = threadTitleInputSchema.safeParse(params);
+      if (!title.success)
+        return { error: { code: -32602, message: "Invalid title generation input" } };
+      return { result: this.#titles ? await this.#titles.generate(title.data) : null };
+    }
     if (method === "codexhost/voice/status")
       return { result: jsonValueSchema.parse(await voiceStatus(this.#host.environment())) };
     if (method === "codexhost/voice/transcribe")
@@ -424,7 +462,7 @@ export class ClientChannelHost {
           interaction: pending.interaction,
           request: pending.projection.request,
         })),
-      ...[...this.#host.interactions.questions]
+      ...[...this.#host.interactions.questions()]
         .filter(([, pending]) => pending.thread === thread)
         .map(([requestId, pending]) => ({
           requestId,
@@ -488,7 +526,7 @@ export class ClientChannelHost {
       ? interactions.approvals.get(id)
       : undefined;
     const question = interactions.isQuestionRequestId(id)
-      ? interactions.questions.get(id)
+      ? interactions.questions().get(id)
       : undefined;
     const pending = approval ?? question;
     if (!pending) {

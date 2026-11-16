@@ -8,6 +8,7 @@ import {
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
@@ -16,6 +17,11 @@ import {
   type ThreadWatchInput,
 } from "./delegation-types.js";
 import { matchesBearerToken } from "./bearer-token.js";
+import type { HostInventory } from "./host-inventory.js";
+import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
+import { readThreadResultFile } from "./thread-result-file.js";
+import { validateReadOptions } from "./delegation-snapshot.js";
+import { startWithDelegationWorktree } from "./delegation-worktree.js";
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 
@@ -105,29 +111,94 @@ async function startWithWatch(
   return { ...result, watch };
 }
 
+/** Send first; optional notification targets the calling Thread resolved by the CLI/listener. */
+async function sendWithWatch(
+  api: DelegationControlApi,
+  watches: DelegationWatchApi,
+  body: Record<string, unknown>,
+): Promise<unknown> {
+  const { watchTimeoutMs, notifyThreadId, ...send } = body;
+  const result = await api.send(send as unknown as ThreadSendInput);
+  const watch = await watchStartedTurn(watches, {
+    threadId: result.threadId,
+    notifyThreadId: (notifyThreadId ?? "") as string,
+    timeoutMs: watchTimeoutMs as number,
+  });
+  return { ...result, watch };
+}
+
 /** The delegation routes shared by the Host control server and the external client listener. */
 export async function routeDelegationRequest(
-  handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi },
+  handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi; inventory?: HostInventory },
   route: string | undefined,
   body: Record<string, unknown>,
 ): Promise<unknown> {
   switch (route) {
+    case "/v1/host/info":
+    case "/v1/project/list":
+      if (!handlers.inventory)
+        throw new DelegationControlError("UNSUPPORTED", "Host inventory is unavailable");
+      return route === "/v1/host/info"
+        ? handlers.inventory.info(body)
+        : handlers.inventory.projects(body);
+    case "/v1/thread/file":
+      return readThreadResultFile(handlers.api, body);
     case "/v1/harness/list":
       return handlers.api.listHarnesses(body as HarnessListInput);
     case "/v1/harness/inspect":
       return handlers.api.inspect(body as unknown as HarnessInspectInput);
-    case "/v1/delegate/start":
-      return body.watchTimeoutMs === undefined
-        ? handlers.api.start(body as unknown as DelegationStartInput)
-        : startWithWatch(handlers.api, watchApi(handlers.watchApi), body);
+    case "/v1/delegate/start": {
+      const { worktree, base, ...start } = body;
+      return startWithDelegationWorktree(
+        {
+          cwd: start.cwd as string | undefined,
+          branch: worktree as string | undefined,
+          base: base as string | undefined,
+        },
+        (cwd) => {
+          const input: Record<string, unknown> = {
+            ...start,
+            ...(cwd !== undefined ? { cwd } : {}),
+          };
+          return input.watchTimeoutMs === undefined
+            ? handlers.api.start(input as unknown as DelegationStartInput)
+            : startWithWatch(handlers.api, watchApi(handlers.watchApi), input);
+        },
+      );
+    }
     case "/v1/thread/send":
-      return handlers.api.send(body as unknown as ThreadSendInput);
+      return body.watchTimeoutMs === undefined
+        ? handlers.api.send(body as unknown as ThreadSendInput)
+        : sendWithWatch(handlers.api, watchApi(handlers.watchApi), body);
     case "/v1/thread/cancel":
       return handlers.api.cancel(body as unknown as ThreadCancelInput);
+    case "/v1/thread/export": {
+      const input = body as unknown as ThreadExportInput;
+      validateThreadExportInput(input);
+      if (!handlers.api.exportThread)
+        throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
+      return handlers.api.exportThread(input);
+    }
     case "/v1/thread/read":
-      return handlers.api.read(body as unknown as ThreadReadInput);
-    case "/v1/thread/wait":
-      return handlers.api.wait(body as unknown as ThreadWaitInput);
+    case "/v1/thread/wait": {
+      const allowed = new Set([
+        "threadId",
+        "view",
+        "from",
+        "to",
+        ...(route === "/v1/thread/read" ? ["hostId", "callerThreadId"] : ["timeoutMs"]),
+      ]);
+      for (const key of Object.keys(body)) {
+        if (!allowed.has(key))
+          throw new DelegationControlError("INVALID_ARGUMENT", `Unknown read option: ${key}`);
+      }
+      validateReadOptions(body as unknown as ThreadReadInput);
+      return route === "/v1/thread/read"
+        ? handlers.api.read(body as unknown as ThreadReadInput)
+        : handlers.api.wait(body as unknown as ThreadWaitInput);
+    }
+    case "/v1/thread/answer":
+      return handlers.api.answer(body as unknown as ThreadAnswerInput);
     case "/v1/thread/watch":
       return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
     case "/v1/thread/watches":
@@ -143,6 +214,7 @@ export async function startDelegationControlServer(input: {
   token: string;
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
+  inventory?: HostInventory;
 }): Promise<DelegationControlServer> {
   const server = createServer((request, response) => {
     void (async () => {

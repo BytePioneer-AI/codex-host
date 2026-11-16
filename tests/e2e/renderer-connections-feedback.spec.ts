@@ -23,6 +23,7 @@ const { outputFiles } = await build({
         const metrics = { rebuilds: 0, lastPaintedInspector: "", checks: [], updates: [], agents };
         const pendingChecks = [];
         const pendingUpdates = [];
+        const updatedAgents = new Set();
         globalThis.finishVersionChecks = () => pendingChecks.splice(0).forEach(resolve => resolve());
         globalThis.finishNextUpdate = () => pendingUpdates.shift()?.();
         const replace = Element.prototype.replaceChildren;
@@ -56,6 +57,7 @@ const { outputFiles } = await build({
             if (action === "update") {
               metrics.updates.push({hostId, agent});
               if (bulk) await new Promise(resolve => pendingUpdates.push(resolve));
+              updatedAgents.add(agent);
               return {currentVersion:"1.3.0",latestVersion:"1.3.0",updateAvailable:false,canUpdate:true};
             }
             metrics.checks.push({agent, paintedInspector:metrics.lastPaintedInspector});
@@ -70,14 +72,16 @@ const { outputFiles } = await build({
               manualUpdateUrl:"https://download.codebuddy.ai/workbuddy/test/WorkBuddy.dmg",
               notice:{en:"Download the official installer, complete installation, then reopen Connections to verify the version.","zh-CN":"此处显示 WorkBuddy 桌面应用版本，内置 CLI 随应用更新。请下载官方安装包并完成安装，再重新打开连接页确认版本。"},
             };
-            const updateAvailable = agent === "pi" || (bulk && ["claude-code", "opencode"].includes(agent));
-            return {currentVersion:"1.2.16",latestVersion:updateAvailable ? "1.3.0" : "1.2.16",updateAvailable,canUpdate:!(bulk && agent === "opencode")};
+            const alreadyUpdated = updatedAgents.has(agent);
+            const updateAvailable = !alreadyUpdated && (agent === "pi" || (bulk && ["claude-code", "opencode"].includes(agent)));
+            return {currentVersion:alreadyUpdated ? "1.3.0" : "1.2.16",latestVersion:alreadyUpdated || updateAvailable ? "1.3.0" : "1.2.16",updateAvailable,canUpdate:!(bulk && agent === "opencode")};
           },
         };
         const messages = rendererSettingsMessages("zh-CN");
         const registry = createRendererSettingsPageRegistry([createConnectionsSettingsPage(messages,()=>diagnostics,store)]);
         const shell = mountRendererSettingsShell(registry,document,messages);
         shell.openSettings(undefined,"connections");
+        globalThis.settingsShell = shell;
         globalThis.feedbackMetrics = metrics;
       };
     `,
@@ -123,12 +127,39 @@ async function setup(page: Page, bulk = false, manual = false) {
 test("checks the list after painting and coalesces diagnosis bursts while checks are pending", async ({
   page,
 }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 480 });
   await setup(page);
+  await page.setViewportSize({ width: 1440, height: 480 });
+  const scrolled = await page.evaluate(() => {
+    const shell = document.querySelector("[data-codexhost-settings-shell]")?.shadowRoot;
+    const scroller = shell?.querySelector<HTMLElement>(".settings-page");
+    const row = shell?.querySelector<HTMLElement>('[data-connection-item="pi"]');
+    if (!scroller || !row) throw new Error("Missing settings scroller or Pi row");
+    (globalThis as unknown as { __piRowRef?: HTMLElement }).__piRowRef = row;
+    scroller.scrollTop = 180;
+    return scroller.scrollTop;
+  });
+  expect(scrolled).toBeGreaterThan(0);
   const before = await page.evaluate(() => Reflect.get(globalThis, "feedbackMetrics").rebuilds);
-  await page.getByRole("button", { name: "重新诊断连接" }).click();
+  await page.evaluate(() => {
+    const shell = document.querySelector("[data-codexhost-settings-shell]")?.shadowRoot;
+    shell?.querySelector<HTMLButtonElement>('[data-connection-action="refresh"]')?.click();
+  });
   await expect(page.getByRole("button", { name: "重新诊断连接" })).toBeEnabled();
+  const afterRefresh = await page.evaluate(() => {
+    const shell = document.querySelector("[data-codexhost-settings-shell]")?.shadowRoot;
+    const scroller = shell?.querySelector<HTMLElement>(".settings-page");
+    const row = shell?.querySelector<HTMLElement>('[data-connection-item="pi"]');
+    return {
+      scrollTop: scroller?.scrollTop ?? -1,
+      sameRow: row === (globalThis as unknown as { __piRowRef?: HTMLElement }).__piRowRef,
+    };
+  });
+  expect(afterRefresh.sameRow).toBe(true);
+  expect(afterRefresh.scrollTop).toBe(scrolled);
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const rebuilds = await page.evaluate(() => Reflect.get(globalThis, "feedbackMetrics").rebuilds);
-  expect(rebuilds - before).toBeLessThanOrEqual(3);
+  expect(rebuilds - before).toBe(0);
   await page.screenshot({ path: testInfo.outputPath("diagnosis-settled.png") });
   const row = page.locator('[data-connection-item="antigravity"]');
   await row.getByRole("cell").first().click();
@@ -254,11 +285,34 @@ test("updates all eligible Harnesses from the Host header and keeps the button b
   }
   await page.evaluate(() => Reflect.get(globalThis, "finishNextUpdate")());
   await expect(updateAll).toHaveText("更新中 1/2");
+  await page.evaluate(() => {
+    const shell = Reflect.get(globalThis, "settingsShell");
+    shell.close();
+    shell.openSettings(undefined, "connections");
+  });
+  await expect(updateAll).toHaveText("更新中 1/2");
+  await expect(
+    page.locator('[data-connection-item="pi"] .settings-connection-row__status'),
+  ).toHaveText("更新中");
+  await page.locator('[data-connection-item="pi"]').click();
+  await expect(page.locator('[data-harness-version="pi"]')).toContainText("当前版本: 1.2.16");
+  await expect(page.locator('[data-harness-version="pi"]')).toContainText("最新版本: 1.3.0");
+  await expect(page.locator('[data-harness-version="pi"]')).toContainText("正在更新…");
   await page.screenshot({ path: testInfo.outputPath("update-all-running.png") });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const metrics = Reflect.get(globalThis, "feedbackMetrics");
+        return metrics.checks.length === metrics.agents.length * 2 - 1;
+      }),
+    )
+    .toBe(true);
+  await page.evaluate(() => Reflect.get(globalThis, "finishVersionChecks")());
   await page.evaluate(() => Reflect.get(globalThis, "finishNextUpdate")());
   await expect(page.locator(".settings-connection-update-result")).toHaveText(
     "已更新 2 项，0 项失败。",
   );
+  await expect(page.locator('[data-harness-version="pi"]')).toContainText("已确认更新成功");
   await expect(updateAll).toHaveText("全部更新");
   await expect(updateAll).toBeDisabled();
   await expect(page.locator('[data-connection-item="opencode"]')).toContainText("有更新");

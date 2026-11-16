@@ -29,7 +29,7 @@ describe("Harness Usage", () => {
       expect(() => parseHostUsage({ sessionCacheUsage: invalid })).toThrow();
     }
   });
-  it.each(["outputTokensPerSecond", "apiOutputTokensPerSecond"])(
+  it.each(["outputTokensPerSecond", "apiOutputTokensPerSecond", "sessionOutputTokensPerSecond"])(
     "accepts fractional %s without relaxing token counts",
     (field) => {
       expect(parseHostUsage({ [field]: 42.7 })).toEqual({ [field]: 42.7 });

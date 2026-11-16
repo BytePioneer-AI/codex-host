@@ -18,6 +18,8 @@ export default [
       ".codexhost/**",
       ".pi/**",
       ".work/**",
+      // Independently installed Next.js site has its own ESLint configuration.
+      "apps/wiki/**",
       "build/**",
       "coverage/**",
       "node_modules/**",

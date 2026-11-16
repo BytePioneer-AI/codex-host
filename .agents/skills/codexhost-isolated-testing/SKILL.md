@@ -68,6 +68,24 @@ description: 为 codexhost 开发中的实际运行验证选择并启动最小�
 - **浏览器**：优先复用 [Web 浏览器测试](../../../packages/web-server/test/browser) 的实际控件与隔离方式；单独创建浏览器上下文，不连接或关闭用户日常浏览器。fixture 的默认假 Host 不能不加说明地用于真实链路验收。
 - **Harness**：优先公共 Adapter 接口及所属插件既有 Gate。直接调用 CLI 可定位原生语义，但不能据此宣布 Host／UI 集成通过。无法隔离的原生单实例或全局状态应报告限制，不自行修改原生程序。
 - **普通开发启动**：见 [Web 构建与生命周期](../../../docs/product/standalone-web.md#代码与构建)。`npm start` / `npm start web` 会重启对应界面并可能重启共享 Host，换 Web 端口不代表隔离 Host。隔离实测使用上述显式测试入口；`npm stop` 是跨工作树停机命令，不用于测试清理。
+- **Desktop 实机**：见下节，用独立 Host 数据目录启动，不另建 Desktop profile。
+
+### Desktop：独立数据目录启动
+
+验证 Desktop 界面（Composer、`#` 菜单、用户消息渲染等）时，沿用用户正常的 Desktop 登录、Codex home 和 Harness 环境，只把 codexhost Host 换到独立数据目录。不要另建 Electron profile、HOME 或 `CODEX_HOME`：那样会卡在登录和首次使用引导，还需要复制凭据。
+
+```bash
+CODEXHOST_DATA_DIR=<run-root>/host npm start
+```
+
+在包含待测修改的工作树根目录执行。
+
+- 效果：构建该工作树，关闭正在运行的 Codex Desktop，再用该工作树的 Renderer 和 Host 启动 Desktop。Host 状态、会话映射、偏好与插件启用都在 `<run-root>/host`。插件取自该工作树构建的 `packages/host-runtime/dist/plugins`，不需要也不要从 `~/.codexhost` 复制任何文件。
+- 不受影响：默认数据目录（`~/.codexhost`）上的共享 Host 和 Web 继续运行。不要加 `--restart-host`。
+- 共享且不隔离的部分：Codex Account、官方 Codex Thread、各 Harness 的原生 home 与凭据、真实模型调用。外部 Harness 会话写入原生历史；只发少量、简短、标明为测试的消息。
+- 授权：会关闭用户正在用的 Desktop，打断其中进行中的任务。启动前取得用户明确同意，并说明恢复方式。
+- 恢复：在用户的日常工作树运行不带 `CODEXHOST_DATA_DIR` 的 `npm start`。重启会打断任务，由用户决定何时执行，测试方不要代为执行。之后用该工作树的 Launcher 停掉测试 Host，再删除 `<run-root>`：`target/debug/codexhost host stop --node <node> --host-runtime <工作树>/packages/host-runtime/dist/main.js --data <run-root>/host`。三个路径都必须是绝对路径，可从测试 Host 进程的启动参数读取。
+- 取证：截图 Desktop 界面；Harness 实际收到的内容以 Host 记录或 Harness 原生会话记录为准，不以界面显示为准。
 
 ## 5. 执行与取证
 

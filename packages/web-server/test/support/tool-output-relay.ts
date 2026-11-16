@@ -92,15 +92,10 @@ export async function toolOutputRelay(t: TestContext) {
   assert.equal(state.relay?.state.status, "connected");
   const hostname = `${relayIdentity(data).id}.relay.test`;
   return {
-    host,
     row,
     output,
-    data,
     relay,
-    local,
-    localToken,
     secret: state.secret,
-    hostname,
     origin: `https://${hostname}`,
   };
 }

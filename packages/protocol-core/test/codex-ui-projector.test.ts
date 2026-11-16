@@ -1,3 +1,4 @@
+import { configureSubagentEvent } from "@codexhost/harness-adapter";
 import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
@@ -1918,3 +1919,61 @@ describe("Codex UI projector", () => {
     ).toThrow("follows the Turn terminal");
   });
 });
+
+it.each([false, true])(
+  "keeps native Codex cards and the heterogeneous sibling guard after inheritance (mixed=%s)",
+  (mixed) => {
+    const value = projector();
+    const event = configureSubagentEvent(
+      {
+        type: "item.started",
+        turnId,
+        item: {
+          type: "subagentDelegation",
+          itemId: itemId("inherited-card"),
+          operation: "spawn",
+          prompt: "Inspect the repository",
+          subagents: [
+            {
+              subagentId: "child-1",
+              description: "Explorer",
+              role: "explorer",
+              background: true,
+              status: "running",
+            },
+            {
+              subagentId: "child-2",
+              description: "Reviewer",
+              role: "reviewer",
+              background: true,
+              status: "pending",
+              ...(mixed ? { model: "native-override", reasoningEffort: "low" } : {}),
+            },
+          ],
+        },
+      },
+      { model: "parent-model", reasoningEffort: "high" },
+    );
+    if (event.type !== "item.started") throw new Error("Expected delegation start");
+    value.project({ type: "turn.started", turnId });
+    expect(value.project(event).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            prompt: "Inspect the repository",
+            receiverThreadIds: ["child-1", "child-2"],
+            model: mixed ? null : "parent-model",
+            reasoningEffort: mixed ? null : "high",
+            agentsStates: {
+              "child-1": { status: "running" },
+              "child-2": { status: "pendingInit" },
+            },
+          },
+        },
+      },
+    ]);
+  },
+);

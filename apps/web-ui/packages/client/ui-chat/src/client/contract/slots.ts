@@ -1,5 +1,7 @@
 /** Chat-owned Slot declarations and composed component props. */
+import type { ReactNode } from "react";
 import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
+import type { ResponseAnnotation } from "@codexhost/shared-contracts";
 import type { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
 import type {
   CommandNode,
@@ -128,6 +130,12 @@ export type QuotaNoticeHostProps = PropsRuntime<"shell.overlay"> &
   PropsRenderSlots<"shell.quota-notice"> &
   InjectFace<QuotaNoticeInjected>;
 
+/** Product-owned application links and their directory presentation. */
+export interface ChatLinks {
+  resolve: MarkdownLinkResolver;
+  describe?: (href: string) => { title: string; icon: ReactNode } | undefined;
+}
+
 /** Optional prose file-mention provider consumed by Chat. */
 export interface ChatFileMentions {
   /**
@@ -144,7 +152,7 @@ declare module "@deepseek-ai/cordis" {
     /** Optional prose file-mention provider. */
     chatFileMentions: ChatFileMentions;
     /** Optional application-link resolver owned by the product integration. */
-    chatLinks: { resolve: MarkdownLinkResolver };
+    chatLinks: ChatLinks;
   }
 }
 
@@ -189,11 +197,17 @@ export interface SentMessageEditing {
     seq: number;
     text: string;
     content: readonly unknown[];
+    responseAnnotations: readonly ResponseAnnotation[];
     pending: boolean;
     blocked: boolean;
     error?: string;
   } | null;
-  begin(seq: number, text: string, content: readonly unknown[]): void;
+  begin(
+    seq: number,
+    text: string,
+    content: readonly unknown[],
+    responseAnnotations?: readonly ResponseAnnotation[],
+  ): void;
   change(text: string): void;
   cancel(): void;
   send(): void;
@@ -238,6 +252,12 @@ export interface ChatNodeOwnerProps {
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined;
   /** Turn-process state when this Node belongs to a projected Turn. */
   turnProcess?: TurnProcessOwnerProps | undefined;
+  /**
+   * Annotations of the user message this Node's Turn answers, in attachment
+   * order; empty when the Turn answers a message without any. The seat resolves
+   * them per Node, so every renderer receives the array it actually reads.
+   */
+  responseAnnotations: readonly ResponseAnnotation[];
 }
 
 /** Shared presentation state for one Turn-process answer generation. */

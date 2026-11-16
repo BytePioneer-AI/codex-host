@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Context } from "@deepseek-ai/cordis";
 import type { TranslateNS } from "@deepseek-ai/dsh-client-locale/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
+import { InputTriggerController } from "@deepseek-ai/dsh-client-ui-input-trigger/src/client/controller.ts";
+import { sourceMatchesTrigger } from "@deepseek-ai/dsh-client-ui-input-trigger/src/core/source.ts";
 import { RemoteError } from "@deepseek-ai/dsh-typert-protocol";
 import { fileMentionSource } from "@deepseek-ai/dsh-client-ui-sidebar-files/src/client/file-mentions.ts";
 import { en } from "@deepseek-ai/dsh-client-ui-sidebar-files/src/client/locales.ts";
@@ -15,6 +18,31 @@ const request = (query: string, signal = new AbortController().signal) => ({
 });
 
 describe("workspace file mentions", () => {
+  it("closes unmatched PR prose and does not reopen it on repeated editor tracking", async () => {
+    const list = vi.fn(async () => ({ ok: true as const, value: [] }));
+    const source = fileMentionSource({ fileReferences: { list } }, () => true, t);
+    const controller = new InputTriggerController({
+      actx: {} as Context,
+      sessionId: session.sessionId,
+      roster: {
+        all: () => [source],
+        sources: (trigger) => (sourceMatchesTrigger(source, trigger) ? [source] : []),
+      },
+    });
+    try {
+      for (const draft of ["#803", "#803的逻辑是什么？", "#803的逻辑是什么？ 如何考虑的"]) {
+        controller.track(draft, draft.length, { tier: "plain" }, 1);
+        await vi.waitFor(() => expect(controller.menu.getSnapshot().open).toBe(false));
+        const requests = list.mock.calls.length;
+        controller.track(draft, draft.length, { tier: "plain" }, 2);
+        expect(controller.menu.getSnapshot().open).toBe(false);
+        expect(list).toHaveBeenCalledTimes(requests);
+      }
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("filters one directory, omits unrepresentable names, and preserves quoted paths", async () => {
     const list = vi.fn(async () => ({
       ok: true as const,
@@ -62,7 +90,7 @@ describe("workspace file mentions", () => {
     await expect(pending).rejects.toThrow();
   });
 
-  it("passes bare queries to recursive search and surfaces no matches", async () => {
+  it("returns no candidates for unmatched searches so the menu can close", async () => {
     const list = vi.fn(async () => ({
       ok: true as const,
       value: [],
@@ -70,7 +98,10 @@ describe("workspace file mentions", () => {
     const source = fileMentionSource({ fileReferences: { list } }, () => true, t);
     const rows = await source.candidates(session, request("absent"));
     expect(list).toHaveBeenCalledWith(session.sessionId, "absent", expect.any(AbortSignal));
-    expect(rows.map((row) => row.disabledReason)).toEqual([en["mention.noMatches"]]);
+    expect(rows).toEqual([]);
+    expect((await source.candidates(session, request("")))[0]?.disabledReason).toBe(
+      en["mention.noMatches"],
+    );
   });
 
   it("keeps listing failures visible and unselectable", async () => {

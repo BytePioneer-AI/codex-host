@@ -17,7 +17,6 @@ use codexhost_platform::{
     validate_proxy_target,
 };
 
-mod child_diagnostics;
 mod desktop_invocation;
 mod local_runtime_lease;
 mod process_identity;
@@ -26,7 +25,6 @@ mod remote_lifecycle;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod remote_listener_process;
 
-use child_diagnostics::{copy_stream_with_last_line, host_runtime_failure_summary};
 use local_runtime_lease::{LocalRuntimeAdmission, admit_local_runtime};
 
 pub type ShimResult<T> = Result<T, Box<dyn Error>>;
@@ -892,14 +890,6 @@ pub fn run_proxy_with_observer(
             }
         }
     }
-    let host_runtime_child = !desktop_helper
-        && should_start_host_runtime(arguments)
-        && host_runtime_paths_are_configured();
-    let child_label = if host_runtime_child {
-        "Host Runtime"
-    } else {
-        "official CLI"
-    };
     let mut command = child_command(
         arguments,
         &current_executable,
@@ -923,21 +913,20 @@ pub fn run_proxy_with_observer(
 
     let child_stdin = child
         .take_stdin()
-        .ok_or_else(|| format!("{child_label} stdin is unavailable"))?;
+        .ok_or("official CLI stdin is unavailable")?;
     let child_stdout = child
         .take_stdout()
-        .ok_or_else(|| format!("{child_label} stdout is unavailable"))?;
+        .ok_or("official CLI stdout is unavailable")?;
     let child_stderr = child
         .take_stderr()
-        .ok_or_else(|| format!("{child_label} stderr is unavailable"))?;
+        .ok_or("official CLI stderr is unavailable")?;
 
     let (stdin_sender, stdin_receiver) = std::sync::mpsc::sync_channel(1);
     let _stdin_pump = thread::spawn(move || {
         let _ = stdin_sender.send(copy_stream(io::stdin().lock(), child_stdin));
     });
     let stdout_pump = thread::spawn(move || copy_stream(child_stdout, io::stdout().lock()));
-    let stderr_pump =
-        thread::spawn(move || copy_stream_with_last_line(child_stderr, io::stderr().lock()));
+    let stderr_pump = thread::spawn(move || copy_stream(child_stderr, io::stderr().lock()));
 
     let outcome = wait_for_child(
         &mut child,
@@ -946,38 +935,31 @@ pub fn run_proxy_with_observer(
     )?;
     stdout_pump
         .join()
-        .map_err(|_| format!("{child_label} stdout pump panicked"))??;
-    let last_stderr_line = stderr_pump
+        .map_err(|_| "official CLI stdout pump panicked")??;
+    stderr_pump
         .join()
-        .map_err(|_| format!("{child_label} stderr pump panicked"))??;
+        .map_err(|_| "official CLI stderr pump panicked")??;
     observer.exit(child_id, &outcome.status, started.elapsed());
 
     if let Some(signal) = outcome.forwarded_signal {
         eprintln!("codexhost shim: forwarded shutdown signal {signal}");
     }
-    if outcome.terminated_descendants {
-        eprintln!("codexhost shim: terminated {child_label} descendants after root exit");
+    // Normal cleanup must not replace a failed child's last stderr line with a success notice.
+    let preserve_child_error = outcome.status.code().is_some_and(|code| code != 0)
+        && outcome.forwarded_signal.is_none()
+        && !outcome.desktop_input_closed
+        && !outcome.forced;
+    if outcome.terminated_descendants && !preserve_child_error {
+        eprintln!("codexhost shim: terminated official CLI descendants after root exit");
     }
     if outcome.desktop_input_closed {
         eprintln!("codexhost shim: closed the local Host Runtime after Desktop stdin EOF");
     }
     if outcome.forced {
-        eprintln!("codexhost shim: forced {child_label} process-group termination after timeout");
+        eprintln!("codexhost shim: forced official CLI process-group termination after timeout");
     }
     if let Some(signal) = exit_signal(&outcome.status) {
-        eprintln!("codexhost shim: {child_label} terminated by signal {signal}");
-    }
-    // Desktop reports only the final stderr line of a failed app-server. Keep the Host Runtime's
-    // own last diagnostic there instead of the Shim's cleanup notes above.
-    if host_runtime_child
-        && !outcome.desktop_input_closed
-        && outcome.forwarded_signal.is_none()
-        && !outcome.status.success()
-    {
-        eprintln!(
-            "{}",
-            host_runtime_failure_summary(&outcome.status, last_stderr_line.as_deref())
-        );
+        eprintln!("codexhost shim: official CLI terminated by signal {signal}");
     }
     Ok(if outcome.desktop_input_closed {
         0

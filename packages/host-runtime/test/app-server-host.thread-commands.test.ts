@@ -28,12 +28,11 @@ const staticCommand = harnessCommandDescriptorSchema.parse({
   label: "Compact",
   argumentMode: "none",
 });
-const liveSkill = harnessCommandDescriptorSchema.parse({
+const liveCommand = harnessCommandDescriptorSchema.parse({
   id: "fake.slash.review",
   invocation: "/review",
   label: "review",
   argumentMode: "text",
-  kind: "skill",
 });
 
 describe("Ephemeral Turn completion", () => {
@@ -244,7 +243,7 @@ describe("Thread command catalog", () => {
       ).resolves.toMatchObject({ result: {} });
       session.completeCancellation();
     } finally {
-      catalog.resolve({ ok: true, value: { commands: [staticCommand, liveSkill] } });
+      catalog.resolve({ ok: true, value: { commands: [staticCommand, liveCommand] } });
       await stopFixture(fixture);
     }
   });
@@ -256,7 +255,7 @@ describe("Thread command catalog", () => {
     const session = fixture.adapter.sessions[0];
     if (!session) throw new Error("Fake Pi Session was not opened");
     session.commands = {
-      list: async () => ({ ok: true, value: { commands: [staticCommand, liveSkill] } }),
+      list: async () => ({ ok: true, value: { commands: [staticCommand, liveCommand] } }),
       execute: async ({ turnId }) => ({ ok: true, value: { turnId } }),
     };
 
@@ -267,8 +266,52 @@ describe("Thread command catalog", () => {
     });
     await expect(
       fixture.collector.waitFor((message) => requestId(message, 2)),
-    ).resolves.toMatchObject({ result: { commands: [staticCommand, liveSkill] } });
+    ).resolves.toMatchObject({ result: { commands: [staticCommand, liveCommand] } });
     await stopFixture(fixture);
+  });
+
+  it("rejects a manually typed native skill as unknown after the live catalog loads", async () => {
+    const fixture = createFixture();
+    try {
+      Object.assign(fixture.adapter, {
+        commandCatalog: { commands: [staticCommand] },
+        liveCommandCatalog: true,
+      });
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const execute = vi.fn(async ({ turnId }: HarnessCommandInvocation) => ({
+        ok: true as const,
+        value: { turnId },
+      }));
+      session.commands = {
+        list: async () => ({ ok: true, value: { commands: [staticCommand, liveCommand] } }),
+        execute,
+      };
+      const startTurn = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "codexhost/thread/commands/inspect",
+        params: { threadId },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 2)),
+      ).resolves.toMatchObject({
+        result: { commands: [staticCommand, liveCommand], source: "live" },
+      });
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "text", text: "/skill:brave-search cats" }] },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 3)),
+      ).resolves.toMatchObject({ error: { code: -32078 } });
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("falls back to the static catalog when the live listing fails", async () => {
@@ -309,7 +352,7 @@ describe("Thread command catalog", () => {
         value: { turnId },
       });
       session.commands = {
-        list: async () => ({ ok: true, value: { commands: [staticCommand, liveSkill] } }),
+        list: async () => ({ ok: true, value: { commands: [staticCommand, liveCommand] } }),
         execute,
       };
       const inspect = async (id: number, cwd?: string) => {
@@ -322,7 +365,7 @@ describe("Thread command catalog", () => {
       };
 
       await expect(inspect(2, "/synthetic/")).resolves.toMatchObject({
-        result: { commands: [staticCommand, liveSkill], source: "live" },
+        result: { commands: [staticCommand, liveCommand], source: "live" },
       });
       // The native process went away: the workspace cache still answers.
       session.commands = {
@@ -330,7 +373,7 @@ describe("Thread command catalog", () => {
         execute,
       };
       await expect(inspect(3, "/synthetic")).resolves.toMatchObject({
-        result: { commands: [staticCommand, liveSkill], source: "live" },
+        result: { commands: [staticCommand, liveCommand], source: "live" },
       });
       await expect(inspect(4, "/elsewhere")).resolves.toMatchObject({
         result: { commands: [staticCommand], source: "static" },

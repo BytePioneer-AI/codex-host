@@ -1,0 +1,56 @@
+---
+title: Accounts, Quotas & Usage
+description: Keep working with external Agents even when Codex quota runs out, import credentials to Pi in one click, and track token spend.
+---
+
+## What Happens When My Codex Quota Runs Out?
+
+**External Agents keep working normally.**
+
+In standard Codex Desktop, running out of your 5-hour or 7-day ChatGPT / Codex allowance locks the message composer. With CodexHost:
+
+- Only native Codex sessions use your Codex quota.
+- Whenever Codex hits its limit, just switch the selector in the bottom-right of the composer to **Claude Code, Pi, OpenCode, Grok, DSH**, or any other installed Agent and keep working—each uses its own login or API key.
+
+---
+
+## Check Quotas Across Your Agents in One Place
+
+Open **codexhost Settings → Accounts** to view live plan allowances and prepaid balances across your signed-in tools:
+
+- Shows **Codex** (5-hour / 7-day windows and reset-card expirations) alongside available quota or balance data from **Claude Code, Grok, Cursor, Kimi Code, Qoder, Antigravity, and Pi** (such as DeepSeek or compatible custom endpoints).
+- Toggle between **Remaining** and **Used** views, complete with local reset countdowns.
+- **Privacy mask for screenshots**: Click the eye icon in the toolbar to mask email addresses (`al****ce@example.com`) across the entire page before sharing screenshots.
+
+> CodexHost reads your existing native sign-ins in read-only mode—it never stores a central password vault or alters official Codex login flows.
+
+---
+
+## One-Click Account Import into Pi
+
+Already signed in to **Codex** or **Grok** (via OAuth) on your machine and want to use those models inside **Pi** without setting up credentials again?
+
+1. Open **codexhost Settings → Accounts**.
+2. Click **Import to Pi** right under your Codex or Grok account (or click **Import Account** in the **Accounts in Pi** section).
+3. Confirm the provider entry name—**no restart needed; any newly opened Pi session can immediately pick those models**.
+
+You can re-import or remove imported entries anytime from the same section without signing out of your original Codex or Grok account.
+
+---
+
+## Track Token Usage & Estimated Cost
+
+### 1. Live Session Usage Popover
+
+Inside supported Agent sessions, click the usage indicator in the status bar to see real-time metrics for the current conversation:
+
+- **Context usage**: how full the current context window is;
+- **Cache hit rate**: cached read vs. write tokens;
+- **Time to First Token (TTFT)** and **estimated cost**.
+
+### 2. Global Usage Dashboard
+
+Open **Usage Statistics** in **codexhost Settings** or the **Local Console (`codexhost console`)** for a cross-Agent breakdown:
+
+- Automatically reads and deduplicates native session logs from Codex and external Agents;
+- Calculates token totals and estimated costs by model and date so you can see where your tokens actually go.

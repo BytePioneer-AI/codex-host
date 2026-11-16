@@ -51,7 +51,7 @@ pub(crate) fn unix_process_snapshot(process_id: u32) -> Result<ProcessSnapshot, 
 }
 
 #[cfg(target_os = "linux")]
-fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> {
+pub(super) fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> {
     let path = format!("/proc/{process_id}/stat");
     let text = std::fs::read_to_string(&path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => {
@@ -70,6 +70,11 @@ fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> 
     if fields.len() < 20 {
         return Err(PlatformError::Invalid(format!(
             "PID {process_id} stat has too few fields"
+        )));
+    }
+    if fields[0] == "Z" {
+        return Err(PlatformError::NotFound(format!(
+            "PID {process_id} has exited"
         )));
     }
     let parse = |index: usize, name: &str| {
@@ -496,78 +501,8 @@ impl ObservedProcessTree {
         processes: &[ProcessSnapshot],
         signal: nix::sys::signal::Signal,
     ) -> Result<(), PlatformError> {
-        #[cfg(target_os = "macos")]
-        use nix::errno::Errno;
-        #[cfg(target_os = "macos")]
-        use nix::sys::signal::kill;
-        #[cfg(target_os = "macos")]
-        use nix::unistd::Pid;
-
         for expected in processes {
-            #[cfg(target_os = "linux")]
-            {
-                use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
-
-                let process_id = Pid::from_raw(expected.id as i32).ok_or_else(|| {
-                    PlatformError::Invalid(format!("PID {} is invalid", expected.id))
-                })?;
-                let descriptor = match pidfd_open(process_id, PidfdFlags::empty()) {
-                    Ok(descriptor) => descriptor,
-                    Err(error) if error == rustix::io::Errno::SRCH => continue,
-                    Err(error) => return Err(PlatformError::Io(error.into())),
-                };
-                let current = match unix_process_snapshot(expected.id) {
-                    Ok(current) => current,
-                    Err(PlatformError::NotFound(_)) => continue,
-                    Err(error) => return Err(error),
-                };
-                // An observed descendant may legitimately exec after it is
-                // attributed to this launch. PID plus start time is the
-                // process-instance identity; its executable is not. The
-                // Desktop root is checked separately in `observe()`.
-                if !same_process_instance(expected, &current) {
-                    return Err(PlatformError::Invalid(format!(
-                        "PID {} was reused before signal delivery",
-                        expected.id
-                    )));
-                }
-                let signal = Signal::from_named_raw(signal as i32).ok_or_else(|| {
-                    PlatformError::Invalid(format!("unsupported Unix signal {signal}"))
-                })?;
-                if let Err(error) = pidfd_send_signal(descriptor, signal)
-                    && error != rustix::io::Errno::SRCH
-                {
-                    return Err(PlatformError::Io(error.into()));
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let current = match unix_process_snapshot(expected.id) {
-                    Ok(current) => current,
-                    Err(PlatformError::NotFound(_)) => continue,
-                    Err(error) => return Err(error),
-                };
-                // An observed descendant may legitimately exec after it is
-                // attributed to this launch. PID plus start time is the
-                // process-instance identity; its executable is not. The
-                // Desktop root is checked separately in `observe()`.
-                if !same_process_instance(expected, &current) {
-                    return Err(PlatformError::Invalid(format!(
-                        "PID {} was reused before signal delivery",
-                        expected.id
-                    )));
-                }
-                let process_id = i32::try_from(expected.id).map_err(|_| {
-                    PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id))
-                })?;
-                if let Err(error) = kill(Pid::from_raw(process_id), signal)
-                    && error != Errno::ESRCH
-                {
-                    return Err(PlatformError::Io(std::io::Error::from_raw_os_error(
-                        error as i32,
-                    )));
-                }
-            }
+            super::process_termination::signal_process_identity(&expected.into(), signal)?;
         }
         Ok(())
     }

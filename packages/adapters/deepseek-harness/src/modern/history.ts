@@ -123,6 +123,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "team/member",
   "team/message/delivered",
   "team/message/queued",
+  "team/mode",
   "team/task",
   "todo/write",
   "tool-workflow/agent-end",
@@ -359,6 +360,11 @@ export class ModernEventValidator {
       case "plan/mode":
         exactKeys(data, ["active"]);
         if (typeof data.active !== "boolean") fail("Modern history plan/mode is malformed");
+        return;
+      // DSH 0.2.2-rc.2 records the per-Session Team selection as a required log-only event.
+      case "team/mode":
+        exactKeys(data, ["enabled"]);
+        if (typeof data.enabled !== "boolean") fail("Modern history team/mode is malformed");
         return;
       case "sandbox/mode":
         requiredOptionalKeys(data, ["mode"], ["source"]);

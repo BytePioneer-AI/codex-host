@@ -280,7 +280,7 @@ for (const locale of ["en-US", "zh-CN"]) {
           )
           .waitFor();
         await page
-          .getByRole("button", { name: chinese ? "放大二维码" : "Enlarge QR code" })
+          .getByRole("button", { name: chinese ? "点击查看二维码" : "Click to view QR code" })
           .waitFor();
         await page
           .locator('[data-connect-route="self-hosted-relay"]')
@@ -312,7 +312,7 @@ for (const locale of ["en-US", "zh-CN"]) {
         await control.getByText(closeFirst, { exact: true }).waitFor();
         assert.equal(
           await page
-            .getByRole("button", { name: chinese ? "放大二维码" : "Enlarge QR code" })
+            .getByRole("button", { name: chinese ? "点击查看二维码" : "Click to view QR code" })
             .count(),
           0,
         );

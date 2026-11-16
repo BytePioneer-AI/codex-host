@@ -179,6 +179,7 @@ describe("release Host and independent plugin Bundles", () => {
         "@deepseek-ai/cosmokit",
         "diff",
         "ws",
+        "yaml",
         "zod",
       ]);
       const pluginAudits = await buildPreinstalledHarnessPlugins({

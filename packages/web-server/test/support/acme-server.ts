@@ -10,6 +10,7 @@ export interface AcmeRequest {
   path: string;
   payload: Record<string, unknown> | null;
   request: IncomingMessage;
+  remotePort: number | undefined;
   response: ServerResponse;
   reply(status: number, data: unknown, headers?: Record<string, string>): void;
 }
@@ -34,7 +35,14 @@ export async function acmeServer(
       });
       response.end(typeof data === "string" ? data : JSON.stringify(data));
     };
-    const item = { path: request.url as string, payload, request, response, reply };
+    const item = {
+      path: request.url as string,
+      payload,
+      request,
+      remotePort: request.socket.remotePort,
+      response,
+      reply,
+    };
     requests.push(item);
     if (handle(item)) return;
     const order = {

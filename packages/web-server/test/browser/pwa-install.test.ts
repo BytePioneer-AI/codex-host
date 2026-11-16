@@ -55,7 +55,12 @@ for (const width of [320, 1280]) {
         await page.getByRole("button", { name: "Open sidebar", exact: true }).click();
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       const settings = page.getByRole("dialog", { name: "Settings", exact: true });
-      const general = settings.getByRole("region", { name: "Other settings", exact: true });
+      const general = settings.getByRole("region", { name: "App & notifications", exact: true });
+      await expect(settings.getByRole("region").first()).toHaveAccessibleName(
+        "App & notifications",
+      );
+      await expect(general.getByText("Notifications", { exact: true })).toHaveCount(1);
+      await expect(settings.getByText("Install CodexHost app", { exact: true })).toHaveCount(1);
       const install = general.getByRole("button", { name: "Install app", exact: true });
       await install.scrollIntoViewIfNeeded();
       const box = await install.boundingBox();

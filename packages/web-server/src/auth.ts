@@ -33,6 +33,8 @@ export interface RequestAuth {
   readonly local: boolean;
   /** Keep this response alive through a revocation it caused, so it can report the result. */
   release(): void;
+  /** Replace this request's access-token cookie when it rotates the token it presented. */
+  renewCookie?(secret: string): void;
 }
 
 /** Live connections per credential, destroyed when that credential is revoked. */
@@ -169,8 +171,8 @@ export class AccessAuth {
     const presented = presentedToken(request, this.trust.secure(request));
     const credential =
       presented === undefined ? undefined : this.credentialFor(presented.token, request);
-    if (credential !== undefined) {
-      const auth = this.admit(request, response, credential);
+    if (presented !== undefined && credential !== undefined) {
+      const auth = this.admit(request, response, credential, presented.source);
       if (pathname !== "/api/auth/status") return { handled: false, auth };
       response
         .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
@@ -217,12 +219,23 @@ export class AccessAuth {
     request: IncomingMessage,
     response: ServerResponse,
     credential: string,
+    source: "bearer" | "cookie",
   ): RequestAuth {
     this.trust.authenticated(request);
     return {
       credential,
       local: isLocalConnection(request),
       release: this.connections.track(credential, response),
+      ...(source === "cookie" && credential !== LOCAL_CREDENTIAL
+        ? {
+            renewCookie: (secret: string): void => {
+              response.setHeader(
+                "set-cookie",
+                this.cookie(request, secret, COOKIE_MAX_AGE_SECONDS),
+              );
+            },
+          }
+        : {}),
     };
   }
 

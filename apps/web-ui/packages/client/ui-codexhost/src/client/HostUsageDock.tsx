@@ -15,6 +15,13 @@ import {
   useDismissOnOutsidePointer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 
+import {
+  formatAccountCreditsCompactCountdown,
+  formatAccountCreditsCompactExpiry,
+  formatAccountCreditsResetCountdown,
+  groupAccountCreditsWindows,
+} from "@codexhost/shared-contracts";
+
 import type { HostAccountCredits, HostThreadUsage } from "./usage.ts";
 import css from "./HostUsageDock.module.css";
 
@@ -23,13 +30,16 @@ type Translate = HostUsageDockProps["t"];
 
 interface DetailRow {
   readonly label: string;
+  readonly scopeLabel?: string;
   readonly value: string;
   readonly note?: string;
+  readonly noteTitle?: string;
   readonly remaining?: number;
 }
 
 interface DetailGroup {
   readonly label: string;
+  readonly title?: string;
   readonly rows: readonly DetailRow[];
 }
 
@@ -80,7 +90,11 @@ function credits(value: number, t: Translate): string {
   return `${amount} ${t("usage.unit.credits")}`;
 }
 
-function resetTime(value: string | number | undefined, t: Translate): string | null {
+function resetTime(
+  value: string | number | undefined,
+  t: Translate,
+  key: "usage.reset.at" | "usage.expires.at" = "usage.reset.at",
+): string | null {
   if (value === undefined) return null;
   const date = new Date(typeof value === "number" ? value * 1_000 : value);
   if (Number.isNaN(date.getTime())) return null;
@@ -100,7 +114,7 @@ function resetTime(value: string | number | undefined, t: Translate): string | n
         hour: "numeric",
         minute: "2-digit",
       });
-  return t("usage.reset.at", { time });
+  return t(key, { time });
 }
 
 function quotaValue(used: number | undefined, limit: number | undefined, unit?: string): string {
@@ -122,6 +136,8 @@ function summaryParts(usage: HostThreadUsage | null, t: Translate): string[] {
     cost(usage),
   ].filter((value): value is string => value !== null);
   if (result.length > 0) return result;
+  if (usage.sessionOutputTokensPerSecond !== undefined)
+    return [tokenRate(usage.sessionOutputTokensPerSecond, t)];
   if (usage.totalTokens !== undefined)
     return [`${tokenCount(usage.totalTokens)} ${t("usage.unit.tokens")}`];
   const context = contextPercent(usage);
@@ -148,6 +164,11 @@ function usageGroups(usage: HostThreadUsage | null, t: Translate): DetailGroup[]
       session.push({
         label: t("usage.cache.average"),
         value: percent(usage.sessionCacheHitRatePercent),
+      });
+    if (usage.sessionOutputTokensPerSecond !== undefined)
+      session.push({
+        label: t("usage.speed.average"),
+        value: tokenRate(usage.sessionOutputTokensPerSecond, t),
       });
     if (usage.cacheHitRatePercent !== undefined)
       session.push({
@@ -200,12 +221,32 @@ function quotaColor(remaining: number): string {
   return remaining <= 10 ? "#c45c4a" : remaining <= 30 ? "#c9a227" : "#3d9a64";
 }
 
+function resetCreditsColor(nextExpiresAt: string | undefined, nowMs: number): string {
+  if (!nextExpiresAt) return "#3d9a64";
+  const timestamp = Date.parse(nextExpiresAt);
+  if (!Number.isFinite(timestamp)) return "#3d9a64";
+  const remainingMs = timestamp - nowMs;
+  if (remainingMs <= 8 * 60 * 60 * 1_000) return "#c45c4a";
+  if (remainingMs <= 24 * 60 * 60 * 1_000) return "#c9a227";
+  return "#3d9a64";
+}
+
 function quotaGroups(
   usage: HostThreadUsage | null,
   account: HostAccountCredits | undefined,
   t: Translate,
+  nowMs: number,
 ): DetailGroup[] {
   const groups: DetailGroup[] = [];
+  const locale = t("usage.dateLocale");
+  const resetSummary = (
+    value: string | number | undefined,
+  ): { text: string | null; title: string | undefined } => {
+    if (value === undefined) return { text: null, title: undefined };
+    const exact = resetTime(value, t) ?? undefined;
+    const countdown = formatAccountCreditsResetCountdown(value, locale, nowMs);
+    return { text: countdown ?? exact ?? null, title: exact };
+  };
   // Match Desktop: account credits is one complete quota view. Thread plan
   // fields are a fallback, not extra windows to append to that same account.
   if (!account && usage) {
@@ -215,67 +256,120 @@ function quotaGroups(
       [t("usage.plan.sevenDay"), usage.planSevenDayUsedPercent, usage.planSevenDayResetsAtUnix],
     ] as const) {
       if (used === undefined) continue;
-      const at = resetTime(reset, t);
+      const at = resetSummary(reset);
       plan.push({
         label,
         value: percent(remainingPercent(used)),
         remaining: remainingPercent(used),
-        ...(at ? { note: at } : {}),
+        ...(at.text ? { note: at.text } : {}),
+        ...(at.title ? { noteTitle: at.title } : {}),
       });
     }
     if (plan.length) groups.push({ label: t("usage.group.plan"), rows: plan });
   }
 
   if (account) {
-    const windowLabel = (
-      period: HostAccountCredits["periodType"] | undefined,
-      fallback: string,
-      scope: unknown,
-    ) =>
-      !scope && period === "five_hour"
-        ? t("usage.plan.fiveHour")
-        : !scope && period === "seven_day"
-          ? t("usage.plan.sevenDay")
-          : fallback;
-    const accountRows: DetailRow[] = [];
-    const primary = quotaValue(account.used, account.limit, account.unit);
-    accountRows.push({
-      label: windowLabel(
-        account.periodType,
-        account.label ?? t("usage.group.quota"),
-        account.scope,
-      ),
-      value: percent(remainingPercent(account.usedPercent)),
-      remaining: remainingPercent(account.usedPercent),
-      note: [primary ? `${t("usage.quota")}: ${primary}` : null, resetTime(account.resetsAt, t)]
-        .filter(Boolean)
-        .join(" · "),
-    });
-    if (account.resetCredits) {
-      const expires = resetTime(account.resetCredits.nextExpiresAt, t);
-      accountRows.push({
-        label: t("usage.resetCredits"),
-        value: String(account.resetCredits.availableCount),
-        ...(expires ? { note: expires } : {}),
-      });
-    }
-    for (const product of account.productUsage ?? []) {
-      const productValue = quotaValue(product.used, product.limit, product.unit);
-      accountRows.push({
-        label: windowLabel(product.periodType, product.product, product.scope),
-        value: percent(remainingPercent(product.usagePercent)),
-        remaining: remainingPercent(product.usagePercent),
-        note: [
-          productValue ? `${t("usage.quota")}: ${productValue}` : null,
-          resetTime(product.resetsAt, t),
+    const periodLabel = (period: HostAccountCredits["periodType"]): string => {
+      if (period === "five_hour") return t("usage.plan.fiveHour");
+      if (period === "seven_day") return t("usage.plan.sevenDay");
+      if (period === "weekly") return t("usage.plan.weekly");
+      if (period === "monthly") return t("usage.plan.monthly");
+      return t("usage.group.quota");
+    };
+    const groupedPeriodLabel = (period: HostAccountCredits["periodType"]): string => {
+      if (period === "five_hour") return t("usage.plan.fiveHour.short");
+      if (period === "seven_day") return t("usage.plan.sevenDay.short");
+      if (period === "weekly") return t("usage.plan.weekly.short");
+      if (period === "monthly") return t("usage.plan.monthly.short");
+      return t("usage.group.quota");
+    };
+    const sections = groupAccountCreditsWindows(account, locale, periodLabel, groupedPeriodLabel);
+    for (const [sectionIndex, section] of sections.entries()) {
+      const isGrouped = section.title !== undefined;
+      const accountRows: DetailRow[] = [];
+      for (const window of section.windows) {
+        const amount = quotaValue(window.used, window.limit, window.unit);
+        const at = isGrouped
+          ? {
+              text:
+                window.resetsAt !== undefined && window.usedPercent > 0
+                  ? (formatAccountCreditsCompactCountdown(window.resetsAt, locale, nowMs) ??
+                    resetTime(window.resetsAt, t))
+                  : null,
+              title:
+                window.resetsAt === undefined
+                  ? undefined
+                  : (resetTime(window.resetsAt, t) ?? undefined),
+            }
+          : resetSummary(window.resetsAt);
+        const note = [
+          amount ? (isGrouped ? amount : `${t("usage.quota")}: ${amount}`) : null,
+          at.text,
         ]
           .filter(Boolean)
-          .join(" · "),
-      });
+          .join(" · ");
+        accountRows.push({
+          label: window.label,
+          ...(window.scopeLabel ? { scopeLabel: window.scopeLabel } : {}),
+          value: percent(remainingPercent(window.usedPercent)),
+          remaining: remainingPercent(window.usedPercent),
+          ...(note ? { note } : {}),
+          ...(at.title ? { noteTitle: at.title } : {}),
+        });
+      }
+      if (accountRows.length) {
+        groups.push({
+          label:
+            section.title ??
+            (sectionIndex === 0
+              ? t("usage.group.quota")
+              : `${t("usage.group.quota")}-${sectionIndex}`),
+          ...(section.title ? { title: section.title } : {}),
+          rows: accountRows,
+        });
+      }
     }
-    if (accountRows.length) groups.push({ label: t("usage.group.quota"), rows: accountRows });
   }
   return groups;
+}
+
+function ResetCreditsFooter({
+  resetCredits,
+  t,
+  nowMs,
+}: {
+  resetCredits: NonNullable<HostAccountCredits["resetCredits"]>;
+  t: Translate;
+  nowMs: number;
+}) {
+  const locale = t("usage.dateLocale");
+  const exactExpiry = resetTime(resetCredits.nextExpiresAt, t, "usage.expires.at") ?? undefined;
+  const compactExpiry =
+    resetCredits.nextExpiresAt !== undefined
+      ? (formatAccountCreditsCompactExpiry(resetCredits.nextExpiresAt, locale, nowMs) ??
+        exactExpiry)
+      : null;
+  const color = resetCreditsColor(resetCredits.nextExpiresAt, nowMs);
+  return (
+    <div
+      className={css.resetCreditsFooter}
+      style={{ "--reset-credits-color": color } as CSSProperties}
+    >
+      <span className={css.resetCreditsLeft} title={exactExpiry}>
+        <svg className={css.resetCreditsIcon} viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.25 5.25a1 1 0 0 1 1-1h9.5a1 1 0 0 1 1 1v1.45a1.3 1.3 0 0 0 0 2.6v1.45a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1V9.3a1.3 1.3 0 0 0 0-2.6V5.25Z" />
+          <path d="M6 4.5v7" strokeDasharray="1.5 1.8" />
+        </svg>
+        <span className={css.resetCreditsCopy}>
+          <span>{t("usage.resetCredits.short")}</span>
+          {compactExpiry && <span className={css.resetCreditsExpiry}> · {compactExpiry}</span>}
+        </span>
+      </span>
+      <span className={css.resetCreditsPill}>
+        {t("usage.resetCredits.count", { count: String(resetCredits.availableCount) })}
+      </span>
+    </div>
+  );
 }
 
 function ContextSummary({ usage, t }: { usage: HostThreadUsage | null; t: Translate }) {
@@ -331,9 +425,21 @@ export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
   const projection = useProjection("codexhostUsage");
   const usage = projection?.usage ?? null;
   const account = projection?.accountCredits;
+  const [quotaOpen, setQuotaOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!quotaOpen) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, [quotaOpen]);
   const summary = useMemo(() => summaryParts(usage, t), [usage, t]);
   const groups = useMemo(() => usageGroups(usage, t), [usage, t]);
-  const quotas = useMemo(() => quotaGroups(usage, account, t), [usage, account, t]);
+  const quotas = useMemo(() => quotaGroups(usage, account, t, nowMs), [usage, account, t, nowMs]);
+  const firstScopedIndex = useMemo(
+    () => quotas.findIndex((group) => group.title !== undefined),
+    [quotas],
+  );
   const primary = quotas.flatMap((group) => group.rows).find((row) => row.remaining !== undefined);
   const hasContext = usage !== null && contextPercent(usage) !== undefined;
   const summaryText = summary.join(" · ");
@@ -342,6 +448,7 @@ export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
       {primary && (
         <UsagePopover
           stat="codexhost-quota"
+          onOpenChange={setQuotaOpen}
           panelStyle={{ "--quota-color": quotaColor(primary.remaining ?? 100) } as CSSProperties}
           label={`${t("usage.quota.remaining")}: ${primary.value}`}
           title={t("usage.quota.details")}
@@ -367,21 +474,45 @@ export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
             </>
           }
         >
-          {quotas.map((group) => (
-            <section className={css.quotaGroup} key={group.label} aria-label={group.label}>
+          {quotas.map((group, groupIndex) => (
+            <section
+              className={css.quotaGroup}
+              data-scoped-group={group.title ? "" : undefined}
+              key={group.label}
+              aria-label={group.label}
+            >
+              {group.title && <h4 className={css.quotaGroupTitle}>{group.title}</h4>}
               {group.rows.map((row, index) => (
                 <div
                   className={css.quotaRow}
-                  key={`${row.label}:${index}`}
+                  data-hero-row={groupIndex === firstScopedIndex && index === 0 ? "" : undefined}
+                  key={`${row.scopeLabel ?? ""}:${row.label}:${index}`}
                   style={{ "--quota-color": quotaColor(row.remaining ?? 100) } as CSSProperties}
                 >
                   <div className={css.quotaHeading}>
-                    <div className={css.quotaDescription}>
-                      <span>{row.label}</span>
-                      {row.note && <p>{row.note}</p>}
+                    <div
+                      className={css.quotaDescription}
+                      title={group.title && !row.note ? row.noteTitle : undefined}
+                    >
+                      <span>
+                        {row.scopeLabel ? (
+                          <>
+                            <span>{row.scopeLabel}</span> · {row.label}
+                          </>
+                        ) : (
+                          row.label
+                        )}
+                      </span>
+                      {group.title
+                        ? row.note && (
+                            <span className={css.quotaInlineNote} title={row.noteTitle}>
+                              · {row.note}
+                            </span>
+                          )
+                        : row.note && <p title={row.noteTitle}>{row.note}</p>}
                     </div>
                     <strong>
-                      {row.remaining !== undefined && (
+                      {row.remaining !== undefined && !group.title && (
                         <span className={css.remainingLabel}>{t("usage.quota.remaining")} </span>
                       )}
                       <span className={css.remainingValue}>{row.value}</span>
@@ -391,7 +522,7 @@ export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
                     <div
                       className={css.progressTrack}
                       role="progressbar"
-                      aria-label={`${row.label}: ${t("usage.quota.remaining")}`}
+                      aria-label={`${row.scopeLabel ? `${row.scopeLabel} · ${row.label}` : row.label}: ${t("usage.quota.remaining")}`}
                       aria-valuemin={0}
                       aria-valuemax={100}
                       aria-valuenow={row.remaining}
@@ -403,6 +534,9 @@ export function HostUsageDock({ useProjection, t }: HostUsageDockProps) {
               ))}
             </section>
           ))}
+          {account?.resetCredits && (
+            <ResetCreditsFooter resetCredits={account.resetCredits} t={t} nowMs={nowMs} />
+          )}
         </UsagePopover>
       )}
       {summary.length > 0 && (groups.length > 0 || hasContext) && (
@@ -428,6 +562,7 @@ function UsagePopover({
   trigger,
   children,
   panelStyle,
+  onOpenChange,
 }: {
   stat: string;
   label: string;
@@ -435,8 +570,12 @@ function UsagePopover({
   trigger: ReactNode;
   children: ReactNode;
   panelStyle?: CSSProperties;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [onOpenChange, open]);
   const pinned = useRef(false);
   const closeTimer = useRef<number | null>(null);
   const rootRef = useRef<HTMLSpanElement | null>(null);

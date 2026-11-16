@@ -30,7 +30,7 @@
 
 ## 证书与数据
 
-中转通过 TLS-ALPN-01 在 443 自动申请 Let's Encrypt 控制地址证书，不申请通配符证书；每台电脑仍自行申请自己的证书。中转和用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。
+中转通过 TLS-ALPN-01 在 443 自动申请 Let's Encrypt 控制地址证书，不申请通配符证书；每台电脑仍自行申请自己的证书。自建中转给电脑下发的证书机构是 Let's Encrypt，不需要额外配置；电脑的证书请求经中转控制地址转发到 Let's Encrypt，中转只转发加密字节，因此中转服务器需要能出站访问 `acme-v02.api.letsencrypt.org:443`。中转和用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。
 
 容器的 `/data` 由 Compose 的 `relay-data` 数据卷持久化，存放 `acme-account.pem`、`certificate-key.pem`、`certificate.pem` 和地址名绑定文件 `names.json`。私钥权限为 0600，重启复用密钥与有效证书；不要删除数据卷或分享私钥。首次签发完成前控制连接不可用。
 

@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 import type { HarnessAdapter, HarnessError } from "@codexhost/harness-adapter";
@@ -157,6 +158,24 @@ function unavailableAdapter(
   };
 }
 
+type ImportGate = <T>(task: () => Promise<T>) => Promise<T>;
+
+/** Bundled plugin modules evaluate synchronously on import. Running one at a time, each after
+ * a macrotask turn, bounds the longest event-loop stall to one plugin instead of a worker wave,
+ * so the Host's endpoints keep answering while plugins load in the background.
+ */
+function createImportGate(): ImportGate {
+  let previous: Promise<unknown> = Promise.resolve();
+  return (task) => {
+    const next = previous.then(async () => {
+      await setImmediate();
+      return task();
+    });
+    previous = next.catch(() => undefined);
+    return next;
+  };
+}
+
 /** An asynchronous timeout cannot sandbox synchronous or process-wide plugin failures. */
 async function loadAdapter(
   candidate: Candidate,
@@ -164,6 +183,7 @@ async function loadAdapter(
   timeoutMs: number,
   diagnose: (diagnostic: HarnessPluginDiagnostic) => void,
   warmup: boolean,
+  importGate: ImportGate,
   signal?: AbortSignal,
 ): Promise<PluginAdapter> {
   const { manifest } = candidate;
@@ -174,7 +194,10 @@ async function loadAdapter(
     const entry = await pluginResourcePath(candidate.root, manifest.entry);
     if (!/\.(?:mjs|js)$/u.test(entry))
       throw new Error("Plugin entry must be an ESM JavaScript module");
-    const module: unknown = await import(pathToFileURL(entry).href);
+    // A timed-out or cancelled plugin never starts executing its module after waiting its turn.
+    const module: unknown = await importGate(async () =>
+      expired ? undefined : import(pathToFileURL(entry).href),
+    );
     if (expired) return undefined;
     const factory =
       manifest.kind === "usage" ? "createUsageStatisticsAdapter" : "createHarnessAdapter";
@@ -294,6 +317,7 @@ export async function loadHarnessPlugins(
   // neighbor without shrinking later plugins to whatever time remains.
   // Filesystem discovery and synchronous plugin execution are not preemptible.
   if (options.signal?.aborted) return registry;
+  const importGate = createImportGate();
   let next = 0;
   let batch = pending;
   const loaded = new Map<
@@ -343,6 +367,7 @@ export async function loadHarnessPlugins(
             timeoutMs,
             diagnose,
             options.warmup !== false,
+            importGate,
             options.signal,
           );
           if (options.signal?.aborted) {

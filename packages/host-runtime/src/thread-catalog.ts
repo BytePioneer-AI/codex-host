@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type { StoredSectionPlacementV1, StoredThreadSummaryV1 } from "@codexhost/mapping-store";
 import {
   decodeThreadListRequest,
   type DecodedThreadListRequest,
@@ -37,7 +37,7 @@ export interface ThreadCatalogInput {
   includeArchived?: boolean;
   officialCursor?: ThreadCatalogReadResult["officialCursor"];
   readLocal(): Promise<{
-    records: readonly StoredThreadRecordV1[];
+    records: readonly StoredThreadSummaryV1[];
     placements: readonly StoredSectionPlacementV1[];
   }>;
   sharedThreads?: Pick<SharedThreadBridge, "list" | "ownership">;

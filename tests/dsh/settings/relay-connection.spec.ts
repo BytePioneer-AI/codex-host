@@ -6,7 +6,7 @@ import {
   RelayControl,
   relayPreparing,
 } from "../../../apps/web-ui/packages/client/ui-codexhost/src/client/RelayControl.tsx";
-import { en } from "../../../apps/web-ui/packages/client/ui-codexhost/src/client/locales.ts";
+import { en, zh } from "../../../apps/web-ui/packages/client/ui-codexhost/src/client/locales.ts";
 
 type Props = ComponentProps<typeof RelayControl>;
 const cleanups: Array<() => void> = [];
@@ -73,6 +73,83 @@ it("accepts a phone name and base domain, derives the relay host, and validates 
   expect(button.disabled).toBe(false);
   fill(domain, "https://example.com");
   expect(button.disabled).toBe(true);
+});
+
+it.each([
+  { language: "en", locale: en },
+  { language: "zh", locale: zh },
+])("shows invitation fields only after invite rejection ($language)", ({ locale }) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  cleanups.push(() => act(() => root.unmount()));
+  const onChange = vi.fn();
+  const props: Props = {
+    kind: "official",
+    relay: {
+      kind: "official",
+      enabled: false,
+      officialHost: "relay.chost.dev",
+      state: { status: "off" },
+    },
+    busy: false,
+    onChange,
+    onRefresh: vi.fn(),
+    t: ((key: keyof typeof en) => locale[key]) as Props["t"],
+  };
+  const render = (state: Props["relay"]["state"]) => {
+    act(() =>
+      root.render(createElement(RelayControl, { ...props, relay: { ...props.relay, state } })),
+    );
+  };
+  const submit = () =>
+    act(() =>
+      container
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+    );
+  const expectNoInvite = () => {
+    expect(container.querySelectorAll("input")).toHaveLength(1);
+    expect(container.textContent).toContain(locale["connectDevices.relay.name"]);
+    expect(container.textContent).not.toContain(locale["connectDevices.relay.inviteLabel"]);
+    expect(container.textContent).not.toContain(locale["connectDevices.relay.beta"]);
+    expect(container.textContent).not.toContain(locale["connectDevices.relay.betaLink"]);
+    expect(container.querySelector("a")).toBeNull();
+  };
+
+  render({ status: "off" });
+  expectNoInvite();
+  expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  submit();
+  expect(onChange).toHaveBeenLastCalledWith(true, { kind: "official", name: "", invite: "" });
+
+  render({ status: "off", reason: "invite" });
+  expect(container.querySelectorAll("input")).toHaveLength(2);
+  expect(container.querySelector('[role="status"]')!.textContent).toContain(
+    locale["connectDevices.relay.invite"],
+  );
+  expect(container.textContent).toContain(locale["connectDevices.relay.beta"]);
+  expect(container.querySelector("a")!.textContent).toBe(locale["connectDevices.relay.betaLink"]);
+  const invite = [...container.querySelectorAll("label")]
+    .find((label) => label.textContent === locale["connectDevices.relay.inviteLabel"])!
+    .querySelector("input")!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      invite,
+      "test-invitation",
+    );
+    invite.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  submit();
+  expect(onChange).toHaveBeenLastCalledWith(true, {
+    kind: "official",
+    name: "",
+    invite: "test-invitation",
+  });
+
+  render({ status: "off", reason: "name-taken" });
+  expectNoInvite();
 });
 
 it("hides official registration inputs when its address is saved and the current kind is self-hosted", () => {

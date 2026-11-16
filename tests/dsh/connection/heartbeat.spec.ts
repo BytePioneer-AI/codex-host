@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Context } from "@deepseek-ai/cordis";
+import {
+  installConnection,
+  type ConnectionHandle,
+} from "../../../apps/web-ui/packages/client/connection/src/client/index.ts";
 import { StreamHeartbeat } from "../../../apps/web-ui/packages/api/gateway/src/client/stream-heartbeat.ts";
 import { RemoteStreamMuxClient } from "../../../apps/web-ui/packages/api/gateway/src/client/stream-client.ts";
 import { ConnectionController } from "../../../apps/web-ui/packages/client/connection/src/client/connection.ts";
@@ -206,6 +211,94 @@ it("fails logical streams on a silent half-open socket and only reconnects when 
   await vi.advanceTimersByTimeAsync(0);
   // Retired carrier messages cannot affect the replacement heartbeat.
   socket.receive({ type: "pong", streamId: "heartbeat-1" });
+  await client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("parks a closed WebSocket in the background and resumes its logical stream once visible", async () => {
+  Socket.instances = [];
+  vi.stubGlobal("WebSocket", Socket);
+  let visibility: DocumentVisibilityState = "visible";
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
+  const client = new RemoteStreamMuxClient();
+  let connection!: ConnectionHandle;
+  installConnection({
+    provide: (_name: string, handle: ConnectionHandle) => {
+      connection = handle;
+    },
+  } as unknown as Context);
+  const received = vi.fn();
+  connection.registerGenerationSource(async (signal, ready) => {
+    for await (const value of client.open("session/follow", {}, signal)) {
+      ready({ home: "/test" });
+      received(value);
+    }
+  });
+  client.start();
+  const loop = connection.start({
+    onReconnectRequested: () => client.reconnect(),
+    onProbeRequested: () => client.probe(),
+    onStateChange: (state) => {
+      if (state !== "connected") client.disconnect();
+    },
+  });
+  try {
+    const first = Socket.instances[0]!;
+    first.open();
+    await vi.advanceTimersByTimeAsync(0);
+    first.receive({ type: "item", streamId: first.sent[0]!.streamId, value: "retained" });
+    await vi.advanceTimersByTimeAsync(0);
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    first.readyState = 3;
+    first.dispatchEvent(new CloseEvent("close", { code: 1006 }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(Socket.instances).toHaveLength(1);
+    expect(connection.state.getSnapshot()).toBe("connecting");
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Socket.instances).toHaveLength(2);
+    const next = Socket.instances[1]!;
+    next.open();
+    await vi.advanceTimersByTimeAsync(0);
+    next.receive({ type: "item", streamId: next.sent[0]!.streamId, value: "resumed" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connection.state.getSnapshot()).toBe("connected");
+    expect(received.mock.calls).toEqual([["retained"], ["resumed"]]);
+  } finally {
+    loop.stop();
+    await client.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  }
+});
+
+it("reports foreground probe timing and close codes without arbitrary peer text", async () => {
+  const log = vi.spyOn(console, "info").mockImplementation(() => {});
+  Socket.instances = [];
+  vi.stubGlobal("WebSocket", Socket);
+  const client = new RemoteStreamMuxClient();
+  client.start();
+  const socket = Socket.instances[0]!;
+  socket.open();
+  await vi.advanceTimersByTimeAsync(0);
+  client.probe();
+  await vi.advanceTimersByTimeAsync(125);
+  socket.receive({ type: "pong", streamId: "heartbeat-1" });
+  expect(log).toHaveBeenCalledWith("[connection] foreground probe", {
+    result: "pong",
+    elapsedMs: 125,
+  });
+  socket.readyState = 3;
+  socket.dispatchEvent(new CloseEvent("close", { code: 1011, reason: "private peer details" }));
+  expect(log).toHaveBeenCalledWith(
+    "[connection] socket close",
+    expect.objectContaining({ code: 1011, reason: "unclassified" }),
+  );
+  expect(JSON.stringify(log.mock.calls)).not.toContain("private peer details");
   await client.close();
   expect(vi.getTimerCount()).toBe(0);
 });

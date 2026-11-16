@@ -1,6 +1,13 @@
-import { Fragment, memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import type { PendingSubmission } from "@deepseek-ai/dsh-api-session-controller/client";
+import { parseAnnotatedMessage, parseThreadWatchNotice } from "@codexhost/shared-contracts";
+import type { ResponseAnnotation } from "@codexhost/shared-contracts";
+import { ResponseAnnotationChip } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { ResponseAnnotationLabels } from "@deepseek-ai/dsh-client-ui-primitives";
+import type {
+  PendingSubmission,
+  PendingSubmissionAttachment,
+} from "@deepseek-ai/dsh-api-session-controller/client";
 import type { MessageImageSource } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import {
   IconEditOutlineRegular,
@@ -14,11 +21,14 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type {
   SentMessageEditing,
+  ChatLinks,
   ChatNodeOwnerProps,
   ChatNodeViewProps,
   ChatViewSlotProps,
 } from "../contract/slots.ts";
+import { annotationLabels } from "../markdown-labels.ts";
 import type { ModelRetryNode, TurnErrorNode, UserMessageNode } from "../contract/snapshot.ts";
+import { ThreadWatchNotice } from "./ThreadWatchNotice.tsx";
 import { CompactionItem } from "./CompactionItem.tsx";
 import { ContextInjectionRow } from "./ContextInjectionRow.tsx";
 import { MessageIconActions } from "./MessageIconActions.tsx";
@@ -33,9 +43,30 @@ function nativeFilePath(file: UserFile["attachment"]): string | undefined {
   return "nativePath" in file && typeof file.nativePath === "string" ? file.nativePath : undefined;
 }
 
-type PresentedAttachment =
+type PresentedAttachment = (
   | { readonly type: "image"; readonly image: MessageImageSource }
-  | { readonly type: "file"; readonly file: UserFile["attachment"] };
+  | { readonly type: "file"; readonly file: UserFile["attachment"] }
+) & { readonly upload?: PendingSubmissionAttachment["upload"] };
+
+function AttachmentUploadProgress({
+  upload,
+  t,
+}: {
+  upload: NonNullable<PendingSubmissionAttachment["upload"]>;
+  t: ChatViewSlotProps["t"];
+}) {
+  const state = useSyncExternalStore(upload.subscribe, upload.getSnapshot);
+  if (state?.status !== "uploading") return null;
+  return (
+    <span className={css.fileMeta} role="status" data-upload-progress>
+      {state.total === undefined || state.total === 0
+        ? t("message.uploading")
+        : t("message.uploadingPercent", {
+            percent: Math.round(Math.min(1, (state.loaded ?? 0) / state.total) * 100),
+          })}
+    </span>
+  );
+}
 
 function contentParts(content: readonly unknown[]): {
   text: string;
@@ -47,7 +78,10 @@ function contentParts(content: readonly unknown[]): {
   const rest: unknown[] = [];
   for (const block of content) {
     const b = block as { type?: string; text?: string; attachment?: unknown };
-    if (b.type === "text" && typeof b.text === "string") texts.push(b.text);
+    // The annotation block is context for the model, shown as chips beside
+    // the bubble instead of raw JSON inside it.
+    if (b.type === "text" && typeof b.text === "string")
+      texts.push(parseAnnotatedMessage(b.text).body);
     else if (b.type === "image" && b.attachment !== undefined) {
       attachments.push({ type: "image", image: { attachment: (b as UserImage).attachment } });
     } else if (b.type === "file" && b.attachment !== undefined) {
@@ -186,12 +220,17 @@ function UserStyleBubble({
   echo = false,
   referenceLabels = [],
   skillNames = [],
+  responseAnnotations = [],
   previewAttachments,
   references,
+  links,
   editor,
   t,
 }: {
   content: readonly unknown[];
+  /** Selected passages the message carried, shown above the bubble. */
+  responseAnnotations?: readonly ResponseAnnotation[] | undefined;
+  links?: ChatLinks | undefined;
   editor?: ReactNode;
   renderMessageImages: ChatNodeOwnerProps["renderMessageImages"];
   /** Optional IconActions (or similar) below the bubble; receives the joined text. */
@@ -214,53 +253,70 @@ function UserStyleBubble({
   const compactImages = attachments.length > 1;
   const truncated = (total: number): string => t("json.truncated", { total });
   const showBubble = text !== "" || rest.length > 0;
+  const notice = parseThreadWatchNotice(text);
   return (
     <div
-      className={css.userRow}
+      className={notice ? css.noticeRow : css.userRow}
       data-pending-steering={pending || undefined}
       data-submission-echo={echo || undefined}
     >
-      <div className={css.userStack}>
+      <div className={notice ? css.noticeStack : css.userStack}>
+        {responseAnnotations.length > 0 && (
+          <div className={css.annotationRow} data-message-annotations>
+            {responseAnnotations.map((annotation, index) => (
+              <ResponseAnnotationChip
+                key={`${String(index)}:${annotation.text}`}
+                index={index + 1}
+                annotation={annotation}
+                labels={annotationLabels(t)}
+              />
+            ))}
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className={css.attachmentRow} data-message-attachments>
-            {attachments.map((attachment, index) =>
-              attachment.type === "image" ? (
-                <Fragment key={`image:${index}`}>
-                  {renderMessageImages({
+            {attachments.map((attachment, index) => (
+              <div className={css.pendingAttachment} key={index}>
+                {attachment.type === "image" ? (
+                  renderMessageImages({
                     images: [attachment.image],
                     align: "end",
                     compact: compactImages,
-                  })}
-                </Fragment>
-              ) : (
-                <span
-                  key={`file:${index}`}
-                  className={css.fileCard}
-                  title={nativeFilePath(attachment.file) ?? attachment.file.name}
-                >
-                  <FileTypeIcon path={attachment.file.name} className={css.fileIcon} />
-                  <span className={css.fileContent}>
-                    <span className={css.fileName}>{attachment.file.name}</span>
-                    <span className={css.fileMeta}>
-                      {[
-                        fileExtension(attachment.file.name).toUpperCase().slice(0, 8),
-                        nativeFilePath(attachment.file) === undefined
-                          ? fileSizeText(attachment.file.bytes)
-                          : undefined,
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
+                  })
+                ) : (
+                  <span
+                    className={css.fileCard}
+                    title={nativeFilePath(attachment.file) ?? attachment.file.name}
+                  >
+                    <FileTypeIcon path={attachment.file.name} className={css.fileIcon} />
+                    <span className={css.fileContent}>
+                      <span className={css.fileName}>{attachment.file.name}</span>
+                      <span className={css.fileMeta}>
+                        {[
+                          fileExtension(attachment.file.name).toUpperCase().slice(0, 8),
+                          nativeFilePath(attachment.file) === undefined
+                            ? fileSizeText(attachment.file.bytes)
+                            : undefined,
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                      </span>
                     </span>
                   </span>
-                </span>
-              ),
-            )}
+                )}
+                {attachment.upload && <AttachmentUploadProgress upload={attachment.upload} t={t} />}
+              </div>
+            ))}
           </div>
         )}
         {editor ??
           (showBubble && (
-            <div className={css.bubble}>
-              {projectUserText(text, referenceLabels, skillNames, "skill", references)}
+            <div className={notice ? undefined : css.bubble}>
+              {notice ? (
+                <ThreadWatchNotice entries={notice} links={links} t={t} />
+              ) : (
+                projectUserText(text, referenceLabels, skillNames, "skill", references)
+              )}
               {rest.map((block, i) => (
                 <JsonBlock
                   key={i}
@@ -279,7 +335,7 @@ function UserStyleBubble({
           </div>
         )}
       </div>
-      {actions?.(text)}
+      {!notice && actions?.(text)}
     </div>
   );
 }
@@ -335,10 +391,11 @@ export function PendingSubmissionBubble({
   );
   const previewAttachments = useMemo<readonly PresentedAttachment[]>(
     () =>
-      submission.attachments.map((attachment) =>
-        attachment.type === "image"
+      submission.attachments.map((attachment) => ({
+        upload: attachment.upload,
+        ...(attachment.type === "image"
           ? {
-              type: "image",
+              type: "image" as const,
               image: {
                 preview: {
                   url: attachment.value.previewUrl,
@@ -352,8 +409,8 @@ export function PendingSubmissionBubble({
                 },
               },
             }
-          : { type: "file", file: attachment.value },
-      ),
+          : { type: "file" as const, file: attachment.value }),
+      })),
     [submission.attachments],
   );
   return (
@@ -385,8 +442,9 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
   openSkill,
   messageEditing,
   useProjection,
+  links,
   t,
-}: ChatNodeViewProps<"user" | "steering">) {
+}: ChatNodeViewProps<"user" | "steering"> & { links?: ChatLinks | undefined }) {
   const data = node.data;
   const turn =
     node.location.kind === "turn" || node.location.kind === "step"
@@ -402,7 +460,9 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
         ) : undefined
       }
       references={{ openFile, openSkill }}
+      links={links}
       renderMessageImages={renderMessageImages}
+      responseAnnotations={data.responseAnnotations}
       {...(data.referenceLabels === undefined ? {} : { referenceLabels: data.referenceLabels })}
       {...(data.skillNames === undefined ? {} : { skillNames: data.skillNames })}
       t={t}
@@ -417,7 +477,9 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
                 className={css.editAction}
                 aria-label={t("message.edit")}
                 title={t("message.edit")}
-                onClick={() => messageEditing.begin(data.seq, text, data.content)}
+                onClick={() =>
+                  messageEditing.begin(data.seq, text, data.content, data.responseAnnotations)
+                }
               >
                 <IconEditOutlineRegular />
               </button>
@@ -447,6 +509,7 @@ export function SentMessageRecovery({
   return (
     <UserStyleBubble
       content={editing.draft?.content ?? []}
+      responseAnnotations={editing.draft?.responseAnnotations}
       renderMessageImages={renderMessageImages}
       editor={<SentMessageEditor editing={editing} t={t} />}
       t={t}

@@ -165,21 +165,31 @@ it("does not flash the CTA while local access is unconfirmed and cancels on unmo
   expect(document.querySelector('[aria-label="Remote access"]')).toBeNull();
 });
 
-it("keeps the settings section available with guidance for remote users", async () => {
+it("keeps the settings section full and offers sign-out for remote users without sidebar CTA", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue(Response.json({ authenticated: true, local: false })),
+    vi.fn(() => Promise.resolve(Response.json({ authenticated: true, local: false }))),
   );
-  vi.spyOn(accessTokenApi, "get").mockRejectedValue(
-    new ApiError("Local access required", "auth/local-access-required", {
-      url: "http://127.0.0.1:4400",
-    }),
-  );
+  vi.spyOn(accessTokenApi, "get").mockResolvedValue({
+    secret: "test-token",
+    lastUsedAt: null,
+    networkUrls: [{ kind: "lan", url: "http://192.168.1.2:4400/" }],
+    tailscale: { status: "not-installed" },
+  });
   const { shell } = await mount();
   await act(async () => shell.actions.openSection("codexhost-connect-devices"));
-  expect(document.querySelector('[data-connect-notice="non-local"]')?.textContent).toContain(
-    "http://127.0.0.1:4400",
-  );
+  await vi.waitFor(() => {
+    expect(document.querySelector('[role="dialog"] [data-connect-devices]')).not.toBeNull();
+    expect(
+      Array.from(document.querySelectorAll('[role="dialog"] button')).some(
+        (button) => button.textContent?.trim() === en["connectDevices.signOut"],
+      ),
+    ).toBe(true);
+  });
+  expect(document.querySelector('[data-connect-notice="non-local"]')).toBeNull();
+  expect(
+    document.querySelector(`[role="dialog"] [aria-label="${en["connectDevices.qrLabel"]}"]`),
+  ).not.toBeNull();
   expect(document.querySelector('[aria-label="Remote access"]')).toBeNull();
 });
 

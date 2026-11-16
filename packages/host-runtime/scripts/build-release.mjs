@@ -21,6 +21,7 @@ const allowedRuntimePackages = new Set([
   "@deepseek-ai/cosmokit",
   "diff",
   "ws",
+  "yaml",
   "zod",
 ]);
 

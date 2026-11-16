@@ -17,6 +17,7 @@ import {
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
   type StoredThreadRecordV1,
+  type StoredThreadSummaryV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
@@ -40,6 +41,7 @@ export interface ExternalThreadStore {
   initialize(): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   listThreads(): Promise<StoredThreadRecordV1[]>;
+  listThreadSummaries(): Promise<StoredThreadSummaryV1[]>;
   getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
   getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
   getDelegationByChild(childHostThreadId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
@@ -115,14 +117,10 @@ export function defaultMappingStoreDirectory(environment: NodeJS.ProcessEnv): st
   );
 }
 
-/** Names the Host process that owns a Mapping Store in lock contention diagnostics. */
-export type MappingStoreOwnerRole = "local Host Runtime" | "remote app-server listener";
-
 export function createProductionExternalThreadStore(
   environment: NodeJS.ProcessEnv,
-  ownerRole: MappingStoreOwnerRole = "local Host Runtime",
 ): ExternalThreadStore {
-  return new MappingStore({ directory: defaultMappingStoreDirectory(environment), ownerRole });
+  return new MappingStore({ directory: defaultMappingStoreDirectory(environment) });
 }
 
 export class ExternalThreadRepository {
@@ -148,6 +146,11 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  /** Catalog reads; Turn mappings are omitted. */
+  listSummaries(): Promise<StoredThreadSummaryV1[]> {
+    return this.store.listThreadSummaries();
   }
 
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
@@ -568,7 +571,7 @@ export function threadSectionFields(placement?: StoredSectionPlacementV1): {
 }
 
 export function externalThreadValue(input: {
-  record: StoredThreadRecordV1;
+  record: StoredThreadSummaryV1;
   turns: JsonObject[];
   sessionId: string;
   running?: boolean;

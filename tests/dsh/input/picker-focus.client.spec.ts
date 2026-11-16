@@ -300,6 +300,45 @@ it.each([
   },
 );
 
+it.each([
+  {
+    locale: "en",
+    dictionary: accessEn,
+    label: "Follow Codex settings",
+    description: "No permission profile is selected; Codex applies its current configuration.",
+  },
+  {
+    locale: "zh",
+    dictionary: accessZh,
+    label: "跟随 Codex 设置",
+    description: "未选择权限档案，由 Codex 当前配置决定。",
+  },
+])("shows the unset official Codex profile as following Codex settings ($locale)", async (test) => {
+  const container = await mount(
+    createElement(PermissionSelect, {
+      locked: false,
+      select: vi.fn(async () => true),
+      useProjection: (name: string) =>
+        name === "permissions"
+          ? { currentValue: "" }
+          : {
+              harnessId: "codex",
+              selectable: true,
+              locked: false,
+              scope: "live",
+              catalog: {
+                defaultModeId: ":workspace",
+                modes: [{ id: ":workspace", label: "Workspace" }],
+              },
+            },
+      t: (key: string) => test.dictionary[key as keyof typeof test.dictionary] ?? key,
+    } as PermissionSelectProps),
+  );
+  const trigger = required<HTMLButtonElement>("button", container);
+  expect(trigger.textContent).toBe(test.label);
+  expect(trigger.title).toBe(test.description);
+});
+
 it.each(
   devices.flatMap((profile) =>
     [1, 5].flatMap((count) => [true, false].map((selected) => ({ ...profile, count, selected }))),

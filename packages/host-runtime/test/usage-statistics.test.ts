@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -582,7 +582,7 @@ describe("UsageStatistics", () => {
     stats.attach(() => [{ harness: "claude-code", capability: storage }]);
     const first = await settledGet(stats);
     expect(storage.reads).toEqual(["one", "two"]);
-    expect(await readdir(path.join(directory, "usage-statistics", "v7"))).toEqual([
+    expect(await readdir(path.join(directory, "usage-statistics", "v8"))).toEqual([
       "claude-code.json",
     ]);
 
@@ -598,6 +598,24 @@ describe("UsageStatistics", () => {
     expect(second.byHarness.map((row) => row.harness)).toEqual(["claude-code"]);
   });
 
+  it("reparses unchanged native sources instead of retaining a v7 cache", async () => {
+    const storage = new FakeStorage(
+      new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),
+    );
+    const first = statistics();
+    first.attach(() => [{ harness: "antigravity", capability: storage }]);
+    await settledGet(first);
+    await rename(
+      path.join(directory, "usage-statistics", "v8"),
+      path.join(directory, "usage-statistics", "v7"),
+    );
+    storage.reads.length = 0;
+    storage.sources.set("one", { fingerprint: "1", entries: [entry("a"), entry("b")] });
+    const next = statistics();
+    next.attach(() => [{ harness: "antigravity", capability: storage }]);
+    expect((await settledGet(next)).totals.requests).toBe(2);
+    expect(storage.reads).toEqual(["one"]);
+  });
   it("rebuilds a deleted or broken cache from native storage", async () => {
     const storage = new FakeStorage(
       new Map([["one", { fingerprint: "1", entries: [entry("a")] }]]),
@@ -605,7 +623,7 @@ describe("UsageStatistics", () => {
     const stats = statistics();
     stats.attach(() => [{ harness: "pi", capability: storage }]);
     const before = await settledGet(stats);
-    await writeFile(path.join(directory, "usage-statistics", "v7", "pi.json"), "{broken");
+    await writeFile(path.join(directory, "usage-statistics", "v8", "pi.json"), "{broken");
     const again = statistics();
     again.attach(() => [{ harness: "pi", capability: storage }]);
     expect((await settledGet(again)).totals).toEqual(before.totals);

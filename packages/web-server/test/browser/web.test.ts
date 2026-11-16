@@ -132,7 +132,7 @@ for (const viewport of [
           `${name} is not clipped horizontally`,
         );
       }
-      const section = dialog.getByRole("region", { name: "Notifications", exact: true });
+      const section = dialog.getByRole("region", { name: "App & notifications", exact: true });
       const bounds = await section.boundingBox();
       assert.ok(bounds && bounds.width >= Math.min(260, viewport.width - 64));
       assert.doesNotMatch(await dialog.innerText(), /DeepSeek|Open configuration file/u);

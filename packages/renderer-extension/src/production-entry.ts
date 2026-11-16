@@ -1,3 +1,4 @@
+import "./renderer-schema-config.js";
 import { installRendererBinding } from "./install-renderer-binding.js";
 import { installRendererRpcSteering } from "./renderer-rpc-steering.js";
 

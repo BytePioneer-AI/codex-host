@@ -1,0 +1,144 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { HostUsageRequest } from "@codexhost/harness-adapter";
+import { readAntigravityRequestTimings } from "../src/native-request-timing.js";
+import { bytes, integer, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+
+let home: string;
+const request: HostUsageRequest = {
+  requestId: "step:1",
+  inputTokens: 150,
+  outputTokens: 20,
+  cachedInputTokens: 50,
+  cacheWriteInputTokens: 0,
+};
+const requests = new Map([[1, request]]);
+beforeEach(async () => {
+  home = await mkdtemp(path.join(os.tmpdir(), "agy-native-timing-"));
+});
+afterEach(async () => {
+  await rm(home, { recursive: true, force: true });
+});
+async function read() {
+  return await readAntigravityRequestTimings("session", home, requests);
+}
+
+describe("Antigravity native request timings", () => {
+  it("uses generation boundaries, excluding prefill and tool completion", async () => {
+    await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    expect(await read()).toEqual(new Map([[1, { startedAtMs: 3000, completedAtMs: 5000 }]]));
+  });
+
+  it("correlates multiple requests by explicit native step indices", async () => {
+    await writeNativeTimingDatabase(home, [
+      { step: 1 },
+      { step: 3, created: 10000, started: 12000, completed: 13000, output: 30 },
+    ]);
+    const all = new Map([
+      [1, request],
+      [3, { ...request, requestId: "step:3", outputTokens: 30 }],
+    ]);
+    expect(await readAntigravityRequestTimings("session", home, all)).toEqual(
+      new Map([
+        [1, { startedAtMs: 3000, completedAtMs: 5000 }],
+        [3, { startedAtMs: 12000, completedAtMs: 13000 }],
+      ]),
+    );
+  });
+
+  it("does not create missing native storage or accept path traversal", async () => {
+    expect(await read()).toBeNull();
+    expect(existsSync(path.join(home, ".gemini"))).toBe(false);
+    expect(await readAntigravityRequestTimings("../session", home, requests)).toBeNull();
+  });
+
+  it.each([
+    { output: 21 },
+    { cached: 49 },
+    { input: 99 },
+    { streamDuration: 1990 },
+    { ttft: 1990 },
+    { streamDuration: 0 },
+    { started: 5000, completed: 5000 },
+    { created: 4000, ttft: 0 },
+    { retries: 1 },
+    { attempts: 2 },
+    { indices: [3, 4] },
+    { sourceSession: "another-conversation" },
+  ])("rejects mismatched usage, intervals, retries or ownership: %j", async (fields) => {
+    await writeNativeTimingDatabase(home, [{ step: 1, ...fields }]);
+    expect(await read()).toEqual(new Map());
+  });
+
+  it("rejects a generator that links multiple planner requests", async () => {
+    await writeNativeTimingDatabase(home, [
+      { step: 1, indices: [1, 3] },
+      { step: 3, indices: [] },
+    ]);
+    const all = new Map([
+      [1, request],
+      [3, { ...request, requestId: "step:3" }],
+    ]);
+    expect(await readAntigravityRequestTimings("session", home, all)).toEqual(new Map());
+  });
+
+  it("uses only the generator explicitly named by the step, not a similar unreferenced record", async () => {
+    await writeNativeTimingDatabase(home, [{ step: 1, retries: 1 }, { step: 1 }]);
+    expect(await read()).toEqual(new Map([[1, { startedAtMs: 3000, completedAtMs: 5000 }]]));
+  });
+
+  it("does not scan unneeded generator records", async () => {
+    await writeNativeTimingDatabase(home, [{ step: 1 }, { step: 3 }]);
+    const all = new Map([
+      [1, request],
+      [3, { ...request, requestId: "step:3" }],
+    ]);
+    expect(await readAntigravityRequestTimings("session", home, all, new Set([3]))).toEqual(
+      new Map([[3, { startedAtMs: 3000, completedAtMs: 5000 }]]),
+    );
+  });
+
+  it("rejects a missing generator reference instead of guessing from row order", async () => {
+    const file = await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("UPDATE gen_metadata SET idx = 7");
+    } finally {
+      db.close();
+    }
+    expect(await read()).toEqual(new Map());
+  });
+
+  it.each([
+    Buffer.from([0x80]),
+    Buffer.from([0x0a, 0xff]),
+    Buffer.from([0x0b]),
+    Buffer.from([0x00]),
+  ])("ignores damaged metadata: %j", async (blob) => {
+    const file = await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const db = new DatabaseSync(file);
+    try {
+      db.prepare("UPDATE steps SET metadata = ?").run(blob);
+    } finally {
+      db.close();
+    }
+    expect(await read()).toEqual(new Map());
+  });
+
+  it("does not treat duplicate usage fields as a known zero", async () => {
+    const file = await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const db = new DatabaseSync(file);
+    try {
+      db.prepare("UPDATE steps SET metadata = CAST(metadata || ? AS BLOB)").run(
+        bytes(9, integer(3, 20)),
+      );
+    } finally {
+      db.close();
+    }
+    expect(await read()).toEqual(new Map());
+  });
+});

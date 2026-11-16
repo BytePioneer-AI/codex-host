@@ -44,7 +44,11 @@ export function createConsoleConnectionDiagnostics(
         await Promise.all(
           plugins.map(async ({ id }) => {
             try {
-              const inspection = await client.inspectHarness({ harnessId: id, refresh });
+              const inspection = await client.inspectHarness({
+                harnessId: id,
+                refresh,
+                purpose: "availability",
+              });
               availability.set(id, inspection.status);
               webUi.set(id, inspection.status === "ready" && inspection.webUi?.open === true);
               const error = inspection.status === "ready" ? null : inspection.error;

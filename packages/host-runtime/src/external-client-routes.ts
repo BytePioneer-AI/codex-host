@@ -1,5 +1,6 @@
 import { routeDelegationRequest } from "./delegation-control-server.js";
 import {
+  DEFAULT_WATCH_TIMEOUT_MS,
   DelegationControlError,
   type DelegationControlApi,
   type DelegationWatchApi,
@@ -12,6 +13,7 @@ import type {
   ExternalClientStreamHandler,
 } from "./external-client-server.js";
 import type { ExternalClientRegistry } from "./external-clients.js";
+import type { HostInventory } from "./host-inventory.js";
 
 const MAX_POLL_MS = 60_000;
 const MAX_EVENTS_PER_READ = 100;
@@ -29,15 +31,40 @@ function ownOrigin(client: string, value: unknown, field: string): string {
   return value as string;
 }
 
+/** External watch=true is shorthand for the timeout-based control protocol used by the CLI. */
+function withWatch(body: Record<string, unknown>): Record<string, unknown> {
+  const { watch, ...rest } = body;
+  if (watch !== undefined && typeof watch !== "boolean")
+    throw new DelegationControlError("INVALID_ARGUMENT", "watch must be a boolean");
+  if (watch === false && body.watchTimeoutMs !== undefined)
+    throw new DelegationControlError("INVALID_ARGUMENT", "watchTimeoutMs requires watch true");
+  const timeout =
+    body.watchTimeoutMs !== undefined
+      ? body.watchTimeoutMs
+      : watch === true
+        ? DEFAULT_WATCH_TIMEOUT_MS
+        : undefined;
+  if (timeout !== undefined && (!Number.isSafeInteger(timeout) || (timeout as number) <= 0))
+    throw new DelegationControlError(
+      "INVALID_ARGUMENT",
+      "watchTimeoutMs must be a positive integer",
+    );
+  return { ...rest, ...(timeout !== undefined ? { watchTimeoutMs: timeout } : {}) };
+}
+
 /** Applies the caller's identity: work and watches without a parent or target belong to the client. */
 function forClient(
   client: string,
   route: string,
   body: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (route === "/v1/delegate/start" || route === "/v1/thread/send") body = withWatch(body);
   if (route === "/v1/delegate/start")
     return { ...body, parentThreadId: ownOrigin(client, body.parentThreadId, "parentThreadId") };
-  if (route === "/v1/thread/watch")
+  if (
+    route === "/v1/thread/watch" ||
+    (route === "/v1/thread/send" && body.watchTimeoutMs !== undefined)
+  )
     return { ...body, notifyThreadId: ownOrigin(client, body.notifyThreadId, "notifyThreadId") };
   return body;
 }
@@ -79,6 +106,7 @@ export function externalClientRouter(handlers: {
   api: DelegationControlApi;
   watchApi?: DelegationWatchApi;
   events?: ClientEventLog;
+  inventory?: HostInventory;
 }): ExternalClientRouter {
   return async (call, route, body) => {
     if (route === "/v1/events/poll") {

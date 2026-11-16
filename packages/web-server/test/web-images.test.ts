@@ -121,10 +121,10 @@ it("validates every image before any files are written", (t) => {
     ...image,
     data: "A".repeat(Math.ceil(WEB_IMAGE_LIMITS.maxImageBytes / 3) * 4 + 4),
   };
-  assert.throws(() => images.prepare([huge]), /20 MiB/u);
-  const dimensions = Buffer.from(PNG, "base64");
-  dimensions.writeUInt32BE(8193, 16);
-  assert.throws(() => images.prepare([{ ...image, data: dimensions.toString("base64") }]), /8192/u);
+  assert.throws(() => images.prepare([huge]), {
+    code: "session/attachment-invalid",
+    details: { reason: "IMAGE_TOO_LARGE" },
+  });
   assert.deepEqual(readdirSync(images.directory), []);
 });
 

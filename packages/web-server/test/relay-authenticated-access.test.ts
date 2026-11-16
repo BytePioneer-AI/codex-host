@@ -60,7 +60,7 @@ async function fixture(t: TestContext, legacy = false) {
     stopped(reason) {
       throw new Error(reason);
     },
-    registered,
+    registered: ({ hostname }) => registered(hostname),
     tcp: (stream, request) =>
       tls.accept(
         stream,

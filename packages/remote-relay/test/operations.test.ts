@@ -278,7 +278,9 @@ describe("checked limits, usage and quota notices", () => {
       const nextEnded = closed(nextDay);
       nextDay.write(Buffer.alloc(20 * 1024));
       await nextEnded;
-      await vi.waitFor(() => expect(agent.notices.at(-1)?.until).toBe("2026-11-08T00:00:00.000Z"));
+      await vi.waitFor(() =>
+        expect(agent.notices.at(-1)).toMatchObject({ until: "2026-11-08T00:00:00.000Z" }),
+      );
       expect(agent.notices).toHaveLength(2);
     },
   );

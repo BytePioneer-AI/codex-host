@@ -1,4 +1,8 @@
-import { restoreHarnessCommandMentions } from "@codexhost/shared-contracts";
+import type { JsonObject } from "@codexhost/protocol-core";
+import {
+  restoreDesktopSkillMentions,
+  restoreHarnessCommandMentions,
+} from "@codexhost/shared-contracts";
 
 import { isExternalCommandCandidate } from "./external-command-routing.js";
 
@@ -11,6 +15,15 @@ function absoluteFilePath(value: unknown): value is string {
     typeof value === "string" &&
     /^(?:\/|[A-Za-z]:[\\/]|\\\\)/u.test(value) &&
     !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+/** Normalize stored queue input without changing attachment items or native annotations. */
+export function restoreExternalSkillInput(input: JsonObject[]): JsonObject[] {
+  return input.map((part) =>
+    part.type === "text" && typeof part.text === "string"
+      ? { ...part, text: restoreDesktopSkillMentions(part.text) }
+      : part,
   );
 }
 
@@ -44,8 +57,10 @@ export function externalTurnInputText(input: unknown): string {
   let inlineImages = 0;
   for (const item of input) {
     if (!record(item)) throw new Error("Invalid external input item");
-    if (item.type === "text" && typeof item.text === "string") texts.push(item.text);
-    else if (item.type === "localImage" && absoluteFilePath(item.path)) localImages.push(item.path);
+    if (item.type === "text" && typeof item.text === "string") {
+      texts.push(restoreDesktopSkillMentions(item.text));
+    } else if (item.type === "localImage" && absoluteFilePath(item.path))
+      localImages.push(item.path);
     else if (item.type === "image" && typeof item.url === "string" && item.url.length > 0) {
       inlineImages++;
     } else {

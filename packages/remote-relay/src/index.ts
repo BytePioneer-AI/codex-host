@@ -9,6 +9,8 @@ import { createServer as createTlsServer } from "node:tls";
 import { WebSocketServer } from "ws";
 import { readClientHello } from "./client-hello.js";
 import { ControlCertificate } from "./certificates.js";
+import { CertificateRequests } from "./certificate-requests.js";
+import type { ExternalAccount } from "./protocol.js";
 import { isDnsLabel, maxPayload, normalizeControlHost, paths } from "./protocol.js";
 import { forward } from "./forward.js";
 import {
@@ -34,6 +36,11 @@ export interface RelayOptions {
   rate?: number;
   dailyQuota?: number;
   maxConnections?: number;
+  certificateDirectory?: string;
+  externalAccount?: (request: {
+    id: string;
+    name: string;
+  }) => Promise<ExternalAccount | { retryAfter?: number } | undefined>;
   check?: (request: RegistrationRequest) => RegistrationResult | Promise<RegistrationResult>;
   onUsage?: (name: string, bytes: number, details: UsageDetails) => void;
   onConnection?: (event: ConnectionEvent) => void;
@@ -53,6 +60,10 @@ export function createRelay(options: RelayOptions) {
   if ((options.cert === undefined) !== (options.key === undefined)) {
     throw new Error("--cert and --key must be provided together");
   }
+  const certificateRequests = new CertificateRequests(
+    options.certificateDirectory,
+    options.externalAccount,
+  );
   const agents = new Map<string, Agent>();
   const usageByName = new Map<string, Usage>();
   const sockets = new Set<Socket>();
@@ -62,13 +73,16 @@ export function createRelay(options: RelayOptions) {
   });
   const http = createHttpServer(async (request, response) => {
     try {
-      if (options.onRequest) await options.onRequest(request, response);
+      if (request.method === "POST" && request.url === paths.externalAccount) {
+        await certificateRequests.account(request, response);
+      } else if (options.onRequest) await options.onRequest(request, response);
       else response.writeHead(404).end();
     } catch {
       if (!response.headersSent) response.writeHead(500).end();
       else response.destroy();
     }
   });
+  http.on("connect", (request, socket, head) => certificateRequests.tunnel(request, socket, head));
   const tls = createTlsServer(
     { ...(options.cert ? credentials() : {}), ALPNProtocols: ["http/1.1"] },
     (socket) => http.emit("connection", socket),
@@ -88,6 +102,7 @@ export function createRelay(options: RelayOptions) {
         ws,
         agents,
         usageByName,
+        certificateRequests,
         { ...options, domain, controlHost },
         request.socket.remoteAddress,
       );
@@ -139,6 +154,12 @@ export function createRelay(options: RelayOptions) {
   else process.on("SIGHUP", reload);
   return {
     server,
+    setCertificateDirectory(directory: string): void {
+      if (!certificateRequests.setDirectory(directory)) return;
+      for (const agent of agents.values()) {
+        agent.notify({ certificateAuthority: { directory } });
+      }
+    },
     disconnect(name: string): void {
       agents.get(name.toLowerCase())?.close(1000);
     },
@@ -149,6 +170,7 @@ export function createRelay(options: RelayOptions) {
       const closed = [...wss.clients, ...sockets].map(
         (connection) => new Promise<void>((resolve) => connection.once("close", () => resolve())),
       );
+      for (const agent of agents.values()) agent.close(1000);
       for (const ws of wss.clients) ws.terminate();
       for (const socket of sockets) socket.destroy();
       wss.close();

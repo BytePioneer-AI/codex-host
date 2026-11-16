@@ -4,6 +4,7 @@ import type { Socket } from "node:net";
 import { createWebSocketStream, WebSocket } from "ws";
 import { log } from "./log.js";
 import type { RelayOptions } from "./index.js";
+import type { CertificateRequests } from "./certificate-requests.js";
 import { Usage } from "./usage.js";
 import {
   closeCodes,
@@ -14,6 +15,8 @@ import {
   registrationContent,
   streamWindowSize,
   connectionWindowSize,
+  type RegistrationResponse,
+  type RelayNotice,
 } from "./protocol.js";
 
 function decodeField(value: unknown, length: number): Buffer {
@@ -41,6 +44,7 @@ export interface Agent {
   phones: Set<Socket>;
   authentications: Map<string, () => void>;
   close: (code: number) => void;
+  notify: (notice: RelayNotice) => void;
   notifyQuota: () => void;
 }
 
@@ -48,6 +52,7 @@ export function registerAgent(
   ws: WebSocket,
   agents: Map<string, Agent>,
   usageByName: Map<string, Usage>,
+  certificateRequests: CertificateRequests,
   options: RelayOptions & { controlHost: string },
   ip: string | undefined,
 ): void {
@@ -58,6 +63,7 @@ export function registerAgent(
   });
   session.setLocalWindowSize(connectionWindowSize);
   let name: string | undefined;
+  let token: string | undefined;
   let pong = true;
   const agent: Agent = {
     session,
@@ -67,13 +73,16 @@ export function registerAgent(
       unregister(code === closeCodes.replaced ? "replace" : "unregister");
       ws.close(code);
     },
-    notifyQuota() {
-      const until = new Date();
-      until.setUTCHours(24, 0, 0, 0);
+    notify(body) {
       const notice = session.request({ ":method": "POST", ":path": paths.notice });
       notice.on("error", () => notice.destroy());
       notice.resume();
-      notice.end(JSON.stringify({ quota: "exhausted", until: until.toISOString() }));
+      notice.end(JSON.stringify(body));
+    },
+    notifyQuota() {
+      const until = new Date();
+      until.setUTCHours(24, 0, 0, 0);
+      agent.notify({ quota: "exhausted", until: until.toISOString() });
     },
   };
   // Reports travel over this computer's signed control session and identify a live relay stream,
@@ -108,6 +117,10 @@ export function registerAgent(
     stream.resume();
   });
   const unregister = (reason: "replace" | "unregister" | "timeout" = "unregister") => {
+    if (token) {
+      certificateRequests.unregister(token);
+      token = undefined;
+    }
     if (name && agents.get(name) === agent) {
       agents.delete(name);
       log(reason === "timeout" ? "unregister" : reason, name, ip);
@@ -235,7 +248,13 @@ export function registerAgent(
       }
       clearTimeout(timeout);
       agents.get(name)?.close(closeCodes.replaced);
-      request.end(JSON.stringify({ hostname: `${name}.${options.domain}` }));
+      token = certificateRequests.register(id, name);
+      const body: RegistrationResponse = {
+        hostname: `${name}.${options.domain}`,
+        token,
+        certificateAuthority: { directory: certificateRequests.directory },
+      };
+      request.end(JSON.stringify(body));
       agents.set(name, agent);
       log("register", name, ip);
       options.onConnection?.({ type: "computer", state: "online", name, ip, time: Date.now() });

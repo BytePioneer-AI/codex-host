@@ -28,6 +28,7 @@ import type {
   MarkdownLabels,
   MarkdownPathImages,
   MarkdownRenderContext,
+  MarkdownResponseAnnotations,
   ReferenceTargets,
 } from "./render.tsx";
 import "katex/dist/katex.min.css";
@@ -38,6 +39,7 @@ export type {
   MarkdownFileMentions,
   MarkdownLabels,
   MarkdownPathImages,
+  MarkdownResponseAnnotations,
 } from "./render.tsx";
 
 /** One settled full render: parse with math, resolve references, append the footnote section. */
@@ -46,6 +48,7 @@ function renderSettled(
   labels: MarkdownLabels,
   fileMentions: MarkdownFileMentions | undefined,
   pathImages: MarkdownPathImages | undefined,
+  responseAnnotations: MarkdownResponseAnnotations | undefined,
 ): ReactNode[] {
   const root = parseGfmWithMath(text);
   const targets = createReferenceTargets();
@@ -55,6 +58,7 @@ function renderSettled(
     labels,
     fileMentions,
     pathImages,
+    responseAnnotations,
     targets,
     footnoteOrder: [],
     footnoteCounts: new Map(),
@@ -91,8 +95,16 @@ class StreamingRenderer {
   private lastText: string | null = null;
   private lastRendered: ReactNode[] = [];
 
-  /** @param labels - Localized Markdown chrome baked into cached elements; the owner replaces the renderer when it changes. */
-  constructor(private readonly labels: MarkdownLabels) {}
+  /**
+   * @param labels - Localized Markdown chrome baked into cached elements; the owner replaces the renderer when it changes.
+   * @param responseAnnotations - The Turn's annotation citations, shared by
+   * the frozen and tail contexts so a streaming reply resolves them exactly
+   * as its settled pass will; the owner replaces the renderer when it changes.
+   */
+  constructor(
+    private readonly labels: MarkdownLabels,
+    private readonly responseAnnotations: MarkdownResponseAnnotations | undefined,
+  ) {}
 
   /**
    * Render the current accumulated text. Idempotent per text value, so React
@@ -133,6 +145,7 @@ class StreamingRenderer {
         labels: this.labels,
         fileMentions: undefined,
         pathImages: undefined,
+        responseAnnotations: this.responseAnnotations,
         targets: frameTargets,
         footnoteOrder: this.frozenFootnoteOrder,
         footnoteCounts: this.frozenFootnoteCounts,
@@ -152,6 +165,7 @@ class StreamingRenderer {
       labels: this.labels,
       fileMentions: undefined,
       pathImages: undefined,
+      responseAnnotations: this.responseAnnotations,
       targets: frameTargets,
       footnoteOrder: [...this.frozenFootnoteOrder],
       footnoteCounts: new Map(this.frozenFootnoteCounts),
@@ -200,6 +214,7 @@ export const MarkdownText = memo(function MarkdownText({
   labels,
   fileMentions,
   pathImages,
+  responseAnnotations,
   variant = "body",
 }: {
   text: string;
@@ -207,21 +222,28 @@ export const MarkdownText = memo(function MarkdownText({
   labels: MarkdownLabels;
   fileMentions?: MarkdownFileMentions | undefined;
   pathImages?: MarkdownPathImages | undefined;
+  responseAnnotations?: MarkdownResponseAnnotations | undefined;
   variant?: "body" | "compact";
 }) {
   const streamRef = useRef<StreamingRenderer | null>(null);
   const streamLabelsRef = useRef<MarkdownLabels>(labels);
+  const streamAnnotationsRef = useRef<MarkdownResponseAnnotations | undefined>(responseAnnotations);
   const children = useMemo(() => {
     if (!streaming) {
       streamRef.current = null;
-      return renderSettled(text, labels, fileMentions, pathImages);
+      return renderSettled(text, labels, fileMentions, pathImages, responseAnnotations);
     }
-    if (streamRef.current === null || streamLabelsRef.current !== labels) {
-      streamRef.current = new StreamingRenderer(labels);
+    if (
+      streamRef.current === null ||
+      streamLabelsRef.current !== labels ||
+      streamAnnotationsRef.current !== responseAnnotations
+    ) {
+      streamRef.current = new StreamingRenderer(labels, responseAnnotations);
       streamLabelsRef.current = labels;
+      streamAnnotationsRef.current = responseAnnotations;
     }
     return streamRef.current.render(text);
-  }, [text, streaming, labels, fileMentions, pathImages]);
+  }, [text, streaming, labels, fileMentions, pathImages, responseAnnotations]);
   return (
     <div
       className={clsx(css.markdown, variant === "compact" && css.compact)}

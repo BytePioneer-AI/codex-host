@@ -432,7 +432,7 @@ for (const mode of ["source", "packed"] as const) {
     });
     assert.throws(
       () => new WebAssets({ ...base, externalPlugins: [{ id: ADDON, directory }] }),
-      /dsh-goal.*Host version is unknown/u,
+      /dsh-goal.*Host does not provide @deepseek-ai\/dsh-goal/u,
     );
   });
 }

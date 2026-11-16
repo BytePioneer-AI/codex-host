@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { createOmpUsageStatistics } from "./omp-usage-statistics.js";
 import {
   listOmpModels,
@@ -823,7 +828,25 @@ class OmpHarnessSession implements HarnessSession {
     });
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? decodeOmpModelRef(state.effectiveModel).id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open" && this.#phase !== "faulted") {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
@@ -2179,6 +2202,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   #event(event: HostEvent): void {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 

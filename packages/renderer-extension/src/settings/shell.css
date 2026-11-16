@@ -1298,6 +1298,7 @@
 .settings-connection-inspector {
   position: sticky;
   top: 18px;
+  overflow-anchor: none;
 }
 
 .settings-connection-inspector__header {

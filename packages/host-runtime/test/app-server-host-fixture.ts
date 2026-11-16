@@ -60,6 +60,10 @@ export class FailingListMappingStore extends MappingStore {
   override listThreads(): Promise<never> {
     return Promise.reject(new Error("Synthetic list read failure"));
   }
+
+  override listThreadSummaries(): Promise<never> {
+    return Promise.reject(new Error("Synthetic list read failure"));
+  }
 }
 
 export class FailingDelegationMappingStore extends MappingStore {
@@ -290,6 +294,7 @@ export function createFixture(
     webOpener?: AppServerHostOptions["webOpener"];
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
+    externalSteerTimeoutMs?: number;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
     onCreateRequestRoute?: AppServerHostOptions["onCreateRequestRoute"];
     modelPrices?: AppServerHostOptions["modelPrices"];
@@ -347,6 +352,8 @@ export function createFixture(
       ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
       : {}),
     environment: {
+      HOME: mappingStoreDirectory,
+      CODEX_HOME: path.join(mappingStoreDirectory, ".codex"),
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       ...(options.environment ?? {}),
     },
@@ -375,6 +382,9 @@ export function createFixture(
     ...(options.usageStatistics ? { usageStatistics: options.usageStatistics } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
     ...(options.officialRuntimeScope ? { officialRuntimeScope: options.officialRuntimeScope } : {}),
+    ...(options.externalSteerTimeoutMs !== undefined
+      ? { externalSteerTimeoutMs: options.externalSteerTimeoutMs }
+      : {}),
     ...(options.onDelegationApi ? { onDelegationApi: options.onDelegationApi } : {}),
     ...(options.onCreateRequestRoute ? { onCreateRequestRoute: options.onCreateRequestRoute } : {}),
   });

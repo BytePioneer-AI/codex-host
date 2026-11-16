@@ -262,13 +262,12 @@
      against window chrome (the right sidebar fullscreen under macOS traffic
      lights) can widen it per pane; the fallback is the design's own 10px. */
   padding: 10px 6px 0 var(--dsh-dockkit-strip-inline-start, 10px);
-  touch-action: none;
+  touch-action: pan-x pinch-zoom;
 }
 
 /* The chips. Shrinks to nothing before any control after it moves; chips keep
-   their 80px floor, so what no longer fits scrolls here on the wheel, with no
-   scrollbar drawn. `touch-action: none` keeps a touch press-and-move a tab drag
-   rather than a pan the scroller would claim and cancel the pointer for.
+   their 80px floor, so what no longer fits scrolls here by wheel or touch, with
+   no scrollbar drawn. Touch pans the row; mouse and pen can drag tabs.
    `data-dockkit-strip-scroll` names the hidden sides (`start`, `end`, or
    both); each hidden side fades the chips out over 24px into whatever ground
    the pane draws, so the row reads as continuing under the controls. */
@@ -282,7 +281,7 @@
   /* The scroll to a newly active chip glides rather than jumps. */
   scroll-behavior: smooth;
   scrollbar-width: none;
-  touch-action: none;
+  touch-action: pan-x pinch-zoom;
 }
 
 .stripTabs::-webkit-scrollbar {
@@ -397,7 +396,7 @@
   white-space: nowrap;
   border-radius: var(--dsw-radius-sm);
   cursor: pointer;
-  touch-action: none;
+  touch-action: pan-x pinch-zoom;
   user-select: none;
 }
 
@@ -430,7 +429,6 @@
    Later than the clipped mask, so a clipped chip showing its close fades
    under the close. A floating panel's header chip has no close, so it keeps
    the clipped mask alone. */
-.tab:not(.floatTitle):hover .tabTitle,
 .tab:not(.floatTitle):focus-within .tabTitle,
 .tabActive .tabTitle {
   mask-image: linear-gradient(to right, black calc(100% - 30px), transparent calc(100% - 14px));
@@ -460,9 +458,20 @@
   pointer-events: none;
 }
 
-/* Shown while the chip is hovered or holds focus, and always on the active
-   chip: the tab in view is the one a reader closes next. */
-.tab:hover .tabClose,
+/* Hover-only controls must not appear on a phone's emulated hover: Safari
+   can consume the first tap to reveal them instead of activating the tab. */
+@media (hover: hover) and (pointer: fine) {
+  .tab:not(.floatTitle):hover .tabTitle {
+    mask-image: linear-gradient(to right, black calc(100% - 30px), transparent calc(100% - 14px));
+  }
+
+  .tab:hover .tabClose {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* The active chip and keyboard-focused controls remain closable without hover. */
 .tab:focus-within .tabClose,
 .tabActive .tabClose {
   opacity: 1;

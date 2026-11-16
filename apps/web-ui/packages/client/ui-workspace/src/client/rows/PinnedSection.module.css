@@ -2,6 +2,6 @@
   margin-bottom: 8px;
 }
 
-.section > [data-row-key] + [data-row-key] {
+.section > * + [data-thread-branch] {
   margin-top: 2px;
 }

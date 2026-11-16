@@ -48,6 +48,8 @@ import type {
 } from "../../src/settings/pages.js";
 
 import { pluginDescriptor } from "../../../../tests/fixtures/harness-plugin-descriptors.js";
+import { createAgentGroupPreferenceStore } from "../../src/agent-group-preference.js";
+import { createConnectionsSettingsPage } from "../../src/settings/connections-page.js";
 import { createHarnessInstallationPanel } from "../../src/settings/harness-installation-panel.js";
 
 class FakeElement {
@@ -112,8 +114,28 @@ class FakeElement {
   }
 
   append(...children: unknown[]): void {
-    for (const child of children) if (child instanceof FakeElement) child.parent = this;
+    for (const child of children) {
+      if (child instanceof FakeElement) {
+        child.remove();
+        child.parent = this;
+      }
+    }
     this.children.push(...children);
+  }
+
+  insertBefore(node: unknown, reference: unknown): unknown {
+    if (node instanceof FakeElement) {
+      node.remove();
+      node.parent = this;
+    }
+    if (reference === null || reference === undefined) {
+      this.children.push(node);
+      return node;
+    }
+    const index = this.children.indexOf(reference);
+    if (index >= 0) this.children.splice(index, 0, node);
+    else this.children.push(node);
+    return node;
   }
 
   get childElementCount(): number {
@@ -144,7 +166,11 @@ class FakeElement {
   }
 
   replaceChildren(...children: unknown[]): void {
-    this.children.splice(0, this.children.length, ...children);
+    for (const existing of this.children) {
+      if (existing instanceof FakeElement) existing.parent = undefined;
+    }
+    this.children.length = 0;
+    this.append(...children);
   }
 
   setAttribute(name: string, value: string): void {
@@ -1982,7 +2008,7 @@ describe("Renderer Connections page", () => {
     );
     if (!dshRow) throw new Error("DeepSeek Harness row is not rendered");
     dshRow.dispatch("click", { target: null });
-    expect(visibleText(content)).toContain("0.2.2-rc.1");
+    expect(visibleText(content)).toContain("0.2.2-rc.2");
     expect(visibleText(content)).toContain(
       pluginDescriptor("deepseek-harness").notice?.["zh-CN"] ?? "missing plugin notice",
     );
@@ -2263,6 +2289,272 @@ describe("Renderer Connections page", () => {
     expect(hostTabs.scrollLeft).toBeGreaterThan(0);
 
     cleanup?.();
+  });
+
+  it("updates rows in place, preserves unselected inspector DOM, and keeps uninstalled Harnesses in More across refreshes", async () => {
+    let piAvailability: "checking" | "ready" = "checking";
+    let dshAvailability: "notInstalled" | "checking" = "notInstalled";
+    let notify: () => void = () => undefined;
+    const piCheck = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              {
+                agent: "claude-code",
+                plugin: pluginDescriptor("claude-code"),
+                availability: "ready",
+                error: null,
+              },
+              {
+                agent: "pi",
+                plugin: pluginDescriptor("pi"),
+                availability: piAvailability,
+                error: null,
+              },
+              {
+                agent: "deepseek-harness",
+                plugin: pluginDescriptor("deepseek-harness"),
+                availability: dshAvailability,
+                error: null,
+              },
+            ],
+          },
+        ],
+      }),
+      installation: vi.fn(async (_hostId, agent) => {
+        if (agent === "pi") return piCheck.promise;
+        return {
+          currentVersion: "1.0.0",
+          latestVersion: "1.0.0",
+          updateAvailable: false,
+          canUpdate: true,
+        };
+      }),
+      refresh: vi.fn(async () => undefined),
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
+    };
+    const store = createAgentGroupPreferenceStore(null);
+    store.setSyncStatus("ready");
+    const page = createConnectionsSettingsPage(
+      rendererSettingsMessages("zh-CN"),
+      () => diagnostics,
+      store,
+    );
+    const document = new FakeDocument();
+    const content = document.createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+
+    const row = (key: string): FakeElement => {
+      const found = descendants(content).find(({ dataset }) => dataset.connectionItem === key);
+      if (!found) throw new Error(`Missing row ${key}`);
+      return found;
+    };
+
+    const initialLayout = elementWithClass(content, "settings-connections-layout");
+    const initialRows = elementWithClass(content, "settings-connection-rows");
+    const initialMoreZone = elementWithClass(content, "settings-connection-group-more");
+    const initialInspector = elementWithClass(content, "settings-connection-inspector");
+    const claudeRow = row("claude-code");
+    const piRow = row("pi");
+    const dshRow = row("deepseek-harness");
+
+    claudeRow.dispatch("click", { target: null });
+    const inspectorHeader = elementWithClass(
+      initialInspector,
+      "settings-connection-inspector__header",
+    );
+    const inspectorBody = elementWithClass(initialInspector, "settings-connection-inspector__body");
+
+    expect(descendants(initialMoreZone)).toContain(dshRow);
+    expect(dshRow.dataset.connectionGroupSection).toBe("more");
+
+    // Unselected row finishes inspection and version check without replacing rows or rebuilding the selected inspector.
+    piAvailability = "ready";
+    notify();
+    await vi.waitFor(() => expect(visibleText(piRow)).toContain("正常"));
+    piCheck.resolve({
+      currentVersion: "1.0.0",
+      latestVersion: "1.2.0",
+      updateAvailable: true,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(visibleText(piRow)).toContain("有更新"));
+
+    expect(elementWithClass(content, "settings-connections-layout")).toBe(initialLayout);
+    expect(elementWithClass(content, "settings-connection-rows")).toBe(initialRows);
+    expect(elementWithClass(content, "settings-connection-inspector")).toBe(initialInspector);
+    expect(elementWithClass(initialInspector, "settings-connection-inspector__header")).toBe(
+      inspectorHeader,
+    );
+    expect(elementWithClass(initialInspector, "settings-connection-inspector__body")).toBe(
+      inspectorBody,
+    );
+    expect(row("claude-code")).toBe(claudeRow);
+    expect(row("pi")).toBe(piRow);
+    expect(row("deepseek-harness")).toBe(dshRow);
+
+    // During a refresh where all Harnesses temporarily report "checking", previously uninstalled
+    // Harnesses stay in More rather than jumping into Main and shifting scroll height.
+    piAvailability = "checking";
+    dshAvailability = "checking";
+    notify();
+    await vi.waitFor(() => expect(visibleText(dshRow)).toContain("检查中"));
+    expect(row("deepseek-harness")).toBe(dshRow);
+    expect(descendants(initialMoreZone)).toContain(dshRow);
+    expect(dshRow.dataset.connectionGroupSection).toBe("more");
+
+    cleanup?.();
+    scope.dispose();
+  });
+
+  it("preserves in-flight Harness update status and batch progress when closing and reopening Settings", async () => {
+    const ompUpdate = deferred<{
+      currentVersion: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      canUpdate: boolean;
+    }>();
+    const installation = vi.fn(async (_hostId: string, agent: string, action: string) => {
+      if (action === "update" && agent === "omp") return ompUpdate.promise;
+      if (action === "update") {
+        return {
+          currentVersion: "1.2.0",
+          latestVersion: "1.2.0",
+          updateAvailable: false,
+          canUpdate: true,
+        };
+      }
+      return {
+        currentVersion: "0.85.1",
+        latestVersion: "0.85.2",
+        updateAvailable: agent === "omp" || agent === "pi",
+        canUpdate: true,
+      };
+    });
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          {
+            hostId: "local",
+            active: true,
+            agents: [
+              {
+                agent: "omp",
+                plugin: pluginDescriptor("omp"),
+                availability: "ready",
+                error: null,
+              },
+              {
+                agent: "pi",
+                plugin: pluginDescriptor("pi"),
+                availability: "ready",
+                error: null,
+              },
+            ],
+          },
+        ],
+      }),
+      installation,
+      refresh: vi.fn(async () => undefined),
+      subscribe: () => () => undefined,
+    };
+    const store = createAgentGroupPreferenceStore(null);
+    store.setSyncStatus("ready");
+    const page = createConnectionsSettingsPage(
+      rendererSettingsMessages("zh-CN"),
+      () => diagnostics,
+      store,
+    );
+
+    // Mount #1: start batch update, wait until Pi finishes (1/2) while Oh My Pi is still updating, then close Settings.
+    const firstContent = new FakeDocument().createElement("main");
+    const firstScope = new RendererSettingsPageScope();
+    const firstCleanup = page.mount({
+      content: firstContent as unknown as HTMLElement,
+      signal: firstScope.signal,
+      runLatest: (operation, handlers) => firstScope.runLatest(operation, handlers),
+    });
+    const bulkOf = (root: FakeElement) => {
+      const button = descendants(root).find(
+        ({ dataset }) => dataset.connectionAction === "update-all",
+      );
+      if (!button) throw new Error("Missing update-all button");
+      return button;
+    };
+    await vi.waitFor(() =>
+      expect(visibleNotesText(bulkOf(firstContent))).toContain("全部更新 (2)"),
+    );
+    bulkOf(firstContent).dispatch("click");
+    await vi.waitFor(() => expect(visibleNotesText(bulkOf(firstContent))).toContain("更新中 1/2"));
+    firstCleanup?.();
+    firstScope.dispose();
+
+    // Mount #2: reopen Settings while Oh My Pi is still updating.
+    const secondContent = new FakeDocument().createElement("main");
+    const secondScope = new RendererSettingsPageScope();
+    const secondCleanup = page.mount({
+      content: secondContent as unknown as HTMLElement,
+      signal: secondScope.signal,
+      runLatest: (operation, handlers) => secondScope.runLatest(operation, handlers),
+    });
+
+    const ompRow = descendants(secondContent).find(
+      ({ dataset }) => dataset.connectionItem === "omp",
+    );
+    if (!ompRow) throw new Error("Missing Oh My Pi row on reopened page");
+    expect(visibleText(ompRow)).toContain("更新中");
+    expect(visibleNotesText(bulkOf(secondContent))).toContain("更新中 1/2");
+    expect(bulkOf(secondContent).disabled).toBe(true);
+
+    ompRow.dispatch("click", { target: null });
+    expect(
+      visibleText(elementWithClass(secondContent, "settings-connection-inspector__header")),
+    ).toContain("更新中");
+    const versionPanel = descendants(secondContent).find(
+      ({ dataset }) => dataset.harnessVersion === "omp",
+    );
+    if (!versionPanel) throw new Error("Missing Oh My Pi version panel on reopened page");
+    expect(visibleText(versionPanel)).toContain("当前版本: 0.85.1");
+    expect(visibleText(versionPanel)).toContain("最新版本: 0.85.2");
+    expect(visibleText(versionPanel)).toContain("正在更新…");
+    expect(visibleText(versionPanel)).not.toContain("正在检查版本");
+    expect(
+      installation.mock.calls.filter(([, agent, action]) => agent === "omp" && action === "check"),
+    ).toHaveLength(1);
+
+    // Finish the pending Oh My Pi update while the reopened page is open.
+    ompUpdate.resolve({
+      currentVersion: "0.85.2",
+      latestVersion: "0.85.2",
+      updateAvailable: false,
+      canUpdate: true,
+    });
+    await vi.waitFor(() => expect(visibleText(ompRow)).toContain("正常"));
+    expect(visibleText(versionPanel)).toContain("当前版本: 0.85.2");
+    expect(visibleText(versionPanel)).toContain("已确认更新成功");
+    expect(visibleText(secondContent)).toContain("已更新 2 项，0 项失败。");
+
+    secondCleanup?.();
+    secondScope.dispose();
   });
 });
 
@@ -2809,111 +3101,76 @@ describe("Renderer Updates page", () => {
   it.each([
     {
       locale: "zh-CN",
-      webTitle: "手机和其他设备（Web）",
-      sshTitle: "其他电脑（SSH）",
-      webDescription:
+      title: "手机与浏览器",
+      description:
         "在手机或其他设备的浏览器上使用这台电脑的 CodexHost，这台电脑需要保持开机和联网。",
-      sshDescription: "这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
-      open: "打开连接设备页",
-      opening: "正在打开…",
+      open: "在浏览器中打开连接设置",
       failed: "Web 打开失败",
     },
     {
       locale: "en",
-      webTitle: "Phones and other devices (Web)",
-      sshTitle: "Other computers (SSH)",
-      webDescription:
+      title: "Phone & browser",
+      description:
         "Use this computer's CodexHost from a browser on your phone or another device. This computer must stay on and connected to the network.",
-      sshDescription:
-        "This computer connects to another Mac or Linux computer over SSH. Connection settings are shared with Codex.",
-      open: "Open Connect devices",
-      opening: "Opening…",
+      open: "Open connection settings in browser",
       failed: "Web could not be opened",
     },
-  ] as const)(
-    "opens Connect devices from Remote connections, not About ($locale)",
-    async (copy) => {
-      const openWeb = vi
-        .fn()
-        .mockRejectedValueOnce(new Error("The local Host is unavailable"))
-        .mockResolvedValueOnce({});
-      const pages = createDefaultRendererSettingsPages(
-        rendererSettingsMessages(copy.locale),
-        () => ({
-          checkUpdate: vi.fn(),
-          startUpdate: vi.fn(),
-          readUpdateStatus: vi.fn(),
-          openWeb,
-        }),
-      );
-      const page = pages.find(({ id }) => id === "remote-connections");
-      const content = new FakeDocument().createElement("main");
-      const scope = new RendererSettingsPageScope();
-      page?.mount({
-        content: content as unknown as HTMLElement,
-        signal: scope.signal,
-        runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-      });
-      const button = descendants(content).find(
-        (element) => element.tagName === "button" && element.textContent === copy.open,
-      );
-      if (!button) throw new Error("Web button is missing");
-      expect(
-        descendants(content)
-          .filter((element) => element.tagName === "h2")
-          .map((element) => element.textContent),
-      ).toEqual([copy.webTitle, copy.sshTitle]);
-      expect(visibleText(content)).toContain(copy.webDescription);
-      expect(visibleText(content)).toContain(copy.sshDescription);
-      button.dispatch("click");
-      expect(button.disabled).toBe(true);
-      expect(button.textContent).toBe(copy.opening);
-      await vi.waitFor(() => {
-        expect(visibleText(content)).toContain(`${copy.failed}: The local Host is unavailable`);
-        expect(button.disabled).toBe(false);
-      });
-      const status = descendants(content).find(
-        (element) => element.getAttribute("role") === "alert",
-      );
-      expect(status?.hidden).toBe(false);
-      expect(button.parent?.parent?.children.at(-1)).toBe(status);
-      button.dispatch("click");
-      await vi.waitFor(() => expect(button.disabled).toBe(false));
-      expect(openWeb).toHaveBeenCalledTimes(2);
-      expect(button.textContent).toBe(copy.open);
-      expect(status?.hidden).toBe(true);
-      const about = new FakeDocument().createElement("main");
-      pages
-        .find(({ id }) => id === "about")
-        ?.mount({
-          content: about as unknown as HTMLElement,
-          signal: scope.signal,
-          runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
-        });
-      expect(visibleText(about)).not.toContain(copy.open);
-      expect(visibleText(about)).not.toContain(copy.webTitle);
-      scope.dispose();
-    },
-  );
+  ] as const)("opens Web connection settings from Phone & browser ($locale)", async (copy) => {
+    const openWeb = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("The local Host is unavailable"))
+      .mockResolvedValueOnce({});
+    const pages = createDefaultRendererSettingsPages(rendererSettingsMessages(copy.locale), () => ({
+      checkUpdate: vi.fn(),
+      startUpdate: vi.fn(),
+      readUpdateStatus: vi.fn(),
+      openWeb,
+    }));
+    const page = pages.find(({ id }) => id === "mobile-web");
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    page?.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (operation, handlers) => scope.runLatest(operation, handlers),
+    });
+    const button = descendants(content).find(
+      (element) => element.tagName === "button" && element.textContent === copy.open,
+    );
+    if (!button) throw new Error("Web button is missing");
+    expect(page?.label).toBe(copy.title);
+    expect(visibleText(content)).toContain(copy.description);
+    button.dispatch("click");
+    expect(button.disabled).toBe(true);
+    await vi.waitFor(() => {
+      expect(visibleText(content)).toContain(`${copy.failed}: The local Host is unavailable`);
+      expect(button.disabled).toBe(false);
+    });
+    button.dispatch("click");
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    expect(openWeb).toHaveBeenCalledTimes(2);
+    scope.dispose();
+  });
 
   it.each([
     [
       "zh-CN",
-      "通过 SSH 连接你的 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
+      "这台电脑通过 SSH 连接另一台 Mac 或 Linux 电脑。连接配置与 Codex 共用。",
       "此窗口无法管理 SSH 连接",
     ],
     [
       "en",
-      "Connect to a Mac or Linux computer over SSH. Connection settings are shared with Codex.",
+      "This computer connects to another Mac or Linux computer over SSH. Connection settings are shared with Codex.",
       "SSH connections are unavailable in this window",
     ],
   ] as const)(
-    "keeps the SSH-only page unchanged without openWeb (%s)",
+    "keeps the SSH page free of Web controls (%s)",
     (locale, description, unavailable) => {
       const page = createDefaultRendererSettingsPages(rendererSettingsMessages(locale), () => ({
         checkUpdate: vi.fn(),
         startUpdate: vi.fn(),
         readUpdateStatus: vi.fn(),
+        openWeb: vi.fn(),
       })).find(({ id }) => id === "remote-connections");
       const content = new FakeDocument().createElement("main");
       const scope = new RendererSettingsPageScope();
@@ -2925,7 +3182,6 @@ describe("Renderer Updates page", () => {
       expect(visibleText(content)).toContain(description);
       expect(visibleText(content)).toContain(unavailable);
       expect(visibleText(content)).not.toContain("Web");
-      expect(descendants(content).filter((element) => element.tagName === "h2")).toEqual([]);
       expect(descendants(content).filter((element) => element.tagName === "button")).toEqual([]);
       scope.dispose();
     },
@@ -2986,7 +3242,7 @@ describe("Renderer Updates page", () => {
       runLatest: (operation, handlers) => plainScope.runLatest(operation, handlers),
     });
     expect(visibleText(plain)).not.toContain("Open console");
-    expect(visibleText(plain)).not.toContain("Open Connect devices");
+    expect(visibleText(plain)).not.toContain("Open connection settings in browser");
     plainScope.dispose();
   });
 

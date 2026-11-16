@@ -157,6 +157,97 @@ it("coalesces tab and cached-page restoration, keeping a live generation unless 
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it("skips background retry backoff once on foreground return without interrupting handshakes", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(0);
+  let visibility: DocumentVisibilityState = "visible";
+  let online = true;
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  vi.spyOn(navigator, "onLine", "get").mockImplementation(() => online);
+  const setVisibility = (next: DocumentVisibilityState) => {
+    visibility = next;
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  let connection!: ConnectionHandle;
+  installConnection({
+    provide: (_name: string, handle: ConnectionHandle) => {
+      connection = handle;
+    },
+  } as unknown as Context);
+  const attempts: Array<{ signal: AbortSignal; fail: () => void; ready: () => void }> = [];
+  connection.registerGenerationSource(async (signal, ready) => {
+    const ended = Promise.withResolvers<void>();
+    const attempt = {
+      signal,
+      fail: () => ended.reject(new Error("socket lost")),
+      ready: () => ready({ home: "/home/test" }),
+    };
+    attempts.push(attempt);
+    signal.addEventListener("abort", () => ended.resolve(), { once: true });
+    if (attempts.length === 1) attempt.ready();
+    await ended.promise;
+  });
+  const loop = connection.start({});
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connection.state.getSnapshot()).toBe("connected");
+    attempts[0]!.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toHaveLength(2); // First reconnect is already immediate.
+    attempts[1]!.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toHaveLength(2); // Now waiting for retry backoff.
+    setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(attempts).toHaveLength(2);
+
+    // Cache restoration and visibility events may arrive in either order.
+    visibility = "visible";
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toHaveLength(3);
+    expect(attempts[2]!.signal.aborted).toBe(false);
+    setVisibility("hidden");
+    setVisibility("visible");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toHaveLength(3);
+    expect(attempts[2]!.signal.aborted).toBe(false);
+
+    attempts[2]!.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    // Duplicate restore events cannot repeatedly bypass backoff after a failed retry.
+    setVisibility("visible");
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.advanceTimersByTimeAsync(249);
+    expect(attempts).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toHaveLength(4);
+    attempts[3]!.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    setVisibility("hidden");
+    setVisibility("visible");
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(attempts).toHaveLength(5);
+    attempts[4]!.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connection.state.getSnapshot()).toBe("connected");
+
+    online = false;
+    window.dispatchEvent(new Event("offline"));
+    setVisibility("hidden");
+    setVisibility("visible");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(attempts).toHaveLength(5);
+    expect(connection.state.getSnapshot()).toBe("disconnected");
+  } finally {
+    loop.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  }
+});
+
 it("does not replace an initial handshake when a cached-page restore arrives", async () => {
   vi.useFakeTimers();
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");

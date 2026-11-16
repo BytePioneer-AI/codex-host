@@ -8,7 +8,7 @@
 
 预装 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
 
-本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` / `0.2.1-rc.4` / `0.2.1-rc.5` / `0.2.2-rc.1` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
+本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` / `0.2.1-rc.4` / `0.2.1-rc.5` / `0.2.2-rc.1` / `0.2.2-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
 
 尚未实现的目标包括：
 
@@ -212,7 +212,9 @@ Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶�
 
 主记录和备份均无法恢复时，Mapping Store 先将独立元数据原样复制到 `quarantine/<id>.json.<时间戳>.invalid.metadata`，再将主记录移到同名的 `.invalid` 文件，不覆盖已有隔离文件。任一步失败只跳过该 Thread，保留源记录及元数据供后续启动重试，并将其元数据排除在孤儿清理之外；健康 Thread 仍可访问。成功隔离后才尽力清理源元数据，清理失败会在后续启动重试。隔离文件用于人工恢复，不会自动重新导入；Harness 原生会话不受此流程删除。
 
-Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。锁记录写入者的 PID、启动时间和角色（本机 Host Runtime 或远程 app-server listener）；遇到活跃持有者时，`STORE_LOCKED` 错误给出 Mapping Store 目录及持有者的 PID、角色和启动时间，未记录角色的旧锁只给出 PID 和启动时间。Host 初始化因此失败时，退出前把这一原因作为最后一行诊断再输出一次，Shim 随后在 Desktop 可见的最后一行重复它。远程 SSH listener 必须使用远程安装导出的 `CODEXHOST_DATA_DIR`；从本机 Launcher 会话或缺少该目录时，Shim 拒绝启动 listener，不会占用本机 Mapping Store。Windows 发生锁冲突时，通过本机 CIM `Win32_Process` 查询进程路径和创建时间；创建时间显式转换为 UTC ISO 字符串，查询最多等待 5 秒。即使系统进程路径不可读，只要创建时间与锁中记录相差超过既有的 5 秒容差，也能识别 PID 复用并回收旧锁，不结束占用该 PID 的进程。查询失败、超时或身份信息不足时仍保留锁并报 `STORE_LOCKED`；旧锁缺少进程创建时间时，不以锁文件的创建时间代替进程身份。
+Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。Windows 发生锁冲突时，通过本机 CIM `Win32_Process` 查询进程路径和创建时间；创建时间显式转换为 UTC ISO 字符串，查询最多等待 5 秒。即使系统进程路径不可读，只要创建时间与锁中记录相差超过既有的 5 秒容差，也能识别 PID 复用并回收旧锁，不结束占用该 PID 的进程。查询失败、超时或身份信息不足时仍保留锁并报 `STORE_LOCKED`；旧锁缺少进程创建时间时，不以锁文件的创建时间代替进程身份。
+
+锁记录先写入同目录临时文件并关闭，再通过硬链接原子发布到 `store.lock`，避免其他实例把尚未写完的记录当成失效锁。回收失效锁时，竞争者创建硬链接快照，只在内容与已检查记录一致、链接数为 2、当前路径仍指向同一 inode 时删除旧锁，并保留快照直到删除完成；并发竞争失败报 `STORE_LOCKED`。发布文件和快照带有进程身份，后续竞争者可清除已退出进程的残留链接。存储目录所在文件系统必须支持硬链接；不支持时获取锁失败。
 
 ## 加载与关闭行为
 
@@ -224,6 +226,7 @@ Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。�
 - 诊断仅包含稳定错误码和公开 ID，不透传插件抛出的路径、环境值或异常正文。
 - Manifest 最大 32 KiB，图标最大 128 KiB，总候选插件最多 128；加载器 API 最多接受 8 个根目录，当前启动组合使用预装和用户两个根目录。
 - 最多 4 个加载 worker；每个插件的异步导入和工厂有独立的默认 10 秒超时，后加载的插件不会分到前一个插件剩下的时间。文件系统发现、同步代码和关闭操作不保证可被超时中断。
+- 插件模块导入在同步求值，worker 之间逐个执行导入，每次导入前先让出一次事件循环，使后台加载期间最长停顿限于单个插件，Host 端点仍能响应健康检查；工厂与预取仍并发。排队时间计入该插件的超时，超时或取消的插件轮到时不再执行其模块。客户端健康检查的 5 秒上限与事件通道连接期限一致：已停止的 Host 会立即拒绝连接，上限只约束仍在启动的繁忙 Host。
 - Host 先初始化官方 app-server，再后台整体加载已启用插件。涉及外部 Harness 的查询、创建、恢复及委派等待同一批加载完成，不采用按需加载或按 Harness 独立等待，原有同步 Adapter 注册表保持不变。
 - Desktop 请求在读取循环之外派发，同 Thread 的请求路由和 Session 打开按接收顺序执行；不同 Thread 及无 Thread 的请求独立处理。命令列表、创建或恢复等待插件时，不阻塞后续官方请求。官方初始化仍在读取循环内完成；运行中 Turn、命令及中断维持原有异步处理方式，不把整个 Turn 串行排队。
 - 关闭或 Desktop 输入 EOF 时先取消插件加载，再等待已接收的路由和 Session 打开任务完成，最后取 Session 快照并关闭资源，避免遗漏迟到的 Session。取消后迟到的 Adapter 仍会关闭；未加载或不可用的外部 Harness 不回退到官方 Codex。
@@ -301,7 +304,7 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 支持配置选择的 Adapter 不因已有活动 Turn 而拒绝 `model.select` / `thinking.select`；通过原生配置接口执行，或更新供下一次原生调用使用的配置。生效时机由 Harness 决定，Host 不承诺当前 Turn 中途换模型，也不统一排队到 Turn 结束。原生拒绝仍作为失败返回，配置成功后发布已确认的 `session.state.changed`。
 
-仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 按启动该 CLI 进程时的 Model 计算当前 Turn 用量，后续配置选择不会重标已运行请求。
+仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 通过 ACP `session/set_config_option` 切换模型与推理档位，并按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 逐请求计费，后续配置选择不会重标已完成请求。
 
 ## 运行中调整方向
 

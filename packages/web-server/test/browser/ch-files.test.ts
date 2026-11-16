@@ -81,7 +81,7 @@ for (const mobile of [false, true])
         isMobile: mobile,
         hasTouch: mobile,
       });
-      // Network-fixture setup: make the real background upload gate observable.
+      // Keep the real background uploads observable before admission.
       await context.route("**/api/session/uploadFileBinary?*", async (route) => {
         await new Promise((done) => setTimeout(done, 350));
         await route.continue();
@@ -103,7 +103,7 @@ for (const mobile of [false, true])
       const composer = page.locator('[data-composer-card] [contenteditable="true"]');
       await composer.fill("Review all attachments");
       const send = page.getByRole("button", { name: "Send message", exact: true });
-      assert.equal(await send.isDisabled(), true, "send waits for streamed uploads");
+      assert.equal(await send.isDisabled(), false, "uploading does not disable send");
       assert.equal(
         host.requests.some((r) => r.method === "thread/start"),
         false,

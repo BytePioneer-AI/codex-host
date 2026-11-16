@@ -22,6 +22,7 @@ export type {
   StoredDelegationRecordV1,
   StoredThreadMetadataV1,
   StoredThreadRecordV1,
+  StoredThreadSummaryV1,
   StoredTurnMappingV1,
   ThreadMetadataPatch,
 } from "./records.js";

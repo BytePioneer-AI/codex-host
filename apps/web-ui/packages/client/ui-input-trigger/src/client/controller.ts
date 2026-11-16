@@ -585,9 +585,17 @@ export class InputTriggerController {
           return;
         // Let every source process the same invalidation before rebuilding the
         // open menu, so one source cannot contribute its previous catalog.
+        const epoch = this.menuEpoch;
         void Promise.resolve().then(() => {
-          if (this.disposed || this.hit !== hit || !this.menu.getSnapshot().open) return;
-          this.fetchCandidates(hit, this.menuSources(hit));
+          const current = this.hit;
+          if (
+            this.disposed ||
+            current === null ||
+            this.menuEpoch !== epoch ||
+            !this.menu.getSnapshot().open
+          )
+            return;
+          this.fetchCandidates(current, this.menuSources(current));
         });
       }),
     );

@@ -1,4 +1,5 @@
 /** Session-owned observable state excluding Conversation target data. */
+import type { ObservableSnapshot } from "@deepseek-ai/dsh-client-store";
 import type { FileAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type { SubagentAddress } from "@deepseek-ai/dsh-subagent/client";
@@ -30,8 +31,19 @@ export interface PendingSubmissionFileAttachment {
 }
 
 /** One attachment displayed by a local submission echo, in prompt order. */
-export type PendingSubmissionAttachment =
-  PendingSubmissionImageAttachment | PendingSubmissionFileAttachment;
+export type PendingSubmissionAttachment = (
+  PendingSubmissionImageAttachment | PendingSubmissionFileAttachment
+) & {
+  /** Browser upload observer; omitted for attachments that do not upload in the background. */
+  readonly upload?: ObservableSnapshot<
+    | {
+        readonly status: "uploading" | "ready" | "error";
+        readonly loaded?: number;
+        readonly total?: number;
+      }
+    | undefined
+  >;
+};
 
 /** Client surface selected when a local submission begins. */
 export type PendingSubmissionPlacement = "transcript" | "queued" | "steering";

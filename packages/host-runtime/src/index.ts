@@ -51,14 +51,18 @@ export {
 } from "./delegation-types.js";
 export type {
   DelegationControlApi,
+  DelegationPendingQuestion,
   DelegationStartInput,
   DelegationStartResult,
   DelegationThreadListResult,
   DelegationThreadSnapshot,
+  ThreadAnswerInput,
+  ThreadAnswerResult,
   ThreadListInput,
   ThreadReadInput,
   ThreadWaitInput,
 } from "./delegation-types.js";
+export type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
 export { hasLauncherManagedUpdateRuntime, runHostRuntime } from "./run-host-runtime.js";
 export { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
 export {

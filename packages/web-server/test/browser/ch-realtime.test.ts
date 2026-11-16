@@ -196,6 +196,7 @@ it(
         await page
           .getByRole("button", { name: "Access mode, current: Native Auto", exact: true })
           .waitFor({ timeout: 3000 });
+      const approvalDetail = `Command details: ${"long-command-argument/".repeat(40)}`;
       host.pending = [
         {
           requestId: -17,
@@ -204,6 +205,7 @@ it(
           interaction: {
             type: "approval",
             title: "Approve native test action",
+            description: approvalDetail,
             actions: [
               { id: "once", label: "Allow once", effect: "allowOnce" },
               { id: "no", label: "Deny", effect: "deny" },
@@ -220,15 +222,58 @@ it(
         await page
           .getByRole("radio", { name: "Allow once", exact: true })
           .waitFor({ timeout: 3000 });
-      for (const page of [a, b])
+      for (const page of [a, b]) {
         assert.equal(await page.getByPlaceholder("Type your answer", { exact: true }).count(), 0);
+        const card = page.locator("[data-question-key]");
+        assert.equal(await card.getByRole("button", { name: "Previous question" }).count(), 0);
+        assert.equal(
+          await card.getByRole("button", { name: "Next question", exact: true }).count(),
+          0,
+        );
+        assert.equal(
+          await card.getByRole("button", { name: "Submit", exact: true }).isDisabled(),
+          true,
+        );
+        await card.getByText(approvalDetail, { exact: true }).waitFor();
+        assert.equal(
+          await card.evaluate((element) => element.scrollWidth <= element.clientWidth),
+          true,
+          "Long details must wrap within the card on desktop and mobile",
+        );
+        const option = defined(
+          await page.getByRole("radio", { name: "Allow once", exact: true }).boundingBox(),
+        );
+        const submit = defined(
+          await card.getByRole("button", { name: "Submit", exact: true }).boundingBox(),
+        );
+        assert.ok(option.height >= 44, "Options keep a touch-sized target");
+        assert.ok(
+          option.y + option.height <= submit.y,
+          "Long details must not push choices behind the footer",
+        );
+      }
       if (process.env.CODEXHOST_TEST_SCREENSHOTS) {
         mkdirSync(process.env.CODEXHOST_TEST_SCREENSHOTS, { recursive: true });
+        await a.screenshot({
+          path: join(process.env.CODEXHOST_TEST_SCREENSHOTS, "realtime-desktop-approval.png"),
+        });
         await b.screenshot({
           path: join(process.env.CODEXHOST_TEST_SCREENSHOTS, "realtime-mobile-approval.png"),
         });
+        await b.emulateMedia({ colorScheme: "dark" });
+        await b.screenshot({
+          path: join(process.env.CODEXHOST_TEST_SCREENSHOTS, "realtime-mobile-approval-dark.png"),
+        });
+        await b.emulateMedia({ colorScheme: "light" });
       }
       await a.getByRole("radio", { name: "Allow once", exact: true }).click();
+      assert.equal(host.answers.length, 0, "Selecting an option must not submit it");
+      assert.equal(
+        await a
+          .getByRole("radio", { name: "Allow once", exact: true })
+          .getAttribute("aria-checked"),
+        "true",
+      );
       await a.getByRole("radio", { name: "Allow once", exact: true }).press("Enter");
       for (const page of [a, b])
         await page
@@ -291,6 +336,68 @@ it(
           answers: { [question.id]: { answers: [customAllowed ? "My own answer" : "Keep"] } },
         });
       }
+      host.pending = [
+        {
+          requestId: -30,
+          threadId: row.id,
+          kind: "question",
+          interaction: {
+            type: "question",
+            title: "Harness choices",
+            questions: [
+              {
+                id: "scope",
+                type: "choice",
+                prompt: "Choose scopes",
+                multiple: true,
+                allowOther: false,
+                options: [
+                  { value: "read", label: "Read", description: "Read workspace files" },
+                  { value: "write", label: "Write", description: "Modify workspace files" },
+                ],
+              },
+              { id: "note", type: "text", prompt: "Add a note" },
+            ],
+          },
+          request: { method: "item/tool/requestUserInput", params: {} },
+        },
+      ];
+      host.changed(row.id, "item/tool/requestUserInput");
+      for (const page of [a, b]) {
+        await page.getByRole("heading", { name: "Choose scopes", exact: true }).waitFor();
+        assert.equal(
+          await page.getByRole("button", { name: "Previous question" }).isDisabled(),
+          true,
+        );
+        assert.equal(
+          await page.getByRole("button", { name: "Next question", exact: true }).isEnabled(),
+          true,
+        );
+      }
+      await a.getByRole("checkbox", { name: "Read", exact: true }).click();
+      await a.getByRole("checkbox", { name: "Write", exact: true }).click();
+      assert.equal(host.answers.length, 4);
+      await a.getByRole("button", { name: "Next", exact: true }).click();
+      await a.getByRole("heading", { name: "Add a note", exact: true }).waitFor();
+      await a.getByRole("button", { name: "Previous question" }).click();
+      for (const label of ["Read", "Write"])
+        assert.equal(
+          await a.getByRole("checkbox", { name: label, exact: true }).getAttribute("aria-checked"),
+          "true",
+        );
+      await a.getByRole("button", { name: "Next", exact: true }).click();
+      await a.getByPlaceholder("Type your answer", { exact: true }).fill("Keep native choices");
+      await a.getByRole("button", { name: "Submit", exact: true }).click();
+      for (const page of [a, b])
+        await page
+          .getByRole("heading", { name: /Choose scopes|Add a note/u })
+          .waitFor({ state: "hidden" });
+      assert.deepEqual(host.answers[4]?.result, {
+        answers: {
+          scope: { answers: ["Read", "Write"] },
+          note: { answers: ["Keep native choices"] },
+        },
+      });
       await channel.close();
       for (const page of [a, b]) {
         await page.locator('[data-native-connection="reconnecting"]').waitFor({ timeout: 3000 });

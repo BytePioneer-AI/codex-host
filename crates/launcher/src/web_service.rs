@@ -42,7 +42,7 @@ pub(super) struct ReadyOwner {
 
 impl ReadyOwner {
     pub fn web_running(&self) -> bool {
-        codexhost_platform::process_snapshot(self.web_pid)
+        codexhost_platform::process_identity(self.web_pid)
             .is_ok_and(|process| process.parent_id == self.pid)
     }
 }
@@ -62,12 +62,7 @@ pub(super) fn owner(data: &Path) -> Result<Option<ReadyOwner>, Box<dyn Error>> {
         Err(error) => return Err(error.into()),
     };
     let record: ReadyOwner = serde_json::from_slice(&bytes)?;
-    Ok(codexhost_platform::process_snapshot(record.pid)
-        .is_ok_and(|live| {
-            live.started_at_micros == record.started_at_micros
-                && live.executable == record.executable
-        })
-        .then_some(record))
+    Ok(codexhost_platform::process_instance(record.pid, record.started_at_micros).map(|_| record))
 }
 
 pub(super) struct Options {
@@ -308,9 +303,7 @@ pub(super) fn stop(options: &Options) -> Result<bool, Box<dyn Error>> {
     };
     publish_status(&options.data.join(STOP), "stop\n")?;
     let started = Instant::now();
-    while codexhost_platform::process_snapshot(record.pid).is_ok_and(|live| {
-        live.started_at_micros == record.started_at_micros && live.executable == record.executable
-    }) {
+    while codexhost_platform::process_instance(record.pid, record.started_at_micros).is_some() {
         if started.elapsed() > Duration::from_secs(10) {
             return Err("Web shutdown timed out".into());
         }
@@ -365,3 +358,7 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         _ => Err("usage: codexhost web-service <ensure|stop> --node <file> --host-node <file> --web-runtime <file> --host-runtime <file> --data <directory>".into()),
     }
 }
+
+#[cfg(test)]
+#[path = "web_service_tests.rs"]
+mod tests;

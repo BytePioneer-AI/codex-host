@@ -384,3 +384,37 @@ it("rejects repeated cursors and rewritten history rather than looping or fabric
   row.updatedAt++;
   await assert.rejects(view.refresh(), /history was rewritten/);
 });
+
+it("opens an empty history at the wire's empty cursor, then continues from the rendering origin", async () => {
+  const { row, view } = fixture(0);
+  await view.refresh();
+  const frames: Array<{ cursor: number; records: Array<{ event: { seq: number } }> }> = [];
+  const follow = () =>
+    view.log.follow(
+      {
+        id: "empty-history-follower",
+        closed: false,
+        push: (frame: unknown) => {
+          const value = frame as { type: string };
+          if (value.type === "snapshot") frames.push(frame as (typeof frames)[number]);
+        },
+        onClose: () => undefined,
+        end: () => undefined,
+        fail: () => undefined,
+      },
+      { assistantStream: true },
+    );
+  follow();
+  const empty = defined(frames.at(-1));
+  assert.equal(empty.records.length, 0);
+  assert.equal(empty.cursor, -1);
+
+  row.turns = turns(1);
+  row.updatedAt++;
+  await view.refresh();
+  follow();
+  const filled = defined(frames.at(-1));
+  assert.ok(filled.records.length > 0);
+  assert.equal(filled.cursor, defined(filled.records.at(-1)).event.seq);
+  assert.equal(defined(filled.records[0]).event.seq, 2 ** 40);
+});

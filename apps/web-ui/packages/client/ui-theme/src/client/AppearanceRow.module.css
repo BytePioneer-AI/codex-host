@@ -55,3 +55,18 @@
   background: var(--dsw-alias-bg-module-platform);
   border-color: var(--dsw-static-neutral-bluish-400);
 }
+
+@media (max-width: 600px) {
+  .cubeRow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .themeCube {
+    min-width: 0;
+    min-height: 72px;
+    padding: 12px 4px;
+    border-radius: var(--dsw-radius-md);
+    font-size: 13px;
+  }
+}

@@ -677,6 +677,35 @@ describe("Harness plugin discovery and loading", () => {
     }
   });
 
+  it("evaluates plugin modules one at a time so a load wave never stalls the Host", async () => {
+    const ids = ["one-agent", "two-agent", "three-agent", "four-agent", "five-agent"];
+    const directory = await root(ids);
+    for (const id of ids) {
+      await plugin(directory, id, {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      globalThis.__pluginEvaluation.push("start");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      globalThis.__pluginEvaluation.push("end");
+      export function createHarnessAdapter() { return new FakeHarnessAdapter(${JSON.stringify(id)}); }
+    `,
+      });
+    }
+    const evaluation: string[] = [];
+    Reflect.set(globalThis, "__pluginEvaluation", evaluation);
+    try {
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect(registry.list()).toHaveLength(ids.length);
+        expect(evaluation).toEqual(ids.flatMap(() => ["start", "end"]));
+      } finally {
+        await registry.close();
+      }
+    } finally {
+      Reflect.deleteProperty(globalThis, "__pluginEvaluation");
+    }
+  });
+
   it("stops taking later plugins when the load is aborted", async () => {
     const ids = ["a-agent", "b-agent", "c-agent", "d-agent", "e-agent"];
     const directory = await root(ids);

@@ -137,11 +137,24 @@ it(
       0,
     );
     await draftPage.keyboard.press("Escape");
+    const permission = draftPage.getByRole("button", {
+      name: "Access mode, current: Follow Codex settings",
+      exact: true,
+    });
+    await permission.waitFor();
+    assert.equal(
+      await permission.getAttribute("title"),
+      "No permission profile is selected; Codex applies its current configuration.",
+    );
+    await permission.click();
+    await draftPage.getByRole("menuitem", { name: "Workspace write", exact: true }).waitFor();
+    await draftPage.keyboard.press("Escape");
     await draftPage.locator('[contenteditable="true"]').fill("New official Codex chat");
     await draftPage.getByRole("button", { name: "Send message", exact: true }).click();
     await draftPage.getByText("CH response: New official Codex chat", { exact: true }).waitFor();
     const start = host.requests.find((entry) => entry.method === "thread/start");
     assert.deepEqual(start?.params.model, { id: "gpt-5.4" });
+    assert.equal(start?.params.permissions, undefined);
     assert.equal(start?.params.cwd, undefined);
     assert.deepEqual(start?.params.projectlessWorkspace, { prompt: "New official Codex chat" });
     const created = [...host.threads.values()].at(-1);

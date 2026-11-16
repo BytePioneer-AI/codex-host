@@ -116,6 +116,7 @@ describe("External Turn input normalization", () => {
       [text("hello"), { type: "toolResponse", text: "not a prompt" }],
       [text("hello"), inline],
       [{ type: "text", text: 123 }],
+      [{ type: "skill", name: "native", path: "/native/SKILL.md" }],
       [null],
     ].map((input) => ({ input })),
   )("rejects input that cannot be represented faithfully: $input", ({ input }) => {

@@ -17,7 +17,7 @@ CODEXHOST_DATA_DIR=/tmp/codexhost-try npm start web -- --port 4401 --ch-data /tm
 
 端口要避开用户正在用的 Web（默认 4400）。启动后打开终端输出的地址试用功能。
 
-## Desktop（会关闭用户正在用的 Codex Desktop，先征得同意）
+## Desktop（会替换正在运行的 Codex Desktop，直接启动，无需事先询问）
 
 ```bash
 CODEXHOST_DATA_DIR=/tmp/codexhost-try npm start

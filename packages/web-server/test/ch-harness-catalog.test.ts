@@ -54,10 +54,14 @@ it("caches failures until Host invalidation, then rereads all cwd entries only f
   assert.equal(requests().length, 7);
 });
 
-it("retains ready results until invalidated even when the native models change", async (t) => {
+it("shares in-flight inspections and retains ready results until invalidated", async (t) => {
   const { host, catalog, invalidate, requests } = fixture();
   t.after(() => catalog.close());
-  const first = await catalog.inspect("fake");
+  const pending = catalog.inspect("fake");
+  const concurrent = catalog.inspect("fake");
+  const first = await pending;
+  assert.deepEqual(await concurrent, first);
+  assert.equal(requests().length, 1);
   host.inspection.catalog.models.push({ ref: { id: "new" }, label: "New model" });
   assert.deepEqual(await catalog.inspect("fake"), first);
   invalidate();

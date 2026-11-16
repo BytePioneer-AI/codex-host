@@ -7,7 +7,7 @@
 - [x] Preserve cache Promise ownership for late completions and errors; test failure caching, model changes and reconnect.
 
 ## 3. Selector
-- [x] Register browser event and refresh only the local catalog; test local/remote isolation.
+- [x] Register browser event and refresh only the local catalog.
 
 ## 4. Settings
 - [x] Coalesce manual refresh after in-flight checks while retaining availability purpose; add tests.

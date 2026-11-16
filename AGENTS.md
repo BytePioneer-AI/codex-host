@@ -58,7 +58,6 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 | Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
 | Overview table of a batch of PRs with a 1–5 recommendation score | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
 | Reviewing a PR or local diff for correctness and boundaries | [codexhost-code-review](.agents/skills/codexhost-code-review/SKILL.md) |
-| Selecting local checks before pushing or claiming checks pass | [codexhost-pre-push-checks](.agents/skills/codexhost-pre-push-checks/SKILL.md) |
 | Testing runtime behavior in isolated Web, Host, Harness, or end-to-end environments | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
 | Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
 | Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
@@ -81,16 +80,18 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 
 ## Testing & Completion
 
-- Choose commands from `package.json`. Focused tests use `tests/vitest.config.js`; Rust uses the owning `Cargo.toml` features. Per-surface selection: `codexhost-pre-push-checks`.
+- Choose commands from `package.json`. Focused tests use `tests/vitest.config.js`; Rust changes run `cargo test` for the owning crate with the features in `package.json`; `scripts/release/**` changes run the matching `tests/release` tests.
 - Verification budget, for every agent including delegated ones. CI runs the full suite on every PR and every push to `main`; local checks only shorten the feedback loop.
   - While developing, run only the test files for the behavior you changed. Once they pass after your last edit, verification is done; there is no separate final pass.
   - Vitest does not type-check. Add `npx tsc -b packages/<pkg>` only for cross-package or public contract changes; otherwise CI catches type and lint errors.
   - Cross-package imports read `dist`: rebuild only the changed dependency (`npx tsc -b packages/<dep>`). Use `npm run build:typescript` only when a test loads bundled plugins.
   - After a fix, rerun only what failed. Do not rerun checks on an unchanged tree or checks a delegate already reported for the same state.
   - Full-repo `npm run lint`, `typecheck`, `check`, `test`, `format:check` belong to CI; run them locally only when asked or when diagnosing a CI failure. Docs, copy, style, and small fixes need no local checks.
+  - After pushing, do not wait for, poll, or report CI results; the user handles CI failures. Do not describe unchecked CI as passing.
 - Small, low-risk changes do not require new tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions.
 - Do not write browser, e2e, or component tests for Web pages (`apps/web-ui`); the user checks page changes directly. Codex Desktop compatibility after an update is checked with `npm run audit:codex-desktop` and `npm run probe:renderer-binding` (`codexhost-update-impact-audit`).
 - `npm start` / `npm start web` rebuild and relaunch the user's Desktop / Web and may restart the shared Host; `npm stop` stops all local codexhost services across worktrees. Both interrupt running tasks: run them only when the user asks, never as validation. Details: `docs/product/standalone-web.md`.
+- When pushing rewritten history, use `--force-with-lease`, never a bare `--force`.
 - Do not claim a check passed unless it was executed. Report skipped or blocked checks and the reason.
 - A change is complete only when implementation, contracts, tests, and affected documentation agree.
 - For core logic or major feature changes, update the corresponding feature document in `docs/`, creating one only when needed. Describe current behavior and key constraints; prefer maintaining an existing document over adding a change report. Minor fixes and local refactors need no documentation changes.

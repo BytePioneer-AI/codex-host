@@ -425,12 +425,21 @@ impl ObservedProcessTree {
         // lifecycle signal can reach it.
         #[cfg(target_os = "linux")]
         if self.process_group_id.is_some() {
+            // If the process-group leader exits before a child was observed,
+            // retaining the group's members is only a bounded fallback: a
+            // surviving member prevents PGID reuse, and the start-time floor
+            // rejects older occupants, but group membership is not lineage
+            // proof. Exact pidfd identity checks still guard every signal.
+            let root_is_live = current_root.is_some();
             let permitted = descendant_snapshots(&known_ids, snapshots);
             if let Some(foreign) = observed.iter().find(|process| {
-                !self
-                    .known
-                    .iter()
-                    .any(|known| same_process_instance(known, process))
+                !(!root_is_live
+                    && process.process_group_id == self.process_group_id.unwrap_or_default()
+                    && process.started_at_micros >= self.process_group_started_at_micros)
+                    && !self
+                        .known
+                        .iter()
+                        .any(|known| same_process_instance(known, process))
                     && !permitted
                         .iter()
                         .any(|descendant| same_process_instance(descendant, process))

@@ -40,6 +40,16 @@ impl ChildProcessGuard {
         self.with_tree(|tree| Ok(!tree.observe()?.is_empty()))
     }
 
+    #[cfg(test)]
+    fn has_observed_process(&self, process_id: u32) -> Result<bool, PlatformError> {
+        self.with_tree(|tree| {
+            Ok(tree
+                .observe()?
+                .iter()
+                .any(|process| process.id == process_id))
+        })
+    }
+
     fn process_group_id(&self) -> Result<u32, PlatformError> {
         self.with_tree(|tree| Ok(tree.process_group_id()))
     }
@@ -203,6 +213,13 @@ impl SupervisedChild {
             .map_or(Ok(false), ChildProcessGuard::has_live_members)
     }
 
+    #[cfg(test)]
+    fn has_observed_process(&self, process_id: u32) -> Result<bool, PlatformError> {
+        self.guard
+            .as_ref()
+            .map_or(Ok(false), |guard| guard.has_observed_process(process_id))
+    }
+
     #[cfg(target_os = "windows")]
     pub fn has_live_processes(&self) -> Result<bool, PlatformError> {
         self.guard
@@ -353,6 +370,75 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleans_up_a_child_that_survives_supervisor_exit() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is before the Unix epoch")
+            .as_nanos();
+        let child_pid = std::env::temp_dir().join(format!(
+            "codexhost-process-supervision-child-{}-{unique}",
+            std::process::id()
+        ));
+        let command_line = format!(
+            "setsid /bin/sh -c 'echo $$ > {}; exec /bin/sleep 30' & sleep 1; exit 0",
+            child_pid.display()
+        );
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(command_line);
+        let mut supervised = spawn_supervised(&mut command).expect("supervise shell");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let child_id = loop {
+            if let Some(pid) = fs::read_to_string(&child_pid)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<u32>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "managed child did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        let supervisor_group = supervised.process_group_id();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let child = unix_process_snapshot(child_id).expect("observe managed child");
+            assert_eq!(child.parent_id, supervised.id());
+            assert_ne!(child.process_group_id, supervisor_group);
+            if supervised
+                .has_observed_process(child_id)
+                .expect("observe supervisor and child")
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "managed child was not captured");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // The shell is the supervisor, while setsid gives the child a distinct
+        // process group. Capture it while the parent link is still observable;
+        // after the shell exits, cleanup must use the child's exact identity
+        // rather than only signaling the supervisor's process group.
+        assert!(supervised.wait().expect("wait for supervisor").success());
+        assert!(
+            supervised
+                .has_live_processes()
+                .expect("observe retained child")
+        );
+        assert!(unix_process_snapshot(child_id).is_ok());
+
+        supervised
+            .force_terminate()
+            .expect("terminate retained child by exact identity");
+        supervised
+            .wait_for_tree_exit(Duration::from_secs(5))
+            .expect("confirm supervisor and child exit");
+        assert!(unix_process_snapshot(child_id).is_err());
+        let _ = fs::remove_file(child_pid);
+    }
 
     #[test]
     fn tracks_a_shebang_root_across_an_exec_transition() {

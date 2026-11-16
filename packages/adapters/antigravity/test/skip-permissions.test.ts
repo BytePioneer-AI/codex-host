@@ -91,18 +91,22 @@ describe("unattended native policy", () => {
             : { ...common, kind, sourceRef: nativeRef },
       );
       expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.error.message);
+      if (kind === "resume") {
+        expect(creations).toHaveLength(0);
+        expect((await result.value.readSnapshot()).ok).toBe(true);
+      }
       expect(creations).toHaveLength(1);
       expect(creations[0]).toMatchObject({
         skipPermissions: true,
         environment: { CODEXHOST_THREAD_ID: "derived" },
       });
       expect(opens[0]).toMatchObject({
-        kind: "resume",
+        kind: kind === "resume" ? "load" : "resume",
         cwd: home,
         systemPromptAppend: expect.stringContaining("CODEXHOST_RUNTIME_TOKEN"),
       });
       expect(JSON.stringify(opens)).not.toContain("private-token");
-      if (!result.ok) throw new Error(result.error.message);
       expect(result.value.initialState.nativeRef?.locator).toMatchObject({
         executionPolicy: "unattended-full-access",
       });

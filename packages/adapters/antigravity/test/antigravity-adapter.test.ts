@@ -263,59 +263,80 @@ describe("Antigravity ACP Session", () => {
     expect(session.initialState.effectiveModel).toEqual(model("gpt-oss-120b-medium"));
     expect(session.initialState.availableThinkingOptions).toEqual([]);
   });
-  it("cancels during initialize without faulting the Session or cancelling an unopened native Session", async () => {
-    const gate = deferred<InitializeResponse>();
-    let transport: FakeTransport | undefined;
-    const { adapter, transports } = fixture();
-    adapter.options.createTransport = (options) => {
-      transport = new FakeTransport(options);
-      transports.push(transport);
-      transport.initialize.mockReturnValue(gate.promise);
-      return transport;
-    };
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    await session.execute({
-      type: "turn.start",
-      turnId: turnId("cancel-init"),
-      input: [{ type: "text", text: "hello" }],
-    });
-    await vi.waitFor(() => expect(transport).toBeDefined());
-    expect(await session.execute({ type: "turn.cancel", turnId: turnId("cancel-init") })).toEqual({
-      ok: true,
-      value: { cancellationRequested: true },
-    });
-    expect(required(transport).cancel).not.toHaveBeenCalled();
-    gate.resolve({ protocolVersion: 1, agentCapabilities: {} });
-    await completed(outputs, "cancel-init");
-    expect(events(outputs).some((e) => e.type === "session.faulted")).toBe(false);
-    const next = await start(session, transports, "after-cancel");
-    next.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs, "after-cancel");
-  });
-  it("waits for historical usage replay before submitting a new prompt", async () => {
-    const gate =
-      deferred<Awaited<ReturnType<AntigravitySessionUsageTracker["replayHistoricalRequests"]>>>();
-    const replay = vi
-      .spyOn(AntigravitySessionUsageTracker.prototype, "replayHistoricalRequests")
-      .mockReturnValueOnce(gate.promise);
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    await session.execute({
-      type: "turn.start",
-      turnId: turnId("replay"),
-      input: [{ type: "text", text: "hello" }],
-    });
-    await vi.waitFor(() => expect(replay).toHaveBeenCalledOnce());
-    expect(transports[0]?.prompt).not.toHaveBeenCalled();
-    gate.resolve({ requests: [], complete: true, usage: null });
-    await vi.waitFor(() => expect(transports[0]?.prompt).toHaveBeenCalledOnce());
-    required(transports[0]).result.resolve({ stopReason: "end_turn" });
-    await completed(outputs, "replay");
-  });
+  it.each(["create", "resume"] as const)(
+    "cancels during %s initialization without faulting or cancelling an unopened native Session",
+    async (kind) => {
+      const gate = deferred<InitializeResponse>();
+      let transport: FakeTransport | undefined;
+      const { adapter, transports } = fixture();
+      adapter.options.createTransport = (options) => {
+        transport = new FakeTransport(options);
+        transports.push(transport);
+        transport.initialize.mockReturnValue(gate.promise);
+        return transport;
+      };
+      const { session, outputs } = await sessionOf(
+        await adapter.open(
+          kind === "resume"
+            ? { kind, cwd: process.cwd(), nativeRef: ref() }
+            : { kind, cwd: process.cwd() },
+        ),
+      );
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("cancel-init"),
+        input: [{ type: "text", text: "hello" }],
+      });
+      await vi.waitFor(() => expect(transport).toBeDefined());
+      expect(await session.execute({ type: "turn.cancel", turnId: turnId("cancel-init") })).toEqual(
+        {
+          ok: true,
+          value: { cancellationRequested: true },
+        },
+      );
+      expect(required(transport).cancel).not.toHaveBeenCalled();
+      gate.resolve({ protocolVersion: 1, agentCapabilities: {} });
+      await completed(outputs, "cancel-init");
+      expect(events(outputs).some((e) => e.type === "session.faulted")).toBe(false);
+      const next = await start(session, transports, "after-cancel");
+      next.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "after-cancel");
+    },
+  );
+  it.each(["create", "resume"] as const)(
+    "waits for historical usage replay before submitting a %s prompt",
+    async (kind) => {
+      const gate =
+        deferred<Awaited<ReturnType<AntigravitySessionUsageTracker["replayHistoricalRequests"]>>>();
+      const replay = vi
+        .spyOn(AntigravitySessionUsageTracker.prototype, "replayHistoricalRequests")
+        .mockReturnValueOnce(gate.promise);
+      const { adapter, transports } = fixture();
+      const { session, outputs } = await sessionOf(
+        await adapter.open(
+          kind === "resume"
+            ? { kind, cwd: process.cwd(), nativeRef: ref() }
+            : { kind, cwd: process.cwd() },
+        ),
+      );
+      if (kind === "resume") {
+        expect((await session.readSnapshot()).ok).toBe(true);
+        expect(transports[0]?.prompt).not.toHaveBeenCalled();
+      }
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("replay"),
+        input: [{ type: "text", text: "hello" }],
+      });
+      await vi.waitFor(() => expect(replay).toHaveBeenCalledOnce());
+      const writer = required(transports.at(-1));
+      expect(writer.prompt).not.toHaveBeenCalled();
+      gate.resolve({ requests: [], complete: true, usage: null });
+      await vi.waitFor(() => expect(writer.prompt).toHaveBeenCalledOnce());
+      writer.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "replay");
+    },
+  );
   it.each([
     ["create", undefined, 40],
     ["resume", undefined, 40],
@@ -367,6 +388,7 @@ describe("Antigravity ACP Session", () => {
     const { session, outputs } = await sessionOf(
       await adapter.open({ kind: "resume", nativeRef: ref(), cwd: home }),
     );
+    expect((await session.readSnapshot()).ok).toBe(true);
     await session.refreshUsage?.();
     const history = events(outputs).filter((event) => event.type === "usage.history");
     expect(history.length).toBeGreaterThan(0);
@@ -755,6 +777,8 @@ describe("Antigravity ACP Session", () => {
     const { session, outputs } = await sessionOf(
       await adapter.open({ kind: "resume", nativeRef, cwd: process.cwd() }),
     );
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
     expect(
       (
         await session.execute({
@@ -817,18 +841,115 @@ describe("Antigravity ACP Session", () => {
         CODEXHOST_THREAD_ID: "base",
       },
     });
-    await adapter.open({
-      kind: "resume",
-      cwd: process.cwd(),
-      nativeRef: ref(),
-      environment: { CODEXHOST_THREAD_ID: "thread-override" },
-    });
+    const { session } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef: ref(),
+        environment: { CODEXHOST_THREAD_ID: "thread-override" },
+      }),
+    );
+    expect((await session.readSnapshot()).ok).toBe(true);
     const transport = required(transports[0]);
     expect(transport.options.environment?.CODEXHOST_THREAD_ID).toBe("thread-override");
     const prompt = required(transport.openSession.mock.calls[0]?.[0].systemPromptAppend);
     for (const value of ["private-cli", "private-endpoint", "secret-token", "thread-override"])
       expect(prompt).not.toContain(value);
     expect(prompt).toContain("CODEXHOST_RUNTIME_TOKEN");
+  });
+  it("reads cold history using only load, then resumes once with saved configuration for writing", async () => {
+    const { adapter, transports } = fixture();
+    const nativeRef = ref(undefined, { permissionModeId: "dangerously-skip-permissions" });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef,
+        model: model("claude"),
+        thinkingOptionId: thinking("high"),
+      }),
+    );
+    expect(transports).toHaveLength(0);
+    expect(session.initialState).toEqual({ nativeRef });
+    const reading = session.readSnapshot();
+    const reader = required(transports[0]);
+    reader.replayedEvents = [
+      { type: "user.text", text: "old question" },
+      { type: "agent.text", text: "old answer" },
+    ];
+    const snapshot = await reading;
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" } }],
+      },
+    });
+    expect(snapshot.ok && snapshot.value.state).toBeUndefined();
+    expect(session.initialState.effectiveModel).toBeUndefined();
+    expect(transports).toHaveLength(1);
+    expect(reader.skipPermissions).toBe(true);
+    expect(reader.openSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind: "load", sessionId: nativeRef.nativeSessionId }),
+    );
+    expect(reader.setConfigOption).not.toHaveBeenCalled();
+    expect(reader.prompt).not.toHaveBeenCalled();
+    expect(reader.close).toHaveBeenCalledOnce();
+    const writer = await start(session, transports);
+    expect(transports).toHaveLength(2);
+    expect(writer.openSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind: "resume", sessionId: nativeRef.nativeSessionId }),
+    );
+    expect(writer.setConfigOption.mock.calls).toEqual([
+      ["model", "claude"],
+      ["thought_level", "high"],
+    ]);
+    writer.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-1" }),
+      }),
+    );
+  });
+  it("does not let a pending cold history reader overwrite writable configuration", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
+    );
+    const gate = deferred<undefined>();
+    const reading = session.readSnapshot();
+    const reader = required(transports[0]);
+    const open = required(reader.openSession.getMockImplementation());
+    reader.openSession.mockImplementationOnce(async (input) => {
+      await gate.promise;
+      return open(input);
+    });
+    try {
+      expect(await session.execute({ type: "model.select", model: model("claude") })).toEqual({
+        ok: true,
+        value: { completed: true },
+      });
+      expect(transports).toHaveLength(2);
+      gate.resolve(undefined);
+      expect(await reading).toMatchObject({
+        ok: true,
+        value: { state: { effectiveModel: model("claude") } },
+      });
+      expect(session.initialState.effectiveModel).toEqual(model("claude"));
+    } finally {
+      gate.resolve(undefined);
+      await reading;
+    }
+  });
+  it("closes an unopened restored Session without starting a process", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
+    );
+    await session.close();
+    await session.close();
+    expect(transports).toHaveLength(0);
   });
   it("loads history on a temporary connection even during an active Turn, without prompting", async () => {
     const { adapter, transports } = fixture();
@@ -861,6 +982,9 @@ describe("Antigravity ACP Session", () => {
         permissionModeId: mode("auto"),
       }),
     );
+    expect(session.initialState.effectiveModel).toBeUndefined();
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
     expect(session.initialState).toMatchObject({
       effectiveModel: model("claude"),
       effectiveThinkingOptionId: "high",
@@ -885,9 +1009,13 @@ describe("Antigravity ACP Session", () => {
       },
     });
     adapters.push(broken);
-    expect(
+    const { session: brokenSession } = await sessionOf(
       await broken.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
-    ).toMatchObject({ ok: false, error: { code: "protocolError" } });
+    );
+    expect(await brokenSession.readSnapshot()).toMatchObject({
+      ok: false,
+      error: { code: "protocolError" },
+    });
   });
   it("accepts slash commands and inline images through the same ACP prompt path", async () => {
     const { adapter, transports } = fixture();

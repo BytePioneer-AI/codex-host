@@ -28,8 +28,8 @@
 | A4 | 创建 Session | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/new` | 未传配置时保持原生默认；预热不产生 `session/list` 空记录 |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块 |
 | A6 | 取消 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/cancel` | 取消关闭活动交互与工具项，保留会话继续下一轮 |
-| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/load` | 通过原生 `session/load` 重放投影稳定 Turn/Item，无需本地镜像文件 |
-| A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | `session/resume` 不重放历史直接恢复可写会话 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/load` | 通过独立原生 `session/load` 读连接投影稳定 Turn/Item；冷历史读取不启动可写连接，无需本地镜像文件 |
+| A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | 恢复对象保留持久身份；普通恢复的可写 `session/resume` 延迟到首次执行或配置操作，派生会话在交付前确认可写恢复 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts` | 忙碌返回 `sessionBusy`，进程异常与鉴权错误归一化脱敏 |
 | A10 | 关闭 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/acp-transport.test.ts` | `session/close` + stdin 关闭 + 超时信号清理子进程 |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | `src/antigravity-adapter.ts`、`src/model-catalog.ts` | `test/antigravity-adapter.test.ts`；实测 `session/set_config_option(model)` | 等待原生 `configOptions` 确认并同步动态推理档位 |
@@ -80,6 +80,7 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
+| 历史恢复生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test packages/host-runtime/test/antigravity-history.test.ts packages/host-runtime/test/installed-harness-plugins.test.ts` | 425 项通过；隔离 Transport 验证冷读仅 `load`、首次写入才 `resume`、保存配置不被读连接覆盖、取消、关闭及派生恢复；原生 CLI 未重验；1 项 OpenCode 真实探针未启用 |
 | Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 19 个测试文件、368 项测试全部通过（Node 22、Node 24） |
 | 用量对账与计时 | 既有测试会话的原生 SQLite / 转录只读回放，经过共享 `UsageMeter` | 单请求、多请求、原生问答及重复回放通过；无新增模型调用 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |

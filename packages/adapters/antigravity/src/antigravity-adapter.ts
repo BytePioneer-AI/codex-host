@@ -324,6 +324,7 @@ export class AntigravitySession implements HarnessSession {
 
   constructor(options: SessionOptions) {
     this.#options = options;
+    if (options.nativeRef) this.#state = { nativeRef: options.nativeRef };
     this.#requested = {
       model: options.model,
       thinkingOptionId: options.thinkingOptionId,
@@ -441,25 +442,17 @@ export class AntigravitySession implements HarnessSession {
           nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
         );
       } catch {
-        this.#turnCount = projectReplayedEventsToTurns({
-          nativeSessionId: opened.sessionId,
-          cwd: this.#options.cwd,
-          events: replayedEvents,
-          ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
-        }).length;
+        this.#turnCount = Math.max(
+          this.#turnCount,
+          projectReplayedEventsToTurns({
+            nativeSessionId: opened.sessionId,
+            cwd: this.#options.cwd,
+            events: replayedEvents,
+            ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
+          }).length,
+        );
       }
-      if (!this.#usage) {
-        const context = replayedEvents.findLast((event) => event.type === "usage.context");
-        this.#usage = new AntigravitySessionUsageTracker({
-          nativeSessionId: opened.sessionId,
-          homedir: antigravityHome(this.#options.environment),
-          expectedInitialTurns: this.#turnCount,
-          ...(context
-            ? { initialContextUsedTokens: context.used, initialContextWindowTokens: context.size }
-            : {}),
-        });
-        this.#usageWork = this.#replayUsage();
-      }
+      this.#initializeUsage(opened.sessionId, replayedEvents);
       transport.setSessionEventHandler((event) => {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
@@ -493,6 +486,19 @@ export class AntigravitySession implements HarnessSession {
       if (this.#transport === transport) this.#transport = undefined;
       throw error;
     }
+  }
+  #initializeUsage(nativeSessionId: string, events: readonly AntigravityAcpEvent[]): void {
+    if (this.#usage) return;
+    const context = events.findLast((event) => event.type === "usage.context");
+    this.#usage = new AntigravitySessionUsageTracker({
+      nativeSessionId,
+      homedir: antigravityHome(this.#options.environment),
+      expectedInitialTurns: this.#turnCount,
+      ...(context
+        ? { initialContextUsedTokens: context.used, initialContextWindowTokens: context.size }
+        : {}),
+    });
+    this.#usageWork = this.#replayUsage();
   }
   #setLocatorPermissionMode(permissionModeId: string): void {
     const ref = this.#state.nativeRef;
@@ -715,9 +721,10 @@ export class AntigravitySession implements HarnessSession {
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
     if (!this.nativeRef) return ok({ turns: [], state: { ...this.#state } });
-    const transport = this.#newTransport(
-      this.#transport?.skipPermissions ?? this.#options.unattended,
-    );
+    const skip =
+      this.#transport?.skipPermissions ??
+      (this.#options.unattended || this.#requested.permissionModeId === SKIP);
+    const transport = this.#newTransport(skip);
     this.#readers.add(transport);
     try {
       await transport.initialize();
@@ -729,23 +736,29 @@ export class AntigravitySession implements HarnessSession {
       });
       if (opened.sessionId !== this.nativeRef.nativeSessionId)
         throw new AntigravityTransportError("protocolError", "Snapshot loaded a different Session");
-      const snapshot: HostThreadSnapshot = {
-        turns: projectReplayedEventsToTurns({
-          nativeSessionId: opened.sessionId,
-          cwd: this.#options.cwd,
-          events: replayedEvents,
-          ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
-          ...(this.#options.adapter.toolOutputLimit !== undefined
-            ? { outputLimit: this.#options.adapter.toolOutputLimit }
-            : {}),
-        }),
-        state: { ...this.#state },
-      };
+      const turns = projectReplayedEventsToTurns({
+        nativeSessionId: opened.sessionId,
+        cwd: this.#options.cwd,
+        events: replayedEvents,
+        ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
+        ...(this.#options.adapter.toolOutputLimit !== undefined
+          ? { outputLimit: this.#options.adapter.toolOutputLimit }
+          : {}),
+      });
+      const turnCount = this.#transport
+        ? this.#turnCount
+        : await readNativeTurnCount(
+            nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
+          ).catch(() => turns.length);
       await transport.close();
       this.#readers.delete(transport);
-      return this.#closed || this.#faulted
-        ? err("invalidState", "Session is closed")
-        : ok(snapshot);
+      if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+      if (!this.#transport) {
+        this.#turnCount = turnCount;
+        this.#initializeUsage(opened.sessionId, replayedEvents);
+      }
+      // Temporary reader configuration does not confirm the writable Session's resume hints.
+      return ok({ turns, ...(this.#transport ? { state: { ...this.#state } } : {}) });
     } catch (error) {
       await transport
         .close()
@@ -1419,7 +1432,22 @@ export class AntigravityAdapter implements HarnessAdapter {
       const common = {
         harnessId,
         adapterEnvironment: this.#environment,
-        openSession: (resume: Extract<OpenSessionInput, { kind: "resume" }>) => this.open(resume),
+        openSession: async (resume: Extract<OpenSessionInput, { kind: "resume" }>) => {
+          const result = await this.open(resume);
+          if (!result.ok || !(result.value instanceof AntigravitySession)) return result;
+          try {
+            // Derived Sessions must confirm the target cwd and configuration before publication.
+            await result.value.initialize();
+            if (this.#closed) {
+              await result.value.close();
+              return err("invalidState", "Adapter is closed");
+            }
+            return result;
+          } catch (error) {
+            await result.value.close().catch(() => undefined);
+            return { ok: false as const, error: normalizeAntigravityError(error) };
+          }
+        },
       };
       try {
         return await (input.kind === "fork"
@@ -1471,7 +1499,6 @@ export class AntigravityAdapter implements HarnessAdapter {
     });
     this.#sessions.add(session);
     try {
-      if (input.kind === "resume") await session.initialize();
       if (this.#closed) {
         await session.close();
         return err("invalidState", "Adapter is closed");

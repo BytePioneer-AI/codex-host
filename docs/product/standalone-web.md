@@ -576,10 +576,8 @@ Desktop 窗口未运行时，Host 使用同一条路径完成置顶和取消置�
 打包时 `packages/web-server/scripts/pack.ts` 将 LibreOffice 引擎、node-pty 和终端私有 runner 一并放入发行目录的 `node_modules`/`app`，并在缺少引擎时保留 DSH 的 `unavailable` 错误。验证命令：
 
 ```sh
-npx vitest run --config tests/vitest.config.js tests/dsh
 node --import tsx --test packages/web-server/test/dsh-right-sidebar.test.ts
 node --import tsx --test packages/web-server/test/dsh-terminal.test.ts
-node --import tsx --test --test-name-pattern="right Sidebar" packages/web-server/test/browser/*.test.ts
 npm run test:web:distribution
 ```
 
@@ -591,7 +589,7 @@ Web 侧栏在服务器浏览器中打开页面，因此 `localhost` 指向运行
 - **画面与输入**：默认以 2 倍像素、PNG、最高 30 帧/秒推流，最长物理边上限 3200 像素；每个查看者只保留一个在途帧及最新待发帧，隐藏时暂停推流。支持导航、鼠标、滚轮、触屏滚动、键盘、中文提交及文本粘贴；断线后释放该查看者仍按住的按键和鼠标按钮。触屏滑动不聚焦输入框；鼠标或触屏点击画面中的可编辑文本区域时才聚焦本地输入框，点击普通内容只聚焦画布以接收方向键等导航按键，不唤起输入法。触屏生成的兼容鼠标事件不重复转发点击。服务端随画面发送可编辑区域坐标（含子框架与开放 Shadow DOM，不含字段值），使手机在用户轻点手势内同步请求键盘，不依赖异步焦点回包。
 - **生命周期与限制**：最多 12 个标签页，已存在的标签允许重新连接；断线后最多保留 5 分钟，全部标签回收后浏览器空闲约 60 秒退出。弹窗的 HTTP(S) 地址作为新的侧栏标签打开。音频、文件上传下载、查看者剪贴板复制及开发者工具尚不提供；「在系统浏览器中打开」使用查看者设备访问原地址，不能代替服务器本机地址访问。
 
-其中 `tests/dsh` 为迁入的 DSH workspace-files 与 terminal-controller 测试；浏览器测试覆盖文件树、聊天文件链接预览、DOCX/PPTX 转换、终端创建/输入/尺寸/重连/关闭和浏览器标签。自动化测试使用假 Harness 与模拟 CH Host，不替代真实 Office 文档、所有平台引擎或真机终端验收。
+自动化测试使用假 Harness 与模拟 CH Host，不替代真实 Office 文档、所有平台引擎或真机终端验收。
 
 ## 对话轮次导航
 
@@ -634,13 +632,12 @@ npm run typecheck
 npm run test:shared-host
 npm run test:web
 npm run test:web:distribution
-npm run test:web:browser
 npm run test:sidebar --workspace=@deepseek-ai/dsh-client-ui-workspace
 ```
 
-服务端和浏览器测试使用假 Harness、模拟 CH Host/CDP 与临时数据，不提交真实模型请求。`test:shared-host` 另使用真实原生 Launcher/Node 进程及模拟 Codex 协议，隔离 HOME/Codex home/data，验证顺序启动复用、前台退出、原生参数保留、正常停止后的子进程清理及不重发；发行检查覆盖认证 Web-only 自动启动与晚到客户端。模拟协议与 macOS 本地执行不等于真实 Codex、所有 Harness 或其他 OS 已验收。共享来源检查覆盖 canonical 身份、已有 GUI 历史、Web 创建、自动目录分组和不新增会话文件；真实环境仅进行目录/元数据和页面只读检查。浏览器检查覆盖手机尺寸的设置、主题持久化、发送、断网重连和历史恢复；发行检查覆盖仓库外运行、插件资源和隔离启动参数。官方通道的配置、交互和只读历史回退由仓库 Vitest 配置定向验证。
+服务端测试使用假 Harness、模拟 CH Host/CDP 与临时数据，不提交真实模型请求。`test:shared-host` 另使用真实原生 Launcher/Node 进程及模拟 Codex 协议，隔离 HOME/Codex home/data，验证顺序启动复用、前台退出、原生参数保留、正常停止后的子进程清理及不重发；发行检查覆盖认证 Web-only 自动启动与晚到客户端。模拟协议与 macOS 本地执行不等于真实 Codex、所有 Harness 或其他 OS 已验收。共享来源检查覆盖 canonical 身份、已有 GUI 历史、Web 创建、自动目录分组和不新增会话文件；真实环境仅进行目录/元数据和页面只读检查。浏览器检查覆盖手机尺寸的设置、主题持久化、发送、断网重连和历史恢复；发行检查覆盖仓库外运行、插件资源和隔离启动参数。官方通道的配置、交互和只读历史回退由仓库 Vitest 配置定向验证。
 
-CH 与 Web 后端纳入现有 TypeScript 检查；迁入前端由 tsdown/Vite 编译并接受浏览器回归，原 DSH 的完整前端类型检查与测试配置尚未迁入。自动化浏览器尺寸测试不替代真机键盘、后台生命周期和 HTTPS Web Push 验收。本地共享模式通过 `attachmentInput` 及独立的 `imageLimits` 声明附件路径能力；仅配置图片存储的连接仍可用 `imagesOnly` 限制图片入口。图片的接收与展示不代表 Harness/Model 的视觉能力；其执行继续沿用原生文件读取路径。`/` 菜单中的 `/model` 由前端模型选择模块提供，后端不重复声明同名命令；`/permission` 则由后端执行原生权限选择。
+CH 与 Web 后端纳入现有 TypeScript 检查；迁入前端由 tsdown/Vite 编译，页面效果由人工查看验收。本地共享模式通过 `attachmentInput` 及独立的 `imageLimits` 声明附件路径能力；仅配置图片存储的连接仍可用 `imagesOnly` 限制图片入口。图片的接收与展示不代表 Harness/Model 的视觉能力；其执行继续沿用原生文件读取路径。`/` 菜单中的 `/model` 由前端模型选择模块提供，后端不重复声明同名命令；`/permission` 则由后端执行原生权限选择。
 
 ## 原生命令、Skills 与委派 Agent 菜单
 

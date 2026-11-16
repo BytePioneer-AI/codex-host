@@ -29,6 +29,7 @@ export const CODEBUDDY_CAPABILITIES: HarnessSessionCapabilities = {
   },
   history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
   subagents: { observe: true, readTranscript: true },
+  autonomousTurns: { observe: true },
 };
 
 export function capabilitiesForProfile(

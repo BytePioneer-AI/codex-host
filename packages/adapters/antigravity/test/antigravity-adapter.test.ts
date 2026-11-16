@@ -564,6 +564,14 @@ describe("Antigravity ACP Session", () => {
     await vi.waitFor(() =>
       expect(events(outputs).filter((event) => event.type === "usage.request")).toHaveLength(1),
     );
+    await vi.waitFor(() =>
+      expect(
+        events(outputs)
+          .filter((event) => event.type === "usage.history")
+          .at(-1),
+      ).toEqual({ type: "usage.history", complete: true }),
+    );
+    expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
     transport.result.resolve({
       stopReason: "end_turn",
       usage: {

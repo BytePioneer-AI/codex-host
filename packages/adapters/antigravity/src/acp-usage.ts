@@ -262,7 +262,8 @@ export class AntigravitySessionUsageTracker {
   }
 
   #historyComplete(): boolean {
-    return this.#complete && !this.#invalidated && !this.#turnActive && !this.#pending;
+    // Completeness covers finished requests, not whether the Turn is still running.
+    return this.#complete && !this.#invalidated && !this.#pending;
   }
 
   #reconcile(): void {

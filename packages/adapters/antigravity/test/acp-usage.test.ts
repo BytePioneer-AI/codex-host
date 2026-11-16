@@ -87,6 +87,57 @@ describe("Antigravity usage model identity", () => {
 });
 
 describe("Antigravity Session usage", () => {
+  it("meters historical and completed live requests without waiting for the Turn to end", async () => {
+    const meter = new UsageMeter();
+    const prices = { find: () => ({ input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }) };
+    const apply = (update: Awaited<ReturnType<typeof tracker.collectNewTranscriptRequests>>) => {
+      for (const request of update.requests) meter.recordRequest(request, "turn-live");
+      meter.recordHistory(update.complete);
+      return meter.derive(update.usage, prices);
+    };
+    await transcript(planner(1));
+    expect(apply(await tracker.replayHistoricalRequests())?.totalCostUsd).toBeCloseTo(0.000145, 10);
+
+    tracker.beginTurn();
+    meter.turnStarted("turn-live", Date.now());
+    // A new request has no final usage yet; keep the historical cost visible.
+    expect(apply(await tracker.collectNewTranscriptRequests())?.totalCostUsd).toBeCloseTo(
+      0.000145,
+      10,
+    );
+    for (const step of [3, 5]) {
+      await appendFile(file, `${planner(step)}\n`);
+      const update = await tracker.collectNewTranscriptRequests();
+      expect(update.complete).toBe(true);
+      expect(update.requests.map((request) => request.requestId)).toEqual([`step:${step}`]);
+      expect(apply(update)?.totalCostUsd).toBeCloseTo(0.000145 * ((step + 1) / 2), 10);
+      expect(apply(await tracker.collectNewTranscriptRequests())?.totalCostUsd).toBeCloseTo(
+        0.000145 * ((step + 1) / 2),
+        10,
+      );
+    }
+
+    const settled = tracker.recordTurnPromptUsage({
+      usage: { inputTokens: 200, cachedReadTokens: 100, cachedWriteTokens: 0, outputTokens: 40 },
+    });
+    expect(settled.complete).toBe(true);
+    expect(apply(await tracker.collectNewTranscriptRequests())?.totalCostUsd).toBeCloseTo(
+      0.000435,
+      10,
+    );
+
+    tracker.beginTurn();
+    await appendFile(file, `${planner(7, { output_tokens: undefined })}\n`);
+    const missing = await tracker.collectNewTranscriptRequests();
+    expect(missing.complete).toBe(false);
+    expect(apply(missing)).not.toHaveProperty("totalCostUsd");
+    await appendFile(file, `${planner(7)}\n`);
+    expect(apply(await tracker.collectNewTranscriptRequests())?.totalCostUsd).toBeCloseTo(
+      0.00058,
+      10,
+    );
+  });
+
   it.each(["native", "fallback", "historical", "early"])(
     "times only text output for the hidden-thought sample when native timing is verified (%s)",
     async (mode) => {

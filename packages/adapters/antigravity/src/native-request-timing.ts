@@ -82,7 +82,8 @@ function closeTo(left: bigint, right: bigint): boolean {
  * CortexStepGeneratorMetadata 2 names its steps and 1 contains ChatModelMetadata.
  * ChatModelMetadata 11/12 are TTFT/streaming durations; 4 is ModelUsageStats.
  * ModelUsageStats 9 is thinking_output_tokens (proto3 uint64).
- * viewable_at does not establish when hidden thinking began.
+ * viewable_at is the first visible output, not when hidden thinking began; callers time only
+ * the non-thinking Tokens over viewable_at through finished_generating_at.
  */
 function requestMetadata(
   metadata: ProtoField[],
@@ -103,13 +104,8 @@ function requestMetadata(
   const thought = unsigned(stepUsage, 9);
   if (thought === null || thought !== unsigned(chatUsage, 9)) return null;
   const facts: AntigravityRequestMetadata = { reasoningOutputTokens: Number(thought) };
-  // Even matching TTFT/streaming durations cannot prove coverage of hidden thinking.
-  // Multiple attempts also cannot share one trustworthy generation interval.
-  if (
-    thought > 0n ||
-    unsigned(chat, 14) !== 0n ||
-    chat.filter((value) => value.number === 17).length > 1
-  )
+  // Multiple attempts cannot share one trustworthy generation interval.
+  if (unsigned(chat, 14) !== 0n || chat.filter((value) => value.number === 17).length > 1)
     return facts;
   const created = nanoseconds(message(metadata, 1));
   const started = nanoseconds(message(metadata, 6));

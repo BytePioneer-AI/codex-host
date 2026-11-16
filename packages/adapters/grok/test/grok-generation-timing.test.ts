@@ -53,10 +53,12 @@ describe("Grok live response usage", () => {
     expect(usage.observe(response())?.outputTokensPerSecond).toBe(20);
   });
 
-  it("keeps hidden-reasoning usage but never divides it by the text-only interval", () => {
+  it("subtracts hidden reasoning from text-first timing without changing usage totals", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(21000);
     const usage = new GrokTurnUsage(null, true);
     usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(26000);
+    usage.observe({ type: "tool.input.delta", text: '{"command":"pwd"}' });
     clock.mockReturnValue(31000);
     const snapshot = usage.observe(response(1200, "hidden", 800));
     expect(snapshot).toMatchObject({
@@ -69,8 +71,8 @@ describe("Grok live response usage", () => {
       cacheHitRatePercent: 20,
       sessionCacheUsage: { inputTokens: 100, cachedInputTokens: 20 },
     });
-    expect(snapshot).not.toHaveProperty("outputTokensPerSecond");
-    expect(usage.metrics()).not.toHaveProperty("outputTokensPerSecond");
+    expect(snapshot?.outputTokensPerSecond).toBe(40);
+    expect(usage.metrics().outputTokensPerSecond).toBe(40);
   });
 
   it("includes the full observed reasoning interval without subtracting reasoning tokens", () => {
@@ -87,7 +89,7 @@ describe("Grok live response usage", () => {
     });
   });
 
-  it("rejects the hidden-reasoning boundary from the sanitized Grok 1.0.77 trace", () => {
+  it("uses the text window from the sanitized Grok 1.0.77 hidden-reasoning trace", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(3583);
     const usage = new GrokTurnUsage(null, true);
     usage.observe({
@@ -98,7 +100,7 @@ describe("Grok live response usage", () => {
     clock.mockReturnValue(8333);
     const snapshot = usage.observe(response(437, "native-hidden", 71));
     expect(snapshot).toMatchObject({ outputTokens: 437, reasoningOutputTokens: 71 });
-    expect(snapshot).not.toHaveProperty("outputTokensPerSecond");
+    expect(snapshot?.outputTokensPerSecond).toBeCloseTo(77.05, 2);
   });
 
   it.each([false, true])(
@@ -133,6 +135,8 @@ describe("Grok live response usage", () => {
       };
       const bad = () => {
         clock.mockReturnValue(10000);
+        usage.observe({ type: "tool.input.delta", text: '{"command":' });
+        clock.mockReturnValue(11000);
         usage.observe({ type: "agent.text", text: "hidden reasoning answer" });
         clock.mockReturnValue(20000);
         return usage.observe(response(1200, "bad", 800));
@@ -159,6 +163,60 @@ describe("Grok live response usage", () => {
       });
     },
   );
+
+  it.each([false, true])("combines full and text-only windows: text first=%s", (textFirst) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    const full = () => {
+      clock.mockReturnValue(textFirst ? 10000 : 1000);
+      usage.observe({ type: "agent.thought", text: "thinking" });
+      clock.mockReturnValue(textFirst ? 11000 : 2000);
+      return usage.observe(response(20, "full", 5));
+    };
+    const text = () => {
+      clock.mockReturnValue(textFirst ? 1000 : 10000);
+      usage.observe({ type: "agent.text", text: "answer" });
+      clock.mockReturnValue(textFirst ? 4000 : 13000);
+      return usage.observe(response(110, "text", 10));
+    };
+    if (textFirst) {
+      expect(text()?.outputTokensPerSecond).toBeCloseTo(100 / 3);
+      full();
+    } else {
+      expect(full()?.outputTokensPerSecond).toBe(20);
+      text();
+    }
+    expect(usage.snapshot()).toMatchObject({
+      outputTokens: 130,
+      reasoningOutputTokens: 15,
+      outputTokensPerSecond: 30,
+    });
+  });
+
+  it.each([20, 21])(
+    "omits text-window speed when reasoning is at least output: %s",
+    (reasoning) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+      const usage = new GrokTurnUsage(null, true);
+      usage.observe({ type: "agent.text", text: "answer" });
+      clock.mockReturnValue(2000);
+      const snapshot = usage.observe(response(20, "all-reasoning", reasoning));
+      expect(snapshot).toMatchObject({ outputTokens: 20, reasoningOutputTokens: reasoning });
+      expect(snapshot).not.toHaveProperty("outputTokensPerSecond");
+    },
+  );
+
+  it("does not use a text window after buffered tool arguments with hidden reasoning", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const usage = new GrokTurnUsage(null, true);
+    usage.observe({ type: "tool.input.delta", text: '{"command":"pwd"}' });
+    clock.mockReturnValue(2000);
+    usage.observe({ type: "agent.text", text: "answer" });
+    clock.mockReturnValue(3000);
+    expect(usage.observe(response(20, "buffered-hidden", 5))).not.toHaveProperty(
+      "outputTokensPerSecond",
+    );
+  });
 
   it.each(['{"command":"pwd"}', "{}", '"pwd"', "null", "0"])(
     "does not salvage a buffered first tool payload with later output: %s",
@@ -231,14 +289,14 @@ describe("Grok live response usage", () => {
     clock.mockReturnValue(10000);
     usage.observe({ type: "agent.text", text: "retry", metadata: { streamStartMs: 2 } });
     clock.mockReturnValue(11000);
-    expect(usage.observe(response(20, "retry", 5))).not.toHaveProperty("outputTokensPerSecond");
+    expect(usage.observe(response(20, "retry", 5))?.outputTokensPerSecond).toBe(15);
     usage.observe({ type: "agent.thought", text: "discarded by compaction" });
     usage.observe({ type: "compaction.started" });
     usage.observe({ type: "compaction.completed", outcome: "succeeded" });
     clock.mockReturnValue(20000);
     usage.observe({ type: "agent.text", text: "after compaction" });
     clock.mockReturnValue(21000);
-    expect(usage.observe(response(20, "compacted", 5))).not.toHaveProperty("outputTokensPerSecond");
+    expect(usage.observe(response(20, "compacted", 5))?.outputTokensPerSecond).toBe(15);
     expect(usage.snapshot()).toMatchObject({ outputTokens: 40, reasoningOutputTokens: 10 });
   });
 
@@ -343,6 +401,9 @@ describe("Grok live response usage", () => {
     usage.observe({ type: "agent.text", text: "answer" });
     clock.mockReturnValue(1000 + duration);
     expect(usage.observe(response())).not.toHaveProperty("outputTokensPerSecond");
+    usage.observe({ type: "agent.text", text: "hidden reasoning answer" });
+    clock.mockReturnValue(1000 + 2 * duration);
+    expect(usage.observe(response(20, "hidden", 5))).not.toHaveProperty("outputTokensPerSecond");
   });
 
   it("accepts known-zero output and never uses API duration", () => {

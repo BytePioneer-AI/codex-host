@@ -88,7 +88,7 @@ describe("Antigravity usage model identity", () => {
 
 describe("Antigravity Session usage", () => {
   it.each(["native", "fallback", "historical", "early"])(
-    "keeps the real hidden-thought sample untimed (%s)",
+    "times only text output for the hidden-thought sample when native timing is verified (%s)",
     async (mode) => {
       const usage = {
         inputTokens: 8856,
@@ -139,8 +139,17 @@ describe("Antigravity Session usage", () => {
         cachedInputTokens: 0,
         cacheWriteInputTokens: 0,
       });
-      expect(update.requests[0]).not.toHaveProperty("startedAtMs");
-      expect(update.requests[0]).not.toHaveProperty("completedAtMs");
+      if (mode === "fallback") {
+        expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+        expect(update.requests[0]).not.toHaveProperty("completedAtMs");
+        expect(update.requests[0]).not.toHaveProperty("timedOutputTokens");
+      } else {
+        expect(update.requests[0]).toMatchObject({
+          startedAtMs: 1794763980519,
+          completedAtMs: 1794763991282,
+          timedOutputTokens: 496,
+        });
+      }
       const meter = new UsageMeter();
       meter.turnStarted("t", 1794763967599);
       for (const request of update.requests)
@@ -162,8 +171,15 @@ describe("Antigravity Session usage", () => {
         find: () => ({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1 }),
       });
       expect(derived).toMatchObject({ inputTokens: 8856, outputTokens: 544, totalCostUsd: 0.0094 });
-      expect(derived?.outputTokensPerSecond).toBeUndefined();
-      expect(derived?.sessionOutputTokensPerSecond).toBeUndefined();
+      if (mode === "fallback" || mode === "historical") {
+        expect(derived?.outputTokensPerSecond).toBeUndefined();
+        expect(tracker.currentUsage()?.outputTokensPerSecond).toBeUndefined();
+      } else {
+        expect(derived?.outputTokensPerSecond).toBeCloseTo(46.08, 2);
+        expect(derived?.outputTokensPerSecond).toBe(tracker.currentUsage()?.outputTokensPerSecond);
+      }
+      if (mode === "fallback") expect(derived?.sessionOutputTokensPerSecond).toBeUndefined();
+      else expect(derived?.sessionOutputTokensPerSecond).toBeCloseTo(46.08, 2);
     },
   );
 
@@ -249,7 +265,7 @@ describe("Antigravity Session usage", () => {
   });
 
   it.each([undefined, 10])(
-    "only times independently verified nonreasoning requests beside unknown/hidden output: %s",
+    "times independently verified text output beside unknown/hidden output: %s",
     async (thought) => {
       await transcript(planner(1), planner(3, { output_tokens: 30 }));
       const database = await writeNativeTimingDatabase(home, [
@@ -290,9 +306,19 @@ describe("Antigravity Session usage", () => {
         completedAtMs: 5000,
         reasoningOutputTokens: 0,
       });
-      expect(update.requests[1]).not.toHaveProperty("startedAtMs");
+      if (thought === undefined) {
+        expect(update.requests[1]).not.toHaveProperty("startedAtMs");
+        expect(update.usage?.outputTokensPerSecond).toBe(10);
+      } else {
+        expect(update.requests[1]).toMatchObject({
+          startedAtMs: 12000,
+          completedAtMs: 13000,
+          timedOutputTokens: 20,
+        });
+        expect(update.usage?.outputTokensPerSecond).toBeCloseTo(40 / 3);
+      }
       expect(update.requests[1]?.reasoningOutputTokens).toBe(thought);
-      expect(update.usage).toMatchObject({ outputTokens: 50, outputTokensPerSecond: 10 });
+      expect(update.usage?.outputTokens).toBe(50);
       expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
     },
   );
@@ -312,7 +338,7 @@ describe("Antigravity Session usage", () => {
     expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
   });
 
-  it("retains the last reliable speed after an untimed hidden-thinking request", async () => {
+  it("retains the last reliable speed when a hidden-thinking request has no verified timing", async () => {
     await transcript(planner(1));
     await writeNativeTimingDatabase(home, [{ step: 1 }]);
     tracker.beginTurn(1000);
@@ -322,17 +348,29 @@ describe("Antigravity Session usage", () => {
     await appendFile(file, planner(3) + "\n");
     await writeNativeTimingDatabase(home, [
       { step: 1 },
-      { step: 3, created: 10000, started: 12000, completed: 12004, thought: 10 },
+      {
+        step: 3,
+        created: 10000,
+        started: 12000,
+        completed: 12004,
+        thought: 10,
+        streamDuration: 10,
+      },
     ]);
-    const update = await tracker.collectNewTranscriptRequests();
+    const update = await tracker.collectNewTranscriptRequests({ completedAtMs: 13000 });
     expect(update.requests[0]).toMatchObject({ reasoningOutputTokens: 10 });
     expect(update.requests[0]).not.toHaveProperty("startedAtMs");
     expect(update.usage).toMatchObject({ outputTokens: 40, outputTokensPerSecond: 10 });
   });
 
-  it.each([false, true])(
-    "keeps tool-call accounting but excludes its buffered timing (historical=%s)",
-    async (historical) => {
+  it.each([
+    { historical: false, thought: 0 },
+    { historical: false, thought: 10 },
+    { historical: true, thought: 0 },
+    { historical: true, thought: 10 },
+  ])(
+    "keeps tool-call accounting but excludes its buffered timing: %j",
+    async ({ historical, thought }) => {
       await transcript(
         planner(1),
         planner(3, {
@@ -342,7 +380,7 @@ describe("Antigravity Session usage", () => {
       );
       await writeNativeTimingDatabase(home, [
         { step: 1 },
-        { step: 3, created: 10000, started: 12000, completed: 12004, output: 1730 },
+        { step: 3, created: 10000, started: 12000, completed: 12004, output: 1730, thought },
       ]);
       const meter = new UsageMeter();
       meter.turnStarted("t", 1000);
@@ -429,9 +467,9 @@ describe("Antigravity Session usage", () => {
     expect(result.usage?.outputTokensPerSecond).toBeCloseTo(50 / 3);
   });
 
-  it("waits for pending native timing until final collection without publishing a duplicate request", async () => {
+  it.each([0, 10])("waits for timing, thought=%i", async (thought) => {
     await transcript(planner(1));
-    const database = await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    const database = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
     const db = new DatabaseSync(database);
     try {
       db.exec("DELETE FROM gen_metadata");
@@ -440,20 +478,44 @@ describe("Antigravity Session usage", () => {
     }
     tracker.beginTurn(1000);
     expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-    await writeNativeTimingDatabase(home, [{ step: 1 }]);
-    const completed = await tracker.collectNewTranscriptRequests({
-      promptUsage: nativePrompt,
-      completedAtMs: 8000,
-    });
-    expect(completed.requests).toHaveLength(1);
-    expect(completed.requests[0]).toMatchObject({ startedAtMs: 3000, completedAtMs: 5000 });
     expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
-    expect(tracker.recordTurnPromptUsage({ usage: nativePrompt }).complete).toBe(true);
+    await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
+    const completed = await tracker.collectNewTranscriptRequests();
+    expect(completed.requests).toHaveLength(1);
+    expect(completed.requests[0]).toMatchObject({
+      reasoningOutputTokens: thought,
+      timedOutputTokens: 20 - thought,
+      startedAtMs: 3000,
+      completedAtMs: 5000,
+    });
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    const usage = { ...nativePrompt, thoughtTokens: thought };
+    expect(
+      (await tracker.collectNewTranscriptRequests({ promptUsage: usage, completedAtMs: 8000 }))
+        .requests,
+    ).toEqual([]);
+    expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
   });
 
-  it("still publishes accounting at Turn end when optional native timing never arrives", async () => {
+  it("does not time a thinking-only request as a zero-speed measurement", async () => {
     await transcript(planner(1));
-    const file = await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    await writeNativeTimingDatabase(home, [{ step: 1, thought: 20 }]);
+    tracker.beginTurn(1000);
+    const usage = { ...nativePrompt, thoughtTokens: 20 };
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      completedAtMs: 8000,
+    });
+    expect(update.requests).toHaveLength(1);
+    expect(update.requests[0]).toMatchObject({ outputTokens: 20, reasoningOutputTokens: 20 });
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.requests[0]).not.toHaveProperty("timedOutputTokens");
+    expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
+  });
+
+  it.each([0, 10])("flushes untimed at Turn end, thought=%i", async (thought) => {
+    await transcript(planner(1));
+    const file = await writeNativeTimingDatabase(home, [{ step: 1, thought }]);
     const db = new DatabaseSync(file);
     try {
       db.exec("DELETE FROM gen_metadata");
@@ -462,15 +524,19 @@ describe("Antigravity Session usage", () => {
     }
     tracker.beginTurn(1000);
     expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
+    const usage = { ...nativePrompt, thoughtTokens: thought };
     const update = await tracker.collectNewTranscriptRequests({
-      promptUsage: nativePrompt,
+      promptUsage: usage,
       completedAtMs: 8000,
     });
     expect(update.requests).toHaveLength(1);
+    expect(update.requests[0]).toMatchObject({ reasoningOutputTokens: thought });
     expect(update.requests[0]).not.toHaveProperty("startedAtMs");
-    const result = tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    expect(update.requests[0]).not.toHaveProperty("timedOutputTokens");
+    const result = tracker.recordTurnPromptUsage({ usage });
     expect(result.complete).toBe(true);
     expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
+    expect((await tracker.collectNewTranscriptRequests()).requests).toEqual([]);
   });
 
   it("does not backfill live speed when replaying historical native timings", async () => {
@@ -518,18 +584,26 @@ describe("Antigravity Session usage", () => {
     expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 
-  it("does not replace rejected native retry timing with whole-turn timing", async () => {
+  it.each([
+    { thought: 0, retries: 1 },
+    { thought: 10, retries: 1 },
+    { thought: 10, attempts: 2 },
+    { thought: 10, output: 21 },
+  ])("does not time rejected native retries or mismatched usage: %j", async (fields) => {
     await transcript(planner(1));
-    await writeNativeTimingDatabase(home, [{ step: 1, retries: 1 }]);
+    await writeNativeTimingDatabase(home, [{ step: 1, ...fields }]);
     tracker.beginTurn(1000);
+    const usage = { ...nativePrompt, thoughtTokens: fields.thought };
     const update = await tracker.collectNewTranscriptRequests({
-      promptUsage: nativePrompt,
+      promptUsage: usage,
       firstOutputAtMs: 3000,
       completedAtMs: 18000,
     });
+    expect(update.requests).toHaveLength(1);
     expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.requests[0]).not.toHaveProperty("timedOutputTokens");
     expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
-    expect(tracker.recordTurnPromptUsage({ usage: nativePrompt }).complete).toBe(true);
+    expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
   });
 
   it("does not add thoughtTokens twice or time hidden thinking with a text-only interval", async () => {

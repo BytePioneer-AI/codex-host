@@ -43,8 +43,18 @@ async function read() {
 }
 
 describe("Antigravity native request timings", () => {
+  it("preserves integer millisecond boundaries in epoch-scale timing fixtures", async () => {
+    const created = 1794803308930;
+    await writeNativeTimingDatabase(home, [
+      { step: 1, created, started: created + 1, completed: created + 3 },
+    ]);
+    expect((await read())?.get(1)).toEqual({
+      startedAtMs: created + 1,
+      completedAtMs: created + 3,
+    });
+  });
   it.each([0, 48])(
-    "preserves verified request thought tokens without inventing a reasoning start: %i",
+    "verifies text-output timing independently of hidden thought tokens: %i",
     async (thought) => {
       await writeNativeTimingDatabase(home, [
         {
@@ -72,9 +82,10 @@ describe("Antigravity native request timings", () => {
       ]);
       const facts = (await readAntigravityRequestMetadata("session", home, all))?.get(1);
       expect(facts?.reasoningOutputTokens).toBe(thought);
-      expect(facts?.timing).toEqual(
-        thought === 0 ? { startedAtMs: 1794763980519, completedAtMs: 1794763991282 } : undefined,
-      );
+      expect(facts?.timing).toEqual({
+        startedAtMs: 1794763980519,
+        completedAtMs: 1794763991282,
+      });
     },
   );
 

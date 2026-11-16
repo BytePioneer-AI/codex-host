@@ -8,7 +8,7 @@ CodeBuddy 与 WorkBuddy 的原生 unsolicited drain 可在没有 Host 请求时�
 
 - 声明 `autonomousTurns.observe`，按同一连接的公告至 `session_end` 区间建立公共自主 Turn。
 - 区间分别拥有内容和审批/提问；串行轮有界排队，真正重叠才 fault；Host Turn 与自主 Turn 保持互斥。
-- 原生区间结束即完成实时生命周期，取消、关闭和故障沿用共享规则。
+- 原生区间结束即完成实时生命周期，无原生身份的终态用既有 `ephemeral: true` 交给 Host 临时投影；取消后不再发布交互，关闭和故障沿用共享规则。
 - 不从历史推断自主 Turn 的身份、成功或分组，不生成其 `nativeTurnRef`；只读历史保持已有投影，重开后的分组可能不同。
 
 ## Decisions

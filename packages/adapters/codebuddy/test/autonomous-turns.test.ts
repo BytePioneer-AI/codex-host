@@ -138,7 +138,7 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     text(f.client, "answer");
     end(f.client);
     const completed = await f.completed();
-    expect(completed).toMatchObject([{ outcome: { status: "succeeded" } }]);
+    expect(completed).toMatchObject([{ outcome: { status: "succeeded" }, ephemeral: true }]);
     noNativeRef(completed);
     expect(f.readHistory).not.toHaveBeenCalled();
     expect(f.texts(required(f.ids()[0]))).toEqual(["answer"]);
@@ -387,6 +387,15 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     const replacement = required(f.native.clients[1]);
     f.readHistory.mockClear();
     announce(replacement);
+    await expect(
+      f.client.context.handlers.question({
+        sessionId: "native-session",
+        toolCallId: "stale",
+        schema: { questions: [{ question: "Choose?", options: [{ label: "Alpha" }] }] },
+      }),
+    ).resolves.toEqual({ outcome: "cancelled" });
+    f.client.context.handlers.fault(Error("stale fault"));
+    expect(f.events().filter((e) => e.type === "session.faulted")).toEqual([]);
     persist(f.native, "second");
     text(replacement, "second");
     end(replacement);
@@ -440,6 +449,75 @@ describe("CodeBuddy limited live autonomous Turns", () => {
     end(f.client);
     await tick();
     expect(f.ids()).toHaveLength(4);
+  });
+
+  it.each(
+    ["approval", "question", "question-rpc"].flatMap((kind) =>
+      ["after-cancel", "before-delivery"].map((timing) => ({ kind, timing })),
+    ),
+  )("$timing: cancels $kind without reopening UI", async ({ kind, timing }) => {
+    const f = await setup();
+    announce(f.client);
+    persist(f.native, "cancelled");
+    await tick();
+    const turnId = required(f.ids()[0]);
+    const request = () => {
+      const questions = [{ question: "Choose?", options: [{ label: "Alpha" }] }];
+      if (kind === "question-rpc")
+        return f.client.context.handlers.question({
+          sessionId: "native-session",
+          toolCallId: "late-question",
+          schema: { questions },
+        });
+      return f.client.context.handlers
+        .permission({
+          sessionId: "native-session",
+          toolCall: {
+            toolCallId: "late-call",
+            rawInput: kind === "question" ? { questions } : { file_path: "late.txt" },
+            _meta: { "codebuddy.ai/toolName": kind === "question" ? "AskUserQuestion" : "Write" },
+          },
+          options: [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "reject", name: "Reject", kind: "reject_once" },
+          ],
+        })
+        .then((answer) => answer.outcome);
+    };
+    let response: unknown;
+    const ask = () =>
+      request().then((value) => {
+        response = value;
+      });
+    const answer = timing === "before-delivery" ? ask() : undefined;
+    await f.session.execute({ type: "turn.cancel", turnId });
+    const late = timing === "after-cancel" ? ask() : answer;
+    await tick();
+    const interactions = f.outputs.filter((o) => o.kind === "interaction").length;
+    const returnedBeforeEnd = response;
+    end(f.client);
+    await late;
+    expect(await f.completed()).toMatchObject([{ outcome: { status: "cancelled" } }]);
+    expect(interactions).toBe(0);
+    expect(returnedBeforeEnd).toEqual({ outcome: "cancelled" });
+  });
+
+  it("publishes 1023 buffered empty intervals without losing terminals", async () => {
+    let gate!: ReturnType<typeof gateHistory>;
+    const f = await setup((n) => {
+      gate = gateHistory(n, 2);
+      return { readHistory: gate.readHistory };
+    });
+    await f.session.execute(host("host", "hold"));
+    f.client.finishPending();
+    await gate.entered;
+    for (let i = 0; i < 1023; i++) {
+      announce(f.client, `empty-${i}`);
+      end(f.client, `empty-${i}`);
+    }
+    gate.release();
+    await f.completed(1024);
+    expect(f.events().filter((e) => e.type === "session.faulted")).toEqual([]);
   });
 
   it("closes a pending approval and settles once when the Session closes", async () => {

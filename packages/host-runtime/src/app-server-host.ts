@@ -3239,6 +3239,8 @@ export class AppServerHost {
             },
           }),
         );
+      } finally {
+        if (params.data.refresh) this.clientEvents.harnessInspectionChanged(params.data.harnessId);
       }
       return;
     }
@@ -3265,6 +3267,8 @@ export class AppServerHost {
         rpcError(request, -32077, `Harness inspection failed: ${errorMessage(error)}`),
       );
       return;
+    } finally {
+      if (params.data.refresh) this.clientEvents.harnessInspectionChanged(params.data.harnessId);
     }
     const validated = harnessInspectionSchema.safeParse(inspection);
     if (!validated.success) {

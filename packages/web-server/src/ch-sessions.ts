@@ -115,7 +115,7 @@ export class ChSessions {
     private readonly preferences?: WebHarnessPreferences,
     harnesses?: ReadonlySet<string>,
   ) {
-    this.catalog = new ChHarnessCatalog(host, displayEntries, preferences, harnesses);
+    this.catalog = new ChHarnessCatalog(host, events, displayEntries, preferences, harnesses);
     this.attachments = images ? new ChAttachments(images, files) : undefined;
     this.fileInputs =
       files && images
@@ -1741,6 +1741,7 @@ export class ChSessions {
     throw new RpcError("host/import-explicit", "CH imports must be explicitly selected.");
   }
   async close(): Promise<void> {
+    this.catalog.close();
     this.fileReferences.close();
     this.skills.close();
     this.closed = true;

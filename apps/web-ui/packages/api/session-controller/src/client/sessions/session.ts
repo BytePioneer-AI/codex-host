@@ -935,6 +935,12 @@ export class Session implements SessionFace {
     this.eventSource.prepend(entries, hasMore);
     for (const { event } of entries) {
       if (event.type === "user/message") this.observeSubmissionMessage(event.data, true);
+      else if (event.type === "agent/inbox/spliced") {
+        // Older queue events prove acceptance without replaying settlement transitions.
+        for (const { source } of event.data.inserted) {
+          if (source.kind === "user" && "rpcId" in source) this.confirmPrompt(source.rpcId);
+        }
+      }
     }
   }
 

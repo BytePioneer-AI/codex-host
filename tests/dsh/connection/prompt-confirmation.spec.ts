@@ -103,7 +103,7 @@ async function fixture() {
       );
     }
   };
-  const spliceInbox = async (requestIds: readonly string[], removedCount = 0) => {
+  const spliceInbox = async (requestIds: readonly string[], removedCount = 0, live = true) => {
     const frame = {
       type: "event",
       event: {
@@ -120,10 +120,12 @@ async function fixture() {
       },
     } as unknown as SessionHistoryRecord;
     records.push(frame);
-    publish(frame);
-    await vi.waitFor(() =>
-      expect(session.eventSource.getSnapshot().entries).toHaveLength(records.length),
-    );
+    if (live) {
+      publish(frame);
+      await vi.waitFor(() =>
+        expect(session.eventSource.getSnapshot().entries).toHaveLength(records.length),
+      );
+    }
   };
   return {
     session,
@@ -306,3 +308,50 @@ it.each(["loadOlder", "loadThrough"] as const)(
     expect(f.prompt).toHaveBeenCalledTimes(1);
   },
 );
+
+it.each(["loadOlder", "loadThrough"] as const)(
+  "confirms a canceled queue receipt found through %s",
+  async (load) => {
+    const f = await fixture();
+    const submission = f.begin();
+    await f.send(submission.requestId);
+    await f.spliceInbox([submission.requestId], 0, false);
+    await f.spliceInbox([], 1, false);
+    await f.confirm("another-client", false);
+    f.showTailFrom(2);
+    await f.session.resync();
+    expect(f.session.getSnapshot().promptError?.error.code).toBe("remote/outcome-unknown");
+    if (load === "loadOlder") await f.session.loadOlder();
+    else await f.session.loadThrough(SessionSeq(0));
+    expect(f.session.getSnapshot().promptError).toBeNull();
+    expect(f.session.getSnapshot().blank).toBe(false);
+    expect(f.onEngaged).toHaveBeenCalledTimes(1);
+    expect(f.prompt).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("observes older queue acceptance without replaying its settlement side effects", async () => {
+  const f = await fixture();
+  const reply = Promise.withResolvers<ReturnType<typeof unknown>>();
+  f.prompt.mockReturnValueOnce(reply.promise);
+  const onRetire = vi.fn();
+  const submission = f.session.beginSubmission({
+    mode: "queue",
+    text: "继续",
+    attachments: [],
+    onRetire,
+  });
+  const sending = f.send(submission.requestId);
+  await f.spliceInbox([submission.requestId], 0, false);
+  await f.spliceInbox([], 1, false);
+  await f.confirm("another-client", false);
+  f.showTailFrom(2);
+  await f.session.resync();
+  await f.session.loadOlder();
+  expect(f.session.getSnapshot().pendingSubmissions).toHaveLength(1);
+  expect(onRetire).not.toHaveBeenCalled();
+  reply.resolve(unknown());
+  expect(await sending).toEqual({ ok: true, value: { accepted: true } });
+  expect(f.session.getSnapshot().promptError).toBeNull();
+  expect(onRetire).not.toHaveBeenCalled();
+});

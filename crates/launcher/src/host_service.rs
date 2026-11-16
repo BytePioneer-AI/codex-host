@@ -326,10 +326,31 @@ pub(super) fn wait_for_shutdown(
     let Some(target) = supervisor.or(owner) else {
         return Ok(());
     };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let mut trees = [supervisor, owner]
+        .into_iter()
+        .flatten()
+        .map(codexhost_platform::ShutdownProcessTree::capture)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let started = Instant::now();
     let mut escalated = false;
     loop {
-        if codexhost_platform::process_instance(target.id, target.started_at_micros).is_none() {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let tree_alive = {
+            let mut alive = false;
+            for tree in &mut trees {
+                alive |= tree.has_live_processes()?;
+            }
+            alive
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let tree_alive = false;
+        if !tree_alive
+            && codexhost_platform::process_instance(target.id, target.started_at_micros).is_none()
+        {
             return Ok(());
         }
         if started.elapsed() >= timeout {
@@ -339,11 +360,26 @@ pub(super) fn wait_for_shutdown(
             // before the stop request, so escalating termination on the waited
             // target is bounded and owned. Report the timeout only if the target
             // survives even the forced termination.
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            for tree in &mut trees {
+                tree.force_terminate()?;
+            }
             codexhost_platform::terminate_process_identity(target, true)?;
             let escalation_deadline = started.elapsed() + Duration::from_secs(2);
             while started.elapsed() < escalation_deadline {
-                if codexhost_platform::process_instance(target.id, target.started_at_micros)
-                    .is_none()
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                let tree_alive = {
+                    let mut alive = false;
+                    for tree in &mut trees {
+                        alive |= tree.has_live_processes()?;
+                    }
+                    alive
+                };
+                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                let tree_alive = false;
+                if !tree_alive
+                    && codexhost_platform::process_instance(target.id, target.started_at_micros)
+                        .is_none()
                 {
                     return Ok(());
                 }

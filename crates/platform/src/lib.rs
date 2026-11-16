@@ -100,6 +100,10 @@ pub use process::{
     desktop_process_tree, desktop_root_snapshots_for_installation, process_snapshots,
 };
 pub use process_chain::descendant_executable_pair_exists;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod process_shutdown;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use process_shutdown::ShutdownProcessTree;
 pub use process_supervision::{ChildProcessGuard, SupervisedChild, spawn_supervised};
 pub use process_termination::{
     terminate_process_group_instance, terminate_process_identity, terminate_process_instance,

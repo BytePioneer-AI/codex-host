@@ -40,7 +40,7 @@ impl ChildProcessGuard {
         self.with_tree(|tree| Ok(!tree.observe()?.is_empty()))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     fn has_observed_process(&self, process_id: u32) -> Result<bool, PlatformError> {
         self.with_tree(|tree| {
             Ok(tree
@@ -213,7 +213,7 @@ impl SupervisedChild {
             .map_or(Ok(false), ChildProcessGuard::has_live_members)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     fn has_observed_process(&self, process_id: u32) -> Result<bool, PlatformError> {
         self.guard
             .as_ref()
@@ -383,11 +383,14 @@ mod tests {
             std::process::id()
         ));
         let command_line = format!(
-            "setsid /bin/sh -c 'echo $$ > {}; exec /bin/sleep 30' & sleep 1; exit 0",
+            "setsid /bin/sh -c 'echo $$ > {}; exec /bin/sleep 30' & read release; exit 0",
             child_pid.display()
         );
         let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg(command_line);
+        command
+            .arg("-c")
+            .arg(command_line)
+            .stdin(std::process::Stdio::piped());
         let mut supervised = spawn_supervised(&mut command).expect("supervise shell");
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -422,6 +425,8 @@ mod tests {
         // process group. Capture it while the parent link is still observable;
         // after the shell exits, cleanup must use the child's exact identity
         // rather than only signaling the supervisor's process group.
+        // Release only after ownership is captured, independent of scheduling.
+        drop(supervised.take_stdin());
         assert!(supervised.wait().expect("wait for supervisor").success());
         assert!(
             supervised

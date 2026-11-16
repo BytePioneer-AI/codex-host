@@ -186,7 +186,6 @@ fn host_chain_timeout_diagnostic(
         shim.display(),
         nodes_display,
     );
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     match codexhost_platform::process_snapshots() {
         Ok(snapshots) => {
             let shim_running = snapshots.iter().any(|process| process.executable == shim);

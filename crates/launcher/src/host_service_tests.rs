@@ -148,6 +148,71 @@ fn stalled_shutdown_terminates_the_captured_fixture_process() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn forced_shutdown_cleans_descendants_in_another_process_group() {
+    use std::io::BufRead;
+    use std::os::unix::process::CommandExt;
+
+    let mut supervisor = Command::new("/bin/sh")
+        .args(["-c", "setsid /bin/sleep 30 & echo $!; read release"])
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut pid = String::new();
+    std::io::BufReader::new(supervisor.stdout.take().unwrap())
+        .read_line(&mut pid)
+        .unwrap();
+    let child_id = pid.trim().parse::<u32>().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let child = loop {
+        if let Ok(child) = codexhost_platform::process_snapshot(child_id)
+            && child.process_group_id == child_id
+        {
+            break child;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "child did not enter its own group"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    let identity = codexhost_platform::process_identity(supervisor.id()).unwrap();
+    assert_eq!(child.parent_id, identity.id);
+    assert_ne!(child.process_group_id, identity.id);
+    // Same-PGID alone is not ownership: this process is our child, not the
+    // supervisor's descendant, and must survive its shutdown.
+    let mut bystander = Command::new("/bin/sleep")
+        .arg("30")
+        .process_group(identity.id as i32)
+        .spawn()
+        .unwrap();
+    let mut reused = identity;
+    reused.started_at_micros += 1;
+    assert!(wait_for_shutdown(None, Some(&reused), Duration::ZERO).is_err());
+    assert!(supervisor.try_wait().unwrap().is_none());
+    let result = wait_for_shutdown(None, Some(&identity), Duration::from_millis(1));
+    let bystander_survived = bystander.try_wait().unwrap().is_none();
+    bystander.kill().unwrap();
+    bystander.wait().unwrap();
+    let survived =
+        codexhost_platform::process_instance(child.id, child.started_at_micros).is_some();
+    // Clean even on the negative baseline, then assert the production result.
+    codexhost_platform::terminate_process_instance(&child, true).unwrap();
+    supervisor.wait().unwrap();
+    result.unwrap();
+    assert!(
+        bystander_survived,
+        "shutdown killed an unrelated same-group process"
+    );
+    assert!(
+        !survived,
+        "shutdown reported success while its child remained alive"
+    );
+}
+
 #[test]
 fn stalled_supervisor_shutdown_is_escalated_when_no_owner_was_captured() {
     const TEST: &str =

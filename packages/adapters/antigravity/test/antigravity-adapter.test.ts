@@ -128,7 +128,9 @@ class FakeTransport implements AntigravityAcpTransportLike {
     },
   );
   cancel = vi.fn(async () => {});
-  closeSession = vi.fn(async () => {});
+  closeSession = vi.fn(async () => {
+    this.sessionId = null;
+  });
   close = vi.fn(async () => {
     this.isClosed = true;
     this.result.resolve({ stopReason: "cancelled" });
@@ -857,7 +859,8 @@ describe("Antigravity ACP Session", () => {
         environment: { CODEXHOST_THREAD_ID: "thread-override" },
       }),
     );
-    expect((await session.readSnapshot()).ok).toBe(true);
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    await session.initialize();
     const transport = required(transports[0]);
     expect(transport.options.environment?.CODEXHOST_THREAD_ID).toBe("thread-override");
     const prompt = required(transport.openSession.mock.calls[0]?.[0].systemPromptAppend);
@@ -880,6 +883,7 @@ describe("Antigravity ACP Session", () => {
     expect(transports).toHaveLength(0);
     expect(session.initialState).toEqual({ nativeRef });
     const reading = session.readSnapshot();
+    await Promise.resolve();
     const reader = required(transports[0]);
     reader.replayedEvents = [
       { type: "user.text", text: "old question" },
@@ -901,7 +905,8 @@ describe("Antigravity ACP Session", () => {
     );
     expect(reader.setConfigOption).not.toHaveBeenCalled();
     expect(reader.prompt).not.toHaveBeenCalled();
-    expect(reader.close).toHaveBeenCalledOnce();
+    expect(reader.closeSession).toHaveBeenCalledOnce();
+    expect(reader.close).not.toHaveBeenCalled();
     const writer = await start(session, transports);
     expect(transports).toHaveLength(2);
     expect(writer.openSession).toHaveBeenCalledExactlyOnceWith(
@@ -919,6 +924,133 @@ describe("Antigravity ACP Session", () => {
         nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-1" }),
       }),
     );
+    await adapter.close();
+    expect(reader.close).toHaveBeenCalledOnce();
+  });
+  it("reuses one read-only process serially across Sessions and isolates by permission and account environment", async () => {
+    const { adapter, transports } = fixture();
+    const firstRef = ref();
+    const secondRef = ref();
+    const skipRef = ref(undefined, { permissionModeId: "dangerously-skip-permissions" });
+    const otherHome = await mkdtemp(path.join(os.tmpdir(), "agy-reader-home-"));
+    directories.push(otherHome);
+    const otherAccountRef = ref();
+    const [
+      { session: first },
+      { session: second },
+      { session: skipSession },
+      { session: otherAccount },
+    ] = await Promise.all([
+      sessionOf(
+        await adapter.open({
+          kind: "resume",
+          cwd: process.cwd(),
+          nativeRef: firstRef,
+          environment: { CODEXHOST_THREAD_ID: "thread-1" },
+        }),
+      ),
+      sessionOf(
+        await adapter.open({
+          kind: "resume",
+          cwd: otherHome,
+          nativeRef: secondRef,
+          environment: { CODEXHOST_THREAD_ID: "thread-2" },
+        }),
+      ),
+      sessionOf(
+        await adapter.open({
+          kind: "resume",
+          cwd: process.cwd(),
+          nativeRef: skipRef,
+          environment: { CODEXHOST_THREAD_ID: "thread-3" },
+        }),
+      ),
+      sessionOf(
+        await adapter.open({
+          kind: "resume",
+          cwd: process.cwd(),
+          nativeRef: otherAccountRef,
+          environment: { HOME: otherHome, CODEXHOST_THREAD_ID: "thread-4" },
+        }),
+      ),
+    ]);
+    const closeGate = deferred<undefined>();
+    const firstRead = first.readSnapshot();
+    await Promise.resolve();
+    const sharedReader = required(transports[0]);
+    sharedReader.closeSession.mockReturnValueOnce(closeGate.promise);
+    const secondRead = second.readSnapshot();
+    await vi.waitFor(() => expect(sharedReader.closeSession).toHaveBeenCalledOnce());
+    expect(sharedReader.openSession).toHaveBeenCalledTimes(1);
+    closeGate.resolve(undefined);
+    expect((await firstRead).ok).toBe(true);
+    expect((await secondRead).ok).toBe(true);
+    expect(transports).toHaveLength(1);
+    expect(sharedReader.initialize).toHaveBeenCalledTimes(1);
+    expect(sharedReader.openSession.mock.calls).toEqual([
+      [{ kind: "load", sessionId: firstRef.nativeSessionId, cwd: process.cwd() }],
+      [{ kind: "load", sessionId: secondRef.nativeSessionId, cwd: otherHome }],
+    ]);
+    expect(sharedReader.closeSession).toHaveBeenCalledTimes(2);
+    expect(sharedReader.close).not.toHaveBeenCalled();
+
+    await first.close();
+    expect(sharedReader.close).not.toHaveBeenCalled();
+
+    expect((await skipSession.readSnapshot()).ok).toBe(true);
+    expect((await otherAccount.readSnapshot()).ok).toBe(true);
+    expect(transports).toHaveLength(3);
+    expect(transports[1]?.skipPermissions).toBe(true);
+    expect(transports[2]?.options.environment?.HOME).toBe(otherHome);
+
+    await adapter.close();
+    expect(transports.every((transport) => transport.close.mock.calls.length === 1)).toBe(true);
+  });
+  it("retires a faulted reader process, starts a fresh reader on the next snapshot, and joins cleanup on Adapter close", async () => {
+    const { adapter, transports } = fixture();
+    const { session: first } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
+    );
+    const { session: second } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
+    );
+    const retiredExited = deferred<undefined>();
+    const readingFirst = first.readSnapshot();
+    await Promise.resolve();
+    const brokenReader = required(transports[0]);
+    brokenReader.closeSession.mockRejectedValueOnce(
+      new AntigravityTransportError("unavailable", "session/close timed out"),
+    );
+    brokenReader.close.mockReturnValue(retiredExited.promise);
+    expect(await readingFirst).toMatchObject({ ok: false, error: { code: "nativeFailure" } });
+    expect(brokenReader.close).toHaveBeenCalledOnce();
+
+    expect((await second.readSnapshot()).ok).toBe(true);
+    expect(transports).toHaveLength(2);
+    const healthyReader = required(transports[1]);
+    expect(healthyReader.close).not.toHaveBeenCalled();
+
+    let adapterClosed = false;
+    const closing = adapter.close().then(() => {
+      adapterClosed = true;
+    });
+    await vi.waitFor(() => expect(healthyReader.close).toHaveBeenCalledOnce());
+    expect(adapterClosed).toBe(false);
+    retiredExited.resolve(undefined);
+    await closing;
+    expect(adapterClosed).toBe(true);
+  });
+  it("propagates pooled reader cleanup failure when the Adapter closes", async () => {
+    const { adapter, transports } = fixture();
+    const { session } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
+    );
+    expect((await session.readSnapshot()).ok).toBe(true);
+    const reader = required(transports[0]);
+    reader.close.mockRejectedValueOnce(new Error("reader cleanup failed"));
+    await expect(adapter.close()).rejects.toThrow("reader cleanup failed");
+    await expect(adapter.close()).rejects.toThrow("reader cleanup failed");
+    adapters.splice(adapters.indexOf(adapter), 1);
   });
   it("does not let a pending cold history reader overwrite writable configuration", async () => {
     const { adapter, transports } = fixture();
@@ -927,6 +1059,7 @@ describe("Antigravity ACP Session", () => {
     );
     const gate = deferred<undefined>();
     const reading = session.readSnapshot();
+    await Promise.resolve();
     const reader = required(transports[0]);
     const open = required(reader.openSession.getMockImplementation());
     reader.openSession.mockImplementationOnce(async (input) => {
@@ -970,10 +1103,12 @@ describe("Antigravity ACP Session", () => {
     const reader = required(transports[1]);
     expect(reader.openSession.mock.calls[0]?.[0].kind).toBe("load");
     expect(reader.prompt).not.toHaveBeenCalled();
-    expect(reader.close).toHaveBeenCalledOnce();
+    expect(reader.closeSession).toHaveBeenCalledOnce();
+    expect(reader.close).not.toHaveBeenCalled();
     reader.options.onFault?.(
       new AntigravityTransportError("processExited", "read-only connection died"),
     );
+    expect(reader.close).toHaveBeenCalledOnce();
     expect(
       (await session.execute({ type: "thinking.select", thinkingOptionId: thinking("high") })).ok,
     ).toBe(true);

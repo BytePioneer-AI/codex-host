@@ -208,7 +208,7 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 
 恢复时，Host 将旧映射解码为 Model、Thinking、Permission Mode 提示并传给 `open({ kind: "resume" })`。Adapter 决定恢复提示还是保留权威原生配置；Host 不再按 Harness ID 补发配置命令。OMP、DSH 在各自 Adapter 内恢复权限；OpenCode 保留原生确认的权限状态。成功读到原生配置后，Host 用共享载体保存确认值，旧映射仍可读取。
 
-Antigravity 普通恢复只保留持久身份，查看历史通过独立原生 `session/load` 连接完成，不预先启动可写 `session/resume`。首次发送或修改配置时再恢复可写连接，并应用保存的配置提示；只读连接的配置不作为可写 Session 的确认状态返回，避免覆盖这些提示。活动 Turn 的历史读取仍与写连接隔离，历史用量回放保持可用。Fork/回滚派生的 Session 在交付前确认目标目录与配置的可写恢复。
+Antigravity 普通恢复只保留持久身份，查看历史通过独立原生 `session/load` 连接完成，不预先启动可写 `session/resume`。首次发送或修改配置时再恢复可写连接，并应用保存的配置提示；只读连接的配置不作为可写 Session 的确认状态返回，避免覆盖这些提示。只读进程按命令、权限与账号环境边界在 Adapter 内串行复用：每次重放后等待原生 `session/close` 确认即释放给后续读取，异常进程立即退役重建，Adapter 关闭时统一回收，不与可写连接混用，也不建立本地历史镜像。活动 Turn 的历史读取仍与写连接隔离，历史用量回放保持可用。Fork/回滚派生的 Session 在交付前确认目标目录与配置的可写恢复。
 
 Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶层字段：当前版本不使用它们，更新文件时原样保留，不因新增字段隔离会话。已知字段的类型、必填要求及身份和映射约束仍照常校验；已知元数据字段的清除不影响同文件中的未知字段。
 

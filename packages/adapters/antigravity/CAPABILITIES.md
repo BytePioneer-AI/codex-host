@@ -28,7 +28,7 @@
 | A4 | 创建 Session | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/new` | 未传配置时保持原生默认；预热不产生 `session/list` 空记录 |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块 |
 | A6 | 取消 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/cancel` | 取消关闭活动交互与工具项，保留会话继续下一轮 |
-| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/load` | 通过独立原生 `session/load` 读连接投影稳定 Turn/Item；冷历史读取不启动可写连接，无需本地镜像文件 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/snapshot-reader-pool.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/load` | 通过独立原生 `session/load` 读连接投影稳定 Turn/Item；冷历史读取不启动可写连接；读进程按命令、权限与账号环境边界在 Adapter 内串行复用，每次读取后 `session/close` 释放、Adapter 关闭统一回收，无需本地镜像文件 |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | 恢复对象保留持久身份；普通恢复的可写 `session/resume` 延迟到首次执行或配置操作，派生会话在交付前确认可写恢复 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts` | 忙碌返回 `sessionBusy`，进程异常与鉴权错误归一化脱敏 |
 | A10 | 关闭 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/acp-transport.test.ts` | `session/close` + stdin 关闭 + 超时信号清理子进程 |
@@ -67,7 +67,7 @@
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
 - Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
-- 只读快照（`session/load`）重放历史 `tool_call` 的名称、参数与终态，不重放历史工具输出正文；实时 Turn 内工具输出完整流式上报。
+- 只读快照（`session/load`）重放历史 `tool_call` 的名称、参数与终态，不重放历史工具输出正文；实时 Turn 内工具输出完整流式上报。每个新原生读进程的首次 `load` 在首条更新前可能有秒级准备延迟，后续同边界历史读取串行复用已初始化读进程。读取为全量重放后由 Host 分页。
 
 ## 插件外改动
 
@@ -81,7 +81,8 @@
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
 | Turn 内费用累计 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-usage.test.ts packages/adapters/antigravity/test/antigravity-adapter.test.ts` | 147 项通过；覆盖历史基线、轮内多请求累计、重复刷新去重、轮末核对与缺失用量保护；未进行真实 CLI/UI 验证 |
-| 历史恢复生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test packages/host-runtime/test/antigravity-history.test.ts packages/host-runtime/test/installed-harness-plugins.test.ts` | 425 项通过；隔离 Transport 验证冷读仅 `load`、首次写入才 `resume`、保存配置不被读连接覆盖、取消、关闭及派生恢复；原生 CLI 未重验；1 项 OpenCode 真实探针未启用 |
+| 历史恢复生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test packages/host-runtime/test/antigravity-history.test.ts packages/host-runtime/test/installed-harness-plugins.test.ts` | 427 项通过；验证冷读仅 `load`、首次写入才 `resume`、保存配置不被读连接覆盖、取消、派生恢复及延迟进程回收的等待和错误报告；1 项 OpenCode 真实探针未启用 |
+| 真实历史只读计时 | `agy 1.5.9`，现有登录态，Adapter 与原生 ACP 分段计时，不发送 Prompt | 单次快照 6.389s，其中原生 `load` 6.323s；进程回收约 2s 由最终关闭等待。同一原生进程首次读取 6.854s，随后读取另一历史 Session 为 118ms；现有服务未重启 |
 | Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 19 个测试文件、368 项测试全部通过（Node 22、Node 24） |
 | 用量对账与计时 | 既有测试会话的原生 SQLite / 转录只读回放，经过共享 `UsageMeter` | 单请求、多请求、原生问答及重复回放通过；无新增模型调用 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |

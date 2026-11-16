@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   configureSubagentEvent,
   configureSubagentSnapshot,
@@ -14,6 +15,7 @@ import type {
   HostCommand,
   HostEvent,
   HostThreadSnapshot,
+  HostTurnSnapshot,
   HostUsage,
   InteractionRespondAccepted,
   InteractionRespondCommand,
@@ -35,12 +37,20 @@ import type {
 import { unsupportedSteer } from "@codexhost/harness-adapter";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
+  hostTurnIdSchema,
   nativeSessionRefSchema,
   type HarnessCommandCatalog,
+  type HostTurnId,
   type NativeTurnRef,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 import type { CodeBuddyClient, CodeBuddyClientFactory } from "./acp-client.js";
+import {
+  CodeBuddyAutonomousTurns,
+  readUnsolicitedTurn,
+  requestIdOf,
+  type CodeBuddyAutonomousRound,
+} from "./autonomous.js";
 import {
   bounded,
   CODEBUDDY_RUNTIME_PROFILE,
@@ -85,12 +95,15 @@ interface SessionReplay {
 interface ActiveTurn {
   command: TurnStartCommand;
   output: CodeBuddyTurnOutput;
-  before: Set<string>;
-  beforeItems: Set<string>;
   completion: Promise<void>;
   nativeCommand: boolean;
   cancelled: boolean;
   done: boolean;
+  /** The Host prompt has returned; later native Interactions belong to the next drain run. */
+  promptSettled?: boolean;
+  /** Present when native output, not a Host `turn.start`, owns this Turn. */
+  autonomous?: { round: CodeBuddyAutonomousRound };
+  settle?: () => void;
 }
 
 export class CodeBuddySession implements HarnessSession {
@@ -113,6 +126,8 @@ export class CodeBuddySession implements HarnessSession {
   #ref: NativeSessionRef | undefined;
   #state: HarnessSessionState = {};
   #active: ActiveTurn | undefined;
+  readonly #autonomous = new CodeBuddyAutonomousTurns();
+  #loadedTurns: HostTurnSnapshot[] | undefined;
   #busy = false;
   #closed = false;
   #closing: Promise<void> | undefined;
@@ -193,56 +208,24 @@ export class CodeBuddySession implements HarnessSession {
               }
               return;
             }
-            if (this.#replay) return;
-            // A started Tool keeps its owner even when later fragments change its metadata.
-            if (
-              (text(record(update._meta)["codebuddy.ai/parentToolCallId"]) ||
-                !this.#active?.output.hasItem(`tool-${text(update.toolCallId)}`)) &&
-              this.subagents.update(update)
-            )
-              return;
-            if (update.sessionUpdate === "config_option_update" && this.#config)
-              this.#apply(configuration(update.configOptions, this.profile));
-            if (
-              update.sessionUpdate === "usage_update" &&
-              typeof update.used === "number" &&
-              typeof update.size === "number" &&
-              update.size > 0
-            ) {
-              this.#context = {
-                contextUsedTokens: update.used,
-                contextWindowTokens: update.size,
-                contextUsagePercent: (update.used / update.size) * 100,
-              };
-              this.#emitUsage();
-              void this.refreshUsage();
-            }
-            this.#active?.output.update(update);
+            if (!this.#replay) this.#dispatchUpdate(update);
           } catch (error) {
             if (this.#replay) this.#replay.fault ??= { error };
             else this.#onFault(error);
           }
         },
         permission: (request) =>
-          generation === this.#generation &&
-          !this.#closed &&
-          !this.#fault &&
-          !this.#replay &&
-          this.#active &&
-          !this.#active.cancelled &&
-          request.sessionId === this.#ref?.nativeSessionId
-            ? this.#interactions.permission(this.#active.command.turnId, request)
-            : Promise.resolve({ outcome: { outcome: "cancelled" } }),
+          generation !== this.#generation || request.sessionId !== this.#ref?.nativeSessionId
+            ? Promise.resolve({ outcome: { outcome: "cancelled" as const } })
+            : this.#interactionTurn((turnId) => this.#interactions.permission(turnId, request), {
+                outcome: { outcome: "cancelled" as const },
+              }),
         question: (params) =>
-          generation === this.#generation &&
-          !this.#closed &&
-          !this.#fault &&
-          !this.#replay &&
-          this.#active &&
-          !this.#active.cancelled &&
-          params.sessionId === this.#ref?.nativeSessionId
-            ? this.#interactions.question(this.#active.command.turnId, params)
-            : Promise.resolve({ outcome: "cancelled" }),
+          generation !== this.#generation || params.sessionId !== this.#ref?.nativeSessionId
+            ? Promise.resolve({ outcome: "cancelled" })
+            : this.#interactionTurn((turnId) => this.#interactions.question(turnId, params), {
+                outcome: "cancelled",
+              }),
       },
     });
   }
@@ -261,8 +244,9 @@ export class CodeBuddySession implements HarnessSession {
     if (this.#ref) {
       const history = await this.#history(this.#ref);
       this.#assertClient(generation);
-      this.#hasTurn =
-        snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile).turns.length > 0;
+      const snapshot = snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile);
+      this.#hasTurn = snapshot.turns.length > 0;
+      this.#loadedTurns = snapshot.turns;
       this.#usage = historyUsage(history);
       this.#meterHistory(history, true);
       rewind = pendingNativeHistoryRewind(history);
@@ -296,6 +280,9 @@ export class CodeBuddySession implements HarnessSession {
         : {};
     if (this.input.kind === "resume") this.#ref = this.input.nativeRef;
     const opened = await this.#openClient();
+    // History that predates this process is behind the autonomous Turn boundary.
+    this.#autonomous.reset(this.#loadedTurns ?? []);
+    this.#loadedTurns = undefined;
     this.#ref = nativeSessionRefSchema.parse({
       harnessId: this.profile.harnessId,
       nativeSessionId: opened.sessionId,
@@ -350,6 +337,152 @@ export class CodeBuddySession implements HarnessSession {
     }
     if (historical || !complete) this.#emit({ type: "usage.history", complete });
   }
+  /** Routes one native frame to the Host Turn, a native drain round, or its buffer. */
+  #dispatchUpdate(update: Record<string, unknown>) {
+    const unsolicited = readUnsolicitedTurn(update);
+    if (unsolicited) {
+      this.#autonomous.announce(unsolicited.requestId);
+      this.#flushAutonomous();
+      return;
+    }
+    if (update.sessionUpdate === "session_end") {
+      const round = this.#autonomous.end(requestIdOf(update));
+      if (!round) return;
+      if (round.started) void this.#finishAutonomous(round);
+      else this.#flushAutonomous();
+      return;
+    }
+    const route = this.#autonomous.route(update);
+    if (route === "active") {
+      if (!this.#replaying) this.#applyUpdate(update);
+      return;
+    }
+    if (route) {
+      route.frames.push(update);
+      return;
+    }
+    if (this.#replaying) return;
+    this.#applyUpdate(update);
+  }
+
+  /**
+   * Binds a native Interaction to the Turn that requested it. A Host prompt that already
+   * returned cannot own later Interactions; a drain run owns them once its public Turn
+   * identity exists, and is cancelled if that run is dropped first.
+   */
+  #interactionTurn<T>(run: (turnId: HostTurnId) => Promise<T>, cancelled: T): Promise<T> {
+    const active = this.#active;
+    if (active && !active.autonomous && !active.promptSettled) return run(active.command.turnId);
+    const round = this.#autonomous.owner();
+    if (!round) return Promise.resolve(cancelled);
+    return round.identity.then((turnId) =>
+      turnId && this.#active?.autonomous?.round === round ? run(turnId) : cancelled,
+    );
+  }
+
+  /** Frames of the active Turn, including a native drain Turn that now owns the Session. */
+  #applyUpdate(update: Record<string, unknown>) {
+    // A started Tool keeps its owner even when later fragments change its metadata.
+    if (
+      (text(record(update._meta)["codebuddy.ai/parentToolCallId"]) ||
+        !this.#active?.output.hasItem(`tool-${text(update.toolCallId)}`)) &&
+      this.subagents.update(update)
+    )
+      return;
+    if (update.sessionUpdate === "config_option_update" && this.#config)
+      this.#apply(configuration(update.configOptions, this.profile));
+    if (
+      update.sessionUpdate === "usage_update" &&
+      typeof update.used === "number" &&
+      typeof update.size === "number" &&
+      update.size > 0
+    ) {
+      this.#context = {
+        contextUsedTokens: update.used,
+        contextWindowTokens: update.size,
+        contextUsagePercent: (update.used / update.size) * 100,
+      };
+      this.#emitUsage();
+      void this.refreshUsage();
+    }
+    this.#active?.output.update(update);
+  }
+
+  #flushAutonomous() {
+    if (this.#active || this.#replaying || this.#closed || this.#fault) return;
+    const round = this.#autonomous.next();
+    if (!round) return;
+    this.#startAutonomous(round);
+    try {
+      for (const frame of round.frames.drain()) this.#applyUpdate(frame);
+    } catch (error) {
+      this.#onFault(error);
+      return;
+    }
+    if (round.ended) void this.#finishAutonomous(round);
+  }
+
+  #startAutonomous(round: CodeBuddyAutonomousRound) {
+    const turnId = hostTurnIdSchema.parse(randomUUID());
+    const completion = Promise.withResolvers<undefined>();
+    const active: ActiveTurn = {
+      command: { type: "turn.start", turnId, input: [] },
+      output: new CodeBuddyTurnOutput(
+        turnId,
+        this.input.cwd,
+        (event) => this.#emit(event),
+        this.profile,
+      ),
+      completion: completion.promise,
+      nativeCommand: false,
+      cancelled: false,
+      done: false,
+      autonomous: { round },
+      settle: () => completion.resolve(undefined),
+    };
+    this.#active = active;
+    this.#autonomous.start(round, turnId);
+    this.subagents.begin(turnId);
+    this.#emit({ type: "turn.autonomous.started", turnId, input: [] });
+    this.#emit({ type: "turn.started", turnId });
+  }
+
+  /**
+   * `session_end` is the native terminal for a drain Turn; the prompt response belongs to
+   * Host-requested Turns. The frame always reports `end_turn`, so the persisted Turn decides
+   * success and supplies the stable native identity.
+   */
+  async #finishAutonomous(round: CodeBuddyAutonomousRound) {
+    const active = this.#active;
+    if (!active?.autonomous || active.autonomous.round !== round || active.done) return;
+    try {
+      const snapshot = await this.#snapshot();
+      const persisted = this.#autonomous.autonomousTurn(snapshot.turns);
+      if (persisted) this.#hasTurn = true;
+      const outcome: TurnOutcome = active.cancelled
+        ? { status: "cancelled" }
+        : persisted?.outcome.status === "succeeded"
+          ? { status: "succeeded" }
+          : {
+              status: "failed",
+              error: nativeError(
+                new CodeBuddyError(
+                  "nativeFailure",
+                  "Native autonomous Turn did not record success",
+                ),
+                this.profile,
+              ),
+            };
+      if (outcome.status === "cancelled") await this.#resumeAfterCancel();
+      if (active.done) return;
+      this.#finish(active, outcome, persisted?.nativeTurnRef);
+      if (this.#usage) this.#emitUsage();
+    } catch (error) {
+      if (!active.done)
+        this.#finish(active, { status: "failed", error: nativeError(error, this.profile) });
+    }
+  }
+
   #apply(config: ReturnType<typeof configuration>, emit = true) {
     // Context belongs to the last confirmed Model. Reconfirming that Model must
     // preserve usage received after its config update but before the response.
@@ -612,17 +745,15 @@ export class CodeBuddySession implements HarnessSession {
             input: [{ type: "text", text: parsed.value }],
           };
         }
-        const snapshot = await this.#snapshot();
-        const before = new Set(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey));
-        const beforeItems = new Set(
-          snapshot.turns.flatMap((turn) => turn.items.map((snapshot) => snapshot.item.itemId)),
-        );
+        // Reading history also yields to native notifications, so a drain announced during
+        // admission is visible before the Host prompt would reach the native process.
+        await this.#snapshot();
         if (this.#closed || this.#fault)
           return failure("invalidState", "Session closed before Turn start", this.profile);
+        if (this.#active)
+          return failure("sessionBusy", "Session is executing an operation", this.profile);
         const active: ActiveTurn = {
           command,
-          before,
-          beforeItems,
           output: new CodeBuddyTurnOutput(
             command.turnId,
             this.input.cwd,
@@ -665,10 +796,12 @@ export class CodeBuddySession implements HarnessSession {
     let cancellationConfirmed = false;
     try {
       if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
-      const response = await this.#client.prompt(
-        this.#ref.nativeSessionId,
-        active.command.input.map((item) => item.text).join("\n"),
-      );
+      const response = await this.#client
+        .prompt(this.#ref.nativeSessionId, active.command.input.map((item) => item.text).join("\n"))
+        .finally(() => {
+          // Once the native run has returned, later Interactions belong to the next run.
+          active.promptSettled = true;
+        });
       if (active.done || this.#closed) return;
       const stop = response.stopReason,
         meta = record(response._meta);
@@ -703,32 +836,22 @@ export class CodeBuddySession implements HarnessSession {
       // After shutdown, history can enrich cancellation but cannot change its outcome.
       const snapshot = await this.#snapshot(cancellationConfirmed ? 1_000 : undefined);
       if (active.done || this.#closed) return;
-      const added = snapshot.turns.filter(
-        (turn) => !active.before.has(turn.nativeTurnRef.nativeTurnKey),
-      );
-      if (
-        added.length > 1 ||
-        (!active.nativeCommand && outcome.status === "succeeded" && added.length !== 1)
-      )
+      // The prompt response names this Turn; drain Turns persisted before this snapshot
+      // remain for their own autonomous Turns instead of counting as Host additions.
+      const userMessageId = text(response.userMessageId) || undefined;
+      const persisted = this.#autonomous.ownHostTurn(snapshot.turns, userMessageId);
+      if (!persisted && !active.nativeCommand && outcome.status === "succeeded")
         throw new CodeBuddyError(
           "protocolError",
           "Could not identify exactly one persisted Native Turn",
         );
-      const nativeTurnRef = added[0]?.nativeTurnRef;
-      if (response.userMessageId && nativeTurnRef?.nativeTurnKey !== response.userMessageId)
-        throw new CodeBuddyError(
-          "protocolError",
-          "ACP terminal and native history disagree on Turn identity",
-        );
-      active.output.confirmCompaction(
-        snapshot.turns
-          .flatMap((turn) => turn.items)
-          .filter((snapshot) => !active.beforeItems.has(snapshot.item.itemId)),
-      );
+      active.output.confirmCompaction(persisted?.items ?? []);
       if (active.nativeCommand)
         active.output.replayCommandResult(
-          (added[0]?.items ?? []).filter(({ item }) => !this.subagents.hasItem(item.itemId)),
+          (persisted?.items ?? []).filter(({ item }) => !this.subagents.hasItem(item.itemId)),
         );
+      const nativeTurnRef = persisted?.nativeTurnRef;
+      if (nativeTurnRef) this.#hasTurn = true;
       const compactCommand =
         outcome.status !== "cancelled" &&
         active.nativeCommand &&
@@ -738,19 +861,19 @@ export class CodeBuddySession implements HarnessSession {
             .join("\n")
             .trim(),
         );
-      const persisted = compactCommand ? added[0]?.outcome : undefined;
-      if (compactCommand && (!persisted || persisted.status === "unknown"))
+      const persistedOutcome = compactCommand ? persisted?.outcome : undefined;
+      if (compactCommand && (!persistedOutcome || persistedOutcome.status === "unknown"))
         throw new CodeBuddyError(
           "protocolError",
           "Native compaction terminal outcome was not persisted",
         );
       const terminalOutcome: TurnOutcome =
-        persisted && persisted.status !== "unknown" ? persisted : outcome;
+        persistedOutcome && persistedOutcome.status !== "unknown" ? persistedOutcome : outcome;
       this.#finish(
         active,
         {
           ...terminalOutcome,
-          ...(added[0]?.checkpoint ? { checkpoint: added[0].checkpoint } : {}),
+          ...(persisted?.checkpoint ? { checkpoint: persisted.checkpoint } : {}),
         },
         nativeTurnRef,
       );
@@ -802,6 +925,8 @@ export class CodeBuddySession implements HarnessSession {
   #finish(active: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef) {
     if (active.done) return;
     active.done = true;
+    active.settle?.();
+    if (active.autonomous) this.#autonomous.finish(active.autonomous.round);
     this.subagents.finish(outcome);
     this.#interactions.close();
     active.output.finish(outcome.status, outcome.status === "failed" ? outcome.error : undefined);
@@ -812,11 +937,13 @@ export class CodeBuddySession implements HarnessSession {
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
     });
     if (this.#active === active) this.#active = undefined;
+    this.#flushAutonomous();
   }
 
   #onFault(error: unknown) {
     if (this.#fault || this.#closed) return;
     this.#fault = nativeError(error, this.profile);
+    this.#autonomous.close();
     if (this.#active) this.#finish(this.#active, { status: "failed", error: this.#fault });
     this.#interactions.close();
     this.#emit({ type: "session.faulted", error: this.#fault });
@@ -830,6 +957,7 @@ export class CodeBuddySession implements HarnessSession {
   }
   async #close() {
     this.#closed = true;
+    this.#autonomous.close();
     this.#interactions.close();
     try {
       await this.#client.close();

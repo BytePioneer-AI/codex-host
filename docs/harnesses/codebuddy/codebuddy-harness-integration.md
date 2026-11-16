@@ -166,6 +166,16 @@ verify system-prompt discovery and inherited Runtime/parent environment; it is n
 an end-to-end test of another live Harness or Desktop deployment.
 
 
+## Native autonomous Turns (CLI 2.157.0)
+
+CodeBuddy's ACP surface can run a Turn without a Host `session/prompt`: a completed background bash/PowerShell task, a cron notice, or a coordinator result triggers an internal drain when the Session is idle. The CLI announces the run with `session_info_update` and `_meta["codebuddy.ai/unsolicitedTurn"] = { requestId, reason: "background_drain" }` (plus the same `codebuddy.ai/requestId`), forwards that run's content frames under the same request id, and closes it with `session_end` (`stopReason: "end_turn"`, same request id). A single drain can contain several such rounds.
+
+The shared Session declares `autonomousTurns.observe` and projects every round as one public Turn: `turn.autonomous.started` with `input: []` and `turn.started`, the native Items, and exactly one `turn.completed`. Success and the Native Turn identity come from the persisted Turn, not from the always-`end_turn` frame; an outcome that native history did not record fails rather than being labelled successful. While an autonomous Turn owns the Session, `turn.start` returns `sessionBusy`, so Desktop queues the next request. Drain frames that arrive while the previous Host Turn is still finishing are held by request id, bounded, and replayed in native order after that Turn's terminal, so the two Turns never share identity or Items.
+
+Cancellation, close and Session faults use the normal lifecycle. `turn.cancel` calls native `session/cancel`, closes pending Interactions and waits for `session_end`; an unconfirmed cancellation faults through the existing bounded rule instead of fabricating a terminal. A cancelled autonomous Turn rebuilds the CLI connection like a cancelled requested Turn. Read-only history projects the native meta input row that opens such a Turn with empty input, so live and reloaded views share the Turn identity, Items and outcome.
+
+Static evidence covers CodeBuddy CLI 2.157.0 (`dist/codebuddy-headless.js`, SHA-256 `ac167cc6a1a6f581e36e789074bf88031007130066297824574680de7af275af`; its bundled ACP documentation specifies the client contract under "Unsolicited Drain Turns") and the WorkBuddy AI 5.7.6 and WorkBuddy 5.6.2 / CLI 2.147.0 bundles. Each carries the same announce/drain protocol path: `triggerDrain`, `drainBackgroundTaskNotifications`, `announceUnsolicitedTurn`, `buildUnsolicitedTurnUpdate` and `readUnsolicitedTurn`. Live background-task execution and the cancellation terminal (`session_end`) have not been validated against these distributions.
+
 ## Native Fork and revision (CLI 2.151.0)
 
 The installed native CLI has two different Fork paths. ACP does not advertise

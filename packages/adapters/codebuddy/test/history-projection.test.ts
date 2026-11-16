@@ -271,6 +271,75 @@ describe("CodeBuddy native history and output projection", () => {
     },
   );
 
+  it("projects a native-initiated meta row as an autonomous Turn with no input", () => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        user,
+        assistant,
+        {
+          ...user,
+          id: "notice",
+          parentId: "answer",
+          providerData: { isMeta: true },
+          content: "<task-notification>background task completed</task-notification>",
+        },
+        {
+          ...assistant,
+          id: "notice-answer",
+          parentId: "notice",
+          content: [{ type: "output_text", text: "handled" }],
+        },
+      ]),
+      ref,
+      process.cwd(),
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[1]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "notice" },
+      input: [],
+      items: [{ item: { type: "agentMessage", text: "handled" } }],
+      outcome: { status: "succeeded" },
+    });
+  });
+
+  it("groups adjacent hidden input rows from one native run into one Turn", () => {
+    const snapshot = snapshotFromHistory(
+      lines([
+        user,
+        assistant,
+        {
+          ...user,
+          id: "notice-1",
+          parentId: "answer",
+          providerData: { isMeta: true },
+          content: "<task-notification>first background task completed</task-notification>",
+        },
+        {
+          ...user,
+          id: "notice-2",
+          parentId: "notice-1",
+          providerData: { isMeta: true },
+          content: "<task-notification>second background task completed</task-notification>",
+        },
+        {
+          ...assistant,
+          id: "notice-answer",
+          parentId: "notice-2",
+          content: [{ type: "output_text", text: "handled both" }],
+        },
+      ]),
+      ref,
+      process.cwd(),
+    );
+    expect(snapshot.turns).toHaveLength(2);
+    expect(snapshot.turns[1]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "notice-1" },
+      input: [],
+      items: [{ item: { type: "agentMessage", text: "handled both" } }],
+      outcome: { status: "succeeded" },
+    });
+  });
+
   it("groups native local command records and hides compaction prompts and summaries", () => {
     const snapshot = snapshotFromHistory(
       lines([

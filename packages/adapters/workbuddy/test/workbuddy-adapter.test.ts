@@ -427,6 +427,7 @@ describe("WorkBuddy Adapter identity", () => {
       capabilities: {
         history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
         subagents: { observe: true, readTranscript: true },
+        autonomousTurns: { observe: true },
       },
     });
   });

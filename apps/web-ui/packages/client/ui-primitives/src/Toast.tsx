@@ -39,7 +39,10 @@ const FADE_MS = 1000;
  * @param props.holdMs - full-opacity hold before the fade; defaults to 3000.
  * @param props.role - ARIA role of the banner; defaults to "alert" (the
  * assertive interruption failures deserve). Transient success confirmations
- * that must not interrupt assistive tech mid-utterance pass "status".
+ * that must not interrupt assistive tech mid-utterance pass "status" — or
+ * "none" when announcement is owned by a persistent live region elsewhere
+ * (per ARIA22 the live container must pre-exist the message; a banner that
+ * mounts together with its text cannot serve as one).
  * @param props.anchor - optional element whose horizontal center the banner
  * follows (e.g. the composer card, so the banner centers over the chat column
  * rather than the whole window); omitted, it centers on the viewport.
@@ -63,7 +66,7 @@ export function Toast({
   holdMs?: number;
   actions?: readonly { label: string; prefix?: string; onClick: () => void }[];
   onDone: () => void;
-  role?: "alert" | "status";
+  role?: "alert" | "status" | "none";
 }) {
   const latestOnDone = useRef(onDone);
   useLayoutEffect(() => {

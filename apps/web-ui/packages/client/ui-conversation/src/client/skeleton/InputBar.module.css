@@ -29,6 +29,19 @@
   padding: 0 var(--dsh-composer-side-clearance);
 }
 
+/* Persistent ARIA22 live region for info notices: present before any notice
+   text is inserted so screen readers announce the change; visually hidden —
+   the visible surface is the toast above. */
+.liveRegion {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 .card {
   box-sizing: border-box;
   position: relative; /* overlay anchor positioning context */

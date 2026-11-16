@@ -492,6 +492,14 @@ export const InputBar = memo(function InputBar({
           onDone={dismissToast}
         />
       )}
+      {/* Persistent, initially-empty live region (ARIA22): the status
+          container exists before any notice text is inserted, so screen
+          readers announce the change reliably — the visible toast mounts
+          together with its text and cannot serve as one. Announcement rides
+          this region alone; the visible toast below is purely visual. */}
+      <div className={css.liveRegion} role="status">
+        {notice?.level === "info" ? notice.text : ""}
+      </div>
       {/* Info notices are one-shot confirmations (e.g. the reference action's
           "added to the current draft"): rendered as the shared success toast,
           never as a resident banner. Suppressed while the error toast owns
@@ -505,7 +513,7 @@ export const InputBar = memo(function InputBar({
           key={`${keyboard.noticeOwner}:${notice.seq}`}
           text={notice.text}
           tone="success"
-          role="status"
+          role="none"
           anchor={cardRef.current}
           onDone={() => keyboard.clearNotice(notice.seq)}
         />

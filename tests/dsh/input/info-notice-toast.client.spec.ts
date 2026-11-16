@@ -202,7 +202,7 @@ it("equal seqs across shells never share a toast: a switch remounts with the new
   await act(async () => {
     a.notify("info", "from A");
   });
-  expect(document.body.querySelector("[role='status']")?.textContent).toContain("from A");
+  expect(document.body.querySelector("[role='none']")?.textContent).toContain("from A");
   // One second of the fake clock passes before B's notice exists, so the two
   // shells hold the same seq but staggered deadlines:
   act(() => vi.advanceTimersByTime(1000));
@@ -212,7 +212,7 @@ it("equal seqs across shells never share a toast: a switch remounts with the new
   // Switching the mounted composer to shell B remounts the toast under B's
   // owner-prefixed key — B's text, B's own timing:
   await render(createElement(InputBar, propsOf(b)));
-  expect(document.body.querySelector("[role='status']")?.textContent).toContain("from B");
+  expect(document.body.querySelector("[role='none']")?.textContent).toContain("from B");
   // A's expiry lands at its own deadline and only clears A's store:
   await act(async () => {
     vi.advanceTimersByTime(3000);
@@ -220,34 +220,46 @@ it("equal seqs across shells never share a toast: a switch remounts with the new
   await render(createElement(InputBar, propsOf(b)));
   expect(a.notices.getSnapshot()).toBeNull();
   expect(b.notices.getSnapshot()?.text).toBe("from B");
-  expect(document.body.querySelector("[role='status']")?.textContent).toContain("from B");
+  expect(document.body.querySelector("[role='none']")?.textContent).toContain("from B");
   // B then expires on its own full window:
   await act(async () => {
     vi.advanceTimersByTime(1000);
   });
   await render(createElement(InputBar, propsOf(b)));
-  expect(document.body.querySelector("[role='status']")).toBeNull();
+  expect(document.body.querySelector("[role='none']")).toBeNull();
   expect(b.notices.getSnapshot()).toBeNull();
 });
 
-it("renders the info confirmation as a status success toast that leaves with the shell expiry", async () => {
+it("announces info through the persistent live region and renders a visual toast that leaves with the shell expiry", async () => {
   vi.useFakeTimers();
   stubGeometry();
   const input = shell();
   const { render } = await mount(createElement(InputBar, propsOf(input)));
+  // ARIA22: the live region pre-exists, empty, before any notice text:
+  const region = document.body.querySelector("[role='status']");
+  expect(region).not.toBeNull();
+  expect(region?.textContent).toBe("");
   await act(async () => {
     input.notify("info", "Added to the current draft");
   });
-  const status = document.body.querySelector("[role='status']");
-  expect(status?.textContent).toContain("Added to the current draft");
+  // The persistent region carries the text (announcement source); the visible
+  // success toast is role=none (purely visual, no second announcement):
+  expect(document.body.querySelector("[role='status']")?.textContent).toContain(
+    "Added to the current draft",
+  );
+  expect(document.body.querySelector("[role='none']")?.textContent).toContain(
+    "Added to the current draft",
+  );
   expect(input.notices.getSnapshot()?.level).toBe("info");
   // The toast's own fade completion and the shell expiry both land at ~4s;
-  // either path must leave no resident banner behind.
+  // either path must leave no resident banner behind, and the region returns
+  // to its empty pre-notice state:
   await act(async () => {
     vi.advanceTimersByTime(4100);
   });
   await render(createElement(InputBar, propsOf(input)));
-  expect(document.body.querySelector("[role='status']")).toBeNull();
+  expect(document.body.querySelector("[role='none']")).toBeNull();
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
   expect(input.notices.getSnapshot()).toBeNull();
 });
 
@@ -265,12 +277,18 @@ it("suppresses the info toast while the error toast owns the top slot", async ()
     input.notify("info", "Added to the current draft");
   });
   expect(document.body.querySelector("[role='alert']")?.textContent).toContain("boom");
-  expect(document.body.querySelector("[role='status']")).toBeNull();
+  // The visual toast is suppressed, but the persistent live region still
+  // carries the notice for announcement:
+  expect(document.body.querySelector("[role='status']")?.textContent).toContain(
+    "Added to the current draft",
+  );
+  expect(document.body.querySelector("[role='none']")).toBeNull();
   // The suppressed notice still expires on schedule:
   await act(async () => {
     vi.advanceTimersByTime(4100);
   });
   await render(createElement(InputBar, propsOf(input)));
   expect(input.notices.getSnapshot()).toBeNull();
-  expect(document.body.querySelector("[role='status']")).toBeNull();
+  expect(document.body.querySelector("[role='none']")).toBeNull();
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
 });

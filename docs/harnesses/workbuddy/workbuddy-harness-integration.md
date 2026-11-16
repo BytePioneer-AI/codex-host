@@ -123,7 +123,7 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 
 WorkBuddy 内置 CLI 支持 unsolicited drain：原生空闲时因后台任务、cron 或协调者结果开始执行，先发 `session_info_update`，其 `_meta["codebuddy.ai/unsolicitedTurn"]` 带 `requestId` 与 `reason: "background_drain"`，最后以 `session_end` 结束。共享 Session 声明 `autonomousTurns.observe`，但 B12 仅受限支持实时观测：同一连接上的公告至终态区间归入一个 `input: []` 的公共自主 Turn。requestId 可复用或在 admission 中改变，不作为区间身份。原生区间已经结束、公共 Turn 仍在收尾时，后续区间独立暂存；真正未结束的区间再次收到公告才 fault。自主 Turn 占用 Session 时，新的 Host Turn 以 `sessionBusy` 拒绝。
 
-`session_end` 发出唯一实时终态：已请求取消则为 cancelled，否则以 succeeded 表示区间完成，不证明原生业务成功。自主 Turn 不读取历史来推断成功、身份或分组，也不分配 `nativeTurnRef`。取消仍调用原生取消并按既有规则重建连接；30 秒未收到终态则 fault。close/fault 沿用共享生命周期。已公告未结束的区间拥有 permission/question，等待自身公共 turnId 后发出交互；旧 Host prompt 的 finally 是否执行不改变归属。全部未释放区间、帧和等待交互元数据共享 2048 帧 / 4 MiB UTF-8 总额度，空区间也占额度。
+`session_end` 发出唯一实时终态：已请求取消则为 cancelled，否则以 succeeded 表示区间完成，不证明原生业务成功。自主 Turn 不读取历史来推断成功、身份或分组，也不分配 `nativeTurnRef`。这些终态带 `ephemeral: true`，由 Host 既有临时投影完成实时收尾和队列推进，不写入 Host Turn 身份映射；原生 Session 记录仍由原生存储保留。取消仍调用原生取消并按既有规则重建连接；30 秒未收到终态则 fault。close/fault 沿用共享生命周期。已公告未结束的区间拥有 permission/question，等待自身公共 turnId 后发出交互；旧 Host prompt 的 finally 是否执行不改变归属。取消后到达的请求，以及等待公共身份时被取消的请求，都返回原生 cancelled，不重新发布交互。全部未释放区间、帧和等待交互元数据共享 2048 帧 / 4 MiB UTF-8 总额度，空区间也占额度。
 
 只读历史保持原生行投影规则，不保存或恢复实时区间；重开会话后，自主输出按原生落盘展示，分组和终态可能与实时不同。
 

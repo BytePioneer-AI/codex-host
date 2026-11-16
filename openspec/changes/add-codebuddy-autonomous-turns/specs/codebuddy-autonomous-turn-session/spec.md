@@ -43,7 +43,7 @@ Session SHALL 声明 `autonomousTurns.observe`，把同一连接的 unsolicited 
 
 ### Requirement: Native intervals SHALL own Interactions and lifecycle settlement
 
-已公告未结束的区间 SHALL 拥有 permission/question，等待自身公共身份后发布；前一 Host prompt 的本地完成状态 SHALL NOT 覆盖该归属。取消 SHALL 调用原生取消并关闭 Interaction，收到 `session_end` 后发唯一 cancelled 终态，超时按既有 fault 规则处理。close/fault SHALL 终结活动 Turn、释放暂存和交互等待。
+已公告未结束的区间 SHALL 拥有 permission/question，等待自身公共身份后发布；前一 Host prompt 的本地完成状态 SHALL NOT 覆盖该归属。取消后到达、或等待身份时被取消的请求 SHALL 返回原生 cancelled，且 SHALL NOT 发布新的 Interaction。取消 SHALL 调用原生取消并关闭 Interaction，收到 `session_end` 后发唯一 cancelled 终态，超时按既有 fault 规则处理。close/fault SHALL 终结活动 Turn、释放暂存和交互等待。
 
 #### Scenario: A drain approval precedes Host completion microtasks
 
@@ -55,6 +55,11 @@ Session SHALL 声明 `autonomousTurns.observe`，把同一连接的 unsolicited 
 - **WHEN** 取消后重建连接期间，新连接收到连续完整区间
 - **THEN** 取消轮 SHALL 仅有一个 cancelled 终态，后续区间 SHALL 分别重放
 
+#### Scenario: Cancellation precedes Interaction publication
+
+- **WHEN** permission/question 在取消后到达，或在其等待身份期间发生取消
+- **THEN** 原生 SHALL 收到 cancelled，且 SHALL NOT 重新发布审批或提问 UI
+
 #### Scenario: The Session closes with an unpublished Interaction
 
 - **WHEN** close/fault 发生于公共身份尚未就绪时
@@ -62,12 +67,17 @@ Session SHALL 声明 `autonomousTurns.observe`，把同一连接的 unsolicited 
 
 ### Requirement: Limited live observation SHALL NOT infer persisted autonomous identity
 
-自主 Turn SHALL NOT 读取历史推断终态、成功、身份或分组，也 SHALL NOT 生成 `nativeTurnRef`。只读历史 SHALL 保持原生行投影规则；重开后按原生落盘展示，分组和终态可能与实时不同。此能力 SHALL 明确标为受限实时支持，不承诺两者一致。
+自主 Turn SHALL NOT 读取历史推断终态、成功、身份或分组，也 SHALL NOT 生成 `nativeTurnRef`。无原生身份的终态 SHALL 带 `ephemeral: true`，通过 Host 既有临时投影完成收尾，不写入 Host Turn 身份映射。只读历史 SHALL 保持原生行投影规则；重开后按原生落盘展示，分组和终态可能与实时不同。此能力 SHALL 明确标为受限实时支持，不承诺两者一致。
 
 #### Scenario: History has no success or contains unrelated meta rows
 
 - **WHEN** 原生区间已结束，但历史不存在、未完成或含失败 Host 的隐藏输入
 - **THEN** 自主 Turn SHALL 按实时区间结束，不认领任何历史行或 Native Turn Ref
+
+#### Scenario: The Host consumes a successful unanchored terminal
+
+- **WHEN** 实时自主区间以无 nativeTurnRef 的成功终态结束
+- **THEN** Host SHALL 接受其 ephemeral 标记、投影完成并继续队列，不得因缺少原生身份将其改判失败
 
 #### Scenario: A Session is reopened
 

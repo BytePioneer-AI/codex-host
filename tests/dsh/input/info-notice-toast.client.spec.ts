@@ -242,6 +242,36 @@ it("equal seqs across shells never share a toast: a switch remounts with the new
   expect(b.notices.getSnapshot()).toBeNull();
 });
 
+it("a shell switch with identical seq and text still clears and re-announces", async () => {
+  vi.useFakeTimers();
+  stubGeometry();
+  const a = shell();
+  const b = shell();
+  const { render } = await mount(createElement(InputBar, propsOf(a)));
+  await act(async () => {
+    a.notify("info", "same text");
+  });
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("same text");
+  // Switch to shell B holding an equal seq and equal text: the announcement
+  // effect must rerun on the owner change and clear-then-restore anyway:
+  await act(async () => {
+    b.notify("info", "same text");
+  });
+  await render(createElement(InputBar, propsOf(b)));
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("");
+  expect(document.body.querySelector("[role='none']")?.textContent).toContain("same text");
+  await act(async () => {
+    vi.advanceTimersByTime(100);
+  });
+  expect(document.body.querySelector("[role='status']")?.textContent).toBe("same text");
+  // Both shells keep their own notice; neither expiry cleared the other:
+  expect(a.notices.getSnapshot()?.text).toBe("same text");
+  expect(b.notices.getSnapshot()?.text).toBe("same text");
+});
+
 it("announces info through the persistent live region and renders a visual toast that leaves with the shell expiry", async () => {
   vi.useFakeTimers();
   stubGeometry();

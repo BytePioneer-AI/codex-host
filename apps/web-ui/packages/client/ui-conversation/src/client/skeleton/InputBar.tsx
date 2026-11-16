@@ -218,7 +218,10 @@ export const InputBar = memo(function InputBar({
         announceRestore.current = undefined;
       }
     };
-  }, [liveNoticeSeq, liveNoticeText]);
+    // noticeOwner rides the deps: shells number notices independently, and a
+    // switch to a shell holding an equal seq + equal text must still rerun
+    // the clear-then-restore sequence for the new shell's announcement.
+  }, [keyboard?.noticeOwner, liveNoticeSeq, liveNoticeText]);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [toolbarLayout, setToolbarLayout] = useState<ControlRowLayout>({
     phone: false,

@@ -2,8 +2,10 @@ import { once } from "node:events";
 import { createServer, type Socket } from "node:net";
 import { PassThrough } from "node:stream";
 import { connect } from "node:tls";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseClientHello, readClientHello } from "../src/client-hello.js";
+
+afterEach(() => vi.useRealTimers());
 
 async function capture(servername?: string, alpn = ["h2", "http/1.1"]): Promise<Buffer> {
   const server = createServer();
@@ -66,8 +68,16 @@ describe("ClientHello", () => {
   });
 
   it("rejects a socket that has not completed its hello in ten seconds", async () => {
+    vi.useFakeTimers();
     const socket = new PassThrough();
-    await expect(readClientHello(socket as unknown as Socket)).rejects.toThrow("timed out");
+    const parsed = readClientHello(socket as unknown as Socket);
+    const rejected = expect(parsed).rejects.toThrow("timed out");
+    const settled = vi.fn();
+    void parsed.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
     socket.destroy();
-  }, 12_000);
+  });
 });

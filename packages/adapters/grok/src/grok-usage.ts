@@ -91,6 +91,7 @@ export class GrokTurnUsage {
   #startedAtMs: number | undefined;
   #streamKey: unknown;
   #reasoningObserved = false;
+  #textStartedOutput = false;
   #bufferedToolInput = false;
   #outputTokens = 0;
   #durationMs = 0;
@@ -134,7 +135,10 @@ export class GrokTurnUsage {
         }
       }
       if (event.type === "agent.thought") this.#reasoningObserved = true;
-      this.#startedAtMs ??= Date.now();
+      if (this.#startedAtMs === undefined) {
+        this.#startedAtMs = Date.now();
+        this.#textStartedOutput = event.type === "agent.text";
+      }
     }
     if (event.type !== "response.completed") return null;
     if (event.messageId) {
@@ -145,7 +149,19 @@ export class GrokTurnUsage {
     const usage = usageFromResponse(event.usage);
     // Missing reasoning counts are unknown, not zero. Without observed thought output,
     // only an explicit zero proves that the observed window covers all output tokens.
-    const completeOutputBoundary = this.#reasoningObserved || usage?.reasoningOutputTokens === 0;
+    const outputTokens = usage?.outputTokens;
+    const reasoningOutputTokens = usage?.reasoningOutputTokens;
+    const completeOutputBoundary = this.#reasoningObserved || reasoningOutputTokens === 0;
+    // Hidden reasoning is outside a text-first window; subtract its native token count.
+    const timedOutputTokens = completeOutputBoundary
+      ? outputTokens
+      : this.#textStartedOutput &&
+          outputTokens !== undefined &&
+          reasoningOutputTokens !== undefined &&
+          reasoningOutputTokens > 0 &&
+          reasoningOutputTokens < outputTokens
+        ? outputTokens - reasoningOutputTokens
+        : undefined;
     this.#resetResponse();
     this.#latestCacheHit = usage?.cacheHitRatePercent;
     if (usage?.inputTokens === undefined || usage.cachedInputTokens === undefined)
@@ -155,8 +171,8 @@ export class GrokTurnUsage {
         const value = usage[field];
         if (value !== undefined) this.#totals[field] = (this.#totals[field] ?? 0) + value;
       }
-      if (completeOutputBoundary && duration > 0 && usage.outputTokens !== undefined) {
-        this.#outputTokens += usage.outputTokens;
+      if (duration > 0 && timedOutputTokens !== undefined) {
+        this.#outputTokens += timedOutputTokens;
         this.#durationMs += duration;
       }
     }
@@ -167,6 +183,7 @@ export class GrokTurnUsage {
     this.#startedAtMs = undefined;
     this.#streamKey = undefined;
     this.#reasoningObserved = false;
+    this.#textStartedOutput = false;
     this.#bufferedToolInput = false;
   }
 

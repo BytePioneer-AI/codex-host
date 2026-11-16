@@ -208,6 +208,8 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 
 恢复时，Host 将旧映射解码为 Model、Thinking、Permission Mode 提示并传给 `open({ kind: "resume" })`。Adapter 决定恢复提示还是保留权威原生配置；Host 不再按 Harness ID 补发配置命令。OMP、DSH 在各自 Adapter 内恢复权限；OpenCode 保留原生确认的权限状态。成功读到原生配置后，Host 用共享载体保存确认值，旧映射仍可读取。
 
+Antigravity 普通恢复只保留持久身份，查看历史通过独立原生 `session/load` 连接完成，不预先启动可写 `session/resume`。首次发送或修改配置时再恢复可写连接，并应用保存的配置提示；只读连接的配置不作为可写 Session 的确认状态返回，避免覆盖这些提示。只读进程按命令、权限与账号环境边界在 Adapter 内串行复用：每次重放后等待原生 `session/close` 确认即释放给后续读取，异常进程立即退役重建，Adapter 关闭时统一回收，不与可写连接混用，也不建立本地历史镜像。活动 Turn 的历史读取仍与写连接隔离，历史用量回放保持可用。Fork/回滚派生的 Session 在交付前确认目标目录与配置的可写恢复。
+
 Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶层字段：当前版本不使用它们，更新文件时原样保留，不因新增字段隔离会话。已知字段的类型、必填要求及身份和映射约束仍照常校验；已知元数据字段的清除不影响同文件中的未知字段。
 
 主记录和备份均无法恢复时，Mapping Store 先将独立元数据原样复制到 `quarantine/<id>.json.<时间戳>.invalid.metadata`，再将主记录移到同名的 `.invalid` 文件，不覆盖已有隔离文件。任一步失败只跳过该 Thread，保留源记录及元数据供后续启动重试，并将其元数据排除在孤儿清理之外；健康 Thread 仍可访问。成功隔离后才尽力清理源元数据，清理失败会在后续启动重试。隔离文件用于人工恢复，不会自动重新导入；Harness 原生会话不受此流程删除。
@@ -238,7 +240,7 @@ Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。W
 
 本机与远程均保留 Desktop 原生的草稿预热；它只提前创建 Session，不发送用户消息。Desktop Control 只给外部、非 ephemeral 的预热 `thread/start` 加上 `codexhostPrewarm: true`，正式创建与官方 Codex 请求不加此标记。配置变更、策略清理或退役时，已返回的外部预热与之后迟到的结果通过 `codexhost/thread/prewarm/discard { threadId }` 请求释放，不能只在前端丢弃结果。
 
-未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。普通非预热 Thread 的创建行为不变。
+未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。首轮已提交但原生身份尚未就绪的当前运行时 Thread 会进入目录与会话列表，包括初始化失败后保留的首轮；身份就绪不改变 Host Thread ID，归档仍按正常列表过滤处理。普通非预热 Thread 的创建行为不变。
 
 Host 在现有每 Thread 请求队列内裁决接管与释放：Turn、原生命令、配置选择、恢复等操作接管后，迟到清理返回 `discarded: false`，不关闭 Session；普通空 Thread 也不能被此接口删除。未接管且没有活动工作或历史的预热先关闭 Session、等待输出结束，再移除 Host 映射；重复清理无副作用，关闭报告失败时保留映射并阻止继续使用这个未确认关闭的预热。该标记只是当前 Host 的内存所有权，不把预分配身份持久化为原生历史。
 

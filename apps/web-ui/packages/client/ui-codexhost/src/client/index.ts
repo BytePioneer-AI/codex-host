@@ -61,6 +61,8 @@ import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
 import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { WallpaperController } from "./wallpaper.ts";
+import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
 import { SettingsLauncher, type SettingsLauncherFace } from "./SettingsLauncher.tsx";
@@ -126,6 +128,20 @@ export function apply(ctx: ClientContext): void {
       ),
     );
   }
+  const wallpaper = new WallpaperController();
+  ctx.effect(() => () => wallpaper.dispose(), "ui-codexhost: wallpaper");
+  ctx.slots.inject("settings.general.item", () =>
+    ctx.slots.register(
+      {
+        name: "settings.general.item",
+        id: "codexhost.wallpaper",
+        order: 10.5,
+        locale: NS,
+        inject: (): WallpaperFace => ({ wallpaper }),
+      },
+      WallpaperRow,
+    ),
+  );
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
   ctx.inject(["conversation", "uiSession"], registerThreadReferenceAction);

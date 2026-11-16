@@ -32,12 +32,14 @@
 | [`architecture/delegation-worktrees.md`](architecture/delegation-worktrees.md) | CLI 与 HTTP/MCP 委派创建独立 Git worktree 的目录、HEAD 基线、返回字段、状态校验与失败保留边界。 |
 | [`architecture/delegation-thread-list.md`](architecture/delegation-thread-list.md) | 委派 CLI 列表的共享 catalog、独立来源分页、查询绑定与活列表一致性边界。 |
 | [`architecture/web-thread-tree.md`](architecture/web-thread-tree.md) | Web 侧栏会话树：委派关系决定的显示父 Thread、Host 树接口、祖先补齐、归档级联、排序与置顶规则；修改侧栏层级或委派显示时阅读。 |
-| [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
+| [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下或等待回答通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
 | [`architecture/external-clients.md`](architecture/external-clients.md) | 同用户 CLI 自动认证、命名客户端登记、本机监听、Thread 引用、调试导出、事件日志与 MCP；修改外部接入时阅读。 |
+| [`architecture/delegation-questions.md`](architecture/delegation-questions.md) | 委派问题（`pendingQuestions`/`thread answer`）的来源、唯一状态、回答与失效语义；修改子 Agent 提问交互时阅读。 |
 | [`architecture/official-traffic-ownership.md`](architecture/official-traffic-ownership.md) | Host 只截获自身流量、其余原样转发官方的归属判别与例外；修改请求路由或参数校验时阅读。 |
 | [`architecture/app-server-transport.md`](architecture/app-server-transport.md) | 原生大历史响应的 WebSocket 与 JSONL 传输边界；排查任务加载、消息大小和转发性能时阅读。 |
 | [`architecture/turn-activity-folding.md`](architecture/turn-activity-folding.md) | 回合完成后过程折叠的 Desktop 条件与 `final_answer` 推断规则；修改 Agent 消息阶段投影或排查过程无法收起时阅读。 |
 | [`architecture/acp-layer-follow-up.md`](architecture/acp-layer-follow-up.md) | 共享 ACP 层的抽取条件与边界；出现第二个适合共享实现的生产 ACP Harness 时阅读。 |
+| [`architecture/acp-implementation-research.md`](architecture/acp-implementation-research.md) | ACP 实现事实记录：本地插件分布、重复职责、会话与进程关系，以及 T3 Code 固定提交的公共 ACP 层和隔离机制；不包含改造方案。 |
 
 ## Harness 专项
 

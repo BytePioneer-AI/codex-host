@@ -43,7 +43,8 @@
 
 /* macOS desktop: the AppFrame column owns the translucent sidebar tint; an
    opaque fill here would sit on top of it and block the window vibrancy. */
-:global([data-platform="darwin"]) .root {
+:global([data-platform="darwin"]) .root,
+:global(body[data-codexhost-wallpaper]) .root {
   background: transparent;
 }
 

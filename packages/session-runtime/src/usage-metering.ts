@@ -114,7 +114,7 @@ export class UsageMeter {
       this.recordOutputTiming(
         {
           requestId: request.requestId,
-          outputTokens: request.outputTokens,
+          outputTokens: request.timedOutputTokens ?? request.outputTokens,
           startedAtMs: request.startedAtMs ?? 0,
           completedAtMs: request.completedAtMs ?? 0,
         },
@@ -451,6 +451,7 @@ export class UsageMeter {
       string,
       {
         outputTokens: number;
+        timedOutputTokens?: number;
         startedAtMs?: number;
         completedAtMs?: number;
       }
@@ -465,7 +466,7 @@ export class UsageMeter {
         request.completedAtMs <= request.startedAtMs
       )
         continue;
-      tokens += request.outputTokens;
+      tokens += request.timedOutputTokens ?? request.outputTokens;
       milliseconds += request.completedAtMs - request.startedAtMs;
     }
     return milliseconds > 0 && Number.isSafeInteger(tokens) && Number.isSafeInteger(milliseconds)

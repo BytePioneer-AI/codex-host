@@ -32,8 +32,38 @@ body {
   text-autospace: normal;
 }
 
+[data-codexhost-wallpaper-layer] {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: var(--ch-wallpaper-opacity, 0.25);
+  transition: opacity 80ms linear;
+}
+
+body[data-codexhost-wallpaper] > #root {
+  position: relative;
+  z-index: 1;
+}
+
 #ios-pwa-top-edge {
   display: none;
+}
+
+/* Touch screens: the app frame owns every scroller, so the page root has nothing
+   to scroll. Stop it from rubber-banding (and Android pull-to-refresh) when a
+   drag starts on a fixed control or a list hits its end; otherwise the whole
+   frame, composer included, follows the finger. Inner scrollers keep their own
+   bounce. Pointer-precise desktops keep trackpad history gestures. */
+@media (hover: none) and (pointer: coarse) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
 }
 
 /* WebKit's fixedContainerEdges recognizes backdrop-filter layers at the top edge.

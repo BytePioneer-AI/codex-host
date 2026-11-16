@@ -262,7 +262,8 @@ export class AntigravitySessionUsageTracker {
   }
 
   #historyComplete(): boolean {
-    return this.#complete && !this.#invalidated && !this.#turnActive && !this.#pending;
+    // Completeness covers finished requests, not whether the Turn is still running.
+    return this.#complete && !this.#invalidated && !this.#pending;
   }
 
   #reconcile(): void {
@@ -381,7 +382,7 @@ export class AntigravitySessionUsageTracker {
         request.outputTokens <= 0
       )
         continue;
-      tokens += request.outputTokens;
+      tokens += request.timedOutputTokens ?? request.outputTokens;
       milliseconds += request.completedAtMs - request.startedAtMs;
     }
     if (milliseconds > 0) this.#outputTokensPerSecond = tokens / (milliseconds / 1000);
@@ -460,12 +461,18 @@ export class AntigravitySessionUsageTracker {
       const candidate = native?.timing;
       // Tool-call viewable_at may describe an already assembled payload, not generation start.
       const clock =
-        parsed.reasoningOutputTokens === 0 &&
+        parsed.reasoningOutputTokens !== undefined &&
+        parsed.reasoningOutputTokens === native?.reasoningOutputTokens &&
+        // A thinking-only request has no output inside the visible window to time.
+        parsed.reasoningOutputTokens < parsed.outputTokens &&
         !transcript.toolCallSteps.has(step) &&
         candidate &&
         (historical || candidate.startedAtMs >= this.#turnStartedAtMs) &&
         candidate.completedAtMs <= Date.now()
-          ? candidate
+          ? {
+              ...candidate,
+              timedOutputTokens: parsed.outputTokens - parsed.reasoningOutputTokens,
+            }
           : undefined;
       // Let an in-flight native metadata commit supply timing before publishing the stable ID.
       if (
@@ -473,7 +480,6 @@ export class AntigravitySessionUsageTracker {
         this.#turnActive &&
         !finalizing &&
         transcript.metadata !== null &&
-        (parsed.reasoningOutputTokens === undefined || parsed.reasoningOutputTokens === 0) &&
         !clock &&
         !transcript.toolCallSteps.has(step)
       )

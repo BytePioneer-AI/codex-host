@@ -21,7 +21,11 @@ export function bytes(field: number, value: Uint8Array): Buffer {
 export function nanoseconds(value: bigint): Buffer {
   return Buffer.concat([integer(1, value / 1_000_000_000n), integer(2, value % 1_000_000_000n)]);
 }
-const time = (milliseconds: number) => nanoseconds(BigInt(Math.round(milliseconds * 1_000_000)));
+const time = (milliseconds: number) =>
+  nanoseconds(
+    BigInt(Math.trunc(milliseconds)) * 1_000_000n +
+      BigInt(Math.round((milliseconds % 1) * 1_000_000)),
+  );
 
 export interface NativeTimingFixture {
   step: number;

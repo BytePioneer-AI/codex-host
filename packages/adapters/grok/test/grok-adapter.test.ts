@@ -1531,7 +1531,7 @@ describe("Grok Adapter ACP projection", () => {
     }
   });
 
-  it("preserves usage without publishing TPS when native reasoning is not streamed", async () => {
+  it("preserves usage and publishes text-window TPS when native reasoning is not streamed", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);
@@ -1580,12 +1580,11 @@ describe("Grok Adapter ACP projection", () => {
       }
       const snapshots = events.filter((event) => event.type === "session.usage.changed");
       expect(snapshots.length).toBeGreaterThan(0);
-      for (const event of snapshots)
-        expect(event.usage).not.toHaveProperty("outputTokensPerSecond");
       expect(snapshots.at(-1)?.usage).toMatchObject({
         inputTokens: 26222,
         outputTokens: 104,
         reasoningOutputTokens: 54,
+        outputTokensPerSecond: 25,
         totalCostUsd: 0.01,
         sessionCacheUsage: { inputTokens: 26222, cachedInputTokens: 0 },
       });

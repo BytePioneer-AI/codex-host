@@ -448,7 +448,7 @@ export function SearchResultItem({
  * @param props.currentId - selected session id (row highlight).
  * @param props.now - epoch ms for relative-time formatting.
  * @param props.onOpen - open a session by id.
- * @param props.onRenameRequest - open the rename dialog from a title double-click (id + current title).
+ * @param props.onRenameRequest - open the rename dialog for this session (id + current title).
  * @param props.renderSlot - child-seat renderer for the row's action lists
  * (`sidebar.workspaces.session.menu.item` / `sidebar.workspaces.session.row.action`),
  * its leading decoration, and its hover-card section.
@@ -477,7 +477,7 @@ export function SessionNodeItem({
   currentId: string | undefined;
   now: number;
   onOpen: (id: SessionNode["id"]) => void;
-  /** Open the rename dialog from a title double-click (id + current title). */
+  /** Open the rename dialog for this session (id + current title). */
   onRenameRequest: (id: SessionNode["id"], currentTitle: string) => void;
   /** Scroll this row into view after search navigation, then acknowledge it. */
   onReveal?: (() => void) | undefined;
@@ -650,14 +650,6 @@ export function SessionNodeItem({
                   toggle(node.id, !expanded, childGroupId);
                 }
               : undefined
-          }
-          onTitleDoubleClick={
-            row.blank
-              ? undefined
-              : (e) => {
-                  e.stopPropagation();
-                  onRenameRequest(node.id, row.title);
-                }
           }
         >
           {showHost && row.remote && <HostBadge host={row.remote} t={t} />}

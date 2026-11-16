@@ -54,18 +54,6 @@ body[data-codexhost-wallpaper] > #root {
   display: none;
 }
 
-/* Touch screens: the app frame owns every scroller, so the page root has nothing
-   to scroll. Stop it from rubber-banding (and Android pull-to-refresh) when a
-   drag starts on a fixed control or a list hits its end; otherwise the whole
-   frame, composer included, follows the finger. Inner scrollers keep their own
-   bounce. Pointer-precise desktops keep trackpad history gestures. */
-@media (hover: none) and (pointer: coarse) {
-  html,
-  body {
-    overscroll-behavior: none;
-  }
-}
-
 /* WebKit's fixedContainerEdges recognizes backdrop-filter layers at the top edge.
    A zero-radius filter preserves page pixels while marking the edge (WebKit 329103).
    Keep 6px for edge sampling even when safe-area-inset-top is zero. */

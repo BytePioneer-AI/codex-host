@@ -78,7 +78,7 @@ Rarely needed: debugging only. Exports the full Thread to a JSON file and return
 
 ## 监听与发现
 
-- 本机共享后台 Host、本机 Desktop Runtime 与受管 Remote Host 均在 `127.0.0.1:4398` 提供外部监听；`CODEXHOST_EXTERNAL_CLIENT_PORT` 改端口，`off` 关闭。端口被占用时只停用外部监听并写诊断，Host 的其他功能不受影响。不要求 GUI 或 Web 页面保持打开，Remote Host 的委派使用其共享执行会话。
+- 本机共享后台 Host、本机 Desktop Runtime 与受管 Remote Host 均在 `127.0.0.1:4398` 提供外部监听；`CODEXHOST_EXTERNAL_CLIENT_PORT` 改端口，`off` 关闭；Launcher、Host 启动封装与 Web 预览清理继承环境时保留该变量，因此它对新启动的共享 Host 生效，已在运行的 Host 重启前沿用原端口。端口被占用时只停用外部监听并写诊断，Host 的其他功能不受影响。不要求 GUI 或 Web 页面保持打开，Remote Host 的委派使用其共享执行会话。
 - Remote Host 的客户端登记、凭据与事件使用该 Host 的数据目录（默认 `~/.codexhost/remote/data`）。运行 `codexhost client` 时须使用相同的 `CODEXHOST_DATA_DIR`。
 - 无界面的共享执行会话在首次原生 Codex 委派前协商官方协议；使用默认模型无需先查询模型目录或打开 Desktop。
 - 监听只接受客户端令牌，不接受 Host 内部令牌；令牌缺失、未知或已吊销都返回相同的 `UNAUTHORIZED`，不透露客户端名称。

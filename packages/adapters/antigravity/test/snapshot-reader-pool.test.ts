@@ -51,7 +51,8 @@ function fixture() {
 it("keeps a request arriving on completion behind already queued reads", async () => {
   const { reader, pool, load } = fixture();
   const gate = Promise.withResolvers<undefined>();
-  const open = reader.openSession.getMockImplementation()!;
+  const open = reader.openSession.getMockImplementation();
+  if (!open) throw new Error("Missing openSession implementation");
   reader.openSession.mockImplementationOnce(async (input) => {
     const result = await open(input);
     await gate.promise;

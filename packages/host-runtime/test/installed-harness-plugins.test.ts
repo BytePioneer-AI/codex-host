@@ -77,7 +77,7 @@ describe("installed Harness composition", () => {
   );
 
   describe("explicit commands", () => {
-    const commands = [
+    const commands: Array<[id: string, variable: string]> = [
       ["copilot", "CODEXHOST_COPILOT_COMMAND"],
       ["pi", "CODEXHOST_PI_COMMAND"],
       ["claude-code", "CODEXHOST_CLAUDE_COMMAND"],

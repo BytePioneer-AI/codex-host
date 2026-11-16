@@ -82,6 +82,18 @@ export interface ComposerKeyboard {
    * @returns the unbind disposer.
    */
   bindFilePicker(picker: { available(): boolean; open(): void }): () => void;
+  /**
+   * Clear the named notice when it is still the current one; a stale seq
+   * names a notice that was already replaced and must not clear its
+   * successor. The info toast's onDone and the shell's expiry timer share
+   * this seq-guarded path.
+   */
+  clearNotice(seq: number): void;
+  /**
+   * Stable per-shell identity for the composer's toast keys, so equal notice
+   * seqs across session shells never share a mounted toast instance.
+   */
+  readonly noticeOwner: number;
 }
 
 /** Half-open [start, end) range/selection in detect-projection coordinates. */

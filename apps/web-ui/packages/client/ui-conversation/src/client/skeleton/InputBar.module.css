@@ -29,18 +29,6 @@
   padding: 0 var(--dsh-composer-side-clearance);
 }
 
-.notice {
-  width: 100%;
-  max-width: var(--dsh-composer-card-max-width);
-  margin-bottom: 6px;
-  padding: 4px 8px;
-  border-radius: var(--dsw-radius-md);
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
-}
-
 .card {
   box-sizing: border-box;
   position: relative; /* overlay anchor positioning context */

@@ -62,6 +62,16 @@ export interface PopupDismissFace {
 }
 
 /**
+ * Lifetime of an info notice, in agreement with the shared Toast's default
+ * hold + fade (3000 + 1000): the expiry lands as the banner finishes fading.
+ * The shell owns the expiry so the notice never outlives its surface even
+ * when no toast mounts (the error surface is busy) or the session switches
+ * away mid-display. The clear is seq-guarded, so timing drift between the two
+ * expiry paths can only ever clear the notice it names.
+ */
+const INFO_NOTICE_TTL_MS = 4000;
+
+/**
  * Construction dependencies of one input model. Trigger and popup callbacks
  * resolve the currently available Session-scoped services on demand. InputHub
  * owns the lexicon subscription through the Session scope's inject lifecycle.
@@ -147,7 +157,7 @@ interface DetachedDraft {
 export class SessionInputShell implements SessionInput {
   /** Published editor projection + submit-plane state + queue overlay (the InputZone currency source). */
   readonly state: SnapshotStore<InputState>;
-  /** Latest surfaced notice (null after clear); the bar renders errors as banners and information inline. */
+  /** Latest surfaced notice (null after clear); the bar renders errors as toasts and info as a success toast. */
   readonly notices: SnapshotStore<InputNotice | null> = createSnapshotStore<InputNotice | null>(
     null,
   );
@@ -214,6 +224,12 @@ export class SessionInputShell implements SessionInput {
   private rev = 0;
   private readonly unregister: () => void;
   private noticeSeq = 0;
+  /** Pending info-notice expiry; a new notice write cancels and replaces it. */
+  private noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Static counter behind noticeOwner: one stable identity per shell instance. */
+  private static noticeOwnerSeq = 0;
+  /** Stable per-shell identity for composer toast keys (see ComposerKeyboard). */
+  readonly noticeOwner = ++SessionInputShell.noticeOwnerSeq;
   private lastPublishedDraft: DraftSnapshot | undefined;
   private draftSnapshotCache: { revision: number; value: DraftSnapshot } | undefined;
   private attachmentIds: readonly DraftAttachmentId[] = [];
@@ -735,12 +751,38 @@ export class SessionInputShell implements SessionInput {
 
   /**
    * Surface a notice from outside the machine (detached command results).
+   * Error notices hold until replaced; info notices are one-shot
+   * confirmations that expire after {@linkcode INFO_NOTICE_TTL_MS} even when
+   * their toast never mounts or the session switches away mid-display.
    * @param level - severity tier.
    * @param text - notice body.
    */
   notify(level: "info" | "error", text: string): void {
-    this.noticeSeq += 1;
-    this.notices.set({ level, text, seq: this.noticeSeq });
+    this.clearNoticeTimer();
+    const seq = ++this.noticeSeq;
+    if (level === "info") {
+      this.noticeTimer = setTimeout(() => this.clearNotice(seq), INFO_NOTICE_TTL_MS);
+    }
+    this.notices.set({ level, text, seq });
+  }
+
+  /**
+   * Clear the named notice when it is still the current one; a stale seq
+   * names a notice that was already replaced and must not clear its
+   * successor. Shared by the info toast's onDone and the expiry timer.
+   */
+  clearNotice(seq: number): void {
+    const current = this.notices.getSnapshot();
+    if (current === null || current.seq !== seq) return;
+    this.clearNoticeTimer();
+    this.notices.set(null);
+  }
+
+  /** Cancel the pending info expiry, if any. */
+  private clearNoticeTimer(): void {
+    if (this.noticeTimer === undefined) return;
+    clearTimeout(this.noticeTimer);
+    this.noticeTimer = undefined;
   }
 
   /**
@@ -762,6 +804,7 @@ export class SessionInputShell implements SessionInput {
    */
   dispose(): readonly DraftAttachmentId[] {
     if (this.disposed) return [];
+    this.clearNoticeTimer();
     const retained = new Set(this.attachmentIds);
     for (const record of this.detachedDrafts.values()) {
       for (const attachmentId of record.attachmentIds) retained.add(attachmentId);
@@ -854,8 +897,7 @@ export class SessionInputShell implements SessionInput {
   private execute(fx: InputEffect): void {
     switch (fx.type) {
       case "notice": {
-        this.noticeSeq += 1;
-        this.notices.set({ level: fx.level, text: fx.text, seq: this.noticeSeq });
+        this.notify(fx.level, fx.text);
         return;
       }
       case "adjudicate": {

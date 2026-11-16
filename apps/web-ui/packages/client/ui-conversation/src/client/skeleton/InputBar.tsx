@@ -492,10 +492,23 @@ export const InputBar = memo(function InputBar({
           onDone={dismissToast}
         />
       )}
-      {notice?.level === "info" && (
-        <div className={css.notice} role="status">
-          {notice.text}
-        </div>
+      {/* Info notices are one-shot confirmations (e.g. the reference action's
+          "added to the current draft"): rendered as the shared success toast,
+          never as a resident banner. Suppressed while the error toast owns
+          the top slot; the shell expires the notice (~4s from creation,
+          seq-guarded) even when suppressed or after a mid-display session
+          switch, so an expired notice cannot re-announce on return. The key
+          pairs the shell identity with the notice seq: equal seqs across
+          shells never share a mounted toast. */}
+      {notice?.level === "info" && toast === null && keyboard !== undefined && (
+        <Toast
+          key={`${keyboard.noticeOwner}:${notice.seq}`}
+          text={notice.text}
+          tone="success"
+          role="status"
+          anchor={cardRef.current}
+          onDone={() => keyboard.clearNotice(notice.seq)}
+        />
       )}
       {/* Trigger clicks land on the card, not the editor: the toolbar row's
           disabled controls swallow clicks otherwise (the CSS state disarms

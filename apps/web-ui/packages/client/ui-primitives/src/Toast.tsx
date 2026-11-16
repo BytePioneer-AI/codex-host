@@ -37,6 +37,9 @@ const FADE_MS = 1000;
  * change, then unmount the toast). The banner surface stays click-through —
  * only the action text takes the pointer.
  * @param props.holdMs - full-opacity hold before the fade; defaults to 3000.
+ * @param props.role - ARIA role of the banner; defaults to "alert" (the
+ * assertive interruption failures deserve). Transient success confirmations
+ * that must not interrupt assistive tech mid-utterance pass "status".
  * @param props.anchor - optional element whose horizontal center the banner
  * follows (e.g. the composer card, so the banner centers over the chat column
  * rather than the whole window); omitted, it centers on the viewport.
@@ -51,6 +54,7 @@ export function Toast({
   holdMs = HOLD_MS,
   actions,
   onDone,
+  role: toastRole = "alert",
 }: {
   text: string;
   icon?: ReactNode;
@@ -59,6 +63,7 @@ export function Toast({
   holdMs?: number;
   actions?: readonly { label: string; prefix?: string; onClick: () => void }[];
   onDone: () => void;
+  role?: "alert" | "status";
 }) {
   const latestOnDone = useRef(onDone);
   useLayoutEffect(() => {
@@ -91,7 +96,7 @@ export function Toast({
   return createPortal(
     <div
       className={css.toast}
-      role="alert"
+      role={toastRole}
       style={
         {
           ...(left === null ? {} : { left }),

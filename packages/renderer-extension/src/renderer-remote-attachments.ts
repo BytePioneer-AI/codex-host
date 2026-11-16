@@ -37,14 +37,14 @@ function imageFile(value: Record<string, unknown>): { contents: Blob; extension:
   const data = match?.[2] ?? "";
   const extension = IMAGE_EXTENSIONS[mimeType];
   if (!extension || !data || data.length % 4 !== 0) {
-    throw new Error("Remote image attachment must contain a supported base64 image");
+    throw new Error("Image attachment must contain a supported base64 image");
   }
   if (data.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) {
-    throw new Error("Remote image attachment exceeds 20 MiB");
+    throw new Error("Image attachment exceeds 20 MiB");
   }
   const decoded = atob(data);
   if (decoded.length > MAX_IMAGE_BYTES || btoa(decoded) !== data) {
-    throw new Error("Remote image attachment is invalid or exceeds 20 MiB");
+    throw new Error("Image attachment is invalid or exceeds 20 MiB");
   }
   const bytes = new Uint8Array(decoded.length);
   for (let index = 0; index < decoded.length; index += 1) bytes[index] = decoded.charCodeAt(index);
@@ -52,20 +52,18 @@ function imageFile(value: Record<string, unknown>): { contents: Blob; extension:
 }
 
 /**
- * Desktop 26.930 carries remote images inline and fills file paths asynchronously.
+ * Desktop can carry images inline and fill file paths asynchronously.
  * Materialize missing paths through the same Manager's native attachment store,
  * before the outgoing Turn. Harness input remains text; images stay in the Desktop
  * request for presentation. No filesystem, SSH, or Harness SDK is implemented here.
  */
-export function createRemoteAttachmentSender(
+export function createExternalAttachmentSender(
   target: unknown,
-  hostId: string,
   isCurrent: () => boolean,
 ): (params: unknown, send: (params: unknown) => unknown) => unknown {
   const prepared = new WeakMap<object, Promise<unknown>>();
   return (params, send) => {
     if (
-      hostId === "local" ||
       !isRecord(target) ||
       !isRecord(params) ||
       typeof params.threadId !== "string" ||
@@ -87,7 +85,7 @@ export function createRemoteAttachmentSender(
       return send(params);
 
     const assertCurrent = () => {
-      if (!isCurrent()) throw new Error("Remote attachment connection is no longer available");
+      if (!isCurrent()) throw new Error("Attachment connection is no longer available");
     };
     assertCurrent();
     const dispatch = (input: unknown) => {
@@ -107,23 +105,23 @@ export function createRemoteAttachmentSender(
       // Reuse native completed uploads. With partial context there is no reliable
       // image-to-path association, so do not guess which image is missing.
       if (existingPaths.length === images.length) return params;
-      if (images.length > 20) throw new Error("Too many remote image attachments (maximum 20)");
+      if (images.length > 20) throw new Error("Too many image attachments (maximum 20)");
       let totalBytes = 0;
       const files = images.map((image) => {
         if (image.type === "localImage") {
-          if (!filePath(image.path)) throw new Error("Remote image attachment path is invalid");
+          if (!filePath(image.path)) throw new Error("Image attachment path is invalid");
           return { path: image.path };
         }
         const file = imageFile(image);
         totalBytes += file.contents.size;
-        if (totalBytes > MAX_TOTAL_BYTES) throw new Error("Remote image attachments exceed 32 MiB");
+        if (totalBytes > MAX_TOTAL_BYTES) throw new Error("Image attachments exceed 32 MiB");
         return file;
       });
       if (
         files.some((file) => "contents" in file) &&
         typeof target.createFileAttachment !== "function"
       ) {
-        throw new Error("Desktop remote attachment storage is unavailable");
+        throw new Error("Desktop attachment storage is unavailable");
       }
       const created: string[] = [];
       const paths: string[] = [];
@@ -139,7 +137,7 @@ export function createRemoteAttachmentSender(
             label: `image-${index + 1}.${file.extension}`,
           });
           if (!isRecord(saved) || !filePath(saved.path) || saved.fsPath !== saved.path) {
-            throw new Error("Desktop returned an invalid remote attachment path");
+            throw new Error("Desktop returned an invalid attachment path");
           }
           created.push(saved.path);
           paths.push(saved.path);

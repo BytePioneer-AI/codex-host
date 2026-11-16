@@ -4,18 +4,21 @@ import type {
   RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "../src/renderer-host-clients.js";
+import { externalTurnInputText } from "../../host-runtime/src/external-turn-input.js";
 
 const image = { type: "image", url: "data:image/png;base64,aGVsbG8=" };
 
 function fixture(hostId = "ssh:remote", provider = "codexhost") {
+  const attachmentRoot =
+    hostId === "local" ? "/Users/test/.codex/attachments" : "/remote/.codex/attachments";
   const rpc = vi.fn(async (...args: unknown[]) => {
     void args;
     return { turn: { id: "turn" } };
   });
   const createFileAttachment = vi.fn(async ({ label }: { contents: Blob; label: string }) => ({
     label,
-    path: `/remote/.codex/attachments/id/${label}`,
-    fsPath: `/remote/.codex/attachments/id/${label}`,
+    path: `${attachmentRoot}/id/${label}`,
+    fsPath: `${attachmentRoot}/id/${label}`,
   }));
   const manager = {
     sendRequest: rpc,
@@ -63,7 +66,24 @@ function submittedText(rpc: ReturnType<typeof fixture>["rpc"]): string {
     .join("\n");
 }
 
-describe("remote external attachments through the native Desktop file store", () => {
+describe("external attachments through the native Desktop file store", () => {
+  it("stores a local external thread's inline annotation image before submitting it", async () => {
+    const f = fixture("local");
+    const params = request([{ type: "text", text: "Change the annotated button" }, image]);
+    try {
+      await f.manager.sendRequest("turn/start", params);
+      expect(f.createFileAttachment).toHaveBeenCalledOnce();
+      const path = "/Users/test/.codex/attachments/id/image-1.png";
+      expect(submittedText(f.rpc)).toContain(path);
+      expect(submittedText(f.rpc)).toContain("Change the annotated button");
+      const sent = f.rpc.mock.calls[0]?.[1] as typeof params;
+      expect(sent.input).toContain(image);
+      expect(externalTurnInputText(sent.input)).toContain(path);
+    } finally {
+      f.dispose();
+    }
+  });
+
   it("uploads inline images before sending, retaining the image preview and text contract", async () => {
     const f = fixture();
     const params = request();
@@ -419,7 +439,7 @@ describe("remote external attachments through the native Desktop file store", ()
     });
     try {
       await expect(f.manager.sendRequest("turn/start", request())).rejects.toThrow(
-        "invalid remote attachment path",
+        "invalid attachment path",
       );
       expect(f.rpc).not.toHaveBeenCalled();
     } finally {
@@ -428,7 +448,7 @@ describe("remote external attachments through the native Desktop file store", ()
   });
 
   it.each([
-    ["local", "codexhost"],
+    ["local", "openai"],
     ["ssh:remote", "openai"],
   ])("leaves %s / %s submissions byte-for-byte unchanged", async (hostId, provider) => {
     const f = fixture(hostId, provider);

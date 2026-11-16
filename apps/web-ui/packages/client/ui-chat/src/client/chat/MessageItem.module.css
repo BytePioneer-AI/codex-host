@@ -59,6 +59,12 @@
   word-break: break-word;
 }
 
+:global(body[data-codexhost-wallpaper]) .bubble {
+  background: color-mix(in srgb, var(--dsw-specific-bubble) 84%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
 .referenceSummary {
   color: var(--dsw-alias-label-tertiary);
   font-size: var(--dsh-content-font-size-secondary, 13px);
@@ -110,6 +116,12 @@
   z-index: 7;
   border-radius: 0;
   background: var(--dsw-alias-bg-base);
+}
+
+:global(body[data-codexhost-wallpaper]) .compactionRow:has(.compactionBody) .compactionButton {
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 78%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
 }
 
 /* A fenced code block in the summary pins its banner at the scrollport top,

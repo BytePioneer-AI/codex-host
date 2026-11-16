@@ -32,6 +32,24 @@ body {
   text-autospace: normal;
 }
 
+[data-codexhost-wallpaper-layer] {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  user-select: none;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: var(--ch-wallpaper-opacity, 0.25);
+  transition: opacity 80ms linear;
+}
+
+body[data-codexhost-wallpaper] > #root {
+  position: relative;
+  z-index: 1;
+}
+
 #ios-pwa-top-edge {
   display: none;
 }

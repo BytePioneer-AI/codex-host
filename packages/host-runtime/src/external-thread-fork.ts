@@ -67,6 +67,12 @@ export async function executeExternalThreadFork(input: {
       error: { code: -32602, message: "External Fork target cwd is invalid" },
     };
   }
+  if (fork.attachToSource && source.record.historyMode !== "paginated") {
+    return {
+      ok: false,
+      error: { code: -32602, message: "attachToSource requires a paginated parent" },
+    };
+  }
   if (!source.session.capabilities.history.fork) {
     return {
       ok: false,
@@ -133,6 +139,10 @@ export async function executeExternalThreadFork(input: {
           hostThreadId: source.id,
           hostTurnId: boundary.hostTurnId,
         },
+        // A persistent Side Chat: the source's history up to the boundary stays as context only.
+        ...(fork.attachToSource
+          ? { attachedToThreadId: source.id, inheritedTurnCount: boundaryIndex + 1 }
+          : {}),
       }),
     );
   } catch {

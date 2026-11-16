@@ -35,6 +35,7 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type InjectedTurnPrefix,
   type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
@@ -583,6 +584,10 @@ export class MappingStore {
         historyMode: input.historyMode,
         ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
         ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+        ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+        ...(input.inheritedTurnCount !== undefined
+          ? { inheritedTurnCount: input.inheritedTurnCount }
+          : {}),
         ...(input.subagent ? { subagent: input.subagent } : {}),
         turnMappings: [],
         createdAt: timestamp,
@@ -847,6 +852,46 @@ export class MappingStore {
   async setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
     return this.#update(hostThreadId, (current) =>
       current.archived === archived ? null : { ...current, archived },
+    );
+  }
+
+  /** Hold `thread/inject_items` text until the next Turn delivers it. */
+  async appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) =>
+        texts.length === 0
+          ? null
+          : {
+              ...current,
+              pendingInjectedText: [...(current.pendingInjectedText ?? []), ...texts],
+            },
+      true,
+    );
+  }
+
+  /** Release the first `count` held texts once a started Turn has delivered them. */
+  async consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    count: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        const pending = (current.pendingInjectedText ?? []).slice(count);
+        const next: StoredThreadRecordV1 = {
+          ...current,
+          injectedTurnPrefixes: [...(current.injectedTurnPrefixes ?? []), prefix].slice(-64),
+        };
+        if (pending.length > 0) next.pendingInjectedText = pending;
+        else delete next.pendingInjectedText;
+        return next;
+      },
+      true,
     );
   }
 

@@ -11,6 +11,7 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type InjectedTurnPrefix,
   type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
@@ -36,6 +37,7 @@ import {
   materializeExternalSubagent,
   projectExternalSnapshot,
 } from "./external-subagent-threads.js";
+import { ownTurns } from "./external-thread-side-chat.js";
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
@@ -82,6 +84,15 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1>;
+  consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    count: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1>;
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
@@ -238,6 +249,21 @@ export class ExternalThreadRepository {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1> {
     return this.store.setTransportModelId(hostThreadId, transportModelId);
+  }
+
+  appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.appendPendingInjectedText(hostThreadId, texts);
+  }
+
+  consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    count: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.consumePendingInjectedText(hostThreadId, count, prefix);
   }
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
@@ -521,7 +547,7 @@ export class ExternalThreadRepository {
   ): Promise<AlignedExternalSnapshot> {
     const turns = await projectExternalSnapshot(this.store, record, snapshot, previous);
     return {
-      record: await this.updatePreview(record, turns, previous !== undefined),
+      record: await this.updatePreview(record, ownTurns(record, turns), previous !== undefined),
       turns,
     };
   }
@@ -538,6 +564,8 @@ export function createExternalThreadRecordInput(input: {
   historyMode: "legacy" | "paginated";
   projectlessWorkspace?: CreateProvisionalThreadInput["projectlessWorkspace"];
   forkSource?: CreateProvisionalThreadInput["forkSource"];
+  attachedToThreadId?: CreateProvisionalThreadInput["attachedToThreadId"];
+  inheritedTurnCount?: CreateProvisionalThreadInput["inheritedTurnCount"];
   importSourceRef?: CreateProvisionalThreadInput["importSourceRef"];
   subagent?: CreateProvisionalThreadInput["subagent"];
 }): CreateProvisionalThreadInput {
@@ -552,6 +580,10 @@ export function createExternalThreadRecordInput(input: {
     historyMode: input.historyMode,
     ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+    ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+    ...(input.inheritedTurnCount !== undefined
+      ? { inheritedTurnCount: input.inheritedTurnCount }
+      : {}),
     ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
     ...(input.subagent ? { subagent: input.subagent } : {}),
   };
@@ -623,6 +655,7 @@ export function externalThreadValue(input: {
         }
       : null,
     forkedFromId: record.forkSource?.hostThreadId ?? null,
+    ...(record.attachedToThreadId ? { attachedToThreadId: record.attachedToThreadId } : {}),
     ...(record.importSourceRef &&
     record.nativeSessionRef &&
     record.importSourceRef.nativeSessionId !== record.nativeSessionRef.nativeSessionId

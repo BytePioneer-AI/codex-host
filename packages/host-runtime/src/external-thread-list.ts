@@ -132,6 +132,13 @@ function includesExternalRecord(
     if (record.hostThreadId === query.ancestorThreadId || parentId !== query.ancestorThreadId)
       return false;
   }
+  // As in native Codex, a Side Chat is listed under its source or by a search that asks for it.
+  if (
+    query.attachedToThreadId !== null
+      ? record.attachedToThreadId !== query.attachedToThreadId
+      : record.attachedToThreadId !== undefined && !query.includeAttachedThreads
+  )
+    return false;
   if (record.archived !== query.archived) return false;
   if (query.projectId !== undefined && (record.projectId ?? null) !== query.projectId) return false;
   if (query.cwd !== null && !query.cwd.includes(record.cwd)) return false;

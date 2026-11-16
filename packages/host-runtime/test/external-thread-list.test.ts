@@ -89,6 +89,35 @@ describe("External Thread metadata catalog", () => {
     expect(list({ ancestorThreadId: "missing", sourceKinds: ["subAgentThreadSpawn"] })).toEqual([]);
   });
 
+  it("lists attached Side Chats under their source or in a search that asks for them", () => {
+    const source = record("source");
+    const attached = {
+      attachedToThreadId: source.hostThreadId,
+      forkSource: { hostThreadId: source.hostThreadId, hostTurnId: hostTurnIdSchema.parse("turn") },
+    };
+    const sideChat = record("side-chat", attached);
+    const archived = record("archived-side-chat", { ...attached, archived: true });
+    const records = [source, sideChat, archived];
+    const list = (params: JsonObject) =>
+      listExternalThreadMetadata({
+        records,
+        query: query(params),
+        runtimeFor: () => null,
+      }).data.map(({ thread }) => thread);
+    expect(list({}).map(({ id }) => id)).toEqual(["source"]);
+    expect(list({ attachedToThreadId: "source" })).toMatchObject([
+      { id: "side-chat", attachedToThreadId: "source", forkedFromId: "source" },
+    ]);
+    expect(list({ attachedToThreadId: "source", archived: true }).map(({ id }) => id)).toEqual([
+      "archived-side-chat",
+    ]);
+    expect(list({ attachedToThreadId: "side-chat" })).toEqual([]);
+    expect(list({ searchTerm: "side" })).toEqual([]);
+    expect(list({ searchTerm: "side", includeAttachedThreads: true }).map(({ id }) => id)).toEqual([
+      "side-chat",
+    ]);
+  });
+
   it("projects only ready records without loading Native history", () => {
     const ready = record("ready");
     const provisional = record("provisional", { state: "creating" });

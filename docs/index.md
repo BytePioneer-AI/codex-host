@@ -24,6 +24,7 @@
 | [`architecture/harness-questions.md`](architecture/harness-questions.md) | 外部 Harness 多选提问卡片、原生单选分流、回答归属与生命周期；修改提问交互时阅读。 |
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 按 Session 能力选择原生同轮插入或停止后重发；修改 steering 时阅读。 |
 | [`architecture/external-thread-queue.md`](architecture/external-thread-queue.md) | 外部 Thread 跟进消息的 Host 原生 `thread/queue/*`、自动推进与中断暂停；修改排队或 Turn 启动时阅读。 |
+| [`architecture/external-thread-side-chats.md`](architecture/external-thread-side-chats.md) | 外部 Thread 的侧边聊天：挂靠 Fork、边界消息暂存并随下一个 Turn 交付，以及列表、历史与删除规则；修改侧边聊天或 Fork 时阅读。 |
 | [`architecture/host-client-channel.md`](architecture/host-client-channel.md) | GUI、Web 与 App 共享原生 Codex／外部 Harness 的生命周期、认证通道、事件驱动快照、交互仲裁及恢复边界。 |
 | [OpenSpec：状态刷新与轮询优化](../openspec/changes/reduce-redundant-state-polling/proposal.md) | Web 目录与组织状态分别校验，远程设置页和 Console 按可见性降频；查看方案、实现进度与验收边界时阅读。 |
 | [`architecture/gui-web-shared-state-design.md`](architecture/gui-web-shared-state-design.md) | 共享 Host 的官方 Codex 与外部 Thread 所有权、存储边界、启动发现及生命周期；不提供旧 standalone 迁移。 |

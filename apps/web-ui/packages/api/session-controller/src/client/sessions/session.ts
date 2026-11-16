@@ -316,6 +316,7 @@ export class Session implements SessionFace {
     signal?: AbortSignal,
     requestId?: SessionRequestId,
   ): Promise<RemoteResult<{ accepted: true }>> {
+    const submittedRequestId = requestId ?? (randomUUID() as SessionRequestId);
     this.promptError = null;
     this.lastAgentError = null;
     // Synchronous, before the first await: the blank → engaging edge must be
@@ -329,7 +330,7 @@ export class Session implements SessionFace {
       const clientTimeZone = resolvedClientTimeZone();
       result = await this.remote.session.prompt(
         {
-          requestId: requestId ?? (randomUUID() as SessionRequestId),
+          requestId: submittedRequestId,
           sessionId: this.sessionId,
           mode,
           content,
@@ -352,7 +353,7 @@ export class Session implements SessionFace {
       const routedContent = content as Exclude<PromptContentPart, { readonly type: "file" }>[];
       const routed = await this.remote.subagents.prompt(
         {
-          requestId: randomUUID() as SessionRequestId,
+          requestId: submittedRequestId,
           parentSessionId: this.address.parentSessionId,
           childSessionId: this.address.childSessionId,
           mode: "continuable",
@@ -364,9 +365,15 @@ export class Session implements SessionFace {
       );
       result = routed.ok ? { ok: true, value: { accepted: true } } : routed;
     }
+    if (
+      !result.ok &&
+      result.error.code === "remote/outcome-unknown" &&
+      this.hasObservedPrompt(submittedRequestId)
+    )
+      result = { ok: true, value: { accepted: true } };
     if (!result.ok) {
       if (requestId !== undefined) this.retireFailedSubmission(requestId);
-      this.promptError = { op: "send", error: result.error };
+      this.promptError = { op: "send", error: result.error, requestId: submittedRequestId };
       this.notifier.markDirty();
       return result;
     }
@@ -377,6 +384,33 @@ export class Session implements SessionFace {
     }
     this.onEngaged?.(this);
     return result;
+  }
+
+  /** A durable message or queue receipt can confirm a send before its RPC reply arrives. */
+  private hasObservedPrompt(requestId: SessionRequestId): boolean {
+    const matches = (message: UserMessage) =>
+      message.source.kind === "user" &&
+      "rpcId" in message.source &&
+      message.source.rpcId === requestId;
+    const inbox = this.projections.get("inbox") as InboxState | undefined;
+    return (
+      this.eventSource
+        .getSnapshot()
+        .entries.some(({ event }) => event.type === "user/message" && matches(event.data)) ||
+      [...(inbox?.["next-turn"] ?? []), ...(inbox?.["next-step"] ?? [])].some(matches)
+    );
+  }
+
+  /** Only the failed send's own receipt resolves its unknown outcome. */
+  private confirmPrompt(requestId: SessionRequestId): void {
+    if (
+      this.promptError?.op !== "send" ||
+      this.promptError.error.code !== "remote/outcome-unknown" ||
+      this.promptError.requestId !== requestId
+    )
+      return;
+    this.promptError = null;
+    this.notifier.markDirty();
   }
 
   /**
@@ -898,7 +932,11 @@ export class Session implements SessionFace {
 
   /** Observe durable acceptance even when insertion and claim share one projection notification. */
   private observeSubmissionEvent(event: SessionEventLike): void {
-    if (this.submissionSettlements.size === 0) return;
+    if (event.type === "user/message") {
+      this.observeSubmissionMessage(event.data, true);
+      return;
+    }
+    if (this.submissionSettlements.size === 0 && this.promptError?.requestId === undefined) return;
     if (event.type === "agent/inbox/spliced") {
       const { target, start, removedCount = 0, inserted, outcome } = event.data;
       for (const [requestId, settlement] of this.submissionSettlements) {
@@ -933,7 +971,6 @@ export class Session implements SessionFace {
       }
       return;
     }
-    if (event.type === "user/message") this.observeSubmissionMessage(event.data, true);
   }
 
   private observeSubmissionInsertions(
@@ -945,6 +982,7 @@ export class Session implements SessionFace {
     for (const [index, message] of messages.entries()) {
       const source = message.source;
       if (source.kind !== "user" || !("rpcId" in source)) continue;
+      this.confirmPrompt(source.rpcId);
       const settlement = this.submissionSettlements.get(source.rpcId);
       if (
         settlement === undefined ||
@@ -969,6 +1007,7 @@ export class Session implements SessionFace {
   ): void {
     const source = message.source;
     if (source.kind !== "user" || !("rpcId" in source)) return;
+    this.confirmPrompt(source.rpcId);
     const settlement = this.submissionSettlements.get(source.rpcId);
     if (settlement === undefined || settlement.retiring) return;
     if (!admitted) {
@@ -992,7 +1031,7 @@ export class Session implements SessionFace {
 
   /** Inbox acceptance retires queued echoes; its watermark completes admitted Chat handoffs. */
   private observeSubmissionInbox(): void {
-    if (this.submissionSettlements.size === 0) return;
+    if (this.submissionSettlements.size === 0 && this.promptError?.requestId === undefined) return;
     const inbox = this.projections.get("inbox") as InboxState | undefined;
     if (inbox === undefined) return;
     const seq = this.projections.seqOf("inbox");

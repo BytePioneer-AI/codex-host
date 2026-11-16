@@ -153,7 +153,7 @@ async function openModels(page: Page, current: string): Promise<void> {
 }
 
 it(
-  "shows colliding remote sessions in the real Web shell and opens their own transcript",
+  "opens separate remote transcripts and reconciles delivered prompts after a lost reply",
   { timeout: 90_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "remote-web-browser-"));
@@ -234,6 +234,11 @@ it(
         if (operation.kind === "prompt") {
           sent.set(operation.hostId, operation.text);
           requestIds.set(operation.hostId, operation.requestId);
+          socket.end(
+            JSON.stringify({ error: { code: -32093, message: "Reply timed out after delivery" } }) +
+              "\n",
+          );
+          return;
         }
         if (operation.kind === "configure") {
           const state = remoteModels.get(operation.hostId);
@@ -503,12 +508,30 @@ it(
     await page.locator('[data-composer-chip="codexhost-thread"]').waitFor();
     await transfer.dispose();
     await page.locator('[contenteditable="true"][role="textbox"]').fill("remote follow-up");
+    const promptResponse = page.waitForResponse((response) =>
+      response.url().endsWith("/api/session/prompt"),
+    );
     await page.getByRole("button", { name: /Send message|发送消息/ }).click();
+    await promptResponse;
     await page.getByText("Follow-up accepted on remote-control:b", { exact: true }).waitFor();
     assert.equal(sent.get("remote-control:b"), "remote follow-up");
     assert.equal(sent.has("remote-ssh-discovered:a"), false);
     assert.equal(calls.filter((call) => call.kind === "prompt").length, 1);
-    assert.equal(await page.getByText("remote follow-up", { exact: true }).count(), 1);
+    assert.equal(
+      await page
+        .locator("[data-chat-node-key]")
+        .getByText("remote follow-up", { exact: true })
+        .count(),
+      1,
+    );
+    const sendError = page.getByText(/Remote operation was not confirmed/);
+    await sendError.waitFor({ state: "hidden" });
+    await page.getByText("Session remote-ssh-discovered:a", { exact: true }).first().click();
+    await page.getByText("Answer from remote-ssh-discovered:a", { exact: true }).waitFor();
+    await page.getByText("Session remote-control:b", { exact: true }).first().click();
+    await page.getByText("Follow-up accepted on remote-control:b", { exact: true }).waitFor();
+    await page.waitForTimeout(200);
+    assert.equal(await sendError.count(), 0, "a confirmed send must not report failure on return");
     const remoteId =
       "web-remote:" +
       Buffer.from(JSON.stringify(["remote-control:b", "same"])).toString("base64url");

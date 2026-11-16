@@ -51,7 +51,7 @@
 
 ## Repository Skills
 
-Use the applicable repository-local skills below when their task occurs; they support contextual invocation. Read the selected `SKILL.md` before using its workflow. Select by task rather than loading or executing every skill on every change. These guides supplement the ownership, scope, and validation rules in this file; copied examples do not establish installed tools or product capabilities.
+Load a skill only when its task occurs; read its `SKILL.md` before following it.
 
 | Task | Skill |
 | --- | --- |
@@ -62,8 +62,6 @@ Use the applicable repository-local skills below when their task occurs; they su
 | Testing runtime behavior in isolated Web, Host, Harness, or end-to-end environments | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
 | Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
 | Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
-
-Existing Harness integration and Desktop update audit skills remain applicable to their specialized tasks.
 
 ## Implementation Principles
 
@@ -83,10 +81,16 @@ Existing Harness integration and Desktop update audit skills remain applicable t
 
 ## Testing & Completion
 
-- Choose build and validation commands from `package.json`, not a copied command catalog. For focused tests, use the repository configuration in `tests/vitest.config.js` or `tests/e2e/playwright.config.js`, and the owning `Cargo.toml` for Rust test features.
-- To build and launch from source, run `npm start` at the repository root for Desktop or `npm start web` for Web; both restart the corresponding interface after building, reusing an unchanged shared Host. A changed Host restarts automatically only when the other interface is closed; otherwise a post-build prompt defaults to keeping Host (non-interactive runs keep it and warn). `--restart-host` / `--keep-host` override this choice; no running Host is left to the interface's `host ensure`. `--no-build` reuses existing artifacts and applies the same Host decision. Restarting Host interrupts its tasks. `npm start web` rebuilds Web UI sources on edit and swaps them into open pages by default; `--no-watch` disables this, while explicit `--watch` remains supported. `--no-build` does not disable watching. On macOS/Windows the Desktop command stops running Codex Desktop processes before launch. Use it when launching is intended, not as a routine validation command; implementation is in `tools/dev-desktop/run.mjs`.
-- `npm stop` stops the current user's identifiable local codexhost services across worktrees (Web/watchers, managed Desktop, shared Hosts and Console), interrupting tasks and Web terminals without deleting data. It signals verified service processes and waits for native supervisors to finish cleanup, without using the invoking checkout's build. Run only when stopping is intended, from a separate terminal; never use it as routine validation or from a Host-owned task. Implementation: `tools/dev-desktop/stop.mjs`.
-- Small, low-risk changes do not require tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions; do not run full test suites by default.
+- Choose commands from `package.json`. Focused tests use `tests/vitest.config.js`; Rust uses the owning `Cargo.toml` features. Per-surface selection: `codexhost-pre-push-checks`.
+- Verification budget, for every agent including delegated ones. CI runs the full suite on every PR and every push to `main`; local checks only shorten the feedback loop.
+  - While developing, run only the test files for the behavior you changed. Once they pass after your last edit, verification is done; there is no separate final pass.
+  - Vitest does not type-check. Add `npx tsc -b packages/<pkg>` only for cross-package or public contract changes; otherwise CI catches type and lint errors.
+  - Cross-package imports read `dist`: rebuild only the changed dependency (`npx tsc -b packages/<dep>`). Use `npm run build:typescript` only when a test loads bundled plugins.
+  - After a fix, rerun only what failed. Do not rerun checks on an unchanged tree or checks a delegate already reported for the same state.
+  - Full-repo `npm run lint`, `typecheck`, `check`, `test`, `format:check` belong to CI; run them locally only when asked or when diagnosing a CI failure. Docs, copy, style, and small fixes need no local checks.
+- Small, low-risk changes do not require new tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions.
+- Do not write browser, e2e, or component tests for Web pages (`apps/web-ui`); the user checks page changes directly. Codex Desktop compatibility after an update is checked with `npm run audit:codex-desktop` and `npm run probe:renderer-binding` (`codexhost-update-impact-audit`).
+- `npm start` / `npm start web` rebuild and relaunch the user's Desktop / Web and may restart the shared Host; `npm stop` stops all local codexhost services across worktrees. Both interrupt running tasks: run them only when the user asks, never as validation. Details: `docs/product/standalone-web.md`.
 - Do not claim a check passed unless it was executed. Report skipped or blocked checks and the reason.
 - A change is complete only when implementation, contracts, tests, and affected documentation agree.
 - For core logic or major feature changes, update the corresponding feature document in `docs/`, creating one only when needed. Describe current behavior and key constraints; prefer maintaining an existing document over adding a change report. Minor fixes and local refactors need no documentation changes.

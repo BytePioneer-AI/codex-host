@@ -65,7 +65,7 @@ description: 为 codexhost 开发中的实际运行验证选择并启动最小�
 
 - **独立 Host**：参考 [原生共享 Host 测试](../../../packages/host-runtime/test/native/shared-host.test.ts) 和 [Launcher 生命周期实现](../../../crates/launcher/src/host_service.rs)。原生 `host ensure` 显式指定 Node、当前 Host Runtime、独立 `--data`、测试插件目录及适用的 `--codex-home` / `--stock-codex`。路径从实际构建和发现结果取得，不硬编码个人安装路径。
 - **独立源码 Web**：参考 [入口参数](../../../packages/web-server/src/main.ts) 和 [测试服务器辅助代码](../../../packages/web-server/test/support/server.ts)。`--data` 指 Web 数据；`--ch-data` 指 Host 数据。`--ch-control-directory` 应指向同一测试 Host 的 `client-hosts`，并核对按需启动所用的 Launcher、Runtime、插件与 Codex home，防止重连回落到用户默认目录。
-- **浏览器**：优先复用 [Web 浏览器测试](../../../packages/web-server/test/browser) 的实际控件与隔离方式；单独创建浏览器上下文，不连接或关闭用户日常浏览器。fixture 的默认假 Host 不能不加说明地用于真实链路验收。
+- **浏览器**：单独创建浏览器上下文，不连接或关闭用户日常浏览器。fixture 的默认假 Host 不能不加说明地用于真实链路验收。
 - **Harness**：优先公共 Adapter 接口及所属插件既有 Gate。直接调用 CLI 可定位原生语义，但不能据此宣布 Host／UI 集成通过。无法隔离的原生单实例或全局状态应报告限制，不自行修改原生程序。
 - **普通开发启动**：见 [Web 构建与生命周期](../../../docs/product/standalone-web.md#代码与构建)。`npm start` / `npm start web` 会重启对应界面并可能重启共享 Host，换 Web 端口不代表隔离 Host。隔离实测使用上述显式测试入口；`npm stop` 是跨工作树停机命令，不用于测试清理。
 - **Desktop 实机**：见下节，用独立 Host 数据目录启动，不另建 Desktop profile。

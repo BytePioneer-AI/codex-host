@@ -516,7 +516,6 @@ export function snapshotFromHistory(
   const supportsFork = capabilitiesForProfile(profile).history.fork;
   const turns: HostTurnSnapshot[] = [];
   let current: HostTurnSnapshot | undefined;
-  let currentOpenedByNativeInput = false;
   const tools = new Map<string, HostItemSnapshot>();
   // CodeBuddy persists a Tool call and its result from separate writers, so a call that
   // is refused before it runs can land its result first. Hold such a result until its
@@ -655,24 +654,6 @@ export function snapshotFromHistory(
       continue;
     }
     if (row.type === "message" && row.role === "user") {
-      // A meta row that opens a Turn is native context (a drain or cron notice), not a
-      // user prompt: only an explicit startsNewUserRequest makes its text Host input.
-      const nativeContext =
-        data.isMeta === true &&
-        data.startsNewUserRequest !== true &&
-        !localCommand &&
-        !(supportsNativeCommands && data.agent === "compact");
-      // One native run can persist several hidden input rows before its first output;
-      // they are one Turn, not one Turn per row.
-      if (
-        nativeContext &&
-        currentOpenedByNativeInput &&
-        current &&
-        current.items.length === 0 &&
-        current.input.length === 0
-      )
-        continue;
-      currentOpenedByNativeInput = nativeContext;
       current = {
         nativeTurnRef: nativeTurnRefSchema.parse({
           harnessId: profile.harnessId,
@@ -680,19 +661,17 @@ export function snapshotFromHistory(
           nativeTurnKey: row.id,
           formatVersion: 1,
         }),
-        input: nativeContext
-          ? []
-          : [
-              {
-                type: "text",
-                text:
-                  supportsNativeCommands && data.agent === "compact"
-                    ? "/compact"
-                    : localCommand
-                      ? `${localCommand[1]}${localCommand[2] ? ` ${localCommand[2]}` : ""}`
-                      : body,
-              },
-            ],
+        input: [
+          {
+            type: "text",
+            text:
+              supportsNativeCommands && data.agent === "compact"
+                ? "/compact"
+                : localCommand
+                  ? `${localCommand[1]}${localCommand[2] ? ` ${localCommand[2]}` : ""}`
+                  : body,
+          },
+        ],
         items: [],
         outcome: { status: "unknown", reason: "Native terminal outcome was not recorded" },
         ...(typeof row.timestamp === "number" ? { startedAtMs: row.timestamp } : {}),

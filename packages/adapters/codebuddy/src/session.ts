@@ -15,7 +15,6 @@ import type {
   HostCommand,
   HostEvent,
   HostThreadSnapshot,
-  HostTurnSnapshot,
   HostUsage,
   InteractionRespondAccepted,
   InteractionRespondCommand,
@@ -48,7 +47,6 @@ import type { CodeBuddyClient, CodeBuddyClientFactory } from "./acp-client.js";
 import {
   CodeBuddyAutonomousTurns,
   readUnsolicitedTurn,
-  requestIdOf,
   type CodeBuddyAutonomousRound,
 } from "./autonomous.js";
 import {
@@ -127,7 +125,6 @@ export class CodeBuddySession implements HarnessSession {
   #state: HarnessSessionState = {};
   #active: ActiveTurn | undefined;
   readonly #autonomous = new CodeBuddyAutonomousTurns();
-  #loadedTurns: HostTurnSnapshot[] | undefined;
   #busy = false;
   #closed = false;
   #closing: Promise<void> | undefined;
@@ -217,15 +214,23 @@ export class CodeBuddySession implements HarnessSession {
         permission: (request) =>
           generation !== this.#generation || request.sessionId !== this.#ref?.nativeSessionId
             ? Promise.resolve({ outcome: { outcome: "cancelled" as const } })
-            : this.#interactionTurn((turnId) => this.#interactions.permission(turnId, request), {
-                outcome: { outcome: "cancelled" as const },
-              }),
+            : this.#interactionTurn(
+                request,
+                (turnId) => this.#interactions.permission(turnId, request),
+                {
+                  outcome: { outcome: "cancelled" as const },
+                },
+              ),
         question: (params) =>
           generation !== this.#generation || params.sessionId !== this.#ref?.nativeSessionId
             ? Promise.resolve({ outcome: "cancelled" })
-            : this.#interactionTurn((turnId) => this.#interactions.question(turnId, params), {
-                outcome: "cancelled",
-              }),
+            : this.#interactionTurn(
+                params,
+                (turnId) => this.#interactions.question(turnId, params),
+                {
+                  outcome: "cancelled",
+                },
+              ),
       },
     });
   }
@@ -244,9 +249,8 @@ export class CodeBuddySession implements HarnessSession {
     if (this.#ref) {
       const history = await this.#history(this.#ref);
       this.#assertClient(generation);
-      const snapshot = snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile);
-      this.#hasTurn = snapshot.turns.length > 0;
-      this.#loadedTurns = snapshot.turns;
+      this.#hasTurn =
+        snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile).turns.length > 0;
       this.#usage = historyUsage(history);
       this.#meterHistory(history, true);
       rewind = pendingNativeHistoryRewind(history);
@@ -280,9 +284,6 @@ export class CodeBuddySession implements HarnessSession {
         : {};
     if (this.input.kind === "resume") this.#ref = this.input.nativeRef;
     const opened = await this.#openClient();
-    // History that predates this process is behind the autonomous Turn boundary.
-    this.#autonomous.reset(this.#loadedTurns ?? []);
-    this.#loadedTurns = undefined;
     this.#ref = nativeSessionRefSchema.parse({
       harnessId: this.profile.harnessId,
       nativeSessionId: opened.sessionId,
@@ -341,19 +342,19 @@ export class CodeBuddySession implements HarnessSession {
   #dispatchUpdate(update: Record<string, unknown>) {
     const unsolicited = readUnsolicitedTurn(update);
     if (unsolicited) {
-      this.#autonomous.announce(unsolicited.requestId);
+      this.#autonomous.announce(unsolicited);
       this.#flushAutonomous();
       return;
     }
     if (update.sessionUpdate === "session_end") {
-      const round = this.#autonomous.end(requestIdOf(update));
+      const round = this.#autonomous.end(text(record(update._meta)["codebuddy.ai/requestId"]));
       if (!round) return;
       if (round.started) void this.#finishAutonomous(round);
       else this.#flushAutonomous();
       return;
     }
-    const route = this.#autonomous.route(update);
-    if (route === "active") {
+    const route = this.#autonomous.owner();
+    if (route?.started) {
       if (!this.#replaying) this.#applyUpdate(update);
       return;
     }
@@ -365,19 +366,29 @@ export class CodeBuddySession implements HarnessSession {
     this.#applyUpdate(update);
   }
 
-  /**
-   * Binds a native Interaction to the Turn that requested it. A Host prompt that already
-   * returned cannot own later Interactions; a drain run owns them once its public Turn
-   * identity exists, and is cancelled if that run is dropped first.
-   */
-  #interactionTurn<T>(run: (turnId: HostTurnId) => Promise<T>, cancelled: T): Promise<T> {
-    const active = this.#active;
-    if (active && !active.autonomous && !active.promptSettled) return run(active.command.turnId);
+  /** An announced native interval owns Interactions before the prior prompt's finally runs. */
+  #interactionTurn<T>(
+    request: unknown,
+    run: (turnId: HostTurnId) => Promise<T>,
+    cancelled: T,
+  ): Promise<T> {
     const round = this.#autonomous.owner();
-    if (!round) return Promise.resolve(cancelled);
-    return round.identity.then((turnId) =>
-      turnId && this.#active?.autonomous?.round === round ? run(turnId) : cancelled,
-    );
+    if (round) {
+      let identity: Promise<HostTurnId | undefined>;
+      try {
+        identity = this.#autonomous.interactionIdentity(round, request);
+      } catch (error) {
+        this.#onFault(error);
+        return Promise.resolve(cancelled);
+      }
+      return identity.then((turnId) =>
+        turnId && this.#active?.autonomous?.round === round ? run(turnId) : cancelled,
+      );
+    }
+    const active = this.#active;
+    return active && !active.autonomous && !active.promptSettled
+      ? run(active.command.turnId)
+      : Promise.resolve(cancelled);
   }
 
   /** Frames of the active Turn, including a native drain Turn that now owns the Session. */
@@ -405,7 +416,7 @@ export class CodeBuddySession implements HarnessSession {
       this.#emitUsage();
       void this.refreshUsage();
     }
-    this.#active?.output.update(update);
+    if (!this.#active?.cancelled) this.#active?.output.update(update);
   }
 
   #flushAutonomous() {
@@ -447,36 +458,14 @@ export class CodeBuddySession implements HarnessSession {
     this.#emit({ type: "turn.started", turnId });
   }
 
-  /**
-   * `session_end` is the native terminal for a drain Turn; the prompt response belongs to
-   * Host-requested Turns. The frame always reports `end_turn`, so the persisted Turn decides
-   * success and supplies the stable native identity.
-   */
+  /** Completes the live interval without assigning persisted identity or inferring success. */
   async #finishAutonomous(round: CodeBuddyAutonomousRound) {
     const active = this.#active;
     if (!active?.autonomous || active.autonomous.round !== round || active.done) return;
     try {
-      const snapshot = await this.#snapshot();
-      const persisted = this.#autonomous.autonomousTurn(snapshot.turns);
-      if (persisted) this.#hasTurn = true;
-      const outcome: TurnOutcome = active.cancelled
-        ? { status: "cancelled" }
-        : persisted?.outcome.status === "succeeded"
-          ? { status: "succeeded" }
-          : {
-              status: "failed",
-              error: nativeError(
-                new CodeBuddyError(
-                  "nativeFailure",
-                  "Native autonomous Turn did not record success",
-                ),
-                this.profile,
-              ),
-            };
-      if (outcome.status === "cancelled") await this.#resumeAfterCancel();
-      if (active.done) return;
-      this.#finish(active, outcome, persisted?.nativeTurnRef);
-      if (this.#usage) this.#emitUsage();
+      const outcome: TurnOutcome = { status: active.cancelled ? "cancelled" : "succeeded" };
+      if (active.cancelled) await this.#resumeAfterCancel();
+      if (!active.done) this.#finish(active, outcome);
     } catch (error) {
       if (!active.done)
         this.#finish(active, { status: "failed", error: nativeError(error, this.profile) });
@@ -747,7 +736,7 @@ export class CodeBuddySession implements HarnessSession {
         }
         // Reading history also yields to native notifications, so a drain announced during
         // admission is visible before the Host prompt would reach the native process.
-        await this.#snapshot();
+        const snapshot = await this.#snapshot();
         if (this.#closed || this.#fault)
           return failure("invalidState", "Session closed before Turn start", this.profile);
         if (this.#active)
@@ -768,7 +757,10 @@ export class CodeBuddySession implements HarnessSession {
         this.#active = active;
         this.subagents.begin(command.turnId);
         this.#emit({ type: "turn.started", turnId: command.turnId });
-        active.completion = this.#run(active);
+        active.completion = this.#run(
+          active,
+          new Set(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)),
+        );
         return { ok: true, value: { turnId: command.turnId } };
       }
       if (this.#needsResume) await this.#resumeClient();
@@ -792,7 +784,7 @@ export class CodeBuddySession implements HarnessSession {
     }
   }
 
-  async #run(active: ActiveTurn) {
+  async #run(active: ActiveTurn, before: ReadonlySet<string>) {
     let cancellationConfirmed = false;
     try {
       if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
@@ -836,10 +828,15 @@ export class CodeBuddySession implements HarnessSession {
       // After shutdown, history can enrich cancellation but cannot change its outcome.
       const snapshot = await this.#snapshot(cancellationConfirmed ? 1_000 : undefined);
       if (active.done || this.#closed) return;
-      // The prompt response names this Turn; drain Turns persisted before this snapshot
-      // remain for their own autonomous Turns instead of counting as Host additions.
-      const userMessageId = text(response.userMessageId) || undefined;
-      const persisted = this.#autonomous.ownHostTurn(snapshot.turns, userMessageId);
+      // A drain can persist before this Host terminal read; the prompt response names
+      // the Host input row. Without that identity, accept only one new persisted Turn.
+      const userMessageId = text(response.userMessageId);
+      const added = snapshot.turns.filter((turn) => !before.has(turn.nativeTurnRef.nativeTurnKey));
+      const persisted = userMessageId
+        ? added.find((turn) => turn.nativeTurnRef.nativeTurnKey === userMessageId)
+        : added.length === 1
+          ? added[0]
+          : undefined;
       if (!persisted && !active.nativeCommand && outcome.status === "succeeded")
         throw new CodeBuddyError(
           "protocolError",

@@ -271,7 +271,7 @@ describe("CodeBuddy native history and output projection", () => {
     },
   );
 
-  it("projects a native-initiated meta row as an autonomous Turn with no input", () => {
+  it("preserves a meta row input without inferring a live autonomous identity", () => {
     const snapshot = snapshotFromHistory(
       lines([
         user,
@@ -296,13 +296,15 @@ describe("CodeBuddy native history and output projection", () => {
     expect(snapshot.turns).toHaveLength(2);
     expect(snapshot.turns[1]).toMatchObject({
       nativeTurnRef: { nativeTurnKey: "notice" },
-      input: [],
+      input: [
+        { type: "text", text: "<task-notification>background task completed</task-notification>" },
+      ],
       items: [{ item: { type: "agentMessage", text: "handled" } }],
       outcome: { status: "succeeded" },
     });
   });
 
-  it("groups adjacent hidden input rows from one native run into one Turn", () => {
+  it("preserves adjacent meta row boundaries without inferring their native runs", () => {
     const snapshot = snapshotFromHistory(
       lines([
         user,
@@ -331,10 +333,15 @@ describe("CodeBuddy native history and output projection", () => {
       ref,
       process.cwd(),
     );
-    expect(snapshot.turns).toHaveLength(2);
-    expect(snapshot.turns[1]).toMatchObject({
-      nativeTurnRef: { nativeTurnKey: "notice-1" },
-      input: [],
+    expect(snapshot.turns).toHaveLength(3);
+    expect(snapshot.turns[2]).toMatchObject({
+      nativeTurnRef: { nativeTurnKey: "notice-2" },
+      input: [
+        {
+          type: "text",
+          text: "<task-notification>second background task completed</task-notification>",
+        },
+      ],
       items: [{ item: { type: "agentMessage", text: "handled both" } }],
       outcome: { status: "succeeded" },
     });

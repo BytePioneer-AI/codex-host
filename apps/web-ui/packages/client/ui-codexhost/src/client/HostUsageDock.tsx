@@ -148,48 +148,54 @@ function summaryParts(usage: HostThreadUsage | null, t: Translate): string[] {
 function usageGroups(usage: HostThreadUsage | null, t: Translate): DetailGroup[] {
   const groups: DetailGroup[] = [];
   if (usage !== null) {
+    const speed: DetailRow[] = [];
+    if (usage.outputTokensPerSecond !== undefined)
+      speed.push({
+        label: t("usage.speed"),
+        value: tokenRate(usage.outputTokensPerSecond, t),
+      });
+    else if (usage.apiOutputTokensPerSecond !== undefined)
+      speed.push({
+        label: t("usage.speed.api"),
+        value: tokenRate(usage.apiOutputTokensPerSecond, t),
+      });
+    if (usage.sessionOutputTokensPerSecond !== undefined)
+      speed.push({
+        label: t("usage.speed.average"),
+        value: tokenRate(usage.sessionOutputTokensPerSecond, t),
+      });
+    if (usage.timeToFirstOutputMs !== undefined)
+      speed.push({ label: t("usage.ttft"), value: latency(usage.timeToFirstOutputMs, t) });
+    if (speed.length) groups.push({ label: t("usage.group.performance"), rows: speed });
+
+    const cache: DetailRow[] = [];
+    if (usage.cacheHitRatePercent !== undefined)
+      cache.push({
+        label: t("usage.cache.latest"),
+        value: percent(usage.cacheHitRatePercent),
+      });
+    if (usage.sessionCacheHitRatePercent !== undefined)
+      cache.push({
+        label: t("usage.cache.average"),
+        value: percent(usage.sessionCacheHitRatePercent),
+      });
+    if (cache.length) groups.push({ label: t("usage.group.cache"), rows: cache });
+
     const session: DetailRow[] = [];
+    if (usage.totalCredits !== undefined)
+      session.push({ label: t("usage.credits"), value: credits(usage.totalCredits, t) });
+    if (session.length) groups.push({ label: t("usage.group.session"), rows: session });
+
+    const tokens: DetailRow[] = [];
     const formattedCost = cost(usage);
     if (formattedCost !== null)
-      session.push({
+      tokens.push({
         label: usage.costSource === "publicPrice" ? t("usage.cost.estimate") : t("usage.cost"),
         value: formattedCost,
         ...(usage.unpricedModels?.length
           ? { note: `${t("usage.unpriced")}: ${usage.unpricedModels.join(", ")}` }
           : {}),
       });
-    if (usage.totalCredits !== undefined)
-      session.push({ label: t("usage.credits"), value: credits(usage.totalCredits, t) });
-    if (usage.sessionCacheHitRatePercent !== undefined)
-      session.push({
-        label: t("usage.cache.average"),
-        value: percent(usage.sessionCacheHitRatePercent),
-      });
-    if (usage.sessionOutputTokensPerSecond !== undefined)
-      session.push({
-        label: t("usage.speed.average"),
-        value: tokenRate(usage.sessionOutputTokensPerSecond, t),
-      });
-    if (usage.cacheHitRatePercent !== undefined)
-      session.push({
-        label: t("usage.cache.latest"),
-        value: percent(usage.cacheHitRatePercent),
-      });
-    if (session.length) groups.push({ label: t("usage.group.session"), rows: session });
-
-    const turn: DetailRow[] = [];
-    if (usage.outputTokensPerSecond !== undefined)
-      turn.push({ label: t("usage.speed"), value: tokenRate(usage.outputTokensPerSecond, t) });
-    else if (usage.apiOutputTokensPerSecond !== undefined)
-      turn.push({
-        label: t("usage.speed.api"),
-        value: tokenRate(usage.apiOutputTokensPerSecond, t),
-      });
-    if (usage.timeToFirstOutputMs !== undefined)
-      turn.push({ label: t("usage.ttft"), value: latency(usage.timeToFirstOutputMs, t) });
-    if (turn.length) groups.push({ label: t("usage.group.turn"), rows: turn });
-
-    const tokens: DetailRow[] = [];
     if (usage.inputTokens !== undefined || usage.outputTokens !== undefined)
       tokens.push({
         label: t("usage.tokens.io"),

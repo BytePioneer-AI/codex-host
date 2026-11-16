@@ -92,7 +92,7 @@
     inset: 0;
     z-index: -1;
     border-radius: inherit;
-    background: color-mix(in srgb, var(--dsw-specific-input-major) 82%, transparent);
+    background: color-mix(in srgb, var(--dsw-specific-input-major) 60%, transparent);
     -webkit-backdrop-filter: blur(16px);
     backdrop-filter: blur(16px);
     box-shadow:

@@ -366,7 +366,9 @@
 
 @supports (backdrop-filter: blur(18px)) or (-webkit-backdrop-filter: blur(18px)) {
   .phoneDrawer {
-    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 38%, transparent);
+    /* Mostly opaque: the drawer lists text over the conversation, so a thin fill
+       lets the session behind read through the rows. The blur keeps the glass edge. */
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 88%, transparent);
     -webkit-backdrop-filter: blur(18px);
     backdrop-filter: blur(18px);
   }

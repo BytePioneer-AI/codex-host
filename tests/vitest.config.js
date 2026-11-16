@@ -1,8 +1,10 @@
-import { globSync, readFileSync } from "node:fs";
+import { globSync } from "node:fs";
 import path from "node:path";
 
 import ts from "typescript";
 import { configDefaults, defineConfig } from "vitest/config";
+
+import { isPlatformTest } from "./platform-tests.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -47,18 +49,13 @@ const include = [
   "tools/**/*.test.mjs",
 ];
 
-// A test file touches OS behavior when it uses the filesystem, processes,
-// paths, the environment, or branches on the platform.
-const platformSensitive =
-  /node:(fs|child_process|os|path|net|worker_threads|url)|process\.(platform|env|execPath|kill|pid)|win32|tmpdir|spawn|execFile|MappingStore|mkdtemp|\.exe\b|USERPROFILE|APPDATA|\\\\/;
-
 // CODEXHOST_TEST_SCOPE=platform runs only platform-sensitive files. Secondary
 // OS lanes (macOS and Windows) use it; Linux x64 covers pure-logic files.
 // Linux ARM64 CI runs native checks and package smoke instead of TS tests.
 function platformIndependentFiles() {
   return globSync(include, { cwd: root, exclude: (name) => name === "node_modules" })
     .map((file) => file.replaceAll("\\", "/"))
-    .filter((file) => !platformSensitive.test(readFileSync(path.join(root, file), "utf8")));
+    .filter((file) => !isPlatformTest(path.join(root, file)));
 }
 
 const platformOnly = process.env.CODEXHOST_TEST_SCOPE === "platform";

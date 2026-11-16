@@ -6,6 +6,8 @@ import { Session } from "../../../apps/web-ui/packages/api/session-controller/sr
 import type { SessionRemotes } from "../../../apps/web-ui/packages/api/session-controller/src/client/sessions/remotes.ts";
 import type {
   SessionFollowFrame,
+  SessionHistoryRecord,
+  SessionPageRequest,
   SessionRequestId,
 } from "../../../apps/web-ui/packages/api/session-controller/src/types.ts";
 
@@ -27,10 +29,19 @@ const message = (requestId: string) => ({
 
 async function fixture() {
   const id = SessionId("remote-thread");
-  const records: SessionFollowFrame[] = [];
+  const records: SessionHistoryRecord[] = [];
+  let tailFrom = 0;
   let publish: (frame: SessionFollowFrame | undefined) => void = () => {};
   const prompt = vi.fn(async () => unknown());
   const cancel = vi.fn(async () => unknown());
+  const onEngaged = vi.fn<(session: Session) => void>();
+  const page = vi.fn(async (request: SessionPageRequest) => ({
+    ok: true as const,
+    value: {
+      records: records.filter(({ event }) => event.seq < (request.beforeSeq ?? Infinity)),
+      hasMore: false,
+    },
+  }));
   const online = { generation: { getSnapshot: () => ({ id: 1 }), subscribe: () => () => {} } };
   const remote = {
     $stream: (options: ConstructorParameters<typeof RemoteStream>[1]) =>
@@ -38,6 +49,7 @@ async function fixture() {
     session: {
       prompt,
       cancel,
+      page,
       async *follow(_request: unknown, signal: AbortSignal) {
         let next = Promise.withResolvers<SessionFollowFrame | undefined>();
         publish = (frame) => next.resolve(frame);
@@ -49,8 +61,8 @@ async function fixture() {
             epoch: "remote-epoch",
             header: { version: 4, id, createdAt: 1, isSeeded: false },
             cursor: records.length - 1,
-            records: [...records],
-            hasMore: false,
+            records: records.slice(tailFrom),
+            hasMore: tailFrom > 0,
             projections: { asOfSeq: records.length - 1, values: {} },
             assistantStream: { revision: 0 },
           } as SessionFollowFrame;
@@ -66,7 +78,7 @@ async function fixture() {
       },
     },
   } as unknown as SessionRemotes;
-  const session = new Session(id, remote);
+  const session = new Session(id, remote, { onEngaged });
   sessions.push(session);
   await session.open();
   const begin = () => session.beginSubmission({ mode: "queue", text: "继续", attachments: [] });
@@ -82,7 +94,7 @@ async function fixture() {
         data: message(requestId),
         surfaceOp: "append",
       },
-    } as unknown as SessionFollowFrame;
+    } as unknown as SessionHistoryRecord;
     records.push(frame);
     if (live) {
       publish(frame);
@@ -91,7 +103,41 @@ async function fixture() {
       );
     }
   };
-  return { session, prompt, begin, send, confirm };
+  const spliceInbox = async (requestIds: readonly string[], removedCount = 0) => {
+    const frame = {
+      type: "event",
+      event: {
+        type: "agent/inbox/spliced",
+        seq: records.length,
+        time: Date.now(),
+        data: {
+          target: "next-turn",
+          start: 0,
+          removedCount,
+          inserted: requestIds.map(message),
+          ...(removedCount > 0 ? { outcome: "canceled" } : {}),
+        },
+      },
+    } as unknown as SessionHistoryRecord;
+    records.push(frame);
+    publish(frame);
+    await vi.waitFor(() =>
+      expect(session.eventSource.getSnapshot().entries).toHaveLength(records.length),
+    );
+  };
+  return {
+    session,
+    prompt,
+    page,
+    onEngaged,
+    begin,
+    send,
+    confirm,
+    spliceInbox,
+    showTailFrom: (index: number) => {
+      tailFrom = index;
+    },
+  };
 }
 
 it("clears an unknown send only when its own message arrives, without sending again", async () => {
@@ -180,3 +226,83 @@ it("reconciles a matching queue receipt after the failed local echo has retired"
   );
   await vi.waitFor(() => expect(f.session.getSnapshot().promptError).toBeNull());
 });
+
+it.each([true, false])(
+  "retains a transient receipt until the RPC settles, with local echo %s",
+  async (echo) => {
+    const f = await fixture();
+    const reply = Promise.withResolvers<ReturnType<typeof unknown>>();
+    f.prompt.mockReturnValueOnce(reply.promise);
+    const sending = f.send(echo ? f.begin().requestId : undefined);
+    const request = (f.prompt.mock.calls[0] as unknown as [{ requestId: SessionRequestId }])[0];
+    f.session.projections.applyLive(
+      "inbox",
+      { "next-turn": [message(request.requestId)], "next-step": [] },
+      SessionSeq(5),
+    );
+    await vi.waitFor(() => expect(f.session.getSnapshot().pendingSubmissions).toEqual([]));
+    await Promise.resolve();
+    f.session.projections.applyLive("inbox", { "next-turn": [], "next-step": [] }, SessionSeq(6));
+    await Promise.resolve();
+    reply.resolve(unknown());
+    expect(await sending).toEqual({ ok: true, value: { accepted: true } });
+    expect(f.session.getSnapshot().promptError).toBeNull();
+    expect(f.onEngaged).toHaveBeenCalledTimes(1);
+    // A completed RPC's transient receipt must not confirm a later invocation.
+    expect((await f.send(request.requestId)).ok).toBe(false);
+    expect(f.session.getSnapshot().promptError?.error.code).toBe("remote/outcome-unknown");
+  },
+);
+
+it("engages a blank session once when a receipt arrives after the failed reply", async () => {
+  const f = await fixture();
+  f.onEngaged.mockImplementation((session) => {
+    expect(session.getSnapshot().promptError).toBeNull();
+    expect(session.getSnapshot().blank).toBe(false);
+    session.handleBlank(false);
+  });
+  const submission = f.begin();
+  await f.send(submission.requestId);
+  expect(f.session.getSnapshot().blank).toBe(true);
+  await f.confirm(submission.requestId);
+  expect(f.session.getSnapshot().blank).toBe(false);
+  expect(f.onEngaged).toHaveBeenCalledExactlyOnceWith(f.session);
+  await f.confirm(submission.requestId);
+  await f.session.resync();
+  expect(f.onEngaged).toHaveBeenCalledTimes(1);
+});
+
+it("retains an event-only queue receipt for a send without an optimistic echo", async () => {
+  const f = await fixture();
+  const reply = Promise.withResolvers<ReturnType<typeof unknown>>();
+  f.prompt.mockReturnValueOnce(reply.promise);
+  const sending = f.send();
+  const request = (f.prompt.mock.calls[0] as unknown as [{ requestId: SessionRequestId }])[0];
+  await f.spliceInbox([request.requestId]);
+  await f.spliceInbox([], 1);
+  reply.resolve(unknown());
+  expect(await sending).toEqual({ ok: true, value: { accepted: true } });
+  expect(f.session.getSnapshot().promptError).toBeNull();
+  expect(f.onEngaged).toHaveBeenCalledTimes(1);
+});
+
+it.each(["loadOlder", "loadThrough"] as const)(
+  "confirms a send found outside the restored tail through %s",
+  async (load) => {
+    const f = await fixture();
+    const submission = f.begin();
+    await f.send(submission.requestId);
+    await f.confirm(submission.requestId, false);
+    await f.confirm("another-client", false);
+    f.showTailFrom(1);
+    await f.session.resync();
+    expect(f.session.getSnapshot().promptError?.error.code).toBe("remote/outcome-unknown");
+    if (load === "loadOlder") await f.session.loadOlder();
+    else await f.session.loadThrough(SessionSeq(0));
+    expect(f.page).toHaveBeenCalledTimes(1);
+    expect(f.session.eventSource.getSnapshot().entries).toHaveLength(2);
+    expect(f.session.getSnapshot().promptError).toBeNull();
+    expect(f.session.getSnapshot().blank).toBe(false);
+    expect(f.prompt).toHaveBeenCalledTimes(1);
+  },
+);

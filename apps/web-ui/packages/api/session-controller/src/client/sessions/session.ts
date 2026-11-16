@@ -151,6 +151,8 @@ export class Session implements SessionFace {
   private blankBit = true;
   private removed = false;
   private promptError: PromptError | null = null;
+  /** Receipts for active sends survive queue removal until their RPC settles. */
+  private readonly inFlightPrompts = new Map<SessionRequestId, { observed: boolean }>();
   private lastAgentError: string | null = null;
   /** Local submission echoes, insertion-ordered (see SessionSnapshot.pendingSubmissions). */
   private pendingSubmissions: readonly PendingSubmission[] = [];
@@ -325,65 +327,77 @@ export class Session implements SessionFace {
     this.promptAttempted = true;
     if (this.blankBit) this.firstPromptPendingTurn = true;
     this.notifier.markDirty();
-    let result: RemoteResult<{ accepted: true }>;
-    if (this.address === undefined) {
-      const clientTimeZone = resolvedClientTimeZone();
-      result = await this.remote.session.prompt(
-        {
-          requestId: submittedRequestId,
-          sessionId: this.sessionId,
-          mode,
-          content,
-          clientTimeZone,
-        },
-        signal,
-      );
-    } else if (content.some((part) => part.type === "file")) {
-      result = {
-        ok: false,
-        error: new RemoteError(
-          "subagent/attachment-invalid",
-          "subagent continuation does not accept files",
-          { reason: "SUBAGENT_FILE_UNSUPPORTED" },
-        ),
-      };
-    } else {
-      // The preceding branch rejects file parts before the narrower subagent
-      // wire type is used; this array is not filtered or reordered.
-      const routedContent = content as Exclude<PromptContentPart, { readonly type: "file" }>[];
-      const routed = await this.remote.subagents.prompt(
-        {
-          requestId: submittedRequestId,
-          parentSessionId: this.address.parentSessionId,
-          childSessionId: this.address.childSessionId,
-          mode: "continuable",
-          delivery: mode,
-          content: routedContent,
-          clientTimeZone: resolvedClientTimeZone(),
-        },
-        signal,
-      );
-      result = routed.ok ? { ok: true, value: { accepted: true } } : routed;
-    }
-    if (
-      !result.ok &&
-      result.error.code === "remote/outcome-unknown" &&
-      this.hasObservedPrompt(submittedRequestId)
-    )
-      result = { ok: true, value: { accepted: true } };
-    if (!result.ok) {
-      if (requestId !== undefined) this.retireFailedSubmission(requestId);
-      this.promptError = { op: "send", error: result.error, requestId: submittedRequestId };
-      this.notifier.markDirty();
+    const inFlight = { observed: false };
+    this.inFlightPrompts.set(submittedRequestId, inFlight);
+    try {
+      let result: RemoteResult<{ accepted: true }>;
+      if (this.address === undefined) {
+        const clientTimeZone = resolvedClientTimeZone();
+        result = await this.remote.session.prompt(
+          {
+            requestId: submittedRequestId,
+            sessionId: this.sessionId,
+            mode,
+            content,
+            clientTimeZone,
+          },
+          signal,
+        );
+      } else if (content.some((part) => part.type === "file")) {
+        result = {
+          ok: false,
+          error: new RemoteError(
+            "subagent/attachment-invalid",
+            "subagent continuation does not accept files",
+            { reason: "SUBAGENT_FILE_UNSUPPORTED" },
+          ),
+        };
+      } else {
+        // The preceding branch rejects file parts before the narrower subagent
+        // wire type is used; this array is not filtered or reordered.
+        const routedContent = content as Exclude<PromptContentPart, { readonly type: "file" }>[];
+        const routed = await this.remote.subagents.prompt(
+          {
+            requestId: submittedRequestId,
+            parentSessionId: this.address.parentSessionId,
+            childSessionId: this.address.childSessionId,
+            mode: "continuable",
+            delivery: mode,
+            content: routedContent,
+            clientTimeZone: resolvedClientTimeZone(),
+          },
+          signal,
+        );
+        result = routed.ok ? { ok: true, value: { accepted: true } } : routed;
+      }
+      if (
+        !result.ok &&
+        result.error.code === "remote/outcome-unknown" &&
+        this.hasObservedPrompt(submittedRequestId)
+      )
+        result = { ok: true, value: { accepted: true } };
+      if (!result.ok) {
+        if (requestId !== undefined) this.retireFailedSubmission(requestId);
+        this.promptError = { op: "send", error: result.error, requestId: submittedRequestId };
+        this.notifier.markDirty();
+        return result;
+      }
+      this.acceptPrompt();
       return result;
+    } finally {
+      if (this.inFlightPrompts.get(submittedRequestId) === inFlight)
+        this.inFlightPrompts.delete(submittedRequestId);
     }
+  }
+
+  /** Publish acceptance from an RPC or the unknown send's durable receipt. */
+  private acceptPrompt(): void {
     // Rejection must leave a first prompt blank and eligible for workspace reuse.
     if (this.blankBit) {
       this.blankBit = false;
       this.notifier.markDirty();
     }
     this.onEngaged?.(this);
-    return result;
   }
 
   /** A durable message or queue receipt can confirm a send before its RPC reply arrives. */
@@ -394,6 +408,7 @@ export class Session implements SessionFace {
       message.source.rpcId === requestId;
     const inbox = this.projections.get("inbox") as InboxState | undefined;
     return (
+      this.inFlightPrompts.get(requestId)?.observed === true ||
       this.eventSource
         .getSnapshot()
         .entries.some(({ event }) => event.type === "user/message" && matches(event.data)) ||
@@ -403,6 +418,8 @@ export class Session implements SessionFace {
 
   /** Only the failed send's own receipt resolves its unknown outcome. */
   private confirmPrompt(requestId: SessionRequestId): void {
+    const inFlight = this.inFlightPrompts.get(requestId);
+    if (inFlight) inFlight.observed = true;
     if (
       this.promptError?.op !== "send" ||
       this.promptError.error.code !== "remote/outcome-unknown" ||
@@ -411,6 +428,7 @@ export class Session implements SessionFace {
       return;
     this.promptError = null;
     this.notifier.markDirty();
+    this.acceptPrompt();
   }
 
   /**
@@ -915,6 +933,9 @@ export class Session implements SessionFace {
     this.baseSeq = entries[0] === undefined ? this.baseSeq : SessionLogOffset(entries[0].event.seq);
     this.hasMore = hasMore;
     this.eventSource.prepend(entries, hasMore);
+    for (const { event } of entries) {
+      if (event.type === "user/message") this.observeSubmissionMessage(event.data, true);
+    }
   }
 
   /** Append one stream-validated live event. */
@@ -936,7 +957,12 @@ export class Session implements SessionFace {
       this.observeSubmissionMessage(event.data, true);
       return;
     }
-    if (this.submissionSettlements.size === 0 && this.promptError?.requestId === undefined) return;
+    if (
+      this.submissionSettlements.size === 0 &&
+      this.inFlightPrompts.size === 0 &&
+      this.promptError?.requestId === undefined
+    )
+      return;
     if (event.type === "agent/inbox/spliced") {
       const { target, start, removedCount = 0, inserted, outcome } = event.data;
       for (const [requestId, settlement] of this.submissionSettlements) {
@@ -1031,7 +1057,12 @@ export class Session implements SessionFace {
 
   /** Inbox acceptance retires queued echoes; its watermark completes admitted Chat handoffs. */
   private observeSubmissionInbox(): void {
-    if (this.submissionSettlements.size === 0 && this.promptError?.requestId === undefined) return;
+    if (
+      this.submissionSettlements.size === 0 &&
+      this.inFlightPrompts.size === 0 &&
+      this.promptError?.requestId === undefined
+    )
+      return;
     const inbox = this.projections.get("inbox") as InboxState | undefined;
     if (inbox === undefined) return;
     const seq = this.projections.seqOf("inbox");

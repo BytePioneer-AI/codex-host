@@ -2,68 +2,74 @@
 
 ## Purpose
 
-CodeBuddy 与 WorkBuddy（国际版、国内版）共用 Session 对原生 unsolicited drain 的投影、互斥和历史一致性。
+CodeBuddy 与 WorkBuddy 共用 Session 对原生 unsolicited drain 的受限实时观测、Turn 互斥和交互归属。
 
 ## ADDED Requirements
 
-### Requirement: Native unsolicited output SHALL become one public autonomous Turn
+### Requirement: Native unsolicited intervals SHALL become public autonomous Turns
 
-当原生在没有 Host `turn.start` 时宣布并执行一轮 drain，Session SHALL 声明 `autonomousTurns.observe`，用 `turn.autonomous.started`（`input: []`）建立公共 Turn，并把该轮内容按普通 Item 规则投影，最后发出唯一的 `turn.completed`。
+Session SHALL 声明 `autonomousTurns.observe`，把同一连接的 unsolicited 公告至 `session_end` 区间投影为一个公共自主 Turn，依次发出 `turn.autonomous.started`（`input: []`）、`turn.started`、普通 Items 和唯一 `turn.completed`。requestId SHALL NOT 被视为区间唯一身份。
 
-#### Scenario: An idle drain completes
+#### Scenario: An idle interval ends
 
-- **WHEN** 原生在空闲时发出 unsolicited 开始帧、内容帧与 `session_end`
-- **THEN** Session SHALL 建立且只建立一个自主 Turn，其 Items 来自该轮内容
-- **AND** SHALL 以落盘 Turn 的 `nativeTurnRef` 与 outcome 发出唯一终态
+- **WHEN** 原生在空闲时发出公告、内容和 `session_end`
+- **THEN** Session SHALL 建立一个自主 Turn，并在终态到达时结束它
+- **AND** 未请求取消时 SHALL 以 succeeded 表示实时区间完成，不表示业务成功
 
-#### Scenario: A drain succeeds after a Host Turn
+#### Scenario: Request identity changes during admission
 
-- **WHEN** 上一个 Host Turn 已结束，原生随后开始并完成一轮 drain
-- **THEN** 自主 Turn SHALL 在 Host 终态之后开始
-- **AND** 两个 Turn SHALL 不共享 Turn ID、Item 或终态
+- **WHEN** 终态或内容的 requestId 与公告不同
+- **THEN** Session SHALL 仍按同一连接的开放区间接收内容和终态
 
-### Requirement: Autonomous and Host Turns SHALL NOT mix
+### Requirement: Autonomous intervals and Host Turns SHALL NOT mix
 
-自主 Turn 持有 Session 时，Host `turn.start` SHALL 以 `sessionBusy` 拒绝；Host 启动读取历史后若已有自主 Turn，该请求也 SHALL 被拒绝。Host Turn 收尾期间到达的 drain 帧 SHALL 按原生顺序暂存，等 Host 终态后再建立自主 Turn；暂存 SHALL 有明确上限，超限按协议错误处理。原生串行多轮 SHALL 按序排队；只有前一轮尚未收到结束帧时再次开始才按协议错误处理。
+自主 Turn 活动时，Host `turn.start` SHALL 返回 `sessionBusy`；Host 准入读取历史后若已开始自主 Turn，也 SHALL 拒绝该 Host 请求。等待公共身份的原生串行区间 SHALL 分别保留内容，并在前一公共 Turn 终态后按序发布；全部暂存 SHALL 合计受 2048 帧 / 4 MiB UTF-8 约束，空区间和等待交互也计入，超限 SHALL fault。只有开放区间未结束又收到公告才 SHALL 判为重叠。
 
-#### Scenario: A Turn is requested during a drain
+#### Scenario: Serial intervals reuse a request ID during finalization
 
-- **WHEN** Host 在自主 Turn 活动期间请求 `turn.start`
-- **THEN** Session SHALL 返回 `sessionBusy`，且 SHALL NOT 发出该请求的 `turn.started`
+- **WHEN** 前一公共 Turn 尚在收尾，原生依次公告并结束多轮且复用 requestId
+- **THEN** 每个区间 SHALL 获得独立公共 Turn，内容不得串入其他区间
+- **AND** SHALL NOT 因公共 Turn 尚未收尾而判为重叠
 
-#### Scenario: A drain starts while the Host Turn finalizes
+#### Scenario: A native interval overlaps
 
-- **WHEN** drain 帧在 Host Turn 尚未发出终态时到达
-- **THEN** 这些帧 SHALL NOT 进入 Host Turn
-- **AND** SHALL 在 Host 终态后按序重放为自主 Turn
+- **WHEN** 前一区间未收到 `session_end` 又收到公告
+- **THEN** Session SHALL 按协议错误 fault，并终结活动 Turn
 
-#### Scenario: Serial native rounds arrive while a terminal read is pending
+#### Scenario: Aggregate pending output exceeds the allowance
 
-- **WHEN** 上一轮已收到结束帧，其公共终态仍在读取历史，后续原生轮依次开始并结束
-- **THEN** 每一轮 SHALL 按原生顺序排队并各自获得一个自主 Turn
-- **AND** SHALL NOT 因公共终态尚未发布而报并发错误
+- **WHEN** 多轮合计暂存或空轮数量超过总额度
+- **THEN** Session SHALL fault，不得因每轮单独低于上限而继续累积
 
-### Requirement: Cancellation and shutdown SHALL settle exactly once
+### Requirement: Native intervals SHALL own Interactions and lifecycle settlement
 
-对自主 Turn 的 `turn.cancel` SHALL 调用原生取消、关闭待处理 Interaction，并以 `session_end` 为唯一终态依据；超时按公共错误与 fault 规则处理。关闭与 fault SHALL 终结活动中的自主 Turn，且不得泄漏 Interaction 或延迟 Item。
+已公告未结束的区间 SHALL 拥有 permission/question，等待自身公共身份后发布；前一 Host prompt 的本地完成状态 SHALL NOT 覆盖该归属。取消 SHALL 调用原生取消并关闭 Interaction，收到 `session_end` 后发唯一 cancelled 终态，超时按既有 fault 规则处理。close/fault SHALL 终结活动 Turn、释放暂存和交互等待。
 
-#### Scenario: The user cancels an autonomous Turn
+#### Scenario: A drain approval precedes Host completion microtasks
 
-- **WHEN** Host 以自主 Turn 的 turnId 发送 `turn.cancel`
-- **THEN** Session SHALL 调用一次原生取消并等待其 `session_end`
-- **AND** SHALL 发出恰好一个 cancelled 终态，并在取消恢复后接受下一轮
+- **WHEN** Host prompt 已返回，下一轮公告和 permission/question 在本地完成处理前到达
+- **THEN** Interaction SHALL 等待并绑定自主 Turn，不能绑定旧 Host Turn
 
-#### Scenario: The Session closes during a drain
+#### Scenario: Cancellation rebuild receives more intervals
 
-- **WHEN** Session 在自主 Turn 活动期间 close
-- **THEN** 该 Turn SHALL 得到 cancelled 终态，输出流结束，Interaction 关闭
+- **WHEN** 取消后重建连接期间，新连接收到连续完整区间
+- **THEN** 取消轮 SHALL 仅有一个 cancelled 终态，后续区间 SHALL 分别重放
 
-### Requirement: Read-only history SHALL agree with the live autonomous Turn
+#### Scenario: The Session closes with an unpublished Interaction
 
-原生注入的 meta 输入行打开 Turn 时，只读历史 SHALL 把该 Turn 投影为空输入，并保留同一 Turn 身份、Items 与终态。显式 `startsNewUserRequest: true`、原生本地命令与 `/compact` 的既有输入规则 SHALL 保持不变。
+- **WHEN** close/fault 发生于公共身份尚未就绪时
+- **THEN** Session SHALL 解除交互等待并丢弃该暂存区间
 
-#### Scenario: A persisted drain Turn is reloaded
+### Requirement: Limited live observation SHALL NOT infer persisted autonomous identity
 
-- **WHEN** Host 读取包含原生 drain Turn 的历史
-- **THEN** 该 Turn SHALL 以空输入、该轮 Items 和落盘 outcome 出现
-- **AND** SHALL 与实时自主 Turn 使用同一 Native Turn 身份
+自主 Turn SHALL NOT 读取历史推断终态、成功、身份或分组，也 SHALL NOT 生成 `nativeTurnRef`。只读历史 SHALL 保持原生行投影规则；重开后按原生落盘展示，分组和终态可能与实时不同。此能力 SHALL 明确标为受限实时支持，不承诺两者一致。
+
+#### Scenario: History has no success or contains unrelated meta rows
+
+- **WHEN** 原生区间已结束，但历史不存在、未完成或含失败 Host 的隐藏输入
+- **THEN** 自主 Turn SHALL 按实时区间结束，不认领任何历史行或 Native Turn Ref
+
+#### Scenario: A Session is reopened
+
+- **WHEN** 用户重开含自主输出的会话
+- **THEN** 历史 SHALL 按既有原生输入行规则展示，不按空输入、时间或行序猜测实时区间

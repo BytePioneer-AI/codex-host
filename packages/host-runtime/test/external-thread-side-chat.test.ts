@@ -11,6 +11,7 @@ import {
   requestId,
   startExternalThread,
   startPiThread,
+  startPiTurn,
   stopFixture,
   turnEvent,
   writeRequest,
@@ -142,6 +143,54 @@ describe("External Side Chats", () => {
       expect(read.result).toMatchObject({ thread: { preview: "question" } });
     } finally {
       await stopFixture(restarted ?? fixture);
+    }
+  });
+
+  it("opens a Side Chat while the source's first Turn runs, with no inherited history", async () => {
+    const fixture = createFixture();
+    try {
+      const sourceId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        historyMode: "paginated",
+      });
+      const sourceTurnId = await startPiTurn(fixture, sourceId, 2);
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/started", sourceTurnId),
+      );
+
+      // As in native Codex, the fork carries completed history only: here, none.
+      const sideChatId = await openSideChat(fixture, sourceId, 3);
+      const started = await call(fixture, 5, "turn/start", {
+        threadId: sideChatId,
+        input: [{ type: "text", text: "question" }],
+      });
+      const turnId = ((started.result as JsonObject).turn as JsonObject).id as string;
+      const [source, sideChat] = fixture.adapter.sessions;
+      if (!source || !sideChat) throw new Error("Missing Fake Sessions");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      sideChat.appendText("answer");
+      sideChat.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      const snapshot = await sideChat.readSnapshot();
+      if (!snapshot.ok) throw new Error("Missing Side Chat snapshot");
+      expect(snapshot.value.turns.map(({ input }) => input[0]?.text)).toEqual([
+        `${boundary(sourceId)}\n\nquestion`,
+      ]);
+      // A temporary Side Chat is an ephemeral fork; other forks still need a completed Turn.
+      const temporary = await call(fixture, 6, "thread/fork", {
+        threadId: sourceId,
+        ephemeral: true,
+        excludeTurns: true,
+      });
+      expect(temporary.result).toMatchObject({ thread: { id: expect.any(String) } });
+      const plain = await call(fixture, 7, "thread/fork", { threadId: sourceId });
+      expect(plain.error).toMatchObject({ code: -32080 });
+
+      source.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", sourceTurnId),
+      );
+    } finally {
+      await stopFixture(fixture);
     }
   });
 

@@ -654,7 +654,8 @@ export function externalThreadValue(input: {
           sha: record.gitInfo.sha ?? null,
         }
       : null,
-    forkedFromId: record.forkSource?.hostThreadId ?? null,
+    // A Side Chat forked before its source completed a Turn has no fork boundary Turn.
+    forkedFromId: record.forkSource?.hostThreadId ?? record.attachedToThreadId ?? null,
     ...(record.attachedToThreadId ? { attachedToThreadId: record.attachedToThreadId } : {}),
     ...(record.importSourceRef &&
     record.nativeSessionRef &&

@@ -18,7 +18,14 @@ Desktop 打开侧边聊天时，先用 `thread/fork` 从主对话 Fork 出子 Th
 - 暂存写在 Thread 记录中，Host 重启后仍会交付。
 - Desktop 只显示用户自己的消息。记录保存已交付前缀的长度和 SHA-256，回放历史时去掉该前缀；对不上时按原文显示。
 
+## 来源运行中
+
+Desktop 打开侧边聊天时不指定边界 Turn：持久侧边聊天带 `attachToSource`，临时侧边聊天带 `ephemeral`。与官方一致，侧边聊天只带已完成的历史，运行中的 Turn 不在其中。
+
+- 来源已有完成的 Turn 时，从最后一个完成的 Turn Fork。
+- 来源还没有完成任何 Turn 时，用来源 Harness 新开 Native Session，沿用来源当前的 Model、Thinking 和权限模式，不继承历史。
+
 ## 边界
 
-- Fork 需要 Fork 边界处已完成 Turn 的 Native Checkpoint。来源 Turn 运行中、边界还没有 Native Checkpoint 时，持久和临时侧边聊天都返回 `-32080`。
+- 其他 Fork 行为不变：边界 Turn 没有 Native Checkpoint 时返回 `-32080`。最后一个完成的 Turn 没有 Native Checkpoint 时，侧边聊天同样返回 `-32080`。
 - 新增的记录字段读取失败时按缺省处理，不隔离整个 Thread。旧版 Host 会保留这些字段，但会把侧边聊天显示在普通列表中。

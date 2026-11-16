@@ -88,7 +88,13 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
   - After a fix, rerun only what failed. Do not rerun checks on an unchanged tree or checks a delegate already reported for the same state.
   - Full-repo `npm run lint`, `typecheck`, `check`, `test`, `format:check` belong to CI; run them locally only when asked or when diagnosing a CI failure. Docs, copy, style, and small fixes need no local checks.
   - After pushing, do not wait for, poll, or report CI results; the user handles CI failures. Do not describe unchecked CI as passing.
-- Small, low-risk changes do not require new tests. For high-risk or cross-package changes, or when explicitly requested, add focused tests for changed behavior and boundary conditions.
+- Writing tests. Every test is code to maintain and CI time to pay; add one only when it earns that.
+  - Small, low-risk changes need no new tests. Add focused tests for high-risk or cross-package changes, or when asked.
+  - A new test must catch a regression the existing tests would miss. Extend the nearest existing case or `test.each` instead of adding near-duplicates.
+  - Assert observable behavior (inputs, outputs, protocol messages, persisted state), not internal call order, private state, or mock call counts.
+  - Mock only external boundaries (network, clock, real CLIs, the OS), never the code under test. Avoid large snapshots and long literal expectations that can only be updated mechanically.
+  - A bug-fix test must fail before the fix. Never weaken assertions or delete tests just to make a change pass; report the conflict instead.
+  - When a change makes existing tests redundant or ties them to removed internals, delete them in the same change.
 - Do not write browser, e2e, or component tests for Web pages (`apps/web-ui`); the user checks page changes directly. Codex Desktop compatibility after an update is checked with `npm run audit:codex-desktop` and `npm run probe:renderer-binding` (`codexhost-update-impact-audit`).
 - `npm start` / `npm start web` rebuild and relaunch the user's Desktop / Web and may restart the shared Host; `npm stop` stops all local codexhost services across worktrees. Both interrupt running tasks: run them only when the user asks, never as validation. Details: `docs/product/standalone-web.md`.
 - When pushing rewritten history, use `--force-with-lease`, never a bare `--force`.

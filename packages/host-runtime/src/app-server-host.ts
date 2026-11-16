@@ -5170,7 +5170,7 @@ export class AppServerHost {
     }
   }
 
-  /** Watch uses the same steering operation as Desktop. */
+  /** `thread send --steer` uses the same steering operation as Desktop. */
   async #steerDelegatedExternalTurn(thread: ExternalThread, text: string): Promise<string> {
     if (this.#externalSteering.hasPending(thread.id) || !thread.running || !thread.activeTurnId) {
       throw new DelegationControlError("THREAD_BUSY", "Thread is not ready for steering");

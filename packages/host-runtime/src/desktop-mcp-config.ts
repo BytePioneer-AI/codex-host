@@ -249,7 +249,9 @@ export async function desktopNativeMcpOverrides(
             ([key, value]) => key !== "type" && value !== null,
           ),
         );
-        const policy = await bundledServerPolicy(server.name, definition, environment);
+        const policy: JsonObject = globalNames.has(server.name)
+          ? {}
+          : await bundledServerPolicy(server.name, definition, environment);
         if (!globalNames.has(server.name) && Object.keys(policy).length === 0) continue;
         const adapted = register(
           definition,

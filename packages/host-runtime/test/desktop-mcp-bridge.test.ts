@@ -248,6 +248,7 @@ it.skipIf(process.platform === "win32")(
     const f = await setup();
     const executable = path.join(f.root, "native-config");
     const recorded = path.join(f.root, "native-arguments.json");
+    const globalPolicyMarker = path.join(f.root, "global-cua-policy");
     const pluginEnvironment = { ...f.server.env, BROWSER_USE_CODEX_APP_VERSION: "fixture1" };
     const servers = [
       { name: "node_repl", enabled: true, transport: { ...f.server, type: "stdio", cwd: null } },
@@ -300,7 +301,7 @@ it.skipIf(process.platform === "win32")(
       `#!${process.execPath}
 require("node:fs").appendFileSync(${JSON.stringify(recorded)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 const servers = ${JSON.stringify(servers)};
-process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=false") ? servers.filter((server) => server.name !== "cua_repl") : servers));
+process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=false") && !require("node:fs").existsSync(${JSON.stringify(globalPolicyMarker)}) ? servers.filter((server) => server.name !== "cua_repl") : servers));
 `,
       { mode: 0o700 },
     );
@@ -349,6 +350,26 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
         ["-c", "features.fixture=true", "-c", "features.plugins=false", "mcp", "list", "--json"],
       ]),
     );
+    await writeFile(globalPolicyMarker, "global definition already supplies its tool policy");
+    const globalPolicy = await createDesktopMcpBridge({
+      nodeReplPath: process.execPath,
+      runtimePath: fileURLToPath(new URL("../dist/release-main.js", import.meta.url)),
+      environment: { ...process.env, CODEX_HOME: f.root },
+      native: { executable, arguments: [] },
+    });
+    if (!globalPolicy) throw new Error("Fixture bridge unavailable");
+    cleanup.push(() => globalPolicy.close());
+    const globalOverrides = (
+      JSON.parse(
+        String(globalPolicy.environment.CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS),
+      ) as string[]
+    )
+      .filter((argument) => argument !== "-c")
+      .map((argument) => argument.split("=")[0]);
+    expect(globalOverrides).toContain("mcp_servers.cua_repl.command");
+    expect(globalOverrides).not.toContain("mcp_servers.cua_repl.enabled_tools");
+    expect(globalOverrides).not.toContain("mcp_servers.cua_repl.default_tools_approval_mode");
+    await rm(globalPolicyMarker);
     await rm(path.join(pluginDirectory, ".mcp.json"));
     const unavailablePolicy = await createDesktopMcpBridge({
       nodeReplPath: process.execPath,

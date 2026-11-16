@@ -1,0 +1,397 @@
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, expect, it, vi } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { CallToolResultSchema, ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { jsonObjectSchema } from "@codexhost/shared-contracts";
+import type { JsonObject } from "@codexhost/protocol-core";
+import { createDesktopMcpBridge } from "../src/desktop-mcp-bridge.js";
+
+const cleanup: Array<() => Promise<unknown>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+});
+
+async function setup() {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "desktop-mcp-test-")));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const events = path.join(root, "events.jsonl");
+  const created = await createDesktopMcpBridge({
+    nodeReplPath: process.execPath,
+    runtimePath: fileURLToPath(new URL("../dist/release-main.js", import.meta.url)),
+    environment: {
+      ...process.env,
+      HOME: root,
+      BROWSER_USE_ACCESS_PIPE_PATH: "synthetic-desktop-pipe",
+    },
+  });
+  if (!created) throw new Error("Missing fixture bridge");
+  const bridge = created;
+  cleanup.push(() => bridge.close());
+  const server = {
+    command: process.execPath,
+    args: [fileURLToPath(new URL("./fixtures/desktop-mcp-server.mjs", import.meta.url))],
+    env: {
+      NODE_REPL_TRUSTED_SERVICES: '{"browser":"fixture"}',
+      FIXTURE_EVENTS: events,
+      FIXTURE_MARKER: "provided",
+    },
+    env_vars: ["BROWSER_USE_ACCESS_PIPE_PATH"],
+    tool_timeout_sec: 45,
+    default_tools_approval_mode: "prompt",
+  };
+  async function rewrite(config: JsonObject = server, cwd = root) {
+    const chunks: Buffer[] = [];
+    const collect = (chunk: Buffer) => chunks.push(chunk);
+    bridge.input.on("data", collect);
+    await new Promise<void>((resolve, reject) => {
+      bridge.input.write(
+        JSON.stringify({
+          id: 1,
+          method: "thread/start",
+          params: { cwd, config: { "mcp_servers.node_repl": config }, future: { preserved: true } },
+        }) + "\n",
+        (error) => (error ? reject(error) : resolve()),
+      );
+    });
+    bridge.input.off("data", collect);
+    return JSON.parse(Buffer.concat(chunks).toString()) as {
+      params: { config: Record<string, JsonObject>; future: { preserved: boolean } };
+    };
+  }
+  const transformed = await rewrite();
+  const config = jsonObjectSchema.parse(transformed.params.config["mcp_servers.node_repl"]);
+  function headers(configuration = config) {
+    return { Authorization: String((configuration.args as string[])[3]) };
+  }
+  async function connect(configuration = config, capabilities = {}) {
+    const client = new Client({ name: "desktop-mcp-test", version: "1" }, { capabilities });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(String((configuration.args as string[])[2])),
+      {
+        requestInit: { headers: headers(configuration) },
+      },
+    );
+    cleanup.push(() => client.close());
+    await client.connect(transport as Transport);
+    return { client, transport };
+  }
+  async function records() {
+    return (await readFile(events, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+  return { bridge, server, config, transformed, root, events, rewrite, connect, records, headers };
+}
+
+it("runs the genuine stdio process below the bridge and preserves metadata and configuration", async () => {
+  const f = await setup();
+  expect(f.config.command).toBe(process.execPath);
+  expect(f.config.env).toEqual(f.server.env);
+  expect(f.config.tool_timeout_sec).toBe(45);
+  expect(f.config.default_tools_approval_mode).toBe("prompt");
+  expect(f.transformed.params.future).toEqual({ preserved: true });
+  const { client } = await f.connect();
+  expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+    "echo",
+    "ask",
+    "wait",
+    "measure",
+  ]);
+  const result = await client.callTool({
+    name: "echo",
+    arguments: { input: "hello" },
+    _meta: { fixtureCaller: "actual-request-metadata" },
+  });
+  expect(jsonObjectSchema.parse(result.structuredContent).parent).not.toBe(process.pid);
+  expect(result.structuredContent).toMatchObject({
+    arguments: { input: "hello" },
+    meta: { fixtureCaller: "actual-request-metadata" },
+    parent: expect.any(Number),
+    cwd: f.root,
+    marker: "provided",
+    browserPipe: "synthetic-desktop-pipe",
+    calls: 1,
+  });
+});
+
+it("keeps separate MCP sessions independent and terminates their owned processes", async () => {
+  const f = await setup();
+  const a = await f.connect();
+  const b = await f.connect();
+  const first = jsonObjectSchema.parse(
+    (await a.client.callTool({ name: "echo", arguments: {} })).structuredContent,
+  );
+  const second = jsonObjectSchema.parse(
+    (await b.client.callTool({ name: "echo", arguments: {} })).structuredContent,
+  );
+  expect(first.pid).not.toBe(second.pid);
+  expect(first.calls).toBe(1);
+  expect(second.calls).toBe(1);
+  await a.transport.terminateSession();
+  await vi.waitFor(() => expect(() => process.kill(Number(first.pid), 0)).toThrow());
+  expect(
+    (await b.client.callTool({ name: "echo", arguments: {} })).structuredContent,
+  ).toMatchObject({ calls: 2 });
+});
+
+it("forwards concurrent server-initiated elicitation and the client's decision", async () => {
+  const f = await setup();
+  const client = new Client(
+    { name: "elicitation-client", version: "1" },
+    { capabilities: { elicitation: { form: {} } } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async () => ({
+    action: "accept",
+    content: { allow: true },
+  }));
+  cleanup.push(() => client.close());
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(String((f.config.args as string[])[2])), {
+      requestInit: { headers: f.headers() },
+    }) as Transport,
+  );
+  const results = await Promise.all([
+    client.callTool({ name: "ask", arguments: { input: "first" } }),
+    client.callTool({ name: "ask", arguments: { input: "second" } }),
+  ]);
+  expect(results.map((result) => result.structuredContent)).toEqual([
+    { action: "accept", content: { allow: true } },
+    { action: "accept", content: { allow: true } },
+  ]);
+});
+
+it("forwards cancellation and retains the session for the next call", async () => {
+  const f = await setup();
+  const { client } = await f.connect();
+  const controller = new AbortController();
+  const pending = client.callTool({ name: "wait", arguments: {} }, CallToolResultSchema, {
+    signal: controller.signal,
+  });
+  await vi.waitFor(async () =>
+    expect((await f.records()).some((entry) => entry.method === "tools/call")).toBe(true),
+  );
+  controller.abort(new Error("test cancellation"));
+  await expect(pending).rejects.toThrow("test cancellation");
+  await vi.waitFor(async () =>
+    expect((await f.records()).some((entry) => entry.event === "cancelled")).toBe(true),
+  );
+  expect((await client.callTool({ name: "echo", arguments: {} })).structuredContent).toMatchObject({
+    calls: 1,
+  });
+});
+
+it("rejects unauthenticated clients and web origins before starting a process", async () => {
+  const f = await setup();
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 0,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "test", version: "1" },
+    },
+  });
+  const headers = {
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+  };
+  expect(
+    (await fetch(String((f.config.args as string[])[2]), { method: "POST", headers, body })).status,
+  ).toBe(401);
+  expect(
+    (
+      await fetch(String((f.config.args as string[])[2]), {
+        method: "POST",
+        headers: {
+          ...headers,
+          ...f.headers(),
+          origin: "https://untrusted.invalid",
+        },
+        body,
+      })
+    ).status,
+  ).toBe(403);
+  await expect(readFile(f.events)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("reuses identical definitions and leaves unsupported servers on their existing transport", async () => {
+  const f = await setup();
+  expect((await f.rewrite()).params.config["mcp_servers.node_repl"]).toEqual(f.config);
+  for (const config of [
+    { ...f.server, command: f.server.command + ".missing" },
+    { ...f.server, environment_id: "remote-environment" },
+    { ...f.server, env: { NODE_REPL_TRUSTED_SERVICES: "{}" } },
+  ]) {
+    expect((await f.rewrite(config)).params.config["mcp_servers.node_repl"]).toEqual(config);
+  }
+});
+
+it("carries authenticated MCP input larger than the delegation API body limit", async () => {
+  const f = await setup();
+  const { client } = await f.connect();
+  const input = "x".repeat(2 * 1024 * 1024 + 1);
+  const result = await client.callTool({ name: "measure", arguments: { input } });
+  expect(result.structuredContent).toEqual({ length: input.length });
+});
+
+it.skipIf(process.platform === "win32")(
+  "resolves enabled native and plugin definitions and retains native configuration flags",
+  async () => {
+    const f = await setup();
+    const executable = path.join(f.root, "native-config");
+    const recorded = path.join(f.root, "native-arguments.json");
+    const pluginEnvironment = { ...f.server.env, BROWSER_USE_CODEX_APP_VERSION: "fixture1" };
+    const servers = [
+      { name: "node_repl", enabled: true, transport: { ...f.server, type: "stdio", cwd: null } },
+      {
+        name: "cua_repl",
+        enabled: true,
+        transport: {
+          ...f.server,
+          type: "stdio",
+          command: "/bin/sh",
+          env: pluginEnvironment,
+          args: [
+            "-c",
+            'export BROWSER_USE_ACCESS_EXECUTOR_ID="${BROWSER_USE_ACCESS_EXECUTOR_ID-}"; exec "$@"',
+            "cua-repl",
+            process.execPath,
+          ],
+        },
+      },
+      { name: "disabled", enabled: false, transport: { ...f.server, type: "stdio" } },
+      {
+        name: "unrelated",
+        enabled: true,
+        transport: { ...f.server, type: "stdio", command: "/bin/echo" },
+      },
+    ];
+    const pluginDirectory = path.join(f.root, "plugins/cache/openai-bundled/fixture/fixture1");
+    await mkdir(pluginDirectory, { recursive: true });
+    const cua = servers.find((server) => server.name === "cua_repl");
+    if (!cua) throw new Error("Missing CUA fixture");
+    const transportDefinition = Object.fromEntries(
+      Object.entries(cua.transport).filter(([key]) => key !== "type"),
+    );
+    await writeFile(
+      path.join(pluginDirectory, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          cua_repl: {
+            ...transportDefinition,
+            enabled_tools: ["js", "js_reset", "turn_ended"],
+            omit_tools_from: ["code_mode", "deferred"],
+            startup_timeout_sec: 120,
+            tools: { js: { output_token_limit: 25000 } },
+          },
+        },
+      }),
+    );
+    await writeFile(
+      executable,
+      `#!${process.execPath}
+require("node:fs").appendFileSync(${JSON.stringify(recorded)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+const servers = ${JSON.stringify(servers)};
+process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=false") ? servers.filter((server) => server.name !== "cua_repl") : servers));
+`,
+      { mode: 0o700 },
+    );
+    const bridge = await createDesktopMcpBridge({
+      nodeReplPath: process.execPath,
+      runtimePath: fileURLToPath(new URL("../dist/release-main.js", import.meta.url)),
+      environment: { ...process.env, CODEX_HOME: f.root },
+      native: {
+        executable,
+        arguments: ["-c", "features.fixture=true", "app-server", "--analytics-default-enabled"],
+      },
+    });
+    if (!bridge) throw new Error("Fixture bridge unavailable");
+    cleanup.push(() => bridge.close());
+    const overrides = JSON.parse(
+      String(bridge.environment.CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS),
+    ) as string[];
+    expect(overrides.filter((value) => value !== "-c").map((value) => value.split("=")[0])).toEqual(
+      [
+        "mcp_servers.node_repl.command",
+        "mcp_servers.node_repl.args",
+        "mcp_servers.cua_repl.command",
+        "mcp_servers.cua_repl.args",
+        "mcp_servers.cua_repl.tool_timeout_sec",
+        "mcp_servers.cua_repl.default_tools_approval_mode",
+        "mcp_servers.cua_repl.enabled_tools",
+        "mcp_servers.cua_repl.omit_tools_from",
+        "mcp_servers.cua_repl.startup_timeout_sec",
+        "mcp_servers.cua_repl.tools",
+      ],
+    );
+    expect(overrides.join("\n")).toContain(
+      'mcp_servers.cua_repl.enabled_tools=["js","js_reset","turn_ended"]',
+    );
+    expect(overrides.join("\n")).toContain(
+      'mcp_servers.cua_repl.tools={"js"={"output_token_limit"=25000}}',
+    );
+    expect(
+      (await readFile(recorded, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual(
+      expect.arrayContaining([
+        ["-c", "features.fixture=true", "mcp", "list", "--json"],
+        ["-c", "features.fixture=true", "-c", "features.plugins=false", "mcp", "list", "--json"],
+      ]),
+    );
+    await rm(path.join(pluginDirectory, ".mcp.json"));
+    const unavailablePolicy = await createDesktopMcpBridge({
+      nodeReplPath: process.execPath,
+      runtimePath: fileURLToPath(new URL("../dist/release-main.js", import.meta.url)),
+      environment: { ...process.env, CODEX_HOME: f.root },
+      native: { executable, arguments: [] },
+    });
+    if (!unavailablePolicy) throw new Error("Fixture bridge unavailable");
+    cleanup.push(() => unavailablePolicy.close());
+    const skipped = String(unavailablePolicy.environment.CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS);
+    expect(skipped).toContain("mcp_servers.node_repl.command");
+    expect(skipped).not.toContain("mcp_servers.cua_repl");
+  },
+);
+
+it("retains the native stdio MCP contract through the HTTP client process", async () => {
+  const f = await setup();
+  const [, , url, authorization] = f.config.args as string[];
+  const entry = new URL("../src/desktop-mcp-bridge.ts", import.meta.url).href;
+  const client = new Client({ name: "stdio-contract", version: "1" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      `const { runDesktopMcpClient } = await import(${JSON.stringify(entry)}); process.exitCode = await runDesktopMcpClient(process.argv.slice(1));`,
+      String(url),
+      String(authorization),
+    ],
+    stderr: "pipe",
+  });
+  cleanup.push(() => client.close());
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "echo",
+    arguments: { input: "stdio" },
+    _meta: { original: "caller-metadata" },
+  });
+  expect(result.structuredContent).toMatchObject({
+    arguments: { input: "stdio" },
+    meta: { original: "caller-metadata" },
+    parent: expect.any(Number),
+  });
+});

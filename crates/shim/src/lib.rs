@@ -848,6 +848,21 @@ pub fn run_proxy_with_observer(
         &stock_codex_path,
         desktop_helper,
     )?;
+    #[cfg(target_os = "macos")]
+    if command.get_program() == stock_codex_path.as_os_str()
+        && !is_managed_remote_listener(arguments)
+        && (desktop_helper
+            || (!host_runtime_paths_are_configured()
+                && env::var_os(STOCK_CODEX_PATH_ENV).is_none()))
+        && (app_server_subcommand_index(arguments).is_some()
+            || arguments
+                .first()
+                .is_some_and(|argument| argument == "sandbox"))
+    {
+        // Native peer authorization requires the signed helper's original caller chain.
+        use std::os::unix::process::CommandExt;
+        return Err(command.exec().into());
+    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

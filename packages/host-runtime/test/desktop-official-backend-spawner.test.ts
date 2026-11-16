@@ -145,7 +145,11 @@ describe("desktop official backend spawner", () => {
     }
 
     await backend.stop();
-    await expect(backend.closed).resolves.toMatchObject({ code: 0, signal: null });
+    // Windows has no POSIX signals: process.kill(pid, "SIGTERM") terminates the
+    // process outright, so Node reports a signal instead of a graceful exit code.
+    await expect(backend.closed).resolves.toMatchObject(
+      process.platform === "win32" ? { code: null, signal: "SIGTERM" } : { code: 0, signal: null },
+    );
     expect(isPidAlive(pid)).toBe(false);
   });
 

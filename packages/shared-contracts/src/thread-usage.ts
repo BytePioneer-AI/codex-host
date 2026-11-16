@@ -9,7 +9,7 @@ const cacheHitRatePercentSchema = z.number().finite().min(0).max(100);
 
 const usageOutputTimingSchema = z
   .object({
-    version: z.literal(3).optional(),
+    version: z.union([z.literal(3), z.literal(4)]).optional(),
     requestId: z.string().min(1),
     turnId: z.string().min(1).max(1024),
     outputTokens: nonNegativeSafeIntegerSchema,
@@ -39,7 +39,7 @@ export function mergeUsageOutputTimings(
 /** Reliable display measurements and completed output intervals, never execution/billing state. */
 const usageMeasurementSchema = z
   .object({
-    version: z.union([z.literal(2), z.literal(3)]).optional(),
+    version: z.union([z.literal(2), z.literal(3), z.literal(4)]).optional(),
     value: finiteNonNegativeNumberSchema,
     turnId: z.string().min(1).max(1024),
     at: nonNegativeSafeIntegerSchema,
@@ -47,14 +47,14 @@ const usageMeasurementSchema = z
   .strict();
 export const usageMeasurementsSchema = z
   .object({
-    // Unversioned intervals can omit hidden thinking time; do not restore them into averages.
+    // Older intervals can omit hidden thinking time; do not restore them into averages.
     outputTimings: z
       .array(usageOutputTimingSchema)
-      .transform((values) => values.filter((value) => value.version === 3))
+      .transform((values) => values.filter((value) => value.version === 4))
       .optional(),
     // Retain independent TTFT facts when dropping incompatible speed measurements.
     outputTokensPerSecond: usageMeasurementSchema
-      .refine((value) => value.version === 3)
+      .refine((value) => value.version === 4)
       .optional()
       .catch(undefined),
     timeToFirstOutputMs: usageMeasurementSchema

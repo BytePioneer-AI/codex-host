@@ -45,7 +45,7 @@
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 支持 | `src/subagents.ts`、`src/subagent-transcript.ts` | `test/subagents.test.ts` | 识别 `invoke_subagent` 工具调用，结合 `conversation_summaries.db` 与 `brain/<id>` 读取状态与 Transcript |
 | B12 | 自主 Turn | 原生有则必做 | P1 | 不适用 | — | 实测 `agy acp` 1.5.9 为请求驱动 `session/prompt`，不在空闲态主动发起无请求 Turn | 后台子代理更新通过 `subagent.*` 事件独立上报；备注：已删除曾接入的 `codexhost_background`（`wait_for_background_task`）轮内等待 MCP 与提示词，避免后台任务占住当前 Turn 影响停止与继续输入 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 支持 | `src/acp-usage.ts` | `test/acp-usage.test.ts`；实测 `PromptResponse.usage` 与 `usage_update` | 合并缓存输入与推理输出口径，实时上报上下文窗口与 Token 快照 |
-| B14 | 请求级计量 | 原生有则必做 | P2 | 支持 | `src/acp-usage.ts`、`src/native-request-timing.ts` | `test/acp-usage.test.ts`、`test/native-request-timing.test.ts`；真实转录与 SQLite 只读回放 | 输出已含思考；无工具调用的请求可用核验过的原生生成区间计速；工具参数整块交付无法证明生成起点时仅保留用量、不参与 TPS 或均值；重复回放不重复计费 |
+| B14 | 请求级计量 | 原生有则必做 | P2 | 支持 | `src/acp-usage.ts`、`src/native-request-timing.ts` | `test/acp-usage.test.ts`、`test/native-request-timing.test.ts`；真实转录与 SQLite 只读回放 | 输出已含思考；仅已确认零思考、无工具调用且计时核验通过的请求计速；隐藏思考或整块工具参数无法证明生成起点时仅保留用量、不参与 TPS 或均值，历史与客户端回退遵守同一限制；重复回放不重复计费 |
 | B15 | 接收委派 | 必做（验证项） | P1 | 支持 | `src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts` | 满足 A8 可写恢复 + B4 无人值守执行 + 环境变量传播 |
 | B16 | 向下委派 | 原生有则必做 | P2 | 支持 | `src/delegation.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts`；实测 `_meta.antigravity.systemPrompt.append` | 注入环境变量并通过原生 `systemPrompt.append` 告知变量名 |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | `manifest.json`、`src/permission-modes.ts` | `test/plugin.test.ts` | 含图标、链接与中英文权限模式文案 |

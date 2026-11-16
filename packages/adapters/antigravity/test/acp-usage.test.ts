@@ -53,6 +53,7 @@ const nativePrompt = {
   cachedReadTokens: 50,
   cachedWriteTokens: 0,
   outputTokens: 20,
+  thoughtTokens: 0,
 };
 
 const prompt = {
@@ -86,6 +87,249 @@ describe("Antigravity usage model identity", () => {
 });
 
 describe("Antigravity Session usage", () => {
+  it.each(["native", "fallback", "historical", "early"])(
+    "keeps the real hidden-thought sample untimed (%s)",
+    async (mode) => {
+      const usage = {
+        inputTokens: 8856,
+        outputTokens: 544,
+        cachedReadTokens: 0,
+        cachedWriteTokens: 0,
+        thoughtTokens: 48,
+        totalTokens: 9400,
+      };
+      await transcript(
+        planner(1, {
+          input_tokens: 8856,
+          cache_read_tokens: 0,
+          output_tokens: 544,
+        }),
+      );
+      if (mode !== "fallback")
+        await writeNativeTimingDatabase(home, [
+          {
+            step: 1,
+            input: 8856,
+            cached: 0,
+            output: 544,
+            thought: 48,
+            created: 1794763967637.624,
+            started: 1794763980519.679,
+            completed: 1794763991282.717,
+          },
+        ]);
+      if (mode !== "historical") tracker.beginTurn(1794763967599);
+      const update =
+        mode === "historical"
+          ? await tracker.replayHistoricalRequests()
+          : await tracker.collectNewTranscriptRequests(
+              mode === "early"
+                ? {}
+                : {
+                    promptUsage: usage,
+                    firstOutputAtMs: 1794763980521,
+                    completedAtMs: 1794763991289,
+                  },
+            );
+      expect(update.requests).toHaveLength(1);
+      expect(update.requests[0]).toMatchObject({
+        inputTokens: 8856,
+        outputTokens: 544,
+        reasoningOutputTokens: 48,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+      });
+      expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+      expect(update.requests[0]).not.toHaveProperty("completedAtMs");
+      const meter = new UsageMeter();
+      meter.turnStarted("t", 1794763967599);
+      for (const request of update.requests)
+        meter.recordRequest(request, mode === "historical" ? null : "t");
+      if (mode !== "historical") {
+        expect(
+          (
+            await tracker.collectNewTranscriptRequests({
+              promptUsage: usage,
+              firstOutputAtMs: 1794763980521,
+              completedAtMs: 1794763991289,
+            })
+          ).requests,
+        ).toEqual([]);
+        expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+      } else expect(update.complete).toBe(true);
+      meter.recordHistory(true);
+      const derived = meter.derive(tracker.currentUsage(), {
+        find: () => ({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1 }),
+      });
+      expect(derived).toMatchObject({ inputTokens: 8856, outputTokens: 544, totalCostUsd: 0.0094 });
+      expect(derived?.outputTokensPerSecond).toBeUndefined();
+      expect(derived?.sessionOutputTokensPerSecond).toBeUndefined();
+    },
+  );
+
+  it.each([undefined, 0, 10])(
+    "does not attribute a multi-request prompt reasoning aggregate (%s) to individual requests",
+    async (thoughtTokens) => {
+      await transcript(planner(1), planner(3));
+      tracker.beginTurn(1000);
+      const usage = {
+        inputTokens: 200,
+        cachedReadTokens: 100,
+        cachedWriteTokens: 0,
+        outputTokens: 40,
+        ...(thoughtTokens === undefined ? {} : { thoughtTokens }),
+      };
+      const update = await tracker.collectNewTranscriptRequests({
+        promptUsage: usage,
+        firstOutputAtMs: 3000,
+        completedAtMs: 5000,
+      });
+      expect(update.requests).toHaveLength(2);
+      for (const request of update.requests) {
+        expect(request).not.toHaveProperty("startedAtMs");
+        expect(request).not.toHaveProperty("reasoningOutputTokens");
+      }
+      expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+      expect(update.usage).not.toHaveProperty("outputTokensPerSecond");
+    },
+  );
+
+  it("does not attach late hidden-thinking timing to an already published stable request", async () => {
+    await transcript(planner(1));
+    tracker.beginTurn(1000);
+    const early = await tracker.collectNewTranscriptRequests();
+    expect(early.requests).toHaveLength(1);
+    expect(early.requests[0]).not.toHaveProperty("startedAtMs");
+    const usage = { ...nativePrompt, thoughtTokens: 10 };
+    const final = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 3000,
+      completedAtMs: 5000,
+    });
+    expect(final.requests).toEqual([]);
+    expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+    expect(final.usage).not.toHaveProperty("outputTokensPerSecond");
+  });
+
+  it("keeps nonreasoning fallback timing when transcript cache writes are already explicit", async () => {
+    await transcript(planner(1, { cache_write_tokens: 15 }));
+    const usage = { ...nativePrompt, cachedWriteTokens: 15 };
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 1000,
+      completedAtMs: 3000,
+    });
+    expect(update.requests[0]).toMatchObject({
+      inputTokens: 165,
+      cacheWriteInputTokens: 15,
+      reasoningOutputTokens: 0,
+      startedAtMs: 1000,
+      completedAtMs: 3000,
+    });
+    expect(update.usage?.outputTokensPerSecond).toBe(10);
+    expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+  });
+
+  it("does not treat an unavailable reasoning count as zero for client fallback", async () => {
+    await transcript(planner(1));
+    const usage = {
+      inputTokens: 100,
+      cachedReadTokens: 50,
+      cachedWriteTokens: 0,
+      outputTokens: 20,
+    };
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 1000,
+      completedAtMs: 3000,
+    });
+    expect(update.requests[0]).not.toHaveProperty("reasoningOutputTokens");
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+  });
+
+  it.each([undefined, 10])(
+    "only times independently verified nonreasoning requests beside unknown/hidden output: %s",
+    async (thought) => {
+      await transcript(planner(1), planner(3, { output_tokens: 30 }));
+      const database = await writeNativeTimingDatabase(home, [
+        { step: 1 },
+        {
+          step: 3,
+          created: 10000,
+          started: 12000,
+          completed: 13000,
+          output: 30,
+          ...(thought === undefined ? {} : { thought }),
+        },
+      ]);
+      if (thought === undefined) {
+        const db = new DatabaseSync(database);
+        try {
+          db.exec("DELETE FROM steps WHERE idx = 3");
+        } finally {
+          db.close();
+        }
+      }
+      tracker.beginTurn(1000);
+      const usage = {
+        ...nativePrompt,
+        inputTokens: 200,
+        cachedReadTokens: 100,
+        outputTokens: 50,
+        thoughtTokens: 10,
+      };
+      const update = await tracker.collectNewTranscriptRequests({
+        promptUsage: usage,
+        firstOutputAtMs: 3000,
+        completedAtMs: 15000,
+      });
+      expect(update.requests).toHaveLength(2);
+      expect(update.requests[0]).toMatchObject({
+        startedAtMs: 3000,
+        completedAtMs: 5000,
+        reasoningOutputTokens: 0,
+      });
+      expect(update.requests[1]).not.toHaveProperty("startedAtMs");
+      expect(update.requests[1]?.reasoningOutputTokens).toBe(thought);
+      expect(update.usage).toMatchObject({ outputTokens: 50, outputTokensPerSecond: 10 });
+      expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+    },
+  );
+
+  it("does not use native zero-thinking timing when attributable prompt facts report hidden thinking", async () => {
+    await transcript(planner(1));
+    await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    tracker.beginTurn(1000);
+    const usage = { ...nativePrompt, thoughtTokens: 10 };
+    const update = await tracker.collectNewTranscriptRequests({
+      promptUsage: usage,
+      firstOutputAtMs: 3000,
+      completedAtMs: 5000,
+    });
+    expect(update.requests[0]).toMatchObject({ reasoningOutputTokens: 10, outputTokens: 20 });
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(tracker.recordTurnPromptUsage({ usage }).complete).toBe(true);
+  });
+
+  it("retains the last reliable speed after an untimed hidden-thinking request", async () => {
+    await transcript(planner(1));
+    await writeNativeTimingDatabase(home, [{ step: 1 }]);
+    tracker.beginTurn(1000);
+    expect((await tracker.collectNewTranscriptRequests()).usage?.outputTokensPerSecond).toBe(10);
+    tracker.recordTurnPromptUsage({ usage: nativePrompt });
+    tracker.beginTurn(10000);
+    await appendFile(file, planner(3) + "\n");
+    await writeNativeTimingDatabase(home, [
+      { step: 1 },
+      { step: 3, created: 10000, started: 12000, completed: 12004, thought: 10 },
+    ]);
+    const update = await tracker.collectNewTranscriptRequests();
+    expect(update.requests[0]).toMatchObject({ reasoningOutputTokens: 10 });
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(update.usage).toMatchObject({ outputTokens: 40, outputTokensPerSecond: 10 });
+  });
+
   it.each([false, true])(
     "keeps tool-call accounting but excludes its buffered timing (historical=%s)",
     async (historical) => {
@@ -166,7 +410,7 @@ describe("Antigravity Session usage", () => {
       cachedReadTokens: 100,
       cachedWriteTokens: 0,
       outputTokens: 50,
-      thoughtTokens: 10,
+      thoughtTokens: 0,
     };
     const update = await tracker.collectNewTranscriptRequests({
       promptUsage: usage,
@@ -288,7 +532,7 @@ describe("Antigravity Session usage", () => {
     expect(tracker.recordTurnPromptUsage({ usage: nativePrompt }).complete).toBe(true);
   });
 
-  it("does not add thoughtTokens twice to native output, history reconciliation or single-request TPS", async () => {
+  it("does not add thoughtTokens twice or time hidden thinking with a text-only interval", async () => {
     await transcript(planner(1, { input_tokens: 13035, cache_read_tokens: 0, output_tokens: 146 }));
     const usage = {
       inputTokens: 13035,
@@ -311,9 +555,11 @@ describe("Antigravity Session usage", () => {
       inputTokens: 13035,
       outputTokens: 146,
       totalTokens: 13181,
-      outputTokensPerSecond: 73,
+      reasoningOutputTokens: 107,
       sessionCacheUsage: { inputTokens: 13035, cachedInputTokens: 0 },
     });
+    expect(update.requests[0]).not.toHaveProperty("startedAtMs");
+    expect(result.usage).not.toHaveProperty("outputTokensPerSecond");
   });
 
   it("combines uncached input, cache reads/writes and reasoning in a validated snapshot", () => {
@@ -817,6 +1063,7 @@ describe("Antigravity Session usage", () => {
         cachedReadTokens: 20,
         cachedWriteTokens: cacheWrite,
         outputTokens: 20,
+        thoughtTokens: 0,
       };
       const final = await tracker.collectNewTranscriptRequests({
         promptUsage: usage,

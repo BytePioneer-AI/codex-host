@@ -153,7 +153,7 @@ export class UsageMeter {
     this.#timedRequests.add(request.requestId);
     this.restoreOutputTimings([
       {
-        version: 3,
+        version: 4,
         requestId: request.requestId,
         turnId,
         outputTokens: request.outputTokens,
@@ -260,7 +260,7 @@ export class UsageMeter {
     if (this.#outputTimings.size) snapshot.outputTimings = [...this.#outputTimings.values()];
     if (this.#outputTokensPerSecond !== undefined && this.#lastOutputTurnId)
       snapshot.outputTokensPerSecond = {
-        version: 3,
+        version: 4,
         value: this.#outputTokensPerSecond,
         turnId: this.#lastOutputTurnId,
         at: this.#lastOutputAtMs,
@@ -287,7 +287,7 @@ export class UsageMeter {
         this.#lastOutputAtMs = Date.now();
         this.#lastOutputLive = true;
         snapshot.outputTokensPerSecond = {
-          version: 3,
+          version: 4,
           value: native.outputTokensPerSecond,
           turnId,
           at: this.#lastOutputAtMs,

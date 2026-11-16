@@ -90,6 +90,8 @@ export class GrokTurnUsage {
   #compacting = false;
   #startedAtMs: number | undefined;
   #streamKey: unknown;
+  #reasoningObserved = false;
+  #bufferedToolInput = false;
   #outputTokens = 0;
   #durationMs = 0;
   #latestCacheHit: number | undefined;
@@ -104,8 +106,7 @@ export class GrokTurnUsage {
 
   observe(event: GrokTransportEvent): HostUsage | null {
     if (event.type === "compaction.started" || event.type === "compaction.completed") {
-      this.#startedAtMs = undefined;
-      this.#streamKey = undefined;
+      this.#resetResponse();
       this.#compacting = event.type === "compaction.started";
     }
     if (this.#compacting) return null;
@@ -116,11 +117,23 @@ export class GrokTurnUsage {
       event.type === "agent.thought" ||
       event.type === "tool.input.delta"
     ) {
-      if (!event.text) return null;
+      if (!event.text || (event.type === "tool.input.delta" && !event.text.trim())) return null;
       const key = event.metadata?.streamStartMs;
       if (key !== undefined && this.#streamKey !== undefined && key !== this.#streamKey)
-        this.#startedAtMs = undefined;
+        this.#resetResponse();
       if (key !== undefined) this.#streamKey = key;
+      if (this.#bufferedToolInput) return null;
+      if (event.type === "tool.input.delta" && this.#startedAtMs === undefined) {
+        try {
+          JSON.parse(event.text);
+          // A complete first payload cannot prove when argument generation began.
+          this.#bufferedToolInput = true;
+          return null;
+        } catch {
+          // An unfinished native arguments_delta can establish a streaming boundary.
+        }
+      }
+      if (event.type === "agent.thought") this.#reasoningObserved = true;
       this.#startedAtMs ??= Date.now();
     }
     if (event.type !== "response.completed") return null;
@@ -129,9 +142,11 @@ export class GrokTurnUsage {
       this.#seen.add(event.messageId);
     }
     const duration = this.#startedAtMs === undefined ? 0 : Date.now() - this.#startedAtMs;
-    this.#startedAtMs = undefined;
-    this.#streamKey = undefined;
     const usage = usageFromResponse(event.usage);
+    // Missing reasoning counts are unknown, not zero. Without observed thought output,
+    // only an explicit zero proves that the observed window covers all output tokens.
+    const completeOutputBoundary = this.#reasoningObserved || usage?.reasoningOutputTokens === 0;
+    this.#resetResponse();
     this.#latestCacheHit = usage?.cacheHitRatePercent;
     if (usage?.inputTokens === undefined || usage.cachedInputTokens === undefined)
       this.#cacheComplete = false;
@@ -140,12 +155,19 @@ export class GrokTurnUsage {
         const value = usage[field];
         if (value !== undefined) this.#totals[field] = (this.#totals[field] ?? 0) + value;
       }
-      if (duration > 0 && usage.outputTokens !== undefined) {
+      if (completeOutputBoundary && duration > 0 && usage.outputTokens !== undefined) {
         this.#outputTokens += usage.outputTokens;
         this.#durationMs += duration;
       }
     }
     return this.snapshot();
+  }
+
+  #resetResponse(): void {
+    this.#startedAtMs = undefined;
+    this.#streamKey = undefined;
+    this.#reasoningObserved = false;
+    this.#bufferedToolInput = false;
   }
 
   metrics(): HostUsage {

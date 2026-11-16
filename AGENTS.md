@@ -58,7 +58,7 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 | Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
 | Overview table of a batch of PRs with a 1–5 recommendation score | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
 | Reviewing a PR or local diff for correctness and boundaries | [codexhost-code-review](.agents/skills/codexhost-code-review/SKILL.md) |
-| Testing runtime behavior in isolated Web, Host, Harness, or end-to-end environments | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
+| Quickly trying a feature in a Web or Desktop run with its own data directory | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
 | Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
 | Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
 

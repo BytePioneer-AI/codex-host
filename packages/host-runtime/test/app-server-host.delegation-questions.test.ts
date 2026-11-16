@@ -296,6 +296,52 @@ describe("Delegation uses the existing Question request and reply", () => {
     }
   });
 
+  it("retires every Question and reply route of a closed Desktop Thread without native writes", async () => {
+    const { fixture, ready } = questionFixture();
+    try {
+      const api = await ready();
+      const threadId = "native-thread";
+      const first = await nativeQuestion(fixture, 11, threadId, "first-turn");
+      const second = await nativeQuestion(fixture, 12, threadId, "second-turn");
+      await nativeQuestion(fixture, 13, "other-thread", "other-turn");
+      const before = await nativeRead(api, fixture, threadId);
+      expect(before.pendingQuestions).toHaveLength(2);
+      const other = (await nativeRead(api, fixture, "other-thread")).pendingQuestions;
+      writeRequest(fixture.official.stdout, { method: "thread/closed", params: { threadId } });
+      await fixture.collector.waitFor((m) => method(m, "thread/closed"));
+      expect((await nativeRead(api, fixture, threadId)).pendingQuestions).toEqual([]);
+      expect((await nativeRead(api, fixture, "other-thread")).pendingQuestions).toEqual(other);
+      for (const question of before.pendingQuestions ?? []) {
+        await expect(
+          api.answer({ threadId, interactionId: question.interactionId, result: reply }),
+        ).rejects.toMatchObject({ code: "QUESTION_NOT_PENDING" });
+      }
+      for (const { request } of [first, second]) {
+        expect(
+          fixture.collector.messages.filter(
+            (m) =>
+              method(m, "serverRequest/resolved") &&
+              (m.params as JsonObject).requestId === request.id,
+          ),
+        ).toHaveLength(1);
+        writeRequest(fixture.desktopInput, { id: requiredMessageId(request), result: reply });
+      }
+      // Late resolutions must not leak the original native request IDs to Desktop.
+      writeRequest(fixture.official.stdout, {
+        method: "serverRequest/resolved",
+        params: { threadId, requestId: 11 },
+      });
+      const barrier = await nativeRead(api, fixture, "other-thread");
+      expect(barrier.pendingQuestions).toEqual(other);
+      expect(
+        fixture.collector.messages.filter((m) => method(m, "serverRequest/resolved")),
+      ).toHaveLength(2);
+      expect(fixture.official.stdin.read()).toBeNull();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("retires only the native Question belonging to the ended Turn", async () => {
     const { fixture, ready } = questionFixture();
     try {

@@ -2200,6 +2200,12 @@ export class AppServerHost {
   async #observeOfficialTurnLifecycle(value: JsonValue): Promise<void> {
     if (!isRecord(value) || !isRecord(value.params)) return;
     const params = value.params;
+    if (value.method === "thread/closed" && typeof params.threadId === "string") {
+      await this.#questions.closeWhere((request) => request.threadId === params.threadId);
+      this.#activeOfficialTurns.delete(params.threadId);
+      this.#signalActiveWorkChanged();
+      return;
+    }
     if (value.method === "turn/started" && typeof params.threadId === "string") {
       const turn = isRecord(params.turn) ? params.turn : null;
       if (turn && typeof turn.id === "string") {
@@ -2756,6 +2762,8 @@ export class AppServerHost {
   }
 
   async #answerDelegationQuestion(input: ThreadAnswerInput): Promise<ThreadAnswerResult> {
+    if (input.result === undefined)
+      throw new DelegationControlError("INVALID_ARGUMENT", "Question reply result is required");
     const native = this.#client
       .nativeQuestions(input.threadId)
       .find((pending) => pending.requestId === input.interactionId);

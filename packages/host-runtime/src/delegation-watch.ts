@@ -234,6 +234,15 @@ export class DelegationWatchService {
     // A Question already waiting needs no watch: report it once, immediately,
     // instead of registering a notification the caller would get anyway.
     if (target.pendingQuestions?.length) {
+      for (const watch of [...this.#watches]) {
+        if (
+          watch.state === "watching" &&
+          watch.threadId === input.threadId &&
+          watch.notifyThreadId === input.notifyThreadId
+        )
+          this.#remove(watch);
+      }
+      await this.#writes;
       return {
         ...result,
         state: "alreadyNeedsInput",

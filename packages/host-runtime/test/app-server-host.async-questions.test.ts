@@ -1,6 +1,14 @@
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type { DelegationControlApi, DelegationPendingQuestion } from "../src/delegation-types.js";
+import { externalClientMcp } from "../src/external-client-mcp.js";
+import { externalClientRouter } from "../src/external-client-routes.js";
+import {
+  startExternalClientServer,
+  type ExternalClientServer,
+} from "../src/external-client-server.js";
+import { ExternalClientRegistry } from "../src/external-clients.js";
 import {
   createFixture,
   method,
@@ -152,6 +160,74 @@ function answer(first: DelegationPendingQuestion) {
 }
 
 describe("Native asynchronous questions through delegation", () => {
+  it("rejects omitted results over HTTP and MCP without consuming or replying to a native question", async () => {
+    const t = await fixture("inProgress", true);
+    let server: ExternalClientServer | undefined;
+    try {
+      writeRequest(t.f.official.stdout, {
+        id: 71,
+        method: "item/tool/requestUserInput",
+        params: { threadId, turnId, questions: [{ id: "sync", question: "Continue?" }] },
+      });
+      const pending = (await t.read()).pendingQuestions?.find((q) => q.kind === "requestUserInput");
+      if (!pending) throw new Error("Missing synchronous question");
+      const clients = new ExternalClientRegistry(
+        path.join(t.f.mappingStoreDirectory, "clients.json"),
+      );
+      const { token } = await clients.add("question-test");
+      const route = externalClientRouter({ api: t.api });
+      server = await startExternalClientServer({
+        port: 0,
+        clients,
+        route,
+        streams: { "/mcp": externalClientMcp(route) },
+        descriptorPath: path.join(t.f.mappingStoreDirectory, "endpoint.json"),
+      });
+      if (!server) throw new Error("External client listener did not start");
+      const endpoint = server.endpoint;
+      for (const entry of ["http", "mcp"]) {
+        const response = await fetch(
+          `${endpoint}${entry === "http" ? "/v1/thread/answer" : "/mcp"}`,
+          {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+            body: JSON.stringify(
+              entry === "http"
+                ? { threadId, interactionId: pending.interactionId }
+                : {
+                    jsonrpc: "2.0",
+                    id: 1,
+                    method: "tools/call",
+                    params: {
+                      name: "thread_answer",
+                      arguments: { thread: threadId, interactionId: pending.interactionId },
+                    },
+                  },
+            ),
+          },
+        );
+        const body = await response.json();
+        if (entry === "http") {
+          expect(response.status).toBe(400);
+          expect(body).toMatchObject({ error: { code: "INVALID_ARGUMENT" } });
+        } else {
+          expect(body.result.isError).toBe(true);
+          expect(JSON.parse(body.result.content[0].text)).toMatchObject({
+            error: { code: "INVALID_ARGUMENT" },
+          });
+        }
+        expect(t.f.official.stdin.read()).toBeNull();
+        expect((await t.read()).pendingQuestions).toContainEqual(pending);
+      }
+      const result = { answers: { sync: { answers: ["Continue"] } } };
+      await t.api.answer({ threadId, interactionId: pending.interactionId, result });
+      expect(await t.next()).toEqual({ id: 71, result });
+    } finally {
+      await server?.close();
+      await stopFixture(t.f);
+    }
+  });
+
   it("reads native questions, answers through the upstream protocol, and preserves siblings", async () => {
     const t = await fixture();
     try {

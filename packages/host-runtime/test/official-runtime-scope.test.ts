@@ -68,7 +68,7 @@ describe("Desktop initialization without native admission", () => {
 });
 
 describe("official Runtime Scope terminal shutdown", () => {
-  it("retires startup questions after failed first initialization before the next generation", async () => {
+  it("retires startup questions when failed first initialization is retried directly", async () => {
     let generation = 0;
     const scope = new OfficialRuntimeScope({
       permanentHome: "/synthetic/home",
@@ -145,8 +145,7 @@ describe("official Runtime Scope terminal shutdown", () => {
     try {
       await expect(scope.start()).rejects.toThrow("unavailable");
       expect(scope.gate.phase).toBe("unavailable");
-      await scope.stop();
-      expect.soft(scope.asyncQuestions.pending("old-thread", "old:")).toEqual([]);
+      expect(scope.asyncQuestions.pending("old-thread", "old:")).toHaveLength(1);
       await scope.start();
       expect(scope.owner.generation).toBe(2);
       expect(scope.gate.phase).toBe("ready");

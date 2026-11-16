@@ -125,6 +125,7 @@ describe.each(["HTTP", "MCP"] as const)("external client parity: %s", (transport
         send,
         listHarnesses: vi.fn(),
         inspect: vi.fn(),
+        answer: vi.fn(),
         cancel: vi.fn(),
         read: vi.fn(),
         wait: vi.fn(),

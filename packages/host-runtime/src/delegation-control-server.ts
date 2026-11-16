@@ -8,6 +8,7 @@ import {
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
@@ -196,6 +197,8 @@ export async function routeDelegationRequest(
         ? handlers.api.read(body as unknown as ThreadReadInput)
         : handlers.api.wait(body as unknown as ThreadWaitInput);
     }
+    case "/v1/thread/answer":
+      return handlers.api.answer(body as unknown as ThreadAnswerInput);
     case "/v1/thread/watch":
       return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
     case "/v1/thread/watches":

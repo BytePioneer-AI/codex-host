@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DelegationControlError,
+  type DelegationPendingQuestion,
   type DelegationThreadSnapshot,
   type DelegationThreadStatus,
   type ThreadSendInput,
@@ -31,6 +32,7 @@ function memoryStore(): DelegationWatchStore & { records: Map<string, PersistedW
 /** A fake Runtime whose Threads are driven by the test; `offline` models sessions not yet registered. */
 function runtime(
   threads: Record<string, { status: DelegationThreadStatus; turnId?: string; title?: string }>,
+  pending: Record<string, DelegationPendingQuestion[]> = {},
 ) {
   const sent: ThreadSendInput[] = [];
   const state = { offline: false };
@@ -50,6 +52,7 @@ function runtime(
       turn: { turnId: thread.turnId ?? `turn-${threadId}`, status: thread.status },
       progress: [],
       result: { availability: "pending" },
+      ...(pending[threadId] ? { pendingQuestions: pending[threadId] } : {}),
     } as DelegationThreadSnapshot;
   });
   const send = vi.fn(async (input: ThreadSendInput) => {
@@ -84,6 +87,80 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("removes a superseded watching record from memory and storage even during observation", async () => {
+    const store = memoryStore();
+    const pending: Record<string, DelegationPendingQuestion[]> = {};
+    const fake = runtime(
+      { child: { status: "running" }, parent: { status: "running" }, other: { status: "running" } },
+      pending,
+    );
+    const watches = service(fake, store);
+    try {
+      const input = { threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 };
+      await watches.watch(input);
+      const oldId = [...store.records.keys()][0];
+      if (!oldId) throw new Error("Missing stored watch");
+      await watches.watch({ ...input, notifyThreadId: "other" });
+      const observing = Promise.withResolvers<DelegationThreadSnapshot>();
+      fake.read.mockImplementationOnce(() => observing.promise);
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      pending.child = [
+        { kind: "requestUserInput", interactionId: "question", turnId: "turn-child", request: {} },
+      ];
+      await expect(watches.watch(input)).resolves.toMatchObject({
+        state: "alreadyNeedsInput",
+        pendingQuestions: pending.child,
+      });
+      expect(store.records.has(oldId)).toBe(false);
+      expect([...store.records.values()]).toMatchObject([
+        { notifyThreadId: "other", state: "watching" },
+      ]);
+      await expect(watches.watches()).resolves.toMatchObject({
+        watches: [{ notifyThreadId: "other", state: "watching" }],
+      });
+      observing.resolve(await fake.read({ threadId: "child" }));
+      await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+      expect(fake.sent.map(({ threadId }) => threadId)).toEqual(["other"]);
+      expect(store.records.size).toBe(0);
+      await expect(watches.watches()).resolves.toEqual({ watches: [] });
+    } finally {
+      watches.close();
+    }
+  });
+
+  it("preserves pendingDelivery when a repeated watch reports alreadyNeedsInput", async () => {
+    const store = memoryStore();
+    const pending: Record<string, DelegationPendingQuestion[]> = {};
+    const fake = runtime({ child: { status: "running" }, parent: { status: "running" } }, pending);
+    const watches = service(fake, store);
+    try {
+      const input = { threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 };
+      await watches.watch(input);
+      pending.child = [
+        {
+          kind: "requestUserInputAsync",
+          interactionId: "question",
+          turnId: "turn-child",
+          request: {},
+        },
+      ];
+      fake.send.mockRejectedValueOnce(new DelegationControlError("THREAD_BUSY", "busy"));
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      const records = [...store.records.values()];
+      expect(records).toMatchObject([{ state: "pendingDelivery", outcome: "needsInput" }]);
+      await expect(watches.watch(input)).resolves.toMatchObject({ state: "alreadyNeedsInput" });
+      expect([...store.records.values()]).toEqual(records);
+      await expect(watches.watches()).resolves.toMatchObject({
+        watches: [{ state: "pendingDelivery" }],
+      });
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(fake.sent).toHaveLength(1);
+      expect(store.records.size).toBe(0);
+    } finally {
+      watches.close();
+    }
   });
 
   it("stores a watch while it is pending and removes it once delivered", async () => {

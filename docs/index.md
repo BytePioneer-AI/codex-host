@@ -39,6 +39,7 @@
 | [`architecture/app-server-transport.md`](architecture/app-server-transport.md) | 原生大历史响应的 WebSocket 与 JSONL 传输边界；排查任务加载、消息大小和转发性能时阅读。 |
 | [`architecture/turn-activity-folding.md`](architecture/turn-activity-folding.md) | 回合完成后过程折叠的 Desktop 条件与 `final_answer` 推断规则；修改 Agent 消息阶段投影或排查过程无法收起时阅读。 |
 | [`architecture/acp-layer-follow-up.md`](architecture/acp-layer-follow-up.md) | 共享 ACP 层的抽取条件与边界；出现第二个适合共享实现的生产 ACP Harness 时阅读。 |
+| [`architecture/acp-implementation-research.md`](architecture/acp-implementation-research.md) | ACP 实现事实记录：本地插件分布、重复职责、会话与进程关系，以及 T3 Code 固定提交的公共 ACP 层和隔离机制；不包含改造方案。 |
 
 ## Harness 专项
 

@@ -14,7 +14,7 @@ import {
 } from "./renderer-model-client.js";
 import { installRendererExternalQueue } from "./renderer-external-queue.js";
 import { installRendererExternalSteering } from "./renderer-external-steering.js";
-import { createExternalAttachmentSender } from "./renderer-remote-attachments.js";
+import { createRemoteAttachmentSender } from "./renderer-remote-attachments.js";
 import { restoreThreadReferenceCapability } from "./renderer-thread-reference-capability.js";
 import { createThreadReferenceContext } from "./renderer-thread-reference-context.js";
 import {
@@ -144,8 +144,9 @@ export function createRendererHostClients(
         () =>
           installRendererExternalSteering(
             target,
-            createExternalAttachmentSender(
+            createRemoteAttachmentSender(
               target,
+              route.hostId,
               () => !disposed && readRouting()?.forHost(route.hostId) === route,
             ),
             createThreadReferenceContext(

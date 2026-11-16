@@ -172,7 +172,7 @@ export function installRendererExternalSteering(
       route.threadId !== params.threadId
     ) {
       // The same outgoing boundary also covers Desktop's locally queued starts.
-      // Attachment preparation is connection-scoped and leaves native Codex input alone.
+      // Attachment preparation is connection-scoped and leaves native/local input alone.
       if (method === "turn/start" && sendTurnStart) {
         return sendTurnStart(params, (input) => {
           if (disposed) throw new Error("External submission binding was disposed");

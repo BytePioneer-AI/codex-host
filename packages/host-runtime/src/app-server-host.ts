@@ -32,6 +32,7 @@ import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
 import { handleSkillsList } from "./skill-library-host.js";
 import { externalTurnInputText } from "./external-turn-input.js";
+import { materializeExternalImages } from "./external-inline-attachments.js";
 import {
   HarnessLaunchSettingsStore,
   HarnessPreferencesStore,
@@ -5110,6 +5111,10 @@ export class AppServerHost {
     }
     let text: string;
     try {
+      params.input = await materializeExternalImages(
+        requestInput(params),
+        this.#options.environment ?? process.env,
+      );
       text = requestText(params);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
@@ -5223,6 +5228,10 @@ export class AppServerHost {
         return;
       }
       if (request.method === "thread/queue/add") {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
         requestText(params);
         const queuedSubmission = this.#externalQueue.add(
           thread.id,
@@ -5259,6 +5268,10 @@ export class AppServerHost {
       }
       if (!itemId) throw new ExternalSteerError(-32602, "Queued submission identity is required");
       if (request.method === "thread/queue/update") {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
         requestText(params);
         const queuedSubmission = this.#externalQueue.update(
           thread.id,
@@ -5488,6 +5501,10 @@ export class AppServerHost {
           [THREAD_STEER_DELIVERY_PARAM]: marker.data.delivery,
         };
       }
+      params.input = await materializeExternalImages(
+        requestInput(params),
+        this.#options.environment ?? process.env,
+      );
       queued = this.#externalQueue.takeSteered(thread.id, params.clientUserMessageId, params.input);
       const started = await this.#externalSteering.run(
         thread,

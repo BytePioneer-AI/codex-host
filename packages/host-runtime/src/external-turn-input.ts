@@ -43,6 +43,14 @@ function imageReferences(text: string): string[] {
     .filter(absoluteFilePath);
 }
 
+export class MissingExternalImagePathsError extends Error {
+  constructor() {
+    super(
+      "Inline images require complete Desktop attachment paths; save the images as local files and attach them again",
+    );
+  }
+}
+
 /**
  * Harnesses accept text. Desktop supplies local image paths both as preview items and in its
  * attachment context. Preserve that context, filling missing explicit paths without reading or
@@ -97,9 +105,7 @@ export function externalTurnInputText(input: unknown): string {
     });
     // Remote fallback retains partial native context and adds paths for every inline image.
     if (!localPathsCovered || remaining.length < inlineImages) {
-      throw new Error(
-        "Inline images require complete Desktop attachment paths; save the images as local files and attach them again",
-      );
+      throw new MissingExternalImagePathsError();
     }
   }
   const missing = [...new Set(localImages)].filter((file) => !references.includes(file));

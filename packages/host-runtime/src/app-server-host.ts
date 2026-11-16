@@ -5501,10 +5501,14 @@ export class AppServerHost {
           [THREAD_STEER_DELIVERY_PARAM]: marker.data.delivery,
         };
       }
-      params.input = await materializeExternalImages(
-        requestInput(params),
-        this.#options.environment ?? process.env,
-      );
+      try {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
+      } catch (error) {
+        throw new ExternalSteerError(-32602, errorMessage(error));
+      }
       queued = this.#externalQueue.takeSteered(thread.id, params.clientUserMessageId, params.input);
       const started = await this.#externalSteering.run(
         thread,

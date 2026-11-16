@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
+import type { HostCommand } from "@codexhost/harness-adapter";
 import {
   createFixture,
   requestId,
@@ -100,7 +101,8 @@ describe("External Harness image input", () => {
       });
       const response = await fixture.collector.waitFor((message) => requestId(message, 40));
       expect(response).not.toHaveProperty("error");
-      const command = execute.mock.calls.find(([value]) => value.type === "turn.start")?.[0];
+      const commands: HostCommand[] = execute.mock.calls.map(([value]) => value);
+      const command = commands.find((value) => value.type === "turn.start");
       if (!command || command.type !== "turn.start" || command.input[0]?.type !== "text") {
         throw new Error("Missing external Turn input");
       }
@@ -151,7 +153,9 @@ describe("External Harness image input", () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
-      const execute = vi.spyOn(fixture.adapter.sessions[0]!, "execute");
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
       writeRequest(fixture.desktopInput, {
         id: 60,
         method: "turn/start",

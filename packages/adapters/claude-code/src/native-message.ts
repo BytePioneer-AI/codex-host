@@ -30,6 +30,8 @@ type ClaudeNativeEvent = Exclude<
 >;
 
 interface AssistantMessageState {
+  /** Native record UUIDs that already closed this message, so replays stay idempotent. */
+  checkpointIds: Set<string>;
   completed: boolean;
   reasoning: string;
   text: string;
@@ -851,6 +853,30 @@ export class ClaudeNativeTurnAccumulator {
       this.#activeRootStreamMessageId ?? nativeMessageId ?? checkpointId ?? this.#nextMessageId();
     const state = this.#messageState(messageId);
     if (state.completed) {
+      // Non-streaming Claude can split one request into several records that share
+      // `message.id`. A later record with its own UUID carries new text, so append it
+      // and publish that record as its own checkpoint instead of dropping it.
+      const splitText =
+        checkpointId && !state.checkpointIds.has(checkpointId) ? assistantText(message) : null;
+      if (checkpointId && splitText) {
+        state.checkpointIds.add(checkpointId);
+        state.text += splitText;
+        events.push({ type: "text.delta", messageId, delta: splitText });
+        this.#consumeToolUseBlocks(message, events, true);
+        if (!this.#protocolConflict && !this.#textConflict) {
+          const usage = state.usagePublished
+            ? undefined
+            : assistantRequestUsage(message, this.#provider);
+          if (usage) state.usagePublished = true;
+          events.push({
+            type: "message.completed",
+            messageId,
+            checkpointId,
+            ...(usage ? { lastRequestUsage: usage } : {}),
+          });
+        }
+        return;
+      }
       this.#consumeToolUseBlocks(message, events, true);
       const usage = assistantRequestUsage(message, this.#provider);
       if (usage && !state.usagePublished) {
@@ -895,6 +921,7 @@ export class ClaudeNativeTurnAccumulator {
       });
     }
     state.completed = true;
+    if (checkpointId) state.checkpointIds.add(checkpointId);
     if (this.#activeRootStreamMessageId === messageId) this.#activeRootStreamMessageId = null;
   }
 
@@ -1078,7 +1105,13 @@ export class ClaudeNativeTurnAccumulator {
   #messageState(messageId: string): AssistantMessageState {
     const existing = this.#messages.get(messageId);
     if (existing) return existing;
-    const created = { completed: false, reasoning: "", text: "", usagePublished: false };
+    const created: AssistantMessageState = {
+      checkpointIds: new Set(),
+      completed: false,
+      reasoning: "",
+      text: "",
+      usagePublished: false,
+    };
     this.#messages.set(messageId, created);
     return created;
   }

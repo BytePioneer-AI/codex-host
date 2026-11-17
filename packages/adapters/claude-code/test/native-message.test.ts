@@ -199,7 +199,7 @@ describe("Claude native Turn interpretation", () => {
     });
   });
 
-  it("does not fail a Turn when a completed message ID receives another text block", () => {
+  it("publishes a later text record of a completed non-streamed message as its own checkpoint", () => {
     const turn = new ClaudeNativeTurnAccumulator();
     const first = assistantBlocks(
       [{ type: "text", text: "first" }],
@@ -212,8 +212,15 @@ describe("Claude native Turn interpretation", () => {
     first.message.id = "request-split";
     second.message.id = "request-split";
 
-    turn.consume(first);
-    turn.consume(second);
+    const events = [first, second, second].flatMap((frame) => turn.consume(frame).events ?? []);
+    expect(events.filter(({ type }) => type === "text.delta")).toMatchObject([
+      { messageId: "request-split", delta: "first" },
+      { messageId: "request-split", delta: "second" },
+    ]);
+    expect(events.filter(({ type }) => type === "message.completed")).toMatchObject([
+      { messageId: "request-split", checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000000" },
+      { messageId: "request-split", checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000001" },
+    ]);
     expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
   });
 

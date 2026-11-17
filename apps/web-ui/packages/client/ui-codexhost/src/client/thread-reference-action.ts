@@ -14,7 +14,6 @@ import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 
 export function registerThreadReferenceAction(ctx: Context): void {
-  const t = ctx.locale.bind("codexhostImport");
   const current = () => {
     if (ctx.layout.panelInfo.getSnapshot().activePanelId !== null) return;
     return ctx.uiSession.adapter.current.getSnapshot().key as SessionId | undefined;
@@ -39,7 +38,6 @@ export function registerThreadReferenceAction(ctx: Context): void {
     if (reference() === undefined) return;
     const insertion = ctx.conversation.input.captureReferenceInsertion(binding);
     if (insertion === undefined) return;
-    const input = ctx.conversation.input.for(binding.ctx);
     let expired = false;
     const available = (): boolean => {
       if (
@@ -74,7 +72,6 @@ export function registerThreadReferenceAction(ctx: Context): void {
         const source = reference();
         if (!allowed || source === undefined) return false;
         if (!insertion.insert(threadReferenceInsert(source))) return false;
-        input.notify("info", t("reference.addedToDraft"));
         return true;
       },
     };

@@ -293,15 +293,10 @@ describe("native ACP stdio transport", () => {
         "agent.thought",
         "tool.call",
       ]);
-      if (scenario === "normal")
-        expect(loaded.replayedEvents.map(({ type }) => type)).toEqual([
-          "user.text",
-          "agent.thought",
-          "tool.call",
-          "agent.text",
-          "usage.context",
-          "session.info",
-        ]);
+      expect(loaded.replayedEvents.slice(-2).map(({ type }) => type)).toEqual([
+        "usage.context",
+        "session.info",
+      ]);
       expect(loaded.replayedEvents[2]).toMatchObject({ args: { path: "a" } });
       expect(sessionEvents).toEqual([]);
     },

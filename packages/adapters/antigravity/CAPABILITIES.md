@@ -28,7 +28,7 @@
 | A4 | 创建 Session | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/new` | 未传配置时保持原生默认；预热不产生 `session/list` 空记录 |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块 |
 | A6 | 取消 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/cancel` | 取消关闭活动交互与工具项，保留会话继续下一轮 |
-| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/snapshot-reader-pool.ts`、`src/native-replay.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts`；实测 `session/load` | 通过独立原生 `session/load` 读连接投影稳定 Turn/Item；冷历史读取不启动可写连接；读进程按命令、权限与账号环境边界在 Adapter 内串行复用，回放与原生 SQLite 的用户边界、文本长度及工具调用数一致后才交付和 `session/close`；不完整或无法验证则报错，Adapter 关闭统一回收，无需本地镜像文件 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/snapshot-reader-pool.ts`、`src/native-replay.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts`；实测 `session/load` | 通过独立原生 `session/load` 读连接投影稳定 Turn/Item；冷历史读取不启动可写连接；读进程按命令、权限与账号环境边界在 Adapter 内串行复用，回放与原生 SQLite 的用户边界、文本长度及工具调用数一致，并收到尾部上下文用量与 Session 信息后才交付和 `session/close`；不完整或无法验证则报错，Adapter 关闭统一回收，无需本地镜像文件 |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | 恢复对象保留持久身份；普通恢复的可写 `session/resume` 延迟到首次执行或配置操作，派生会话在交付前确认可写恢复 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts` | 忙碌返回 `sessionBusy`，进程异常与鉴权错误归一化脱敏 |
 | A10 | 关闭 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/acp-transport.test.ts` | `session/close` + stdin 关闭 + 超时信号清理子进程 |
@@ -81,7 +81,7 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| 历史回放完整性与未知终态 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-transport.test.ts packages/protocol-core/test/final-answer-phase.test.ts`；`node --import tsx --test packages/web-server/test/ch-thread-history.test.ts`；变更包 `tsc -b` | 35 项 Vitest + 17 项 Web 后端测试通过；类型构建通过。覆盖成功响应后迟到正文、分块尾部、不完整回放超时报错和未知终态保留正文；真实 `agy 1.5.9` 每块延迟 10ms 的只读探针收齐 28 轮、25 条正文，未发送 Prompt 或重启服务 |
+| 历史回放完整性与未知终态 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-transport.test.ts packages/protocol-core/test/final-answer-phase.test.ts`；`node --import tsx --test packages/web-server/test/ch-thread-history.test.ts`；变更包 `tsc -b` | 35 项 Vitest + 17 项 Web 后端测试通过；类型构建通过。覆盖成功响应后迟到正文、分块尾部、尾部上下文用量与 Session 信息不泄漏到实时通道、不完整回放超时报错和未知终态保留正文；真实 `agy 1.5.9` 每块延迟 10ms 的只读探针收齐 28 轮、25 条正文，未发送 Prompt 或重启服务 |
 | Turn 内费用累计 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-usage.test.ts packages/adapters/antigravity/test/antigravity-adapter.test.ts` | 147 项通过；覆盖历史基线、轮内多请求累计、重复刷新去重、轮末核对与缺失用量保护；未进行真实 CLI/UI 验证 |
 | 历史恢复生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test packages/host-runtime/test/antigravity-history.test.ts packages/host-runtime/test/installed-harness-plugins.test.ts` | 427 项通过；验证冷读仅 `load`、首次写入才 `resume`、保存配置不被读连接覆盖、取消、派生恢复及延迟进程回收的等待和错误报告；1 项 OpenCode 真实探针未启用 |
 | 真实历史只读计时 | `agy 1.5.9`，现有登录态，Adapter 与原生 ACP 分段计时，不发送 Prompt | 单次快照 6.389s，其中原生 `load` 6.323s；进程回收约 2s 由最终关闭等待。同一原生进程首次读取 6.854s，随后读取另一历史 Session 为 118ms；现有服务未重启 |

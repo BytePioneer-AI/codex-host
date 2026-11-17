@@ -78,6 +78,8 @@ Host 只监听 `127.0.0.1`，使用随机 Bearer token，拒绝带 Origin 的直
 
 服务还提供认证的 Host-private `/v1/desktop` WebSocket 和 `/v1/shutdown` 管理入口，不通过 Web 网关公开。Desktop 连接携带有界、版本化的运行时上下文，不能改写后台的存储目录、Codex home 或委派认证。Web 发行包携带原生 Launcher 和同一 Host bundle；它不是纯浏览器即可启动的后台，也不包含 Node 或 Harness CLI。
 
+Desktop、共享 external 与 SSH WebSocket 的输出流按发送完成回调推进，顺序和排队由同一 Writable 维护。Host 对未触发背压的写入立即推进状态，触发背压时等待本次写入完成；输出流提前关闭则结束等待并报告写入失败。共享查看端的通知也按单次写入释放回调，不为每条通知等待整个队列排空。每个查看端允许一个大于 8 MiB 的响应处于排队或发送中，另有最多 8 MiB 的普通消息等待队列；正在发送的普通消息不计入等待队列，因此小通知后跟随一个大响应也可正常发送。第二个大响应或普通队列超限时只断开该查看端，不关闭共享执行所有者或取消原生 Turn。查看端离开后剩余输出继续排空；正常结束等待输出流完成，监听器关闭则解除发送等待并释放所属连接。
+
 POST 使用 JSON，正文上限 128 MiB（`CLIENT_REQUEST_LIMIT_BYTES`，与桌面 WebSocket 一致，可容纳内联图片）；返回 `{result: …}` 或 `{error: {code, message}}`。RPC 参数为 `{method, params}`，快照参数为 `{threadId, knownTurns?, truncateToolOutput?}`（可选项见下文“快照的可选精简”），回答参数为 `{epoch, threadId, requestId, result}`。可用 RPC 在 `CLIENT_CHANNEL_METHODS` 中；支持官方 Codex 创建、恢复、Fork 及本地 external Thread 操作，不开放官方历史回退。具体 Harness 能力仍须通过已有 inspect 契约查询，不能因 RPC 在名单内便假定该 Harness 支持它。
 
 client channel 透传既有的 `thread/revert {threadId, beforeTurnId}`。它与 GUI 共用分页历史回退路由；请求携带 canonical Turn ID，过期边界或活动 Turn 由 Host 拒绝。Web 编辑只对当前 Thread 声明 `history.rollbackLastTurn` 的最后一轮开放，回退确认后再通过 `turn/start` 重跑；这两个操作不构成新的原子编辑契约，结果未知不重试。详见[独立 Web 的已发送消息编辑](../product/standalone-web.md#编辑已发送消息)。
@@ -123,6 +125,8 @@ Web 的 `session/control` 状态流必须先发送 baseline，再发送 projecti
 ## 输入、工具与交互
 
 Desktop 专用 `CodexTurnProjector.pendingTurn()` 不包含所有进行中的 Item，不能用作通用客户端完整快照。`snapshotTurn()` 复用同一投影器的 Item 状态，提供 Reasoning、命令输出及工具状态；原 Desktop 通知形状保留。Host 接受的普通用户输入保留给快照；来自客户端通道的输入还沿既有 shared-Thread 投影方式广播给 GUI。`clientUserMessageId`/`clientId` 关联用于撤下 Web 乐观回显，不能靠相同文本猜测确认。
+
+原生历史缺少 Turn 结束依据时，Turn 附带 `codexhostTurnOutcome: {status: "unknown", reason}`。Desktop 兼容的 `status` 仍使用其已有终态词汇，客户端不能据此覆盖显式的 unknown。Web 将该事实保留为 `turn/end` 的 `unknown` 原因，显示“已结束（状态未知）”；正常完成、取消、失败维持原有区别。正文独立于结束原因保留，不能以空正文猜测失败，也不能将已有正文当作成功证据。
 
 Turn 可附 `codexhostFileOperations: [{beforeItemId, item}]`，保留被 Desktop 累计 `fileChange` 卡合并的原始编辑调用。`item` 沿用原生 Item ID、参数、输出及成功/失败/取消状态；`beforeItemId` 指向后续的非文件 Item，`null` 表示放在轮末，同一锚点按数组顺序排列。客户端展示逐次调用时替换正文里的累计文件卡，而不是叠加两种表示；累计文件卡的 `changes` 仍供本轮变更汇总使用。字段缺失表示 Host 只提供旧的累计表示，不能从累计 diff 猜测真实的工具调用次数或边界。实时快照、已完成 Turn 和分页历史均携带该信息；它参与已完成 Turn 指纹，原始调用不受 `truncateToolOutput` 对 `items` 的截断影响。
 

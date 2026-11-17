@@ -124,6 +124,11 @@ export const clientChannelEventSchema = z.discriminatedUnion("type", [
     cursor: clientChannelCursorSchema,
     cwd: z.string().optional(),
   }),
+  z.object({
+    type: z.literal("harness-inspection-changed"),
+    cursor: clientChannelCursorSchema,
+    harnessId: z.string().min(1),
+  }),
   z.object({ type: z.literal("display-settings-changed"), cursor: clientChannelCursorSchema }),
   z.object({
     type: z.literal("preferences-changed"),
@@ -210,6 +215,8 @@ const clientTurnSchema = z
   .object({
     id: z.string().min(1),
     status: z.string().min(1),
+    /** Native history has no terminal evidence; Desktop's status vocabulary cannot express this. */
+    codexhostTurnOutcome: z.object({ status: z.literal("unknown"), reason: z.string() }).optional(),
     items: z.array(z.object({ id: z.string().min(1), type: z.string().min(1) }).passthrough()),
     /** Original file operations, independent of the cumulative Desktop fileChange card.
      * Insert before the named non-file Item; null appends at the end of the Turn.

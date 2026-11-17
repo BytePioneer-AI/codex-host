@@ -15,7 +15,7 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import { mapClaudeSnapshot } from "./claude-history.js";
+import { mapClaudeSnapshotWithCheckpointIds, matchesClaudeCheckpointId } from "./claude-history.js";
 import type { ClaudePendingSessions } from "./pending-session.js";
 import type { ClaudeAdapterDependencies } from "./transport.js";
 
@@ -65,11 +65,25 @@ function nativeIds(snapshot: HostThreadSnapshot): Set<string> {
   );
 }
 
+interface ClaudeForkHistory {
+  snapshot: HostThreadSnapshot;
+  turnCheckpointIds: string[][];
+}
+
 async function readSnapshot(
   dependencies: ClaudeForkInput["dependencies"],
   cwd: string,
   sessionId: string,
 ): Promise<HarnessResult<HostThreadSnapshot>> {
+  const history = await readHistory(dependencies, cwd, sessionId);
+  return history.ok ? { ok: true, value: history.value.snapshot } : history;
+}
+
+async function readHistory(
+  dependencies: ClaudeForkInput["dependencies"],
+  cwd: string,
+  sessionId: string,
+): Promise<HarnessResult<ClaudeForkHistory>> {
   let messages: unknown[];
   try {
     messages = (await dependencies.readSessionMessages({ cwd, sessionId })) ?? [];
@@ -86,7 +100,7 @@ async function readSnapshot(
     };
   }
   try {
-    return { ok: true, value: mapClaudeSnapshot(messages, sessionId) };
+    return { ok: true, value: mapClaudeSnapshotWithCheckpointIds(messages, sessionId) };
   } catch {
     return {
       ok: false,
@@ -147,8 +161,13 @@ export async function forkClaudeSession(
 
   // Native worktree entry changes the Session cwd without changing the Desktop workspace.
   // The SDK resolves the source within that workspace's project/worktree history.
-  const source = await readSnapshot(input.dependencies, input.cwd, sourceRef.data.nativeSessionId);
-  if (!source.ok) return source;
+  const sourceHistory = await readHistory(
+    input.dependencies,
+    input.cwd,
+    sourceRef.data.nativeSessionId,
+  );
+  if (!sourceHistory.ok) return sourceHistory;
+  const source = { ok: true as const, value: sourceHistory.value.snapshot };
   if (input.kind === "rollbackLastTurn" && source.value.turns.length === 0) {
     return {
       ok: false,
@@ -185,9 +204,14 @@ export async function forkClaudeSession(
   const boundaryIndex =
     input.kind === "rollbackLastTurn"
       ? source.value.turns.length - 2
-      : source.value.turns.findIndex(
-          (turn) =>
-            checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
+      : // A live checkpoint names the last root Assistant record seen while the Turn ran;
+        // the persisted Turn checkpoint can be a later root tool_result of the same Turn.
+        // Fork at that Turn's final checkpoint so the native prefix keeps the whole Turn.
+        sourceHistory.value.turnCheckpointIds.findIndex(
+          (ids, index) =>
+            checkpoint?.success &&
+            source.value.turns[index]?.checkpoint !== undefined &&
+            ids.some((id) => matchesClaudeCheckpointId(id, checkpoint.data.checkpointId)),
         );
   const retained = source.value.turns[boundaryIndex];
   const boundaryId =

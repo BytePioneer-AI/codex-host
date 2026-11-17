@@ -1,3 +1,5 @@
+import { rmSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import {
@@ -8,7 +10,9 @@ import {
 } from "@codexhost/shared-contracts";
 import {
   createFixture,
+  readJsonLine,
   requestId,
+  requiredMessageId,
   startExternalThread,
   startPiThread,
   startPiTurn,
@@ -19,6 +23,28 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost output failure", () => {
+  it("finishes when Desktop output closes during a backpressured initialize response", async () => {
+    const fixture = createFixture({ desktopOutput: new PassThrough({ highWaterMark: 1 }) });
+    try {
+      await fixture.ready;
+      fixture.desktopOutput.pause();
+      writeRequest(fixture.desktopInput, { id: 901, method: "initialize", params: {} });
+      const request = await readJsonLine(fixture.official.stdin);
+      expect(request.method).toBe("initialize");
+      writeRequest(fixture.official.stdout, { id: requiredMessageId(request), result: {} });
+      await vi.waitFor(() => expect(fixture.desktopOutput.writableNeedDrain).toBe(true));
+      fixture.desktopOutput.destroy();
+      await expect(fixture.running).resolves.toBe(1);
+      expect(fixture.desktopInput.destroyed).toBe(true);
+      expect(fixture.desktopOutput.listenerCount("close")).toBe(0);
+    } finally {
+      fixture.host.close();
+      fixture.desktopOutput.resume();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("diagnoses duplicate starts with Harness, Thread and Item identity without tool input", async () => {
     const fixture = createFixture();
     try {

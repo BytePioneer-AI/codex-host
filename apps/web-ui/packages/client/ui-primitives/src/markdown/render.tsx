@@ -17,7 +17,7 @@
  * may add node types this renderer has no mapping for.
  */
 
-import { Fragment, createElement, useCallback, useState } from "react";
+import { Fragment, createElement, useCallback, useRef, useState } from "react";
 import type { Key, ReactNode } from "react";
 import clsx from "clsx";
 import type * as Md from "mdast";
@@ -32,6 +32,7 @@ import { LinkIconMedium, classifyLinkPath } from "../LinkIcon.tsx";
 import { useMarkdownDelegate } from "./MarkdownDelegate.tsx";
 import { MarkdownAnchor, MarkdownTextLinks, sanitizeMarkdownUrl } from "./MarkdownAnchor.tsx";
 import { HoverCard } from "../HoverCard.tsx";
+import { Menu } from "../Menu.tsx";
 import { responseAnnotationIndex } from "@codexhost/shared-contracts";
 import { ResponseAnnotationLabel } from "../ResponseAnnotation.tsx";
 import type { ResponseAnnotationLabels, ResponseAnnotationView } from "../ResponseAnnotation.tsx";
@@ -622,30 +623,89 @@ function MarkdownFileLink({
   readonly glyph: boolean;
   readonly children: ReactNode[];
 }): ReactNode {
-  const { openFile, fileImages } = useMarkdownDelegate();
+  const { openFile, openFileExternalLabel, fileImages } = useMarkdownDelegate();
   const [load] = useState(nextImageLoad);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [contextPoint, setContextPoint] = useState<DOMRect | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const getMenuAnchorRect = useCallback(
+    () => contextPoint ?? buttonRef.current?.getBoundingClientRect() ?? null,
+    [contextPoint],
+  );
   if (openFile === undefined) return <>{children}</>;
+  const options = file.line === undefined ? {} : { line: file.line };
+  const openExternal = (): void => {
+    openFile(file.path, { ...options, external: true });
+  };
   // Pure-image anchors already contain their preview and keep one navigation target.
   const preview = glyph && classifyLinkPath(file.path) === "image" ? fileImages : undefined;
   const resolved = preview?.resolve(file.path);
   const src = resolved === undefined ? undefined : freshImageUrl(resolved, load);
-  const anchor = (
+  const button = (
     <button
+      ref={buttonRef}
       type="button"
       className={clsx(css.fileMention, css.fileLink)}
       title={src === undefined ? file.path : undefined}
-      onClick={() => {
-        openFile(file.path, file.line === undefined ? undefined : { line: file.line });
+      aria-haspopup={openFileExternalLabel === undefined ? undefined : "menu"}
+      aria-expanded={openFileExternalLabel === undefined ? undefined : menuOpen}
+      onClick={(event) => {
+        setMenuOpen(false);
+        openFile(file.path, {
+          ...options,
+          ...(event.ctrlKey || event.metaKey ? { external: true } : {}),
+        });
       }}
+      onContextMenu={
+        openFileExternalLabel === undefined
+          ? undefined
+          : (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setContextPoint(new DOMRect(event.clientX, event.clientY, 0, 0));
+              setMenuOpen(true);
+            }
+      }
+      onKeyDown={
+        openFileExternalLabel === undefined
+          ? undefined
+          : (event) => {
+              if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+              event.preventDefault();
+              setContextPoint(null);
+              setMenuOpen(true);
+            }
+      }
     >
       {glyph && <LinkIconMedium kind={classifyLinkPath(file.path)} className={css.linkIcon} />}
       {children}
     </button>
   );
+  const anchor =
+    openFileExternalLabel === undefined ? (
+      button
+    ) : (
+      <Menu
+        open={menuOpen}
+        portal
+        autoFocus
+        anchor={button}
+        items={[{ id: "open-external", label: openFileExternalLabel }]}
+        onSelect={(id) => {
+          setMenuOpen(false);
+          if (id === "open-external") openExternal();
+        }}
+        onClose={() => {
+          setMenuOpen(false);
+        }}
+        getAnchorRect={getMenuAnchorRect}
+      />
+    );
   if (src === undefined || preview === undefined) return anchor;
   return (
     <HoverCard
       inline
+      disabled={menuOpen}
       anchor={anchor}
       content={
         <>

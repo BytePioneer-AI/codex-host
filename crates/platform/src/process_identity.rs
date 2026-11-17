@@ -56,12 +56,24 @@ pub fn process_identity(process_id: u32) -> Result<ProcessIdentity, PlatformErro
 
 #[cfg(target_os = "windows")]
 pub fn process_identity(process_id: u32) -> Result<ProcessIdentity, PlatformError> {
+    const ERROR_INVALID_PARAMETER: i32 = 87;
+
     let parent_id = super::process::parent_process_id(process_id)?
         .ok_or_else(|| PlatformError::NotFound(format!("cannot inspect PID {process_id}")))?;
+    // OpenProcess reports ERROR_INVALID_PARAMETER when a non-zero PID exits after enumeration.
+    let started_at_micros =
+        super::process::process_started_at_micros(process_id).map_err(|error| match &error {
+            PlatformError::ProcessInspection { source, .. }
+                if process_id != 0 && source.raw_os_error() == Some(ERROR_INVALID_PARAMETER) =>
+            {
+                PlatformError::NotFound(format!("cannot inspect PID {process_id}: {source}"))
+            }
+            _ => error,
+        })?;
     Ok(ProcessIdentity {
         id: process_id,
         parent_id,
-        started_at_micros: super::process::process_started_at_micros(process_id)?,
+        started_at_micros,
     })
 }
 

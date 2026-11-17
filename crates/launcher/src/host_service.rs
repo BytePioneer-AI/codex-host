@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codexhost_platform::{
-    configure_background_command, configure_detached_service_command, node_entrypoint_path,
-    spawn_supervised,
+    PlatformError, configure_background_command, configure_detached_service_command,
+    node_entrypoint_path, process_identity, spawn_supervised, terminate_process_identity,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -329,8 +329,10 @@ pub(super) fn wait_for_shutdown(
     let started = Instant::now();
     let mut escalated = false;
     loop {
-        if codexhost_platform::process_instance(target.id, target.started_at_micros).is_none() {
-            return Ok(());
+        match process_identity(target.id) {
+            Ok(current) if current.started_at_micros == target.started_at_micros => {}
+            Ok(_) | Err(PlatformError::NotFound(_)) => return Ok(()),
+            Err(error) => return Err(error.into()),
         }
         if started.elapsed() >= timeout {
             return Err("Service shutdown timed out".into());
@@ -339,7 +341,21 @@ pub(super) fn wait_for_shutdown(
         // cleanup after terminating the owner captured before the stop request.
         if !escalated && started.elapsed() >= Duration::from_secs(2) {
             if let Some(owner) = owner {
-                codexhost_platform::terminate_process_identity(owner, true)?;
+                match terminate_process_identity(owner, true) {
+                    Ok(()) => {}
+                    Err(error @ PlatformError::Invalid(_)) => {
+                        // Recheck after rejection: the captured owner may have exited or its PID
+                        // changed identity before signal delivery. Neither ends the supervisor wait.
+                        match process_identity(owner.id) {
+                            Ok(current) if current.started_at_micros != owner.started_at_micros => {
+                            }
+                            Err(PlatformError::NotFound(_)) => {}
+                            Ok(_) => return Err(error.into()),
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    Err(error) => return Err(error.into()),
+                }
             }
             escalated = true;
         }

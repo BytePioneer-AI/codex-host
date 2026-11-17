@@ -3,7 +3,10 @@ import path from "node:path";
 import { openRendererLocalPage } from "./renderer-local-page.js";
 import { CdpConnectionClosedError, listCdpTargets } from "./cdp-client.js";
 import { remoteConnectionsExpression } from "./remote-connections-control.js";
-import { remoteConnectionsReplySchema } from "@codexhost/shared-contracts";
+import {
+  REMOTE_THREAD_CONTROL_TIMEOUT_MS,
+  remoteConnectionsReplySchema,
+} from "@codexhost/shared-contracts";
 
 import {
   startControllerAttachmentServer,
@@ -337,7 +340,12 @@ export async function runDesktopController(
         // responses while other settings reads run. Never retry a submitted mutation.
         const current = await useSession(() => recoverSession());
         return remoteConnectionsReplySchema.parse(
-          await current.executeRenderer(remoteConnectionsExpression(request)),
+          await current.executeRenderer(
+            remoteConnectionsExpression(request),
+            request.action === "read-thread" || request.action === "session"
+              ? REMOTE_THREAD_CONTROL_TIMEOUT_MS
+              : 30_000,
+          ),
         );
       },
       openLocalPage: (url) =>

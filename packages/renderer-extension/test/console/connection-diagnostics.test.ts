@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { harnessIdSchema } from "@codexhost/shared-contracts";
 
 import { createConsoleConnectionDiagnostics } from "../../src/console/connection-diagnostics.js";
 import type { RendererModelClient } from "../../src/renderer-model-client.js";
@@ -73,6 +74,50 @@ describe("console connection diagnostics", () => {
       purpose: "availability",
     });
   });
+
+  it.each([1, 3])(
+    "queues one manual refresh for %s clicks during a background check",
+    async (clicks) => {
+      const background = Promise.withResolvers<never>();
+      const refreshed = Promise.withResolvers<never>();
+      const inspectHarness = vi
+        .fn()
+        .mockReturnValueOnce(background.promise)
+        .mockReturnValueOnce(refreshed.promise);
+      const diagnostics = createConsoleConnectionDiagnostics(
+        client({
+          listHarnessPlugins: async () => ({
+            plugins: [{ id: harnessIdSchema.parse("pi"), name: "Pi", version: "1" }],
+          }),
+          inspectHarness,
+        }),
+      );
+      diagnostics.snapshot();
+      await vi.waitFor(() => expect(inspectHarness).toHaveBeenCalledTimes(1));
+      const refreshes = Array.from({ length: clicks }, () => diagnostics.refresh());
+      expect(inspectHarness).toHaveBeenCalledExactlyOnceWith({
+        harnessId: "pi",
+        refresh: false,
+        purpose: "availability",
+      });
+      background.reject(new Error("background failed"));
+      await vi.waitFor(() => expect(inspectHarness).toHaveBeenCalledTimes(2));
+      expect(inspectHarness).toHaveBeenLastCalledWith({
+        harnessId: "pi",
+        refresh: true,
+        purpose: "availability",
+      });
+      const settled = vi.fn();
+      void Promise.all(refreshes).then(settled);
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      refreshed.reject(new Error("refresh failed"));
+      await Promise.all(refreshes);
+      expect(inspectHarness).toHaveBeenCalledTimes(2);
+      await diagnostics.refresh();
+      expect(inspectHarness).toHaveBeenCalledTimes(3);
+    },
+  );
 
   it.each(["install", "check", "update"] as const)(
     "forwards %s to the local Host",

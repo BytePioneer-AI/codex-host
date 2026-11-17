@@ -27,7 +27,7 @@ const CLAUDE_MODEL_VALUE_MAX_LENGTH = 512;
 const modelInfoSchema = z.object({
   value: z.string().trim().min(1).max(CLAUDE_MODEL_VALUE_MAX_LENGTH),
   displayName: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH),
-  description: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
+  description: z.string().trim().max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
   resolvedModel: harnessResolvedModelLabelSchema.optional(),
 });
 

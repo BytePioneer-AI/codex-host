@@ -9,6 +9,10 @@
   padding: 0 var(--dsh-composer-side-clearance) 4px;
 }
 
+:global([data-phone]) .root {
+  padding-bottom: max(4px, calc(env(safe-area-inset-bottom) - 23px));
+}
+
 .dock {
   display: flex;
   align-items: center;

@@ -96,7 +96,11 @@ import { ClaudeCodeExecutableError, resolveClaudeCodeExecutable } from "./comman
 import { ClaudePendingSessions, isPendingClaudeSession } from "./pending-session.js";
 import { forkClaudeSession } from "./claude-fork.js";
 import { remapForkedSessionReferences } from "./claude-fork-references.js";
-import { mapClaudeSnapshot, mapClaudeSubagentSnapshot } from "./claude-history.js";
+import {
+  isPersistedClaudeMessageId,
+  mapClaudeSnapshot,
+  mapClaudeSubagentSnapshot,
+} from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeTranscript } from "./claude-transcript.js";
 import {
@@ -341,6 +345,8 @@ const DEFAULT_CONTINUATION_QUIESCENCE_MS = 2_000;
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+const SYNTHETIC_AUTONOMOUS_TURN_KEY_PATTERN = /^autonomous-\d+$/u;
 
 function safeNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -808,7 +814,7 @@ class ClaudeHarnessSession implements HarnessSession {
               isRecord(message) && typeof message.uuid === "string" ? [message.uuid] : [],
             ),
           );
-          if (this.#unpersistedMessageIds.every((id) => ids.has(id))) {
+          if (this.#unpersistedMessageIds.every((id) => isPersistedClaudeMessageId(id, ids))) {
             this.#unpersistedMessageIds = [];
             break;
           }
@@ -2954,11 +2960,17 @@ class ClaudeHarnessSession implements HarnessSession {
       : null;
     // New Segments cannot confirm that earlier Turns have reached the transcript.
     // Only readSnapshot clears IDs after observing them all in native history.
-    if (active.userMessageId || active.checkpointId) {
+    // A Turn cancelled before producing any checkpoint may never reach disk; avoid
+    // blocking later history reads forever on its unpersisted userMessageId.
+    const trackUserMessageId =
+      active.userMessageId !== null &&
+      !SYNTHETIC_AUTONOMOUS_TURN_KEY_PATTERN.test(active.userMessageId) &&
+      (outcome.status !== "cancelled" || active.checkpointId !== null);
+    if (trackUserMessageId || active.checkpointId) {
       this.#unpersistedMessageIds = [
         ...new Set([
           ...this.#unpersistedMessageIds,
-          ...(active.userMessageId ? [active.userMessageId] : []),
+          ...(trackUserMessageId && active.userMessageId ? [active.userMessageId] : []),
           ...(active.checkpointId ? [active.checkpointId] : []),
         ]),
       ];

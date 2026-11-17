@@ -83,6 +83,7 @@ describe("client event log", () => {
           request: {},
         },
       ];
+      // The watch ends only after its event is appended, so wait for both.
       await vi.waitFor(async () => {
         expect((await log.read("bot", 0)).events).toMatchObject([
           {
@@ -93,9 +94,9 @@ describe("client event log", () => {
             interactionId: "captured-question",
           },
         ]);
+        expect((await service.watches()).watches).toEqual([]);
       });
       expect(fake.send).not.toHaveBeenCalled();
-      expect((await service.watches()).watches).toEqual([]);
     } finally {
       await service.close();
     }

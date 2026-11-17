@@ -36,6 +36,7 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
+import { DocumentDownload } from "./DocumentDownload.tsx";
 import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
@@ -113,6 +114,16 @@ const HOST_SETTINGS_PAGES = [
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
+  ctx.slots.inject("sidebar.right.tab.document.actions", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.right.tab.document.actions",
+        id: "codexhost-download",
+        inject: (sessionId) => ({ sessionId, label: t("file.download") }),
+      },
+      DocumentDownload,
+    ),
+  );
   const installation = ctx.get("pwaInstall");
   if (installation !== undefined) {
     ctx.slots.inject("settings.general.item", () =>
@@ -435,6 +446,7 @@ export function apply(ctx: ClientContext): void {
         inject: () => ({
           list: ctx.sessions.list,
           connection: ctx.get("connection") as ConnectionHandle,
+          retryHistory: (id: SessionId) => ctx.sessions.retryHistory(id),
         }),
       },
       HostConnectionStatus,

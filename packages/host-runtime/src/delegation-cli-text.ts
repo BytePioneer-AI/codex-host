@@ -31,6 +31,7 @@ function snapshotText(
         )
       : []),
     ...fields(compact.timedOut, "timedOut"),
+    ...fields(compact.pendingQuestions, "pendingQuestions"),
   ];
   if (view === "messages") {
     const overview = `totalTurns: ${snapshot.totalTurns}   from: ${snapshot.from}   to: ${snapshot.to}`;

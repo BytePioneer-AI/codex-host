@@ -88,6 +88,53 @@ it("merges concurrent observers and migrates a legacy log only when saving", asy
   }
 });
 
+it("drops incompatible stored speed and intervals without discarding TTFT", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "usage-snapshot-version-"));
+  const folder = join(directory, "usage-measurements-v1");
+  const key = createHash("sha256")
+    .update(JSON.stringify(["scope", "session"]))
+    .digest("hex");
+  const file = join(folder, key + ".json");
+  const latency = { value: 900, turnId: "t", at: 2000 };
+  const diagnose = vi.fn();
+  const store = new UsageMeasurementsStore(directory, diagnose);
+  try {
+    await mkdir(folder);
+    const old = JSON.stringify({
+      version: 1,
+      values: {
+        outputTokensPerSecond: { version: 3, value: 120, turnId: "t", at: 2000 },
+        outputTimings: [
+          {
+            version: 3,
+            requestId: "old",
+            turnId: "t",
+            outputTokens: 120,
+            startedAtMs: 1000,
+            completedAtMs: 2000,
+          },
+        ],
+        timeToFirstOutputMs: latency,
+      },
+    });
+    await writeFile(file, old);
+    expect(await store.read("scope", "session", new Set(["t"]))).toEqual({
+      timeToFirstOutputMs: latency,
+    });
+    expect(await readFile(file, "utf8")).toBe(old);
+    expect(diagnose).not.toHaveBeenCalled();
+    store.record("scope", "session", "t", 3000, { outputTokensPerSecond: 40 });
+    await store.flush("scope", "session");
+    expect(JSON.parse(await readFile(file, "utf8")).values).toEqual({
+      outputTokensPerSecond: { version: 4, value: 40, turnId: "t", at: 3000 },
+      timeToFirstOutputMs: latency,
+    });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("reports optional write failures without rejecting native observation or shutdown", async () => {
   const directory = await mkdtemp(join(tmpdir(), "usage-snapshot-failure-"));
   const diagnose = vi.fn();

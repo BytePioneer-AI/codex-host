@@ -1343,11 +1343,11 @@ it("stores latest measurements only in existing metadata without changing identi
   const before = await store.getThread(threadId);
   const core = await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8");
   const values = {
-    outputTokensPerSecond: { version: 3 as const, value: 100, turnId: "turn-1", at: 100 },
+    outputTokensPerSecond: { version: 4 as const, value: 100, turnId: "turn-1", at: 100 },
     timeToFirstOutputMs: { value: 50, turnId: "turn-1", at: 90 },
     outputTimings: [
       {
-        version: 3 as const,
+        version: 4 as const,
         requestId: "one",
         turnId: "turn-1",
         outputTokens: 100,

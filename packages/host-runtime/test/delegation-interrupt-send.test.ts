@@ -34,6 +34,7 @@ function setup(initial: DelegationThreadStatus = "running") {
     canHandleStart: () => true,
     listHarnesses: vi.fn(),
     inspect: vi.fn(),
+    answer: vi.fn(),
     start: vi.fn(),
     list: vi.fn(),
     read: vi.fn(async ({ threadId }) => snapshot(threadId)),

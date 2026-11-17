@@ -28,8 +28,8 @@
 | A4 | 创建 Session | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/new` | 未传配置时保持原生默认；预热不产生 `session/list` 空记录 |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块 |
 | A6 | 取消 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/cancel` | 取消关闭活动交互与工具项，保留会话继续下一轮 |
-| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/load` | 通过原生 `session/load` 重放投影稳定 Turn/Item，无需本地镜像文件 |
-| A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | `session/resume` 不重放历史直接恢复可写会话 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/snapshot-reader-pool.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/load` | 通过独立原生 `session/load` 读连接投影稳定 Turn/Item；冷历史读取不启动可写连接；读进程按命令、权限与账号环境边界在 Adapter 内串行复用，每次读取后 `session/close` 释放、Adapter 关闭统一回收，无需本地镜像文件 |
+| A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | 恢复对象保留持久身份；普通恢复的可写 `session/resume` 延迟到首次执行或配置操作，派生会话在交付前确认可写恢复 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts` | 忙碌返回 `sessionBusy`，进程异常与鉴权错误归一化脱敏 |
 | A10 | 关闭 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/acp-transport.test.ts` | `session/close` + stdin 关闭 + 超时信号清理子进程 |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | `src/antigravity-adapter.ts`、`src/model-catalog.ts` | `test/antigravity-adapter.test.ts`；实测 `session/set_config_option(model)` | 等待原生 `configOptions` 确认并同步动态推理档位 |
@@ -45,7 +45,7 @@
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 支持 | `src/subagents.ts`、`src/subagent-transcript.ts` | `test/subagents.test.ts` | 识别 `invoke_subagent` 工具调用，结合 `conversation_summaries.db` 与 `brain/<id>` 读取状态与 Transcript |
 | B12 | 自主 Turn | 原生有则必做 | P1 | 不适用 | — | 实测 `agy acp` 1.5.9 为请求驱动 `session/prompt`，不在空闲态主动发起无请求 Turn | 后台子代理更新通过 `subagent.*` 事件独立上报；备注：已删除曾接入的 `codexhost_background`（`wait_for_background_task`）轮内等待 MCP 与提示词，避免后台任务占住当前 Turn 影响停止与继续输入 |
 | B13 | 会话用量 | 原生有则必做 | P1 | 支持 | `src/acp-usage.ts` | `test/acp-usage.test.ts`；实测 `PromptResponse.usage` 与 `usage_update` | 合并缓存输入与推理输出口径，实时上报上下文窗口与 Token 快照 |
-| B14 | 请求级计量 | 原生有则必做 | P2 | 支持 | `src/acp-usage.ts`、`src/native-request-timing.ts` | `test/acp-usage.test.ts`、`test/native-request-timing.test.ts`；真实转录与 SQLite 只读回放 | 输出已含思考；无工具调用的请求可用核验过的原生生成区间计速；工具参数整块交付无法证明生成起点时仅保留用量、不参与 TPS 或均值；重复回放不重复计费 |
+| B14 | 请求级计量 | 原生有则必做 | P2 | 支持 | `src/acp-usage.ts`、`src/native-request-timing.ts` | `test/acp-usage.test.ts`、`test/native-request-timing.test.ts`；真实转录与 SQLite 只读回放 | 输出已含思考；无工具调用且计时核验通过的请求以首个可见输出至生成结束计非思考 Token（`timedOutputTokens`）；思考数无法确认、全部为思考或整块工具参数时仅保留用量、不参与 TPS 或均值；客户端回退仍限零思考单请求；Turn 内按历史与本轮已完成请求累计费用，不计正在生成的请求，缺失用量仍声明不完整；重复回放不重复计费 |
 | B15 | 接收委派 | 必做（验证项） | P1 | 支持 | `src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts` | 满足 A8 可写恢复 + B4 无人值守执行 + 环境变量传播 |
 | B16 | 向下委派 | 原生有则必做 | P2 | 支持 | `src/delegation.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts`；实测 `_meta.antigravity.systemPrompt.append` | 注入环境变量并通过原生 `systemPrompt.append` 告知变量名 |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | `manifest.json`、`src/permission-modes.ts` | `test/plugin.test.ts` | 含图标、链接与中英文权限模式文案 |
@@ -67,7 +67,7 @@
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
 - Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
-- 只读快照（`session/load`）重放历史 `tool_call` 的名称、参数与终态，不重放历史工具输出正文；实时 Turn 内工具输出完整流式上报。
+- 只读快照（`session/load`）重放历史 `tool_call` 的名称、参数与终态，不重放历史工具输出正文；实时 Turn 内工具输出完整流式上报。每个新原生读进程的首次 `load` 在首条更新前可能有秒级准备延迟，后续同边界历史读取串行复用已初始化读进程。读取为全量重放后由 Host 分页。
 
 ## 插件外改动
 
@@ -80,6 +80,9 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
+| Turn 内费用累计 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-usage.test.ts packages/adapters/antigravity/test/antigravity-adapter.test.ts` | 147 项通过；覆盖历史基线、轮内多请求累计、重复刷新去重、轮末核对与缺失用量保护；未进行真实 CLI/UI 验证 |
+| 历史恢复生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test packages/host-runtime/test/antigravity-history.test.ts packages/host-runtime/test/installed-harness-plugins.test.ts` | 427 项通过；验证冷读仅 `load`、首次写入才 `resume`、保存配置不被读连接覆盖、取消、派生恢复及延迟进程回收的等待和错误报告；1 项 OpenCode 真实探针未启用 |
+| 真实历史只读计时 | `agy 1.5.9`，现有登录态，Adapter 与原生 ACP 分段计时，不发送 Prompt | 单次快照 6.389s，其中原生 `load` 6.323s；进程回收约 2s 由最终关闭等待。同一原生进程首次读取 6.854s，随后读取另一历史 Session 为 118ms；现有服务未重启 |
 | Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 19 个测试文件、368 项测试全部通过（Node 22、Node 24） |
 | 用量对账与计时 | 既有测试会话的原生 SQLite / 转录只读回放，经过共享 `UsageMeter` | 单请求、多请求、原生问答及重复回放通过；无新增模型调用 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |

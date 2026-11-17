@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { mergeUsageOutputTimings, usageMeasurementsSchema } from "@codexhost/shared-contracts";
 
 const timing = {
-  version: 3 as const,
+  version: 4 as const,
   requestId: "request",
   turnId: "turn",
   outputTokens: 100,
@@ -16,7 +16,7 @@ it("validates completed output intervals independently of latest display measure
   });
   expect(
     usageMeasurementsSchema.parse({
-      outputTokensPerSecond: { version: 3, value: 40, turnId: "turn", at: 2000 },
+      outputTokensPerSecond: { version: 4, value: 40, turnId: "turn", at: 2000 },
     }),
   ).not.toHaveProperty("outputTimings");
   for (const invalid of [
@@ -40,23 +40,29 @@ it("drops legacy speed without discarding independent latency or accepting a fak
   expect(snapshot.timeToFirstOutputMs).toEqual(latency);
   expect(
     usageMeasurementsSchema.parse({
-      outputTokensPerSecond: { version: 3, value: 0, turnId: "turn", at: 2000 },
+      outputTokensPerSecond: { version: 4, value: 0, turnId: "turn", at: 2000 },
     }).outputTokensPerSecond?.value,
   ).toBe(0);
 });
 
-it("drops pre-fix speeds and intervals while retaining independent TTFT", () => {
-  const oldTiming = { ...timing, version: undefined };
-  const latency = { value: 900, turnId: "turn", at: 2000 };
-  const parsed = usageMeasurementsSchema.parse({
-    outputTokensPerSecond: { version: 2, value: 120, turnId: "turn", at: 2000 },
-    outputTimings: [oldTiming, { ...timing, requestId: "new" }],
-    timeToFirstOutputMs: latency,
-  });
-  expect(parsed.outputTokensPerSecond).toBeUndefined();
-  expect(parsed.outputTimings).toEqual([{ ...timing, requestId: "new" }]);
-  expect(parsed.timeToFirstOutputMs).toEqual(latency);
-});
+it.each([undefined, 2, 3])(
+  "drops incompatible speed version %s and intervals while retaining independent TTFT",
+  (version) => {
+    const latency = { value: 900, turnId: "turn", at: 2000 };
+    const parsed = usageMeasurementsSchema.parse({
+      outputTokensPerSecond: { version, value: 120, turnId: "turn", at: 2000 },
+      outputTimings: [
+        { ...timing, version: undefined },
+        { ...timing, version: 3, requestId: "old-versioned" },
+        { ...timing, requestId: "new" },
+      ],
+      timeToFirstOutputMs: latency,
+    });
+    expect(parsed.outputTokensPerSecond).toBeUndefined();
+    expect(parsed.outputTimings).toEqual([{ ...timing, requestId: "new" }]);
+    expect(parsed.timeToFirstOutputMs).toEqual(latency);
+  },
+);
 
 it("deduplicates concurrent observations deterministically using the earliest completion", () => {
   const delayed = { ...timing, completedAtMs: 2100 };

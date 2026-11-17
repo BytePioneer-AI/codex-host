@@ -6,15 +6,70 @@ import type { DelegationControlApi } from "../src/delegation-types.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import {
+  bindOfficialThread,
   createFixture,
   method,
   messageParams,
+  readJsonLine,
   startPiThread,
   startPiTurn,
   stopFixture,
 } from "./app-server-host-fixture.js";
 
 describe("Delegation steering through CLI and Host", () => {
+  it("steers a running official Thread with turn/steer instead of starting another Turn", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (value) => {
+        api = value;
+        return undefined;
+      },
+    });
+    await bindOfficialThread(fixture, "native-thread");
+    if (!api) throw new Error("Missing Delegation API");
+    try {
+      const sending = api.send({
+        threadId: "native-thread",
+        message: "also inspect the tests",
+        steer: true,
+      });
+      const read = await readJsonLine(fixture.official.stdin);
+      expect(read).toMatchObject({ method: "thread/read", params: { threadId: "native-thread" } });
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          id: read.id,
+          result: {
+            thread: {
+              id: "native-thread",
+              status: { type: "active" },
+              turns: [{ id: "running-turn", status: "inProgress", items: [] }],
+            },
+          },
+        })}\n`,
+      );
+      const steer = await readJsonLine(fixture.official.stdin);
+      expect(steer).toMatchObject({
+        method: "turn/steer",
+        params: {
+          threadId: "native-thread",
+          expectedTurnId: "running-turn",
+          input: [{ type: "text", text: "also inspect the tests" }],
+        },
+      });
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: steer.id, result: { turnId: "running-turn" } })}\n`,
+      );
+      await expect(sending).resolves.toMatchObject({
+        threadId: "native-thread",
+        turnId: "running-turn",
+        harnessId: "codex",
+      });
+      expect(fixture.official.stdin.read()).toBeNull();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each([true, false])(
     "uses the upstream delivery operation with native support=%s",
     async (native) => {

@@ -76,16 +76,17 @@ fn ready_identity_ignores_the_image_and_cleanup_preserves_another_owner() {
 }
 
 #[test]
-fn service_environment_preserves_opt_in_list_tracing() {
-    const TEST: &str = "host_service::tests::service_environment_preserves_opt_in_list_tracing";
+fn service_environment_preserves_opt_in_settings() {
+    const TEST: &str = "host_service::tests::service_environment_preserves_opt_in_settings";
     if env::var_os("CODEXHOST_TRACE_ENV_TEST").is_some() {
         let mut command = Command::new("unused");
         super::clean(&mut command);
-        assert!(
-            !command
-                .get_envs()
-                .any(|(key, _)| key == "CODEXHOST_TRACE_SESSION_LIST")
-        );
+        for setting in [
+            "CODEXHOST_TRACE_SESSION_LIST",
+            "CODEXHOST_EXTERNAL_CLIENT_PORT",
+        ] {
+            assert!(!command.get_envs().any(|(key, _)| key == setting));
+        }
         assert!(
             command
                 .get_envs()
@@ -97,6 +98,7 @@ fn service_environment_preserves_opt_in_list_tracing() {
         .args(["--exact", TEST])
         .env("CODEXHOST_TRACE_ENV_TEST", "1")
         .env("CODEXHOST_TRACE_SESSION_LIST", "1")
+        .env("CODEXHOST_EXTERNAL_CLIENT_PORT", "4402")
         .status()
         .unwrap();
     assert!(status.success());

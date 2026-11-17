@@ -30,6 +30,20 @@
   border-top-right-radius: var(--dsl-code-block-border-radius);
 }
 
+:global(body[data-codexhost-wallpaper]) .block {
+  background: color-mix(in srgb, var(--dsl-code-block-background) 84%, transparent);
+}
+
+:global(body[data-codexhost-wallpaper]) .bannerWrap {
+  background-color: transparent;
+}
+
+:global(body[data-codexhost-wallpaper]) .banner {
+  background: color-mix(in srgb, var(--dsl-code-block-banner-background-color) 88%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
 .banner {
   background: var(--dsl-code-block-banner-background-color);
   padding: 9px 14px;

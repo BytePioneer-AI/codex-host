@@ -8,6 +8,7 @@ import {
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -190,6 +191,10 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
     const snapshot = await (await this.#registrationForThread(input.threadId)).wait(input);
     return withRefs(snapshot, (await this.#refs?.get(snapshot.threadId)) ?? []);
+  }
+
+  async answer(input: ThreadAnswerInput) {
+    return (await this.#registrationForThread(input.threadId)).answer(input);
   }
 
   async watch(input: ThreadWatchInput) {

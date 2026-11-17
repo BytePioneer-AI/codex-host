@@ -158,7 +158,24 @@ describe("Harness Usage request", () => {
     expect(parseHostUsageRequest(base)).toEqual(base);
   });
 
+  it.each([0, 15, 20])(
+    "accepts timed output Tokens within the output total: %i",
+    (timedOutputTokens) => {
+      const request = { ...base, timedOutputTokens, startedAtMs: 1_000, completedAtMs: 2_000 };
+      expect(parseHostUsageRequest(request)).toEqual(request);
+    },
+  );
+
   it.each([
+    { ...base, timedOutputTokens: 15 },
+    { ...base, timedOutputTokens: 15, startedAtMs: 1_000 },
+    { ...base, timedOutputTokens: 15, completedAtMs: 2_000 },
+    ...[-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "15", 21].map((timedOutputTokens) => ({
+      ...base,
+      timedOutputTokens,
+      startedAtMs: 1_000,
+      completedAtMs: 2_000,
+    })),
     { ...base, requestId: "" },
     { ...base, inputTokens: undefined },
     { ...base, outputTokens: -1 },

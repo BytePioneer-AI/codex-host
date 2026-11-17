@@ -293,15 +293,10 @@ describe("native ACP stdio transport", () => {
         "agent.thought",
         "tool.call",
       ]);
-      if (scenario === "normal")
-        expect(loaded.replayedEvents.map(({ type }) => type)).toEqual([
-          "user.text",
-          "agent.thought",
-          "tool.call",
-          "agent.text",
-          "usage.context",
-          "session.info",
-        ]);
+      expect(loaded.replayedEvents.slice(-2).map(({ type }) => type)).toEqual([
+        "usage.context",
+        "session.info",
+      ]);
       expect(loaded.replayedEvents[2]).toMatchObject({ args: { path: "a" } });
       expect(sessionEvents).toEqual([]);
     },
@@ -462,8 +457,9 @@ describe("native ACP stdio transport", () => {
           }),
         );
         if (ending === "cancel") {
-          await delay(30);
-          expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } });
+          await vi.waitFor(async () =>
+            expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } }),
+          );
           expect(onPermission).toHaveBeenCalledOnce();
         }
       }

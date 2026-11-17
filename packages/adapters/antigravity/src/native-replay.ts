@@ -53,7 +53,14 @@ export function nativeReplayCompletion(expected: ReplaySize): {
   complete: Promise<void>;
   observe: (event: AntigravityAcpEvent) => void;
 } {
-  const received: ReplaySize = { users: 0, text: 0, thought: 0, tools: 0 };
+  const received = {
+    users: 0,
+    text: 0,
+    thought: 0,
+    tools: 0,
+    usage: false,
+    sessionInfo: false,
+  };
   let resolve!: () => void;
   const complete = new Promise<void>((done) => {
     resolve = done;
@@ -63,7 +70,9 @@ export function nativeReplayCompletion(expected: ReplaySize): {
       received.users === expected.users &&
       received.text === expected.text &&
       received.thought === expected.thought &&
-      received.tools === expected.tools
+      received.tools === expected.tools &&
+      received.usage &&
+      received.sessionInfo
     )
       resolve();
   };
@@ -75,6 +84,8 @@ export function nativeReplayCompletion(expected: ReplaySize): {
       if (event.type === "agent.text") received.text += event.text.length;
       if (event.type === "agent.thought") received.thought += event.text.length;
       if (event.type === "tool.call") received.tools++;
+      if (event.type === "usage.context") received.usage = true;
+      if (event.type === "session.info") received.sessionInfo = true;
       check();
     },
   };

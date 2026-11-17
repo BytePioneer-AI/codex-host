@@ -42,6 +42,9 @@ const storedGitInfoV1Schema = z
   })
   .strict();
 
+/** At most this many `thread/inject_items` texts wait for the next Turn. */
+export const MAX_PENDING_INJECTED_TEXTS = 64;
+
 /** Fields owned by the Thread record file; Desktop metadata is stored separately. */
 const storedThreadCoreV1Shape = {
   formatVersion: z.literal(1),
@@ -74,6 +77,33 @@ const storedThreadCoreV1Shape = {
     })
     .strict()
     .optional(),
+  // Side Chat fields fall back to absent rather than quarantining the Thread.
+  /** Desktop Side Chat source; attached Threads are listed only under it. */
+  attachedToThreadId: hostThreadIdSchema.optional().catch(undefined),
+  /** Leading Turns an attached Side Chat inherited from its source; they are not listed. */
+  inheritedTurnCount: z.number().int().nonnegative().optional().catch(undefined),
+  /** `thread/inject_items` text not yet delivered; the next Turn carries it. */
+  pendingInjectedText: z
+    .array(z.string())
+    .max(MAX_PENDING_INJECTED_TEXTS)
+    .optional()
+    .catch(undefined),
+  /** How many held texts were released. A Turn releases by position, never by content. */
+  releasedInjectedTexts: z.number().int().nonnegative().optional().catch(undefined),
+  /**
+   * Turns whose native input begins with delivered injected text, hidden when replayed. One
+   * entry per such Turn, never trimmed, so every replayed Turn stays clean.
+   */
+  injectedTurnPrefixes: z
+    .array(
+      z.object({
+        hostTurnId: hostTurnIdSchema,
+        length: z.number().int().positive(),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+      }),
+    )
+    .optional()
+    .catch(undefined),
   turnMappings: z.array(storedTurnMappingV1Schema),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
@@ -149,6 +179,16 @@ function refineThreadRecord(
       code: "custom",
       path: ["importSourceRef"],
       message: "Subagent Threads cannot have an import source",
+    });
+  }
+  if (
+    record.attachedToThreadId &&
+    (record.attachedToThreadId === record.hostThreadId || record.subagent)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["attachedToThreadId"],
+      message: "Only a non-Subagent Thread can attach to another Thread",
     });
   }
   const hostTurnIds = new Set<string>();
@@ -299,12 +339,17 @@ export interface CreateProvisionalThreadInput {
   historyMode: "legacy" | "paginated";
   projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"];
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
+  attachedToThreadId?: HostThreadId;
+  inheritedTurnCount?: number;
   subagent?: {
     parentHostThreadId: HostThreadId;
     nativeSubagentId: string;
     role?: string;
   };
 }
+
+/** Delivered injected text at the start of a Turn's native input. */
+export type InjectedTurnPrefix = NonNullable<StoredThreadRecordV1["injectedTurnPrefixes"]>[number];
 
 export interface CommitReadyThreadInput {
   hostThreadId: HostThreadId;

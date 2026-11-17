@@ -31,7 +31,12 @@ import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
 import { handleSkillsList } from "./skill-library-host.js";
-import { externalTurnInputText } from "./external-turn-input.js";
+import {
+  EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED,
+  externalTurnInputText,
+  isInputlessInterruptedTaskResume,
+} from "./external-turn-input.js";
+import { materializeExternalImages } from "./external-inline-attachments.js";
 import {
   HarnessLaunchSettingsStore,
   HarnessPreferencesStore,
@@ -149,6 +154,13 @@ import {
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 import { executeExternalThreadFork } from "./external-thread-fork.js";
+import {
+  holdInjectedItems,
+  ownTurns,
+  releaseInjectedText,
+  withInjectedText,
+  type InjectedTurnText,
+} from "./external-thread-side-chat.js";
 import { settleExternalOutputFailure } from "./external-output-failure.js";
 import { SessionImportRequests } from "./session-import-requests.js";
 import {
@@ -349,8 +361,6 @@ import {
   parseJsonFrame,
   projectCodexThreadUsage,
   readLfFrames,
-  writeFrame,
-  writeJsonFrame,
   jsonRpcRequestSchema,
   threadForkResult,
   threadRevertResult,
@@ -635,27 +645,36 @@ function turnProjectionGate(): TurnProjectionGate {
 }
 
 class OrderedWriter {
-  #tail = Promise.resolve();
-
   constructor(
     private readonly stream: Writable,
     /** Returns true for a message it consumed instead of the stream. */
     private readonly intercept: (value: JsonValue) => boolean = () => false,
   ) {}
 
-  frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
-    return this.#enqueue(() => writeFrame(this.stream, frame));
+  async frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
+    await this.write(Buffer.concat([frame, Buffer.from("\n")]));
   }
 
-  json(value: JsonValue): Promise<void> {
-    if (this.intercept(value)) return Promise.resolve();
-    return this.#enqueue(() => writeJsonFrame(this.stream, value));
+  async json(value: JsonValue): Promise<void> {
+    if (this.intercept(value)) return;
+    // Writable owns ordering and backpressure, including unawaited shared notifications.
+    await this.write(encodeJsonFrame(value));
   }
 
-  #enqueue(operation: () => Promise<void>): Promise<void> {
-    const next = this.#tail.then(operation, operation);
-    this.#tail = next.catch(() => undefined);
-    return next;
+  private write(frame: Buffer<ArrayBufferLike>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Accepted writes must not hold Host state updates until a next-tick callback.
+      // A backpressured write waits only for its own completion, not a global drain.
+      const closed = () =>
+        reject(new Error("Protocol stream closed before pending write completed"));
+      const accepted = this.stream.write(frame, (error) => {
+        this.stream.off("close", closed);
+        if (error) reject(error);
+        else resolve();
+      });
+      if (accepted) resolve();
+      else this.stream.once("close", closed);
+    });
   }
 }
 
@@ -1156,6 +1175,8 @@ export class AppServerHost {
       setExternalThreadName: (request, location, name) =>
         this.#setExternalThreadName(request, location, name),
       deleteExternalThread: (request, location) => this.#deleteExternalThread(request, location),
+      injectExternalThreadItems: (request, location) =>
+        this.#injectExternalThreadItems(request, location),
       cleanExternalBackgroundTerminals: (request, threadId) =>
         this.#cleanExternalBackgroundTerminals(request, threadId),
       startExternalCompaction: (request, threadId) =>
@@ -4813,6 +4834,21 @@ export class AppServerHost {
     request: JsonRpcRequest,
     location: Extract<ExternalThreadLocation, { kind: "external" }>,
   ): Promise<void> {
+    // Only a ready Side Chat is listed, so only it can block: Desktop deletes those first.
+    const attached = (await this.#repository.listSummaries()).find(
+      ({ attachedToThreadId, state }) =>
+        attachedToThreadId === location.record.hostThreadId && state === "ready",
+    );
+    if (attached) {
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32602,
+          `Cannot delete a Thread while attached Thread ${attached.hostThreadId} exists`,
+        ),
+      );
+      return;
+    }
     try {
       await this.#externalRuntime.deleteThread(location.record.hostThreadId);
     } catch (error) {
@@ -5010,7 +5046,7 @@ export class AppServerHost {
   }
 
   #externalHistoryTurns(thread: ExternalThread, forClient = false): JsonObject[] {
-    const turns = this.#withOpenBackgroundCommands(thread, thread.turns);
+    const turns = this.#withOpenBackgroundCommands(thread, ownTurns(thread.record, thread.turns));
     if (!thread.activeTurnId || (forClient && thread.ephemeralTurnIds.has(thread.activeTurnId)))
       return turns;
     const active = thread.projectedTurns.get(thread.activeTurnId);
@@ -5075,10 +5111,12 @@ export class AppServerHost {
       promise: Promise.resolve(),
       resolve: () => undefined,
     });
+    const stored = await this.#repository.find(thread.id);
+    const injected = withInjectedText(stored, text);
     const result = await thread.session.execute({
       type: "turn.start",
       turnId,
-      input: [{ type: "text", text }],
+      input: [{ type: "text", text: injected.text }],
     });
     if (!result.ok) {
       thread.running = false;
@@ -5087,6 +5125,35 @@ export class AppServerHost {
       thread.responseGates.delete(turnId);
       this.#signalActiveWorkChanged();
       throw new Error(result.error.message);
+    }
+    await this.#releaseInjectedText(thread, turnId, injected);
+  }
+
+  async #injectExternalThreadItems(
+    request: JsonRpcRequest,
+    location: Extract<ExternalThreadLocation, { kind: "external" }>,
+  ): Promise<void> {
+    const error = await holdInjectedItems({
+      request,
+      record: location.record,
+      repository: this.#repository,
+      runtime: this.#externalRuntime,
+    });
+    await this.#writer.json(
+      error ? rpcError(request, error.code, error.message) : rpcEnvelope(request, { result: {} }),
+    );
+  }
+
+  async #releaseInjectedText(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    injected: InjectedTurnText,
+  ): Promise<void> {
+    try {
+      await releaseInjectedText({ thread, turnId, injected, repository: this.#repository });
+    } catch (error) {
+      // The Turn already has the text. A held copy can repeat it once; it is never lost.
+      this.#diagnose(`Injected items could not be released: ${errorMessage(error)}`);
     }
   }
 
@@ -5112,8 +5179,16 @@ export class AppServerHost {
         return;
       }
     }
+    if (isInputlessInterruptedTaskResume(params)) {
+      await this.#writer.json(rpcError(request, -32078, EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED));
+      return;
+    }
     let text: string;
     try {
+      params.input = await materializeExternalImages(
+        requestInput(params),
+        this.#options.environment ?? process.env,
+      );
       text = requestText(params);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
@@ -5227,6 +5302,10 @@ export class AppServerHost {
         return;
       }
       if (request.method === "thread/queue/add") {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
         requestText(params);
         const queuedSubmission = this.#externalQueue.add(
           thread.id,
@@ -5263,6 +5342,10 @@ export class AppServerHost {
       }
       if (!itemId) throw new ExternalSteerError(-32602, "Queued submission identity is required");
       if (request.method === "thread/queue/update") {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
         requestText(params);
         const queuedSubmission = this.#externalQueue.update(
           thread.id,
@@ -5492,6 +5575,14 @@ export class AppServerHost {
           [THREAD_STEER_DELIVERY_PARAM]: marker.data.delivery,
         };
       }
+      try {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
+      } catch (error) {
+        throw new ExternalSteerError(-32602, errorMessage(error));
+      }
       queued = this.#externalQueue.takeSteered(thread.id, params.clientUserMessageId, params.input);
       const started = await this.#externalSteering.run(
         thread,
@@ -5712,12 +5803,15 @@ export class AppServerHost {
       if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
         await this.#notifyExternalThreadStarted(thread.thread);
       }
+      const stored = await this.#repository.find(thread.id);
+      const injected = withInjectedText(stored, rewriteDelegationMentionText(text));
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
-        input: [{ type: "text", text: rewriteDelegationMentionText(text) }],
+        input: [{ type: "text", text: injected.text }],
       });
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
+      await this.#releaseInjectedText(thread, turnId, injected);
       await this.#externalRuntime.capturePreview(thread, projection.projector.snapshotTurn());
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {

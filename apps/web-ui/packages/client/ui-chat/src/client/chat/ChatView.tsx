@@ -248,7 +248,7 @@ export function ChatView({
   // the attach action only when it stays inside one of them.
   const attachSelection = useCallback(
     (text: string) => {
-      return inputActions?.addResponseAnnotation({ text }) !== undefined;
+      return inputActions?.addResponseAnnotation({ text }, { focus: "end" }) !== undefined;
     },
     [inputActions],
   );

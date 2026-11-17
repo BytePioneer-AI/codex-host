@@ -74,6 +74,8 @@ export type OpenState = "cold" | "loading" | "open" | "error";
 export interface PromptError {
   readonly op: "send" | "stop";
   readonly error: RemoteFailure;
+  /** Sent message identity used to reconcile an unconfirmed send with durable history. */
+  readonly requestId?: SessionRequestId;
 }
 
 /** Immutable Session lifecycle and control snapshot. */

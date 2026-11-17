@@ -197,6 +197,7 @@ describe("Desktop existing remote session boundary", () => {
       "thread/resume",
       "turn/start",
     ]);
+    expect(send).toHaveBeenCalledWith("thread/resume", { threadId: "same", excludeTurns: true });
   });
   it("serializes data in the Controller expression and excludes local operations", async () => {
     const f = fixture();

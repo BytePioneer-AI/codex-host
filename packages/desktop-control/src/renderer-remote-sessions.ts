@@ -515,7 +515,7 @@ export async function rendererRemoteSession(
       }
     }
     case "prompt":
-      await manager.sendRequest("thread/resume", { threadId });
+      await manager.sendRequest("thread/resume", { threadId, excludeTurns: true });
       if (routing.forHost(operation.hostId) !== route)
         throw new Error("Remote connection changed during resume");
       return manager.sendRequest("turn/start", {

@@ -394,8 +394,9 @@ describe("native ACP stdio transport", () => {
           }),
         );
         if (ending === "cancel") {
-          await delay(30);
-          expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } });
+          await vi.waitFor(async () =>
+            expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } }),
+          );
           expect(onPermission).toHaveBeenCalledOnce();
         }
       }

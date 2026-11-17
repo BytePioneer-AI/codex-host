@@ -349,8 +349,6 @@ import {
   parseJsonFrame,
   projectCodexThreadUsage,
   readLfFrames,
-  writeFrame,
-  writeJsonFrame,
   jsonRpcRequestSchema,
   threadForkResult,
   threadRevertResult,
@@ -635,27 +633,36 @@ function turnProjectionGate(): TurnProjectionGate {
 }
 
 class OrderedWriter {
-  #tail = Promise.resolve();
-
   constructor(
     private readonly stream: Writable,
     /** Returns true for a message it consumed instead of the stream. */
     private readonly intercept: (value: JsonValue) => boolean = () => false,
   ) {}
 
-  frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
-    return this.#enqueue(() => writeFrame(this.stream, frame));
+  async frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
+    await this.write(Buffer.concat([frame, Buffer.from("\n")]));
   }
 
-  json(value: JsonValue): Promise<void> {
-    if (this.intercept(value)) return Promise.resolve();
-    return this.#enqueue(() => writeJsonFrame(this.stream, value));
+  async json(value: JsonValue): Promise<void> {
+    if (this.intercept(value)) return;
+    // Writable owns ordering and backpressure, including unawaited shared notifications.
+    await this.write(encodeJsonFrame(value));
   }
 
-  #enqueue(operation: () => Promise<void>): Promise<void> {
-    const next = this.#tail.then(operation, operation);
-    this.#tail = next.catch(() => undefined);
-    return next;
+  private write(frame: Buffer<ArrayBufferLike>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Accepted writes must not hold Host state updates until a next-tick callback.
+      // A backpressured write waits only for its own completion, not a global drain.
+      const closed = () =>
+        reject(new Error("Protocol stream closed before pending write completed"));
+      const accepted = this.stream.write(frame, (error) => {
+        this.stream.off("close", closed);
+        if (error) reject(error);
+        else resolve();
+      });
+      if (accepted) resolve();
+      else this.stream.once("close", closed);
+    });
   }
 }
 

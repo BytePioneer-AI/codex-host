@@ -372,7 +372,7 @@ type SessionTreeProps = Pick<
     onRenameRequest: (workspaceId: WorkspaceId, currentTitle: string) => void;
     /** Open the browser-owned delete-confirmation dialog for a real Workspace group. */
     onDeleteRequest: (workspaceId: WorkspaceId, currentTitle: string) => void;
-    /** Open the rename dialog from a row title double-click. */
+    /** Open the rename dialog for a Session. */
     onSessionRenameRequest: (sessionId: SessionNode["id"], currentTitle: string) => void;
     /** One Session chosen from search that must be exposed and scrolled into view. */
     revealSessionId?: SessionId | undefined;

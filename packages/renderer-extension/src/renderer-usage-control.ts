@@ -34,7 +34,6 @@ interface RendererUsageMessages {
   readonly sessionCacheHit: string;
   readonly outputSpeed: string;
   readonly averageOutputSpeed: string;
-  readonly averageOutputSpeedDescription: string;
   readonly apiOutputSpeed: string;
   readonly apiOutputSpeedDescription: string;
   readonly timeToFirstOutput: string;
@@ -62,7 +61,6 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   sessionCacheHit: "Average cache hit",
   outputSpeed: "Output speed (TPS)",
   averageOutputSpeed: "Average output speed (TPS)",
-  averageOutputSpeedDescription: "Requests with reliable generation timing only",
   apiOutputSpeed: "API average speed",
   apiOutputSpeedDescription:
     "Output tokens / native API time, including first-token wait; not generation TPS.",
@@ -91,7 +89,6 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   sessionCacheHit: "平均缓存命中",
   outputSpeed: "输出速度（TPS）",
   averageOutputSpeed: "平均输出速度（TPS）",
-  averageOutputSpeedDescription: "仅统计有可靠生成计时的请求",
   apiOutputSpeed: "API 平均速度",
   apiOutputSpeedDescription: "输出 Token ÷ 原生 API 耗时，含首字等待；不是生成 TPS。",
   timeToFirstOutput: "首 token（TTFT）",
@@ -435,7 +432,6 @@ function renderDetails(
     session.push([
       messages.averageOutputSpeed,
       formatRendererTokenRate(usage.sessionOutputTokensPerSecond, locale),
-      messages.averageOutputSpeedDescription,
     ]);
   }
   if (usage?.cacheHitRatePercent !== undefined) {

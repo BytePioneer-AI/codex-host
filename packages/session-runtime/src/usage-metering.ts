@@ -114,7 +114,7 @@ export class UsageMeter {
       this.recordOutputTiming(
         {
           requestId: request.requestId,
-          outputTokens: request.outputTokens,
+          outputTokens: request.timedOutputTokens ?? request.outputTokens,
           startedAtMs: request.startedAtMs ?? 0,
           completedAtMs: request.completedAtMs ?? 0,
         },
@@ -153,6 +153,7 @@ export class UsageMeter {
     this.#timedRequests.add(request.requestId);
     this.restoreOutputTimings([
       {
+        version: 4,
         requestId: request.requestId,
         turnId,
         outputTokens: request.outputTokens,
@@ -259,7 +260,7 @@ export class UsageMeter {
     if (this.#outputTimings.size) snapshot.outputTimings = [...this.#outputTimings.values()];
     if (this.#outputTokensPerSecond !== undefined && this.#lastOutputTurnId)
       snapshot.outputTokensPerSecond = {
-        version: 2,
+        version: 4,
         value: this.#outputTokensPerSecond,
         turnId: this.#lastOutputTurnId,
         at: this.#lastOutputAtMs,
@@ -286,7 +287,7 @@ export class UsageMeter {
         this.#lastOutputAtMs = Date.now();
         this.#lastOutputLive = true;
         snapshot.outputTokensPerSecond = {
-          version: 2,
+          version: 4,
           value: native.outputTokensPerSecond,
           turnId,
           at: this.#lastOutputAtMs,
@@ -450,6 +451,7 @@ export class UsageMeter {
       string,
       {
         outputTokens: number;
+        timedOutputTokens?: number;
         startedAtMs?: number;
         completedAtMs?: number;
       }
@@ -464,7 +466,7 @@ export class UsageMeter {
         request.completedAtMs <= request.startedAtMs
       )
         continue;
-      tokens += request.outputTokens;
+      tokens += request.timedOutputTokens ?? request.outputTokens;
       milliseconds += request.completedAtMs - request.startedAtMs;
     }
     return milliseconds > 0 && Number.isSafeInteger(tokens) && Number.isSafeInteger(milliseconds)

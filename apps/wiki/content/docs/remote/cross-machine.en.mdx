@@ -1,0 +1,26 @@
+---
+title: Choosing a Remote Setup
+description: Pick the right setup in 30 seconds—when to use the mobile Web app, SSH remote servers, or Windows Remote Control.
+---
+
+CodexHost offers three ways to work away from a single screen—**Web App**, **SSH Remote Host**, and **Remote Control**—and they solve very different problems.
+
+Match your situation below:
+
+- **Scenario A: "My code and Agents already run on my main computer—I just want to check or steer them from my phone, tablet, or couch laptop."**
+  👉 Use **[Web App & Mobile Access](/en/docs/web/mobile)**. Scan a QR code and you're in—no remote host setup needed.
+- **Scenario B: "My codebase, toolchain, and Agent logins live on a remote Linux or macOS dev server, and I want a native UI on my laptop."**
+  👉 Use **[SSH Remote Host](/en/docs/remote/ssh)**. Your local Codex Desktop stays snappy while Agents execute on the remote machine.
+- **Scenario C: "My code and Agents live on a Windows PC, and I want to drive them from another computer without opening ports or setting up SSH."**
+  👉 Use **[Windows Remote Control](/en/docs/remote/remote-control)** with a simple pairing code.
+
+---
+
+## At a Glance: Where Everything Runs
+
+| Setup                             | Where You Use the UI          | Where Agents Actually Run                    | Where Files & Credentials Stay  | Guide                                                    |
+| :-------------------------------- | :---------------------------- | :------------------------------------------- | :------------------------------ | :------------------------------------------------------- |
+| **Local Desktop**                 | Local Codex Desktop           | Your computer                                | Your computer                   | [Install & Start/Stop](/en/docs/quick-start/install)     |
+| **Web App**                       | Phone, tablet, or any browser | **Your main computer** (shared with Desktop) | **Your main computer**          | [Web App & Mobile](/en/docs/web/mobile)                  |
+| **SSH Remote Host**               | Local Codex Desktop           | **Remote Linux / macOS server**              | **Remote Linux / macOS server** | [SSH Remote Host](/en/docs/remote/ssh)                   |
+| **Remote Control (Experimental)** | Controller's Codex Desktop    | **Target Windows PC**                        | **Target Windows PC**           | [Windows Remote Control](/en/docs/remote/remote-control) |

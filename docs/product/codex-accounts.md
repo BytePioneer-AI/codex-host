@@ -92,4 +92,3 @@ SSH 维持远端原生单账号，不传输本地凭据。
 - `packages/shared-contracts/src/harness-accounts.ts`：浏览器安全的只读快照与请求契约。
 - `packages/renderer-extension/src/settings/accounts.css`：明暗主题及窄窗口布局。
 - `packages/renderer-extension/test/settings/`：设置页及额度单元测试。
-- `tests/e2e/renderer-settings-accounts.spec.ts`：真实设置外壳与真实渲染代码，使用隔离的模拟客户端验证布局和交互；不连接真实账号服务。

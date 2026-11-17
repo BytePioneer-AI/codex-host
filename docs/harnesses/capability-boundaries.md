@@ -26,7 +26,9 @@ Kimi Code ACP 的 `ExitPlanMode` 请求包含原生 `plan_approve` / `plan_opt_N
 
 Kimi 通过 ACP `configOptions` 提供当前会话、当前 Model 的 Thinking 列表和选中值。插件在创建、恢复、配置命令响应及 `config_option_update` 通知中读取这些事实，将列表保存在会话内存状态的 `availableThinkingOptions` 中，沿公共状态事件更新 Desktop；不轮询，也不在启动检查时遍历切换 Model。不同会话或 Host 不共享可变列表。
 
-启动检查只读取配置文件中的 Model 目录并检查认证。配置文件不是 Thinking 能力目录，因此草稿目录不猜测 `medium` 或 `off/on`，也不自动发送 Thinking 默认值；未显式选择时保留原生默认配置。会话建立后使用原生列表。切换 Model 以返回的新配置整体替换旧列表，不自动重放旧 Thinking；原生未提供列表时清除旧列表。当前 Model 的选项不扩散到其他 Model。
+启动检查读取配置文件中的 Model 目录并检查认证，不创建会话。草稿目录按每个 Model 明确声明的 `capabilities`、`support_efforts` 和 `default_effort` 展示 Thinking：`thinking` 提供声明的强度列表，无强度列表时提供 `off/on`；`always_thinking` 排除 `off`；未声明思考能力的 Model 不提供选项。默认值仅在当前默认 Model 的选项内有效，显式 `[thinking]` 设置优先于 `default_effort`，不将其他 Model 的档位作为默认值。配置声明不代表后端实际支持，插件不自动补写用户配置。
+
+会话建立后使用 ACP 原生列表和确认值，不以草稿默认值冒充已生效配置；未显式选择时保留原生默认配置。切换 Model 以返回的新配置整体替换旧列表，不自动重放旧 Thinking；原生未提供列表时清除旧列表。当前 Model 的选项不扩散到其他 Model。
 
 显式选择或持久化恢复的 Thinking 值不在当前原生列表中时返回错误，不将 `medium` 映射为 `on`，也不静默替换用户选择。应重新选择原生支持的值或清除旧选择。`off/on` 是部分 Model 的原生取值，不是所有 Kimi Model 的固定能力。
 

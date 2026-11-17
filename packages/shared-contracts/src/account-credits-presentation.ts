@@ -153,6 +153,28 @@ export function groupAccountCreditsWindows(
   }));
 }
 
+function countdownMinutes(value: string | number, nowMs: number): number | null {
+  const timestamp = typeof value === "number" ? value * 1_000 : Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.ceil((timestamp - nowMs) / 60_000));
+}
+
+function isChineseLocale(locale: string): boolean {
+  return locale === "zh-CN" || locale.startsWith("zh-");
+}
+
+function compactDurationText(minutes: number): string {
+  if (minutes >= 1_440) {
+    const days = Math.floor(minutes / 1_440);
+    const hours = Math.floor((minutes % 1_440) / 60);
+    return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours > 0) return mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
+  return `${mins}m`;
+}
+
 /**
  * Formats a quota reset timestamp as a compact remaining duration (at most two
  * units, rounded up to whole minutes) without implying an unconfirmed refresh.
@@ -162,10 +184,9 @@ export function formatAccountCreditsResetCountdown(
   locale: string,
   nowMs: number = Date.now(),
 ): string | null {
-  const timestamp = typeof value === "number" ? value * 1_000 : Date.parse(value);
-  if (!Number.isFinite(timestamp)) return null;
-  const minutes = Math.max(0, Math.ceil((timestamp - nowMs) / 60_000));
-  const chinese = locale === "zh-CN" || locale.startsWith("zh-");
+  const minutes = countdownMinutes(value, nowMs);
+  if (minutes === null) return null;
+  const chinese = isChineseLocale(locale);
   if (minutes === 0) return chinese ? "即将重置" : "Resets soon";
   if (minutes >= 1_440) {
     const days = Math.floor(minutes / 1_440);
@@ -191,18 +212,25 @@ export function formatAccountCreditsCompactCountdown(
   locale: string,
   nowMs: number = Date.now(),
 ): string | null {
-  const timestamp = typeof value === "number" ? value * 1_000 : Date.parse(value);
-  if (!Number.isFinite(timestamp)) return null;
-  const minutes = Math.max(0, Math.ceil((timestamp - nowMs) / 60_000));
-  const chinese = locale === "zh-CN" || locale.startsWith("zh-");
-  if (minutes === 0) return chinese ? "即将重置" : "Resets soon";
-  if (minutes >= 1_440) {
-    const days = Math.floor(minutes / 1_440);
-    const hours = Math.floor((minutes % 1_440) / 60);
-    return hours > 0 ? `${days}d${hours}h` : `${days}d`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  if (hours > 0) return mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
-  return `${mins}m`;
+  const minutes = countdownMinutes(value, nowMs);
+  if (minutes === null) return null;
+  if (minutes === 0) return isChineseLocale(locale) ? "即将重置" : "Resets soon";
+  return compactDurationText(minutes);
+}
+
+/**
+ * Short inline expiry phrase (e.g. `15d4h 后到期`, `in 15d4h`) for footer
+ * badges that sit alongside reset-credit counts.
+ */
+export function formatAccountCreditsCompactExpiry(
+  value: string | number,
+  locale: string,
+  nowMs: number = Date.now(),
+): string | null {
+  const minutes = countdownMinutes(value, nowMs);
+  if (minutes === null) return null;
+  const chinese = isChineseLocale(locale);
+  if (minutes === 0) return chinese ? "即将到期" : "expires soon";
+  const compact = compactDurationText(minutes);
+  return chinese ? `${compact} 后到期` : `in ${compact}`;
 }

@@ -78,6 +78,32 @@
   background: transparent;
 }
 
+:global(body[data-codexhost-wallpaper]) .frame,
+:global(body[data-codexhost-wallpaper]) .centerCol,
+:global(body[data-codexhost-wallpaper]) .rightbarCol,
+:global(body[data-codexhost-wallpaper]) .bottomRow {
+  background: transparent;
+}
+
+:global(html:not([data-platform="darwin"]) body[data-codexhost-wallpaper]) .sidebarCol {
+  background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 22%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+:global(html:not([data-platform="darwin"]) body[data-ds-dark-theme][data-codexhost-wallpaper])
+  .sidebarCol {
+  background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 26%, transparent);
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :global(html:not([data-platform="darwin"]) body[data-codexhost-wallpaper]) .sidebarCol {
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 92%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 /* The constant step below the window's top strip (traffic lights, sidebar
    toggle, shell.leading controls), the same in both sidebar states. Entry
    pages in the main panel (plugin manager, settings-like pages — not the

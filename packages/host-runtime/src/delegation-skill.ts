@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 14;
+const SKILL_VERSION = 15;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
@@ -28,6 +28,13 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "1c238d035647b40f6f6db17409e31e1723fbe57c5aa1aaf35487686aecb65b6f",
   // v13, before the content split with CLI help.
   "fc3d2a7d88de1da2e57853faa086661defdaf92c054d6f0c01953d10aee5f351",
+  // Earlier fork-managed question templates.
+  "fb3b555c90030b7c9e506ba0eb7e4a584efc1e7b369c552bf1d93daaffa9a310",
+  "a6e753ed092239429ebc0dcba8090fb9425fa65292b7810ba990c13a531816a6",
+  // v14, before the delegated question workflow.
+  "75eb0ea22c8e3ce875a62133c10d62fedacf381e25202d01688210dd951324c1",
+  // Fork v13, before the content split with CLI help.
+  "41c2672e34b7a52dee9111f8284a4261b4dbcd42908262dcc814b323bb278e59",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
@@ -37,8 +44,8 @@ description: >
   Delegate tasks to other coding agents, or read and follow up on existing
   external agent sessions. Use when the user asks another agent (including
   @agent) to independently perform a task, or asks to view a specified external
-  session's content, progress, or results, send follow-up messages, wait, or
-  cancel a task. Not for recapping the current conversation, discussing or
+  session's content, progress, or results, send follow-up messages, answer its
+  questions, wait, or cancel a task. Not for recapping the current conversation, discussing or
   configuring agents, or role-playing.
 ---
 
@@ -80,10 +87,16 @@ the current assistant. If the target is ambiguous, ask the user to identify it.
 Keep requests to view or summarize a session read-only.
 
 Then choose the next action from the user's request: send a follow-up, cancel,
-read now, wait for a bounded period, check later, watch it so the Host notifies
-this Thread once when it stops, or leave it running. A watch notification
+read now, answer a pending question, wait for a bounded period, check later, or
+watch it so the Host notifies this Thread once when it stops or needs input.
+You can also leave it running. A watch notification
 reports execution state only; read the Thread before judging or reporting its
 work. Only when debugging needs the full Thread, export it to a file.
+
+For a pending question, read the Thread and follow the answer command's help.
+After answering, read or watch again; submission does not prove completion.
+Questions requiring the user's decision or additional authorization belong to
+the user.
 
 Report the result returned by read or a completed wait, together with the target
 agent, status, and a labeled task link. Keep internal tracking IDs in tool calls.

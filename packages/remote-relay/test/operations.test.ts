@@ -32,9 +32,9 @@ const tls = () =>
   });
 
 afterEach(async () => {
+  vi.useRealTimers();
   for (const relay of relays.splice(0)) await relay.close();
   vi.restoreAllMocks();
-  vi.useRealTimers();
 });
 
 describe("registration checks and address names", () => {
@@ -132,6 +132,8 @@ describe("registration checks and address names", () => {
   });
 
   it("times out a pending check and ignores its late result", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const checking = Promise.withResolvers<undefined>();
     let finish!: (result: RegistrationResult) => void;
     const check = vi
       .fn<NonNullable<RelayOptions["check"]>>()
@@ -139,18 +141,24 @@ describe("registration checks and address names", () => {
         () =>
           new Promise((resolve) => {
             finish = resolve;
+            checking.resolve(undefined);
           }),
       )
       .mockReturnValue({ name: "alice" });
     const relay = await start({ check });
     const first = await fakeAgent({ port: relay.port });
+    await checking.promise;
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(first.ws.readyState).toBe(WebSocket.OPEN);
+    await vi.advanceTimersByTimeAsync(1);
     expect(await first.closed).toBe(4408);
+    vi.useRealTimers();
     const next = await fakeAgent({ port: relay.port });
     expect(await next.registered).toBe("alice.relay.test");
     finish({ name: "alice" });
     await delay(20);
     expect(next.ws.readyState).toBe(WebSocket.OPEN);
-  }, 12_000);
+  });
 
   it("replaces by name even when the identity changes", async () => {
     const relay = await start({ check: () => ({ name: "alice" }) });
@@ -196,6 +204,7 @@ describe("registration checks and address names", () => {
 
 describe("checked limits, usage and quota notices", () => {
   it("uses the checked rate instead of the startup rate", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     const relay = await start({ rate: 1, check: () => ({ name: "alice", rate: 16 * 1024 }) });
     const target = createTlsServer(credentials, (socket) => {
       socket.on("error", () => {});
@@ -215,6 +224,16 @@ describe("checked limits, usage and quota notices", () => {
     const response = collect(client);
     const startTime = performance.now();
     client.write(Buffer.alloc(40 * 1024));
+    let settled = false;
+    void response.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    for (let elapsed = 0; !settled && elapsed < 8000; elapsed += 10) {
+      await vi.advanceTimersByTimeAsync(10);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(settled, "transfer should finish within eight virtual seconds").toBe(true);
     expect((await response).toString()).toBe("ok");
     expect(performance.now() - startTime).toBeGreaterThan(800);
     client.destroy();

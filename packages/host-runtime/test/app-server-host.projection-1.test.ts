@@ -1212,9 +1212,10 @@ describe("AppServerHost HarnessAdapter projection", () => {
       fixture.official.stdout.write(
         `${JSON.stringify({ method: "synthetic/event", params: { payload: "x".repeat(32_768) } })}\n`,
       );
-      await vi.waitFor(() =>
-        expect(fixture.desktopOutput.listenerCount("drain")).toBeGreaterThan(0),
-      );
+      await vi.waitFor(() => {
+        expect(fixture.desktopOutput.writableNeedDrain).toBe(true);
+        expect(fixture.desktopOutput.writableLength).toBeGreaterThan(0);
+      });
       fixture.official.stdout.end();
 
       const outcome = await Promise.race([

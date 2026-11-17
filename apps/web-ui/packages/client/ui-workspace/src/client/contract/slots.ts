@@ -307,7 +307,7 @@ export type WorkspaceBrowserInjected = {
   loadMoreSessions: () => void;
   /** Maximum number of merged rows rendered for one search. */
   searchResultLimit: number;
-  /** Open the Session rename dialog (a row title double-click); the rename action entry raises the same request. */
+  /** Open the Session rename dialog; row actions and keyboard commands raise this request. */
   requestSessionRename: (sessionId: SessionId, currentTitle: string) => void;
   /** Tell the user an archived row cannot be opened (a click on it). */
   notifyArchivedNotOpenable: () => void;

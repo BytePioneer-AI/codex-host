@@ -40,7 +40,9 @@ describe("remote settings Controller channel", () => {
           { ...environment, CODEXHOST_CONTROL_NONCE: "0".repeat(32) },
           { action: "list" },
         ),
-      ).resolves.toMatchObject({ error: { code: -32090 } });
+      ).resolves.toMatchObject({
+        error: { code: -32096, message: expect.stringContaining("Controller rejected") },
+      });
       await expect(
         requestDesktopRemoteConnections(environment, { action: "eval", expression: "anything" }),
       ).resolves.toMatchObject({ error: { code: -32602 } });

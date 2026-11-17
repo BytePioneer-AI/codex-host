@@ -435,6 +435,7 @@ export function apply(ctx: ClientContext): void {
         inject: () => ({
           list: ctx.sessions.list,
           connection: ctx.get("connection") as ConnectionHandle,
+          retryHistory: (id: SessionId) => ctx.sessions.retryHistory(id),
         }),
       },
       HostConnectionStatus,

@@ -544,6 +544,19 @@ export interface ItemDetachedEvent {
   itemId: HostItemId;
 }
 
+/**
+ * The Harness produced new output after its Turn completed (idle-time
+ * background work). The Item starts and stays detached on the completed
+ * Turn; it settles later with `item.updated` / `item.completed` on the
+ * same Turn, exactly like an `item.detached` Item. Adapters must emit it
+ * only while no successor Turn has started, and only for text Items.
+ */
+export interface ItemBackgroundStartedEvent {
+  type: "item.background.started";
+  turnId: HostTurnId;
+  item: HostItem;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
@@ -578,6 +591,7 @@ export type HostEvent =
   | ItemUpdatedEvent
   | ItemCompletedEvent
   | ItemDetachedEvent
+  | ItemBackgroundStartedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;

@@ -11,6 +11,7 @@ import type {
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
   ItemDetachedEvent,
   ItemStartedEvent,
@@ -51,6 +52,7 @@ export type ProjectableHostEvent =
   | ItemUpdatedEvent
   | ItemCompletedEvent
   | ItemDetachedEvent
+  | ItemBackgroundStartedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent;
 
@@ -943,6 +945,7 @@ export class CodexTurnProjector {
     if (
       this.#completed &&
       !(
+        event.type === "item.background.started" ||
         (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
         (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId))
       )
@@ -950,6 +953,13 @@ export class CodexTurnProjector {
       throw new Error("Host output follows the Turn terminal event");
     }
     switch (event.type) {
+      case "item.background.started":
+        if (!this.#completed) throw new Error("Host foreground output must use item.started");
+        if (event.item.type !== "agentMessage" && event.item.type !== "reasoning")
+          throw new Error("Only a text Item can start after its Turn completes");
+        this.#startItem({ ...event, type: "item.started" }, emittedAtMs);
+        this.#detached.add(event.item.itemId);
+        return { messages: [] };
       case "item.detached":
         if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
           throw new Error("Only a command Item can outlive its Turn");

@@ -87,6 +87,7 @@ export type {
   InteractionClosedEvent,
   InteractionRespondAccepted,
   InteractionRespondCommand,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
   ItemDetachedEvent,
   ItemStartedEvent,

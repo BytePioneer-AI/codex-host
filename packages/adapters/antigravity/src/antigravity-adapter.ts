@@ -295,6 +295,21 @@ interface PendingInteraction {
   resolve(value: RequestPermissionResponse | CreateElicitationResponse): void;
   cancelValue: RequestPermissionResponse | CreateElicitationResponse;
 }
+/**
+ * One idle-output episode on the most recently completed user Turn: the text
+ * Item streams as a background (detached) Item and settles at the next
+ * provable boundary — successor prompt, close or fault. No timers involved.
+ */
+interface BackgroundEpisode {
+  turnId: HostTurnId;
+  textItem:
+    | {
+        type: "agentMessage" | "reasoning";
+        itemId: ReturnType<typeof hostItemIdSchema.parse>;
+        text: string;
+      }
+    | undefined;
+}
 
 export class AntigravitySession implements HarnessSession {
   readonly harnessId = harnessId;
@@ -313,6 +328,8 @@ export class AntigravitySession implements HarnessSession {
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   #turnCount = 0;
   #active: ActiveTurn | undefined;
+  #lastCompletedTurnId: HostTurnId | undefined;
+  #background: BackgroundEpisode | undefined;
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
   #usageWork: Promise<void> = Promise.resolve();
@@ -454,6 +471,10 @@ export class AntigravitySession implements HarnessSession {
         );
       }
       this.#initializeUsage(opened.sessionId, replayedEvents);
+      // A fresh open replays history through session/load; the replayed turns
+      // supersede any live idle-output state from the previous connection.
+      this.#background = undefined;
+      this.#lastCompletedTurnId = undefined;
       transport.setSessionEventHandler((event) => {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
@@ -635,6 +656,13 @@ export class AntigravitySession implements HarnessSession {
     this.#applyConfig(confirmed);
   }
   #sessionEvent(event: AntigravityAcpEvent): void {
+    if (event.type === "agent.text" || event.type === "agent.thought") {
+      this.#appendBackgroundText(
+        event.type === "agent.text" ? "agentMessage" : "reasoning",
+        event.text,
+      );
+      return;
+    }
     switch (event.type) {
       case "config.update":
         this.#applyConfig(event.configOptions);
@@ -797,6 +825,9 @@ export class AntigravitySession implements HarnessSession {
             return err("invalidRequest", "Prompt and Turn ID must not be empty");
           const turn: ActiveTurn = { turnId: command.turnId, cancelled: false, ended: false };
           this.#active = turn;
+          // A successor prompt ends the idle-output window of the previous Turn
+          // before the new Turn announces itself.
+          this.#settleBackground({ status: "succeeded" });
           this.#emit({ type: "turn.started", turnId: turn.turnId });
           void this.#runTurn(turn, command);
           return ok({ turnId: command.turnId });
@@ -1096,6 +1127,53 @@ export class AntigravitySession implements HarnessSession {
     });
     turn.textItem = undefined;
   }
+  /** Idle Harness output lands on the most recently completed user Turn. */
+  #appendBackgroundText(type: "agentMessage" | "reasoning", text: string): void {
+    if (!text) return;
+    if (this.#active || this.#opening || this.#configuring || this.#historyOperation) return;
+    const turnId = this.#lastCompletedTurnId;
+    if (!turnId) {
+      // No completed Turn to attach to (e.g. tail output after resume); the
+      // content stays recoverable through the next history read.
+      return;
+    }
+    this.#background ??= { turnId, textItem: undefined };
+    const episode = this.#background;
+    if (episode.turnId !== turnId || episode.textItem?.type !== type) {
+      this.#settleBackground({ status: "succeeded" });
+      this.#background = { turnId, textItem: undefined };
+    }
+    const current = this.#background;
+    if (!current.textItem) {
+      current.textItem = { type, itemId: hostItemIdSchema.parse(randomUUID()), text: "" };
+      this.#emit({
+        type: "item.background.started",
+        turnId,
+        item: { ...current.textItem },
+      });
+    }
+    current.textItem.text += text;
+    this.#emit({
+      type: "item.updated",
+      turnId,
+      itemId: current.textItem.itemId,
+      update: { type: "text.append", text },
+    });
+  }
+  /** Close the pending idle-output Item; the emitted content stays real output. */
+  #settleBackground(outcome: HostItemOutcome): void {
+    const episode = this.#background;
+    if (!episode?.textItem) {
+      this.#background = undefined;
+      return;
+    }
+    this.#emit({
+      type: "item.completed",
+      turnId: episode.turnId,
+      snapshot: { item: { ...episode.textItem }, outcome },
+    });
+    this.#background = undefined;
+  }
   #finish(turn: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (!this.#isCurrent(turn)) return;
     this.#closeInteractions("cancelled");
@@ -1103,6 +1181,9 @@ export class AntigravitySession implements HarnessSession {
     turn.tracker?.finishPending(outcome);
     turn.ended = true;
     this.#active = undefined;
+    // Idle output after this Turn attributes to it until a successor starts.
+    this.#lastCompletedTurnId = turn.turnId;
+    this.#settleBackground({ status: "succeeded" });
     this.#emit({
       type: "turn.completed",
       turnId: turn.turnId,
@@ -1241,6 +1322,9 @@ export class AntigravitySession implements HarnessSession {
     this.#closeInteractions("cancelled");
     if (this.#active)
       this.#finish(this.#active, { status: "failed", error: normalizeAntigravityError(error) });
+    // Delivered idle output is real work; settle it before the fault closes
+    // the stream so it is not swept to failed.
+    this.#settleBackground({ status: "succeeded" });
     this.#emit({ type: "session.faulted", error: normalizeAntigravityError(error) });
     this.#channel.end();
     this.#subagents.stop();
@@ -1256,6 +1340,8 @@ export class AntigravitySession implements HarnessSession {
     this.#closed = true;
     this.#abort.abort();
     this.#closeInteractions("cancelled");
+    // The native transcript persists what was already delivered.
+    this.#settleBackground({ status: "succeeded" });
     const active = this.#active;
     if (active) this.#finish(active, { status: "cancelled", reason: "Session closed" });
     this.#channel.end();

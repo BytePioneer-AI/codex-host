@@ -94,6 +94,13 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     if (scenario === 'close-stalled') return;
     return result(req.id,{});
   }
+  if (req.method === 'antigravity/idle-notify' && !req.id) {
+    return update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'background note'}});
+  }
+  if (req.method === 'antigravity/idle-notify' && req.id) {
+    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'idle before'}});
+    return result(req.id,{});
+  }
 });
 `,
 }));
@@ -521,5 +528,32 @@ describe("native ACP stdio transport", () => {
     await expect(value.prompt([], handler())).rejects.toThrow("already active");
     await value.close();
     await pending;
+  });
+  it("routes idle agent output without an active prompt to the session handler", async () => {
+    const value = transport();
+    await open(value);
+    const events: AntigravityAcpEvent[] = [];
+    value.setSessionEventHandler((event) => events.push(event));
+    const child = fixture.children.at(-1);
+    child?.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "antigravity/idle-notify",
+        params: {},
+      }) + "\n",
+    );
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({ type: "agent.text", text: "background note" }),
+    );
+  });
+  it("keeps routing prompt-time output to the active handler only", async () => {
+    const value = transport();
+    await open(value);
+    const sessionEvents: AntigravityAcpEvent[] = [];
+    const promptEvents: AntigravityAcpEvent[] = [];
+    value.setSessionEventHandler((event) => sessionEvents.push(event));
+    await value.prompt([], handler(promptEvents));
+    expect(promptEvents).toContainEqual({ type: "agent.text", text: expect.any(String) });
+    expect(sessionEvents).not.toContainEqual({ type: "agent.text" });
   });
 });

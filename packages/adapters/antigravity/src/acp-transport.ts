@@ -409,7 +409,10 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     if (
       ["config.update", "mode.update", "commands.update", "session.info", "usage.context"].includes(
         event.type,
-      )
+      ) ||
+      // Idle agent output between prompts belongs to the Session, not to an
+      // already-finished prompt; route it so the Adapter can project it.
+      (!this.#active && !this.#opening)
     ) {
       if (this.#sessionHandler) this.#sessionHandler(event);
       else this.#pendingEvents.push(event);

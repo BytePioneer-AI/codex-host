@@ -1450,3 +1450,152 @@ describe("inspection and errors", () => {
     },
   );
 });
+
+describe("Antigravity idle background output episodes", () => {
+  it("attributes idle agent output to the most recently completed Turn and settles it on the next prompt", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+
+    transport.eventHandler?.({ type: "agent.text", text: "awake: " });
+    transport.eventHandler?.({ type: "agent.text", text: "done\n" });
+
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.background.started",
+          turnId: "t1",
+          item: expect.objectContaining({ type: "agentMessage" }),
+        }),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter((event) => event.type === "item.updated" && event.turnId === "t1"),
+      ).toHaveLength(2),
+    );
+
+    // The successor prompt settles the episode before the new Turn completes.
+    expect(
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("t2"),
+        input: [{ type: "text", text: "next" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "t2" } });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === "t2"),
+      ).toHaveLength(1),
+    );
+    const all = events(outputs);
+    const settleIndex = all.findIndex(
+      (event) => event.type === "item.completed" && event.turnId === "t1",
+    );
+    const nextTurnIndex = all.findIndex(
+      (event) => event.type === "turn.started" && event.turnId === "t2",
+    );
+    expect(settleIndex).toBeGreaterThanOrEqual(0);
+    expect(nextTurnIndex).toBeGreaterThan(settleIndex);
+    expect(all[settleIndex]).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "agentMessage", text: "awake: done\n" },
+        outcome: { status: "succeeded" },
+      },
+    });
+    await session.close();
+  });
+
+  it("drops idle output when no user Turn has completed", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.eventHandler?.({ type: "agent.text", text: "orphan" });
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started" }),
+    );
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    await session.close();
+  });
+
+  it("settles a pending episode as succeeded when the Session faults", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.thought", text: "thinking in the dark" });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.background.started",
+          item: expect.objectContaining({ type: "reasoning" }),
+        }),
+      ),
+    );
+    transport.options.onFault?.(
+      new AntigravityTransportError("processExited", "Antigravity ACP exited (code 8)"),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).find((event) => event.type === "item.completed" && event.turnId === "t1"),
+      ).toMatchObject({ snapshot: { outcome: { status: "succeeded" } } }),
+    );
+    expect(events(outputs)).toContainEqual(expect.objectContaining({ type: "session.faulted" }));
+  });
+
+  it("settles a pending episode as succeeded on close", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.text", text: "tail" });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({ type: "item.background.started" }),
+      ),
+    );
+    await session.close();
+    expect(events(outputs).find((event) => event.type === "item.completed")).toMatchObject({
+      snapshot: { item: { text: "tail" }, outcome: { status: "succeeded" } },
+    });
+  });
+
+  it("merges consecutive same-type idle chunks into one Item and switches Items on type change", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.text", text: "one" });
+    transport.eventHandler?.({ type: "agent.text", text: " two" });
+    transport.eventHandler?.({ type: "agent.thought", text: " pondering" });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter((event) => event.type === "item.background.started"),
+      ).toHaveLength(2),
+    );
+    await session.close();
+    await vi.waitFor(() => {
+      const settledTexts = events(outputs)
+        .filter((event) => event.type === "item.completed" && event.turnId === "t1")
+        .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
+      expect(settledTexts).toEqual(["one two", " pondering"]);
+    });
+  });
+});

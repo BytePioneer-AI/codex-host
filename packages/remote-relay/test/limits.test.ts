@@ -283,7 +283,9 @@ describe("bandwidth and UTC quota", () => {
   });
 
   it("releases 32 stalled ClientHello connections so a new phone can receive a response", async () => {
-    await start();
+    // This test deliberately opens many connections from one IP to simulate a slot-exhaustion
+    // attempt; raise the per-IP limit so the unrelated rate limiter doesn't interfere.
+    await start({ ipConnectionLimit: 100 });
     const tls = createTlsServer({ ...credentials, handshakeTimeout: 0 }, (socket) => {
       socket.on("error", () => {});
       socket.once("data", () => socket.end("ok"));

@@ -83,7 +83,10 @@ it("opens only the latest five full Turns, then pages backwards without renumber
 
 it("keeps unknown historical outcomes distinct from success without hiding the answer", async () => {
   const { row, view } = fixture(1);
-  row.turns[0]!.codexhostTurnOutcome = { status: "unknown", reason: "No native terminal record" };
+  defined(row.turns[0]).codexhostTurnOutcome = {
+    status: "unknown",
+    reason: "No native terminal record",
+  };
   await view.refresh();
   const end = defined(view.log.events.find((event) => event.type === "turn/end"));
   assert.deepEqual((end.data as { reason: unknown }).reason, { kind: "unknown" });

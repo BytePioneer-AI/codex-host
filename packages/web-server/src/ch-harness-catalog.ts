@@ -57,7 +57,7 @@ export class ChHarnessCatalog {
         })
         .then((value) => {
           const result = harnessInspectionSchema.parse(value);
-          if (id === "codex" && result.status !== "ready") this.inspections.delete(key);
+          if (result.status !== "ready") this.inspections.delete(key);
           return result;
         })
         .catch((error: unknown) => {

@@ -93,9 +93,9 @@ describe("client event log", () => {
             interactionId: "captured-question",
           },
         ]);
+        expect((await service.watches()).watches).toEqual([]);
       });
       expect(fake.send).not.toHaveBeenCalled();
-      expect((await service.watches()).watches).toEqual([]);
     } finally {
       await service.close();
     }

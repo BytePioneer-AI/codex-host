@@ -27,6 +27,25 @@ export function restoreExternalSkillInput(input: JsonObject[]): JsonObject[] {
   );
 }
 
+/** Desktop's resume control after an interrupted Turn: no input, only this trigger. */
+const RESUME_INTERRUPTED_TASK_TRIGGER = "resume_interrupted_task";
+
+export const EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED =
+  "External Harness does not support resuming an interrupted Turn; send a message to continue";
+
+/**
+ * Harnesses take text Turns only, so a resume request carries nothing to send. It is told apart
+ * from an ordinary empty submission so the caller can explain the limitation instead of
+ * rejecting it as malformed input.
+ */
+export function isInputlessInterruptedTaskResume(params: Record<string, unknown>): boolean {
+  return (
+    params.turnTrigger === RESUME_INTERRUPTED_TASK_TRIGGER &&
+    Array.isArray(params.input) &&
+    params.input.length === 0
+  );
+}
+
 /** Desktop's serialized attachment context, before the user's request. */
 function imageReferences(text: string): string[] {
   const context = text.split(/^## My request:[ \t]*\r?$/mu)[0] ?? "";

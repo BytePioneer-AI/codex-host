@@ -5,6 +5,7 @@ import {
   CODEX_RUNTIME_REMOVED_MESSAGE,
   CodexRuntimeFilesRemovedError,
 } from "./codex-runtime/backend-files.js";
+import { RemoteAppServerOutput } from "./remote-app-server-output.js";
 
 function bytes(data: RawData): Buffer {
   if (Buffer.isBuffer(data)) return data;
@@ -21,39 +22,9 @@ export function attachRemoteAppServerSession(options: {
   createSession(streams: RemoteAppServerSessionStreams): RemoteAppServerSession;
 }): { running: Promise<void>; close(): void } {
   const { socket, diagnosticOutput } = options;
-  const input = new PassThrough(),
-    output = new PassThrough();
+  const input = new PassThrough();
+  const output = new RemoteAppServerOutput(socket, options.framing);
   const session = options.createSession({ input, output, diagnosticOutput });
-  let pending = Buffer.alloc(0);
-  const send = (frame: Buffer, binary: boolean) => {
-    if (socket.readyState !== socket.OPEN) return;
-    if (socket.bufferedAmount > 16 * 1024 * 1024) {
-      socket.terminate();
-      return;
-    }
-    socket.send(frame, { binary });
-  };
-  output.on("data", (chunk: Buffer | string) => {
-    const frame = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    if (options.framing === "ndjson") {
-      send(frame, true);
-      return;
-    }
-    pending = Buffer.concat([pending, frame]);
-    while (true) {
-      const newline = pending.indexOf(0x0a);
-      if (newline < 0) break;
-      send(pending.subarray(0, newline), false);
-      pending = pending.subarray(newline + 1);
-    }
-  });
-  output.once("end", () => {
-    if (socket.readyState === socket.OPEN)
-      socket.close(
-        pending.length ? 1011 : 1000,
-        pending.length ? "Host Runtime emitted an incomplete frame" : undefined,
-      );
-  });
   let inputTail = Promise.resolve();
   let queuedInputBytes = 0;
   let disconnecting = false,
@@ -63,6 +34,7 @@ export function attachRemoteAppServerSession(options: {
     input.destroy();
     if (closing || finished) return;
     closing = true;
+    socket.terminate();
     try {
       session.close();
     } catch (error) {
@@ -129,10 +101,10 @@ export function attachRemoteAppServerSession(options: {
             : "Host Runtime failed",
         );
     })
-    .finally(() => {
-      finished = true;
+    .finally(async () => {
       input.destroy();
-      output.end();
+      await new Promise<void>((resolve) => output.end(resolve));
+      finished = true;
     });
   return { running, close };
 }

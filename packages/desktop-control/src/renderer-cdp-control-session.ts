@@ -35,7 +35,7 @@ export interface RendererCdpControlSnapshot {
 }
 
 interface RendererCdpClient extends RendererModuleCdpClient {
-  evaluate<T>(expression: string): Promise<T>;
+  evaluate<T>(expression: string, timeoutMs?: number): Promise<T>;
   close(): void;
 }
 
@@ -49,7 +49,7 @@ export interface RendererCdpControlSession {
   readonly snapshot: RendererCdpControlSnapshot;
   ensureInstalled(): Promise<RendererCdpControlSnapshot>;
   activateDesktop(): Promise<number>;
-  executeRenderer<T>(expression: string): Promise<T>;
+  executeRenderer<T>(expression: string, timeoutMs?: number): Promise<T>;
   close(): void;
 }
 
@@ -369,9 +369,9 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     return 1;
   }
 
-  executeRenderer<T>(expression: string): Promise<T> {
+  executeRenderer<T>(expression: string, timeoutMs?: number): Promise<T> {
     if (this.#closed) return Promise.reject(new Error("Renderer CDP Control Session is closed"));
-    return this.renderer.evaluate<T>(expression);
+    return this.renderer.evaluate<T>(expression, timeoutMs);
   }
 
   close(): void {

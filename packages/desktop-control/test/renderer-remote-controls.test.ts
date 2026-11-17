@@ -142,6 +142,52 @@ it("reads full paginated history and remote identity without using the legacy fu
   await f.read();
   expect(f.send.mock.calls.filter(([m]) => m === "codexhost/harness/inspect")).toHaveLength(1);
 });
+it("reads only the newest Turn status before interrupt and rejects a replaced route", async () => {
+  const f = fixture();
+  let latest = "inProgress";
+  f.send.mockImplementation(async (method) => {
+    if (method === "thread/read") return { thread: { id: "same", status: { type: "active" } } };
+    if (method === "thread/turns/list")
+      return { data: [{ id: "current", status: latest }], nextCursor: "older" };
+    return {};
+  });
+  const operation = {
+    kind: "status",
+    hostId: "remote-ssh-discovered:mac",
+    threadId: "same",
+  } as const;
+  const status = (await rendererRemoteSession(f.target, operation)) as {
+    epoch: string;
+    turnId: string | null;
+  };
+  expect(status.turnId).toBe("current");
+  expect(f.send.mock.calls).toEqual([
+    ["thread/read", { threadId: "same", includeTurns: false }],
+    [
+      "thread/turns/list",
+      { threadId: "same", cursor: null, limit: 1, sortDirection: "desc", itemsView: "notLoaded" },
+    ],
+  ]);
+  latest = "completed";
+  expect(await rendererRemoteSession(f.target, operation)).toMatchObject({ turnId: null });
+  f.routes.set(operation.hostId, { manager: f.route.manager });
+  f.send.mockClear();
+  await expect(
+    rendererRemoteSession(f.target, {
+      ...operation,
+      kind: "interrupt",
+      epoch: status.epoch,
+      turnId: "current",
+    }),
+  ).rejects.toThrow("changed");
+  expect(f.send).not.toHaveBeenCalled();
+  f.send.mockImplementation(async () => {
+    f.routes.set(operation.hostId, { manager: f.route.manager });
+    return { thread: { id: "same", status: { type: "active" } } };
+  });
+  await expect(rendererRemoteSession(f.target, operation)).rejects.toThrow("changed");
+  expect(f.send).toHaveBeenCalledTimes(1);
+});
 it("rejects repeated cursors instead of returning partial history", async () => {
   const f = fixture();
   f.send.mockImplementation(async (method) =>
@@ -150,6 +196,34 @@ it("rejects repeated cursors instead of returning partial history", async () => 
       : { data: [], nextCursor: "repeat" },
   );
   await expect(f.read()).rejects.toThrow("cursor repeated");
+});
+it("requires a continuation's connection epoch before issuing any native read", async () => {
+  const f = fixture();
+  expect(
+    remoteSessionOperationSchema.safeParse({
+      kind: "read",
+      hostId: "remote-ssh-discovered:mac",
+      threadId: "same",
+      page: { cursor: "next" },
+    }).success,
+  ).toBe(false);
+  const initial = (await rendererRemoteSession(f.target, {
+    kind: "read",
+    hostId: "remote-ssh-discovered:mac",
+    threadId: "same",
+    page: { cursor: null },
+  })) as { nextCursor: string; epoch: string };
+  expect(initial.nextCursor).toBe("next");
+  f.send.mockClear();
+  await expect(
+    rendererRemoteSession(f.target, {
+      kind: "read",
+      hostId: "remote-ssh-discovered:mac",
+      threadId: "same",
+      page: { cursor: "next", epoch: "retired" },
+    }),
+  ).rejects.toThrow("connection changed");
+  expect(f.send).not.toHaveBeenCalled();
 });
 it("keeps history available when optional inspection fails without polling unavailable Harnesses", async () => {
   const f = fixture();

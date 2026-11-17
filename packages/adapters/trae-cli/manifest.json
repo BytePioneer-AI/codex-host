@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 1,
+  "id": "trae-cli",
+  "name": "TRAE CLI",
+  "version": "0.0.0",
+  "adapterApiVersion": 1,
+  "entry": "./dist/plugin.js",
+  "icon": "./assets/icon.svg",
+  "installation": {
+    "commands": [
+      {
+        "terminal": "macOS / Linux · Terminal",
+        "command": "sh -c \"$(curl -fsSL https://trae.cn/trae-cli/install_v2.sh)\""
+      },
+      {
+        "terminal": "Windows · PowerShell",
+        "command": "irm https://trae.cn/trae-cli/install_v2.ps1 | iex"
+      }
+    ],
+    "after": {
+      "en": "Run traecli login first. The official CLI documentation currently requires a TRAE Enterprise flagship subscription; Desktop login and SOLO models are not reused. Set CODEXHOST_TRAE_CLI_COMMAND for a custom executable.",
+      "zh-CN": "先运行 traecli login。官方 CLI 文档当前要求 TRAE 企业版旗舰套餐；不复用桌面登录或 SOLO 模型。自定义可执行文件使用 CODEXHOST_TRAE_CLI_COMMAND。"
+    }
+  },
+  "links": {
+    "website": "https://www.trae.cn/",
+    "documentation": "https://docs.trae.cn/cli_agent-client-protocol",
+    "installation": "https://docs.trae.cn/cli_get-started-with-trae-cli-2"
+  }
+}

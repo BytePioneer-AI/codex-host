@@ -1,5 +1,6 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
+  "file.download": "Download",
   "discovery.agents": "Delegation Agents",
   "discovery.sessions": "Sessions",
   "reference.addedToDraft": "Added to the current draft",
@@ -490,6 +491,7 @@ export const en = {
 export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
+  "file.download": "下载",
   "discovery.agents": "委派 Agent",
   "discovery.sessions": "会话",
   "reference.addedToDraft": "已加入当前草稿",

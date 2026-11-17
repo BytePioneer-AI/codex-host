@@ -50,13 +50,16 @@ export function writeJson(response: ServerResponse, status: number, value: unkno
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-export async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+export async function jsonBody(
+  request: IncomingMessage,
+  maximumBytes = MAX_REQUEST_BYTES,
+): Promise<Record<string, unknown>> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_REQUEST_BYTES)
+    if (size > maximumBytes)
       throw new DelegationControlError("INVALID_ARGUMENT", "Request body is too large");
     chunks.push(buffer);
   }

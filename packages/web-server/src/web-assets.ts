@@ -24,7 +24,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   checkExternalClientDependencies,
   readExternalClientAssets,
@@ -426,9 +426,19 @@ export class WebAssets {
 
   /** Static file from the Vite shell output. */
   dist(pathname: string): AssetResponse | undefined {
-    const target = resolve(this.distRoot, `.${decodeURIComponent(pathname)}`);
-    if (!target.startsWith(this.distRoot) || !existsSync(target) || !statSync(target).isFile())
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
       return undefined;
+    }
+    // Authentication matches encoded routes; traversal must not change the selected route.
+    if (decoded.split(/[/\\]/u).includes("..")) return undefined;
+    const target = resolve(this.distRoot, `.${decoded}`);
+    const fromRoot = relative(this.distRoot, target);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot))
+      return undefined;
+    if (!existsSync(target) || !statSync(target).isFile()) return undefined;
     return { body: readFileSync(target), contentType: contentTypeOf(target) };
   }
 }

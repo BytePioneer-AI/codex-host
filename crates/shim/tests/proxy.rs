@@ -524,6 +524,52 @@ fn macos_fixture_bundle(directory: &std::path::Path) -> PathBuf {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn macos_browser_helpers_replace_the_shim_process_with_the_official_cli() {
+    for arguments in [
+        vec!["app-server", "--listen", "stdio://"],
+        vec!["sandbox", "--", "/official/node", "/official/kernel.js"],
+    ] {
+        let directory = temporary_directory();
+        let bundle = macos_fixture_bundle(&directory);
+        let ready = directory.join("helper-ready");
+        let mut command = Command::new(shim_path());
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("CODEXHOST_") {
+                command.env_remove(key);
+            }
+        }
+        let mut child = command
+            .args(&arguments)
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .env("FAKE_CODEX_HOST_RUNTIME_READY", &ready)
+            .env("FAKE_CODEX_HOST_RUNTIME_EOF_DELAY_MS", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let shim_id = child.id();
+        let observed = wait_for_optional_file(&ready, Duration::from_secs(5));
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let observed = observed.expect("official helper published readiness");
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(
+            process_id_from_ready(&observed, "root="),
+            shim_id,
+            "the official helper must retain the launched process ID: {arguments:?}"
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn macos_browser_helper_preserving_only_cli_override_reaches_official_cli() {
     let directory = temporary_directory();
     let bundle = macos_fixture_bundle(&directory);

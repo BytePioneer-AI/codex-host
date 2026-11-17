@@ -304,8 +304,18 @@ export function SelectionActions({
           event.stopPropagation();
         }}
         onClick={() => {
+          if (!selection.host.isConnected || !container()?.contains(selection.host)) return;
           if (!onAdd(selection.text)) return;
-          window.getSelection()?.removeAllRanges();
+          const live = window.getSelection();
+          // The attach callback may already have placed the caret in the Composer.
+          // Clear only a selection still owned by the answer, not that new caret.
+          if (
+            live?.anchorNode != null &&
+            live.focusNode !== null &&
+            selection.host.contains(live.anchorNode) &&
+            selection.host.contains(live.focusNode)
+          )
+            live.removeAllRanges();
           setSelection(null);
         }}
       >

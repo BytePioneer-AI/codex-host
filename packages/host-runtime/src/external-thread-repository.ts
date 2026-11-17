@@ -395,6 +395,8 @@ export class ExternalThreadRepository {
     return this.#projectSnapshot(nextRecord, snapshot, derived);
   }
 
+  /** Replace the current Session with one holding an exact shorter prefix of its Turns:
+   * usually without the last Turn, or without several trailing Turns derived from a Checkpoint. */
   async commitLastTurnRollback(
     current: StoredThreadRecordV1,
     nativeSessionRef: NativeSessionRef,
@@ -404,9 +406,9 @@ export class ExternalThreadRepository {
       current.state !== "ready" ||
       !current.nativeSessionRef ||
       nativeSessionRef.harnessId !== current.harnessId ||
-      snapshot.turns.length !== current.turnMappings.length - 1
+      snapshot.turns.length >= current.turnMappings.length
     ) {
-      throw new Error("Last-Turn rollback is not an exact ready Session replacement");
+      throw new Error("Rollback is not an exact shorter ready Session replacement");
     }
     const mappings = snapshot.turns.map((turn, index): StoredTurnMappingV1 => {
       const previous = current.turnMappings[index];

@@ -11,8 +11,8 @@ import {
 
 import type { AntigravityPromptUsage } from "./acp-types.js";
 import {
-  readAntigravityRequestTimings,
-  type AntigravityRequestTiming,
+  readAntigravityRequestMetadata,
+  type AntigravityRequestMetadata,
 } from "./native-request-timing.js";
 
 export interface AntigravitySessionUsageTrackerOptions {
@@ -153,7 +153,7 @@ interface TranscriptRequests {
   steps: Map<number, HostUsageRequest | null>;
   toolCallSteps: Set<number>;
   complete: boolean;
-  timings: Map<number, AntigravityRequestTiming> | null;
+  metadata: Map<number, AntigravityRequestMetadata> | null;
 }
 interface PendingUsage {
   base: HostUsage;
@@ -262,7 +262,8 @@ export class AntigravitySessionUsageTracker {
   }
 
   #historyComplete(): boolean {
-    return this.#complete && !this.#invalidated && !this.#turnActive && !this.#pending;
+    // Completeness covers finished requests, not whether the Turn is still running.
+    return this.#complete && !this.#invalidated && !this.#pending;
   }
 
   #reconcile(): void {
@@ -347,7 +348,8 @@ export class AntigravitySessionUsageTracker {
     if (
       !hadPending &&
       !input.hasToolCalls &&
-      transcript.timings === null &&
+      transcript.metadata === null &&
+      single?.reasoningOutputTokens === 0 &&
       usage?.inputTokens !== undefined &&
       usage.outputTokens !== undefined &&
       requests.length === 1 &&
@@ -380,7 +382,7 @@ export class AntigravitySessionUsageTracker {
         request.outputTokens <= 0
       )
         continue;
-      tokens += request.outputTokens;
+      tokens += request.timedOutputTokens ?? request.outputTokens;
       milliseconds += request.completedAtMs - request.startedAtMs;
     }
     if (milliseconds > 0) this.#outputTokensPerSecond = tokens / (milliseconds / 1000);
@@ -415,23 +417,35 @@ export class AntigravitySessionUsageTracker {
           this.#invalidated = true;
         continue;
       }
-      let parsed = request;
+      const write = cacheUsage?.cacheWriteInputTokens;
+      const singleMatches =
+        steps.size === 1 &&
+        cacheUsage?.inputTokens !== undefined &&
+        request.inputTokens - (request.cacheWriteInputTokens ?? 0) ===
+          cacheUsage.inputTokens - (write ?? 0) &&
+        request.outputTokens === cacheUsage.outputTokens &&
+        (cacheUsage.cachedInputTokens === undefined ||
+          request.cachedInputTokens === cacheUsage.cachedInputTokens);
+      const native = transcript.metadata?.get(step);
+      // A prompt aggregate is a request fact only when exactly one matching request is known.
+      const thought =
+        !historical && singleMatches && transcript.complete
+          ? (cacheUsage?.reasoningOutputTokens ?? native?.reasoningOutputTokens)
+          : native?.reasoningOutputTokens;
+      let parsed = parseHostUsageRequest({
+        ...request,
+        ...(thought !== undefined && thought <= request.outputTokens
+          ? { reasoningOutputTokens: thought }
+          : {}),
+      });
       if (
         !historical &&
         request.cachedInputTokens !== undefined &&
         request.cacheWriteInputTokens === undefined
       ) {
-        const write = cacheUsage?.cacheWriteInputTokens;
-        const singleMatches =
-          steps.size === 1 &&
-          cacheUsage?.inputTokens !== undefined &&
-          request.inputTokens === cacheUsage.inputTokens - (write ?? 0) &&
-          request.outputTokens === cacheUsage.outputTokens &&
-          (cacheUsage.cachedInputTokens === undefined ||
-            request.cachedInputTokens === cacheUsage.cachedInputTokens);
         if (write === 0 || (write !== undefined && singleMatches && transcript.complete))
           parsed = parseHostUsageRequest({
-            ...request,
+            ...parsed,
             inputTokens: request.inputTokens + (write ?? 0),
             cacheWriteInputTokens: write,
           });
@@ -444,19 +458,28 @@ export class AntigravitySessionUsageTracker {
         this.#complete = false;
         continue;
       }
-      const candidate = transcript.timings?.get(step);
+      const candidate = native?.timing;
+      // Tool-call viewable_at may describe an already assembled payload, not generation start.
       const clock =
+        parsed.reasoningOutputTokens !== undefined &&
+        parsed.reasoningOutputTokens === native?.reasoningOutputTokens &&
+        // A thinking-only request has no output inside the visible window to time.
+        parsed.reasoningOutputTokens < parsed.outputTokens &&
+        !transcript.toolCallSteps.has(step) &&
         candidate &&
         (historical || candidate.startedAtMs >= this.#turnStartedAtMs) &&
         candidate.completedAtMs <= Date.now()
-          ? candidate
+          ? {
+              ...candidate,
+              timedOutputTokens: parsed.outputTokens - parsed.reasoningOutputTokens,
+            }
           : undefined;
       // Let an in-flight native metadata commit supply timing before publishing the stable ID.
       if (
         !historical &&
         this.#turnActive &&
         !finalizing &&
-        transcript.timings !== null &&
+        transcript.metadata !== null &&
         !clock &&
         !transcript.toolCallSteps.has(step)
       )
@@ -481,7 +504,7 @@ export class AntigravitySessionUsageTracker {
       steps: new Map(),
       toolCallSteps: new Set(),
       complete: true,
-      timings: null,
+      metadata: null,
     };
     try {
       for await (const line of lines) {
@@ -544,14 +567,9 @@ export class AntigravitySessionUsageTracker {
     result.complete &&=
       [...result.steps.values()].every((request) => request !== null) &&
       [...this.#consumed.keys()].every((step) => result.steps.has(step));
-    // Tool-call viewable_at can describe a fully assembled payload, not generation start.
-    const unseen = new Set(
-      [...result.steps.keys()].filter(
-        (step) => !this.#consumed.has(step) && !result.toolCallSteps.has(step),
-      ),
-    );
+    const unseen = new Set([...result.steps.keys()].filter((step) => !this.#consumed.has(step)));
     if (withTimings && unseen.size > 0)
-      result.timings = await readAntigravityRequestTimings(
+      result.metadata = await readAntigravityRequestMetadata(
         this.#nativeSessionId,
         this.#home,
         result.steps,

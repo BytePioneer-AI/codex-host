@@ -91,18 +91,35 @@ describe("unattended native policy", () => {
             : { ...common, kind, sourceRef: nativeRef },
       );
       expect(result.ok).toBe(true);
-      expect(creations).toHaveLength(1);
-      expect(creations[0]).toMatchObject({
+      if (!result.ok) throw new Error(result.error.message);
+      if (kind === "resume") {
+        expect(creations).toHaveLength(0);
+        expect((await result.value.readSnapshot()).ok).toBe(true);
+        expect(creations).toHaveLength(1);
+        expect(creations[0]).toMatchObject({ skipPermissions: true });
+        expect(creations[0]?.environment?.CODEXHOST_THREAD_ID).toBeUndefined();
+        expect(opens[0]).toMatchObject({ kind: "load", cwd: home });
+        expect(
+          await result.value.execute({
+            type: "turn.start",
+            turnId: "t-resume" as never,
+            input: [{ type: "text", text: "resume turn" }],
+          }),
+        ).toEqual({ ok: true, value: { turnId: "t-resume" } });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const writableCreation = creations.at(-1);
+      const writableOpen = opens.at(-1);
+      expect(writableCreation).toMatchObject({
         skipPermissions: true,
         environment: { CODEXHOST_THREAD_ID: "derived" },
       });
-      expect(opens[0]).toMatchObject({
+      expect(writableOpen).toMatchObject({
         kind: "resume",
         cwd: home,
         systemPromptAppend: expect.stringContaining("CODEXHOST_RUNTIME_TOKEN"),
       });
       expect(JSON.stringify(opens)).not.toContain("private-token");
-      if (!result.ok) throw new Error(result.error.message);
       expect(result.value.initialState.nativeRef?.locator).toMatchObject({
         executionPolicy: "unattended-full-access",
       });

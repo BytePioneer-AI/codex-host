@@ -436,16 +436,13 @@ registerAccessTokenRpc(rpc, accessTokens, {
 });
 registerBackgroundControls(rpc, accessTokens, {
   background: background !== undefined,
-  port: () => listeningPort,
   data,
   launcher,
   npmEntrypoint,
   shutdown,
 });
 registerMisc(rpc, { events });
-registerUiExtensionRpc(rpc, extensions, {
-  port: () => (server.address() as { port: number }).port,
-});
+registerUiExtensionRpc(rpc, extensions);
 registerVoiceStatus(rpc, chHost);
 
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
@@ -700,7 +697,7 @@ const server = createWebServer((request, response) => {
 });
 
 const relay = new RemoteRelay(data, accessTokens !== undefined, server, trust);
-registerRelayRpc(rpc, accessTokens, () => listeningPort, relay);
+registerRelayRpc(rpc, accessTokens, relay);
 if (serviceOptions.relayEnabled) relay.start();
 
 const wss = createBrowserWebSocketServer();

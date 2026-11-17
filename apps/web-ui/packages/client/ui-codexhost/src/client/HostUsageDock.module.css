@@ -47,10 +47,10 @@
   position: fixed;
   z-index: 1100;
   box-sizing: border-box;
-  width: min(320px, calc(100vw - 24px));
+  width: min(288px, calc(100vw - 24px));
   max-height: min(520px, calc(100vh - 24px));
   overflow: auto;
-  padding: 14px;
+  padding: 12px;
   border: 0;
   border-radius: var(--dsw-radius-lg);
   background: var(--dsw-specific-menu);
@@ -58,20 +58,20 @@
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
   box-shadow: var(--dsw-elevation-prominent);
   color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 19px;
+  font-size: 12px;
+  line-height: 18px;
   cursor: default;
 }
 
 .panel header {
   color: var(--dsw-alias-label-primary);
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 500;
-  line-height: 22px;
+  line-height: 20px;
 }
 
 .context {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .contextRow {
@@ -104,26 +104,26 @@
 }
 
 .group {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .group h3 {
-  margin: 0 0 5px;
+  margin: 0 0 3px;
   color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .group dl {
   display: grid;
-  gap: 5px;
+  gap: 3px;
   margin: 0;
 }
 
 .detail {
   display: grid;
-  grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
-  gap: 0 16px;
+  grid-template-columns: minmax(100px, auto) minmax(0, 1fr);
+  gap: 0 12px;
 }
 
 .detail dt,

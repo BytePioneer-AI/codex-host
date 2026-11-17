@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HostUsageRequest } from "@codexhost/harness-adapter";
-import { readAntigravityRequestTimings } from "../src/native-request-timing.js";
+import { readAntigravityRequestMetadata } from "../src/native-request-timing.js";
 import { bytes, integer, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
 
 let home: string;
@@ -23,14 +23,108 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
+async function readAntigravityRequestTimings(
+  session: string,
+  home: string,
+  all: ReadonlyMap<number, HostUsageRequest | null>,
+  needed = new Set(all.keys()),
+) {
+  const metadata = await readAntigravityRequestMetadata(session, home, all, needed);
+  return metadata === null
+    ? null
+    : new Map(
+        [...metadata].flatMap(([step, facts]) =>
+          facts.timing ? [[step, facts.timing] as const] : [],
+        ),
+      );
+}
 async function read() {
   return await readAntigravityRequestTimings("session", home, requests);
 }
 
 describe("Antigravity native request timings", () => {
-  it("uses generation boundaries, excluding prefill and tool completion", async () => {
+  it("preserves integer millisecond boundaries in epoch-scale timing fixtures", async () => {
+    const created = 1794803308930;
+    await writeNativeTimingDatabase(home, [
+      { step: 1, created, started: created + 1, completed: created + 3 },
+    ]);
+    expect((await read())?.get(1)).toEqual({
+      startedAtMs: created + 1,
+      completedAtMs: created + 3,
+    });
+  });
+  it.each([0, 48])(
+    "verifies text-output timing independently of hidden thought tokens: %i",
+    async (thought) => {
+      await writeNativeTimingDatabase(home, [
+        {
+          step: 1,
+          input: 8856,
+          cached: 0,
+          output: 544,
+          thought,
+          created: 1794763967637.624,
+          started: 1794763980519.679,
+          completed: 1794763991282.717,
+        },
+      ]);
+      const all = new Map([
+        [
+          1,
+          {
+            ...request,
+            inputTokens: 8856,
+            cachedInputTokens: 0,
+            outputTokens: 544,
+            reasoningOutputTokens: thought,
+          },
+        ],
+      ]);
+      const facts = (await readAntigravityRequestMetadata("session", home, all))?.get(1);
+      expect(facts?.reasoningOutputTokens).toBe(thought);
+      expect(facts?.timing).toEqual({
+        startedAtMs: 1794763980519,
+        completedAtMs: 1794763991282,
+      });
+    },
+  );
+
+  it.each([{ thought: 1 }, { thought: 21 }, { generatorThought: 1 }])(
+    "rejects inconsistent native/request reasoning counters: %j",
+    async (fields) => {
+      await writeNativeTimingDatabase(home, [{ step: 1, ...fields }]);
+      const all = new Map([[1, { ...request, reasoningOutputTokens: 0 }]]);
+      expect(await readAntigravityRequestMetadata("session", home, all)).toEqual(new Map());
+    },
+  );
+
+  it("preserves step-level thinking facts before generator timing is available", async () => {
+    const file = await writeNativeTimingDatabase(home, [{ step: 1, thought: 10 }]);
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("DELETE FROM gen_metadata");
+    } finally {
+      db.close();
+    }
+    expect(await readAntigravityRequestMetadata("session", home, requests)).toEqual(
+      new Map([[1, { reasoningOutputTokens: 10 }]]),
+    );
+  });
+
+  it("retains verified usage when timing durations are inconsistent", async () => {
+    await writeNativeTimingDatabase(home, [{ step: 1, streamDuration: 1990, thought: 0 }]);
+    expect(await readAntigravityRequestMetadata("session", home, requests)).toEqual(
+      new Map([[1, { reasoningOutputTokens: 0 }]]),
+    );
+  });
+
+  it("uses generation boundaries and the proto3 default thought count from verified usage", async () => {
     await writeNativeTimingDatabase(home, [{ step: 1 }]);
     expect(await read()).toEqual(new Map([[1, { startedAtMs: 3000, completedAtMs: 5000 }]]));
+    expect((await readAntigravityRequestMetadata("session", home, requests))?.get(1)).toEqual({
+      reasoningOutputTokens: 0,
+      timing: { startedAtMs: 3000, completedAtMs: 5000 },
+    });
   });
 
   it("correlates multiple requests by explicit native step indices", async () => {

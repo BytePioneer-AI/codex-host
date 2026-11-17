@@ -144,9 +144,16 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
     "x-forwarded-proto": "http",
     "x-forwarded-host": "evil.localhost",
   };
-  for (const method of ["codexhost/accessTokenGet", "codexhost/relaySet"]) {
-    const reply = await f.send(`/api/${method}`, f.body(method, { enabled: false }), forged);
-    assert.equal(JSON.parse(reply.body.toString()).result.error.code, "auth/local-access-required");
+  const forgedStatus = await f.send("/api/auth/status", undefined, forged);
+  assert.deepEqual(JSON.parse(forgedStatus.body.toString()), { authenticated: true, local: false });
+  const localToken = defined(f.local.searchParams.get("token") ?? undefined);
+  assert.equal(
+    (await f.send("/api/auth/status", undefined, { authorization: `Bearer ${localToken}` })).status,
+    401,
+  );
+  for (const method of ["codexhost/accessTokenGet", "codexhost/uiExtensions/list"]) {
+    const reply = await f.send(`/api/${method}`, f.body(method), forged);
+    assert.equal(JSON.parse(reply.body.toString()).result.ok, true, method);
   }
   for (const origin of [`http://${f.hostname}`, "https://sibling.localhost"]) {
     assert.equal(

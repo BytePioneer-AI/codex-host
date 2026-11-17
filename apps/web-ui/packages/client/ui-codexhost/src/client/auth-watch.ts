@@ -13,6 +13,28 @@ const PROBE_INTERVAL_MS = 5_000;
 
 export const computerOffline = createSnapshotStore(false);
 
+let tokenRenewals = 0;
+const renewalListeners = new Set<() => void>();
+
+/**
+ * Pause 401 expiry probes across an intentional token rotation so closing old sockets does not
+ * reload the page before the response sets the replacement cookie.
+ */
+export async function runWithTokenRenewal<T>(operation: () => Promise<T>): Promise<T> {
+  tokenRenewals += 1;
+  if (tokenRenewals === 1) {
+    for (const listener of renewalListeners) listener();
+  }
+  try {
+    return await operation();
+  } finally {
+    tokenRenewals -= 1;
+    if (tokenRenewals === 0) {
+      for (const listener of renewalListeners) listener();
+    }
+  }
+}
+
 /**
  * @param state - the connection state to watch.
  * @returns a function that stops watching.
@@ -25,6 +47,7 @@ export function watchAuthentication(state: ConnectionHandle["state"]): () => voi
   let visible = document.visibilityState !== "hidden";
   const canProbe = () =>
     !stopped &&
+    tokenRenewals === 0 &&
     visible &&
     document.visibilityState !== "hidden" &&
     state.getSnapshot() === "connecting";
@@ -97,6 +120,7 @@ export function watchAuthentication(state: ConnectionHandle["state"]): () => voi
     if (event.persisted) visibilityChanged();
   };
   const unsubscribe = state.subscribe(changed);
+  renewalListeners.add(changed);
   document.addEventListener("visibilitychange", visibilityChanged);
   window.addEventListener("pageshow", shown);
   changed();
@@ -104,6 +128,7 @@ export function watchAuthentication(state: ConnectionHandle["state"]): () => voi
     stopped = true;
     reset();
     unsubscribe();
+    renewalListeners.delete(changed);
     document.removeEventListener("visibilitychange", visibilityChanged);
     window.removeEventListener("pageshow", shown);
   };

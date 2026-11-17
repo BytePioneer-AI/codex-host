@@ -75,6 +75,11 @@
   backdrop-filter: var(--dsw-mask-blur);
 }
 
+/* Preserve slider geometry and the main UI; the opacity row restores its own visibility. */
+:global(body[data-codexhost-wallpaper-previewing]) :where(.mask, .panel, .panel *) {
+  visibility: hidden !important;
+}
+
 /* Settings uses a shared 1040×800 panel, wide enough for the CodexHost
    connection and usage pages; longer sections scroll
    inside the options column; the navigation scrolls independently. One height for

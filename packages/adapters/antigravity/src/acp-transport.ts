@@ -213,7 +213,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     this.#pendingEvents = [];
     const params = {
       cwd: input.cwd,
-      mcpServers: input.mcpServers ? [...input.mcpServers] : [],
+      mcpServers: [],
       ...(input.additionalDirectories?.length
         ? { additionalDirectories: input.additionalDirectories }
         : {}),

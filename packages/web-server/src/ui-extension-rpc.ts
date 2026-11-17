@@ -6,21 +6,17 @@ import {
 import { RpcError, type RpcRegistry, type RpcContext } from "./transport.ts";
 import type { WebUiExtensions } from "./ui-extensions.ts";
 
-export function registerUiExtensionRpc(
-  rpc: RpcRegistry,
-  extensions: WebUiExtensions,
-  options: { port: () => number },
-): void {
-  const local = (context: RpcContext): void => {
-    if (context.auth?.local !== true)
+export function registerUiExtensionRpc(rpc: RpcRegistry, extensions: WebUiExtensions): void {
+  const authenticated = (context: RpcContext): void => {
+    if (context.auth === undefined)
       throw new RpcError(
-        "auth/local-access-required",
-        "Web extensions can only be managed on this computer.",
-        { url: `http://127.0.0.1:${String(options.port())}` },
+        "auth/disabled",
+        "Authentication must be enabled to manage Web extensions.",
+        {},
       );
   };
   const mutate = async (context: RpcContext, operation: () => Promise<unknown>) => {
-    local(context);
+    authenticated(context);
     try {
       return await operation();
     } catch (error) {
@@ -32,7 +28,7 @@ export function registerUiExtensionRpc(
     }
   };
   rpc.register("codexhost/uiExtensions/list", (_args, context) => {
-    local(context);
+    authenticated(context);
     return extensions.state();
   });
   rpc.register("codexhost/uiExtensions/install", (args, context) =>

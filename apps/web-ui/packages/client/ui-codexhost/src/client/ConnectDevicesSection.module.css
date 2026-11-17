@@ -80,24 +80,41 @@
   min-width: 0;
 }
 .qrButton {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.qrButton:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.qrFrame {
   position: relative;
   display: block;
   padding: 8px;
-  border: none;
   border-radius: 12px;
   background: white;
   overflow: hidden;
   line-height: 0;
-  cursor: pointer;
 }
 .qr {
   display: block;
   width: 144px;
   height: 144px;
-  filter: blur(10px);
-  opacity: 0.35;
   pointer-events: none;
   user-select: none;
+}
+.qrObscured {
+  filter: blur(10px);
+  opacity: 0.35;
 }
 .qrCover {
   position: absolute;
@@ -116,6 +133,14 @@
 .qrCover small {
   font-size: 11px;
   line-height: 16px;
+}
+.qrAction {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.qrButton:hover:not(:disabled) .qrAction {
+  color: var(--dsw-alias-label-primary);
 }
 .qrPlaceholder {
   box-sizing: border-box;
@@ -479,15 +504,6 @@
 .dangerConfirm:hover:not(:disabled) {
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 88%, #000);
   color: white;
-}
-.qrModal {
-  width: min(420px, 100%);
-}
-.largeQr {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 12px;
 }
 @media (max-width: 600px) {
   .page {

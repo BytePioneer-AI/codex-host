@@ -1,0 +1,51 @@
+---
+title: Self-Hosted Encrypted Relay
+description: Own a domain and a Linux server? Spin up your own end-to-end encrypted mobile access Relay with Docker Compose in minutes.
+---
+
+## Do I Need to Self-Host a Relay?
+
+For most people, **no**:
+
+- If you just want to reach your computer from your phone while away, turn on the **Official Encrypted Relay** in **Settings → Connected Devices**, or use **Tailscale**.
+- Self-hosting is for when **you already own a domain and a public Linux VPS** and want your own custom URL (like `https://my-mac.example.com`) on infrastructure you control.
+
+### How Does It Stay Private?
+
+The Relay server **only forwards raw encrypted bytes**. Your home/office computer requests its own Let's Encrypt TLS certificate and decrypts HTTPS traffic locally—**the Relay server itself never holds your private key and cannot read your chats or code.**
+
+---
+
+## What You Need Before Starting
+
+1. **A Linux server with a public IPv4 address**: Git and Docker (with Docker Compose) installed, and **TCP port 443** open in your firewall / cloud security group (port 80 is not needed, and nothing else should be bound to 443).
+2. **Your own domain** with a wildcard DNS record:
+   - **Type**: `A`
+   - **Name / Host**: `*` (wildcard—existing `www` or root `@` records keep working untouched)
+   - **Value**: Your server's public IPv4 address (if you use Cloudflare DNS, set proxy status to **DNS only / grey cloud**)
+
+---
+
+## Deploy & Connect in 2 Steps
+
+### Step 1: Start the Relay on Your Server
+
+SSH into your server, replace `example.com` below with your actual domain, and run:
+
+```bash
+git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost
+cd /opt/codexhost/packages/remote-relay/deploy
+echo "RELAY_DOMAIN=example.com" > .env
+docker compose up -d --build
+```
+
+Compose builds directly from source (no Node.js needed on the host) and automatically manages the control-plane certificate on port 443.
+
+### Step 2: Enable It on Your Computer
+
+1. Open CodexHost Web on your computer (`codexhost web`) and go to **Settings → Connected Devices**.
+2. Select **Self-Hosted Encrypted Relay**.
+3. Enter your **Relay domain** (e.g. `example.com`, without `https://` or `relay.`) and a **Device name** (e.g. `my-mac`).
+4. Click **Enable Relay**. Within about a minute your computer will provision its certificate, and you can scan the QR code on your phone to connect via `https://my-mac.example.com`.
+
+> For rate limits, custom certificates, and troubleshooting tips, see the [full Self-Hosted Relay guide](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/product/self-hosted-relay.md) in the repository.

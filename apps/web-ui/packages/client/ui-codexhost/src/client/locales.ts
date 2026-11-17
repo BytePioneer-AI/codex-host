@@ -69,7 +69,8 @@ export const en = {
   "usage.title": "Usage",
   "usage.details": "Usage details",
   "usage.group.session": "Session",
-  "usage.group.turn": "Turn",
+  "usage.group.performance": "Performance",
+  "usage.group.cache": "Cache",
   "usage.group.tokens": "Token",
   "usage.group.plan": "Plan usage",
   "usage.group.quota": "Account quota",
@@ -78,7 +79,6 @@ export const en = {
   "usage.cache.average": "Average cache hit",
   "usage.speed": "Output speed (TPS)",
   "usage.speed.average": "Average output speed (TPS)",
-  "usage.speed.average.note": "Requests with reliable generation timing only",
   "usage.speed.api": "Output speed (API)",
   "usage.ttft": "First token (TTFT)",
   "usage.cost": "Cost",
@@ -290,8 +290,7 @@ export const en = {
 
   "extensions.description":
     "Add DSH themes and panels to Web. Extensions are shared by everyone connected to this Web service. After installing, enable the extension here.",
-  "extensions.localOnly":
-    "Extensions can only be managed on the computer running Web. Open {url} on that computer to manage them.",
+  "extensions.authDisabled": "Authentication must be enabled to manage interface extensions.",
   "extensions.loading": "Loading extensions…",
   "extensions.loadFailed": "Could not load extensions: {message}",
   "extensions.actionFailed": "That did not work: {message}",
@@ -468,6 +467,21 @@ export const en = {
   "voice.error.audio-too-large": "The recording exceeds the 10 MiB limit.",
   "voice.error.audio-format": "The audio format is not accepted.",
   "voice.error.audio-invalid": "The recording is unavailable.",
+
+  "wallpaper.title": "Background image",
+  "wallpaper.description": "Upload a local image as the background",
+  "wallpaper.active": "",
+  "wallpaper.activeNamed": "{name}",
+  "wallpaper.upload": "Upload image",
+  "wallpaper.replace": "Change image",
+  "wallpaper.remove": "Remove",
+  "wallpaper.opacity": "Background opacity",
+  "wallpaper.error.unsupported-storage":
+    "Local browser storage is unavailable, so background images cannot be saved.",
+  "wallpaper.error.invalid-format": "Choose a PNG, JPEG, WebP, GIF, or AVIF image.",
+  "wallpaper.error.file-too-large": "Image exceeds the 20 MiB limit.",
+  "wallpaper.error.decode-failed": "Could not decode this image file.",
+  "wallpaper.error.storage-failed": "Could not save the background image in this browser.",
 } as const;
 
 export type ImportLocaleKey = keyof typeof en;
@@ -540,7 +554,8 @@ export const zh: Record<ImportLocaleKey, string> = {
   "usage.title": "用量",
   "usage.details": "用量详情",
   "usage.group.session": "会话",
-  "usage.group.turn": "本轮",
+  "usage.group.performance": "性能",
+  "usage.group.cache": "缓存",
   "usage.group.tokens": "Token",
   "usage.group.plan": "套餐用量",
   "usage.group.quota": "账号配额",
@@ -549,7 +564,6 @@ export const zh: Record<ImportLocaleKey, string> = {
   "usage.cache.average": "平均缓存命中",
   "usage.speed": "输出速度（TPS）",
   "usage.speed.average": "平均输出速度（TPS）",
-  "usage.speed.average.note": "仅统计有可靠生成计时的请求",
   "usage.speed.api": "输出速度（API）",
   "usage.ttft": "首 token（TTFT）",
   "usage.cost": "费用",
@@ -741,7 +755,7 @@ export const zh: Record<ImportLocaleKey, string> = {
 
   "extensions.description":
     "为 Web 添加 DSH 主题和面板。扩展对连接此 Web 服务的所有页面生效，安装后可在这里启用。",
-  "extensions.localOnly": "界面扩展只能在运行 Web 的电脑上管理。请在该电脑上打开 {url}。",
+  "extensions.authDisabled": "未启用访问认证时不能管理界面扩展。",
   "extensions.loading": "正在加载界面扩展…",
   "extensions.loadFailed": "无法加载界面扩展：{message}",
   "extensions.actionFailed": "操作失败：{message}",
@@ -898,4 +912,18 @@ export const zh: Record<ImportLocaleKey, string> = {
   "voice.error.audio-too-large": "录音超过 10 MiB 上限。",
   "voice.error.audio-format": "音频格式不被接受。",
   "voice.error.audio-invalid": "录音文件不可用。",
+
+  "wallpaper.title": "背景图片",
+  "wallpaper.description": "上传本地图片作为背景",
+  "wallpaper.active": "",
+  "wallpaper.activeNamed": "{name}",
+  "wallpaper.upload": "上传图片",
+  "wallpaper.replace": "更换图片",
+  "wallpaper.remove": "移除",
+  "wallpaper.opacity": "背景透明度",
+  "wallpaper.error.unsupported-storage": "当前浏览器不支持本地存储，无法保存背景图片。",
+  "wallpaper.error.invalid-format": "请选择 PNG、JPEG、WebP、GIF 或 AVIF 格式的图片。",
+  "wallpaper.error.file-too-large": "图片超过 20 MiB 上限。",
+  "wallpaper.error.decode-failed": "无法读取该图片文件。",
+  "wallpaper.error.storage-failed": "无法在当前浏览器保存背景图片。",
 };

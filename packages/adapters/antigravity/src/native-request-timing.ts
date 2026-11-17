@@ -3,9 +3,9 @@ import type { DatabaseSync as NativeDatabase } from "node:sqlite";
 import type { HostUsageRequest } from "@codexhost/harness-adapter";
 import { decodeVarint, readProtoFields, type ProtoField } from "./native-protobuf.js";
 
-export interface AntigravityRequestTiming {
-  startedAtMs: number;
-  completedAtMs: number;
+export interface AntigravityRequestMetadata {
+  reasoningOutputTokens: number;
+  timing?: { startedAtMs: number; completedAtMs: number };
 }
 
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
@@ -57,11 +57,16 @@ function matchesUsage(fields: ProtoField[] | null, request: HostUsageRequest): b
   if (!fields) return false;
   const input = unsigned(fields, 2),
     output = unsigned(fields, 3),
-    cached = unsigned(fields, 5);
+    cached = unsigned(fields, 5),
+    thought = unsigned(fields, 9);
   return (
     input !== null &&
     output !== null &&
     cached !== null &&
+    thought !== null &&
+    output >= thought &&
+    (request.reasoningOutputTokens === undefined ||
+      thought === BigInt(request.reasoningOutputTokens)) &&
     input + cached + BigInt(request.cacheWriteInputTokens ?? 0) === BigInt(request.inputTokens) &&
     output === BigInt(request.outputTokens) &&
     (request.cachedInputTokens === undefined || cached === BigInt(request.cachedInputTokens))
@@ -76,23 +81,32 @@ function closeTo(left: bigint, right: bigint): boolean {
  * agy 1.5.9: CortexStepMetadata 1/6/7 are created/viewable/finished timestamps;
  * CortexStepGeneratorMetadata 2 names its steps and 1 contains ChatModelMetadata.
  * ChatModelMetadata 11/12 are TTFT/streaming durations; 4 is ModelUsageStats.
- * These boundaries precede tool execution, unlike a whole session/prompt interval.
+ * ModelUsageStats 9 is thinking_output_tokens (proto3 uint64).
+ * viewable_at is the first visible output, not when hidden thinking began; callers time only
+ * the non-thinking Tokens over viewable_at through finished_generating_at.
  */
-function timing(
+function requestMetadata(
   metadata: ProtoField[],
   generator: ProtoField[],
   request: HostUsageRequest,
-): AntigravityRequestTiming | null {
+): AntigravityRequestMetadata | null {
   const chat = message(generator, 1);
+  const stepUsage = message(metadata, 9);
+  const chatUsage = chat && message(chat, 4);
   if (
     !chat ||
-    !matchesUsage(message(metadata, 9), request) ||
-    !matchesUsage(message(chat, 4), request)
+    !stepUsage ||
+    !chatUsage ||
+    !matchesUsage(stepUsage, request) ||
+    !matchesUsage(chatUsage, request)
   )
     return null;
+  const thought = unsigned(stepUsage, 9);
+  if (thought === null || thought !== unsigned(chatUsage, 9)) return null;
+  const facts: AntigravityRequestMetadata = { reasoningOutputTokens: Number(thought) };
   // Multiple attempts cannot share one trustworthy generation interval.
   if (unsigned(chat, 14) !== 0n || chat.filter((value) => value.number === 17).length > 1)
-    return null;
+    return facts;
   const created = nanoseconds(message(metadata, 1));
   const started = nanoseconds(message(metadata, 6));
   const completed = nanoseconds(message(metadata, 7));
@@ -110,19 +124,22 @@ function timing(
     !closeTo(started - created, ttft) ||
     !closeTo(completed - started, streamed)
   )
-    return null;
+    return facts;
   const startedAtMs = Number(started / NANOSECONDS_PER_MS);
   const completedAtMs = Number(completed / NANOSECONDS_PER_MS);
-  return completedAtMs > startedAtMs ? { startedAtMs, completedAtMs } : null;
+  return {
+    ...facts,
+    ...(completedAtMs > startedAtMs ? { timing: { startedAtMs, completedAtMs } } : {}),
+  };
 }
 
-/** Null means timing storage is unavailable; an empty Map means no verified timing yet. */
-export async function readAntigravityRequestTimings(
+/** Null means storage is unavailable; missing entries have no verified request-level facts. */
+export async function readAntigravityRequestMetadata(
   nativeSessionId: string,
   home: string,
   requests: ReadonlyMap<number, HostUsageRequest | null>,
   neededSteps: ReadonlySet<number> = new Set(requests.keys()),
-): Promise<Map<number, AntigravityRequestTiming> | null> {
+): Promise<Map<number, AntigravityRequestMetadata> | null> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(nativeSessionId)) return null;
   let database: NativeDatabase | undefined;
   try {
@@ -138,7 +155,7 @@ export async function readAntigravityRequestTimings(
     const generatorQuery = database.prepare(
       `SELECT CASE WHEN length(data) <= ${MAX_METADATA_BYTES} THEN data END AS data FROM gen_metadata WHERE idx = ?`,
     );
-    const result = new Map<number, AntigravityRequestTiming>();
+    const result = new Map<number, AntigravityRequestMetadata>();
     for (const index of neededSteps) {
       const request = requests.get(index);
       if (!request) continue;
@@ -160,6 +177,10 @@ export async function readAntigravityRequestTimings(
         generatorIndex > BigInt(Number.MAX_SAFE_INTEGER)
       )
         continue;
+      const usage = message(metadata, 9);
+      if (!usage || !matchesUsage(usage, request)) continue;
+      // Request-level usage can be committed before optional generator timing.
+      result.set(index, { reasoningOutputTokens: Number(unsigned(usage, 9)) });
       const generated = generatorQuery.get(Number(generatorIndex));
       if (!(generated?.data instanceof Uint8Array)) continue;
       const fields = readProtoFields(generated.data);
@@ -167,8 +188,9 @@ export async function readAntigravityRequestTimings(
       if (!fields || !indices) continue;
       const plannerSteps = [...new Set(indices.filter((step) => requests.get(step)))];
       if (plannerSteps.length !== 1 || plannerSteps[0] !== index) continue;
-      const clock = timing(metadata, fields, request);
-      if (clock) result.set(index, clock);
+      const facts = requestMetadata(metadata, fields, request);
+      if (facts) result.set(index, facts);
+      else result.delete(index);
     }
     return result;
   } catch {

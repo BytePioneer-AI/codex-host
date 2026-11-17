@@ -83,17 +83,11 @@ export const ANTIGRAVITY_PERMISSION_MODE_CATALOG: HarnessPermissionModeCatalog =
         localizations: {
           en: {
             label: "Skip permissions",
-            description:
-              "Run Antigravity ACP with --dangerously-skip-permissions to auto-approve all tool permission requests.",
           },
           "zh-CN": {
             label: "跳过权限检查",
-            description:
-              "使用 --dangerously-skip-permissions 启动 Antigravity ACP，自动批准所有工具权限请求。",
           },
         },
-        description:
-          "Run Antigravity ACP with --dangerously-skip-permissions to auto-approve all tool permission requests.",
         dangerous: true,
       },
     ],

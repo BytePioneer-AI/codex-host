@@ -30,8 +30,6 @@ type ClaudeNativeEvent = Exclude<
 >;
 
 interface AssistantMessageState {
-  /** Native record UUIDs that already closed this message, so replays stay idempotent. */
-  checkpointIds: Set<string>;
   completed: boolean;
   reasoning: string;
   text: string;
@@ -489,6 +487,8 @@ export interface ClaudeNativeMessageResult {
 export class ClaudeNativeTurnAccumulator {
   readonly #provider: string | undefined;
   #activeRootStreamMessageId: string | null = null;
+  /** Native record UUIDs already published, across stream and request message IDs. */
+  #publishedCheckpointIds = new Set<string>();
   #assistantErrors: string[] = [];
   #cancelRequested = false;
   #compactionState: "idle" | "active" | "settled" = "idle";
@@ -857,9 +857,11 @@ export class ClaudeNativeTurnAccumulator {
       // `message.id`. A later record with its own UUID carries new text, so append it
       // and publish that record as its own checkpoint instead of dropping it.
       const splitText =
-        checkpointId && !state.checkpointIds.has(checkpointId) ? assistantText(message) : null;
+        checkpointId && !this.#publishedCheckpointIds.has(checkpointId)
+          ? assistantText(message)
+          : null;
       if (checkpointId && splitText) {
-        state.checkpointIds.add(checkpointId);
+        this.#publishedCheckpointIds.add(checkpointId);
         state.text += splitText;
         events.push({ type: "text.delta", messageId, delta: splitText });
         this.#consumeToolUseBlocks(message, events, true);
@@ -921,7 +923,7 @@ export class ClaudeNativeTurnAccumulator {
       });
     }
     state.completed = true;
-    if (checkpointId) state.checkpointIds.add(checkpointId);
+    if (checkpointId) this.#publishedCheckpointIds.add(checkpointId);
     if (this.#activeRootStreamMessageId === messageId) this.#activeRootStreamMessageId = null;
   }
 
@@ -1106,7 +1108,6 @@ export class ClaudeNativeTurnAccumulator {
     const existing = this.#messages.get(messageId);
     if (existing) return existing;
     const created: AssistantMessageState = {
-      checkpointIds: new Set(),
       completed: false,
       reasoning: "",
       text: "",

@@ -249,6 +249,7 @@ describe("Claude native Turn interpretation", () => {
       first,
       partial("second", "stream-second"),
       second,
+      second,
     ].flatMap((frame) => turn.consume(frame).events ?? []);
     expect(events.filter(({ type }) => type === "text.delta")).toMatchObject([
       { delta: "first" },

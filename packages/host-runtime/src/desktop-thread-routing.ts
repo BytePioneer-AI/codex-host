@@ -55,6 +55,7 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/archive",
   "thread/delete",
   "thread/fork",
+  "thread/inject_items",
   "thread/items/list",
   "thread/metadata/update",
   "thread/name/set",
@@ -184,6 +185,7 @@ export interface DesktopThreadRoutingHost {
     name: JsonValue | undefined,
   ): Promise<void>;
   deleteExternalThread(request: JsonRpcRequest, location: ExternalLocation): Promise<void>;
+  injectExternalThreadItems(request: JsonRpcRequest, location: ExternalLocation): Promise<void>;
   cleanExternalBackgroundTerminals(request: JsonRpcRequest, threadId: string): Promise<void>;
   startExternalCompaction(request: JsonRpcRequest, threadId: string): Promise<void>;
 }
@@ -685,6 +687,18 @@ export class DesktopThreadRouting {
           await this.#host.deleteExternalThread(request, location);
         }
         return true;
+      }
+    }
+    if (request.method === "thread/inject_items") {
+      const threadId = routingParams(request).threadId;
+      if (typeof threadId === "string") {
+        // Awaited here so a following `turn/start` already finds the held text.
+        const location = await this.#host.locateExternalThread(threadId);
+        if (await this.#host.writeResolutionError(request, location)) return true;
+        if (location.kind === "external") {
+          await this.#host.injectExternalThreadItems(request, location);
+          return true;
+        }
       }
     }
     if (

@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import type { ServerHttp2Stream } from "node:http2";
+import { connect, createServer, type AddressInfo } from "node:net";
 import { createServer as createTlsServer } from "node:tls";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRelay, type RelayOptions } from "../src/index.js";
@@ -281,6 +282,82 @@ describe("bandwidth and UTC quota", () => {
     validations.forEach((socket) => socket.destroy());
   });
 
+  it("releases 32 stalled ClientHello connections so a new phone can receive a response", async () => {
+    await start();
+    const tls = createTlsServer({ ...credentials, handshakeTimeout: 0 }, (socket) => {
+      socket.on("error", () => {});
+      socket.once("data", () => socket.end("ok"));
+    });
+    const agent = await fakeAgent({
+      port: 4482,
+      tcp: (stream) => {
+        tls.emit("connection", stream);
+      },
+    });
+    await agent.registered;
+
+    // Capture a real ClientHello, then replay it without continuing the TLS handshake.
+    const capture = createServer();
+    capture.listen(0, "127.0.0.1");
+    await once(capture, "listening");
+    const accepted = once(capture, "connection");
+    const probe = phone(agent.hostname, undefined, (capture.address() as AddressInfo).port);
+    const [socket] = await accepted;
+    const [hello] = await once(socket, "data");
+    probe.destroy();
+    socket.destroy();
+    await new Promise<void>((resolve) => capture.close(() => resolve()));
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const stalled = Array.from({ length: 32 }, () => {
+      const client = connect(4482, "127.0.0.1");
+      client.on("error", () => {});
+      client.write(hello);
+      return client;
+    });
+    // Receiving the computer's TLS response proves all 32 slots are forwarding.
+    await Promise.all(stalled.map((client) => once(client, "data")));
+    await closed(phone(agent.hostname, undefined, 4482));
+    const ended = Promise.all(stalled.map(closed));
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(stalled.every((client) => !client.destroyed)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const allowed = phone(agent.hostname, undefined, 4482);
+    await once(allowed, "secureConnect");
+    const response = collect(allowed);
+    allowed.write("hello");
+    expect((await response).toString()).toBe("ok");
+    await ended;
+  });
+
+  it.each(["upload", "download"])("renews the idle timeout on %s progress", async (direction) => {
+    await start();
+    const tls = createTlsServer(credentials);
+    const agent = await fakeAgent({
+      port: 4482,
+      tcp: (stream) => {
+        tls.emit("connection", stream);
+      },
+    });
+    await agent.registered;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const accepted = once(tls, "secureConnection");
+    const client = phone(agent.hostname, undefined, 4482);
+    await once(client, "secureConnect");
+    const [server] = await accepted;
+    server.on("error", () => {});
+    const sender = direction === "upload" ? client : server;
+    const receiver = direction === "upload" ? server : client;
+    for (let index = 0; index < 2; index++) {
+      await vi.advanceTimersByTimeAsync(90_000);
+      const received = once(receiver, "data");
+      sender.write("still forwarding");
+      expect((await received)[0].toString()).toBe("still forwarding");
+    }
+    client.destroy();
+  });
+
   it("also applies the bandwidth limit to over-quota ACME traffic", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     await start({ dailyQuota: 1, rate: 8 * 1024 });
@@ -311,7 +388,10 @@ describe("bandwidth and UTC quota", () => {
 
   it("closes an over-quota ACME connection after ten seconds", async () => {
     await start({ dailyQuota: 1 });
-    const tls = createTlsServer({ ...credentials, ALPNProtocols: ["acme-tls/1"] });
+    const tls = createTlsServer({ ...credentials, ALPNProtocols: ["acme-tls/1"] }, (socket) => {
+      socket.on("error", () => {});
+      socket.on("data", (chunk) => socket.write(chunk));
+    });
     const agent = await fakeAgent({
       port: 4482,
       tcp: (stream) => {
@@ -327,6 +407,8 @@ describe("bandwidth and UTC quota", () => {
     const ended = closed(validation);
     await vi.advanceTimersByTimeAsync(9999);
     expect(validation.destroyed).toBe(false);
+    validation.write("challenge");
+    expect((await once(validation, "data"))[0].toString()).toBe("challenge");
     await vi.advanceTimersByTimeAsync(1);
     await ended;
     expect(performance.now() - startTime).toBeGreaterThan(9800);

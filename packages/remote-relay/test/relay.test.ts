@@ -26,6 +26,7 @@ beforeEach(async () => {
     controlHost: "relay.test",
     cert: `${certDirectory}/cert.pem`,
     key: keyPath,
+    ipConnectionLimit: 100,
   });
   relay.server.listen(4480, "127.0.0.1");
   await once(relay.server, "listening");

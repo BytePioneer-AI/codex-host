@@ -227,7 +227,7 @@ describe("bandwidth and UTC quota", () => {
   });
 
   it("shares the hourly ACME allowance across connections and reconnects, then rejects new validations", async () => {
-    await start({ dailyQuota: 1 });
+    await start({ dailyQuota: 1, ipConnectionLimit: 100 });
     const tls = createTlsServer({ ...credentials, ALPNProtocols: ["acme-tls/1"] }, (socket) => {
       socket.on("error", () => {});
       socket.resume();
@@ -262,7 +262,7 @@ describe("bandwidth and UTC quota", () => {
   });
 
   it("keeps over-quota ACME connections inside the 32-connection limit", async () => {
-    await start({ dailyQuota: 1 });
+    await start({ dailyQuota: 1, ipConnectionLimit: 100 });
     const tls = createTlsServer({ ...credentials, ALPNProtocols: ["acme-tls/1"] });
     const agent = await fakeAgent({
       port: 4482,

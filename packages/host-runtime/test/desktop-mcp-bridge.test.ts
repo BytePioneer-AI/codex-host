@@ -444,12 +444,14 @@ it("reaps initialization that finishes after its HTTP client disconnects", async
   const released = Promise.withResolvers<undefined>();
   const disconnected = Promise.withResolvers<undefined>();
   const originalStart = StdioClientTransport.prototype.start;
+  let toolHostPid: number | null = null;
   const start = vi
     .spyOn(StdioClientTransport.prototype, "start")
     .mockImplementationOnce(async function (this: StdioClientTransport) {
       entered.resolve(undefined);
       await released.promise;
       await originalStart.call(this);
+      toolHostPid = this.pid;
     });
   const url = String((f.config.args as string[])[2]);
   const originalEmit = ServerResponse.prototype.emit;
@@ -479,10 +481,9 @@ it("reaps initialization that finishes after its HTTP client disconnects", async
     await disconnected.promise;
     released.resolve(undefined);
     await request;
-    await vi.waitFor(async () => {
-      const record = (await f.records()).find((entry) => entry.event === "started");
-      expect(record).toBeDefined();
-      expect(() => process.kill(Number(record?.pid), 0)).toThrow();
+    await vi.waitFor(() => {
+      expect(toolHostPid).not.toBeNull();
+      expect(() => process.kill(Number(toolHostPid), 0)).toThrow();
     });
   } finally {
     released.resolve(undefined);

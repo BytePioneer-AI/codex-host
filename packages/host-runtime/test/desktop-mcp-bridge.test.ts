@@ -442,7 +442,10 @@ it("retains the native stdio MCP contract through the HTTP client process", asyn
     meta: { original: "caller-metadata" },
     parent: expect.any(Number),
   });
-});
+  const input = "x".repeat(11 * 1024 * 1024);
+  const measured = await client.callTool({ name: "measure", arguments: { input } });
+  expect(measured.structuredContent).toEqual({ length: input.length });
+}, 20_000);
 
 it("reaps initialization that finishes after its HTTP client disconnects", async () => {
   const f = await setup();
@@ -487,17 +490,21 @@ it("reaps initialization that finishes after its HTTP client disconnects", async
     await disconnected.promise;
     released.resolve(undefined);
     await request;
-    await vi.waitFor(() => {
-      expect(toolHostPid).not.toBeNull();
-      expect(() => process.kill(Number(toolHostPid), 0)).toThrow();
-    });
+    await vi.waitFor(
+      () => {
+        expect(toolHostPid).not.toBeNull();
+        expect(() => process.kill(Number(toolHostPid), 0)).toThrow();
+      },
+      // Allow the SDK's EOF/SIGTERM grace periods and the bridge's exit confirmation.
+      { timeout: 6_000 },
+    );
   } finally {
     released.resolve(undefined);
     controller.abort();
     start.mockRestore();
     events.mockRestore();
   }
-});
+}, 20_000);
 
 it("releases the remote session when the stdio client receives EOF", async () => {
   const f = await setup();
@@ -508,7 +515,7 @@ it("releases the remote session when the stdio client receives EOF", async () =>
   });
   const messages = new JsonLineCollector(child.stdout.pipe(new PassThrough()));
   child.stdin.write(JSON.stringify(initializationRequest) + "\n");
-  await messages.waitFor((message) => message.id === 0);
+  await messages.waitFor((message) => message.id === 0, 10_000);
   child.stdin.write(
     JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n",
   );
@@ -520,12 +527,14 @@ it("releases the remote session when the stdio client receives EOF", async () =>
       params: { name: "echo", arguments: {} },
     }) + "\n",
   );
-  const reply = await messages.waitFor((message) => message.id === 1);
+  const reply = await messages.waitFor((message) => message.id === 1, 10_000);
   const content = jsonObjectSchema.parse(jsonObjectSchema.parse(reply.result).structuredContent);
   child.stdin.end();
-  await vi.waitFor(() => expect(child.exitCode).toBe(0), { timeout: 1_500 });
-  await vi.waitFor(() => expect(() => process.kill(Number(content.pid), 0)).toThrow());
-});
+  await vi.waitFor(() => expect(child.exitCode).toBe(0), { timeout: 6_000 });
+  await vi.waitFor(() => expect(() => process.kill(Number(content.pid), 0)).toThrow(), {
+    timeout: 6_000,
+  });
+}, 20_000);
 
 it("stops an owned tool that ignores EOF and termination", async () => {
   const f = await setup();

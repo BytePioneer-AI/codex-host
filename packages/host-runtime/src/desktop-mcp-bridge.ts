@@ -401,7 +401,10 @@ export async function runDesktopMcpClient(arguments_: string[]): Promise<number>
   const http = new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers: { Authorization: authorization } },
   });
-  const stdio = new StdioServerTransport();
+  const stdio = new StdioServerTransport(process.stdin, process.stdout, {
+    // Leave room for the stdio frame's LF or CRLF terminator.
+    maxBufferSize: MAX_MCP_REQUEST_BYTES + 2,
+  });
   const done = Promise.withResolvers<number>();
   const failed = () => done.resolve(1);
   http.onmessage = (message) => {

@@ -268,7 +268,13 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
           "Antigravity session/new returned no sessionId",
         );
       this.#sessionId = sessionId;
-      if (replay) await this.#request(replay.complete, "session/load replay");
+      if (replay) {
+        await this.#request(replay.complete, "session/load replay");
+        // ACP may emit replay metadata in the same read turn after the content
+        // that satisfies the native history-size barrier. Keep those updates
+        // isolated from the live handler before returning the replay snapshot.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       const events = buffered
         .filter((entry) => entry.sessionId === sessionId)
         .map(({ event }) => event);

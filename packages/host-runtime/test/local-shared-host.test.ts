@@ -140,6 +140,7 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
   });
   vi.spyOn(official, "configureStartup").mockRejectedValue(new CodexRuntimeFilesRemovedError());
   const stdin = vi.spyOn(process.stdin, "pipe").mockImplementation((destination) => destination);
+  const pause = vi.spyOn(process.stdin, "pause");
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   try {
     const result = await runLocalDesktopBridge(
@@ -152,6 +153,7 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
       ["app-server"],
     );
     expect(result).toBe(1);
+    expect(pause).toHaveBeenCalled();
     expect(stderr.mock.calls.map(([message]) => String(message)).join("")).toContain(
       CODEX_RUNTIME_REMOVED_MESSAGE,
     );
@@ -162,17 +164,29 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
     await expect(f.web.request("thread/list", {})).resolves.toMatchObject({ data: [] });
   } finally {
     stdin.mockRestore();
+    pause.mockRestore();
     stderr.mockRestore();
     await official.close();
   }
 });
 
-it("forwards Desktop's app tools pipe to the shared official Codex startup", async () => {
+it.each([true, false])("forwards current Desktop browser access (%s)", async (enabled) => {
   const pipe = path.join(tmpdir(), "codex-app-tools-synthetic.sock");
+  const browserAccess = {
+    BROWSER_USE_ACCESS_EXECUTOR_ID: "synthetic-executor",
+    BROWSER_USE_ACCESS_PIPE_PATH: path.join(tmpdir(), "browser-access-synthetic.sock"),
+    BROWSER_USE_ACCESS_VERIFYING_IDENTITY: "synthetic-verifying-identity",
+    CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS: "[]",
+  };
   const f = await setup((streams, request) =>
     sharedHostDesktop(
       {
-        environment: { CODEXHOST_DATA_DIR: f.root },
+        environment: {
+          CODEXHOST_DATA_DIR: f.root,
+          ...Object.fromEntries(
+            Object.keys(browserAccess).map((key) => [key, "stale-service-value"]),
+          ),
+        },
         runtimeUrl: import.meta.url,
         stockCodex: path.join(f.root, "codex.exe"),
         official,
@@ -212,6 +226,9 @@ it("forwards Desktop's app tools pipe to the shared official Codex startup", asy
         CODEXHOST_LAUNCHER_EXECUTABLE: path.join(f.root, "unused-launcher"),
         CODEXHOST_DATA_DIR: f.root,
         CODEX_APP_TOOLS_PIPE_PATH: pipe,
+        ...(enabled ? browserAccess : {}),
+        BROWSER_USE_ACCESS_UNRELATED: "must-not-cross",
+        NODE_OPTIONS: "must-not-cross",
         UNRELATED_DESKTOP_SECRET: "must-not-cross",
       },
       path.join(f.root, "unused-runtime.mjs"),
@@ -220,6 +237,12 @@ it("forwards Desktop's app tools pipe to the shared official Codex startup", asy
     );
     expect(configured).toHaveLength(1);
     expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
+    for (const [key, value] of Object.entries(browserAccess)) {
+      if (enabled) expect(configured[0]?.[key]).toBe(value);
+      else expect(configured[0]).not.toHaveProperty(key);
+    }
+    expect(configured[0]).not.toHaveProperty("BROWSER_USE_ACCESS_UNRELATED");
+    expect(configured[0]).not.toHaveProperty("NODE_OPTIONS");
     expect(configured[0]).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
   } finally {
     stdin.mockRestore();

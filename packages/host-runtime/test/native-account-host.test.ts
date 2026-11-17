@@ -16,6 +16,13 @@ vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
 
 const prepared = new Set<PreparedLocalCodex>();
 const temporaryDirectories = new Set<string>();
+const desktopConnectionVariables = [
+  "CODEX_APP_TOOLS_PIPE_PATH",
+  "BROWSER_USE_ACCESS_EXECUTOR_ID",
+  "BROWSER_USE_ACCESS_PIPE_PATH",
+  "BROWSER_USE_ACCESS_VERIFYING_IDENTITY",
+  "CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS",
+];
 afterEach(async () => {
   for (const local of prepared) await local.close();
   prepared.clear();
@@ -479,28 +486,47 @@ describe("local Codex read-only identity startup", () => {
     );
   });
 
-  it("replaces an idle backend when only Desktop's app tools pipe changes", async () => {
+  it("applies ephemeral Desktop MCP arguments without persisting their credentials", async () => {
+    nativeFixture();
+    const local = await startLocal(true);
+    const overrides = ["-c", 'mcp_servers.node_repl.args=["synthetic-local-capability"]'];
+    await local.configureStartup({
+      stockCodexPath: "/synthetic/codex",
+      arguments: ["app-server"],
+      environment: { CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS: JSON.stringify(overrides) },
+    });
+    await local.officialRuntimeScope.start();
+    const invocation = vi.mocked(createOwnedLoopbackBackend).mock.calls.at(-1)?.[0];
+    expect(invocation?.arguments).toEqual(["app-server", ...overrides]);
+    const directory = path.dirname(String(invocation?.environment.CODEX_HOME));
+    const saved = JSON.parse(
+      await readFile(path.join(directory, "official-startup-v1.json"), "utf8"),
+    ) as { arguments: string[] };
+    expect(saved.arguments).toEqual(["app-server"]);
+  });
+
+  it.each(desktopConnectionVariables)("refreshes idle backend on %s", async (key) => {
     const first = nativeFixture();
     const local = await startLocal(true);
     const configuration = {
       stockCodexPath: "/synthetic/codex",
       arguments: ["-c", "features.code_mode_host=true", "app-server"],
-      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-1" },
+      environment: { [key]: "/synthetic/connection-1" },
     };
     await local.configureStartup(configuration);
     await local.officialRuntimeScope.start();
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({
         environment: expect.objectContaining({
-          CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-1",
+          [key]: "/synthetic/connection-1",
         }),
       }),
     );
     nativeFixture();
-    // A reopened Desktop creates a new pipe; the idle backend must not keep the stale one.
+    // A reopened Desktop creates new connection settings; retire the stale idle backend.
     await local.configureStartup({
       ...configuration,
-      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2" },
+      environment: { [key]: "/synthetic/connection-2" },
     });
     expect(first.stop).toHaveBeenCalledOnce();
     await local.officialRuntimeScope.start();
@@ -508,20 +534,20 @@ describe("local Codex read-only identity startup", () => {
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({
         environment: expect.objectContaining({
-          CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2",
+          [key]: "/synthetic/connection-2",
         }),
       }),
     );
   });
 
-  it("preserves an active Turn when only Desktop's app tools pipe changes", async () => {
+  it.each(desktopConnectionVariables)("keeps active Turn on %s change", async (key) => {
     const first = nativeFixture();
     const diagnostics = new PassThrough();
     const local = await startLocal(true, undefined, diagnostics);
     const configuration = {
       stockCodexPath: "/synthetic/codex",
       arguments: ["-c", "features.code_mode_host=true", "app-server"],
-      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-1" },
+      environment: { [key]: "/synthetic/connection-1" },
     };
     await local.configureStartup(configuration);
     await local.officialRuntimeScope.start();
@@ -532,20 +558,20 @@ describe("local Codex read-only identity startup", () => {
     await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
     await local.configureStartup({
       ...configuration,
-      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2" },
+      environment: { [key]: "/synthetic/connection-2" },
     });
     expect(first.stop).not.toHaveBeenCalled();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
     expect(diagnostics.read()?.toString()).toContain("preserving active official Codex work");
   });
 
-  it("starts the next backend on the app tools pipe that arrived during a preserved Turn", async () => {
+  it.each(desktopConnectionVariables)("recovers with latest %s", async (key) => {
     const first = nativeFixture();
     const local = await startLocal(true);
     const configuration = {
       stockCodexPath: "/synthetic/codex",
       arguments: ["-c", "features.code_mode_host=true", "app-server"],
-      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-1" },
+      environment: { [key]: "/synthetic/connection-1" },
     };
     await local.configureStartup(configuration);
     await local.officialRuntimeScope.start();
@@ -556,10 +582,10 @@ describe("local Codex read-only identity startup", () => {
     await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
     await local.configureStartup({
       ...configuration,
-      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2" },
+      environment: { [key]: "/synthetic/connection-2" },
     });
     expect(first.stop).not.toHaveBeenCalled();
-    // The preserved generation ends on its own; its replacement must use the new pipe.
+    // The preserved generation ends on its own; its replacement must use the new settings.
     nativeFixture();
     first.crash();
     await vi.waitFor(() => expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2), {
@@ -568,7 +594,7 @@ describe("local Codex read-only identity startup", () => {
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({
         environment: expect.objectContaining({
-          CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/app-tools-2",
+          [key]: "/synthetic/connection-2",
         }),
       }),
     );

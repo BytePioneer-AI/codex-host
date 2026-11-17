@@ -13,6 +13,12 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 
 只有确认归属后才做严格校验并返回 `-32602` 等错误。带 codexhost 前缀但格式非法的标记或游标直接报错，不回落官方。
 
+## macOS 原生 Browser MCP 的进程归属
+
+Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树中。本地 macOS 前端识别 Desktop 下发的第一方 Browser `node_repl` MCP 配置，把这些工具服务启动在 Desktop 子进程中，并将其配置转换为经过能力令牌认证的本机 Streamable HTTP MCP。识别限定到所选运行时的真实 `node_repl` 可执行文件及带 Browser 服务的配置。未知配置和远程执行环境仍交给原生处理。
+
+前端通过原生 CLI 的 `mcp list --json` 读取实际启用的本地及插件工具定义。仅为识别出的第一方服务生成临时 stdio 命令覆盖，经认证的 Desktop 上下文传给共享后端，启动记录保留原始参数。`thread/start`、`thread/resume`、`thread/fork` 的显式 MCP 覆盖沿用同一转换。保留请求其余字段、工具审批设置、超时和工具选择。MCP 消息及原生请求元数据按标准传输转发。配置转换在 Desktop 前端发生，共享 Host 继续持有任务执行。
+
 ## 原生 Codex Fork 的模型继承
 
 Desktop 可能在 `thread/fork` 中省略 Model，原生 app-server 因此使用全局默认配置，而不是来源 Thread 的配置。共享原生通道对 Desktop 与 Web 一致补齐省略的 Model、Provider、Thinking 和 Fast：来源只取当前原生进程通过 `thread/start`、`thread/resume`、`thread/fork` 响应或 `thread/settings/updated` 确认的设置，不读取 Host 的最后一次草稿选择，也不复制权限、指令或其他配置。

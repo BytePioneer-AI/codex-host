@@ -88,6 +88,8 @@ const storedThreadCoreV1Shape = {
     .max(MAX_PENDING_INJECTED_TEXTS)
     .optional()
     .catch(undefined),
+  /** How many held texts were released. A Turn releases by position, never by content. */
+  releasedInjectedTexts: z.number().int().nonnegative().optional().catch(undefined),
   /**
    * Turns whose native input begins with delivered injected text, hidden when replayed. One
    * entry per such Turn, never trimmed, so every replayed Turn stays clean.

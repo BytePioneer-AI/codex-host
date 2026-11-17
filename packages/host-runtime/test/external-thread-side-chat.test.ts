@@ -9,6 +9,7 @@ import {
   completePiTurn,
   createFixture,
   requestId,
+  rollbackCapableAdapter,
   startExternalThread,
   startPiThread,
   startPiTurn,
@@ -204,6 +205,36 @@ describe("External Side Chats", () => {
       await fixture.collector.waitFor((message) =>
         turnEvent(message, "turn/completed", sourceTurnId),
       );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("undoes only a Side Chat's own Turns and answers with them alone", async () => {
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", rollbackCapableAdapter()]]),
+    });
+    try {
+      const sourceId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        historyMode: "paginated",
+      });
+      await completePiTurn(fixture, sourceId, 2);
+      const sideChatId = await openSideChat(fixture, sourceId, 3);
+      const firstTurnId = await completePiTurn(fixture, sideChatId, 5, 1);
+      await completePiTurn(fixture, sideChatId, 6, 1);
+      const undone = await call(fixture, 7, "thread/rollback", {
+        threadId: sideChatId,
+        numTurns: 1,
+      });
+      expect(((undone.result as JsonObject).thread as JsonObject).turns).toMatchObject([
+        { id: firstTurnId },
+      ]);
+      // One more than its own Turn would reach the history it inherited.
+      const tooFar = await call(fixture, 8, "thread/rollback", {
+        threadId: sideChatId,
+        numTurns: 2,
+      });
+      expect(tooFar.error).toMatchObject({ code: -32602 });
     } finally {
       await stopFixture(fixture);
     }

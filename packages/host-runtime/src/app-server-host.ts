@@ -5096,7 +5096,7 @@ export class AppServerHost {
       resolve: () => undefined,
     });
     const stored = await this.#repository.find(thread.id);
-    const injected = withInjectedText(stored?.pendingInjectedText, text);
+    const injected = withInjectedText(stored, text);
     const result = await thread.session.execute({
       type: "turn.start",
       turnId,
@@ -5764,10 +5764,7 @@ export class AppServerHost {
         await this.#notifyExternalThreadStarted(thread.thread);
       }
       const stored = await this.#repository.find(thread.id);
-      const injected = withInjectedText(
-        stored?.pendingInjectedText,
-        rewriteDelegationMentionText(text),
-      );
+      const injected = withInjectedText(stored, rewriteDelegationMentionText(text));
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,

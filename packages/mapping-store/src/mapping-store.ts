@@ -879,22 +879,25 @@ export class MappingStore {
   }
 
   /**
-   * Record that a started Turn delivered `delivered`, and release them if they still lead the
-   * queue. Another Turn may have released them already; the queue then stays as it is.
+   * Record that a started Turn delivered the held texts before position `through`, counted over
+   * every text ever held, and release the ones still queued. Another Turn may have released
+   * them already; texts held after that keep their own positions, even with the same content.
    */
   async consumePendingInjectedText(
     hostThreadId: HostThreadId,
-    delivered: readonly string[],
+    through: number,
     prefix: InjectedTurnPrefix,
   ): Promise<StoredThreadRecordV1> {
     return this.#update(
       hostThreadId,
       (current) => {
+        const released = current.releasedInjectedTexts ?? 0;
         const queued = current.pendingInjectedText ?? [];
-        const leads = delivered.every((text, index) => queued[index] === text);
-        const pending = leads ? queued.slice(delivered.length) : queued;
+        const count = Math.min(Math.max(through - released, 0), queued.length);
+        const pending = queued.slice(count);
         const next: StoredThreadRecordV1 = {
           ...current,
+          releasedInjectedTexts: released + count,
           injectedTurnPrefixes: [...(current.injectedTurnPrefixes ?? []), prefix],
         };
         if (pending.length > 0) next.pendingInjectedText = pending;

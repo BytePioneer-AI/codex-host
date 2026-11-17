@@ -70,14 +70,15 @@ describe("Injected text held for the next Turn", () => {
     expect((await store.getThread(hostThreadId))?.pendingInjectedText).toEqual(texts);
   });
 
-  it("releases delivered texts only while they still lead the queue", async () => {
+  it("releases only the held texts a Turn carried, even when the same text is held again", async () => {
     const { store } = await setup();
     await store.appendPendingInjectedText(hostThreadId, ["A"]);
-    // Two Turns carried A. The first release frees it; B arrives before the second release.
-    await store.consumePendingInjectedText(hostThreadId, ["A"], prefix(1));
-    await store.appendPendingInjectedText(hostThreadId, ["B"]);
-    const record = await store.consumePendingInjectedText(hostThreadId, ["A"], prefix(2));
-    expect(record.pendingInjectedText).toEqual(["B"]);
+    // Two Turns carried A. The first release frees it; A is held again, and B, before the second.
+    await store.consumePendingInjectedText(hostThreadId, 1, prefix(1));
+    await store.appendPendingInjectedText(hostThreadId, ["A", "B"]);
+    const record = await store.consumePendingInjectedText(hostThreadId, 1, prefix(2));
+    expect(record.pendingInjectedText).toEqual(["A", "B"]);
+    expect(record.releasedInjectedTexts).toBe(1);
     expect(record.injectedTurnPrefixes?.map(({ hostTurnId }) => hostTurnId)).toEqual([
       "turn-1",
       "turn-2",
@@ -88,7 +89,7 @@ describe("Injected text held for the next Turn", () => {
     const { directory, store } = await setup();
     for (let turn = 1; turn <= 70; turn++) {
       await store.appendPendingInjectedText(hostThreadId, ["context"]);
-      await store.consumePendingInjectedText(hostThreadId, ["context"], prefix(turn));
+      await store.consumePendingInjectedText(hostThreadId, turn, prefix(turn));
     }
     await store.close();
     stores.splice(stores.indexOf(store), 1);

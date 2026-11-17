@@ -90,7 +90,7 @@ export interface ExternalThreadStore {
   ): Promise<StoredThreadRecordV1>;
   consumePendingInjectedText(
     hostThreadId: HostThreadId,
-    delivered: readonly string[],
+    through: number,
     prefix: InjectedTurnPrefix,
   ): Promise<StoredThreadRecordV1>;
   updateMetadata(
@@ -260,10 +260,10 @@ export class ExternalThreadRepository {
 
   consumePendingInjectedText(
     hostThreadId: HostThreadId,
-    delivered: readonly string[],
+    through: number,
     prefix: InjectedTurnPrefix,
   ): Promise<StoredThreadRecordV1> {
-    return this.store.consumePendingInjectedText(hostThreadId, delivered, prefix);
+    return this.store.consumePendingInjectedText(hostThreadId, through, prefix);
   }
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {

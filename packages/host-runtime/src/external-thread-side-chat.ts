@@ -51,8 +51,8 @@ export async function holdInjectedItems(input: {
 
 export interface InjectedTurnText {
   text: string;
-  /** Held texts this Turn carries, released once the Harness accepts it. */
-  delivered: readonly string[];
+  /** Position after the last held text this Turn carries; released once the Harness accepts it. */
+  through: number;
   prefix?: Omit<InjectedTurnPrefix, "hostTurnId">;
 }
 
@@ -62,14 +62,17 @@ function sha256(text: string): string {
 
 /** Native Turn text that leads with held injected text, and how to recognize it on replay. */
 export function withInjectedText(
-  pending: readonly string[] | undefined,
+  held:
+    Pick<StoredThreadRecordV1, "pendingInjectedText" | "releasedInjectedTexts"> | null | undefined,
   text: string,
 ): InjectedTurnText {
-  if (!pending?.length) return { text, delivered: [] };
+  const pending = held?.pendingInjectedText;
+  const released = held?.releasedInjectedTexts ?? 0;
+  if (!pending?.length) return { text, through: released };
   const prefix = `${pending.join("\n\n")}\n\n`;
   return {
     text: `${prefix}${text}`,
-    delivered: [...pending],
+    through: released + pending.length,
     prefix: { length: prefix.length, sha256: sha256(prefix) },
   };
 }
@@ -84,7 +87,7 @@ export async function releaseInjectedText(input: {
   if (!input.injected.prefix) return;
   input.thread.record = await input.repository.consumePendingInjectedText(
     input.thread.id,
-    input.injected.delivered,
+    input.injected.through,
     { hostTurnId: input.turnId, ...input.injected.prefix },
   );
 }

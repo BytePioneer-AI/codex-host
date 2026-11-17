@@ -23,11 +23,21 @@ impl ShutdownProcessTree {
         }
         let mut tree = ObservedProcessTree::new_with_process_group(root, None, None);
         tree.observe()?;
+        if !tree.root_is_current()? {
+            return Err(PlatformError::Invalid(
+                "Shutdown root disappeared during observation; descendants cannot be verified"
+                    .into(),
+            ));
+        }
         Ok(Some(Self { tree }))
     }
 
     pub fn has_live_processes(&mut self) -> Result<bool, PlatformError> {
         Ok(!self.tree.observe()?.is_empty())
+    }
+
+    pub fn exclude_process(&mut self, identity: ProcessIdentity) {
+        self.tree.exclude_process(identity);
     }
 
     pub fn force_terminate(&mut self) -> Result<(), PlatformError> {

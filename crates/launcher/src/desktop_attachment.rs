@@ -361,13 +361,11 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
     let Some((launcher, controller)) = managed_processes(data)? else {
         return Ok(false);
     };
+    let shutdown = crate::host_service::prepare_shutdown(None, Some(&(&launcher).into()))?;
     codexhost_platform::terminate_process_instance(&controller, false)?;
-    crate::host_service::wait_for_shutdown(
-        None,
-        Some(&(&launcher).into()),
-        Duration::from_secs(10),
-    )
-    .map_err(|error| format!("stopping the managed Desktop failed: {error}"))?;
+    shutdown
+        .wait(Duration::from_secs(10))
+        .map_err(|error| format!("stopping the managed Desktop failed: {error}"))?;
     Ok(true)
 }
 

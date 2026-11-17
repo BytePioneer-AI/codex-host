@@ -719,12 +719,15 @@ fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
             .status
             .success()
     );
-    let result = fixture
-        .public_command("stop")
-        .arg("--host-runtime")
-        .arg(fixture.root.join("missing-host.mjs"))
-        .output()
-        .unwrap();
+    // Keep the installation layout: Console is a sibling of host-runtime.mjs.
+    // Renaming the override to missing-host.mjs instead selects the installed
+    // Console (absent in this fixture), so it never exercises Console cleanup.
+    let runtime = fixture.root.join("host-runtime.mjs");
+    let saved_runtime = fixture.root.join("host-runtime.saved");
+    fs::rename(&runtime, &saved_runtime).unwrap();
+    let result = fixture.public_command("stop").output().unwrap();
+    // Restore only after stop, so Drop can clean up the still-running Host.
+    fs::rename(&saved_runtime, &runtime).unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("Host:"));
     assert!(!fixture.root.join("web-service-ready.json").exists());
@@ -732,7 +735,10 @@ fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
     assert!(
         fs::read_to_string(fixture.root.join("events"))
             .unwrap()
-            .ends_with("console-stop\n")
+            .ends_with("console-stop\n"),
+        "stop stderr: {}; events: {}",
+        String::from_utf8_lossy(&result.stderr),
+        fs::read_to_string(fixture.root.join("events")).unwrap()
     );
 }
 
@@ -919,6 +925,18 @@ fn owned_gui_activation(refuse_stop: bool) {
 #[cfg(unix)]
 #[test]
 fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
+    // The real Updater registers before stopping Host. Keep that ownership
+    // transfer in this native fixture rather than treating a new PGID as proof.
+    if let Some(script) = std::env::var_os("CODEXHOST_TEST_UPDATER_SCRIPT") {
+        let _independent = codexhost_platform::register_independent_service().unwrap();
+        let status = Command::new(std::env::var_os("CODEXHOST_TEST_UPDATER_NODE").unwrap())
+            .arg(script)
+            .arg(std::env::var_os("CODEXHOST_TEST_UPDATER_REQUEST").unwrap())
+            .status()
+            .unwrap();
+        assert!(status.success(), "fixture updater failed: {status}");
+        return;
+    }
     use std::os::unix::fs::PermissionsExt;
     struct FinishHelper(PathBuf);
     impl Drop for FinishHelper {
@@ -984,7 +1002,21 @@ setInterval(() => {{
 "##,
             fixture.node
         );
-        fs::write(&helper, helper_source).unwrap();
+        let script = operation.join("fixture-updater.mjs");
+        fs::write(
+            &script,
+            helper_source.replace("pid:process.pid", "pid:process.ppid"),
+        )
+        .unwrap();
+        // Quote shell arguments without assuming paths have no apostrophes.
+        let quote = |value: &std::ffi::OsStr| {
+            format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
+        };
+        fs::write(&helper, format!(
+            "#!/bin/sh\nexport CODEXHOST_TEST_UPDATER_SCRIPT={}\nexport CODEXHOST_TEST_UPDATER_NODE={}\nexport CODEXHOST_TEST_UPDATER_REQUEST={}\nexec {} --exact service_supervisor_hands_off_once_and_can_retry_without_desktop --nocapture\n",
+            quote(script.as_os_str()), quote(std::ffi::OsStr::new(&fixture.node)),
+            quote(request.as_os_str()), quote(std::env::current_exe().unwrap().as_os_str()),
+        )).unwrap();
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(&request, serde_json::to_vec(&serde_json::json!({
             "schema_version":1,"wait_pid":owner,"wait_executable":environment["CODEXHOST_LAUNCHER_EXECUTABLE"],

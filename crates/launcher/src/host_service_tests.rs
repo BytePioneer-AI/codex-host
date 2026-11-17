@@ -213,6 +213,113 @@ fn forced_shutdown_cleans_descendants_in_another_process_group() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn prepared_shutdown_retains_descendants_after_root_exits() {
+    use std::io::BufRead;
+    let mut supervisor = Command::new("/bin/sh")
+        .args(["-c", "sleep 30 & echo $!; read release"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut pid = String::new();
+    std::io::BufReader::new(supervisor.stdout.take().unwrap())
+        .read_line(&mut pid)
+        .unwrap();
+    let child = codexhost_platform::process_snapshot(pid.trim().parse().unwrap()).unwrap();
+    let identity = codexhost_platform::process_identity(supervisor.id()).unwrap();
+    let shutdown = super::prepare_shutdown(None, Some(&identity)).unwrap();
+    supervisor.kill().unwrap();
+    supervisor.wait().unwrap();
+    let result = shutdown.wait(Duration::ZERO);
+    let survived =
+        codexhost_platform::process_instance(child.id, child.started_at_micros).is_some();
+    codexhost_platform::terminate_process_instance(&child, true).unwrap();
+    result.unwrap();
+    assert!(!survived, "a captured descendant survived its root");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shutdown_is_idempotent_when_supervisor_missing_before_observation() {
+    use std::io::BufRead;
+    let mut supervisor = Command::new("/bin/sh")
+        .args(["-c", "sleep 30 & echo $!; read release"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut pid = String::new();
+    std::io::BufReader::new(supervisor.stdout.take().unwrap())
+        .read_line(&mut pid)
+        .unwrap();
+    let child_id = pid.trim().parse::<u32>().unwrap();
+    let child = codexhost_platform::process_snapshot(child_id).unwrap();
+    let identity = codexhost_platform::process_identity(supervisor.id()).unwrap();
+    supervisor.kill().unwrap();
+    supervisor.wait().unwrap();
+    let result = wait_for_shutdown(None, Some(&identity), Duration::ZERO);
+    let alive = codexhost_platform::process_instance(child.id, child.started_at_micros).is_some();
+    codexhost_platform::terminate_process_instance(&child, true).unwrap();
+    assert!(alive);
+    assert!(result.is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn control_process_inside_supervisor_tree_survives_forced_shutdown() {
+    const TEST: &str =
+        "host_service::tests::control_process_inside_supervisor_tree_survives_forced_shutdown";
+    if env::var_os("CODEXHOST_CONTROL_TEST").is_some() {
+        let parent = codexhost_platform::process_identity(
+            codexhost_platform::process_identity(std::process::id())
+                .unwrap()
+                .parent_id,
+        )
+        .unwrap();
+        wait_for_shutdown(None, Some(&parent), Duration::from_millis(1)).unwrap();
+        fs::write(env::var_os("CODEXHOST_CONTROL_MARKER").unwrap(), "survived").unwrap();
+        return;
+    }
+    let marker = env::temp_dir().join(format!(
+        "codexhost-control-survived-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut supervisor = Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!(
+                "\"{}\" --exact {TEST}",
+                env::current_exe().unwrap().display()
+            ),
+        ])
+        .env("CODEXHOST_CONTROL_TEST", "1")
+        .env("CODEXHOST_CONTROL_MARKER", &marker)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let status = supervisor.wait().unwrap();
+    assert!(
+        !status.success(),
+        "the supervisor should have been force-terminated"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marker.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        marker.exists(),
+        "control process was killed with the supervisor"
+    );
+    let _ = fs::remove_file(marker);
+}
+
 #[test]
 fn stalled_supervisor_shutdown_is_escalated_when_no_owner_was_captured() {
     const TEST: &str =

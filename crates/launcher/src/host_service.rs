@@ -318,89 +318,176 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
 
 // The supervisor exits after cleaning its managed children. This wait is only
 // for normal shutdown; it is not a startup lock or a crash-recovery proof.
+#[derive(Default)]
+pub(super) struct ShutdownWait {
+    owner: Option<codexhost_platform::ProcessIdentity>,
+    target: Option<codexhost_platform::ProcessIdentity>,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    trees: Vec<codexhost_platform::ShutdownProcessTree>,
+}
+
+#[cfg(test)]
 pub(super) fn wait_for_shutdown(
     owner: Option<&codexhost_platform::ProcessIdentity>,
     supervisor: Option<&codexhost_platform::ProcessIdentity>,
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
+    prepare_shutdown(owner, supervisor)?.wait(timeout)
+}
+
+pub(super) fn prepare_shutdown(
+    owner: Option<&codexhost_platform::ProcessIdentity>,
+    supervisor: Option<&codexhost_platform::ProcessIdentity>,
+) -> Result<ShutdownWait, Box<dyn Error>> {
     let Some(target) = supervisor.or(owner) else {
-        return Ok(());
+        return Ok(ShutdownWait::default());
+    };
+    // A target that exited before observation is the existing idempotent
+    // no-op. Once it was present, capture failures must remain errors.
+    match codexhost_platform::process_identity(target.id) {
+        Ok(current) if current.started_at_micros == target.started_at_micros => {}
+        Ok(_) => {
+            return Err(format!("PID {} was reused before shutdown observation", target.id).into());
+        }
+        Err(codexhost_platform::PlatformError::NotFound(_)) => return Ok(ShutdownWait::default()),
+        Err(error) => return Err(error.into()),
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let control = codexhost_platform::process_identity(std::process::id())?;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let controls = {
+        // Preserve only the verified ancestry needed by this synchronous
+        // controller, stopping before either service root. Never exempt a
+        // service root (or infer ownership from its process group).
+        let snapshots = codexhost_platform::process_snapshots()?;
+        let mut controls = vec![control];
+        let mut parent = control.parent_id;
+        while parent > 1
+            && ![supervisor, owner]
+                .into_iter()
+                .flatten()
+                .any(|root| root.id == parent)
+        {
+            let Some(snapshot) = snapshots.iter().find(|process| process.id == parent) else {
+                return Err("Control ancestry changed before shutdown observation".into());
+            };
+            if controls.iter().any(|known| known.id == snapshot.id) {
+                return Err("Cyclic control ancestry during shutdown observation".into());
+            }
+            controls.push(snapshot.into());
+            parent = snapshot.parent_id;
+        }
+        controls
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let mut trees = [supervisor, owner]
+    let trees = [supervisor, owner]
         .into_iter()
         .flatten()
-        .map(codexhost_platform::ShutdownProcessTree::capture)
-        .collect::<Result<Vec<_>, _>>()?
+        .map(|expected| {
+            let tree = codexhost_platform::ShutdownProcessTree::capture(expected)?;
+            let required = expected.id == target.id
+                || supervisor.is_some_and(|identity| identity.id == expected.id);
+            if required && tree.is_none() {
+                return Err(codexhost_platform::PlatformError::Invalid(
+                    "Shutdown target disappeared during observation; descendants cannot be verified".into(),
+                ));
+            }
+            Ok(tree)
+        })
+        .collect::<Result<Vec<_>, codexhost_platform::PlatformError>>()?
         .into_iter()
         .flatten()
+        .map(|mut tree| {
+            for control in &controls {
+                tree.exclude_process(*control);
+            }
+            tree
+        })
         .collect::<Vec<_>>();
-    let started = Instant::now();
-    let mut escalated = false;
-    loop {
+    Ok(ShutdownWait {
+        owner: owner.copied(),
+        target: Some(*target),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let tree_alive = {
-            let mut alive = false;
-            for tree in &mut trees {
-                alive |= tree.has_live_processes()?;
-            }
-            alive
-        };
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let tree_alive = false;
-        if !tree_alive
-            && codexhost_platform::process_instance(target.id, target.started_at_micros).is_none()
-        {
+        trees,
+    })
+}
+
+impl ShutdownWait {
+    pub(super) fn wait(self, timeout: Duration) -> Result<(), Box<dyn Error>> {
+        let Some(target) = self.target.as_ref() else {
             return Ok(());
-        }
-        if started.elapsed() >= timeout {
-            // SIGTERM alone can leave a stalled service alive (for example a
-            // Desktop Controller finishing asynchronous cleanup, #861). Callers
-            // pass identities that were validated to belong to this installation
-            // before the stop request, so escalating termination on the waited
-            // target is bounded and owned. Report the timeout only if the target
-            // survives even the forced termination.
+        };
+        let owner = self.owner.as_ref();
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let mut trees = self.trees;
+        let started = Instant::now();
+        let mut escalated = false;
+        loop {
             #[cfg(any(target_os = "macos", target_os = "linux"))]
-            for tree in &mut trees {
-                tree.force_terminate()?;
-            }
-            codexhost_platform::terminate_process_identity(target, true)?;
-            let escalation_deadline = started.elapsed() + Duration::from_secs(2);
-            while started.elapsed() < escalation_deadline {
-                #[cfg(any(target_os = "macos", target_os = "linux"))]
-                let tree_alive = {
-                    let mut alive = false;
-                    for tree in &mut trees {
-                        alive |= tree.has_live_processes()?;
-                    }
-                    alive
-                };
-                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                let tree_alive = false;
-                if !tree_alive
-                    && codexhost_platform::process_instance(target.id, target.started_at_micros)
-                        .is_none()
-                {
-                    return Ok(());
+            let tree_alive = {
+                let mut alive = false;
+                for tree in &mut trees {
+                    alive |= tree.has_live_processes()?;
                 }
-                thread::sleep(Duration::from_millis(25));
+                alive
+            };
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            let tree_alive = false;
+            if !tree_alive
+                && codexhost_platform::process_instance(target.id, target.started_at_micros)
+                    .is_none()
+            {
+                return Ok(());
             }
-            return Err(format!(
+            if started.elapsed() >= timeout {
+                // SIGTERM alone can leave a stalled service alive (for example a
+                // Desktop Controller finishing asynchronous cleanup, #861). Callers
+                // pass identities that were validated to belong to this installation
+                // before the stop request, so escalating termination on the waited
+                // target is bounded and owned. Report the timeout only if the target
+                // survives even the forced termination.
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                for tree in &mut trees {
+                    tree.force_terminate()?;
+                }
+                codexhost_platform::terminate_process_identity(target, true)?;
+                let escalation_deadline = started.elapsed() + Duration::from_secs(2);
+                while started.elapsed() < escalation_deadline {
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    let tree_alive = {
+                        let mut alive = false;
+                        for tree in &mut trees {
+                            alive |= tree.has_live_processes()?;
+                        }
+                        alive
+                    };
+                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                    let tree_alive = false;
+                    if !tree_alive
+                        && codexhost_platform::process_instance(target.id, target.started_at_micros)
+                            .is_none()
+                    {
+                        return Ok(());
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+                return Err(format!(
                 "Service shutdown timed out after {}s; forced termination of process {} did not complete",
                 timeout.as_secs(),
                 target.id
             )
             .into());
-        }
-        // A stalled Node may retain native children. Let its supervisor finish
-        // cleanup after terminating the owner captured before the stop request.
-        if !escalated && started.elapsed() >= Duration::from_secs(2) {
-            if let Some(owner) = owner {
-                codexhost_platform::terminate_process_identity(owner, true)?;
             }
-            escalated = true;
+            // A stalled Node may retain native children. Let its supervisor finish
+            // cleanup after terminating the owner captured before the stop request.
+            if !escalated && started.elapsed() >= Duration::from_secs(2) {
+                if let Some(owner) = owner {
+                    codexhost_platform::terminate_process_identity(owner, true)?;
+                }
+                escalated = true;
+            }
+            thread::sleep(Duration::from_millis(25));
         }
-        thread::sleep(Duration::from_millis(25));
     }
 }
 
@@ -410,6 +497,8 @@ fn stop(options: &Options) -> Result<(), Box<dyn Error>> {
         .as_ref()
         .filter(|owner| owner.parent_id > 1)
         .and_then(|owner| codexhost_platform::process_identity(owner.parent_id).ok());
+    // Observe ownership before the stop request can remove parent links.
+    let shutdown = prepare_shutdown(owner.as_ref(), supervisor.as_ref())?;
     let mut command = Command::new(&options.node);
     clean(&mut command);
     let status = command
@@ -422,7 +511,7 @@ fn stop(options: &Options) -> Result<(), Box<dyn Error>> {
         .stderr(Stdio::inherit())
         .status()?;
     if status.success() {
-        wait_for_shutdown(owner.as_ref(), supervisor.as_ref(), Duration::from_secs(10))
+        shutdown.wait(Duration::from_secs(10))
     } else {
         Err("Shared Host shutdown was not confirmed".into())
     }

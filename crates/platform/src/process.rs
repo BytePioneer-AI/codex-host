@@ -1,6 +1,8 @@
 use super::{DesktopInstallation, PlatformError};
 #[cfg(target_os = "windows")]
 use super::{node_entrypoint_path, windows_process};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::ProcessIdentity;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::thread;
@@ -175,6 +177,16 @@ pub fn process_snapshot(_process_id: u32) -> Result<ProcessSnapshot, PlatformErr
     ))
 }
 
+#[cfg(target_os = "windows")]
+pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
+    Ok(windows_process::process_entries()?
+        .into_iter()
+        // Processes can exit or deny inspection during enumeration. This API
+        // is a diagnostic snapshot, not proof that all processes were inspected.
+        .filter_map(|entry| process_snapshot(entry.id).ok())
+        .collect())
+}
+
 #[cfg(target_os = "macos")]
 pub fn process_snapshots() -> Result<Vec<ProcessSnapshot>, PlatformError> {
     use libproc::processes::{ProcFilter, pids_by_type};
@@ -279,6 +291,7 @@ enum RootExecutablePolicy {
 pub(crate) struct ObservedProcessTree {
     pub(crate) root: ProcessSnapshot,
     known: Vec<ProcessSnapshot>,
+    excluded: Vec<ProcessIdentity>,
     process_group_id: Option<u32>,
     process_group_started_at_micros: u64,
     root_executable_policy: RootExecutablePolicy,
@@ -327,6 +340,7 @@ impl ObservedProcessTree {
             process_group_started_at_micros: process_group_started_at_micros
                 .unwrap_or(root.started_at_micros),
             known,
+            excluded: Vec::new(),
             root,
             root_executable_policy: RootExecutablePolicy::Fixed,
         }
@@ -334,6 +348,16 @@ impl ObservedProcessTree {
 
     pub(crate) fn process_group_id(&self) -> u32 {
         self.process_group_id.unwrap_or(self.root.process_group_id)
+    }
+
+    /// Exclude an explicitly identified control process. PID alone is never
+    /// sufficient because the PID may have been reused.
+    pub(crate) fn exclude_process(&mut self, identity: ProcessIdentity) {
+        if !self.excluded.iter().any(|known| {
+            known.id == identity.id && known.started_at_micros == identity.started_at_micros
+        }) {
+            self.excluded.push(identity);
+        }
     }
 
     pub(crate) fn observe(&mut self) -> Result<Vec<ProcessSnapshot>, PlatformError> {
@@ -401,6 +425,11 @@ impl ObservedProcessTree {
             }
         }
         self.known = refreshed;
+        self.known.retain(|process| {
+            !self.excluded.iter().any(|excluded| {
+                excluded.id == process.id && excluded.started_at_micros == process.started_at_micros
+            })
+        });
         let known_ids = self
             .known
             .iter()
@@ -418,6 +447,11 @@ impl ObservedProcessTree {
                     .cloned()
                     .collect::<Vec<_>>()
             });
+        observed.retain(|process| {
+            !self.excluded.iter().any(|excluded| {
+                excluded.id == process.id && excluded.started_at_micros == process.started_at_micros
+            })
+        });
         // The Linux managed-launch group is private when it is created, but a
         // later foreign member still must not silently become owned. The root
         // itself (exec path) and known descendants prove lineage; a same-PGID
@@ -425,21 +459,16 @@ impl ObservedProcessTree {
         // lifecycle signal can reach it.
         #[cfg(target_os = "linux")]
         if self.process_group_id.is_some() {
-            // If the process-group leader exits before a child was observed,
-            // retaining the group's members is only a bounded fallback: a
-            // surviving member prevents PGID reuse, and the start-time floor
-            // rejects older occupants, but group membership is not lineage
-            // proof. Exact pidfd identity checks still guard every signal.
-            let root_is_live = current_root.is_some();
+            // Group membership and a start-time floor cannot prove lineage,
+            // even after the leader exits. A foreign sibling can join a live
+            // group, and pidfd only pins identity, not ownership. Fail closed
+            // for unobserved orphans rather than guessing which are ours.
             let permitted = descendant_snapshots(&known_ids, snapshots);
             if let Some(foreign) = observed.iter().find(|process| {
-                !(!root_is_live
-                    && process.process_group_id == self.process_group_id.unwrap_or_default()
-                    && process.started_at_micros >= self.process_group_started_at_micros)
-                    && !self
-                        .known
-                        .iter()
-                        .any(|known| same_process_instance(known, process))
+                !self
+                    .known
+                    .iter()
+                    .any(|known| same_process_instance(known, process))
                     && !permitted
                         .iter()
                         .any(|descendant| same_process_instance(descendant, process))
@@ -451,6 +480,11 @@ impl ObservedProcessTree {
             }
         }
         observed.extend(descendant_snapshots(&known_ids, snapshots));
+        observed.retain(|process| {
+            !self.excluded.iter().any(|excluded| {
+                excluded.id == process.id && excluded.started_at_micros == process.started_at_micros
+            })
+        });
         for process in observed {
             if !self.known.iter().any(|known| known.id == process.id) {
                 self.known.push(process);
@@ -991,6 +1025,86 @@ mod tests {
                 .iter()
                 .any(|process| same_process_instance(process, &replacement))
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_reused_group_without_adopting_new_members() {
+        let root = snapshot(10, 1, "/tmp/root", 100);
+        let mut tree = ObservedProcessTree::new(root);
+        assert!(tree.observe_snapshots(&[]).unwrap().is_empty());
+        // The old group has disappeared and its numeric PGID is now reused.
+        let mut foreign = snapshot(20, 1, "/tmp/foreign", 200);
+        foreign.process_group_id = 10;
+        assert!(tree.observe_snapshots(&[foreign]).is_err());
+        assert_eq!(tree.known.len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retains_proven_orphan_but_rejects_replacement_in_its_group() {
+        let root = snapshot(10, 1, "/tmp/root", 100);
+        let mut child = snapshot(20, 10, "/tmp/child", 101);
+        child.process_group_id = 10;
+        let mut tree = ObservedProcessTree::new(root.clone());
+        tree.observe_snapshots(&[root, child.clone()]).unwrap();
+        child.parent_id = 1;
+        assert_eq!(tree.observe_snapshots(&[child.clone()]).unwrap().len(), 1);
+        child.started_at_micros = 200;
+        assert!(tree.observe_snapshots(&[child]).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn refuses_unattributed_group_member_after_leader_exit() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        let mut leader = Command::new("/bin/sh")
+            .args(["-c", "echo ready; read release"])
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(leader.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let mut tree = ObservedProcessTree::new(process_snapshot(leader.id()).unwrap());
+        tree.observe().unwrap();
+        // This sibling is in the same session and may legally join the group,
+        // but it has never been a descendant of the owned leader.
+        let mut foreign = Command::new("/bin/sh")
+            .args(["-c", "echo ready; read release"])
+            .process_group(leader.id() as i32)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        ready.clear();
+        BufReader::new(foreign.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let before_exit = tree.signal_exact(nix::sys::signal::Signal::SIGKILL);
+        let leader_survived = leader.try_wait().unwrap().is_none();
+        leader.kill().unwrap();
+        leader.wait().unwrap();
+        let result = tree.signal_exact(nix::sys::signal::Signal::SIGKILL);
+        let survived = foreign.try_wait().unwrap().is_none();
+        let _ = foreign.kill();
+        foreign.wait().unwrap();
+        assert!(before_exit.is_err());
+        assert!(
+            leader_survived,
+            "rejection must precede any signal delivery"
+        );
+        assert!(
+            result.is_err(),
+            "an unattributed group member must reject cleanup"
+        );
+        assert!(survived, "cleanup killed an unrelated sibling");
     }
 
     #[cfg(target_os = "linux")]

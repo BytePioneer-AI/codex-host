@@ -42,6 +42,9 @@ const storedGitInfoV1Schema = z
   })
   .strict();
 
+/** At most this many `thread/inject_items` texts wait for the next Turn. */
+export const MAX_PENDING_INJECTED_TEXTS = 64;
+
 /** Fields owned by the Thread record file; Desktop metadata is stored separately. */
 const storedThreadCoreV1Shape = {
   formatVersion: z.literal(1),
@@ -80,8 +83,15 @@ const storedThreadCoreV1Shape = {
   /** Leading Turns an attached Side Chat inherited from its source; they are not listed. */
   inheritedTurnCount: z.number().int().nonnegative().optional().catch(undefined),
   /** `thread/inject_items` text not yet delivered; the next Turn carries it. */
-  pendingInjectedText: z.array(z.string()).max(64).optional().catch(undefined),
-  /** Turns whose native input begins with delivered injected text, hidden when replayed. */
+  pendingInjectedText: z
+    .array(z.string())
+    .max(MAX_PENDING_INJECTED_TEXTS)
+    .optional()
+    .catch(undefined),
+  /**
+   * Turns whose native input begins with delivered injected text, hidden when replayed. One
+   * entry per such Turn, never trimmed, so every replayed Turn stays clean.
+   */
   injectedTurnPrefixes: z
     .array(
       z.object({
@@ -90,7 +100,6 @@ const storedThreadCoreV1Shape = {
         sha256: z.string().regex(/^[a-f0-9]{64}$/u),
       }),
     )
-    .max(64)
     .optional()
     .catch(undefined),
   turnMappings: z.array(storedTurnMappingV1Schema),

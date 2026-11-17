@@ -26,6 +26,7 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import {
+  MAX_PENDING_INJECTED_TEXTS,
   THREAD_METADATA_FIELDS,
   storedDelegationRecordV1Schema,
   storedThreadMetadataV1Schema,
@@ -855,37 +856,46 @@ export class MappingStore {
     );
   }
 
-  /** Hold `thread/inject_items` text until the next Turn delivers it. */
+  /** Hold `thread/inject_items` text for the next Turn; over the limit, fail and keep the queue. */
   async appendPendingInjectedText(
     hostThreadId: HostThreadId,
     texts: readonly string[],
   ): Promise<StoredThreadRecordV1> {
     return this.#update(
       hostThreadId,
-      (current) =>
-        texts.length === 0
-          ? null
-          : {
-              ...current,
-              pendingInjectedText: [...(current.pendingInjectedText ?? []), ...texts],
-            },
+      (current) => {
+        if (texts.length === 0) return null;
+        const pending = [...(current.pendingInjectedText ?? []), ...texts];
+        if (pending.length > MAX_PENDING_INJECTED_TEXTS) {
+          throw new MappingStoreError(
+            "INVALID_RECORD",
+            `At most ${MAX_PENDING_INJECTED_TEXTS} injected texts can wait for the next Turn`,
+          );
+        }
+        return { ...current, pendingInjectedText: pending };
+      },
       true,
     );
   }
 
-  /** Release the first `count` held texts once a started Turn has delivered them. */
+  /**
+   * Record that a started Turn delivered `delivered`, and release them if they still lead the
+   * queue. Another Turn may have released them already; the queue then stays as it is.
+   */
   async consumePendingInjectedText(
     hostThreadId: HostThreadId,
-    count: number,
+    delivered: readonly string[],
     prefix: InjectedTurnPrefix,
   ): Promise<StoredThreadRecordV1> {
     return this.#update(
       hostThreadId,
       (current) => {
-        const pending = (current.pendingInjectedText ?? []).slice(count);
+        const queued = current.pendingInjectedText ?? [];
+        const leads = delivered.every((text, index) => queued[index] === text);
+        const pending = leads ? queued.slice(delivered.length) : queued;
         const next: StoredThreadRecordV1 = {
           ...current,
-          injectedTurnPrefixes: [...(current.injectedTurnPrefixes ?? []), prefix].slice(-64),
+          injectedTurnPrefixes: [...(current.injectedTurnPrefixes ?? []), prefix],
         };
         if (pending.length > 0) next.pendingInjectedText = pending;
         else delete next.pendingInjectedText;

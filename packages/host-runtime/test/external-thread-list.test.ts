@@ -13,6 +13,7 @@ import {
   listExternalThreadMetadata,
   resolveExternalSessionTreeIds,
 } from "../src/external-thread-list.js";
+import { externalThreadValue } from "../src/external-thread-repository.js";
 
 const harnessId = harnessIdSchema.parse("pi");
 
@@ -116,6 +117,22 @@ describe("External Thread metadata catalog", () => {
     expect(list({ searchTerm: "side", includeAttachedThreads: true }).map(({ id }) => id)).toEqual([
       "side-chat",
     ]);
+  });
+
+  it("takes an attached Side Chat's preview from its record, never from inherited Turns", () => {
+    const sideChat = record("side-chat", {
+      attachedToThreadId: hostThreadIdSchema.parse("source"),
+      inheritedTurnCount: 1,
+    });
+    const inherited = {
+      id: "inherited",
+      items: [{ type: "userMessage", content: [{ type: "text", text: "source message" }] }],
+    };
+    const value = (input: StoredThreadRecordV1) =>
+      externalThreadValue({ record: input, turns: [inherited], sessionId: "side-chat" }).preview;
+    expect(value(sideChat)).toBe("");
+    expect(value({ ...sideChat, preview: "own question" })).toBe("own question");
+    expect(value(record("plain"))).toBe("source message");
   });
 
   it("projects only ready records without loading Native history", () => {

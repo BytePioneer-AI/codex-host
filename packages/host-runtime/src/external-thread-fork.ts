@@ -24,6 +24,7 @@ import {
 } from "./external-thread-repository.js";
 import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
+import { ownTurns } from "./external-thread-side-chat.js";
 
 export type ExternalThreadForkResult =
   | { ok: false; error: ExternalThreadRpcError }
@@ -71,6 +72,13 @@ export async function executeExternalThreadFork(input: {
     return {
       ok: false,
       error: { code: -32602, message: "attachToSource requires a paginated parent" },
+    };
+  }
+  // A persistent Side Chat cannot outlive an ephemeral source it is listed under.
+  if (fork.attachToSource && source.record.ephemeral) {
+    return {
+      ok: false,
+      error: { code: -32602, message: "attachToSource requires a persistent parent" },
     };
   }
   if (!source.session.capabilities.history.fork) {
@@ -223,9 +231,10 @@ export async function executeExternalThreadFork(input: {
       derivedNativeRef as NativeSessionRef,
       snapshot.value,
     );
+    // A Side Chat lists only its own Turns; the runtime keeps the inherited ones as context.
     const thread = externalThreadValue({
       record: aligned.record,
-      turns: aligned.turns,
+      turns: ownTurns(aligned.record, aligned.turns),
       sessionId: source.sessionId,
     });
     const derived = runtime.register({

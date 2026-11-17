@@ -90,7 +90,7 @@ export interface ExternalThreadStore {
   ): Promise<StoredThreadRecordV1>;
   consumePendingInjectedText(
     hostThreadId: HostThreadId,
-    count: number,
+    delivered: readonly string[],
     prefix: InjectedTurnPrefix,
   ): Promise<StoredThreadRecordV1>;
   updateMetadata(
@@ -260,10 +260,10 @@ export class ExternalThreadRepository {
 
   consumePendingInjectedText(
     hostThreadId: HostThreadId,
-    count: number,
+    delivered: readonly string[],
     prefix: InjectedTurnPrefix,
   ): Promise<StoredThreadRecordV1> {
-    return this.store.consumePendingInjectedText(hostThreadId, count, prefix);
+    return this.store.consumePendingInjectedText(hostThreadId, delivered, prefix);
   }
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
@@ -613,7 +613,12 @@ export function externalThreadValue(input: {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
   const updatedAt = Math.floor(Date.parse(record.updatedAt) / 1_000);
-  const previewText = record.preview ?? firstUserMessagePreview(input.turns) ?? "";
+  // A Side Chat's preview comes from its own Turns only, and the record keeps it. Turns passed
+  // here may still include the history it inherited.
+  const previewText =
+    record.preview ??
+    (record.attachedToThreadId ? undefined : firstUserMessagePreview(input.turns)) ??
+    "";
   return {
     id: record.hostThreadId,
     sessionId: input.sessionId,

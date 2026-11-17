@@ -51,7 +51,8 @@ export async function holdInjectedItems(input: {
 
 export interface InjectedTurnText {
   text: string;
-  consumed: number;
+  /** Held texts this Turn carries, released once the Harness accepts it. */
+  delivered: readonly string[];
   prefix?: Omit<InjectedTurnPrefix, "hostTurnId">;
 }
 
@@ -64,11 +65,11 @@ export function withInjectedText(
   pending: readonly string[] | undefined,
   text: string,
 ): InjectedTurnText {
-  if (!pending?.length) return { text, consumed: 0 };
+  if (!pending?.length) return { text, delivered: [] };
   const prefix = `${pending.join("\n\n")}\n\n`;
   return {
     text: `${prefix}${text}`,
-    consumed: pending.length,
+    delivered: [...pending],
     prefix: { length: prefix.length, sha256: sha256(prefix) },
   };
 }
@@ -83,7 +84,7 @@ export async function releaseInjectedText(input: {
   if (!input.injected.prefix) return;
   input.thread.record = await input.repository.consumePendingInjectedText(
     input.thread.id,
-    input.injected.consumed,
+    input.injected.delivered,
     { hostTurnId: input.turnId, ...input.injected.prefix },
   );
 }

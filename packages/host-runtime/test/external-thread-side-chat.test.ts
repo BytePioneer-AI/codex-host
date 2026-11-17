@@ -98,6 +98,12 @@ describe("External Side Chats", () => {
       expect(rejected.error).toMatchObject({ code: -32602 });
 
       const sideChatId = await openSideChat(fixture, sourceId, 4);
+      // Only its own Turns can be undone, and it has none yet.
+      const undo = await call(fixture, 20, "thread/rollback", {
+        threadId: sideChatId,
+        numTurns: 1,
+      });
+      expect(undo.error).toMatchObject({ code: -32602 });
       const started = await call(fixture, 6, "turn/start", {
         threadId: sideChatId,
         input: [{ type: "text", text: "question" }],
@@ -116,6 +122,15 @@ describe("External Side Chats", () => {
         "synthetic",
         `${boundary(sourceId)}\n\nquestion`,
       ]);
+      // Its first own message is its preview at once, not the inherited first message.
+      const live = await call(fixture, 21, "thread/read", { threadId: sideChatId });
+      expect(live.result).toMatchObject({ thread: { preview: "question" } });
+      // Without excludeTurns, the fork response still lists no inherited Turn.
+      const unexcluded = await call(fixture, 22, "thread/fork", {
+        threadId: sourceId,
+        attachToSource: true,
+      });
+      expect(unexcluded.result).toMatchObject({ thread: { turns: [], preview: "" } });
 
       const saved = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(sideChatId));
       const nativeSessionId = saved?.nativeSessionRef?.nativeSessionId;
@@ -194,7 +209,7 @@ describe("External Side Chats", () => {
     }
   });
 
-  it("attaches only to paginated sources and deletes a source after its Side Chats", async () => {
+  it("attaches only to persistent paginated sources and deletes a source after its Side Chats", async () => {
     const fixture = createFixture();
     try {
       const legacyId = await startPiThread(fixture);
@@ -204,11 +219,20 @@ describe("External Side Chats", () => {
         attachToSource: true,
       });
       expect(legacy.error).toMatchObject({ code: -32602 });
+      const ephemeralId = await startExternalThread(fixture, "codexhost/pi-native", 11, {
+        historyMode: "paginated",
+        ephemeral: true,
+      });
+      const ephemeral = await call(fixture, 12, "thread/fork", {
+        threadId: ephemeralId,
+        attachToSource: true,
+      });
+      expect(ephemeral.error).toMatchObject({ code: -32602 });
 
       const sourceId = await startExternalThread(fixture, "codexhost/pi-native", 4, {
         historyMode: "paginated",
       });
-      await completePiTurn(fixture, sourceId, 5, 1);
+      await completePiTurn(fixture, sourceId, 5, 2);
       const sideChatId = await openSideChat(fixture, sourceId, 6);
       expect((await call(fixture, 8, "thread/delete", { threadId: sourceId })).error).toMatchObject(
         { code: -32602 },

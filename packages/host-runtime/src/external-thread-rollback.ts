@@ -255,6 +255,16 @@ export async function executeExternalThreadRollback(input: {
       error: { code: -32080, message: "External Revert boundary is unavailable" },
     };
   }
+  // A Side Chat lists only its own Turns, so only those can be undone.
+  const inherited = derived.record.attachedToThreadId
+    ? (derived.record.inheritedTurnCount ?? 0)
+    : 0;
+  if (inherited > 0 && rollback.numTurns > derived.record.turnMappings.length - inherited) {
+    return {
+      ok: false,
+      error: { code: -32602, message: "A Side Chat cannot undo the history it inherited" },
+    };
+  }
   if (rollback.numTurns === 1 && derived.session.capabilities.history.rollbackLastTurn) {
     return executeCurrentLastTurnRollback({
       current: derived,

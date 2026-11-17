@@ -74,7 +74,7 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| Adapter 公共行为 / 协议边界 | 聚焦 `test/acp.test.ts`，独立 Node ACP 子进程 | 17 项全部通过；独立协议进程，没有模拟 Adapter/Transport |
+| Adapter 公共行为 / 协议边界 | 聚焦 `test/acp.test.ts`，独立 Node ACP 子进程 | 19 项分批验证通过；独立协议进程，没有模拟 Adapter/Transport |
 | 原生边界 | 官方 CLI 0.213.1 initialize / list / new / models --json | initialize 成功；list/new 明确 Authentication required；models 空列表 |
 | 插件加载 / Host 集成 | 构建预装集合与真实 Loader；搬移目录、并发工厂、显式命令覆盖 | 29 项通过、1 项既有测试跳过（OpenCode 真实 CLI 用例未设置 CODEXHOST_OPENCODE_REAL_COMMAND）；真实 Loader 验证通过 |
 | 真实原生验收 | Windows；账号无 CLI 权限 | 未完成：不宣称登录后对话和配置能力通过 |

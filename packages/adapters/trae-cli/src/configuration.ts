@@ -6,6 +6,7 @@ import type {
   HarnessSessionState,
 } from "@codexhost/harness-adapter";
 import {
+  harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
   harnessPermissionModeCatalogSchema,
@@ -82,5 +83,5 @@ export function cliCatalog(raw: unknown): HarnessModelCatalog {
     const label = typeof value.name === "string" ? value.name : value.id;
     return { ref: modelRef(value.id), label };
   });
-  return { models, thinkingOptions: [] };
+  return harnessModelCatalogSchema.parse({ models, thinkingOptions: [] });
 }

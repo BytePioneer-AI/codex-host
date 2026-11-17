@@ -112,6 +112,17 @@ function outputs(session: HarnessSession) {
 }
 
 describe("TRAE CLI ACP public behavior through an owned native process", () => {
+  it.each(["duplicate-models", "blank-label"])(
+    "rejects invalid CLI catalogs before publishing ready: %s",
+    async (scenario) => {
+      const f = await fixture(scenario);
+      expect(await f.adapter.inspect({ cwd: f.root })).toMatchObject({
+        status: "unavailable",
+        error: { code: "protocolError" },
+      });
+      expect((await f.audit()).some((row) => row.method === "session/new")).toBe(false);
+    },
+  );
   it("inspects and caches the CLI catalog without session/new or prompt; factory update stays manual", async () => {
     const f = await fixture();
     const inspected = await f.adapter.inspect({ cwd: f.root });

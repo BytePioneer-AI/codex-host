@@ -16,6 +16,19 @@ const audit = (method, params) =>
 const args = process.argv.slice(2);
 if (args[0] === "models") {
   audit("models", args);
+  if (scenario === "duplicate-models") {
+    console.log(
+      JSON.stringify([
+        { id: "duplicate", name: "First" },
+        { id: "duplicate", name: "Second" },
+      ]),
+    );
+    process.exit(0);
+  }
+  if (scenario === "blank-label") {
+    console.log(JSON.stringify([{ id: "model", name: "" }]));
+    process.exit(0);
+  }
   console.log(
     JSON.stringify([
       { id: "provider/model-a", name: "Model A" },

@@ -31,7 +31,11 @@ import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
 import { handleSkillsList } from "./skill-library-host.js";
-import { externalTurnInputText } from "./external-turn-input.js";
+import {
+  EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED,
+  externalTurnInputText,
+  isInputlessInterruptedTaskResume,
+} from "./external-turn-input.js";
 import {
   HarnessLaunchSettingsStore,
   HarnessPreferencesStore,
@@ -5114,6 +5118,10 @@ export class AppServerHost {
         );
         return;
       }
+    }
+    if (isInputlessInterruptedTaskResume(params)) {
+      await this.#writer.json(rpcError(request, -32078, EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED));
+      return;
     }
     let text: string;
     try {

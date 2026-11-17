@@ -31,7 +31,12 @@ import { ExternalThreadPrewarms } from "./external-thread-prewarms.js";
 import { SkillLibrary } from "@codexhost/skill-library";
 import { SKILLS_LIST_METHOD, SKILLS_CHANGED_METHOD } from "@codexhost/shared-contracts";
 import { handleSkillsList } from "./skill-library-host.js";
-import { externalTurnInputText } from "./external-turn-input.js";
+import {
+  EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED,
+  externalTurnInputText,
+  isInputlessInterruptedTaskResume,
+} from "./external-turn-input.js";
+import { materializeExternalImages } from "./external-inline-attachments.js";
 import {
   HarnessLaunchSettingsStore,
   HarnessPreferencesStore,
@@ -326,7 +331,10 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
-import { externalThreadListEntries } from "./external-thread-list.js";
+import {
+  externalThreadListEntries,
+  type ExternalThreadListRuntimeState,
+} from "./external-thread-list.js";
 import { ModelPriceCatalog } from "./model-prices.js";
 import { UsageMeasurementsStore } from "./usage-measurements-store.js";
 import { ObservedSessionUsage } from "./observed-session-usage.js";
@@ -346,8 +354,6 @@ import {
   parseJsonFrame,
   projectCodexThreadUsage,
   readLfFrames,
-  writeFrame,
-  writeJsonFrame,
   jsonRpcRequestSchema,
   threadForkResult,
   threadRevertResult,
@@ -632,27 +638,36 @@ function turnProjectionGate(): TurnProjectionGate {
 }
 
 class OrderedWriter {
-  #tail = Promise.resolve();
-
   constructor(
     private readonly stream: Writable,
     /** Returns true for a message it consumed instead of the stream. */
     private readonly intercept: (value: JsonValue) => boolean = () => false,
   ) {}
 
-  frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
-    return this.#enqueue(() => writeFrame(this.stream, frame));
+  async frame(frame: Buffer<ArrayBufferLike>): Promise<void> {
+    await this.write(Buffer.concat([frame, Buffer.from("\n")]));
   }
 
-  json(value: JsonValue): Promise<void> {
-    if (this.intercept(value)) return Promise.resolve();
-    return this.#enqueue(() => writeJsonFrame(this.stream, value));
+  async json(value: JsonValue): Promise<void> {
+    if (this.intercept(value)) return;
+    // Writable owns ordering and backpressure, including unawaited shared notifications.
+    await this.write(encodeJsonFrame(value));
   }
 
-  #enqueue(operation: () => Promise<void>): Promise<void> {
-    const next = this.#tail.then(operation, operation);
-    this.#tail = next.catch(() => undefined);
-    return next;
+  private write(frame: Buffer<ArrayBufferLike>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      // Accepted writes must not hold Host state updates until a next-tick callback.
+      // A backpressured write waits only for its own completion, not a global drain.
+      const closed = () =>
+        reject(new Error("Protocol stream closed before pending write completed"));
+      const accepted = this.stream.write(frame, (error) => {
+        this.stream.off("close", closed);
+        if (error) reject(error);
+        else resolve();
+      });
+      if (accepted) resolve();
+      else this.stream.once("close", closed);
+    });
   }
 }
 
@@ -3058,11 +3073,18 @@ export class AppServerHost {
     }
   }
 
-  #listRuntimeState(threadId: string): { running: boolean } | null {
+  #listRuntimeState(threadId: string): ExternalThreadListRuntimeState | null {
     const subagentStatus = this.#subagentThreadStatuses.get(threadId);
     if (subagentStatus) return { running: subagentStatus === "active" };
     const thread = this.#externalRuntime.get(threadId);
-    return thread ? { running: thread.running } : null;
+    return thread
+      ? {
+          running: thread.running,
+          hasSubmittedTurn:
+            !thread.unsubmittedPrewarm &&
+            (thread.activeTurnId !== null || thread.projectedTerminalTurnId !== null),
+        }
+      : null;
   }
 
   /** `section_position` lists merge External section placements into the official order. */
@@ -5098,8 +5120,16 @@ export class AppServerHost {
         return;
       }
     }
+    if (isInputlessInterruptedTaskResume(params)) {
+      await this.#writer.json(rpcError(request, -32078, EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED));
+      return;
+    }
     let text: string;
     try {
+      params.input = await materializeExternalImages(
+        requestInput(params),
+        this.#options.environment ?? process.env,
+      );
       text = requestText(params);
     } catch (error) {
       await this.#writer.json(rpcError(request, -32602, errorMessage(error)));
@@ -5213,6 +5243,10 @@ export class AppServerHost {
         return;
       }
       if (request.method === "thread/queue/add") {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
         requestText(params);
         const queuedSubmission = this.#externalQueue.add(
           thread.id,
@@ -5249,6 +5283,10 @@ export class AppServerHost {
       }
       if (!itemId) throw new ExternalSteerError(-32602, "Queued submission identity is required");
       if (request.method === "thread/queue/update") {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
         requestText(params);
         const queuedSubmission = this.#externalQueue.update(
           thread.id,
@@ -5404,7 +5442,7 @@ export class AppServerHost {
     }
   }
 
-  /** Watch uses the same steering operation as Desktop. */
+  /** `thread send --steer` uses the same steering operation as Desktop. */
   async #steerDelegatedExternalTurn(thread: ExternalThread, text: string): Promise<string> {
     if (this.#externalSteering.hasPending(thread.id) || !thread.running || !thread.activeTurnId) {
       throw new DelegationControlError("THREAD_BUSY", "Thread is not ready for steering");
@@ -5477,6 +5515,14 @@ export class AppServerHost {
           expectedTurnId: marker.data.expectedTurnId,
           [THREAD_STEER_DELIVERY_PARAM]: marker.data.delivery,
         };
+      }
+      try {
+        params.input = await materializeExternalImages(
+          requestInput(params),
+          this.#options.environment ?? process.env,
+        );
+      } catch (error) {
+        throw new ExternalSteerError(-32602, errorMessage(error));
       }
       queued = this.#externalQueue.takeSteered(thread.id, params.clientUserMessageId, params.input);
       const started = await this.#externalSteering.run(

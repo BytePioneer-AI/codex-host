@@ -238,7 +238,7 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 - **AND** 它 MUST NOT 仅以自由文本表述成败
 
 ### Requirement: 调用方可显式注册一次性 Thread 停下通知
-系统 SHALL 提供 `thread watch` 与 `thread watches`，在任意两个不同 Thread 间注册一次性通知，不要求委派血缘。watch 在被观察 Thread 停下、等待回答或到期时，SHALL 通过 `thread send` 的 `steer: true` 路径提交一次通知：原生 Codex 复用 `turn/steer`，外部 Harness 复用 Desktop 的送达操作，空闲 Thread 开始新 Turn。通知 SHALL 只报告执行状态、Thread 链接及问题身份，不携带或摘要会话内容，也不表示工作已验收。终态 SHALL 优先于待答题；仅非终态存在问题时报告 `needsInput`，题目 MUST NOT 改写 Thread 状态。未送达 watch SHALL 持久化并在 Runtime 重启后接续；被观察 Thread 的取消被接受时 SHALL 移除其 watch。
+系统 SHALL 提供 `thread watch` 与 `thread watches`，在任意两个不同 Thread 间注册一次性通知，不要求委派血缘。watch 在被观察 Thread 停下、等待回答或到期时，SHALL 通过与 `thread send` 相同的路径在被通知 Thread 中启动一个新 Turn，作为一次性通知；被通知 Thread 正在运行时 MUST NOT 插入或中断其当前 Turn，SHALL 等其空闲后再送达。通知 SHALL 只报告执行状态、Thread 链接及问题身份，不携带或摘要会话内容，也不表示工作已验收。终态 SHALL 优先于待答题；仅非终态存在问题时报告 `needsInput`，题目 MUST NOT 改写 Thread 状态。未送达 watch SHALL 持久化并在 Runtime 重启后接续；被观察 Thread 的取消被接受时 SHALL 移除其 watch。
 
 #### Scenario: 注册后立即返回
 - **WHEN** 调用方对一个运行中且没有待回答问题的 Thread 执行 `thread watch`
@@ -288,18 +288,18 @@ Host SHALL 向它拉起的 Harness 进程提供配套 CLI 的绝对路径、Runt
 
 #### Scenario: 被通知 Thread 正忙
 - **WHEN** 通知到期时被通知 Thread 有活跃 Turn
-- **THEN** 若它当前能接受输入，Host SHALL 通过同一 steering 操作把通知提交到当前 Turn
-- **AND** 暂不能接受输入时通知 SHALL 保持待送达，`THREAD_BUSY` MUST NOT 被视为已送达
+- **THEN** 通知 SHALL 保持待送达并在最长 6 小时内重试
+- **AND** `THREAD_BUSY` MUST NOT 被视为已送达
 - **AND** `thread send` 自身 MUST NOT 因此改为排队
 - **AND** 每次投递 SHALL 合并该接收方当前所有待投递通知，包括此前轮询积累的终态或 `needsInput` 通知
 
-#### Scenario: 已确认输入未被接受的投递失败
-- **WHEN** 投递失败且调用链确认输入未被接受，例如 resume 校验失败、原生明确拒绝，或替换开始前停止超时
+#### Scenario: 已确认未启动的投递失败
+- **WHEN** 投递失败且调用链确认未启动 Turn，例如 resume 校验失败或原生明确拒绝启动
 - **THEN** Host SHALL 在投递期限内保留通知并重试
 - **AND** 接收方已不存在或只读时 SHALL 直接标记 `undeliverable`
 
 #### Scenario: 投递结果未知
-- **WHEN** 投递失败且调用链不能证明输入未被接受，例如输入提交后 Harness 确认超时
+- **WHEN** 投递失败且调用链不能证明未启动 Turn，例如 Harness 启动确认超时
 - **THEN** Host MUST NOT 重试该投递
 - **AND** SHALL 将 watch 标记为 `undeliverable` 并保留结果未知的原因
 

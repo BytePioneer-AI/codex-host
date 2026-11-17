@@ -33,7 +33,7 @@
 | B10 | 提问 | 原生有则必做 | P0 | 受限 | src/acp-transport.ts、src/grok-questions.ts、src/grok-adapter.ts | test/grok-acp-questions.test.ts、test/grok-questions.test.ts、test/grok-adapter.test.ts | 已接入原生单选、多选、自由输入、回答/取消及撤回；不提供倒计时、活动续时或 Plan 特殊动作；实机待验收 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 支持 | src/grok-subagent.ts、src/grok-subagent-lifecycle.ts | test/grok-subagent.test.ts、test/grok-adapter.test.ts |  |
 | B12 | 自主 Turn | 原生有则必做 | P1 | 受限 | src/grok-adapter.ts | test/grok-adapter.test.ts | 当前仅在活动 Turn 中投影原生输出 |
-| B13 | 会话用量 | 原生有则必做 | P1 | 支持 | src/grok-usage.ts、src/grok-adapter.ts | test/grok-usage.test.ts、test/grok-acp-usage.test.ts |  |
+| B13 | 会话用量 | 原生有则必做 | P1 | 支持 | src/grok-usage.ts、src/grok-adapter.ts | test/grok-usage.test.ts、test/grok-acp-usage.test.ts、test/grok-generation-timing.test.ts | 已观测思考或原生确认零思考的请求按全部输出计速；隐藏思考且首个输出为正文时，以正文至响应完成计非思考 Token；思考数未知或整块工具参数不补造计时，Token 和原生费用保留 |
 | B14 | 请求级计量 | 原生有则必做 | P2 | 受限 | src/grok-usage.ts、src/grok-adapter.ts | test/grok-adapter.test.ts | 当前发布原生费用快照，不发布 usage.request / usage.history |
 | B15 | 接收委派 | 必做（验证项） | P1 | 受限 | src/grok-adapter.ts | test/grok-adapter.test.ts | 执行策略与环境有测试；真实完整委派未验收 |
 | B16 | 向下委派 | 原生有则必做 | P2 | 待验证 | — | 本次未进行真实向下委派 |  |

@@ -4,6 +4,7 @@ import { it } from "node:test";
 import { RemoteSessions, remoteSessionId, remoteSessionIdentity } from "../src/remote-sessions.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
+import { RemoteSessionError } from "@codexhost/desktop-control";
 import type { StreamSink } from "../src/transport.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -123,7 +124,7 @@ it("archives and undoes through workspace RPCs without losing local archives or 
   assert.equal(writes.length, 3);
 });
 
-function fixture() {
+function fixture(readError?: Error) {
   const calls: RemoteSessionOperation[] = [];
   let offline = false,
     loseWrite = false;
@@ -160,8 +161,10 @@ function fixture() {
         { hostId: "remote-control:b", online: true },
       ];
     if (operation.kind === "list") return { data: [row], nextCursor: null };
-    if (operation.kind === "read")
+    if (operation.kind === "read") {
+      if (readError) throw readError;
       return { epoch: "epoch-" + operation.hostId, result: { thread: row }, requests: [] };
+    }
     if (loseWrite) throw new Error("unknown");
     return {};
   });
@@ -180,6 +183,16 @@ function fixture() {
     },
   };
 }
+it("keeps history size errors distinct from an unavailable Desktop", async (t) => {
+  const f = fixture(new RemoteSessionError(-32094, "A remote Turn exceeds the history page limit"));
+  t.after(() => f.remote.close());
+  const result = await f.call("session/projections", {
+    sessionId: remoteSessionId("remote-ssh-discovered:a", "same"),
+  });
+  assert.ok(!result.ok);
+  assert.equal(result.error.code, "remote/history-too-large");
+  assert.equal(result.error.message, "A remote Turn exceeds the history page limit");
+});
 it("retains undo identity when the catalog sees archive before its write acknowledgement", async (t) => {
   const applied = Promise.withResolvers<undefined>();
   const acknowledgement = Promise.withResolvers<undefined>();

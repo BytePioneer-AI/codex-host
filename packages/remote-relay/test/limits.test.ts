@@ -22,12 +22,27 @@ async function start(options: Partial<RelayOptions> = {}) {
 const closed = (socket: NodeJS.EventEmitter) =>
   new Promise<void>((resolve) => socket.once("close", () => resolve()));
 afterEach(async () => {
+  vi.useRealTimers();
   await relay?.close();
   relay = undefined;
   await delay(5);
   vi.restoreAllMocks();
-  vi.useRealTimers();
 });
+
+// Keep socket I/O real while advancing the token buckets and their scheduled retries.
+async function advanceTransfer<T>(transfer: Promise<T>): Promise<T> {
+  let settled = false;
+  void transfer.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  for (let elapsed = 0; !settled && elapsed < 8000; elapsed += 10) {
+    await vi.advanceTimersByTimeAsync(10);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  expect(settled, "transfer should finish within eight virtual seconds").toBe(true);
+  return transfer;
+}
 
 describe("bandwidth and UTC quota", () => {
   it("uses one second token capacity independently in each direction", () => {
@@ -76,6 +91,7 @@ describe("bandwidth and UTC quota", () => {
   it.each(["upload", "download"])(
     "shares the %s rate across an ID's phones, without slowing another ID",
     async (direction) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
       await start({ rate: 32 * 1024 });
       const size = 48 * 1024;
       const tls = createTlsServer(credentials, (socket) => {
@@ -115,7 +131,7 @@ describe("bandwidth and UTC quota", () => {
       quick.write("small");
       expect((await quickResult).toString()).toBe("quick");
       expect(performance.now() - startTime).toBeLessThan(1000);
-      const output = await Promise.all(results);
+      const output = await advanceTransfer(Promise.all(results));
       expect(performance.now() - startTime).toBeGreaterThanOrEqual(1800);
       expect(output.map((bytes) => bytes.length)).toEqual(
         direction === "download" ? [size, size] : [2, 2],
@@ -266,6 +282,7 @@ describe("bandwidth and UTC quota", () => {
   });
 
   it("also applies the bandwidth limit to over-quota ACME traffic", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     await start({ dailyQuota: 1, rate: 8 * 1024 });
     const tls = createTlsServer({ ...credentials, ALPNProtocols: ["acme-tls/1"] }, (socket) => {
       socket.on("error", () => {});
@@ -288,7 +305,7 @@ describe("bandwidth and UTC quota", () => {
     const response = collect(validation);
     const startTime = performance.now();
     validation.write(Buffer.alloc(24 * 1024));
-    expect((await response).toString()).toBe("ack");
+    expect((await advanceTransfer(response)).toString()).toBe("ack");
     expect(performance.now() - startTime).toBeGreaterThan(1800);
   });
 
@@ -303,10 +320,15 @@ describe("bandwidth and UTC quota", () => {
     });
     await agent.registered;
     await closed(phone(agent.hostname, undefined, 4482));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     const validation = phone(agent.hostname, ["acme-tls/1"], 4482);
     await once(validation, "secureConnect");
     const startTime = performance.now();
-    await closed(validation);
+    const ended = closed(validation);
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(validation.destroyed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await ended;
     expect(performance.now() - startTime).toBeGreaterThan(9800);
-  }, 12_000);
+  });
 });

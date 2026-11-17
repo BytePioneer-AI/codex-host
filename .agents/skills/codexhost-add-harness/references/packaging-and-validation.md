@@ -101,7 +101,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
 | 预装发行 | 上一行，加上 `scripts/release/harness-plugins.json` 的 `plugins`；新增运行依赖时更新 `runtimePackages`；插件需要额外的运行资源时，核实 `packages/harness-adapter/scripts/build-plugin.mjs`、`scripts/release/prepare-payload.mjs`、`prepare-npm.mjs` 及对应 release 测试 |
 | 加载测试 | `packages/host-runtime/test/installed-harness-plugins.test.ts`（预装集合）；改动了加载机制时，还要改 `harness-plugin-loader.test.ts` |
 | 文档 | `docs/harnesses/<id>/<id>-harness-integration.md`、`docs/index.md`、`docs/harnesses/capability-boundaries.md`、README 能力表（以及 `docs/project/README.*.md`）；按需更新 `harness-plugin-runtime.md` 的安装/更新表、`docs/product/usage-metering.md` 和 `usage-statistics.md` 的「已接入」列表 |
-| 可选 | `agent-group-preference.ts` 的显示顺序、`tools/renderer-binding` 和 `tools/codex-desktop-contract-audit` 的名单、`tests/e2e/renderer-<id>.spec.ts` |
+| 可选 | `agent-group-preference.ts` 的显示顺序、`tools/renderer-binding` 和 `tools/codex-desktop-contract-audit` 的名单 |
 
 Host 包及其 tsconfig 不增加具体 Adapter 的依赖；`tools/check-boundaries.mjs` 和核心 Bundle 审计会拒绝 Adapter 或 SDK 泄漏进核心。
 

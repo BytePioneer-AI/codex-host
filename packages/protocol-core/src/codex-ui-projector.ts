@@ -713,6 +713,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
   const turn = {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
+    ...(snapshot.outcome.status === "unknown" ? { codexhostTurnOutcome: snapshot.outcome } : {}),
     items: [
       {
         id: `${turnId}-user`,

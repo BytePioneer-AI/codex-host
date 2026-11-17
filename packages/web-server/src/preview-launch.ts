@@ -80,6 +80,8 @@ export function previewLaunch(
   const env = Object.fromEntries(
     Object.entries(environment).filter(([key]) => {
       const name = key.toUpperCase();
+      // A deliberate Host setting, not inherited routing: the isolated Host must listen elsewhere.
+      if (name === "CODEXHOST_EXTERNAL_CLIENT_PORT") return true;
       return (
         !name.startsWith("CODEXHOST_") &&
         !["CODEX_CLI_PATH", "NODE_OPTIONS", "NODE_PATH"].includes(name)

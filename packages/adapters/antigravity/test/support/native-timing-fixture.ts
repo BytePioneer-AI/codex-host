@@ -21,7 +21,11 @@ export function bytes(field: number, value: Uint8Array): Buffer {
 export function nanoseconds(value: bigint): Buffer {
   return Buffer.concat([integer(1, value / 1_000_000_000n), integer(2, value % 1_000_000_000n)]);
 }
-const time = (milliseconds: number) => nanoseconds(BigInt(milliseconds) * 1_000_000n);
+const time = (milliseconds: number) =>
+  nanoseconds(
+    BigInt(Math.trunc(milliseconds)) * 1_000_000n +
+      BigInt(Math.round((milliseconds % 1) * 1_000_000)),
+  );
 
 export interface NativeTimingFixture {
   step: number;
@@ -29,6 +33,8 @@ export interface NativeTimingFixture {
   input?: number;
   cached?: number;
   output?: number;
+  thought?: number;
+  generatorThought?: number;
   created?: number;
   started?: number;
   completed?: number;
@@ -56,6 +62,7 @@ export async function writeNativeTimingDatabase(
         integer(2, fixture.input ?? 100),
         integer(3, fixture.output ?? 20),
         integer(5, fixture.cached ?? 50),
+        ...(fixture.thought !== undefined ? [integer(9, fixture.thought)] : []),
       ]);
       const metadata = Buffer.concat([
         bytes(1, time(created)),
@@ -73,7 +80,17 @@ export async function writeNativeTimingDatabase(
         ),
       ]);
       const chat = Buffer.concat([
-        bytes(4, usage),
+        bytes(
+          4,
+          fixture.generatorThought === undefined
+            ? usage
+            : Buffer.concat([
+                integer(2, fixture.input ?? 100),
+                integer(3, fixture.output ?? 20),
+                integer(5, fixture.cached ?? 50),
+                integer(9, fixture.generatorThought),
+              ]),
+        ),
         bytes(11, time(fixture.ttft ?? started - created)),
         bytes(12, time(fixture.streamDuration ?? completed - started)),
         integer(14, fixture.retries ?? 0),

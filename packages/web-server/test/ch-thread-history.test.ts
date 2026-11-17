@@ -81,6 +81,23 @@ it("opens only the latest five full Turns, then pages backwards without renumber
   assert.ok(host.requests.every((r) => ["thread/read", "thread/turns/list"].includes(r.method)));
 });
 
+it("keeps unknown historical outcomes distinct from success without hiding the answer", async () => {
+  const { row, view } = fixture(1);
+  defined(row.turns[0]).codexhostTurnOutcome = {
+    status: "unknown",
+    reason: "No native terminal record",
+  };
+  await view.refresh();
+  const end = defined(view.log.events.find((event) => event.type === "turn/end"));
+  assert.deepEqual((end.data as { reason: unknown }).reason, { kind: "unknown" });
+  assert.ok(
+    view.log.events.some(
+      (event) =>
+        event.type === "assistant/message" && JSON.stringify(event.data).includes("Answer 0"),
+    ),
+  );
+});
+
 it("preserves native message times across paging, refreshes and reopening", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1_800_000_000_000 });
   const { host, row, view } = fixture(12);

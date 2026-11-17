@@ -200,6 +200,7 @@ export async function readThreadCatalog(
     const archivedThreadIds = filterExternalThreadListRecords({
       records: local.records,
       query: listQuery(true),
+      runtimeFor: input.runtimeFor,
       placementOf: (id) => placements.get(id),
     }).map((record) => record.hostThreadId);
     return { rows, archivedThreadIds, reservedIds: new Set([...localOwners.keys(), ...sharedIds]) };

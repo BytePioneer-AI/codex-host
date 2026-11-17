@@ -30,60 +30,65 @@ describe("Claude Code runtime Model catalog", () => {
     expect(() => decodeClaudeModelRef({ id: `${alias.id}=` } as never)).toThrow();
   });
 
-  it("preserves default, aliases, and custom rows that resolve to one actual Model", () => {
-    const normalized = normalizeClaudeModelCatalog(
-      snapshot([
-        {
-          value: "default",
-          displayName: "Default",
-          description: "ignored",
-          resolvedModel: "runtime-custom",
-        },
-        {
-          value: "sonnet",
-          displayName: "Family",
-          description: "ignored",
-          resolvedModel: "runtime-custom",
-          supportsEffort: true,
-          supportedEffortLevels: ["low", "adaptive-v2", "high", "adaptive-v2"],
-        },
-        {
-          value: "custom-model",
-          displayName: "Family",
-          description: "ignored",
-          resolvedModel: "runtime-custom",
-          provider: { baseUrl: "https://private.invalid", apiKey: "secret" },
-          price: 42,
-        },
-      ]),
-    );
+  it.each([undefined, "", " \t ", "ignored"])(
+    "preserves default, aliases, and custom rows with description %j",
+    (description) => {
+      const normalized = normalizeClaudeModelCatalog(
+        snapshot([
+          {
+            value: "default",
+            displayName: "Default",
+            description: "ignored",
+            resolvedModel: "runtime-custom",
+          },
+          {
+            value: "sonnet",
+            displayName: "Family",
+            description: "ignored",
+            resolvedModel: "runtime-custom",
+            supportsEffort: true,
+            supportedEffortLevels: ["low", "adaptive-v2", "high", "adaptive-v2"],
+          },
+          {
+            value: "custom-model",
+            displayName: "Family",
+            description,
+            resolvedModel: "runtime-custom",
+            provider: { baseUrl: "https://private.invalid", apiKey: "secret" },
+            price: 42,
+          },
+        ]),
+      );
 
-    expect(normalized.catalog.models).toHaveLength(3);
-    expect(new Set(normalized.catalog.models.map(({ ref }) => ref.id)).size).toBe(3);
-    expect(new Set(normalized.catalog.models.map(({ label }) => label)).size).toBe(3);
-    expect(
-      normalized.catalog.models.filter(
-        ({ resolvedModelLabel }) => resolvedModelLabel === "runtime-custom",
-      ),
-    ).toHaveLength(3);
-    expect(normalized.catalog.defaultModel).toEqual(CLAUDE_DEFAULT_MODEL_REF);
-    expect(normalized.catalog.thinkingOptions).toEqual([
-      { id: "off", label: "Off" },
-      { id: "auto", label: "Auto" },
-      { id: "low", label: "Low" },
-      { id: "medium", label: "Medium" },
-      { id: "high", label: "High" },
-      { id: "xhigh", label: "Extra High" },
-      { id: "max", label: "Max" },
-      { id: "ultracode", label: "Ultracode" },
-    ]);
-    expect(normalized.catalog.defaultThinkingOptionId).toBe("auto");
-    expect(
-      normalized.catalog.models.find(({ label }) => label.startsWith("Family (sonnet"))
-        ?.supportedThinkingOptionIds,
-    ).toEqual(["off", "auto", "low", "medium", "high", "xhigh", "max", "ultracode"]);
-    expect(JSON.stringify(normalized.catalog)).not.toMatch(/private|apiKey|price|supportsEffort/u);
-  });
+      expect(normalized.catalog.models).toHaveLength(3);
+      expect(new Set(normalized.catalog.models.map(({ ref }) => ref.id)).size).toBe(3);
+      expect(new Set(normalized.catalog.models.map(({ label }) => label)).size).toBe(3);
+      expect(
+        normalized.catalog.models.filter(
+          ({ resolvedModelLabel }) => resolvedModelLabel === "runtime-custom",
+        ),
+      ).toHaveLength(3);
+      expect(normalized.catalog.defaultModel).toEqual(CLAUDE_DEFAULT_MODEL_REF);
+      expect(normalized.catalog.thinkingOptions).toEqual([
+        { id: "off", label: "Off" },
+        { id: "auto", label: "Auto" },
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" },
+        { id: "xhigh", label: "Extra High" },
+        { id: "max", label: "Max" },
+        { id: "ultracode", label: "Ultracode" },
+      ]);
+      expect(normalized.catalog.defaultThinkingOptionId).toBe("auto");
+      expect(
+        normalized.catalog.models.find(({ label }) => label.startsWith("Family (sonnet"))
+          ?.supportedThinkingOptionIds,
+      ).toEqual(["off", "auto", "low", "medium", "high", "xhigh", "max", "ultracode"]);
+      expect(JSON.stringify(normalized.catalog)).not.toMatch(
+        /private|apiKey|price|supportsEffort/u,
+      );
+    },
+  );
 
   it("uses deterministic bounded labels for long duplicate display names", () => {
     const displayName = "D".repeat(250);
@@ -138,6 +143,9 @@ describe("Claude Code runtime Model catalog", () => {
       },
       snapshot([{ value: "", displayName: "Bad" }]),
       snapshot([{ value: "valid", displayName: "" }]),
+      ...[null, 1, {}, [], "x".repeat(257)].map((description) =>
+        snapshot([{ value: "valid", displayName: "Valid", description }]),
+      ),
       snapshot([
         { value: "same", displayName: "First" },
         { value: "same", displayName: "Second" },

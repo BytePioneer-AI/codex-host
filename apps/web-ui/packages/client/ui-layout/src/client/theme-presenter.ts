@@ -68,7 +68,14 @@ export class ThemePresenter {
       this.appliedTokens.push(name);
     }
     this.themeColorMeta.content = getComputedStyle(body).backgroundColor;
-    if (!this.themeColorMeta.isConnected) document.head.append(this.themeColorMeta);
+    if (!this.themeColorMeta.isConnected) {
+      // Browsers use the first matching theme-color, and the page ships static
+      // system-scheme defaults for first paint. Go ahead of them so the system
+      // chrome follows the rendered palette rather than the OS scheme; removing
+      // this node in dispose() falls back to those defaults.
+      const first = document.head.querySelector('meta[name="theme-color"]');
+      document.head.insertBefore(this.themeColorMeta, first);
+    }
   }
 
   /**

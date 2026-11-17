@@ -1,5 +1,5 @@
 import { remoteApprovalPresentation } from "./remote-approval.ts";
-import { requestRemoteSession } from "@codexhost/desktop-control";
+import { requestRemoteSession, RemoteSessionError } from "@codexhost/desktop-control";
 import { z } from "zod";
 import {
   harnessConfigurationStateSchema,
@@ -23,8 +23,12 @@ import {
   viewHarnessId,
   type RemoteConfigurationSetting,
   type RemoteControls,
-  type RemoteControlsSnapshot,
 } from "./remote-session-controls.ts";
+import {
+  readRemoteHistory,
+  remoteThreadRowSchema as rowSchema,
+  type RemotePendingRequest as PendingRequest,
+} from "./remote-session-history.ts";
 import { requestOf } from "./store.ts";
 import {
   RpcError,
@@ -33,7 +37,8 @@ import {
   type StreamRegistry,
   type StreamSink,
 } from "./transport.ts";
-import { readToolOutput, toolOutputSink } from "./tool-output.ts";
+import { readToolOutput } from "./tool-output.ts";
+import { followRemoteHistory } from "./remote-history-follow.ts";
 import type { Workspaces } from "./workspaces.ts";
 import {
   remoteWorkspaceGroups,
@@ -60,47 +65,7 @@ const hostsSchema = z.array(
       .optional(),
   }),
 );
-const rowSchema = z
-  .object({
-    id: z.string().min(1),
-    cwd: z.string(),
-    modelProvider: z.string(),
-    createdAt: z.number(),
-    updatedAt: z.number(),
-    status: z.object({ type: z.string() }),
-  })
-  .passthrough();
 const pageSchema = z.object({ data: z.array(rowSchema), nextCursor: z.string().nullable() });
-const snapshotSchema = z.object({
-  result: z.object({
-    thread: rowSchema.extend({
-      turns: z.array(
-        z
-          .object({
-            id: z.string(),
-            status: z.string(),
-            items: z.array(z.object({ id: z.string(), type: z.string() }).passthrough()),
-          })
-          .passthrough(),
-      ),
-    }),
-  }),
-  epoch: z.string().min(1),
-  // Optional metadata is parsed independently below. A malformed optional
-  // control payload must not make the remote history unreadable.
-  nativeSettings: z.unknown().optional(),
-  configuration: z.unknown().optional(),
-  inspection: z.unknown().optional(),
-  harness: z.unknown().optional(),
-  interactionsAvailable: z.boolean().optional(),
-  requests: z.array(
-    z.object({
-      id: z.union([z.string(), z.number().int()]),
-      method: z.string(),
-      params: z.record(z.string(), z.unknown()),
-    }),
-  ),
-});
 export function remoteSessionId(hostId: string, threadId: string): string {
   return PREFIX + Buffer.from(JSON.stringify([hostId, threadId])).toString("base64url");
 }
@@ -124,32 +89,20 @@ export function remoteSessionIdentity(
   }
   throw new RpcError("remote/identity-invalid", "Invalid remote Thread identity");
 }
-interface PendingRequest {
-  id: string | number;
-  method: string;
-  params: Record<string, unknown>;
-}
-interface Snapshot {
-  result: { thread: ChThread };
-  epoch: string;
-  requests: PendingRequest[];
-  configuration?: RemoteControlsSnapshot["configuration"];
-  inspection?: RemoteControlsSnapshot["inspection"];
-  harness?: RemoteControlsSnapshot["harness"];
-  interactionsAvailable?: boolean;
-}
 interface Entry {
   identity: { hostId: string; threadId: string };
   row: ChThread;
   online: boolean;
   archived?: boolean;
   epoch?: string;
+  fullReadAt?: number;
   configurationRevision: number;
   view?: ChThreadView;
   viewHarnessId?: string;
   viewOrigin?: number;
   reading?: Promise<ChThreadView>;
   controls?: RemoteControls;
+  historyError?: { code: string; message: string };
 }
 type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 
@@ -160,7 +113,7 @@ export class RemoteSessions {
   private hosts = new Map<string, RemoteWorkspaceHost>();
   private controls = new Set<StreamSink>();
   private pending = new Map<string, { sessionId: string; cancel(): void }>();
-  private followTimers = new Set<NodeJS.Timeout>();
+  private readonly followLifetime = new AbortController();
   private listing: Promise<void> | undefined;
   private archiveRevision = 0;
   private archiveWrites = 0;
@@ -196,8 +149,19 @@ export class RemoteSessions {
       );
     try {
       return await this.call(parsed.data);
-    } catch {
-      const write = !["hosts", "list", "read"].includes(operation.kind);
+    } catch (error) {
+      const write = !["hosts", "list", "read", "status"].includes(operation.kind);
+      if (!write && error instanceof RemoteSessionError && ![-32090, -32093].includes(error.code))
+        throw new RpcError(
+          error.code === -32094
+            ? "remote/history-too-large"
+            : error.code === -32095
+              ? "remote/connection-changed"
+              : error.code === -32096
+                ? "remote/controller-rejected"
+                : "remote/read-failed",
+          error.message,
+        );
       throw new RpcError(
         write ? "remote/outcome-unknown" : "remote/offline",
         write
@@ -379,6 +343,7 @@ export class RemoteSessions {
           threadReference: this.reference(entry),
           nativeConnection: { state: entry.online ? "connected" : "reconnecting" },
           nativeDiscovery: false,
+          remoteHistoryError: entry.historyError ?? null,
           attachmentInput: { enabled: false },
           sessionListMetadata: { blank: false, lastPromptAt: entry.row.updatedAt * 1000 },
         },
@@ -413,13 +378,35 @@ export class RemoteSessions {
     }
     if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
     const current = entry;
+    const requireCurrent = () => {
+      const active = this.entries.get(id);
+      if (this.closed || !active)
+        throw new RpcError("remote/not-found", "Remote Thread is no longer available");
+      if (active !== current)
+        throw new RpcError(
+          "remote/connection-changed",
+          "Remote Thread changed during history read",
+        );
+    };
+    requireCurrent();
     const configurationRevision = current.configurationRevision;
     current.reading ??= (async () => {
       try {
-        const snapshot = snapshotSchema.parse(
-          await this.invoke({ kind: "read", ...identity }),
-        ) as Snapshot;
-        if (this.closed || snapshot.result.thread.id !== identity.threadId)
+        const before = JSON.stringify(this.summary(id, current));
+        const snapshot = await readRemoteHistory(
+          (operation) => this.invoke(operation),
+          identity,
+          current.view && current.epoch
+            ? {
+                thread: current.view.thread,
+                epoch: current.epoch,
+                fullReadAt: current.fullReadAt ?? 0,
+                owner: current.controls?.configuration?.owner,
+              }
+            : undefined,
+        );
+        requireCurrent();
+        if (snapshot.result.thread.id !== identity.threadId)
           throw new Error("Remote identity mismatch");
         if (configurationRevision !== current.configurationRevision) {
           const view = current.view;
@@ -432,7 +419,9 @@ export class RemoteSessions {
           this.retireView(current);
         }
         current.epoch = snapshot.epoch;
+        current.fullReadAt = snapshot.fullReadAt;
         current.online = true;
+        delete current.historyError;
         current.row = snapshot.result.thread;
         current.controls = mergeRemoteControls(
           current.controls,
@@ -441,6 +430,8 @@ export class RemoteSessions {
         );
         const row = { ...current.row, id, cwd: "" };
         const harnessId = viewHarnessId(current);
+        if (current.view?.thread.turns.some((turn, index) => row.turns[index]?.id !== turn.id))
+          this.retireView(current);
         if (!current.view || current.viewHarnessId !== harnessId) {
           if (current.view) this.retireView(current);
           current.view = this.createView(row, harnessId, current.viewOrigin);
@@ -469,6 +460,7 @@ export class RemoteSessions {
               "attachmentInput",
               "remoteHost",
               "harnessIdentity",
+              "remoteHistoryError",
             ].includes(key)
           )
             current.view.log.setProjection(key, value);
@@ -489,9 +481,23 @@ export class RemoteSessions {
             "nativeInteractionError",
             "This Desktop connection requires answering its native interactions in Codex Desktop.",
           );
+        const summary = this.summary(id, current);
+        if (JSON.stringify(summary) !== before) this.events.emit("api-session/added", summary);
+        this.events.emit("api-session/status", id, summary.running);
         return current.view;
       } catch (error) {
-        this.offline(current);
+        requireCurrent();
+        if (error instanceof RpcError && error.code === "remote/offline") this.offline(current);
+        else if (!this.closed) {
+          if (error instanceof RpcError && error.code === "remote/connection-changed")
+            this.clearPending(id);
+          current.historyError = {
+            code: error instanceof RpcError ? error.code : "remote/read-failed",
+            message: error instanceof Error ? error.message : String(error),
+          };
+          current.view?.log.setProjection("remoteHistoryError", current.historyError);
+          this.events.emit("api-session/added", this.summary(id, current));
+        }
         throw error;
       }
     })().finally(() => {
@@ -628,36 +634,14 @@ export class RemoteSessions {
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return false;
       if (endpoint !== "session/follow")
         throw new RpcError("remote/unsupported", "This remote stream is unavailable");
-      const view = await this.read(id);
-      if (sink.closed) return true;
-      view.log.follow(toolOutputSink(view.log, sink), requestOf(args));
-      let busy = false,
-        failures = 0,
-        retryAt = 0;
-      const timer = setInterval(() => {
-        if (busy || sink.closed || this.closed || Date.now() < retryAt) return;
-        busy = true;
-        void this.read(id)
-          .then(() => {
-            failures = 0;
-            retryAt = 0;
-          })
-          .catch(() => {
-            // The offline projection is already published by read(). Keep the
-            // subscription alive and back off until this viewer closes.
-            failures = Math.min(failures + 1, 5);
-            retryAt = Date.now() + Math.min(30_000, 1500 * 2 ** failures);
-          })
-          .finally(() => {
-            busy = false;
-          });
-      }, 1500);
-      timer.unref();
-      this.followTimers.add(timer);
-      sink.onClose(() => {
-        clearInterval(timer);
-        this.followTimers.delete(timer);
-      });
+      await followRemoteHistory(
+        () => this.read(id),
+        sink,
+        requestOf(args),
+        this.followLifetime.signal,
+        () => this.entries.get(id)?.historyError,
+        (view) => this.entries.get(id)?.view === view,
+      );
       return true;
     });
   }
@@ -666,6 +650,27 @@ export class RemoteSessions {
     id: string,
     request: Record<string, unknown>,
   ): Promise<unknown> {
+    if (method === "session/cancel") {
+      const identity = remoteSessionIdentity(id);
+      if (!identity) throw new RpcError("remote/identity-invalid", "Remote identity required");
+      const status = z
+        .object({
+          threadId: z.literal(identity.threadId),
+          status: z.string(),
+          turnId: z.string().min(1).nullable(),
+          epoch: z.string().min(1),
+        })
+        .parse(await this.invoke({ kind: "status", ...identity }));
+      if (status.status !== "active" || status.turnId === null)
+        throw new RpcError("remote/stop-unavailable", "No confirmed current Turn to interrupt");
+      await this.invoke({
+        kind: "interrupt",
+        ...identity,
+        epoch: status.epoch,
+        turnId: status.turnId,
+      });
+      return { accepted: true };
+    }
     const readOnly = [
       "session/projections",
       "session/page",
@@ -726,12 +731,6 @@ export class RemoteSessions {
         };
         break;
       }
-      case "session/cancel": {
-        const turn = entry.row.turns.find((turn) => turn.status === "inProgress");
-        if (!turn) throw new RpcError("remote/stop-unavailable", "No interruptible remote turn");
-        operation = { kind: "interrupt", ...base, turnId: turn.id };
-        break;
-      }
       case "session/rename":
         operation = { kind: "rename", ...base, name: String(request.title ?? "") };
         break;
@@ -779,8 +778,7 @@ export class RemoteSessions {
   close(): void {
     this.closed = true;
     clearInterval(this.timer);
-    for (const timer of this.followTimers) clearInterval(timer);
-    this.followTimers.clear();
+    this.followLifetime.abort();
     for (const id of this.entries.keys()) this.clearPending(id);
     for (const entry of this.entries.values()) entry.view?.log.reconnectFollowers();
     this.controls.clear();

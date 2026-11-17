@@ -178,7 +178,9 @@ describe("source-separated Thread catalog", () => {
     expect(result.ownership.map((owner) => owner.threadId)).toEqual(["parent", "native"]);
     expect(result.archivedThreadIds).toEqual(["known-archived"]);
     expect(options.readLocal).toHaveBeenCalledTimes(1);
-    expect(runtimeFor).toHaveBeenCalledExactlyOnceWith("parent");
+    expect(runtimeFor).toHaveBeenCalledWith("parent");
+    expect(runtimeFor).toHaveBeenCalledWith("creating");
+    expect(runtimeFor).not.toHaveBeenCalledWith("known-archived");
     expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ archived: false }));
   });
 

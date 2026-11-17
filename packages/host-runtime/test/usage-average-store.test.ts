@@ -9,7 +9,7 @@ it("merges concurrent request timing snapshots once and filters removed Turns on
   const a = new UsageMeasurementsStore(directory, () => {});
   const b = new UsageMeasurementsStore(directory, () => {});
   const first = {
-    version: 3 as const,
+    version: 4 as const,
     requestId: "a",
     turnId: "one",
     outputTokens: 100,
@@ -17,7 +17,7 @@ it("merges concurrent request timing snapshots once and filters removed Turns on
     completedAtMs: 2000,
   };
   const second = {
-    version: 3 as const,
+    version: 4 as const,
     requestId: "b",
     turnId: "two",
     outputTokens: 300,

@@ -24,12 +24,8 @@ export default [
       "coverage/**",
       "node_modules/**",
       "openspec/**",
-      "playwright-report/**",
       "reference/**",
       "target/**",
-      "test-results/**",
-      // Imported DSH test sources keep their upstream lint rules.
-      "tests/dsh/**",
       "**/dist/**",
     ],
   },

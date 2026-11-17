@@ -321,7 +321,7 @@ describe("bandwidth and UTC quota", () => {
     await Promise.all(stalled.map((client) => once(client, "data")));
     await closed(phone(agent.hostname, undefined, 4482));
     const ended = Promise.all(stalled.map(closed));
-    await vi.advanceTimersByTimeAsync(119_999);
+    await vi.advanceTimersByTimeAsync(30 * 60_000 - 1);
     expect(stalled.every((client) => !client.destroyed)).toBe(true);
     await vi.advanceTimersByTimeAsync(1);
 
@@ -352,7 +352,7 @@ describe("bandwidth and UTC quota", () => {
     const sender = direction === "upload" ? client : server;
     const receiver = direction === "upload" ? server : client;
     for (let index = 0; index < 2; index++) {
-      await vi.advanceTimersByTimeAsync(90_000);
+      await vi.advanceTimersByTimeAsync(1_350_000);
       const received = once(receiver, "data");
       sender.write("still forwarding");
       expect((await received)[0].toString()).toBe("still forwarding");

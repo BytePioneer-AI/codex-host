@@ -52,7 +52,7 @@ afterEach(async () => {
 
 describe("per-IP connection rate limits", () => {
   it.each([
-    { mode: "defaults", options: {}, limit: 10, ban: 60_000 },
+    { mode: "defaults", options: {}, limit: 50, ban: 10_000 },
     {
       mode: "configured limits",
       options: { ipConnectionLimit: 3, ipConnectionWindow: 2_000, ipBanDuration: 1_000 },

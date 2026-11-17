@@ -2,9 +2,9 @@ export class ConnectionRateLimiter {
   private entries = new Map<string, { attempts: number[]; bannedUntil: number }>();
 
   constructor(
-    private limit = 10,
+    private limit = 50,
     private window = 10_000,
-    private banDuration = 60_000,
+    private banDuration = 10_000,
   ) {
     for (const [name, value] of [
       ["--ip-connection-limit", limit],

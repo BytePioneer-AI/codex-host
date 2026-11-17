@@ -957,9 +957,11 @@ export class CodexTurnProjector {
         if (!this.#completed) throw new Error("Host foreground output must use item.started");
         if (event.item.type !== "agentMessage" && event.item.type !== "reasoning")
           throw new Error("Only a text Item can start after its Turn completes");
-        this.#startItem({ ...event, type: "item.started" }, emittedAtMs);
-        this.#detached.add(event.item.itemId);
-        return { messages: [] };
+        {
+          const started = this.#startItem({ ...event, type: "item.started" }, emittedAtMs);
+          this.#detached.add(event.item.itemId);
+          return started;
+        }
       case "item.detached":
         if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
           throw new Error("Only a command Item can outlive its Turn");

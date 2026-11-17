@@ -68,6 +68,18 @@ describe("Codex UI projector background Items", () => {
     expect(projector.openDetachedWireItems()).toEqual(new Map());
   });
 
+  it("announces a background Item that starts with text", () => {
+    const projector = completedProjector();
+    const started = projector.project(
+      { type: "item.background.started", turnId, item: { ...message, text: "awake" } },
+      2_000,
+    );
+    expect(started.messages).toMatchObject([
+      { method: "item/started", params: { turnId, item: { id: message.itemId } } },
+    ]);
+    expect(projector.hasOpenDetachedItems).toBe(true);
+  });
+
   it("rejects a background Item before the Turn completes", () => {
     const projector = new CodexTurnProjector({
       threadId: "thread-1",

@@ -114,6 +114,7 @@ export class ChSessions {
     displayEntries?: () => Promise<HarnessDisplayEntries>,
     private readonly preferences?: WebHarnessPreferences,
     harnesses?: ReadonlySet<string>,
+    private readonly openFile?: (path: unknown) => Promise<{ opened: true }>,
   ) {
     this.catalog = new ChHarnessCatalog(host, events, displayEntries, preferences, harnesses);
     this.attachments = images ? new ChAttachments(images, files) : undefined;
@@ -1497,11 +1498,21 @@ export class ChSessions {
         : page;
     });
     rpc.register("session/workspacePathApplications", () => ({ applications: [] }));
-    rpc.register("session/openWorkspacePath", () => {
-      throw new RpcError(
-        "session/open-unavailable",
-        "Opening computer paths is unavailable in Web.",
-      );
+    rpc.register("session/openWorkspacePath", async (args, context) => {
+      if (context.relay)
+        throw new RpcError(
+          "session/open-unavailable",
+          "Remote connections cannot open Host files.",
+        );
+      const request = requestOf<{ path: string; action?: string; application?: string }>(args);
+      if (request.action !== undefined || request.application !== undefined)
+        throw new RpcError(
+          "session/open-unavailable",
+          "Only the system default application is supported.",
+        );
+      if (!this.openFile)
+        throw new RpcError("session/open-unavailable", "The native launcher is unavailable.");
+      return this.openFile(request.path);
     });
     for (const [method, archived] of [
       ["workspace/archiveSession", true],

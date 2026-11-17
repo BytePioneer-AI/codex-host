@@ -634,8 +634,11 @@ function MarkdownFileLink({
       type="button"
       className={clsx(css.fileMention, css.fileLink)}
       title={src === undefined ? file.path : undefined}
-      onClick={() => {
-        openFile(file.path, file.line === undefined ? undefined : { line: file.line });
+      onClick={(event) => {
+        openFile(file.path, {
+          ...(file.line === undefined ? {} : { line: file.line }),
+          ...(event.ctrlKey || event.metaKey ? { external: true } : {}),
+        });
       }}
     >
       {glyph && <LinkIconMedium kind={classifyLinkPath(file.path)} className={css.linkIcon} />}

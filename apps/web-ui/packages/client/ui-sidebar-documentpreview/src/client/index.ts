@@ -95,6 +95,7 @@ export const inject = [
   "sidebarRightTabs",
   "remote",
   "remote.workspaceFiles",
+  "remote.session",
   "configForms",
   "resources",
 ];
@@ -149,6 +150,10 @@ export function apply(ctx: ClientContext): void {
             },
             inject: (sessionId, actions): TextPreviewInjected => ({
               ...face(sessionId, actions),
+              openExternal: async (path, signal) => {
+                const result = await ctx.remote.session.openWorkspacePath({ path }, signal);
+                if (!result.ok) throw new Error(result.error.message);
+              },
               hooks: { documentPreviews: source },
             }),
           },

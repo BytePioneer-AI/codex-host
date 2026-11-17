@@ -37,7 +37,8 @@ export interface MarkdownDelegate {
    * @param path - Absolute or workspace-relative file path.
    * @param options - First line to reveal when the destination specifies a line or range.
    */
-  readonly openFile?: ((path: string, options?: { line?: number }) => void) | undefined;
+  readonly openFile?:
+    ((path: string, options?: { line?: number; external?: boolean }) => void) | undefined;
 }
 
 const MarkdownDelegateContext = createContext<MarkdownDelegate>({});

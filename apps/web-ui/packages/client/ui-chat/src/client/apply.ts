@@ -77,6 +77,7 @@ export const inject = [
   "configForms",
   "remote",
   "remote.session",
+  "remote.workspaceFiles",
   "sidebarRight",
 ];
 
@@ -257,6 +258,15 @@ export function apply(ctx: Context): void {
             // to land.
             openFile: async (path, options) => {
               const cwd = ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd;
+              if (options?.external) {
+                const meta = await ctx.remote.workspaceFiles.stat(sessionId, path);
+                if (!meta.ok) throw new Error(meta.error.message);
+                const result = await ctx.remote.session.openWorkspacePath({
+                  path: meta.value.absolutePath,
+                });
+                if (!result.ok) throw new Error(result.error.message);
+                return;
+              }
               const url = fileAddressFor(sessionId, cwd, path);
               if (options?.line === undefined) ctx.sidebarRight.openResource(url);
               else ctx.sidebarRight.openResource(url, { params: { line: options.line } });

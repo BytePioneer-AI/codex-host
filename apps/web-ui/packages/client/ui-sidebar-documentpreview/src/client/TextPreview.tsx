@@ -51,6 +51,7 @@ export type { LoadedPage } from "./text/lines.ts";
 
 /** Private registration inputs; the framework binds the registry source to useDocumentPreviews. */
 export interface TextPreviewInjected extends TextInjected {
+  readonly openExternal: (path: string, signal: AbortSignal) => Promise<void>;
   readonly hooks: {
     readonly documentPreviews: ObservableSnapshot<readonly DocumentPreviewDefinition[]>;
   };
@@ -88,6 +89,7 @@ export function TextPreview({
   t,
   addResource,
   setResources,
+  openExternal,
 }: TextPreviewProps): ReactNode {
   const { tab } = useTabInfo();
   const { navigation, signal } = tab;
@@ -133,6 +135,26 @@ export function TextPreview({
   const [menuOpen, setMenuOpen] = useState(false);
   const absolutePath = meta.value?.absolutePath ?? current?.complete?.absolutePath;
   const displayPath = absolutePath ?? file.path;
+  const [openError, setOpenError] = useState<string>();
+  const pathLabel = (
+    <>
+      <PathLabel
+        path={displayPath}
+        className={css.path}
+        data-textpreview-path
+        onClick={(event) => {
+          if (!(event.ctrlKey || event.metaKey) || absolutePath === undefined) return;
+          event.preventDefault();
+          setOpenError(undefined);
+          void openExternal(absolutePath, signal).catch((error: unknown) => {
+            if (!signal.aborted)
+              setOpenError(error instanceof Error ? error.message : String(error));
+          });
+        }}
+      />
+      {openError !== undefined && <span role="alert">{openError}</span>}
+    </>
+  );
   // Contributions that hand the file to the Host wait for its Host path.
   const fileOwner = absolutePath === undefined ? undefined : { absolutePath };
   // Every tab of this type is a `file` resource address, so its params are the
@@ -342,7 +364,7 @@ export function TextPreview({
         data-textpreview-url={tab.contentId}
       >
         <div className={css.header}>
-          <PathLabel path={displayPath} className={css.path} data-textpreview-path />
+          {pathLabel}
           {fileOwner !== undefined && renderSlot("sidebar.right.tab.document.actions", fileOwner)}
         </div>
         <div className={css.body} data-textpreview-body>
@@ -411,7 +433,7 @@ export function TextPreview({
         )
       )}
       <div className={css.header}>
-        <PathLabel path={displayPath} className={css.path} data-textpreview-path />
+        {pathLabel}
         {candidates.length > 1 && (
           <Menu
             open={menuOpen}

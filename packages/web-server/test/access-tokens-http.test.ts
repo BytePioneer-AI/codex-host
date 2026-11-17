@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -549,6 +550,64 @@ it("limits failed tokens by address without affecting signed-in devices", async 
     200,
   );
   assert.equal((await send(base, "/")).status, 401);
+});
+
+it("limits concurrent failed logins whose bodies arrive after all headers", async (t) => {
+  const { base } = await start(t);
+  const body = JSON.stringify({ token: "wrong" });
+  const continued = "HTTP/1.1 100 Continue\r\n\r\n";
+  const attempts = Array.from({ length: 30 }, () => {
+    const socket = createConnection({ host: base.hostname, port: Number(base.port) });
+    t.after(() => socket.destroy());
+    socket.setEncoding("utf8");
+    socket.setTimeout(5000, () => socket.destroy(new Error("Delayed login timed out")));
+    let response = "";
+    const ready = new Promise<void>((done, fail) => {
+      socket.on("data", (chunk) => {
+        response += chunk;
+        if (response.startsWith(continued)) done();
+      });
+      socket.once("error", fail);
+      socket.once("end", () => fail(new Error("Login ended before 100 Continue")));
+    });
+    socket.write(
+      [
+        "POST /api/auth/login HTTP/1.1",
+        `Host: ${base.host}`,
+        "Content-Type: application/json",
+        `Content-Length: ${Buffer.byteLength(body)}`,
+        "Expect: 100-continue",
+        "Connection: close",
+        "\r\n",
+      ].join("\r\n"),
+    );
+    return { socket, ready, response: () => response.slice(continued.length) };
+  });
+
+  // The server has accepted every header, but no login can finish until we send the bodies.
+  await Promise.all(attempts.map(({ ready }) => ready));
+  const replies = await Promise.all(
+    attempts.map(async ({ socket, response }) => {
+      const ended = once(socket, "end");
+      socket.write(body);
+      await ended;
+      return response();
+    }),
+  );
+  assert.deepEqual(
+    {
+      unauthorized: replies.filter((reply) => reply.startsWith("HTTP/1.1 401 ")).length,
+      limited: replies.filter((reply) => reply.startsWith("HTTP/1.1 429 ")).length,
+    },
+    { unauthorized: 10, limited: 20 },
+  );
+  for (const reply of replies) {
+    assert.match(
+      reply,
+      reply.startsWith("HTTP/1.1 429 ") ? /"auth\/rate-limited"/u : /"auth\/invalid-token"/u,
+    );
+    assert.doesNotMatch(reply, /\r\nset-cookie:/iu);
+  }
 });
 
 it("refuses management and keeps push subscriptions working with authentication off", async (t) => {

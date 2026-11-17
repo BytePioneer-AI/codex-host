@@ -44,6 +44,7 @@ cancellation and responses pass through the MCP SDK transports. The native
 configuration supplies tool approvals, tool selection, output limits and timeouts.
 Authenticated MCP POST bodies are limited to 16 MiB before parsing. The stdio
 entry accepts the same payload budget with room for its line terminator.
+The limit applies to each request across fragmented or combined stdio reads.
 
 The listener accepts profiles received through Desktop's stdin and validates
 the first-party executable against the selected runtime's `node_repl`. Profiles

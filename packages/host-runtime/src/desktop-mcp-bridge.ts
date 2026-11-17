@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { Readable } from "node:stream";
+import { Readable, type Writable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { once } from "node:events";
 import {
@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { JSONRPCMessage, RequestId } from "@modelcontextprotocol/sdk/types.js";
 import type { JsonObject } from "@codexhost/protocol-core";
+import { readLfFrames } from "@codexhost/protocol-core";
 import {
   DesktopMcpConfigTransform,
   desktopStdioConfig,
@@ -395,18 +396,38 @@ export async function createDesktopMcpBridge(options: {
 }
 
 /** Preserves the native stdio contract while its genuine tool process is owned by Desktop. */
-export async function runDesktopMcpClient(arguments_: string[]): Promise<number> {
+export async function runDesktopMcpClient(
+  arguments_: string[],
+  streams: { input: Readable; output: Writable } = {
+    input: process.stdin,
+    output: process.stdout,
+  },
+): Promise<number> {
   const [url, authorization] = arguments_;
   if (!url || !authorization) throw new Error("Desktop MCP connection is unavailable");
   const http = new StreamableHTTPClientTransport(new URL(url), {
     requestInit: { headers: { Authorization: authorization } },
   });
-  const stdio = new StdioServerTransport(process.stdin, process.stdout, {
-    // Leave room for the stdio frame's LF or CRLF terminator.
-    maxBufferSize: MAX_MCP_REQUEST_BYTES + 2,
+  const input = Readable.from(
+    (async function* () {
+      for await (const frame of readLfFrames(streams.input, {
+        maxFrameBytes: MAX_MCP_REQUEST_BYTES + 1,
+      })) {
+        const body = frame.at(-1) === 0x0d ? frame.subarray(0, -1) : frame;
+        if (body.length > MAX_MCP_REQUEST_BYTES)
+          throw new Error("Desktop MCP request exceeds its limit");
+        yield Buffer.concat([body, Buffer.from("\n")]);
+      }
+    })(),
+    // Deliver each bounded frame separately to the SDK's aggregate read buffer.
+    { objectMode: true, highWaterMark: 1 },
+  );
+  const stdio = new StdioServerTransport(input, streams.output, {
+    maxBufferSize: MAX_MCP_REQUEST_BYTES + 1,
   });
   const done = Promise.withResolvers<number>();
   const failed = () => done.resolve(1);
+  input.on("error", failed);
   http.onmessage = (message) => {
     void stdio.send(message).catch(failed);
   };
@@ -418,20 +439,21 @@ export async function runDesktopMcpClient(arguments_: string[]): Promise<number>
   http.onerror = failed;
   stdio.onerror = failed;
   const inputClosed = () => done.resolve(0);
-  process.stdin.once("end", inputClosed);
-  process.stdin.once("close", inputClosed);
-  if (process.stdin.readableEnded || process.stdin.destroyed) inputClosed();
+  input.once("end", inputClosed);
+  input.once("close", inputClosed);
+  if (input.readableEnded || input.destroyed) inputClosed();
   try {
     await http.start();
     await stdio.start();
     return await done.promise;
   } finally {
-    process.stdin.off("end", inputClosed);
-    process.stdin.off("close", inputClosed);
+    input.off("end", inputClosed);
+    input.off("close", inputClosed);
     await http.terminateSession().catch(() => undefined);
     await http.close();
+    input.destroy();
+    streams.input.destroy();
     await stdio.close();
-    process.stdin.pause();
   }
 }
 

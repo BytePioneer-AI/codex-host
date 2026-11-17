@@ -13,7 +13,7 @@ import { CallToolResultSchema, ElicitRequestSchema } from "@modelcontextprotocol
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { jsonObjectSchema } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
-import { createDesktopMcpBridge } from "../src/desktop-mcp-bridge.js";
+import { createDesktopMcpBridge, runDesktopMcpClient } from "../src/desktop-mcp-bridge.js";
 import { JsonLineCollector } from "./app-server-host-fixture.js";
 
 const initializationRequest = {
@@ -446,6 +446,58 @@ it("retains the native stdio MCP contract through the HTTP client process", asyn
   const measured = await client.callTool({ name: "measure", arguments: { input } });
   expect(measured.structuredContent).toEqual({ length: input.length });
 }, 20_000);
+
+it.each(["\n", "\r\n"])(
+  "bounds individual stdio frames when adjacent requests share a read (%j)",
+  async (ending) => {
+    const f = await setup();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const messages = new JsonLineCollector(output);
+    const connection = runDesktopMcpClient((f.config.args as string[]).slice(2), { input, output });
+    cleanup.push(async () => {
+      input.end();
+      await connection;
+    });
+    input.write(JSON.stringify(initializationRequest) + ending);
+    await messages.waitFor((message) => message.id === 0, 10_000);
+    input.write(
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + ending,
+    );
+    const request = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "measure", arguments: { input: "" } },
+    };
+    const limit = 16 * 1024 * 1024;
+    request.params.arguments.input = "x".repeat(limit - Buffer.byteLength(JSON.stringify(request)));
+    const frame = Buffer.from(JSON.stringify(request));
+    const next = {
+      ...request,
+      id: 2,
+      params: { name: "measure", arguments: { input: "next frame" } },
+    };
+    expect(frame.length).toBe(limit);
+    input.write(frame.subarray(0, frame.length - 32));
+    input.write(
+      Buffer.concat([
+        frame.subarray(frame.length - 32),
+        Buffer.from(ending + JSON.stringify(next) + ending),
+      ]),
+    );
+    const first = await messages.waitFor((message) => message.id === 1, 10_000);
+    const second = await messages.waitFor((message) => message.id === 2, 10_000);
+    expect(jsonObjectSchema.parse(first.result).structuredContent).toEqual({
+      length: request.params.arguments.input.length,
+    });
+    expect(jsonObjectSchema.parse(second.result).structuredContent).toEqual({ length: 10 });
+    input.write(Buffer.alloc(limit + 2, "x"));
+    expect(await connection).toBe(1);
+    expect((await f.records()).filter((record) => record.method === "tools/call")).toHaveLength(2);
+  },
+  20_000,
+);
 
 it("reaps initialization that finishes after its HTTP client disconnects", async () => {
   const f = await setup();

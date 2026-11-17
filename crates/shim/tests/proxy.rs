@@ -904,49 +904,73 @@ fn macos_non_desktop_caller_uses_the_official_cli_when_another_desktop_owns_the_
 
 #[cfg(target_os = "macos")]
 #[test]
-fn macos_non_desktop_caller_uses_the_official_cli_when_a_live_runtime_owns_the_mapping_store() {
+fn macos_non_desktop_caller_routes_by_the_mapping_store_owner_identity() {
     let directory = temporary_directory();
-    let data = directory.join("helper");
-    fs::create_dir_all(data.join("mapping-store")).unwrap();
-    // The Mapping Store lock names a live Node process, as a remote listener's Host Runtime does.
-    let node = directory.join("node");
-    fs::copy(fake_codex_path(), &node).unwrap();
-    let mut runtime = Command::new(&node)
-        .arg("--child-sleep")
+    let ready = directory.join("node-started-at");
+    let mut runtime = Command::new("node")
+        .args([
+            "-e",
+            "require('node:fs').writeFileSync(process.argv[1], new Date(performance.timeOrigin).toISOString()); setInterval(() => {}, 1000)",
+        ])
+        .arg(&ready)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn live Mapping Store owner");
-    fs::write(
-        data.join("mapping-store/store.lock"),
-        format!(
-            "{{\"pid\":{},\"instanceId\":\"remote-listener\",\"startedAt\":\"2026-11-07T03:59:59.986Z\"}}\n",
-            runtime.id()
-        ),
-    )
-    .unwrap();
-
-    let helper = run_unmanaged_bundle_app_server(&directory.join("bundle"), &data, 1, true);
-    let stderr = String::from_utf8_lossy(&helper.stderr);
+        .expect("spawn live Node process");
+    let started_at = wait_for_file(&ready, Duration::from_secs(5));
+    let mut results = Vec::new();
+    for (name, identity, official_cli) in [
+        ("legacy", None, true),
+        ("matching", Some(started_at.as_str()), true),
+        ("unreadable", Some("invalid"), true),
+        ("stale", Some("2000-01-01T00:00:00.000Z"), false),
+    ] {
+        let data = directory.join(name);
+        fs::create_dir_all(data.join("mapping-store")).unwrap();
+        let identity = identity.map_or_else(String::new, |value| {
+            format!(",\"processStartedAt\":\"{value}\"")
+        });
+        fs::write(
+            data.join("mapping-store/store.lock"),
+            format!(
+                "{{\"pid\":{},\"instanceId\":\"remote-listener\",\"startedAt\":\"2026-11-07T03:59:59.986Z\"{identity}}}\n",
+                runtime.id()
+            ),
+        )
+        .unwrap();
+        let helper = run_unmanaged_bundle_app_server(&data.join("bundle"), &data, 1, true);
+        results.push((name, official_cli, data, helper));
+    }
+    let runtime_survived = process_exists(runtime.id());
     let _ = runtime.kill();
     let _ = runtime.wait();
-    assert!(helper.status.success(), "{stderr}");
     assert!(
-        stderr.contains("args=app-server|--listen|stdio://"),
-        "{stderr}"
+        runtime_survived,
+        "the unrelated Node process was terminated"
     );
-    assert!(
-        stderr.contains(&format!(
-            "Host Runtime PID {} already owns the Mapping Store",
-            runtime.id()
-        )),
-        "{stderr}"
-    );
-    assert!(
-        !data.join("local-host-runtime-owner.lock").exists(),
-        "a routed helper must not acquire the Host Runtime lease"
-    );
+    for (name, official_cli, data, helper) in results {
+        let stderr = String::from_utf8_lossy(&helper.stderr);
+        assert!(helper.status.success(), "{name}: {stderr}");
+        assert_eq!(
+            stderr.contains("args=app-server|--listen|stdio://"),
+            official_cli,
+            "{name}: {stderr}"
+        );
+        assert_eq!(
+            stderr.contains(&format!(
+                "Host Runtime PID {} already owns the Mapping Store",
+                runtime.id()
+            )),
+            official_cli,
+            "{name}: {stderr}"
+        );
+        assert_eq!(
+            data.join("local-host-runtime-owner.lock").exists(),
+            !official_cli,
+            "{name}: only the Host route may acquire a lease"
+        );
+    }
     fs::remove_dir_all(directory).unwrap();
 }
 

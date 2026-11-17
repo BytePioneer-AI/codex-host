@@ -55,9 +55,10 @@ export function forward(
     socket.destroy();
     stream.destroy();
   };
-  const deadline = validation ? setTimeout(abort, 10_000) : undefined;
+  const deadline = setTimeout(abort, validation ? 10_000 : 120_000);
   let bytes = 0;
   const account = (size: number, direction: "upload" | "download") => {
+    if (!validation) deadline.refresh();
     bytes += size;
     totals[direction] += size;
     const quotaExceeded = usage.add(size, validation);

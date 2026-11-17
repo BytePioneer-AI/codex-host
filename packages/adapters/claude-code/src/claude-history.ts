@@ -380,9 +380,30 @@ function itemOutcome(outcome: HistoricalTurnOutcome): HostItemOutcome {
   return { status: "succeeded" };
 }
 
+function isCheckpointCandidate(message: ClaudeHistoryMessage): boolean {
+  return (
+    !message.nested &&
+    (message.type === "assistant" || message.interrupted || hasRootToolResult(message))
+  );
+}
+
 export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThreadSnapshot {
+  return mapClaudeSnapshotWithCheckpointIds(values, sessionId).snapshot;
+}
+
+/**
+ * Maps native history and also lists, per Turn, every root record UUID that a live
+ * `message.completed` could have published as that Turn's checkpoint. The persisted Turn
+ * checkpoint is the last of them, so callers holding an earlier live checkpoint can still
+ * locate the Turn it belongs to.
+ */
+export function mapClaudeSnapshotWithCheckpointIds(
+  values: unknown[],
+  sessionId: string,
+): { snapshot: HostThreadSnapshot; turnCheckpointIds: string[][] } {
   const messages = conversationMessages(values, sessionId);
   const turns: HostThreadSnapshot["turns"] = [];
+  const turnCheckpointIds: string[][] = [];
   for (let index = 0; index < messages.length;) {
     const user = messages[index];
     if (!user || !user.startsTurn) {
@@ -396,11 +417,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     const turnMessages = messages.slice(index, end);
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
-    const checkpointIndex = turnMessages.findLastIndex(
-      (message) =>
-        !message.nested &&
-        (message.type === "assistant" || message.interrupted || hasRootToolResult(message)),
-    );
+    const checkpointIndex = turnMessages.findLastIndex(isCheckpointCandidate);
     const lastSteering = turnMessages.findLastIndex(({ type }) => type === "steering");
     // A checkpoint before the latest delivered input cannot retain the displayed prefix.
     const checkpointMessage =
@@ -410,6 +427,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     // Tool Items count only what live reaches the Tool lifecycle: root, non-Subagent
     // blocks. Every such block consumes an ordinal so identities stay aligned.
     let toolOrdinal = 0;
+    turnCheckpointIds.push(
+      turnMessages.filter(isCheckpointCandidate).map((message) => message.uuid),
+    );
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: claudeCodeHarnessId,
@@ -590,7 +610,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     });
     index = end;
   }
-  return { turns };
+  return { snapshot: { turns }, turnCheckpointIds };
 }
 
 function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<string, unknown>> {

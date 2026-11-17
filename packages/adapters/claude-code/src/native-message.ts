@@ -851,30 +851,15 @@ export class ClaudeNativeTurnAccumulator {
       this.#activeRootStreamMessageId ?? nativeMessageId ?? checkpointId ?? this.#nextMessageId();
     const state = this.#messageState(messageId);
     if (state.completed) {
-      let textAppended = false;
-      const completeText = assistantText(message);
-      if (completeText !== null && completeText.length > 0) {
-        if (completeText.startsWith(state.text)) {
-          const suffix = completeText.slice(state.text.length);
-          if (suffix.length > 0) {
-            state.text += suffix;
-            textAppended = true;
-            events.push({ type: "text.delta", messageId, delta: suffix });
-          }
-        } else if (completeText !== state.text) {
-          this.#textConflict = true;
-        }
-      }
       this.#consumeToolUseBlocks(message, events, true);
       const usage = assistantRequestUsage(message, this.#provider);
-      const publishUsage = Boolean(usage && !state.usagePublished);
-      if (publishUsage) state.usagePublished = true;
-      if ((textAppended || publishUsage) && !this.#protocolConflict && !this.#textConflict) {
+      if (usage && !state.usagePublished) {
+        state.usagePublished = true;
         events.push({
           type: "message.completed",
           messageId,
           ...(checkpointId ? { checkpointId } : {}),
-          ...(publishUsage && usage ? { lastRequestUsage: usage } : {}),
+          lastRequestUsage: usage,
         });
       }
       return;

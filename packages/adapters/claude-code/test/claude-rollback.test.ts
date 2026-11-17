@@ -593,6 +593,141 @@ describe("Claude last-Turn rollback", () => {
     });
   });
 
+  it.each([
+    ["the persisted Assistant UUID", "cb93af3f-d06f-4ff8-bad0-b9e0c2fee509"],
+    ["a split-block stream UUID", "cb93af3f-d06f-4ff8-bad0-000000000000"],
+  ])(
+    "forks from a live checkpoint carrying %s when the Turn ends in a root tool_result",
+    async (_label, liveCheckpointId) => {
+      const f = await fixture();
+      const persistedAssistantId = "cb93af3f-d06f-4ff8-bad0-b9e0c2fee509";
+      const toolResultId = randomUUID();
+      const originalCreateTransport = f.dependencies.createTransport;
+      f.dependencies.createTransport = vi.fn((input) => {
+        const transport = originalCreateTransport(input);
+        transport.runTurn = async (text, userMessageId, onEvent) => {
+          f.histories.set(input.sessionId, [
+            ...(f.histories.get(input.sessionId) ?? []),
+            {
+              type: "user",
+              uuid: userMessageId,
+              session_id: input.sessionId,
+              message: { role: "user", content: text },
+            },
+            {
+              type: "assistant",
+              uuid: persistedAssistantId,
+              session_id: input.sessionId,
+              message: {
+                role: "assistant",
+                content: [
+                  { type: "text", text: "reading" },
+                  { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "a.ts" } },
+                ],
+              },
+            },
+            {
+              type: "user",
+              uuid: toolResultId,
+              session_id: input.sessionId,
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: "read-1", content: "contents" }],
+              },
+            },
+          ]);
+          onEvent({ type: "text.delta", messageId: "msg-tool", delta: "reading" });
+          onEvent({
+            type: "message.completed",
+            messageId: "msg-tool",
+            checkpointId: liveCheckpointId,
+          });
+          return { status: "cancelled", reason: "Cancelled by user" };
+        };
+        return transport;
+      });
+
+      const adapter = f.adapter();
+      const session = await unwrap(
+        adapter.open({ kind: "resume", cwd: f.directory, nativeRef: f.sourceRef }),
+      );
+      const outputs: Array<{ kind: string; event?: unknown }> = [];
+      const consuming = (async () => {
+        for await (const output of session.outputs) outputs.push(output);
+      })();
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse(randomUUID()),
+        input: [{ type: "text", text: "read then stop" }],
+      });
+      let liveCheckpoint: unknown;
+      await vi.waitFor(() => {
+        const completed = outputs.find(
+          (output) =>
+            output.kind === "event" &&
+            (output.event as { type?: string }).type === "turn.completed",
+        );
+        expect(completed).toBeDefined();
+        liveCheckpoint = (completed?.event as { outcome: { checkpoint?: unknown } }).outcome
+          .checkpoint;
+      });
+      expect(liveCheckpoint).toMatchObject({ checkpointId: liveCheckpointId });
+      await vi.waitFor(async () => {
+        expect(await session.readSnapshot()).toMatchObject({
+          ok: true,
+          value: { turns: [{}, { checkpoint: { checkpointId: toolResultId } }] },
+        });
+      });
+
+      const forked = await unwrap(
+        adapter.open({
+          kind: "fork",
+          cwd: f.directory,
+          sourceRef: f.sourceRef,
+          checkpoint: nativeCheckpointRefSchema.parse(liveCheckpoint),
+        }),
+      );
+      expect(f.dependencies.forkSession).toHaveBeenLastCalledWith({
+        cwd: f.directory,
+        sourceSessionId: f.sourceRef.nativeSessionId,
+        checkpointId: toolResultId,
+      });
+      expect(await forked.readSnapshot()).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            { input: [{ text: "prompt 1" }] },
+            {
+              input: [{ text: "read then stop" }],
+              items: expect.arrayContaining([
+                expect.objectContaining({
+                  item: expect.objectContaining({ type: "toolExecution", toolName: "Read" }),
+                }),
+              ]),
+            },
+          ],
+        },
+      });
+      await session.close();
+      await consuming;
+    },
+  );
+
+  it("rejects a fork checkpoint that belongs to no Turn", async () => {
+    const f = await fixture(2);
+    const result = await f.adapter().open({
+      kind: "fork",
+      cwd: f.directory,
+      sourceRef: f.sourceRef,
+      checkpoint: nativeCheckpointRefSchema.parse({
+        ...f.sourceRef,
+        checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000001",
+      }),
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
+    expect(f.dependencies.forkSession).not.toHaveBeenCalled();
+  });
+
   it("rejects missing recovery metadata instead of silently recreating it", async () => {
     const f = await fixture();
     const store = new ClaudePendingSessions(f.environment);

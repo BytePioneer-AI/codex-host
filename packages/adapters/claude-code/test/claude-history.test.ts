@@ -776,6 +776,59 @@ describe("Claude history mapping", () => {
     });
   });
 
+  it("keeps auto-compaction summary records inside the active Turn and includes trailing tool_result checkpoints", () => {
+    const history = [
+      message("user", "user-1", "first"),
+      message("assistant", "assistant-tool", [
+        { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "a.ts" } },
+      ]),
+      message("user", "tool-result-1", [
+        { type: "tool_result", tool_use_id: "tool-1", content: "ok", is_error: false },
+      ]),
+      {
+        type: "system",
+        subtype: "compact_boundary",
+        uuid: "compact-boundary-1",
+        session_id: sessionId,
+      },
+      {
+        ...message(
+          "user",
+          "compact-summary-1",
+          "This session is being continued from a previous conversation.",
+        ),
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+      },
+      message("assistant", "assistant-after-compact", [{ type: "text", text: "continued reply" }]),
+      message("user", "user-2", "second"),
+      message("assistant", "assistant-2-tool", [
+        { type: "tool_use", id: "tool-2", name: "Read", input: { file_path: "b.ts" } },
+      ]),
+      message("user", "tool-result-2", [
+        { type: "tool_result", tool_use_id: "tool-2", content: "second ok", is_error: false },
+      ]),
+    ];
+
+    expect(mapClaudeSnapshot(history, sessionId).turns).toMatchObject([
+      {
+        nativeTurnRef: { nativeTurnKey: "user-1" },
+        checkpoint: { checkpointId: "assistant-after-compact" },
+        input: [{ type: "text", text: "first" }],
+        items: [
+          { item: { type: "toolExecution", toolName: "Read" } },
+          { item: { type: "agentMessage", text: "continued reply" } },
+        ],
+      },
+      {
+        nativeTurnRef: { nativeTurnKey: "user-2" },
+        checkpoint: { checkpointId: "tool-result-2" },
+        input: [{ type: "text", text: "second" }],
+        items: [{ item: { type: "toolExecution", toolName: "Read" } }],
+      },
+    ]);
+  });
+
   it("rejects mismatched Sessions and duplicate native message identities", () => {
     const wrongSession = { ...message("user", "user-1", "first"), session_id: "other" };
     expect(() => mapClaudeSnapshot([wrongSession], sessionId)).toThrow("invalid message identity");

@@ -41,6 +41,31 @@ type ClaudeHistoryMessage = ClaudeHistoryRecord &
   );
 
 const claudeCodeHarnessId: HarnessId = harnessIdSchema.parse("claude-code");
+// Claude Code 2.1.x streams multi-block messages with block-index UUID suffixes
+// (`<prefix>-00000000000N`) while persisting the original message UUID to `.jsonl`.
+const CLAUDE_BLOCK_SPLIT_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-0{8}[0-9a-f]{4}$/iu;
+
+export function matchesClaudeCheckpointId(persistedId: string, expectedId: string): boolean {
+  if (persistedId === expectedId) return true;
+  if (!CLAUDE_BLOCK_SPLIT_UUID_PATTERN.test(expectedId)) return false;
+  return (
+    persistedId.length === 36 &&
+    persistedId.slice(0, 24).toLowerCase() === expectedId.slice(0, 24).toLowerCase()
+  );
+}
+
+export function isPersistedClaudeMessageId(
+  expectedId: string,
+  persistedIds: ReadonlySet<string>,
+): boolean {
+  if (persistedIds.has(expectedId)) return true;
+  if (!CLAUDE_BLOCK_SPLIT_UUID_PATTERN.test(expectedId)) return false;
+  for (const id of persistedIds) {
+    if (matchesClaudeCheckpointId(id, expectedId)) return true;
+  }
+  return false;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -132,6 +157,13 @@ function visibleUserTextParts(message: ClaudeHistoryMessage): string[] {
   return parts.filter((part) => !isLocalCommandRecord(part) && !isTaskNotificationRecord(part));
 }
 
+function hasRootToolResult(message: ClaudeHistoryMessage): boolean {
+  if (message.type !== "user" || message.nested || !Array.isArray(message.message.content)) {
+    return false;
+  }
+  return message.message.content.some((block) => isRecord(block) && block.type === "tool_result");
+}
+
 function isInterruptionRecord(value: Record<string, unknown>, promptId: string | null): boolean {
   if (
     value.type !== "user" ||
@@ -215,6 +247,8 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
         (interrupted ||
           value.isSynthetic === true ||
           value.isMeta === true ||
+          value.isCompactSummary === true ||
+          value.isVisibleInTranscriptOnly === true ||
           isTaskNotificationOrigin(value) ||
           (value.toolUseResult !== undefined && value.toolUseResult !== null)),
     };
@@ -363,7 +397,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
     const checkpointIndex = turnMessages.findLastIndex(
-      ({ type, interrupted, nested }) => !nested && (type === "assistant" || interrupted),
+      (message) =>
+        !message.nested &&
+        (message.type === "assistant" || message.interrupted || hasRootToolResult(message)),
     );
     const lastSteering = turnMessages.findLastIndex(({ type }) => type === "steering");
     // A checkpoint before the latest delivered input cannot retain the displayed prefix.

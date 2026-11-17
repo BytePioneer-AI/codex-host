@@ -199,6 +199,57 @@ describe("Claude native Turn interpretation", () => {
     });
   });
 
+  it("emits text.delta and message.completed when a text snapshot follows a completed thinking block on the same message ID", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const messageId = "request-2";
+    const thinking = assistantBlocks(
+      [{ type: "thinking", thinking: "plan" }],
+      "cb93af3f-d06f-4ff8-bad0-b9e0c2fee509",
+      undefined,
+      null,
+      {
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    );
+    thinking.message.id = messageId;
+    expect(turn.consume(thinking)).toEqual({
+      events: [
+        {
+          type: "message.completed",
+          messageId,
+          checkpointId: "cb93af3f-d06f-4ff8-bad0-b9e0c2fee509",
+          lastRequestUsage: {
+            requestId: messageId,
+            model: "claude-sonnet-4-6",
+            inputTokens: 100,
+            outputTokens: 10,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+          },
+        },
+      ],
+    });
+
+    const textBlock = assistantBlocks(
+      [{ type: "text", text: "final answer" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000001",
+    );
+    textBlock.message.id = messageId;
+    expect(turn.consume(textBlock)).toEqual({
+      events: [
+        { type: "text.delta", messageId, delta: "final answer" },
+        {
+          type: "message.completed",
+          messageId,
+          checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000001",
+        },
+      ],
+    });
+  });
+
   it("reconciles separate Assistant text responses across a Tool loop", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

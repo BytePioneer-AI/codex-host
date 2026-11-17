@@ -4,7 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import {
+  hostTurnIdSchema,
+  nativeCheckpointRefSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 import type { HarnessSession } from "@codexhost/harness-adapter";
 
 import { ClaudeCodeAdapter } from "../src/claude-code-adapter.js";
@@ -49,7 +53,7 @@ async function fixture(turns = 1) {
     nativeSessionId: randomUUID(),
     formatVersion: 1,
   });
-  const histories = new Map([
+  const histories = new Map<string, Array<Record<string, unknown>>>([
     [
       sourceRef.nativeSessionId,
       Array.from({ length: turns }, (_, i) =>
@@ -422,6 +426,170 @@ describe("Claude last-Turn rollback", () => {
     expect(await replacement.readSnapshot()).toMatchObject({
       ok: true,
       value: { turns: [{ input: [{ text: "prompt 1" }], items: [] }] },
+    });
+  });
+
+  it("accepts split-block stream checkpoint UUIDs and unpersisted cancelled Turns during snapshot read and rollback", async () => {
+    const f = await fixture();
+    const persistedAssistantId = "cb93af3f-d06f-4ff8-bad0-b9e0c2fee509";
+    const splitCheckpointId = "cb93af3f-d06f-4ff8-bad0-000000000001";
+    const originalCreateTransport = f.dependencies.createTransport;
+    let turnNumber = 0;
+    f.dependencies.createTransport = vi.fn((input) => {
+      const transport = originalCreateTransport(input);
+      transport.runTurn = async (text, userMessageId, onEvent) => {
+        turnNumber += 1;
+        if (turnNumber === 1) {
+          const entryUser = {
+            type: "user",
+            uuid: userMessageId,
+            session_id: input.sessionId,
+            message: { role: "user", content: text },
+          };
+          const entryAssistant = {
+            type: "assistant",
+            uuid: persistedAssistantId,
+            session_id: input.sessionId,
+            message: { role: "assistant", content: [{ type: "text", text: "multi-block reply" }] },
+          };
+          f.histories.set(input.sessionId, [
+            ...(f.histories.get(input.sessionId) ?? []),
+            entryUser,
+            entryAssistant,
+          ]);
+          onEvent({ type: "text.delta", messageId: "msg-split", delta: "multi-block reply" });
+          onEvent({
+            type: "message.completed",
+            messageId: "msg-split",
+            checkpointId: splitCheckpointId,
+          });
+          return { status: "succeeded" };
+        }
+        // Simulate a Turn cancelled before Claude Code persists any native records.
+        return { status: "cancelled", reason: "Cancelled by user" };
+      };
+      return transport;
+    });
+
+    const adapter = f.adapter();
+    const session = await unwrap(
+      adapter.open({ kind: "resume", cwd: f.directory, nativeRef: f.sourceRef }),
+    );
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse(randomUUID()),
+      input: [{ type: "text", text: "split message" }],
+    });
+    await vi.waitFor(async () => {
+      const snapshot = await session.readSnapshot();
+      expect(snapshot).toMatchObject({ ok: true });
+      if (snapshot.ok) expect(snapshot.value.turns).toHaveLength(2);
+    });
+
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse(randomUUID()),
+      input: [{ type: "text", text: "cancelled early" }],
+    });
+    await vi.waitFor(async () => {
+      expect(await session.readSnapshot()).toMatchObject({ ok: true });
+    });
+
+    const forked = await unwrap(
+      adapter.open({
+        kind: "fork",
+        cwd: f.directory,
+        sourceRef: f.sourceRef,
+        checkpoint: nativeCheckpointRefSchema.parse({
+          ...f.sourceRef,
+          checkpointId: splitCheckpointId,
+        }),
+      }),
+    );
+    expect(await forked.readSnapshot()).toMatchObject({
+      ok: true,
+      value: {
+        turns: [{ input: [{ text: "prompt 1" }] }, { input: [{ text: "split message" }] }],
+      },
+    });
+
+    const replacement = await unwrap(
+      adapter.open({ kind: "rollbackLastTurn", cwd: f.directory, sourceRef: f.sourceRef }),
+    );
+    expect(await replacement.readSnapshot()).toMatchObject({
+      ok: true,
+      value: { turns: [{ input: [{ text: "prompt 1" }] }] },
+    });
+  });
+
+  it("retains a Turn ending in a tool_result and auto-compaction continuation during rollbackLastTurn", async () => {
+    const f = await fixture(0);
+    const sid = f.sourceRef.nativeSessionId;
+    f.histories.set(sid, [
+      {
+        type: "user",
+        uuid: "user-1",
+        session_id: sid,
+        message: { role: "user", content: "prompt 1" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-tool-1",
+        session_id: sid,
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "a.ts" } }],
+        },
+      },
+      {
+        type: "user",
+        uuid: "tool-result-1",
+        session_id: sid,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "read-1", content: "contents" }],
+        },
+      },
+      {
+        type: "user",
+        uuid: "compact-1",
+        session_id: sid,
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+        message: { role: "user", content: "compacted summary" },
+      },
+      {
+        type: "user",
+        uuid: "user-2",
+        session_id: sid,
+        message: { role: "user", content: "prompt 2" },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-2",
+        session_id: sid,
+        message: { role: "assistant", content: [{ type: "text", text: "reply 2" }] },
+      },
+    ]);
+
+    const replacement = await unwrap(
+      f.adapter().open({ kind: "rollbackLastTurn", cwd: f.directory, sourceRef: f.sourceRef }),
+    );
+    expect(await replacement.readSnapshot()).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            input: [{ text: "prompt 1" }],
+            items: [{ item: { type: "toolExecution", toolName: "Read" } }],
+          },
+        ],
+      },
+    });
+    expect(f.dependencies.forkSession).toHaveBeenCalledWith({
+      cwd: f.directory,
+      sourceSessionId: sid,
+      checkpointId: "tool-result-1",
     });
   });
 

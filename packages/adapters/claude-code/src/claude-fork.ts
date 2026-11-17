@@ -15,7 +15,7 @@ import {
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
 
-import { mapClaudeSnapshot } from "./claude-history.js";
+import { mapClaudeSnapshot, matchesClaudeCheckpointId } from "./claude-history.js";
 import type { ClaudePendingSessions } from "./pending-session.js";
 import type { ClaudeAdapterDependencies } from "./transport.js";
 
@@ -187,7 +187,9 @@ export async function forkClaudeSession(
       ? source.value.turns.length - 2
       : source.value.turns.findIndex(
           (turn) =>
-            checkpoint?.success && turn.checkpoint?.checkpointId === checkpoint.data.checkpointId,
+            checkpoint?.success &&
+            turn.checkpoint !== undefined &&
+            matchesClaudeCheckpointId(turn.checkpoint.checkpointId, checkpoint.data.checkpointId),
         );
   const retained = source.value.turns[boundaryIndex];
   const boundaryId =

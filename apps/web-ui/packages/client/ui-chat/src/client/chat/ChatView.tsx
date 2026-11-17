@@ -49,6 +49,9 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
     /** Host-observed compaction activity, separate from ordinary Turn work. */
     compacting: boolean;
+    /** Last failed remote history read; cleared by a successful authoritative read. */
+    remoteHistoryError: { code: string; message: string } | null;
+    nativeConnection: { state: "connected" | "reconnecting"; message?: string } | null;
   }
 }
 
@@ -254,7 +257,14 @@ export function ChatView({
   const recoveryLasting = useSustainedRecovery(carrier !== "connected");
   const compacting = useProjection("compacting");
   const openState = useSession((s) => s.openState);
-  const statusUnconfirmed = carrier === "disconnected" || recoveryLasting || openState === "error";
+  const historyError = useProjection("remoteHistoryError");
+  const nativeConnection = useProjection("nativeConnection");
+  const statusUnconfirmed =
+    carrier === "disconnected" ||
+    recoveryLasting ||
+    openState === "error" ||
+    !!historyError ||
+    nativeConnection?.state === "reconnecting";
   const openError = useSession((s) => s.openError);
   const hasMore = useSession((s) => s.hasMore);
   const loadingOlder = useSession((s) => s.loadingOlder);

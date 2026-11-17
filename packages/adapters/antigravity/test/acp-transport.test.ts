@@ -1,6 +1,11 @@
 import type * as ChildProcess from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { bytes } from "./support/native-timing-fixture.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcpTransport } from "../src/acp-transport.js";
@@ -42,9 +47,18 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     update({sessionUpdate:'user_message_chunk',content:{type:'text',text:'Question'}},req.params.sessionId);
     update({sessionUpdate:'agent_thought_chunk',content:{type:'text',text:'Thinking'}},req.params.sessionId);
     update({sessionUpdate:'tool_call',toolCallId:'old-tool',name:'view_file',args:{path:'a'},status:'completed'},req.params.sessionId);
-    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Answer'}},req.params.sessionId);
-    update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
-    update({sessionUpdate:'session_info_update',title:'History'},req.params.sessionId);
+    const tail = () => {
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:scenario === 'split-history' ? 'swer' : 'Answer'}},req.params.sessionId);
+      update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
+      update({sessionUpdate:'session_info_update',title:'History'},req.params.sessionId);
+    };
+    if (scenario === 'split-history') update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'An'}},req.params.sessionId);
+    if (scenario === 'late-history' || scenario === 'split-history' || scenario === 'missing-history') {
+      result(req.id,{configOptions:[]});
+      if (scenario !== 'missing-history') setTimeout(tail, 30);
+      return;
+    }
+    tail();
     return result(req.id,{configOptions:[]});
   }
   if (req.method === 'session/resume') {
@@ -104,6 +118,34 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const transports: AntigravityAcpTransport[] = [];
+const homes: string[] = [];
+function historyEnvironment(scenario: string): NodeJS.ProcessEnv {
+  const home = mkdtempSync(path.join(os.tmpdir(), "agy-replay-"));
+  homes.push(home);
+  const directory = path.join(home, ".gemini/antigravity-cli/conversations");
+  mkdirSync(directory, { recursive: true });
+  const db = new DatabaseSync(path.join(directory, "saved.db"));
+  try {
+    db.exec("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)");
+    const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?)");
+    insert.run(0, 14, Buffer.alloc(0));
+    insert.run(
+      1,
+      15,
+      bytes(
+        20,
+        Buffer.concat([
+          bytes(1, Buffer.from("Answer")),
+          bytes(3, Buffer.from("Thinking")),
+          bytes(7, bytes(1, Buffer.from("old-tool"))),
+        ]),
+      ),
+    );
+  } finally {
+    db.close();
+  }
+  return { HOME: home, USERPROFILE: home, AGY_TEST_SCENARIO: scenario };
+}
 function transport(
   scenario = "normal",
   extra: Partial<ConstructorParameters<typeof AntigravityAcpTransport>[0]> = {},
@@ -134,6 +176,7 @@ async function replies(value: AntigravityAcpTransport): Promise<Record<string, u
 }
 afterEach(async () => {
   await Promise.all(transports.splice(0).map((value) => value.close()));
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
   for (const child of fixture.children.splice(0)) {
     expect(child.exitCode !== null || child.signalCode !== null || child.pid === undefined).toBe(
       true,
@@ -226,27 +269,47 @@ describe("native ACP stdio transport", () => {
       },
     ]);
   });
-  it("resumes without replay, but load collects the complete replay before its result", async () => {
-    const value = transport();
-    expect(
-      (await value.openSession({ kind: "resume", sessionId: "saved", cwd: "/repo" }))
-        .replayedEvents,
-    ).toEqual([]);
-    await value.closeSession();
-    const sessionEvents: AntigravityAcpEvent[] = [];
-    value.setSessionEventHandler((event) => sessionEvents.push(event));
-    const loaded = await value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" });
-    expect(loaded.opened.sessionId).toBe("saved");
-    expect(loaded.replayedEvents.map(({ type }) => type)).toEqual([
-      "user.text",
-      "agent.thought",
-      "tool.call",
-      "agent.text",
-      "usage.context",
-      "session.info",
-    ]);
-    expect(loaded.replayedEvents[2]).toMatchObject({ args: { path: "a" } });
-    expect(sessionEvents).toEqual([]);
+  it.each(["normal", "late-history", "split-history"])(
+    "collects complete %s replay even after the load response",
+    async (scenario) => {
+      const value = transport(scenario, { environment: historyEnvironment(scenario) });
+      expect(
+        (await value.openSession({ kind: "resume", sessionId: "saved", cwd: "/repo" }))
+          .replayedEvents,
+      ).toEqual([]);
+      await value.closeSession();
+      const sessionEvents: AntigravityAcpEvent[] = [];
+      value.setSessionEventHandler((event) => sessionEvents.push(event));
+      const loaded = await value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" });
+      expect(loaded.opened.sessionId).toBe("saved");
+      expect(
+        loaded.replayedEvents
+          .filter((event) => event.type === "agent.text")
+          .map((event) => event.text)
+          .join(""),
+      ).toBe("Answer");
+      expect(loaded.replayedEvents.slice(0, 3).map(({ type }) => type)).toEqual([
+        "user.text",
+        "agent.thought",
+        "tool.call",
+      ]);
+      expect(loaded.replayedEvents.slice(-2).map(({ type }) => type)).toEqual([
+        "usage.context",
+        "session.info",
+      ]);
+      expect(loaded.replayedEvents[2]).toMatchObject({ args: { path: "a" } });
+      expect(sessionEvents).toEqual([]);
+    },
+  );
+  it("rejects a truncated replay instead of publishing a successful partial snapshot", async () => {
+    const value = transport("missing-history", {
+      environment: historyEnvironment("missing-history"),
+      commandTimeoutMs: 500,
+    });
+    await expect(
+      value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" }),
+    ).rejects.toThrow(/replay.*timed out/);
+    expect(value.isClosed).toBe(true);
   });
   it("round-trips multipart prompts and full native usage, rejecting foreign notifications", async () => {
     const value = transport();
@@ -394,8 +457,9 @@ describe("native ACP stdio transport", () => {
           }),
         );
         if (ending === "cancel") {
-          await delay(30);
-          expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } });
+          await vi.waitFor(async () =>
+            expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } }),
+          );
           expect(onPermission).toHaveBeenCalledOnce();
         }
       }

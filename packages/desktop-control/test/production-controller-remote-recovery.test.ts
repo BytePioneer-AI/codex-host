@@ -3,6 +3,8 @@ import { expect, it, vi } from "vitest";
 import { runDesktopController } from "../src/production-controller.js";
 import type { RendererCdpControlSession } from "../src/renderer-cdp-control-session.js";
 import type { RemoteSessionTarget } from "../src/renderer-remote-sessions.js";
+import type { StartControllerAttachmentServerOptions } from "../src/controller-attachment-server.js";
+import { REMOTE_THREAD_CONTROL_TIMEOUT_MS } from "@codexhost/shared-contracts";
 
 const options = {
   rendererCdpEndpoint: "http://127.0.0.1:1",
@@ -10,6 +12,54 @@ const options = {
   attachmentPort: 12345,
   attachmentNonce: "0123456789abcdef0123456789abcdef",
 };
+
+it("passes the remote deadline through the production Controller to Renderer evaluation", async () => {
+  const abort = new AbortController();
+  const snapshot = {} as RendererCdpControlSession["snapshot"];
+  const executeRenderer = vi.fn(async () => ({ result: { accepted: true } }));
+  const session: RendererCdpControlSession = {
+    snapshot,
+    ensureInstalled: async () => snapshot,
+    activateDesktop: async () => 1,
+    executeRenderer: executeRenderer as RendererCdpControlSession["executeRenderer"],
+    close() {},
+  };
+  let remote: StartControllerAttachmentServerOptions["remoteConnections"];
+  await runDesktopController(options, abort.signal, {
+    readRenderer: async () => "fixture renderer",
+    install: async () => session,
+    startAttachmentServer: async (input) => {
+      remote = input.remoteConnections;
+      return { close: async () => {} };
+    },
+    ready() {},
+    monitorIntervalMs: 1,
+    async sleep() {
+      await setImmediate();
+      try {
+        if (!remote) throw new Error("Remote Controller handler was not installed");
+        await remote({
+          action: "session",
+          operation: {
+            kind: "prompt",
+            hostId: "remote-ssh-discovered:fixture",
+            threadId: "fixture",
+            epoch: "epoch",
+            text: "continue",
+          },
+        });
+        expect(executeRenderer).toHaveBeenLastCalledWith(
+          expect.any(String),
+          REMOTE_THREAD_CONTROL_TIMEOUT_MS,
+        );
+        await remote({ action: "state", hostId: "remote-ssh-discovered:fixture" });
+        expect(executeRenderer).toHaveBeenLastCalledWith(expect.any(String), 30_000);
+      } finally {
+        abort.abort();
+      }
+    },
+  });
+});
 
 it("restores enabled connections at Controller startup and after backoff without Web requests", async () => {
   let now = 0;

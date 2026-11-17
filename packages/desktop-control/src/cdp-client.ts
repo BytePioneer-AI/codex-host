@@ -300,14 +300,19 @@ export class CdpClient {
     };
   }
 
-  #send(method: string, params: Record<string, unknown>, sessionId?: string): Promise<unknown> {
+  #send(
+    method: string,
+    params: Record<string, unknown>,
+    sessionId?: string,
+    timeoutMs = this.#commandTimeoutMs,
+  ): Promise<unknown> {
     if (this.#closed) return Promise.reject(new CdpConnectionClosedError("CDP client is closed"));
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
         reject(new Error(`CDP command '${method}' timed out`));
-      }, this.#commandTimeoutMs);
+      }, timeoutMs);
       this.#pending.set(id, { resolve, reject, timeout });
       try {
         this.#socket.send(
@@ -321,12 +326,13 @@ export class CdpClient {
     });
   }
 
-  async evaluate<T>(expression: string): Promise<T> {
-    const response = await this.command("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+  async evaluate<T>(expression: string, timeoutMs?: number): Promise<T> {
+    const response = await this.#send(
+      "Runtime.evaluate",
+      { expression, awaitPromise: true, returnByValue: true },
+      undefined,
+      timeoutMs,
+    );
     if (!isRecord(response)) throw new Error("Runtime.evaluate returned an invalid result");
     try {
       if (isRecord(response.exceptionDetails)) {

@@ -109,6 +109,89 @@ fn shutdown_without_a_running_owner_returns_immediately() {
     wait_for_shutdown(None, None, Duration::from_millis(1)).unwrap();
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn shutdown_with_a_reused_owner_identity_waits_for_the_supervisor() {
+    use std::sync::mpsc;
+
+    const TEST: &str =
+        "host_service::tests::shutdown_with_a_reused_owner_identity_waits_for_the_supervisor";
+    if let Some(root) = env::var_os("CODEXHOST_IDENTITY_TEST_ROOT") {
+        let root = std::path::PathBuf::from(root);
+        let role = env::var("CODEXHOST_IDENTITY_TEST_ROLE").unwrap();
+        fs::write(root.join(format!("{role}.ready")), "ready").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !root.join(format!("{role}.exit")).exists() {
+            assert!(Instant::now() < deadline, "fixture was not released");
+            thread::sleep(Duration::from_millis(10));
+        }
+        return;
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = env::temp_dir().join(format!("codexhost-identity-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let spawn = |role: &str| {
+        Command::new(env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env("CODEXHOST_IDENTITY_TEST_ROOT", &root)
+            .env("CODEXHOST_IDENTITY_TEST_ROLE", role)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut replacement = spawn("replacement");
+    let mut supervisor = spawn("supervisor");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !root.join("replacement.ready").exists() || !root.join("supervisor.ready").exists() {
+        assert!(Instant::now() < deadline, "fixtures did not start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let mut stale_owner = codexhost_platform::process_identity(replacement.id()).unwrap();
+    let supervisor_identity = codexhost_platform::process_identity(supervisor.id()).unwrap();
+    assert_eq!(stale_owner.parent_id, std::process::id());
+    assert_eq!(supervisor_identity.parent_id, std::process::id());
+    // A different captured start time represents PID reuse without recycling an OS PID.
+    stale_owner.started_at_micros -= 1;
+    let reaper = thread::spawn(move || supervisor.wait().unwrap());
+    let (sender, receiver) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let result = wait_for_shutdown(
+            Some(&stale_owner),
+            Some(&supervisor_identity),
+            Duration::from_secs(8),
+        )
+        .map_err(|error| error.to_string());
+        sender.send(result).unwrap();
+    });
+    let early = receiver.recv_timeout(Duration::from_millis(2500));
+    let still_waiting = matches!(early, Err(mpsc::RecvTimeoutError::Timeout));
+    let replacement_alive = replacement.try_wait().unwrap().is_none();
+    fs::write(root.join("supervisor.exit"), "exit").unwrap();
+    let result = early.unwrap_or_else(|_| receiver.recv_timeout(Duration::from_secs(5)).unwrap());
+    waiter.join().unwrap();
+    let supervisor_status = reaper.join().unwrap();
+    fs::write(root.join("replacement.exit"), "exit").unwrap();
+    let replacement_status = replacement.wait().unwrap();
+    fs::remove_dir_all(root).unwrap();
+
+    assert!(
+        still_waiting,
+        "shutdown returned before supervisor exit: {result:?}"
+    );
+    assert!(result.is_ok(), "shutdown failed: {result:?}");
+    assert!(
+        replacement_alive && replacement_status.success(),
+        "replacement was terminated"
+    );
+    assert!(supervisor_status.success());
+}
+
 #[test]
 fn stalled_shutdown_terminates_the_captured_fixture_process() {
     const TEST: &str =

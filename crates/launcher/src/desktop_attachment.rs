@@ -308,13 +308,24 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
     let Some((launcher, controller)) = managed_processes(data)? else {
         return Ok(false);
     };
-    codexhost_platform::terminate_process_instance(&controller, false)?;
-    crate::host_service::wait_for_shutdown(
-        None,
-        Some(&(&launcher).into()),
-        Duration::from_secs(10),
-    )?;
+    stop_controller(&launcher, &controller, Duration::from_secs(10))?;
     Ok(true)
+}
+
+// The Launcher exits only after its Controller does. A Controller that keeps waiting on an
+// unresponsive Renderer after SIGTERM is forced, so the Launcher can release Desktop ownership
+// instead of failing the update and blocking the recovery Launcher.
+fn stop_controller(
+    launcher: &ProcessSnapshot,
+    controller: &ProcessSnapshot,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    codexhost_platform::terminate_process_instance(controller, false)?;
+    // Windows termination is already forceful, and escalating against an exited Controller
+    // whose handle the Launcher still holds fails with access denied.
+    let owner: Option<codexhost_platform::ProcessIdentity> =
+        (!cfg!(target_os = "windows")).then(|| controller.into());
+    crate::host_service::wait_for_shutdown(owner.as_ref(), Some(&launcher.into()), timeout)
 }
 
 #[cfg(test)]
@@ -325,6 +336,48 @@ mod tests {
     fn descriptor(port: u16) -> RuntimeDescriptor {
         RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
             .expect("runtime descriptor")
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn stop_controller_forces_a_controller_that_ignores_sigterm() {
+        use codexhost_platform::process_snapshot;
+        use std::process::{Command, Stdio};
+
+        // The fixture Launcher exits once its Controller child does, like the real Launcher. The
+        // Controller reports its PID only after installing the SIGTERM trap.
+        let mut command = Command::new("/bin/bash");
+        command
+            .args([
+                "-c",
+                "/bin/bash -c 'trap \"\" TERM; echo $$; while :; do sleep 0.05; done' & wait $!",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut launcher_child = command.spawn().unwrap();
+        let mut line = String::new();
+        BufReader::new(launcher_child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let controller = process_snapshot(line.trim().parse().unwrap()).unwrap();
+        let launcher = process_snapshot(launcher_child.id()).unwrap();
+        let reaper = thread::spawn(move || launcher_child.wait());
+
+        let started = Instant::now();
+        let result = stop_controller(&launcher, &controller, Duration::from_secs(6));
+        let elapsed = started.elapsed();
+        let _ = codexhost_platform::terminate_process_instance(&controller, true);
+        reaper.join().unwrap().unwrap();
+        assert!(
+            result.is_ok(),
+            "stuck Controller blocked shutdown: {result:?}"
+        );
+        // The Controller ignores SIGTERM, so only the 2s escalation can end it.
+        assert!(
+            elapsed >= Duration::from_secs(2) && elapsed < Duration::from_secs(6),
+            "shutdown took {elapsed:?}"
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

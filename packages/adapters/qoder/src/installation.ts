@@ -41,6 +41,21 @@ export function createQoderInstallation(
             "This Qoder China release does not expose a non-installing update check. Use its original installer.",
         };
       const output = await run(["update", "--check"]);
+      if (/unable to determine installation method/i.test(output))
+        return {
+          currentVersion,
+          latestVersion: "Unknown",
+          updateAvailable: false,
+          canUpdate: false,
+          messageCode: "qoder-check-unavailable",
+          notice: {
+            en: "This Qoder CLI cannot determine how it was installed and cannot check for updates. Use the installer or application that installed it.",
+            "zh-CN":
+              "当前 Qoder CLI 无法识别自身的安装方式，不能检查更新。请使用安装它的安装程序或应用进行更新。",
+          },
+          message:
+            "This Qoder CLI cannot determine how it was installed and cannot check for updates.",
+        };
       const available = output.match(/Update available:\s*\S+\s*(?:->|\u2192)\s*(\S+)/i);
       if (available?.[1])
         return {

@@ -42,6 +42,7 @@ signed Desktop Node tool host. This keeps the peer and its two checked ancestors
 on the selected signed runtime. Requests, metadata, notifications, elicitation,
 cancellation and responses pass through the MCP SDK transports. The native
 configuration supplies tool approvals, tool selection, output limits and timeouts.
+Authenticated MCP POST bodies are limited to 16 MiB before parsing.
 
 The listener accepts profiles received through Desktop's stdin and validates
 the first-party executable against the selected runtime's `node_repl`. Profiles

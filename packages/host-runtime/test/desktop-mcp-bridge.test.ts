@@ -265,12 +265,18 @@ it("reuses identical definitions and leaves unsupported servers on their existin
   }
 });
 
-it("carries authenticated MCP input larger than the delegation API body limit", async () => {
+it("carries large authenticated MCP input and rejects requests above the browser limit", async () => {
   const f = await setup();
   const { client } = await f.connect();
   const input = "x".repeat(2 * 1024 * 1024 + 1);
   const result = await client.callTool({ name: "measure", arguments: { input } });
   expect(result.structuredContent).toEqual({ length: input.length });
+  await expect(
+    client.callTool({ name: "measure", arguments: { input: "x".repeat(16 * 1024 * 1024) } }),
+  ).rejects.toThrow();
+  const next = await client.callTool({ name: "measure", arguments: { input: "still connected" } });
+  expect(next.structuredContent).toEqual({ length: 15 });
+  expect((await f.records()).filter((record) => record.method === "tools/call")).toHaveLength(2);
 });
 
 it.skipIf(process.platform === "win32")(

@@ -26,6 +26,8 @@ import {
   DESKTOP_BROWSER_MCP_ARGUMENTS_ENV,
 } from "./desktop-context-environment.js";
 
+const MAX_MCP_REQUEST_BYTES = 16 * 1024 * 1024;
+
 interface Profile {
   id: string;
   token: string;
@@ -294,7 +296,7 @@ export async function createDesktopMcpBridge(options: {
     let body: Record<string, unknown> | undefined;
     if (request.method === "POST") {
       try {
-        body = await jsonBody(request, Number.MAX_SAFE_INTEGER);
+        body = await jsonBody(request, MAX_MCP_REQUEST_BYTES);
       } catch {
         response.writeHead(400).end();
         return;

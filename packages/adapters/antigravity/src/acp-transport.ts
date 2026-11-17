@@ -12,6 +12,8 @@ import { commandInvocation as antigravityInvocation } from "@codexhost/harness-d
 
 import { projectAcpSessionUpdate } from "./acp-projection.js";
 import { resolveAntigravityExecutable } from "./command.js";
+import { nativeReplayCompletion, readNativeReplaySize } from "./native-replay.js";
+import { antigravityHome } from "./usage-statistics.js";
 import {
   AntigravityTransportError,
   type AntigravityAcpConfigOption,
@@ -38,6 +40,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   #acceptCallbacks = false;
   #promptInterrupted: AbortController | null = null;
   #opening: Array<{ sessionId: string; event: AntigravityAcpEvent }> | null = null;
+  #observeReplay: ((sessionId: string, event: AntigravityAcpEvent) => void) | null = null;
   #pendingEvents: AntigravityAcpEvent[] = [];
   #closed = false;
   #closing: Promise<void> | null = null;
@@ -222,6 +225,20 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
         : {}),
     };
     try {
+      const replay =
+        input.kind === "load" && input.sessionId
+          ? nativeReplayCompletion(
+              await readNativeReplaySize(
+                input.sessionId,
+                antigravityHome(this.options.environment ?? process.env),
+              ),
+            )
+          : undefined;
+      this.#observeReplay = replay
+        ? (sessionId, event) => {
+            if (sessionId === input.sessionId) replay.observe(event);
+          }
+        : null;
       let request: Promise<unknown>;
       if (input.kind === "create") request = connection.newSession(params);
       else {
@@ -251,6 +268,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
           "Antigravity session/new returned no sessionId",
         );
       this.#sessionId = sessionId;
+      if (replay) await this.#request(replay.complete, "session/load replay");
       const events = buffered
         .filter((entry) => entry.sessionId === sessionId)
         .map(({ event }) => event);
@@ -267,6 +285,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       };
     } finally {
       this.#opening = null;
+      this.#observeReplay = null;
     }
   }
 
@@ -380,6 +399,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     if (!event) return;
     if (this.#opening) {
       this.#opening.push({ sessionId, event });
+      this.#observeReplay?.(sessionId, event);
       return;
     }
     if (sessionId === this.#sessionId) this.#dispatch(event);

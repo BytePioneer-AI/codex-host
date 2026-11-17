@@ -429,6 +429,7 @@ export function ChatView({
             )}
             <MarkdownDelegateProvider
               openExternalLink={openExternalLink}
+              openFileExternalLabel={t("fileOpen.external")}
               resolveLink={resolveLink}
               openFile={requestOpenFile}
               fileImages={fileImages}

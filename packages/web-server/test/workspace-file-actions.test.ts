@@ -12,7 +12,7 @@ test("downloads original binary, HTML and empty files with attachment headers; r
     void downloadWorkspaceFile(
       request,
       response,
-      new URL(request.url!, "http://localhost"),
+      new URL(request.url ?? "/", "http://localhost"),
       (id) => (id === "known" ? root : undefined),
     );
   });
@@ -31,8 +31,9 @@ test("downloads original binary, HTML and empty files with attachment headers; r
       const response = await fetch(`${base}/?${query}`);
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("content-type"), "application/octet-stream");
-      assert.match(response.headers.get("content-disposition")!, /^attachment;/u);
-      assert.ok(response.headers.get("content-disposition")!.includes(encodeURIComponent(name)));
+      const disposition = response.headers.get("content-disposition") ?? "";
+      assert.match(disposition, /^attachment;/u);
+      assert.ok(disposition.includes(encodeURIComponent(name)));
       assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
       const head = await fetch(`${base}/?${query}`, { method: "HEAD" });
       assert.equal(head.headers.get("content-length"), String(bytes.length));

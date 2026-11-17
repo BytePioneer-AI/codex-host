@@ -20,6 +20,7 @@ import {
   desktopNativeMcpOverrides,
 } from "./desktop-mcp-config.js";
 import { jsonBody } from "./delegation-control-server.js";
+import { OfficialProcessLifecycle } from "./official-process-lifecycle.js";
 import {
   DESKTOP_BROWSER_ACCESS_ENV,
   DESKTOP_BROWSER_MCP_ARGUMENTS_ENV,
@@ -46,6 +47,7 @@ class DesktopMcpSession {
   #outgoing = Promise.resolve();
   #standaloneReady = false;
   #closing?: Promise<void>;
+  #starting?: Promise<void>;
 
   constructor(profile: Profile, remove: () => void) {
     this.#stdio = new StdioClientTransport({
@@ -76,10 +78,12 @@ class DesktopMcpSession {
       }
       void this.#flush()
         .then(() => this.#stdio.send(message))
-        .catch(() => this.close());
+        .catch(() => this.close().catch(() => undefined));
     };
     this.#stdio.onmessage = (message) => {
-      this.#outgoing = this.#outgoing.then(() => this.#forward(message)).catch(() => this.close());
+      this.#outgoing = this.#outgoing
+        .then(() => this.#forward(message))
+        .catch(() => this.close().catch(() => undefined));
     };
     this.#stdio.onclose = () => {
       this.#closed.resolve(undefined);
@@ -88,23 +92,26 @@ class DesktopMcpSession {
       void this.http.close();
     };
     this.http.onclose = () => {
-      void this.close();
+      void this.close().catch(() => undefined);
     };
     this.#stdio.stderr?.on("data", () => {});
     this.#stdio.onerror = () => {
-      void this.close();
+      void this.close().catch(() => undefined);
     };
   }
 
-  async start(): Promise<void> {
-    await this.http.start();
-    try {
-      await this.#stdio.start();
-    } catch (error) {
-      this.#closed.resolve(undefined);
-      await this.close();
-      throw error;
-    }
+  start(): Promise<void> {
+    this.#starting ??= (async () => {
+      try {
+        await this.http.start();
+        await this.#stdio.start();
+      } catch (error) {
+        this.#closed.resolve(undefined);
+        void this.close().catch(() => undefined);
+        throw error;
+      }
+    })();
+    return this.#starting;
   }
 
   async handle(request: Request, body?: unknown): Promise<Response> {
@@ -153,9 +160,19 @@ class DesktopMcpSession {
 
   close(): Promise<void> {
     this.#closing ??= Promise.resolve().then(async () => {
+      await this.#starting?.catch(() => undefined);
       await this.http.close();
       await this.#stdio.close();
-      await this.#closed.promise;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Desktop MCP tool host exit could not be confirmed")),
+          2_000,
+        );
+        void this.#closed.promise.then(() => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
     });
     return this.#closing;
   }
@@ -286,6 +303,14 @@ export async function createDesktopMcpBridge(options: {
     const id = request.headers["mcp-session-id"];
     let session = typeof id === "string" ? profile.sessions.get(id) : undefined;
     const initializing = session === undefined;
+    const controller = new AbortController();
+    response.once("close", () => {
+      if (!response.writableEnded) {
+        controller.abort();
+        if (initializing) void session?.close().catch(() => undefined);
+      }
+    });
+    if (response.destroyed) return;
     if (!session) {
       if (id !== undefined || request.method !== "POST" || body?.method !== "initialize") {
         response.writeHead(id === undefined ? 400 : 404).end();
@@ -298,13 +323,10 @@ export async function createDesktopMcpBridge(options: {
       session = created;
       await session.start();
     }
-    const controller = new AbortController();
-    response.once("close", () => {
-      if (!response.writableEnded) {
-        controller.abort();
-        if (initializing) void session.close();
-      }
-    });
+    if (controller.signal.aborted) {
+      if (initializing) await session.close();
+      return;
+    }
     const headers = new Headers();
     for (const [key, value] of Object.entries(request.headers)) {
       if (Array.isArray(value)) value.forEach((part) => headers.append(key, part));
@@ -336,6 +358,7 @@ export async function createDesktopMcpBridge(options: {
 
   const server = createServer((request, response) => {
     void handle(request, response).catch(() => {
+      if (response.destroyed) return;
       if (!response.headersSent) response.writeHead(502);
       response.end();
     });
@@ -389,11 +412,17 @@ export async function runDesktopMcpClient(arguments_: string[]): Promise<number>
   stdio.onclose = () => done.resolve(0);
   http.onerror = failed;
   stdio.onerror = failed;
+  const inputClosed = () => done.resolve(0);
+  process.stdin.once("end", inputClosed);
+  process.stdin.once("close", inputClosed);
+  if (process.stdin.readableEnded || process.stdin.destroyed) inputClosed();
   try {
     await http.start();
     await stdio.start();
     return await done.promise;
   } finally {
+    process.stdin.off("end", inputClosed);
+    process.stdin.off("close", inputClosed);
     await http.terminateSession().catch(() => undefined);
     await http.close();
     await stdio.close();
@@ -405,16 +434,48 @@ export async function runDesktopMcpClient(arguments_: string[]): Promise<number>
 export async function runDesktopMcpServer(arguments_: string[]): Promise<number> {
   const [command, ...args] = arguments_;
   if (!command) throw new Error("Desktop MCP executable is unavailable");
-  const child = spawn(command, args, { stdio: "inherit" });
-  const interrupt = () => child.kill("SIGINT");
-  const terminate = () => child.kill("SIGTERM");
+  const child = spawn(command, args, { stdio: "pipe", windowsHide: true });
+  const lifecycle = new OfficialProcessLifecycle(child, {
+    // Finish cleanup inside the MCP SDK's tool-host shutdown grace period.
+    timeoutMs: 500,
+    endInput: () => child.stdin.end(),
+  });
+  const done = Promise.withResolvers<number>();
+  void lifecycle.closed.then(({ code }) => done.resolve(code ?? 1));
+  const stop = () => {
+    void lifecycle.stop().catch(done.reject);
+  };
+  const interrupt = () => {
+    child.kill("SIGINT");
+    stop();
+  };
   process.on("SIGINT", interrupt);
-  process.on("SIGTERM", terminate);
+  process.on("SIGTERM", stop);
+  process.stdin.once("end", stop);
+  process.stdin.once("close", stop);
+  child.stdin.on("error", stop);
+  child.stdout.on("error", stop);
+  child.stderr.on("error", stop);
+  process.stdin.on("error", stop);
+  process.stdout.on("error", stop);
+  process.stderr.on("error", stop);
+  process.stdin.pipe(child.stdin);
+  child.stdout.pipe(process.stdout, { end: false });
+  child.stderr.pipe(process.stderr, { end: false });
+  if (process.stdin.readableEnded || process.stdin.destroyed) stop();
   try {
-    const [code] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
-    return code ?? 1;
+    return await done.promise;
   } finally {
     process.off("SIGINT", interrupt);
-    process.off("SIGTERM", terminate);
+    process.off("SIGTERM", stop);
+    process.stdin.off("end", stop);
+    process.stdin.off("close", stop);
+    process.stdin.off("error", stop);
+    process.stdout.off("error", stop);
+    process.stderr.off("error", stop);
+    process.stdin.unpipe(child.stdin);
+    process.stdin.pause();
+    child.stdin.destroy();
+    // The output pipes drain buffered responses before the tool host exits.
   }
 }

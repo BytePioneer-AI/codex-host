@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import { ServerResponse } from "node:http";
+import { PassThrough } from "node:stream";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,6 +14,18 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { jsonObjectSchema } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { createDesktopMcpBridge } from "../src/desktop-mcp-bridge.js";
+import { JsonLineCollector } from "./app-server-host-fixture.js";
+
+const initializationRequest = {
+  jsonrpc: "2.0",
+  id: 0,
+  method: "initialize",
+  params: {
+    protocolVersion: "2025-11-25",
+    capabilities: {},
+    clientInfo: { name: "desktop-mcp-test", version: "1" },
+  },
+};
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -87,7 +102,32 @@ async function setup() {
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
   }
-  return { bridge, server, config, transformed, root, events, rewrite, connect, records, headers };
+  function clientArguments() {
+    const [, , url, authorization] = config.args as string[];
+    const entry = new URL("../src/desktop-mcp-bridge.ts", import.meta.url).href;
+    return [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      `const { runDesktopMcpClient } = await import(${JSON.stringify(entry)}); process.exitCode = await runDesktopMcpClient(process.argv.slice(1));`,
+      String(url),
+      String(authorization),
+    ];
+  }
+  return {
+    bridge,
+    server,
+    config,
+    transformed,
+    root,
+    events,
+    rewrite,
+    connect,
+    records,
+    headers,
+    clientArguments,
+  };
 }
 
 it("runs the genuine stdio process below the bridge and preserves metadata and configuration", async () => {
@@ -189,16 +229,7 @@ it("forwards cancellation and retains the session for the next call", async () =
 
 it("rejects unauthenticated clients and web origins before starting a process", async () => {
   const f = await setup();
-  const body = JSON.stringify({
-    jsonrpc: "2.0",
-    id: 0,
-    method: "initialize",
-    params: {
-      protocolVersion: "2025-11-25",
-      capabilities: {},
-      clientInfo: { name: "test", version: "1" },
-    },
-  });
+  const body = JSON.stringify(initializationRequest);
   const headers = {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
@@ -387,20 +418,10 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
 
 it("retains the native stdio MCP contract through the HTTP client process", async () => {
   const f = await setup();
-  const [, , url, authorization] = f.config.args as string[];
-  const entry = new URL("../src/desktop-mcp-bridge.ts", import.meta.url).href;
   const client = new Client({ name: "stdio-contract", version: "1" });
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [
-      "--import",
-      "tsx",
-      "--input-type=module",
-      "--eval",
-      `const { runDesktopMcpClient } = await import(${JSON.stringify(entry)}); process.exitCode = await runDesktopMcpClient(process.argv.slice(1));`,
-      String(url),
-      String(authorization),
-    ],
+    args: f.clientArguments(),
     stderr: "pipe",
   });
   cleanup.push(() => client.close());
@@ -415,4 +436,150 @@ it("retains the native stdio MCP contract through the HTTP client process", asyn
     meta: { original: "caller-metadata" },
     parent: expect.any(Number),
   });
+});
+
+it("reaps initialization that finishes after its HTTP client disconnects", async () => {
+  const f = await setup();
+  const entered = Promise.withResolvers<undefined>();
+  const released = Promise.withResolvers<undefined>();
+  const disconnected = Promise.withResolvers<undefined>();
+  const originalStart = StdioClientTransport.prototype.start;
+  const start = vi
+    .spyOn(StdioClientTransport.prototype, "start")
+    .mockImplementationOnce(async function (this: StdioClientTransport) {
+      entered.resolve(undefined);
+      await released.promise;
+      await originalStart.call(this);
+    });
+  const url = String((f.config.args as string[])[2]);
+  const originalEmit = ServerResponse.prototype.emit;
+  const events = vi.spyOn(ServerResponse.prototype, "emit").mockImplementation(function (
+    this: ServerResponse,
+    event: string | symbol,
+    ...args: unknown[]
+  ) {
+    if (event === "close" && this.req.url === new URL(url).pathname)
+      disconnected.resolve(undefined);
+    return originalEmit.call(this, event, ...args);
+  });
+  const controller = new AbortController();
+  const request = fetch(url, {
+    method: "POST",
+    headers: {
+      ...f.headers(),
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(initializationRequest),
+    signal: controller.signal,
+  }).catch(() => undefined);
+  try {
+    await entered.promise;
+    controller.abort();
+    await disconnected.promise;
+    released.resolve(undefined);
+    await request;
+    await vi.waitFor(async () => {
+      const record = (await f.records()).find((entry) => entry.event === "started");
+      expect(record).toBeDefined();
+      expect(() => process.kill(Number(record?.pid), 0)).toThrow();
+    });
+  } finally {
+    released.resolve(undefined);
+    controller.abort();
+    start.mockRestore();
+    events.mockRestore();
+  }
+});
+
+it("releases the remote session when the stdio client receives EOF", async () => {
+  const f = await setup();
+  const child = spawn(process.execPath, f.clientArguments(), { stdio: "pipe" });
+  child.stderr.on("data", () => {});
+  cleanup.push(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  });
+  const messages = new JsonLineCollector(child.stdout.pipe(new PassThrough()));
+  child.stdin.write(JSON.stringify(initializationRequest) + "\n");
+  await messages.waitFor((message) => message.id === 0);
+  child.stdin.write(
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n",
+  );
+  child.stdin.write(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "echo", arguments: {} },
+    }) + "\n",
+  );
+  const reply = await messages.waitFor((message) => message.id === 1);
+  const content = jsonObjectSchema.parse(jsonObjectSchema.parse(reply.result).structuredContent);
+  child.stdin.end();
+  await vi.waitFor(() => expect(child.exitCode).toBe(0), { timeout: 1_500 });
+  await vi.waitFor(() => expect(() => process.kill(Number(content.pid), 0)).toThrow());
+});
+
+it("stops an owned tool that ignores EOF and termination", async () => {
+  const f = await setup();
+  const rewritten = await f.rewrite({
+    ...f.server,
+    env: { ...f.server.env, FIXTURE_IGNORE_SHUTDOWN: "1" },
+  });
+  const config = jsonObjectSchema.parse(rewritten.params.config["mcp_servers.node_repl"]);
+  const { client, transport } = await f.connect(config);
+  const content = jsonObjectSchema.parse(
+    (await client.callTool({ name: "echo", arguments: {} })).structuredContent,
+  );
+  cleanup.push(async () => {
+    try {
+      process.kill(Number(content.pid), "SIGKILL");
+    } catch {
+      /* The owned tool already exited. */
+    }
+  });
+  const started = Date.now();
+  await transport.terminateSession();
+  expect(Date.now() - started).toBeLessThan(3_000);
+  await vi.waitFor(() => expect(() => process.kill(Number(content.pid), 0)).toThrow());
+  if (process.platform !== "win32")
+    expect((await f.records()).some((entry) => entry.event === "ignored-termination")).toBe(true);
+});
+
+it("drains tool output before the tool host exits", async () => {
+  const entry = new URL("../src/desktop-mcp-bridge.ts", import.meta.url).href;
+  const payloadSize = 2 * 1024 * 1024;
+  const child = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      `const { runDesktopMcpServer } = await import(${JSON.stringify(entry)}); process.exitCode = await runDesktopMcpServer(process.argv.slice(1));`,
+      process.execPath,
+      "--input-type=module",
+      "--eval",
+      `process.stdout.write(Buffer.alloc(${payloadSize}, "x"), () => process.exit(0));`,
+    ],
+    { stdio: "pipe" },
+  );
+  cleanup.push(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  });
+  child.stderr.on("data", () => {});
+  const output: Buffer[] = [];
+  child.stdout.on("data", (chunk: Buffer) => {
+    output.push(chunk);
+    child.stdout.pause();
+    setTimeout(() => child.stdout.resume(), 5);
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("close", () => resolve());
+    child.once("error", reject);
+  });
+  expect(child.exitCode).toBe(0);
+  const bytes = Buffer.concat(output);
+  expect(bytes.length).toBe(payloadSize);
+  expect(bytes.every((byte) => byte === 0x78)).toBe(true);
 });

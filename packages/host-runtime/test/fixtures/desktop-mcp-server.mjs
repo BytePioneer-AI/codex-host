@@ -11,6 +11,10 @@ function record(value) {
 function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
 }
+if (process.env.FIXTURE_IGNORE_SHUTDOWN === "1") {
+  process.on("SIGTERM", () => record({ event: "ignored-termination" }));
+  setInterval(() => {}, 1_000);
+}
 record({ event: "started", pid: process.pid, parent: process.ppid });
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);

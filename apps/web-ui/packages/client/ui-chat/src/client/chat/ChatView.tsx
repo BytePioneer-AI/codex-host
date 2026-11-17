@@ -248,7 +248,7 @@ export function ChatView({
   // the attach action only when it stays inside one of them.
   const attachSelection = useCallback(
     (text: string) => {
-      return inputActions?.addResponseAnnotation({ text }) !== undefined;
+      return inputActions?.addResponseAnnotation({ text }, { focus: "end" }) !== undefined;
     },
     [inputActions],
   );
@@ -439,6 +439,7 @@ export function ChatView({
             )}
             <MarkdownDelegateProvider
               openExternalLink={openExternalLink}
+              openFileExternalLabel={t("fileOpen.external")}
               resolveLink={resolveLink}
               openFile={requestOpenFile}
               fileImages={fileImages}

@@ -313,6 +313,11 @@ export class AccessAuth {
       }
       chunks.push(chunk as Buffer);
     }
+    // Other logins may exhaust the limit while this request awaits its body.
+    if (this.limit.blocked(this.trust.clientAddress(request))) {
+      fail(429, "auth/rate-limited");
+      return;
+    }
     let token: unknown;
     try {
       token = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { token?: unknown }).token;

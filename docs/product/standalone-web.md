@@ -78,6 +78,8 @@ codexhost stop
 
 历史更新确认的运行状态立即发布到会话目录，发送后和结束后不等待下一次目录轮询。远程会话运行中拒绝再次启动回合。停止操作独立读取 Thread 状态和最新 Turn 元数据（`itemsView: "notLoaded"`），不依赖完整历史读取，仍受所属连接的排队与响应延迟影响；只有确认 Thread 活动且最新 Turn 正在运行时，才使用同一连接代次发送一次中断。历史中遗留的未完成标记不改变停止目标，读取失败或代次变化不触发猜测与重发。
 
+本机模型目录按 Harness 与 cwd 缓存 Host 的检查结果，失败结果也缓存，窗口焦点切换、打开菜单不会重新启动原生检查；Codex 的非就绪结果不缓存。任一入口（Desktop、Web、Console、CLI）以 `refresh: true` 完成检查后，Host 广播该 Harness 的检查失效事件；Web 丢弃该 Harness 的全部缓存并通知选择器重新读取本机目录，远程目录不受影响。Host 重连时清空全部缓存。设置页的连接检查只判断 Harness 能否启动，选择器需要读取完整模型目录，两者结果可能不同。
+
 原生 Codex 远程会话的当前模型从所属 Host 的 Thread 元数据读取，模型目录也来自该 Host。模型与 Fast 变体通过远端原生设置接口切换，收到确认后更新投影；缺少当前模型或目录时显示不可用，不使用本机默认模型替代。
 
 远程 external 会话的 Harness 名称、模型目录、当前模型、思考等级与权限来自同一远端 Host；Web 不使用本机模型目录替代。远程模型菜单的目录请求携带 Session 身份，按会话隔离缓存；本机会话仍共享本机 Host 目录。模型、思考等级与权限选择分别路由到远端 Thread 的原生配置接口，每次只确认一个设置；重连后过期的设置请求会被拒绝，未知结果的写请求不重试。可选的 Harness 发现结果按连接缓存，临时失败经退避后允许重试，不影响历史读取。模型与思考等级组合选择按顺序确认；部分完成时报告失败，不自动重发已确认的写入。
@@ -351,7 +353,7 @@ Web 默认包含就绪的官方 Codex 与外部会话 Harness。`--harness <id,.
 
 Host 优先使用 Desktop 自带程序，其次使用本机不低于 0.161.0 的 `codex`，拒绝 shim 或代理。Web 先启动时沿用最近记录的 Desktop 参数，没有记录时使用基线参数；Desktop 接入且参数不同时，空闲后台可替换，有活动 Turn 时保留。原生 home 取自 `CODEX_HOME`，未设置时为 `~/.codex`。不提供按会话自定义 CLI 路径或版本。
 
-模型目录来自官方 `model/list`，权限选项来自 `permissionProfile/list` 中可选的档案，保留其 ID，不转换为 Host 自造的审批／沙箱组合。未保存显式权限偏好的新 Codex Thread 不传 `permissions`，也不把档案列表顺序当作默认值；界面显示“跟随 Codex 设置”。Model、Thinking、权限选择调用 `thread/settings/update`，等待匹配的 `thread/settings/updated` 后发布确认值，影响后续 Turn。未确认或未报告的配置不冒充已生效状态。
+模型目录来自官方 `model/list`，权限选项来自 `permissionProfile/list` 中可选的档案，保留其 ID，不转换为 Host 自造的审批／沙箱组合。新 Codex Thread 优先使用已保存且仍有效的权限偏好；没有有效偏好时，默认选择原生目录中可选的 `:danger-full-access`（完全访问），界面显示与 `thread/start` 传入的 `permissions` 一致，不把档案列表顺序当作默认值。原生目录未提供该档案时不传 `permissions`，界面显示“跟随 Codex 设置”。Model、Thinking、权限选择调用 `thread/settings/update`，等待匹配的 `thread/settings/updated` 后发布确认值，影响后续 Turn。未确认或未报告的配置不冒充已生效状态。
 
 Turn 运行中排队发送进入官方队列，Web 可编辑、删除和立即发送，Desktop 看到同一队列。立即发送在活动 Turn 内使用原生 Steer，确认接受后删除原队列项；空闲时启动该队列项。拒绝或结果未知不自动回退或重发。官方停止中断 Turn，不保证结束原生后台终端；后台命令可以继续运行，Web 不隐式强杀或清理它们。`/compact` 与 `/review` 分别调用官方压缩和 Review 方法；Skill 菜单采用官方启用目录。置顶与用量复用同一官方 Thread。
 
@@ -631,7 +633,7 @@ Composer 模型入口采用 Codex-CH 式嵌套选择：主卡直接列出当前 
 
 ## 原生权限与会话标识
 
-权限菜单及 `/permission` 读取当前会话的权限目录（官方 Codex 使用 `permissionProfile/list`，外部 Harness 使用 Adapter），保留原生模式 ID、标签、描述与危险标记；不再把 `auto` 解释成 DSH 的 Auto review，也不使用进程全局权限目录为不同 Harness 套用相同预设。危险模式有显式确认；无原生可选权限能力的 Harness 隐藏入口。`atCreate` 模式仅在原生会话创建前可选，之后锁定；原生拒绝显示错误，不伪造切换成功。未创建 Thread 时保存用户主动选择的 ID；官方 Codex 在 `thread/start` 传入该档案，外部 Harness 在 `Adapter.open` 时传入，已有会话通过各自原生配置接口下发。跨 Harness 的草稿切换采用目标 Harness 已保存且仍有效的权限偏好；外部 Harness 没有偏好时采用其目录默认值，官方 Codex 没有偏好时保持“跟随 Codex 设置”。界面与提交读取同一份选择，不继承其他 Harness 同名模式的语义。草稿中的主动权限选择保存为以后新会话的默认值，已创建会话的权限切换只更新当前会话。Codex 未报告活动权限档案时显示“跟随 Codex 设置”；其他未确认或不在目录中的有效权限显示“原生配置”，不自动选择某个标准档位。全局默认权限设置入口不再显示，因为各 Harness 的模式与生效范围并不相同。
+权限菜单及 `/permission` 读取当前会话的权限目录（官方 Codex 使用 `permissionProfile/list`，外部 Harness 使用 Adapter），保留原生模式 ID、标签、描述与危险标记；不再把 `auto` 解释成 DSH 的 Auto review，也不使用进程全局权限目录为不同 Harness 套用相同预设。手动选择被目录标记为危险的模式时有显式确认；无原生可选权限能力的 Harness 隐藏入口。`atCreate` 模式仅在原生会话创建前可选，之后锁定；原生拒绝显示错误，不伪造切换成功。未创建 Thread 时保存用户主动选择的 ID；官方 Codex 在 `thread/start` 传入该档案，外部 Harness 在 `Adapter.open` 时传入，已有会话通过各自原生配置接口下发。跨 Harness 的草稿切换采用目标 Harness 已保存且仍有效的权限偏好；外部 Harness 没有偏好时采用其目录默认值，官方 Codex 没有有效偏好时默认选择目录中可选的“完全访问”，该档案不可用时保持“跟随 Codex 设置”。界面与提交读取同一份选择，不继承其他 Harness 同名模式的语义。草稿中的主动权限选择保存为以后新会话的默认值，已创建会话的权限切换只更新当前会话。Codex 未报告活动权限档案时显示“跟随 Codex 设置”；其他未确认或不在目录中的有效权限显示“原生配置”，不自动选择某个标准档位。全局默认权限设置入口不再显示，因为各 Harness 的模式与生效范围并不相同。
 
 左侧会话行读取服务端持久元数据中的绑定 Harness（草稿读取该会话的已选 Harness），显示插件品牌图标，不从当前 Composer 或其他会话的默认选择推测。未打开的历史会话同样显示，刷新可恢复；运行、审批和未读状态叠加在图标旁，归档保留身份。侧栏与 Harness 选择器通过同一展示组件消费 CH 插件的 `iconStyle`：优先绘制经过公共契约校验的矢量路径，`currentColor` 随主题变化；位图保留插件声明的背景、圆角和留白比例。不直接把固定黑色、带原始留白的 SVG 当成矢量展示，也不对 Pi 单独反色。展示元数据按目录共享读取，不逐会话请求。缺少图标资源或元数据读取失败时使用通用图标，不伪造其他品牌。
 

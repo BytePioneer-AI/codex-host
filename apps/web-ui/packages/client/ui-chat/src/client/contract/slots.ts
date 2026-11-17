@@ -67,6 +67,8 @@ export type UsePresentation = SnapshotSelectorHook<ChatPresentationPolicy>;
 export interface OpenFileOptions {
   /** 1-based line to reveal; absent = the file's beginning. */
   readonly line?: number;
+  /** Hand the original file to the Host operating system's default application. */
+  readonly external?: boolean;
 }
 
 /** Owner currency of the completed-Turn extension chain. */

@@ -29,15 +29,6 @@ const platformOnly = process.env.CODEXHOST_TEST_SCOPE === "platform";
 
 export default defineConfig({
   root,
-  resolve: {
-    alias: {
-      // Node-based Session tests use source instead of the browser ModuleLoader bundle.
-      "@deepseek-ai/dsh-api-gateway/client": path.resolve(
-        root,
-        "apps/web-ui/packages/api/gateway/src/client/index.ts",
-      ),
-    },
-  },
   test: {
     environment: "node",
     include,

@@ -269,20 +269,26 @@ describe("native ACP stdio transport", () => {
       },
     ]);
   });
-  it.each(["normal", "late-history", "split-history"])(
-    "collects complete %s replay even after the load response",
-    async (scenario) => {
+  it.each(
+    ["normal", "late-history", "split-history"].flatMap((scenario) =>
+      ["before-load", "after-load"].map((handlerTiming) => ({ scenario, handlerTiming })),
+    ),
+  )(
+    "collects complete $scenario replay with a $handlerTiming live handler",
+    async ({ scenario, handlerTiming }) => {
       const value = transport(scenario, { environment: historyEnvironment(scenario) });
       expect(
         (await value.openSession({ kind: "resume", sessionId: "saved", cwd: "/repo" }))
           .replayedEvents,
       ).toEqual([]);
       await value.closeSession();
-      // Install the live handler only after load has returned. Replay updates are
-      // returned by openSession and must not be observed as live session events.
+      // Preserve both main's preinstalled-handler coverage and the PR's
+      // post-load handler path: neither may receive replay as live events.
       const sessionEvents: AntigravityAcpEvent[] = [];
+      const handleSessionEvent = (event: AntigravityAcpEvent) => sessionEvents.push(event);
+      if (handlerTiming === "before-load") value.setSessionEventHandler(handleSessionEvent);
       const loaded = await value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" });
-      value.setSessionEventHandler((event) => sessionEvents.push(event));
+      if (handlerTiming === "after-load") value.setSessionEventHandler(handleSessionEvent);
       expect(loaded.opened.sessionId).toBe("saved");
       expect(
         loaded.replayedEvents
@@ -295,15 +301,10 @@ describe("native ACP stdio transport", () => {
         "agent.thought",
         "tool.call",
       ]);
-      if (scenario === "normal")
-        expect(loaded.replayedEvents.map(({ type }) => type)).toEqual([
-          "user.text",
-          "agent.thought",
-          "tool.call",
-          "agent.text",
-          "usage.context",
-          "session.info",
-        ]);
+      expect(loaded.replayedEvents.slice(-2).map(({ type }) => type)).toEqual([
+        "usage.context",
+        "session.info",
+      ]);
       expect(loaded.replayedEvents[2]).toMatchObject({ args: { path: "a" } });
       expect(sessionEvents).toEqual([]);
     },

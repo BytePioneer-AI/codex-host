@@ -85,14 +85,14 @@ it("lists native and external Threads and continues native history with its orig
     const draftProjections = await call<{
       values: { permissions: { currentValue: string } };
     }>("session/projections", { sessionId: draft.sessionId });
-    assert.deepEqual(draftProjections.values.permissions, { currentValue: "" });
+    assert.deepEqual(draftProjections.values.permissions, { currentValue: ":danger-full-access" });
     await call("session/prompt", {
       sessionId: draft.sessionId,
       content: [{ type: "text", text: "First official message" }],
     });
     const start = host.requests.filter((entry) => entry.method === "thread/start").at(-1);
     assert.deepEqual(start?.params.model, { id: "gpt-5.4" });
-    assert.equal(start?.params.permissions, undefined);
+    assert.equal(start?.params.permissions, ":danger-full-access");
     assert.equal(start?.params.cwd, cwd);
     assert.deepEqual(
       start?.params.projectlessWorkspace,

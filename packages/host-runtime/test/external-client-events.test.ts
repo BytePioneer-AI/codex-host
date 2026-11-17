@@ -83,6 +83,7 @@ describe("client event log", () => {
           request: {},
         },
       ];
+      // The watch ends only after its event is appended, so wait for both.
       await vi.waitFor(async () => {
         expect((await log.read("bot", 0)).events).toMatchObject([
           {

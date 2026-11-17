@@ -151,6 +151,10 @@ it("reads forwarding headers only from a configured proxy", () => {
   assert.equal(untrusted.clientAddress(request(forwarded)), "127.0.0.1");
   const trusted = new RequestTrust("127.0.0.1, 10.0.0.1");
   assert.equal(trusted.sameOrigin(request(forwarded)), true);
+  assert.equal(
+    trusted.sameOrigin(request({ ...forwarded, origin: "http://phone.example" })),
+    false,
+  );
   assert.equal(trusted.secure(request(forwarded)), true);
   assert.equal(trusted.clientAddress(request(forwarded)), "203.0.113.9");
   // A different direct peer gains nothing from a neighbouring entry in the list.

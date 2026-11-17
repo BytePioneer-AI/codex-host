@@ -199,6 +199,69 @@ describe("Claude native Turn interpretation", () => {
     });
   });
 
+  it("publishes a later text record of a completed non-streamed message as its own checkpoint", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const first = assistantBlocks(
+      [{ type: "text", text: "first" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000000",
+    );
+    const second = assistantBlocks(
+      [{ type: "text", text: "second" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000001",
+    );
+    first.message.id = "request-split";
+    second.message.id = "request-split";
+
+    const events = [first, second, second].flatMap((frame) => turn.consume(frame).events ?? []);
+    expect(events.filter(({ type }) => type === "text.delta")).toMatchObject([
+      { messageId: "request-split", delta: "first" },
+      { messageId: "request-split", delta: "second" },
+    ]);
+    expect(events.filter(({ type }) => type === "message.completed")).toMatchObject([
+      { messageId: "request-split", checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000000" },
+      { messageId: "request-split", checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000001" },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("publishes each streamed block of one native message as its own completed message", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const start = {
+      type: "stream_event",
+      uuid: "stream-start",
+      parent_tool_use_id: null,
+      event: { type: "message_start", message: { id: "request-stream" } },
+    };
+    const first = assistantBlocks(
+      [{ type: "text", text: "first" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000000",
+    );
+    const second = assistantBlocks(
+      [{ type: "text", text: "second" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000001",
+    );
+    first.message.id = "request-stream";
+    second.message.id = "request-stream";
+
+    const events = [
+      start,
+      partial("first", "stream-first"),
+      first,
+      partial("second", "stream-second"),
+      second,
+      second,
+    ].flatMap((frame) => turn.consume(frame).events ?? []);
+    expect(events.filter(({ type }) => type === "text.delta")).toMatchObject([
+      { delta: "first" },
+      { delta: "second" },
+    ]);
+    expect(events.filter(({ type }) => type === "message.completed")).toMatchObject([
+      { checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000000" },
+      { checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000001" },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
   it("reconciles separate Assistant text responses across a Tool loop", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 

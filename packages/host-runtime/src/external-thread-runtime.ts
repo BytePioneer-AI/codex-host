@@ -799,10 +799,14 @@ export class ExternalThreadRuntime {
 
   /** Persist first accepted input before replying, never on the output/token path. */
   async capturePreview(thread: ExternalThread, turn: JsonObject): Promise<void> {
+    // A Side Chat's first own Turn follows the history it inherited.
+    const inherited = thread.record.attachedToThreadId
+      ? (thread.record.inheritedTurnCount ?? 0)
+      : 0;
     if (
       thread.record.preview !== undefined ||
-      thread.record.turnMappings.length !== 0 ||
-      thread.turns.length !== 0
+      thread.record.turnMappings.length !== inherited ||
+      thread.turns.length !== inherited
     )
       return;
     try {

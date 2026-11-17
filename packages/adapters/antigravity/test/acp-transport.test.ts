@@ -278,9 +278,11 @@ describe("native ACP stdio transport", () => {
           .replayedEvents,
       ).toEqual([]);
       await value.closeSession();
+      // Install the live handler only after load has returned. Replay updates are
+      // returned by openSession and must not be observed as live session events.
       const sessionEvents: AntigravityAcpEvent[] = [];
-      value.setSessionEventHandler((event) => sessionEvents.push(event));
       const loaded = await value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" });
+      value.setSessionEventHandler((event) => sessionEvents.push(event));
       expect(loaded.opened.sessionId).toBe("saved");
       expect(
         loaded.replayedEvents

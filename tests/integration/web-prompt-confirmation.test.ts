@@ -18,7 +18,7 @@ afterEach(async () => {
 
 const unknown = () => ({
   ok: false as const,
-  error: new RemoteError("remote/outcome-unknown", "Remote operation was not confirmed", {}),
+  error: new RemoteError("outcome-unknown", "Remote operation was not confirmed", {}),
 });
 const message = (requestId: string) => ({
   id: `message-${requestId}`,
@@ -204,7 +204,9 @@ it("does not hide a definite rejection or a stop error after observing a message
   const f = await fixture();
   f.prompt.mockResolvedValueOnce({
     ok: false,
-    error: new RemoteError("session/writer-held", "Session is in use", {}),
+    error: new RemoteError("session/writer-held", "Session is in use", {
+      sessionId: SessionId("remote-thread"),
+    }),
   });
   const first = f.begin();
   await f.send(first.requestId);

@@ -784,16 +784,14 @@ export class TurnProjector {
     }
     this.closeStep();
     this.finished = true;
-    // History snapshots often cannot tell how a turn ended; reading those as completed is closer
-    // to the truth than "stopped".
     const reason =
-      outcome.status === "succeeded" || (outcome.status === "unknown" && !this.options.live)
+      outcome.status === "succeeded"
         ? { kind: "completed" }
         : outcome.status === "cancelled"
           ? { kind: "aborted", reason: { kind: "user" } }
           : outcome.status === "failed"
             ? { kind: "error", error: { message: outcome.error.message, code: outcome.error.code } }
-            : { kind: "interrupted" };
+            : { kind: "unknown" };
     this.log.append("turn/end", {
       turn: this.turn,
       reason,

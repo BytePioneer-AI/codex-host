@@ -3,6 +3,7 @@ import {
   REASONING_TRANSCRIPT_COMMAND,
   type ClientFileOperation,
   type ClientThreadImportSource,
+  type ClientThreadSnapshot,
   type WebFileDiff,
   type WebTurnFileSummary,
 } from "@codexhost/shared-contracts";
@@ -30,6 +31,7 @@ export interface ChTurn {
   status: string;
   items: ChItem[];
   codexhostFileOperations?: ClientFileOperation[] | undefined;
+  codexhostTurnOutcome?: ClientThreadSnapshot["turnsPage"]["data"][number]["codexhostTurnOutcome"];
   /** Native Turn boundaries in Unix seconds. */
   startedAt?: number | null;
   completedAt?: number | null;
@@ -167,6 +169,8 @@ function finished(status: string): boolean {
   return status !== "inProgress" && status !== "running";
 }
 function outcome(turn: ChTurn): TurnOutcomeShape {
+  if (turn.status === "completed" && turn.codexhostTurnOutcome?.status === "unknown")
+    return turn.codexhostTurnOutcome;
   return turn.status === "failed"
     ? {
         status: "failed",

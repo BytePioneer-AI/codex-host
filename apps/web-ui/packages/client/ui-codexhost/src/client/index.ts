@@ -119,7 +119,15 @@ export function apply(ctx: ClientContext): void {
       {
         name: "sidebar.right.tab.document.actions",
         id: "codexhost-download",
-        inject: (sessionId) => ({ sessionId, label: t("file.download") }),
+        inject: (sessionId) => ({
+          sessionId,
+          label: t("file.download"),
+          openFolderLabel: t("file.openFolder"),
+          remoteUnsupportedLabel: t("file.openFolder.remoteUnsupported"),
+          openFolderFailedLabel: t("file.openFolder.failed"),
+          revealFolder: (path: string) =>
+            ctx.remote.session.openWorkspacePath({ path, action: "reveal" }),
+        }),
       },
       DocumentDownload,
     ),

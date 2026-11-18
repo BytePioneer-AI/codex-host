@@ -2,7 +2,6 @@ import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import type {
   CreateElicitationRequest,
   CreateElicitationResponse,
@@ -94,6 +93,7 @@ import {
   readAcpEffectiveModelState,
   splitAntigravityModelAndEffort,
 } from "./model-catalog.js";
+import { readNativeHistory } from "./native-replay.js";
 import { readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
@@ -103,14 +103,12 @@ import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js
 import { rollbackAntigravityLastTurn } from "./rollback.js";
 import { AntigravitySessionImport } from "./session-import.js";
 import { ANTIGRAVITY_COMMAND_CATALOG, parseAndFormatAntigravityCommand } from "./slash-commands.js";
-import { AntigravitySnapshotReaderPool } from "./snapshot-reader-pool.js";
 import { AntigravitySubagents, readNativeSubagentStatus } from "./subagents.js";
 import { readSubagentTranscript } from "./subagent-transcript.js";
 import { antigravityHome, createAntigravityUsageStatistics } from "./usage-statistics.js";
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
-const TURN_COUNT_RETRY_DELAYS_MS = [50, 100, 150, 250] as const;
 export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   configuration: {
     selectModel: true,
@@ -270,7 +268,6 @@ interface SessionOptions extends RequestedConfiguration {
   knownTurnRefs?: readonly NativeTurnRef[] | undefined;
   unattended: boolean;
   adapter: AntigravityAdapterOptions;
-  readerPool: AntigravitySnapshotReaderPool;
   onClosed(session: AntigravitySession): void;
 }
 interface ActiveTurn {
@@ -414,7 +411,7 @@ export class AntigravitySession implements HarnessSession {
         return;
       }
       const ref = this.nativeRef ?? this.#options.nativeRef;
-      const { opened, replayedEvents } = await transport.openSession({
+      const { opened } = await transport.openSession({
         kind: ref ? "resume" : "create",
         ...(ref ? { sessionId: ref.nativeSessionId } : {}),
         cwd: this.#options.cwd,
@@ -440,22 +437,10 @@ export class AntigravitySession implements HarnessSession {
           "Antigravity returned an invalid native Session ID",
         );
       this.#applyOpened(opened, skip);
-      try {
-        this.#turnCount = await readNativeTurnCount(
-          nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
-        );
-      } catch {
-        this.#turnCount = Math.max(
-          this.#turnCount,
-          projectReplayedEventsToTurns({
-            nativeSessionId: opened.sessionId,
-            cwd: this.#options.cwd,
-            events: replayedEvents,
-            ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
-          }).length,
-        );
-      }
-      this.#initializeUsage(opened.sessionId, replayedEvents);
+      this.#turnCount = await readNativeTurnCount(
+        nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
+      ).catch(() => this.#turnCount);
+      this.#initializeUsage(opened.sessionId);
       transport.setSessionEventHandler((event) => {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
@@ -490,16 +475,12 @@ export class AntigravitySession implements HarnessSession {
       throw error;
     }
   }
-  #initializeUsage(nativeSessionId: string, events: readonly AntigravityAcpEvent[]): void {
+  #initializeUsage(nativeSessionId: string): void {
     if (this.#usage) return;
-    const context = events.findLast((event) => event.type === "usage.context");
     this.#usage = new AntigravitySessionUsageTracker({
       nativeSessionId,
       homedir: antigravityHome(this.#options.environment),
       expectedInitialTurns: this.#turnCount,
-      ...(context
-        ? { initialContextUsedTokens: context.used, initialContextWindowTokens: context.size }
-        : {}),
     });
     this.#usageWork = this.#replayUsage();
   }
@@ -723,43 +704,32 @@ export class AntigravitySession implements HarnessSession {
   }
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
-    if (!this.nativeRef) return ok({ turns: [], state: { ...this.#state } });
-    const skip =
-      this.#transport?.skipPermissions ??
-      (this.#options.unattended || this.#requested.permissionModeId === SKIP);
+    const nativeRef = this.nativeRef;
+    if (!nativeRef) return ok({ turns: [], state: { ...this.#state } });
+    const { nativeSessionId } = nativeRef;
     try {
-      const { opened, replayedEvents } = await this.#options.readerPool.loadSession({
-        sessionId: this.nativeRef.nativeSessionId,
-        cwd: this.#options.cwd,
-        environment: this.#options.environment,
-        skipPermissions: skip,
-        signal: this.#abort.signal,
-      });
+      const { events, turnCount } = await readNativeHistory(
+        nativeSessionId,
+        antigravityHome(this.#options.environment),
+      );
       if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
       const turns = projectReplayedEventsToTurns({
-        nativeSessionId: opened.sessionId,
+        nativeSessionId,
         cwd: this.#options.cwd,
-        events: replayedEvents,
+        events,
         ...(this.#options.knownTurnRefs ? { knownTurnRefs: this.#options.knownTurnRefs } : {}),
         ...(this.#options.adapter.toolOutputLimit !== undefined
           ? { outputLimit: this.#options.adapter.toolOutputLimit }
           : {}),
       });
-      const turnCount = this.#transport
-        ? this.#turnCount
-        : await readNativeTurnCount(
-            nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
-          ).catch(() => turns.length);
-      if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
       if (!this.#transport) {
         this.#turnCount = turnCount;
-        this.#initializeUsage(opened.sessionId, replayedEvents);
+        this.#initializeUsage(nativeSessionId);
       }
-      // Shared reader configuration does not confirm the writable Session's resume hints.
       return ok({ turns, ...(this.#transport ? { state: { ...this.#state } } : {}) });
-    } catch (error) {
+    } catch {
       if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
-      return { ok: false, error: normalizeAntigravityError(error) };
+      return err("nativeFailure", "Antigravity history unavailable");
     }
   }
 
@@ -1004,25 +974,11 @@ export class AntigravitySession implements HarnessSession {
               }
             : { status: "succeeded" };
       const before = this.#turnCount;
-      const dbPath = nativeConversationDbPath(
-        ref.nativeSessionId,
-        antigravityHome(this.#options.environment),
-      );
       let count: number;
       try {
-        count = await readNativeTurnCount(dbPath);
-        if (count <= before && outcome.status === "succeeded") {
-          for (const delayMs of TURN_COUNT_RETRY_DELAYS_MS) {
-            if (this.#closed || this.#faulted || !this.#isCurrent(turn)) break;
-            await delay(delayMs, undefined, { signal: this.#abort.signal }).catch(() => undefined);
-            if (this.#closed || this.#faulted || !this.#isCurrent(turn)) break;
-            count = await readNativeTurnCount(dbPath);
-            if (count > before) break;
-          }
-          if (count <= before && (turn.firstOutputAtMs !== undefined || turn.hasToolCalls)) {
-            count = before + 1;
-          }
-        }
+        count = await readNativeTurnCount(
+          nativeConversationDbPath(ref.nativeSessionId, antigravityHome(this.#options.environment)),
+        );
       } catch {
         count = outcome.status === "succeeded" ? before + 1 : before;
       }
@@ -1308,7 +1264,6 @@ export class AntigravityAdapter implements HarnessAdapter {
   readonly usageStatistics: ReturnType<typeof createAntigravityUsageStatistics>;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #sessions = new Set<AntigravitySession>();
-  readonly #readerPool: AntigravitySnapshotReaderPool;
   readonly #cache = new Map<string, HarnessInspection>();
   readonly #inflight = new Map<string, Promise<HarnessInspection>>();
   readonly #abort = new AbortController();
@@ -1318,7 +1273,6 @@ export class AntigravityAdapter implements HarnessAdapter {
   #quotaCwd = process.cwd();
   constructor(readonly options: AntigravityAdapterOptions = {}) {
     this.#environment = options.environment ?? process.env;
-    this.#readerPool = new AntigravitySnapshotReaderPool(this.options);
     this.sessionImport = new AntigravitySessionImport(this.#environment);
     this.usageStatistics = createAntigravityUsageStatistics(this.#environment);
   }
@@ -1501,7 +1455,6 @@ export class AntigravityAdapter implements HarnessAdapter {
         : {}),
       unattended,
       adapter: this.options,
-      readerPool: this.#readerPool,
       onClosed: (closed) => this.#sessions.delete(closed),
     });
     this.#sessions.add(session);
@@ -1591,10 +1544,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     this.#cache.clear();
     this.#inflight.clear();
     this.#quota = null;
-    await Promise.all([
-      ...[...this.#sessions].map((session) => session.close()),
-      this.#readerPool.close(),
-    ]);
+    await Promise.all([...this.#sessions].map((session) => session.close()));
     this.#sessions.clear();
   }
 }

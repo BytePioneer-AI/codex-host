@@ -3,9 +3,9 @@
 codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当前 Session 的能力选择送达方式：
 
 - **原生同轮插入**：Session 此刻声明 `capabilities.steer` 时，Host 发送公共命令 `turn.steer`，由 Adapter 调用 Harness 自己的插入原语，在原生安全边界把输入送入**当前 Turn**，不取消、不另起 Turn。
-- **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。任何不确定能并入当前 Turn 的情况都走这条路径，保证不比没有原生插入时差。
+- **停止后重发（退路）**：其余情况下，Host **取消当前 Turn，等待它终结，再自动执行本次新输入**。写入前不能并入当前 Turn 或 Harness 明确未接纳时走这条路径；写入后交付结果不确定则报错，不自动重发。
 
-用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。当前只有 Claude Code 会声明 `capabilities.steer`，并且只在确定插入会并入当前 Turn 时声明；其条件与原生依据见 [`../harnesses/claude-code/claude-code-steer.md`](../harnesses/claude-code/claude-code-steer.md)；其他 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
+用户继续使用 Codex Desktop 原有按钮、跟进处理方式设置和单条消息反向操作，不需要手动停止后重发。官方 Codex Thread 仍透传原生 `turn/steer`，不改变同轮追加输入的语义。Claude Code、Pi 和 OMP 按各自原生执行窗口动态声明 `capabilities.steer`；具体条件见 [Claude](../harnesses/claude-code/claude-code-steer.md)、[Pi](../harnesses/pi/pi-steer.md)、[OMP](../harnesses/omp/omp-steer.md)。其余 Adapter 对 `turn.steer` 返回 `unsupported`，保持停止后重发。
 
 ## 原生同轮插入
 
@@ -17,6 +17,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
   1. `turn/steer` 带有 `codexhostSteerDelivery`（Renderer 已经按该方式展示）时照它执行：`newTurn` 停止后重发；`activeTurn` 原生插入，Harness 没收下时报错、不改走退路，避免和 Desktop 已有的展示不一致。
   2. 输入是 Harness 命令（Session 提供命令、文本以 `/命令` 开头）时停止后重发，命令照常解析和执行。
   3. 其余情况读取实时的 `capabilities.steer`：为 `true` 时原生插入，Harness 没收下就改走停止后重发；如果当前 Turn 在此期间已经结束，直接把输入作为下一个 Turn 启动。
+- 原生调用抛错表示交付结果不确定，不触发停止后重发。Host 保留有界的失败回执，防止同一消息身份被自动重试；若输入来自队列，恢复原位置并禁止 Host 自动推进它，包括后续其他 Turn 完成之后。输入钩子的副作用不能假定已撤销；用户应检查影响后再决定手动发送或删除，见[队列执行语义](external-thread-queue.md#执行语义)。
 - `turn/steer` 回执包含 `turnId` 和 `delivery`：`activeTurn` 表示送入当前 Turn，`newTurn` 表示停止旧 Turn 后开始了新 Turn。
 - `codexhost/thread/steering/inspect { threadId, text? }` 按同样的规则（第 2、3 步）预先给出送达方式；读取失败返回 `-32081`。
 
@@ -24,7 +25,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 
 ### 后续 Adapter 接入
 
-已有原生同轮插入能力的 Harness，只需在自己的 Adapter 中声明能力、处理 `turn.steer`、保证写入前校验与失败语义，并适配本 Harness 的原生历史读取。Host、Broker 和 Renderer 不按 Harness ID 增加分支。公共输入目前仅支持文本；非同轮的排队原语不能声明为此能力。真实原生执行、取消和历史行为仍需由各 Adapter 验证。
+已有原生同轮插入能力的 Harness，只需在自己的 Adapter 中声明能力、处理 `turn.steer`、保证写入前校验与失败语义，并适配本 Harness 的原生历史读取。Host、Broker 和 Renderer 不按 Harness ID 增加分支。公共输入目前仅支持文本；只有原生控制流能证明输入会进入尚未结束的当前 Turn 时，才可声明此能力；单纯 queued／入队回执不足。真实原生执行、取消和历史行为仍需由各 Adapter 验证。
 
 ### Fork 与撤销窗口
 
@@ -45,7 +46,7 @@ codexhost 对外部 Harness Thread 保留一个「调整方向」操作，按当
 - 取消 acknowledgement 不等于完成。等待旧 Turn 的 Interaction/Item 关闭、终态身份持久化及 Desktop 终态通知写出后，复用普通 `turn/start` 的底层启动函数，分配真实的新 Host Turn ID，返回 `{turnId}`。
 - 同 Thread 的其他 start、Harness command、委派 start 不能抢占这个替换过程。若原生自主 Turn 已先开始，替换失败，不取消这个意外的新 Turn。
 - 取消与旧轮终态等待合计最多 20 秒，短于当前 Desktop 的 30 秒提交超时。超时、Session fault、输出流结束、Host 关闭/断连、显式停止替换、旧轮失败或持久化失败均不再自动启动新轮。新轮启动本身仍遵循原有 Adapter admission 语义；客户端超时不意味着它没有被接受。
-- 同一连接内以 `threadId + clientUserMessageId` 合并相同请求，并保留有界的成功交付回执供 outcome-unknown 重试使用；同一消息 ID 不得携带不同的旧轮 ID 或输入。不承诺跨 Host 重启或回执淘汰后的 exactly-once。
+- 同一连接内以 `threadId + clientUserMessageId` 合并相同请求，并保留有界的成功回执与结果不确定的失败回执；同一消息 ID 不得携带不同的旧轮 ID 或输入。不承诺跨 Host 重启或回执淘汰后的 exactly-once。
 
 普通停止仍调用 Adapter 原来的取消实现。原生进程、工具和子任务的退出速度及恢复策略属于 Adapter；本功能没有增加统一的强杀策略，也不会回滚旧轮已经完成的文件修改。
 
@@ -124,7 +125,7 @@ Shared Host 是外部 Thread 队列的唯一所有者，并实现 Codex Desktop 
 - `packages/renderer-extension/test/renderer-external-steering.test.ts`（`steer delivery handshake`）：inspect 带文本、两种展示方式分别标记 `codexhostSteerDelivery`、Host 不支持 inspect 时改用 Thread 所有权。
 - `packages/protocol-core/test/codex-ui-projector.test.ts`：插入的 `userMessage` 在实时与历史投影中留在所属 Turn。
 - `packages/adapters/claude-code/test/*.test.ts`：Claude Code 的 `priority: "next"` 推入、接受条件、错过 Turn 与历史分轮。
-- `packages/host-runtime/test/external-turn-steering.test.ts`：原生插入不取消、失败释放回执、没收下时退回（当前 Turn 已结束则直接启动下一个、正在结束则等待其终态），以及延迟/同步终态、去重、冲突、过期目标、输入预检、超时迟到、fault、关闭、显式停止、自主 Turn 及启动失败。
+- `packages/host-runtime/test/external-turn-steering.test.ts`：原生插入不取消、明确拒绝释放回执、结果不确定保留失败回执与禁止自动重试、没收下时退回（当前 Turn 已结束则直接启动下一个、正在结束则等待其终态），以及延迟/同步终态、去重、冲突、过期目标、输入预检、超时迟到、fault、关闭、显式停止、自主 Turn 及启动失败。
 - `packages/host-runtime/test/app-server-host*.test.ts`：真实 Host 路由、外部不泄漏官方流、取消与启动顺序、响应 gate、同 Thread start 竞争、官方透传。
 - `packages/renderer-extension/test/renderer-external-steering.test.ts`：正常 start 占位、唯一输入、无旧轮 steer Item、去重、队列暂停恢复、owner/follower、失败和卸载。
 - `packages/renderer-extension/test/renderer-external-steering-rpc.test.ts`：类方法的 RPC 可访问性、模型／权限列表读取、官方与外部 steer、实例隔离、卸载和重复安装，以及卸载期间待定请求的清理。
@@ -137,3 +138,13 @@ Shared Host 是外部 Thread 队列的唯一所有者，并实现 Codex Desktop 
 针对 RpcTarget 实例属性回归，还在运行中的上述版本 Desktop 内通过其真实 `RpcStub` 调用了 `model/list` 和 `permissionProfile/list`，验证原型挂接修复后两者成功返回，并重试了此前失败的只读查询。该检查没有发送新消息、修改权限选择或验证原生 Harness 执行。
 
 以上合成测试和只读 RPC 检查不替代真实 Desktop 与各原生 Harness 验收。发布验收应覆盖流式文本、工具运行、Question/Approval、连续提交、已有队列、取消失败、刷新历史，以及多窗口和远端连接。不得把类型检查或合成测试通过称为所有 Harness 的实机兼容性证明。
+
+### Pi / OMP Adapter 实机 Gate
+
+`tools/gate-steer/adapter.real.test.mjs` 默认跳过。先运行 `npm run typecheck`，再用 `CODEXHOST_STEER_REAL_HARNESSES=pi,omp npx vitest run --config tests/vitest.config.js tools/gate-steer/adapter.real.test.mjs` 选择实际安装的 Harness；`CODEXHOST_STEER_REAL_MODEL` 可指定原生目录中的完整模型显示名。Gate 不修改模型配置，但会使用现有登录和模型额度，留下原生 Session。
+
+Pi 的异步 input hook 跨越原执行终态时，恢复与队列隔离由 `packages/adapters/pi/test/pi-steer-delayed-input.real.test.ts` 验证；同样用 `CODEXHOST_STEER_REAL_HARNESSES=pi` 显式运行。该测试还恢复同一个 Native Session 并发送下一轮，确认晚到输入没有被重放；它清理自建 Session，不操作已有历史。
+
+默认执行 `single`、`double`、`near-terminal` 三种场景，也可用 `CODEXHOST_STEER_REAL_SCENARIOS` 选择。测试只要求在临时目录执行前台 sleep 命令，并检查单次/连续插入、原工具完成、错误目标/空文本/终态后的拒绝及原生历史身份。工具结束附近的场景继续观察 30 秒：接纳的输入必须在目标 Host Turn 回复一次；明确拒绝的输入不能执行。原生 Session 和记录保留在 `.codexhost/native-steer-real/<harness>/`，临时工作目录清理。未安装、缺凭据或超时都不能算作通过，且该 Gate 不验证 Desktop GUI。
+
+macOS / Desktop 26.1103.31037 的独立 GUI 验收通过真实 Composer 的「排队」「引导」与删除按钮执行。Pi 覆盖工具中正常插话、异步 hook 跨越终态、原轮成功、同一 Native Session 恢复、未确认队列不自动重放，以及删除后普通发送。OMP 在 `openai-codex / gpt-5.6-sol`、High 配置下验证实际 shell 工具完成、一个 Host Turn 内接纳与回复；其他 Model / Provider 组合不能由此推定通过。以上不覆盖多窗口、远端和其他 OS。

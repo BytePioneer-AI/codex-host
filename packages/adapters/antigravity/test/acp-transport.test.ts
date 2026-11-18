@@ -1,11 +1,8 @@
 import type * as ChildProcess from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { Readable } from "node:stream";
+import { TransformStream } from "node:stream/web";
 import { setTimeout as delay } from "node:timers/promises";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { bytes } from "./support/native-timing-fixture.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcpTransport } from "../src/acp-transport.js";
@@ -17,9 +14,9 @@ const fixture = vi.hoisted(() => ({
   script: `
 const readline = require('node:readline');
 const scenario = process.env.AGY_TEST_SCENARIO;
-const send = (value) => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ...value})+'\\n');
+const send = (value, written) => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ...value})+'\\n', written);
 const result = (id, value) => send({id, result:value});
-const update = (update, sessionId='native') => send({method:'session/update',params:{sessionId,update}});
+const update = (update, sessionId='native', written) => send({method:'session/update',params:{sessionId,update}}, written);
 let promptId;
 const replies={};
 if (scenario === 'wait-term') setInterval(() => {}, 1000);
@@ -43,24 +40,6 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     update({sessionUpdate:'available_commands_update',availableCommands:[{name:'quota',description:'Quota'}]});
     return result(req.id,{sessionId:'native',models:{currentModelId:'gemini-4-carbon',availableModels:[{modelId:'gemini-4-carbon',name:JSON.stringify(req.params)}]},modes:{currentModeId:'default',availableModes:[]},configOptions:[],_meta:{antigravity:{tier:{id:'pro',name:'Pro',upgradeUri:'https://example.com'}}}});
   }
-  if (req.method === 'session/load') {
-    update({sessionUpdate:'user_message_chunk',content:{type:'text',text:'Question'}},req.params.sessionId);
-    update({sessionUpdate:'agent_thought_chunk',content:{type:'text',text:'Thinking'}},req.params.sessionId);
-    update({sessionUpdate:'tool_call',toolCallId:'old-tool',name:'view_file',args:{path:'a'},status:'completed'},req.params.sessionId);
-    const tail = () => {
-      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:scenario === 'split-history' ? 'swer' : 'Answer'}},req.params.sessionId);
-      update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
-      update({sessionUpdate:'session_info_update',title:'History'},req.params.sessionId);
-    };
-    if (scenario === 'split-history') update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'An'}},req.params.sessionId);
-    if (scenario === 'late-history' || scenario === 'split-history' || scenario === 'missing-history') {
-      result(req.id,{configOptions:[]});
-      if (scenario !== 'missing-history') setTimeout(tail, 30);
-      return;
-    }
-    tail();
-    return result(req.id,{configOptions:[]});
-  }
   if (req.method === 'session/resume') {
     if (scenario === 'initial-usage') update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
     return result(req.id,{configOptions:[],modes:{currentModeId:'plan',availableModes:[]}});
@@ -74,6 +53,10 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     promptId=req.id;
     if (scenario === 'exit-prompt') return setTimeout(() => process.exit(8), 10);
     if (scenario === 'stall-prompt' || scenario === 'close-stalled') return;
+    if (scenario === 'drained-prompt') {
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'A'.repeat(512 * 1024)}},'native',() => process.stderr.write('prompt-flushed\\n'));
+      return result(req.id,{stopReason:'end_turn'});
+    }
     if (scenario === 'callbacks' || scenario === 'prompt-ends' || scenario === 'answer-callbacks') {
       send({id:'permission',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'shell',name:'run_command',kind:'execute',args:{command:'pwd'}},options:[{optionId:'session',name:'Session',kind:'allow_session'},{optionId:'deny',name:'Deny',kind:'reject_once'}]}});
       send({id:'question',method:'elicitation/create',params:{sessionId:'native',toolCallId:'ask',mode:'form',message:'The agent has a question.',requestedSchema:{type:'object',properties:{q1:{type:'array',title:'Colors',items:{type:'string',oneOf:[{const:'1',title:'Red'}]}},q1_other:{type:'string',title:'Other'}}}}});
@@ -118,34 +101,6 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const transports: AntigravityAcpTransport[] = [];
-const homes: string[] = [];
-function historyEnvironment(scenario: string): NodeJS.ProcessEnv {
-  const home = mkdtempSync(path.join(os.tmpdir(), "agy-replay-"));
-  homes.push(home);
-  const directory = path.join(home, ".gemini/antigravity-cli/conversations");
-  mkdirSync(directory, { recursive: true });
-  const db = new DatabaseSync(path.join(directory, "saved.db"));
-  try {
-    db.exec("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)");
-    const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?)");
-    insert.run(0, 14, Buffer.alloc(0));
-    insert.run(
-      1,
-      15,
-      bytes(
-        20,
-        Buffer.concat([
-          bytes(1, Buffer.from("Answer")),
-          bytes(3, Buffer.from("Thinking")),
-          bytes(7, bytes(1, Buffer.from("old-tool"))),
-        ]),
-      ),
-    );
-  } finally {
-    db.close();
-  }
-  return { HOME: home, USERPROFILE: home, AGY_TEST_SCENARIO: scenario };
-}
 function transport(
   scenario = "normal",
   extra: Partial<ConstructorParameters<typeof AntigravityAcpTransport>[0]> = {},
@@ -176,7 +131,6 @@ async function replies(value: AntigravityAcpTransport): Promise<Record<string, u
 }
 afterEach(async () => {
   await Promise.all(transports.splice(0).map((value) => value.close()));
-  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
   for (const child of fixture.children.splice(0)) {
     expect(child.exitCode !== null || child.signalCode !== null || child.pid === undefined).toBe(
       true,
@@ -269,47 +223,38 @@ describe("native ACP stdio transport", () => {
       },
     ]);
   });
-  it.each(["normal", "late-history", "split-history"])(
-    "collects complete %s replay even after the load response",
-    async (scenario) => {
-      const value = transport(scenario, { environment: historyEnvironment(scenario) });
-      expect(
-        (await value.openSession({ kind: "resume", sessionId: "saved", cwd: "/repo" }))
-          .replayedEvents,
-      ).toEqual([]);
-      await value.closeSession();
-      const sessionEvents: AntigravityAcpEvent[] = [];
-      value.setSessionEventHandler((event) => sessionEvents.push(event));
-      const loaded = await value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" });
-      expect(loaded.opened.sessionId).toBe("saved");
-      expect(
-        loaded.replayedEvents
-          .filter((event) => event.type === "agent.text")
-          .map((event) => event.text)
-          .join(""),
-      ).toBe("Answer");
-      expect(loaded.replayedEvents.slice(0, 3).map(({ type }) => type)).toEqual([
-        "user.text",
-        "agent.thought",
-        "tool.call",
-      ]);
-      expect(loaded.replayedEvents.slice(-2).map(({ type }) => type)).toEqual([
-        "usage.context",
-        "session.info",
-      ]);
-      expect(loaded.replayedEvents[2]).toMatchObject({ args: { path: "a" } });
-      expect(sessionEvents).toEqual([]);
-    },
-  );
-  it("rejects a truncated replay instead of publishing a successful partial snapshot", async () => {
-    const value = transport("missing-history", {
-      environment: historyEnvironment("missing-history"),
-      commandTimeoutMs: 500,
-    });
-    await expect(
-      value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" }),
-    ).rejects.toThrow(/replay.*timed out/);
-    expect(value.isClosed).toBe(true);
+  it("drains the child stdout while the ACP consumer is paused", async () => {
+    const gate = Promise.withResolvers<undefined>();
+    const toWeb = Readable.toWeb;
+    let pause = false;
+    const slowConsumer = vi.spyOn(Readable, "toWeb").mockImplementation((source, options) =>
+      toWeb(source, options).pipeThrough(
+        new TransformStream({
+          async transform(chunk, controller) {
+            if (pause) await gate.promise;
+            controller.enqueue(chunk);
+          },
+        }),
+      ),
+    );
+    const value = transport("drained-prompt");
+    try {
+      await open(value);
+      let stderr = "";
+      fixture.children.at(-1)?.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+      const events: AntigravityAcpEvent[] = [];
+      pause = true;
+      const prompting = value.prompt([], handler(events));
+      try {
+        await vi.waitFor(() => expect(stderr).toContain("prompt-flushed"));
+      } finally {
+        gate.resolve(undefined);
+        await prompting;
+      }
+      expect(events).toEqual([{ type: "agent.text", text: "A".repeat(512 * 1024) }]);
+    } finally {
+      slowConsumer.mockRestore();
+    }
   });
   it("round-trips multipart prompts and full native usage, rejecting foreign notifications", async () => {
     const value = transport();
@@ -383,12 +328,11 @@ describe("native ACP stdio transport", () => {
     "preserves context sent before %s returns",
     async (kind) => {
       const value = transport("initial-usage");
-      const opened = await value.openSession({
+      await value.openSession({
         kind,
         cwd: process.cwd(),
         ...(kind === "resume" ? { sessionId: "saved" } : {}),
       });
-      expect(opened.replayedEvents).toEqual([]);
       const events: AntigravityAcpEvent[] = [];
       value.setSessionEventHandler((event) => events.push(event));
       expect(events).toContainEqual({ type: "usage.context", used: 40, size: 1000 });

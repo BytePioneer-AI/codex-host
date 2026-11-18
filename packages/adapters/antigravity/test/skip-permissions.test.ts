@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { harnessPermissionModeIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
@@ -11,7 +10,12 @@ import type {
   AntigravityAcpTransportOptions,
 } from "../src/acp-types.js";
 import { antigravityDelegationInstructions } from "../src/delegation.js";
-import { minimalTrajectoryMetadataBlob, nativeConversationDbPath } from "../src/fork.js";
+import { minimalTrajectoryMetadataBlob } from "../src/fork.js";
+import {
+  answerStep,
+  createNativeHistoryDatabase,
+  userStep,
+} from "./support/native-history-fixture.js";
 const adapters: AntigravityAdapter[] = [];
 const homes: string[] = [];
 afterEach(async () => {
@@ -30,12 +34,14 @@ describe("unattended native policy", () => {
         formatVersion: 1,
         locator: { executionPolicy: "unattended-full-access" },
       });
-      const file = nativeConversationDbPath(nativeRef.nativeSessionId, home);
-      await mkdir(path.dirname(file), { recursive: true });
-      const db = new DatabaseSync(file);
+      const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
       db.exec(
-        "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER); CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB); INSERT INTO steps VALUES (0,14),(1,15),(2,14),(3,15)",
+        "CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB)",
       );
+      userStep(db, 0, "Question one");
+      answerStep(db, 1, "Answer one");
+      userStep(db, 2, "Question two");
+      answerStep(db, 3, "Answer two");
       db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
         randomUUID(),
         nativeRef.nativeSessionId,
@@ -65,7 +71,7 @@ describe("unattended native policy", () => {
             setSessionEventHandler: () => {},
             openSession: async (input) => {
               opens.push(input);
-              return { opened: { sessionId: input.sessionId ?? randomUUID() }, replayedEvents: [] };
+              return { opened: { sessionId: input.sessionId ?? randomUUID() } };
             },
             setMode: async () => {},
             setConfigOption: async () => [],
@@ -95,10 +101,7 @@ describe("unattended native policy", () => {
       if (kind === "resume") {
         expect(creations).toHaveLength(0);
         expect((await result.value.readSnapshot()).ok).toBe(true);
-        expect(creations).toHaveLength(1);
-        expect(creations[0]).toMatchObject({ skipPermissions: true });
-        expect(creations[0]?.environment?.CODEXHOST_THREAD_ID).toBeUndefined();
-        expect(opens[0]).toMatchObject({ kind: "load", cwd: home });
+        expect(creations).toHaveLength(0);
         expect(
           await result.value.execute({
             type: "turn.start",

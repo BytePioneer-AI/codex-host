@@ -16,7 +16,7 @@
 | 已验证的原生版本 | `agy 1.5.9`（最低要求 `1.5.8`，含 `usage_update`、`auto` 模式及审批/取消修复） |
 | 交付范围 | 预装发行 / Desktop 产品接入 / 完整委派 |
 | 参考插件 | `kimi-code`（ACP stdio 传输、elicitation 与 configOptions 状态映射）；`codebuddy`（ACP 交互、子代理工具投影与只读会话导入）；`workbuddy`（附加系统提示词跨 Harness 委派） |
-| 最后验证 | 历史读取：2026-11-17，macOS（darwin arm64），`agy 1.5.9` 原生只读回放；其他能力矩阵：2026-11-15 |
+| 最后验证 | 历史读取：2026-11-18，macOS（darwin arm64），`agy 1.5.11` 原生 SQLite 只读；其他能力矩阵：2026-11-15 |
 
 ## 能力
 
@@ -28,7 +28,7 @@
 | A4 | 创建 Session | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/new` | 未传配置时保持原生默认；预热不产生 `session/list` 空记录 |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块 |
 | A6 | 取消 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/cancel` | 取消关闭活动交互与工具项，保留会话继续下一轮 |
-| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/snapshot-reader-pool.ts`、`src/native-replay.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts`；实测 `session/load` | 通过独立原生 `session/load` 读连接投影稳定 Turn/Item；冷历史读取不启动可写连接；读进程按命令、权限与账号环境边界在 Adapter 内串行复用，回放与原生 SQLite 的用户边界、文本长度及工具调用数一致，并收到尾部上下文用量与 Session 信息后才交付和 `session/close`；不完整或无法验证则报错，Adapter 关闭统一回收，无需本地镜像文件 |
+| A7 | 只读快照 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/native-replay.ts`、`src/acp-projection.ts` | `test/native-history.test.ts`、`test/antigravity-adapter.test.ts` | 直接只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`（用户输入、planner、警告），解码为事件后交给投影器生成稳定 Turn/Item；不启动 `agy`、不走 `session/load`；活动库读取已提交的 WAL 快照并跳过仍在生成或执行的步骤；数据库不可读或格式未知时报 `Antigravity history unavailable`，无本地镜像、无降级 |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/resume` | 恢复对象保留持久身份；普通恢复的可写 `session/resume` 延迟到首次执行或配置操作，派生会话在交付前确认可写恢复 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`、`test/acp-transport.test.ts` | 忙碌返回 `sessionBusy`，进程异常与鉴权错误归一化脱敏 |
 | A10 | 关闭 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/acp-transport.test.ts` | `session/close` + stdin 关闭 + 超时信号清理子进程 |
@@ -67,25 +67,22 @@
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
 - Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
-- 只读快照（`session/load`）重放历史 `tool_call` 的名称、参数与终态，不重放历史工具输出正文；实时 Turn 内工具输出完整流式上报。每个新原生读进程的首次 `load` 在首条更新前可能有秒级准备延迟，后续同边界历史读取串行复用已初始化读进程。读取为全量重放后由 Host 分页。
+- 历史由原生 SQLite 读取，包含工具调用名称、参数与配对结果文本；读取不依赖 ACP 进程，耗时为毫秒级，由 Host 分页。连续的用户输入沿用既有分组规则合并为一轮，以保持已存 Turn 身份稳定。
 
 ## 插件外改动
 
-- 历史终态的通用展示：`shared-contracts` / `protocol-core` 保留 unknown 终态元数据，`web-server` / `session-runtime` / Web UI 显示“已结束（状态未知）”，不加入 Antigravity 专用 Host 分支。
+- 历史终态的通用展示：`shared-contracts` / `protocol-core` 保留 unknown 终态元数据，`web-server` / `session-runtime` 保留 unknown 原因，Web UI 中性显示“已结束”，不加入 Antigravity 专用 Host 分支。
 - `package-lock.json`：`@codexhost/adapter-antigravity` 增加工作区已有的 `@agentclientprotocol/sdk@1.3.0` 与 `diff@8.0.2` 依赖声明。
 - `packages/host-runtime/src/usage-statistics.ts`：提升全局用量统计文件缓存版本号（`CACHE_VERSION` 至 `8`），使升级后重建 Antigravity 模型归一与隐式缓存写入统计。
-- `packages/host-runtime/test/antigravity-question.real.test.ts`：对齐原生 ACP `session/load` 历史工具快照（校验实时 `item.completed` 与快照 `ask_question` 参数/终态）并清理测试在 `conversation_summaries.db` 中产生的临时记录。
+- `packages/host-runtime/test/antigravity-question.real.test.ts`：对齐原生 SQLite 历史工具快照（校验实时 `item.completed` 与快照 `ask_question` 参数/终态）并清理测试在 `conversation_summaries.db` 中产生的临时记录。
 - 文档同步：`docs/harnesses/antigravity/`、`docs/harnesses/capability-boundaries.md`、`docs/architecture/harness-plugin-runtime.md`、`docs/architecture/harness-command-integration.md`、`docs/product/usage-metering.md`、`docs/product/usage-statistics.md`、`docs/index.md`。
 
 ## 验证记录
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
-| 历史回放完整性与未知终态 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-transport.test.ts packages/protocol-core/test/final-answer-phase.test.ts`；`node --import tsx --test packages/web-server/test/ch-thread-history.test.ts`；变更包 `tsc -b` | 35 项 Vitest + 17 项 Web 后端测试通过；类型构建通过。覆盖成功响应后迟到正文、分块尾部、尾部上下文用量与 Session 信息不泄漏到实时通道、不完整回放超时报错和未知终态保留正文；真实 `agy 1.5.9` 每块延迟 10ms 的只读探针收齐 28 轮、25 条正文，未发送 Prompt 或重启服务 |
 | Turn 内费用累计 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-usage.test.ts packages/adapters/antigravity/test/antigravity-adapter.test.ts` | 147 项通过；覆盖历史基线、轮内多请求累计、重复刷新去重、轮末核对与缺失用量保护；未进行真实 CLI/UI 验证 |
-| 历史恢复生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test packages/host-runtime/test/antigravity-history.test.ts packages/host-runtime/test/installed-harness-plugins.test.ts` | 427 项通过；验证冷读仅 `load`、首次写入才 `resume`、保存配置不被读连接覆盖、取消、派生恢复及延迟进程回收的等待和错误报告；1 项 OpenCode 真实探针未启用 |
-| 真实历史只读计时 | `agy 1.5.9`，现有登录态，Adapter 与原生 ACP 分段计时，不发送 Prompt | 单次快照 6.389s，其中原生 `load` 6.323s；进程回收约 2s 由最终关闭等待。同一原生进程首次读取 6.854s，随后读取另一历史 Session 为 118ms；现有服务未重启 |
-| Adapter 公共行为 | `npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test` | 19 个测试文件、368 项测试全部通过（Node 22、Node 24） |
+| SQLite 历史读取 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/native-history.test.ts`；只读读取 69 个真实主会话 | 读取全部成功，393 个已存 Turn ID 按原顺序保留；`readSnapshot` 中位数 0.61 ms、P95 9.03 ms，不启动 ACP |
 | 用量对账与计时 | 既有测试会话的原生 SQLite / 转录只读回放，经过共享 `UsageMeter` | 单请求、多请求、原生问答及重复回放通过；无新增模型调用 |
 | 原生边界 | 本机 `agy 1.5.9` 隔离探针（`initialize` / `session/new` / `prompt` / `request_permission` / `elicitation` / `load` / `resume` / `list`） | 已通过前置实测 |
 | 插件加载 | `npm run build:typescript && npx vitest run -c tests/vitest.config.js packages/host-runtime/test/installed-harness-plugins.test.ts` | 插件打包与真实 Cordis Loader 加载通过 |

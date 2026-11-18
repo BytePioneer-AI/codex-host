@@ -585,63 +585,6 @@ export class AntigravityToolTracker {
   }
 }
 
-function explicitReplayTurnSlot(nativeTurnKey: string): number | undefined {
-  const zeroBased = /^turn-(0|[1-9]\d*)$/u.exec(nativeTurnKey);
-  if (zeroBased) return Number(zeroBased[1]);
-  const oneBased = /^turn:([1-9]\d*)$/u.exec(nativeTurnKey);
-  if (oneBased) return Number(oneBased[1]) - 1;
-  return undefined;
-}
-
-function resolveReplayNativeTurnKeys(
-  count: number,
-  knownTurnRefs?: readonly NativeTurnRef[],
-): string[] {
-  const keys = new Array<string | undefined>(count);
-  const used = new Set<string>();
-  const known = knownTurnRefs ?? [];
-
-  for (const ref of known) {
-    const slot = explicitReplayTurnSlot(ref.nativeTurnKey);
-    if (
-      slot !== undefined &&
-      Number.isSafeInteger(slot) &&
-      slot >= 0 &&
-      slot < count &&
-      keys[slot] === undefined &&
-      !used.has(ref.nativeTurnKey)
-    ) {
-      keys[slot] = ref.nativeTurnKey;
-      used.add(ref.nativeTurnKey);
-    }
-  }
-
-  for (let i = 0; i < Math.min(known.length, count); i++) {
-    const ref = known[i];
-    if (
-      ref &&
-      keys[i] === undefined &&
-      explicitReplayTurnSlot(ref.nativeTurnKey) === undefined &&
-      !used.has(ref.nativeTurnKey)
-    ) {
-      keys[i] = ref.nativeTurnKey;
-      used.add(ref.nativeTurnKey);
-    }
-  }
-
-  let nextFallback = count;
-  return Array.from({ length: count }, (_, i) => {
-    const existing = keys[i];
-    if (existing !== undefined) return existing;
-    let candidate = `turn-${i}`;
-    while (used.has(candidate)) {
-      candidate = `turn-${nextFallback++}`;
-    }
-    used.add(candidate);
-    return candidate;
-  });
-}
-
 export function projectReplayedEventsToTurns(params: {
   nativeSessionId: string;
   cwd: string;
@@ -650,6 +593,7 @@ export function projectReplayedEventsToTurns(params: {
   outputLimit?: number;
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
+  const usedTurnKeys = new Set(params.knownTurnRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
   let active: { turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
@@ -657,15 +601,22 @@ export function projectReplayedEventsToTurns(params: {
   const begin = () => {
     active?.tracker.finishPending({
       status: "cancelled",
-      reason: "No terminal tool status in ACP replay",
+      reason: "No terminal tool status in native history",
     });
     const index = turns.length;
     const turnId = hostTurnIdSchema.parse(`turn-${index}`);
+    let nativeTurnKey = params.knownTurnRefs?.[index]?.nativeTurnKey;
+    if (nativeTurnKey === undefined) {
+      let n = index;
+      nativeTurnKey = `turn-${n}`;
+      while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
+      usedTurnKeys.add(nativeTurnKey);
+    }
     const turn: HostTurnSnapshot = {
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: "antigravity",
         nativeSessionId: params.nativeSessionId,
-        nativeTurnKey: `turn-${index}`,
+        nativeTurnKey,
         formatVersion: 1,
       }),
       checkpoint: nativeCheckpointRefSchema.parse({
@@ -676,7 +627,7 @@ export function projectReplayedEventsToTurns(params: {
       }),
       input: [],
       items: [],
-      outcome: { status: "unknown", reason: "ACP replay does not include prompt stop reasons" },
+      outcome: { status: "unknown", reason: "Native history does not include prompt stop reasons" },
     };
     turns.push(turn);
     sequence = 0;
@@ -732,20 +683,8 @@ export function projectReplayedEventsToTurns(params: {
   }
   active?.tracker.finishPending({
     status: "cancelled",
-    reason: "No terminal tool status in ACP replay",
+    reason: "No terminal tool status in native history",
   });
-  const resolvedKeys = resolveReplayNativeTurnKeys(turns.length, params.knownTurnRefs);
-  for (let i = 0; i < turns.length; i++) {
-    const turn = turns[i];
-    const resolvedKey = resolvedKeys[i];
-    if (!turn || !resolvedKey) continue;
-    turn.nativeTurnRef = nativeTurnRefSchema.parse({
-      harnessId: "antigravity",
-      nativeSessionId: params.nativeSessionId,
-      nativeTurnKey: resolvedKey,
-      formatVersion: 1,
-    });
-  }
   return turns;
 }
 

@@ -56,6 +56,7 @@ import {
   type ClaudeTransportTurnResult,
   type ClaudeTurnEvent,
   type ClaudeTurnTransport,
+  type ClaudeUserContent,
 } from "./transport.js";
 
 const CLIENT_APP = "codexhost-claude-code-adapter/0.0.0";
@@ -816,7 +817,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   runTurn(
-    text: string,
+    content: ClaudeUserContent,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
@@ -844,7 +845,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     for (const event of unclaimed) onEvent(event);
     this.#input.push({
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content },
       parent_tool_use_id: null,
       session_id: this.sessionId,
       uuid: userMessageId as `${string}-${string}-${string}-${string}-${string}`,
@@ -862,7 +863,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
    * The Turn ending first therefore does not reject it, and a missing `queued` receipt resolves
    * after a bounded wait so callers that serialize requests are never held indefinitely.
    */
-  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void> {
+  steer(
+    content: ClaudeUserContent,
+    messageId: string,
+    onTakeover?: (started: boolean) => void,
+  ): Promise<void> {
     if (this.#closePromise || !this.#started || !this.#query || !this.canSteerActiveTurn()) {
       return Promise.reject(new ClaudeSteerMissedTurnError());
     }
@@ -872,7 +877,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     try {
       this.#input.push({
         type: "user",
-        message: { role: "user", content: text },
+        message: { role: "user", content },
         parent_tool_use_id: null,
         session_id: this.sessionId,
         uuid: messageId as `${string}-${string}-${string}-${string}-${string}`,

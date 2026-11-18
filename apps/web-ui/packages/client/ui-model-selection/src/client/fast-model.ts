@@ -1,16 +1,15 @@
-/** A Fast Model ref is a variant of its catalog Model, not another Model row. */
 import type {
   ModelCatalogModel,
   ModelProviderGroup,
   ModelSelection,
 } from "@deepseek-ai/dsh-api-session-controller/types";
 
-/** Whether `modelId` selects this catalog Model, either plain or as its Fast variant. */
+/** Whether `modelId` selects this catalog Model or one of its speed variants. */
 export function isModelRoute(model: ModelCatalogModel, modelId: string): boolean {
-  return model.id === modelId || model.fastModel === modelId;
+  return model.id === modelId || model.fastModel === modelId || model.ultrafastModel === modelId;
 }
 
-/** The catalog Model a selection routes to, resolving a Fast ref to its base Model. */
+/** Resolve a selection, including a speed variant, to its catalog Model. */
 export function catalogModelOf(
   groups: readonly ModelProviderGroup[],
   selection: Pick<ModelSelection, "provider" | "model">,

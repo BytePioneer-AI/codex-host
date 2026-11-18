@@ -77,7 +77,11 @@ it("reads and changes the remote native model without consulting local defaults"
     status: "ready",
     catalog: {
       models: [
-        { ref: encodeOfficialCodexModelRef("gpt-6-astra"), label: "Astra" },
+        {
+          ref: encodeOfficialCodexModelRef("gpt-6-astra"),
+          fastModel: encodeOfficialCodexModelRef("gpt-6-astra", "priority"),
+          label: "Astra",
+        },
         {
           ref: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast"),
           label: "Astra · Ultrafast",
@@ -156,10 +160,15 @@ it("reads and changes the remote native model without consulting local defaults"
   const catalog = await call("session/modelCatalog");
   assert.ok(catalog.ok);
   assert.equal((catalog.value as { default: { model: string } }).default.model, ref().id);
-  assert.deepEqual(
-    (catalog.value as { groups: Array<{ models: unknown }> }).groups[0]?.models,
-    inspection.catalog.models.map(({ ref, label }) => ({ id: ref.id, name: label })),
-  );
+  assert.deepEqual((catalog.value as { groups: Array<{ models: unknown }> }).groups[0]?.models, [
+    {
+      id: encodeOfficialCodexModelRef("gpt-6-astra").id,
+      name: "Astra",
+      fastModel: encodeOfficialCodexModelRef("gpt-6-astra", "priority").id,
+      ultrafastModel: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast").id,
+    },
+    { id: encodeOfficialCodexModelRef("gpt-other").id, name: "Other" },
+  ]);
   for (const [targetModel, targetTier] of [
     ["gpt-other", null],
     ["gpt-6-astra", "priority"],

@@ -3,6 +3,8 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   HARNESS_PLUGIN_API_VERSION,
+  decodeOfficialCodexModelSelection,
+  encodeOfficialCodexModelRef,
   harnessPluginManifestSchema,
   isHarnessPluginInScope,
   type HarnessPluginScope,
@@ -25,6 +27,7 @@ export interface ModelGroup {
     description?: string;
     /** Native Fast variant of this Model; selected through the same Model RPC. */
     fastModel?: string;
+    ultrafastModel?: string;
     reasoning?: { efforts: Array<{ id: string; name: string }>; defaultEffort?: string };
   }>;
 }
@@ -102,35 +105,55 @@ export function groupOf(
 ): ModelGroup {
   const { catalog } = inspection;
   const options = new Map(catalog.thinkingOptions.map((option) => [option.id, option]));
+  const ultrafastByModel = new Map<string, string>();
+  if (id === "codex") {
+    const ids = new Set(catalog.models.map(({ ref }) => ref.id));
+    for (const { ref } of catalog.models) {
+      try {
+        const selection = decodeOfficialCodexModelSelection(ref);
+        if (selection.serviceTier === "ultrafast") {
+          const base = encodeOfficialCodexModelRef(selection.model).id;
+          if (ids.has(base)) ultrafastByModel.set(base, ref.id);
+        }
+      } catch {
+        // Unrecognized remote references are kept as their original catalog rows.
+      }
+    }
+  }
+  const ultrafastRefs = new Set(ultrafastByModel.values());
   return {
     id,
     name,
-    models: catalog.models.map((model) => {
-      const supported =
-        model.supportedThinkingOptionIds ?? catalog.thinkingOptions.map((option) => option.id);
-      const efforts = supported.flatMap((optionId) => {
-        const option = options.get(optionId);
-        return option === undefined ? [] : [{ id: option.id, name: option.label }];
-      });
-      return {
-        id: model.ref.id,
-        name: model.label,
-        ...(model.resolvedModelLabel !== undefined && model.resolvedModelLabel !== model.label
-          ? { description: model.resolvedModelLabel }
-          : {}),
-        ...(model.fastModel ? { fastModel: model.fastModel.id } : {}),
-        ...(efforts.length > 0
-          ? {
-              reasoning: {
-                efforts,
-                ...(catalog.defaultThinkingOptionId !== undefined &&
-                supported.includes(catalog.defaultThinkingOptionId)
-                  ? { defaultEffort: catalog.defaultThinkingOptionId }
-                  : {}),
-              },
-            }
-          : {}),
-      };
-    }),
+    models: catalog.models
+      .filter(({ ref }) => !ultrafastRefs.has(ref.id))
+      .map((model) => {
+        const ultrafastModel = ultrafastByModel.get(model.ref.id);
+        const supported =
+          model.supportedThinkingOptionIds ?? catalog.thinkingOptions.map((option) => option.id);
+        const efforts = supported.flatMap((optionId) => {
+          const option = options.get(optionId);
+          return option === undefined ? [] : [{ id: option.id, name: option.label }];
+        });
+        return {
+          id: model.ref.id,
+          name: model.label,
+          ...(model.resolvedModelLabel !== undefined && model.resolvedModelLabel !== model.label
+            ? { description: model.resolvedModelLabel }
+            : {}),
+          ...(model.fastModel ? { fastModel: model.fastModel.id } : {}),
+          ...(ultrafastModel ? { ultrafastModel } : {}),
+          ...(efforts.length > 0
+            ? {
+                reasoning: {
+                  efforts,
+                  ...(catalog.defaultThinkingOptionId !== undefined &&
+                  supported.includes(catalog.defaultThinkingOptionId)
+                    ? { defaultEffort: catalog.defaultThinkingOptionId }
+                    : {}),
+                },
+              }
+            : {}),
+        };
+      }),
   };
 }

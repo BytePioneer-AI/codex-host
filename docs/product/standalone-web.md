@@ -8,7 +8,7 @@ Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-serv
 
 Codex 的 Fast 闪电仅在官方 `model/list` 为当前 Model 的 `serviceTiers` 声明 `priority` 时显示，不根据 Model 名、Thinking 或旧 `additionalSpeedTiers` 推断能力。普通和 Fast 复用公共 `fastModel` 引用契约，对应同一原生 Model；Host 将开启转换为 `serviceTier: "priority"`，显式关闭转换为 `serviceTier: null`。未指定 Model 选择时不覆盖官方默认或恢复配置。创建响应、恢复响应和 `thread/settings/updated` 中确认的档位决定选中状态，Desktop 的配置变化也会同步。
 
-当当前 Host 的官方模型目录声明 `ultrafast` 时，Web 模型选择器会显示「模型名 · Ultrafast」。该选项保留同一个原生模型和 Thinking 选项，通过原生设置选择 `serviceTier: "ultrafast"`。选择基础模型会清除显式档位。SSH 和 Remote Control 会话使用各自远端 Host 的目录与设置确认。
+当当前 Host 的官方模型目录声明 `ultrafast` 时，Web 输入框旁的闪电会显示当前响应速度，并打开包含标准、Fast（若支持）和 Ultrafast 的菜单。切换保留同一个原生模型和 Thinking，通过原生设置选择档位。选择标准会清除显式档位。SSH 和 Remote Control 会话使用各自远端 Host 的目录与设置确认。
 
 运行中切换通过 `thread/settings/update`，保留 Thinking，并等待成功响应及 Model、service tier 均匹配的通知后返回确认；省略 service tier 的 Thinking 或权限更新不会清除 Fast。后续 Turn 沿用官方 Thread 设置，不把 Fast 引用作为原生 Model 名发送，也不承诺改变正在运行的请求。Fast 可能增加额度消耗；目录声明仅表示能力，不保证账号可用额度、实际调度或速度。
 

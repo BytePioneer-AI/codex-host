@@ -17,6 +17,7 @@ import {
   type ThreadWatchInput,
 } from "./delegation-types.js";
 import { matchesBearerToken } from "./bearer-token.js";
+import { withDelegationRequestDefaults } from "./delegation-request-defaults.js";
 import type { HostInventory } from "./host-inventory.js";
 import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { readThreadResultFile } from "./thread-result-file.js";
@@ -134,8 +135,9 @@ async function sendWithWatch(
 export async function routeDelegationRequest(
   handlers: { api: DelegationControlApi; watchApi?: DelegationWatchApi; inventory?: HostInventory },
   route: string | undefined,
-  body: Record<string, unknown>,
+  requestBody: Record<string, unknown>,
 ): Promise<unknown> {
+  const body = withDelegationRequestDefaults(route, requestBody);
   switch (route) {
     case "/v1/host/info":
     case "/v1/project/list":

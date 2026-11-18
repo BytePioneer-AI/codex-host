@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { projectDelegationThreadSnapshot } from "../src/delegation-snapshot.js";
-import type { ThreadReadInput, ThreadWaitInput } from "../src/delegation-types.js";
+import {
+  DEFAULT_WATCH_TIMEOUT_MS,
+  type ThreadReadInput,
+  type ThreadWaitInput,
+} from "../src/delegation-types.js";
+import { externalClientRouter } from "../src/external-client-routes.js";
 
 const token = "synthetic-token";
 
@@ -380,5 +385,185 @@ describe("delegation control server", () => {
       await server.close();
       await unsupported.close();
     }
+  });
+
+  describe("optional request fields", () => {
+    const started = {
+      delegationId: "delegation-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      harnessId: "pi" as const,
+      deepLink: "codex://threads/thread-1",
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
+    };
+    const snapshot = {
+      threadId: "thread-1",
+      harnessId: "pi" as const,
+      status: "completed" as const,
+      turn: null,
+      progress: [],
+      result: { availability: "pending" as const },
+    };
+
+    function setup() {
+      const api = {
+        listHarnesses: vi.fn(),
+        inspect: vi.fn(),
+        answer: vi.fn(),
+        send: vi.fn(),
+        cancel: vi.fn(),
+        start: vi.fn(async () => ({ ...started, parentThreadId: "client:bot" })),
+        read: vi.fn(async () => snapshot),
+        wait: vi.fn(async () => ({ ...snapshot, timedOut: false })),
+        list: vi.fn(async () => ({ threads: [], nextCursor: null })),
+      };
+      const watch = vi.fn(async (input: { threadId: string; timeoutMs: number }) => ({
+        ...input,
+        notifyThreadId: "client:bot",
+        state: "watching" as const,
+        status: "running" as const,
+      }));
+      return { api, watch, watchApi: { watch, watches: vi.fn() } };
+    }
+
+    // The request shapes http-events.{zh,en}.mdx documents, sent through the
+    // external client router like a bot with a client token would.
+    it.each([
+      [
+        "/v1/delegate/start",
+        { harness: "pi", task: "t" },
+        "start",
+        { harnessId: "pi", task: "t", parentThreadId: "client:bot" },
+      ],
+      [
+        "/v1/delegate/start",
+        { harnessId: "pi", task: "t" },
+        "start",
+        { harnessId: "pi", task: "t", parentThreadId: "client:bot" },
+      ],
+      [
+        "/v1/delegate/start",
+        { harness: "pi", harnessId: "pi", task: "t" },
+        "start",
+        { harnessId: "pi", task: "t", parentThreadId: "client:bot" },
+      ],
+      [
+        "/v1/thread/read",
+        { threadId: "thread-1" },
+        "read",
+        { threadId: "thread-1", view: "result" },
+      ],
+      [
+        "/v1/thread/read",
+        { threadId: "thread-1", view: "messages" },
+        "read",
+        { threadId: "thread-1", view: "messages" },
+      ],
+      [
+        "/v1/thread/wait",
+        { threadId: "thread-1" },
+        "wait",
+        { threadId: "thread-1", view: "result", timeoutMs: 30_000 },
+      ],
+      [
+        "/v1/thread/wait",
+        { threadId: "thread-1", timeoutMs: 1000 },
+        "wait",
+        { threadId: "thread-1", view: "result", timeoutMs: 1000 },
+      ],
+      ["/v1/thread/list", {}, "list", { limit: 25, sort: "created-desc" }],
+      ["/v1/thread/list", { limit: 3 }, "list", { limit: 3, sort: "created-desc" }],
+      [
+        "/v1/thread/list",
+        { limit: 3, client: "other" },
+        "list",
+        { limit: 3, client: "other", sort: "created-desc" },
+      ],
+      [
+        "/v1/thread/list",
+        { limit: 3, sort: "updated-asc" },
+        "list",
+        { limit: 3, sort: "updated-asc" },
+      ],
+    ] as const)("%s %j reaches the Host as %j", async (route, body, method, expected) => {
+      const { api, watchApi } = setup();
+      const router = externalClientRouter({ api, watchApi });
+      await router({ client: "bot" } as Parameters<typeof router>[0], route, { ...body });
+      expect(api[method]).toHaveBeenCalledExactlyOnceWith(expected);
+    });
+
+    it("defaults the watch timeout to the CLI's", async () => {
+      const { api, watch, watchApi } = setup();
+      const router = externalClientRouter({ api, watchApi });
+      const call = { client: "bot" } as Parameters<typeof router>[0];
+      await router(call, "/v1/thread/watch", { threadId: "thread-1" });
+      await router(call, "/v1/thread/watch", { threadId: "thread-1", timeoutMs: 1000 });
+      expect(watch.mock.calls.map(([input]) => input)).toEqual([
+        { threadId: "thread-1", notifyThreadId: "client:bot", timeoutMs: DEFAULT_WATCH_TIMEOUT_MS },
+        { threadId: "thread-1", notifyThreadId: "client:bot", timeoutMs: 1000 },
+      ]);
+      expect(DEFAULT_WATCH_TIMEOUT_MS).toBe(1_740_000);
+    });
+
+    it.each([
+      [{ task: "t" }],
+      [{ harness: "", task: "t" }],
+      [{ harness: 7, task: "t" }],
+      [{ harness: "pi", harnessId: "claude", task: "t" }],
+    ])("rejects delegate start %j as INVALID_ARGUMENT naming the field", async (body) => {
+      const { api } = setup();
+      const server = await startDelegationControlServer({ token, api });
+      try {
+        const response = await fetch(`${server.endpoint}/v1/delegate/start`, authorized(body));
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({
+          error: { code: "INVALID_ARGUMENT", message: expect.stringContaining("harness") },
+        });
+        expect(api.start).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    });
+
+    it("rejects an unknown sort as INVALID_ARGUMENT, not INTERNAL_ERROR", async () => {
+      const { api } = setup();
+      const server = await startDelegationControlServer({ token, api });
+      try {
+        const response = await fetch(
+          `${server.endpoint}/v1/thread/list`,
+          authorized({ limit: 3, sort: "newest" }),
+        );
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({
+          error: { code: "INVALID_ARGUMENT", message: expect.stringContaining("sort") },
+        });
+        expect(api.list).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    });
+
+    it("starts with a watch when only the documented harness field is sent", async () => {
+      const { api, watch, watchApi } = setup();
+      const router = externalClientRouter({ api, watchApi });
+      await router({ client: "bot" } as Parameters<typeof router>[0], "/v1/delegate/start", {
+        harness: "pi",
+        task: "t",
+        cwd: "/w",
+        watch: true,
+      });
+      expect(api.start).toHaveBeenCalledWith({
+        harnessId: "pi",
+        task: "t",
+        cwd: "/w",
+        parentThreadId: "client:bot",
+      });
+      expect(watch).toHaveBeenCalledWith({
+        threadId: "thread-1",
+        notifyThreadId: "client:bot",
+        timeoutMs: DEFAULT_WATCH_TIMEOUT_MS,
+      });
+    });
   });
 });

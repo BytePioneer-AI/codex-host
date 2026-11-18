@@ -20,7 +20,11 @@ import { originClientName } from "./external-client-origin.js";
 export { DELEGATION_HELP } from "./delegation-cli-help.js";
 
 import {
+  DEFAULT_THREAD_LIST_LIMIT,
+  DEFAULT_THREAD_LIST_SORT,
+  DEFAULT_WAIT_TIMEOUT_MS,
   DEFAULT_WATCH_TIMEOUT_MS,
+  THREAD_LIST_SORTS,
   DELEGATION_RUNTIME_ENDPOINT_ENV,
   DELEGATION_THREAD_ID_ENV,
   NATIVE_CODEX_THREAD_ID_ENV,
@@ -28,11 +32,9 @@ import {
   type DelegationControlErrorCode,
 } from "./delegation-types.js";
 
-const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 // Node's fetch abandons a request that sends no response headers for 300 s, so
 // longer waits are split into Runtime requests that each answer well before then.
 const MAX_WAIT_REQUEST_MS = 240_000;
-const DEFAULT_LIMIT = 25;
 const EVENT_FOLLOW_POLL_MS = 55_000;
 const MAX_LIMIT = 100;
 
@@ -766,17 +768,8 @@ export async function runDelegationCli(input: {
           "INVALID_ARGUMENT",
           "thread list accepts no positional arguments",
         );
-      const sort = value(parsed, "--sort") ?? "created-desc";
-      if (
-        !new Set([
-          "created-asc",
-          "created-desc",
-          "updated-asc",
-          "updated-desc",
-          "recency-asc",
-          "recency-desc",
-        ]).has(sort)
-      )
+      const sort = value(parsed, "--sort") ?? DEFAULT_THREAD_LIST_SORT;
+      if (!(THREAD_LIST_SORTS as readonly string[]).includes(sort))
         throw new DelegationControlError("INVALID_ARGUMENT", "--sort is invalid");
       const parentThread = value(parsed, "--parent");
       const client = value(parsed, "--client");
@@ -796,7 +789,7 @@ export async function runDelegationCli(input: {
             ...(ref ? { ref } : {}),
             limit: value(parsed, "--limit")
               ? positiveInteger(value(parsed, "--limit"), "--limit", MAX_LIMIT)
-              : DEFAULT_LIMIT,
+              : DEFAULT_THREAD_LIST_LIMIT,
             ...(value(parsed, "--cursor") ? { cursor: value(parsed, "--cursor") } : {}),
             sort,
           },

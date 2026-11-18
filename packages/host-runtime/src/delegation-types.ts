@@ -26,6 +26,19 @@ export const EXTERNAL_CLIENT_PORT_ENV = "CODEXHOST_EXTERNAL_CLIENT_PORT";
 export const NATIVE_CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 /** Default watch expiry; callers adjust it with --timeout-ms. */
 export const DEFAULT_WATCH_TIMEOUT_MS = 29 * 60_000;
+/** Default `thread wait` expiry when no timeout is given. */
+export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+/** Default page size of `thread list`. */
+export const DEFAULT_THREAD_LIST_LIMIT = 25;
+export const THREAD_LIST_SORTS = [
+  "created-asc",
+  "created-desc",
+  "updated-asc",
+  "updated-desc",
+  "recency-asc",
+  "recency-desc",
+] as const;
+export const DEFAULT_THREAD_LIST_SORT = "created-desc";
 
 export type DelegationThreadStatus =
   "creating" | "running" | "completed" | "failed" | "interrupted";
@@ -229,13 +242,7 @@ export interface ThreadListInput {
   ref?: string;
   limit: number;
   cursor?: string;
-  sort:
-    | "created-asc"
-    | "created-desc"
-    | "updated-asc"
-    | "updated-desc"
-    | "recency-asc"
-    | "recency-desc";
+  sort: (typeof THREAD_LIST_SORTS)[number];
 }
 
 export interface DelegationThreadListItem {

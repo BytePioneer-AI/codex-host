@@ -39,7 +39,21 @@ All action endpoints accept `POST` requests with a JSON body:
 | `POST /v1/thread/read`    | Read the latest result or turn history  | `threadId`, optional `view` (`"result"` or `"messages"`), `from`, `to`                     |
 | `POST /v1/thread/wait`    | Wait up to `timeoutMs` for completion   | `threadId`, optional `timeoutMs`, `view`                                                   |
 | `POST /v1/thread/cancel`  | Cancel the active turn                  | `threadId`                                                                                 |
+| `POST /v1/thread/watch`   | Get notified when a session stops       | `threadId`, optional `timeoutMs`                                                           |
 | `POST /v1/thread/watches` | List pending completion watches         | `{}`                                                                                       |
+| `POST /v1/thread/list`    | List sessions, newest first by default  | Optional `cwd`, `client`, `limit`, `cursor`, `sort`                                        |
+
+Omitted optional fields use the same defaults as the `codexhost` CLI:
+
+| Field                   | Default                |
+| :---------------------- | :--------------------- |
+| `view` (`read`, `wait`) | `"result"`             |
+| `timeoutMs` (`wait`)    | `30000` (30 seconds)   |
+| `timeoutMs` (`watch`)   | `1740000` (29 minutes) |
+| `limit` (`list`)        | `25` (at most `100`)   |
+| `sort` (`list`)         | `"created-desc"`       |
+
+`/v1/delegate/start` also accepts `harnessId` as an alias of `harness`. If neither is present, the request fails with `INVALID_ARGUMENT`.
 
 ### Example: Start a Task in a Fresh Worktree with a Watch
 

@@ -223,7 +223,7 @@ describe("native ACP stdio transport", () => {
     ]);
   });
   it("drains the child stdout while the ACP consumer is paused", async () => {
-    const gate = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<undefined>();
     const toWeb = Readable.toWeb;
     let pause = false;
     const slowConsumer = vi.spyOn(Readable, "toWeb").mockImplementation((source, options) =>
@@ -247,7 +247,7 @@ describe("native ACP stdio transport", () => {
       try {
         await vi.waitFor(() => expect(stderr).toContain("prompt-flushed"));
       } finally {
-        gate.resolve();
+        gate.resolve(undefined);
         await prompting;
       }
       expect(events).toEqual([{ type: "agent.text", text: "A".repeat(512 * 1024) }]);

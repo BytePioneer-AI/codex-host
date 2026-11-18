@@ -503,19 +503,18 @@ interface BackgroundTextRun {
   text: string;
 }
 
-function terminalBackgroundTextRun(
+function backgroundTextCandidates(
   items: readonly JsonObject[],
   count: number,
   type: string,
 ): BackgroundTextRun | null {
   const run: BackgroundTextRunItem[] = [];
-  for (let index = count - 1; index >= 0; index -= 1) {
+  for (let index = 0; index < count; index += 1) {
     const item = items[index];
     if (item?.type === "commandExecution" && item.command === REASONING_TRANSCRIPT_COMMAND)
       continue;
     const itemText = item && item.type === type ? backgroundItemText(item) : null;
-    if (itemText === null) break;
-    run.unshift({ index, text: itemText, start: 0 });
+    if (itemText !== null) run.push({ index, text: itemText, start: 0 });
   }
   if (run.length === 0) return null;
   let start = 0;
@@ -538,9 +537,9 @@ function alignBackgroundTextRun(
   consumedEnd: number,
   foregroundItems: readonly JsonObject[],
 ): number | null {
-  const run = terminalBackgroundTextRun(items, historicalCount, type);
+  const run = backgroundTextCandidates(items, historicalCount, type);
   if (!run) return null;
-  const foregroundRun = terminalBackgroundTextRun(foregroundItems, foregroundItems.length, type);
+  const foregroundRun = backgroundTextCandidates(foregroundItems, foregroundItems.length, type);
   const foregroundText = foregroundRun?.text ?? "";
   if (!run.text.startsWith(foregroundText)) return null;
   const searchStart = Math.max(consumedEnd, foregroundText.length);
@@ -5172,42 +5171,31 @@ export class AppServerHost {
         return live;
       });
       const historicalCount = items.length;
-      let liveType: string | null = null;
-      let consumedEnd = 0;
-      const blockedTypes = new Set<string>();
+      const consumedEnd = new Map<string, number>();
       for (const live of background?.values() ?? []) {
         const liveText = backgroundItemText(live);
         if (liveText === "") continue;
         if (liveText === null) {
           items.push(live);
-          if (liveType) blockedTypes.add(liveType);
-          liveType = null;
-          consumedEnd = 0;
           continue;
         }
         if (typeof live.type !== "string") {
           items.push(live);
-          if (liveType) blockedTypes.add(liveType);
-          liveType = null;
           continue;
         }
-        if (live.type !== liveType) {
-          if (liveType) blockedTypes.add(liveType);
-          liveType = live.type;
-          consumedEnd = 0;
-        }
-        const alignmentBlocked = blockedTypes.has(live.type);
-        const aligned =
-          !alignmentBlocked &&
-          alignBackgroundTextRun(items, historicalCount, live.type, liveText, consumedEnd, [
-            ...(foreground?.values() ?? []),
-          ]);
-        if (aligned === null || aligned === false) {
+        const aligned = alignBackgroundTextRun(
+          items,
+          historicalCount,
+          live.type,
+          liveText,
+          consumedEnd.get(live.type) ?? 0,
+          [...(foreground?.values() ?? [])],
+        );
+        if (aligned === null) {
           items.push(live);
-          blockedTypes.add(live.type);
           continue;
         }
-        consumedEnd = aligned;
+        consumedEnd.set(live.type, aligned);
       }
       return {
         ...turn,

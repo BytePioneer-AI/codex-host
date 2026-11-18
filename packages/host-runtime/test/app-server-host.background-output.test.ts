@@ -319,6 +319,89 @@ describe("Host runtime idle background output on a completed Turn", () => {
     }
   });
 
+  it("aligns alternating replayed reasoning and text Items without duplicating them", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const replayed = [
+        {
+          type: "agentMessage" as const,
+          itemId: hostItemIdSchema.parse("turn-0-item-0"),
+          text: "answer 2",
+        },
+        {
+          type: "reasoning" as const,
+          itemId: hostItemIdSchema.parse("turn-0-item-1"),
+          text: "T1",
+        },
+        {
+          type: "agentMessage" as const,
+          itemId: hostItemIdSchema.parse("turn-0-item-2"),
+          text: "A1",
+        },
+        {
+          type: "reasoning" as const,
+          itemId: hostItemIdSchema.parse("turn-0-item-3"),
+          text: "T2",
+        },
+        {
+          type: "agentMessage" as const,
+          itemId: hostItemIdSchema.parse("turn-0-item-4"),
+          text: "A2",
+        },
+      ];
+      const readSnapshot = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        return {
+          ...snapshot,
+          value: {
+            ...snapshot.value,
+            turns: snapshot.value.turns.map((turn) => ({
+              ...turn,
+              items: replayed.map((item) => ({
+                item,
+                outcome: { status: "succeeded" as const },
+              })),
+            })),
+          },
+        };
+      };
+
+      for (const [index, type, text] of [
+        ["reasoning", "T1"],
+        ["agentMessage", "A1"],
+        ["reasoning", "T2"],
+        ["agentMessage", "A2"],
+      ] as const) {
+        const itemId = hostItemIdSchema.parse(`live-alternating-${index}`);
+        session.emitEvent({
+          type: "item.background.started",
+          turnId,
+          item: { type, itemId, text },
+        });
+        await fixture.collector.waitFor((message) => itemStarted(message, itemId));
+      }
+
+      const items = await readHistoryItems(fixture, threadId, 5);
+      expect(items.filter((item) => item.type === "agentMessage").map((item) => item.text)).toEqual(
+        ["answer 2", "A1", "A2"],
+      );
+      expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
+        [["T1"], ["T2"]],
+      );
+      expect(
+        items.filter((item) => String(item.id).startsWith("live-alternating")),
+      ).toHaveLength(0);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each([
     ["same content", "same notification", "same notification", false],
     ["same content already replayed", "same notification", "same notification", true],

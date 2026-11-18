@@ -329,6 +329,11 @@
   text-align: inherit;
 }
 
+/* Menu defaults to inline-flex, which shrinks the wrapped .fileLink by its -3px margins and forces premature line breaks. */
+.markdown .fileLinkMenu {
+  display: inline;
+}
+
 .fileMention:hover,
 .fileMention:focus {
   outline: none;

@@ -689,6 +689,7 @@ function MarkdownFileLink({
         open={menuOpen}
         portal
         autoFocus
+        className={css.fileLinkMenu}
         anchor={button}
         items={[{ id: "open-external", label: openFileExternalLabel }]}
         onSelect={(id) => {

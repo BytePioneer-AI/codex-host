@@ -1386,7 +1386,7 @@ export class CodexTurnProjector {
       mediaMessages.push(this.#agentDelta(projected.item.itemId, delta, emittedAtMs));
     }
     projected.item = { ...event.snapshot.item };
-    if (projected.item.type === "agentMessage") {
+    if (projected.item.type === "agentMessage" && this.#background.has(projected.item.itemId)) {
       projected.media = createAgentMedia(projected.item.text, this.#cwd);
       projected.media.flush();
     }

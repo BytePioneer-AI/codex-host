@@ -15,6 +15,7 @@ export function DocumentDownload({
   openFolderLabel,
   remoteUnsupportedLabel,
   openFolderFailedLabel,
+  revealFolder,
 }: {
   readonly absolutePath: string;
   readonly sessionId: string;
@@ -22,6 +23,11 @@ export function DocumentDownload({
   readonly openFolderLabel: string;
   readonly remoteUnsupportedLabel: string;
   readonly openFolderFailedLabel: string;
+  readonly revealFolder: (
+    path: string,
+  ) => Promise<
+    { readonly ok: true } | { readonly ok: false; readonly error: { readonly code: string } }
+  >;
 }) {
   const query = new URLSearchParams({ sessionId, path: absolutePath });
   const [opening, setOpening] = useState(false);
@@ -39,16 +45,13 @@ export function DocumentDownload({
           disabled={opening}
           onClick={() => {
             setOpening(true);
-            void fetch("/api/workspace-file/open-folder", {
-              method: "POST",
-              credentials: "same-origin",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ sessionId, path: absolutePath }),
-            })
-              .then((response) => {
-                if (!response.ok) {
+            void revealFolder(absolutePath)
+              .then((result) => {
+                if (!result.ok) {
                   showError(
-                    response.status === 403 ? remoteUnsupportedLabel : openFolderFailedLabel,
+                    result.error.code === "session/open-unavailable"
+                      ? remoteUnsupportedLabel
+                      : openFolderFailedLabel,
                   );
                 }
               })

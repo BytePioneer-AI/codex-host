@@ -4,11 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import {
-  downloadWorkspaceFile,
-  openWorkspaceFile,
-  revealWorkspaceFileFolder,
-} from "../src/workspace-file-actions.ts";
+import { downloadWorkspaceFile, openWorkspaceFile } from "../src/workspace-file-actions.ts";
 
 test("downloads original binary, HTML and empty files with attachment headers; refuses unknown sessions and directories", async () => {
   const root = await mkdtemp(join(tmpdir(), "ch-file-actions-"));
@@ -83,10 +79,3 @@ test(
     }
   },
 );
-
-test("revealWorkspaceFileFolder rejects relative, NUL-containing, and missing paths", async () => {
-  await assert.rejects(revealWorkspaceFileFolder("relative.html"), /absolute/u);
-  await assert.rejects(revealWorkspaceFileFolder(join(tmpdir(), "bad\0path")), /absolute/u);
-  await assert.rejects(revealWorkspaceFileFolder(123), /absolute/u);
-  await assert.rejects(revealWorkspaceFileFolder(join(tmpdir(), `missing-${Date.now()}`)));
-});

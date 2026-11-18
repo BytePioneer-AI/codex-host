@@ -125,6 +125,8 @@ export function apply(ctx: ClientContext): void {
           openFolderLabel: t("file.openFolder"),
           remoteUnsupportedLabel: t("file.openFolder.remoteUnsupported"),
           openFolderFailedLabel: t("file.openFolder.failed"),
+          revealFolder: (path: string) =>
+            ctx.remote.session.openWorkspacePath({ path, action: "reveal" }),
         }),
       },
       DocumentDownload,

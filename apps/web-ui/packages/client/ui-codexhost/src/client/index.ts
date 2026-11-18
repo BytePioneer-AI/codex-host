@@ -92,6 +92,7 @@ export const inject = [
   "workspaces",
   "sessions",
   "remote",
+  "remote.session",
   "inputTriggers",
   "theme",
   "connection",
@@ -123,7 +124,6 @@ export function apply(ctx: ClientContext): void {
           sessionId,
           label: t("file.download"),
           openFolderLabel: t("file.openFolder"),
-          remoteUnsupportedLabel: t("file.openFolder.remoteUnsupported"),
           openFolderFailedLabel: t("file.openFolder.failed"),
           revealFolder: (path: string) =>
             ctx.remote.session.openWorkspacePath({ path, action: "reveal" }),

@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { ChSessions } from "../src/ch-sessions.ts";
+import { DataDir } from "../src/store.ts";
+import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { downloadWorkspaceFile, openWorkspaceFile } from "../src/workspace-file-actions.ts";
+import { Workspaces } from "../src/workspaces.ts";
+import { FakeChHost } from "./support/ch-host.ts";
 
 test("downloads original binary, HTML and empty files with attachment headers; refuses unknown sessions and directories", async () => {
   const root = await mkdtemp(join(tmpdir(), "ch-file-actions-"));
@@ -54,27 +59,72 @@ test("downloads original binary, HTML and empty files with attachment headers; r
 });
 
 test(
-  "desktop handoff passes one canonical file argument to the native launcher",
+  "workspace path RPC opens files and reveals files or directories through the native launcher",
   { skip: process.platform === "win32" },
   async () => {
     const root = await mkdtemp(join(tmpdir(), "ch-native-open-"));
+    const launcher = join(root, "launcher");
+    const workspace = join(root, "workspace");
+    const sessions = new ChSessions(
+      new FakeChHost(),
+      new Workspaces(new DataDir(root), workspace),
+      new EventHub(root),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (path, action) => openWorkspaceFile(launcher, path, action),
+    );
     try {
-      const launcher = join(root, "launcher");
-      const file = join(root, "space ; 原文.html");
+      const sibling = join(root, "sibling worktree");
+      const file = join(sibling, "space ; 原文.html");
       const receipt = join(root, "receipt.json");
+      await mkdir(workspace);
+      await mkdir(sibling);
       await writeFile(file, "original");
       await writeFile(
         launcher,
         `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(process.argv.slice(2)));\n`,
       );
       await chmod(launcher, 0o700);
-      assert.deepEqual(await openWorkspaceFile(launcher, file), { opened: true });
-      const args = JSON.parse(await readFile(receipt, "utf8"));
-      assert.equal(args[0], "open-file");
-      assert.equal(await readFile(args[1], "utf8"), "original");
-      await assert.rejects(openWorkspaceFile(launcher, root), /regular files/u);
+      const rpc = new RpcRegistry();
+      sessions.register(rpc, new StreamRegistry());
+      const openPath = (path: string, action?: string, relay = false) =>
+        rpc.dispatch(
+          "session/openWorkspacePath",
+          { args: { request: { path, action } } },
+          undefined,
+          undefined,
+          relay,
+        );
+      for (const [action, expectedCommand] of [
+        [undefined, "open-file"],
+        ["reveal", "reveal-file"],
+      ] as const) {
+        assert.deepEqual(await openPath(file, action), { ok: true, value: { opened: true } });
+        const args = JSON.parse(await readFile(receipt, "utf8"));
+        assert.equal(args.length, 2);
+        assert.equal(args[0], expectedCommand);
+        assert.equal(await readFile(args[1], "utf8"), "original");
+      }
+      for (const rejected of [
+        await openPath(file, "reveal", true),
+        await openPath(file, "other"),
+      ]) {
+        assert.equal(rejected.ok, false);
+        if (!rejected.ok) assert.equal(rejected.error.code, "session/open-unavailable");
+      }
+      assert.deepEqual(await openPath(sibling, "reveal"), { ok: true, value: { opened: true } });
+      assert.deepEqual(JSON.parse(await readFile(receipt, "utf8")), [
+        "reveal-file",
+        await realpath(sibling),
+      ]);
+      await assert.rejects(openWorkspaceFile(launcher, sibling), /regular files/u);
+      await assert.rejects(openWorkspaceFile(launcher, join(root, "missing"), "reveal"), /ENOENT/u);
       await assert.rejects(openWorkspaceFile(launcher, "relative.html"), /absolute/u);
     } finally {
+      sessions.close();
       await rm(root, { recursive: true, force: true });
     }
   },

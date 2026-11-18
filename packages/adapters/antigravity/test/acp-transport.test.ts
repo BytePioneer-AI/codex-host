@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { bytes } from "./support/native-timing-fixture.js";
+import { bytes, integer } from "./support/native-timing-fixture.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcpTransport } from "../src/acp-transport.js";
@@ -44,6 +44,23 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     return result(req.id,{sessionId:'native',models:{currentModelId:'gemini-4-carbon',availableModels:[{modelId:'gemini-4-carbon',name:JSON.stringify(req.params)}]},modes:{currentModeId:'default',availableModes:[]},configOptions:[],_meta:{antigravity:{tier:{id:'pro',name:'Pro',upgradeUri:'https://example.com'}}}});
   }
   if (req.method === 'session/load') {
+    if (scenario === 'complex-history') {
+      update({sessionUpdate:'user_message_chunk',content:{type:'text',text:'Turn 1'}},req.params.sessionId);
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'\\n⚠ API error (attempt 1)\\n'}},req.params.sessionId);
+      update({sessionUpdate:'agent_thought_chunk',content:{type:'text',text:'Check'}},req.params.sessionId);
+      update({sessionUpdate:'tool_call',toolCallId:'call-valid',name:'run_command',args:{command:'pwd'},status:'completed'},req.params.sessionId);
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'First'}},req.params.sessionId);
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'\\n⚠ Short warning\\n'}},req.params.sessionId);
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'\\n⚠ Detail warning\\n'}},req.params.sessionId);
+      result(req.id,{configOptions:[]});
+      setTimeout(() => {
+        update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'\\n\\nSecond'}},req.params.sessionId);
+        update({sessionUpdate:'user_message_chunk',content:{type:'text',text:'Turn 2'}},req.params.sessionId);
+        update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Next turn'}},req.params.sessionId);
+        update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
+      }, 30);
+      return;
+    }
     update({sessionUpdate:'user_message_chunk',content:{type:'text',text:'Question'}},req.params.sessionId);
     update({sessionUpdate:'agent_thought_chunk',content:{type:'text',text:'Thinking'}},req.params.sessionId);
     update({sessionUpdate:'tool_call',toolCallId:'old-tool',name:'view_file',args:{path:'a'},status:'completed'},req.params.sessionId);
@@ -128,19 +145,93 @@ function historyEnvironment(scenario: string): NodeJS.ProcessEnv {
   try {
     db.exec("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)");
     const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?)");
-    insert.run(0, 14, Buffer.alloc(0));
-    insert.run(
-      1,
-      15,
-      bytes(
-        20,
-        Buffer.concat([
-          bytes(1, Buffer.from("Answer")),
-          bytes(3, Buffer.from("Thinking")),
-          bytes(7, bytes(1, Buffer.from("old-tool"))),
-        ]),
-      ),
-    );
+    if (scenario === "complex-history") {
+      insert.run(0, 14, Buffer.alloc(0));
+      insert.run(1, 17, bytes(24, bytes(3, bytes(2, Buffer.from("API error (attempt 1)")))));
+      insert.run(
+        2,
+        15,
+        bytes(
+          20,
+          Buffer.concat([
+            bytes(1, Buffer.alloc(0)),
+            bytes(3, Buffer.from("Check")),
+            bytes(7, bytes(1, Buffer.from("call-valid"))),
+            bytes(7, bytes(1, Buffer.from("call-invalid"))),
+          ]),
+        ),
+      );
+      insert.run(
+        3,
+        132,
+        Buffer.concat([integer(4, 3), bytes(5, bytes(4, bytes(1, Buffer.from("call-valid"))))]),
+      );
+      insert.run(
+        4,
+        132,
+        Buffer.concat([integer(4, 4), bytes(5, bytes(4, bytes(1, Buffer.from("call-invalid"))))]),
+      );
+      insert.run(5, 15, bytes(20, bytes(1, Buffer.from("First"))));
+      insert.run(
+        6,
+        17,
+        bytes(
+          24,
+          bytes(
+            3,
+            Buffer.concat([
+              bytes(1, Buffer.from("Short warning")),
+              bytes(2, Buffer.from("Full API error (attempt 2)")),
+            ]),
+          ),
+        ),
+      );
+      insert.run(
+        7,
+        17,
+        bytes(
+          24,
+          bytes(
+            3,
+            Buffer.concat([
+              bytes(1, Buffer.from("Agent execution terminated due to error.")),
+              bytes(2, Buffer.from("Detail warning")),
+              bytes(9, Buffer.from("Detail warning")),
+            ]),
+          ),
+        ),
+      );
+      insert.run(8, 15, bytes(20, bytes(1, Buffer.from("Second"))));
+      insert.run(9, 14, Buffer.alloc(0));
+      insert.run(10, 15, bytes(20, bytes(1, Buffer.from("Next turn"))));
+      const summaries = new DatabaseSync(
+        path.join(home, ".gemini/antigravity-cli/conversation_summaries.db"),
+      );
+      try {
+        summaries.exec(
+          "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT, raw_summary BLOB)",
+        );
+        summaries
+          .prepare("INSERT INTO conversation_summaries VALUES (?, ?, ?)")
+          .run("saved", "", Buffer.alloc(0));
+      } finally {
+        summaries.close();
+      }
+    } else {
+      insert.run(0, 14, Buffer.alloc(0));
+      insert.run(
+        1,
+        15,
+        bytes(
+          20,
+          Buffer.concat([
+            bytes(1, Buffer.from("Answer")),
+            bytes(3, Buffer.from("Thinking")),
+            bytes(7, bytes(1, Buffer.from("old-tool"))),
+          ]),
+        ),
+      );
+    }
   } finally {
     db.close();
   }
@@ -301,6 +392,28 @@ describe("native ACP stdio transport", () => {
       expect(sessionEvents).toEqual([]);
     },
   );
+  it("matches native multi-step text separators, retry warnings, and skipped invalid tool calls during load replay", async () => {
+    const value = transport("complex-history", {
+      environment: historyEnvironment("complex-history"),
+      commandTimeoutMs: 500,
+    });
+    const loaded = await value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" });
+    expect(
+      loaded.replayedEvents
+        .filter((event) => event.type === "agent.text")
+        .map((event) => event.text),
+    ).toEqual([
+      "\n⚠ API error (attempt 1)\n",
+      "First",
+      "\n⚠ Short warning\n",
+      "\n⚠ Detail warning\n",
+      "\n\nSecond",
+      "Next turn",
+    ]);
+    expect(loaded.replayedEvents.filter((event) => event.type === "tool.call")).toEqual([
+      expect.objectContaining({ toolCallId: "call-valid" }),
+    ]);
+  });
   it("rejects a truncated replay instead of publishing a successful partial snapshot", async () => {
     const value = transport("missing-history", {
       environment: historyEnvironment("missing-history"),

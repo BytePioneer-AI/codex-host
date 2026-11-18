@@ -875,6 +875,8 @@ export function installRendererBindingProbe(
     motionReentry = installation;
     void installation.ready.catch((error: unknown) => {
       console.error("codexhost Motion reentry installation failed", error);
+      // Discovery can fail transiently (the module catalog is republished); the next ready installs again.
+      if (motionReentry === installation) motionReentry = undefined;
     });
   };
   let scanScheduled = false;

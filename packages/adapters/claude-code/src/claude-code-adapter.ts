@@ -103,6 +103,7 @@ import {
 } from "./claude-history.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeTranscript } from "./claude-transcript.js";
+import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
   decodeClaudeModelRef,
@@ -800,45 +801,59 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#readingHistory = true;
     try {
       let messages: unknown[];
-      try {
-        // Native result frames can arrive before the transcript batch is written.
-        const deadline = Date.now() + this.#closeTimeoutMs;
-        for (;;) {
+      // Native result frames can arrive before the transcript batch is written.
+      const deadline = Date.now() + this.#closeTimeoutMs;
+      for (;;) {
+        try {
           messages =
             (await this.#readSessionMessages({
               cwd: this.#cwd,
               sessionId: this.#sessionId,
             })) ?? [];
-          const ids = new Set(
-            messages.flatMap((message) =>
-              isRecord(message) && typeof message.uuid === "string" ? [message.uuid] : [],
-            ),
-          );
-          if (this.#unpersistedMessageIds.every((id) => isPersistedClaudeMessageId(id, ids))) {
-            this.#unpersistedMessageIds = [];
-            break;
-          }
-          if (Date.now() >= deadline || this.#phase !== "open") {
-            return {
-              ok: false,
-              error: {
-                code: "sessionBusy",
-                message: "Claude Code history is still being persisted",
-                retryable: true,
-              },
-            };
-          }
-          await delay(25);
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "nativeFailure",
+              message: "Claude Code history could not be read",
+              retryable: true,
+            },
+          };
         }
-      } catch {
-        return {
-          ok: false,
-          error: {
-            code: "nativeFailure",
-            message: "Claude Code history could not be read",
-            retryable: true,
-          },
-        };
+        let ids: Set<string>;
+        try {
+          ids = new Set(
+            messages.flatMap((message) => {
+              if (!isRecord(message) || typeof message.uuid !== "string") return [];
+              const queued = readClaudeQueuedCommand(message, this.#sessionId);
+              return queued ? [message.uuid, queued.sourceUuid] : [message.uuid];
+            }),
+          );
+        } catch {
+          return {
+            ok: false,
+            error: {
+              code: "protocolError",
+              message: "Claude Code history is invalid",
+              retryable: false,
+            },
+          };
+        }
+        if (this.#unpersistedMessageIds.every((id) => isPersistedClaudeMessageId(id, ids))) {
+          this.#unpersistedMessageIds = [];
+          break;
+        }
+        if (Date.now() >= deadline || this.#phase !== "open") {
+          return {
+            ok: false,
+            error: {
+              code: "sessionBusy",
+              message: "Claude Code history is still being persisted",
+              retryable: true,
+            },
+          };
+        }
+        await delay(25);
       }
       if (messages.length === 0 && isPendingClaudeSession(this.#nativeRef)) {
         try {

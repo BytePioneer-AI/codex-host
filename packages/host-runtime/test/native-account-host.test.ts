@@ -18,6 +18,7 @@ const prepared = new Set<PreparedLocalCodex>();
 const temporaryDirectories = new Set<string>();
 const desktopConnectionVariables = [
   "CODEX_APP_TOOLS_PIPE_PATH",
+  "CODEXHOST_DESKTOP_APP_TOOLS_NODE",
   "BROWSER_USE_ACCESS_EXECUTOR_ID",
   "BROWSER_USE_ACCESS_PIPE_PATH",
   "BROWSER_USE_ACCESS_VERIFYING_IDENTITY",
@@ -643,6 +644,45 @@ describe("local Codex read-only identity startup", () => {
     } finally {
       await client.close();
     }
+  });
+
+  it("retries the deferred replacement until the previous backend's exit is confirmed", async () => {
+    const first = nativeFixture();
+    const local = await startLocal(true);
+    const scope = local.officialRuntimeScope;
+    await scope.start();
+    const lifecycle = (method: string) => ({
+      method,
+      params: { threadId: "thread", turn: { id: "turn" } },
+    });
+    first.notify(lifecycle("turn/started"));
+    await vi.waitFor(() => expect(scope.owner.hasActiveWork).toBe(true));
+    await local.configureStartup({
+      stockCodexPath: "/synthetic/codex",
+      arguments: ["app-server"],
+      environment: { CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/latest" },
+    });
+
+    first.stop
+      .mockRejectedValueOnce(new Error("Exit unconfirmed"))
+      .mockRejectedValueOnce(new Error("Exit still unconfirmed"));
+    nativeFixture();
+    first.notify(lifecycle("turn/completed"));
+    await vi.waitFor(() => expect(first.stop).toHaveBeenCalledTimes(2));
+    expect(scope.owner.generation).toBe(1);
+    await vi.waitFor(
+      () => {
+        expect(scope.owner.generation).toBe(2);
+        expect(scope.gate.phase).toBe("ready");
+      },
+      { timeout: 3_000 },
+    );
+    expect(first.stop).toHaveBeenCalledTimes(3);
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({ CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/latest" }),
+      }),
+    );
   });
 
   it.each(desktopConnectionVariables)("recovers with latest %s", async (key) => {

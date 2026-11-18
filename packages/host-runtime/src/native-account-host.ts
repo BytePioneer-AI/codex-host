@@ -12,7 +12,11 @@ import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
 import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
-import { DESKTOP_LAUNCH_CONTEXT_ENV, desktopMcpArguments } from "./desktop-context-environment.js";
+import {
+  DESKTOP_APP_TOOLS_NODE_ENV,
+  DESKTOP_LAUNCH_CONTEXT_ENV,
+  desktopMcpArguments,
+} from "./desktop-context-environment.js";
 import {
   captureCodexRuntimeFiles,
   assertCodexRuntimeFilesPresent,
@@ -113,7 +117,11 @@ export async function prepareLocalCodex(input: {
         refreshWhenIdle = false;
         void scope
           .stop()
+          .catch(() => {
+            input.diagnosticOutput.write("codexhost: official Codex exit is still unconfirmed\n");
+          })
           .then(() => {
+            // start() proves the previous exit and schedules recovery on failure.
             if (!scope.closed) return scope.start();
           })
           .catch(() => {
@@ -128,11 +136,16 @@ export async function prepareLocalCodex(input: {
         if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
         backendFiles = captureCodexRuntimeFiles(startup.stockCodexPath);
         running = startup;
+        const appToolsNode = startup.environment[DESKTOP_APP_TOOLS_NODE_ENV];
         const backend = createOwnedLoopbackBackend({
           stockCodexPath: startup.stockCodexPath,
           cwd: home,
           arguments: [...startup.arguments, ...desktopMcpArguments(startup.environment)],
-          environment: { ...officialEnvironment(startup.environment), CODEX_HOME: home },
+          environment: {
+            ...officialEnvironment(startup.environment),
+            CODEX_HOME: home,
+            ...(appToolsNode ? { CODEX_MCP_NODE_PATH: appToolsNode } : {}),
+          },
         });
         startupConfigured = true;
         // Keep the invocation fixed through startup and until backend exit is confirmed.

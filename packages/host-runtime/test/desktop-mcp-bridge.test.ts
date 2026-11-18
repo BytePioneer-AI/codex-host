@@ -14,6 +14,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { jsonObjectSchema } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { createDesktopMcpBridge, runDesktopMcpClient } from "../src/desktop-mcp-bridge.js";
+import { findDesktopAppTools } from "../src/desktop-app-tools.js";
 import { JsonLineCollector } from "./app-server-host-fixture.js";
 
 const initializationRequest = {
@@ -43,17 +44,21 @@ async function setup() {
     path.join(appTools, "server.mjs"),
     await readFile(new URL("./fixtures/desktop-mcp-server.mjs", import.meta.url)),
   );
+  const environment = {
+    ...process.env,
+    HOME: root,
+    CODEX_HOME: root,
+    BROWSER_USE_ACCESS_PIPE_PATH: "synthetic-desktop-pipe",
+    CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/current-app-tools.sock",
+  };
+  const appToolsSelection = findDesktopAppTools(root, environment);
+  if (!appToolsSelection) throw new Error("Missing app-tools fixture");
+  const wrapper = path.join(root, "app-tools-node");
   const created = await createDesktopMcpBridge({
     nodeReplPath: process.execPath,
-    desktopResourcesPath: root,
+    appTools: { wrapper, matches: appToolsSelection.matches },
     runtimePath: fileURLToPath(new URL("../dist/release-main.js", import.meta.url)),
-    environment: {
-      ...process.env,
-      HOME: root,
-      CODEX_HOME: root,
-      BROWSER_USE_ACCESS_PIPE_PATH: "synthetic-desktop-pipe",
-      CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/current-app-tools.sock",
-    },
+    environment,
   });
   if (!created) throw new Error("Missing fixture bridge");
   const bridge = created;
@@ -130,6 +135,7 @@ async function setup() {
     server,
     config,
     appTools,
+    wrapper,
     transformed,
     root,
     events,
@@ -172,7 +178,7 @@ it("runs the genuine stdio process below the bridge and preserves metadata and c
   });
 });
 
-it("runs only the bundled app-tools server with the Desktop's current pipe and native policy", async () => {
+it("changes Node selection only for enabled, verified app-tools definitions", async () => {
   const f = await setup();
   const key = "mcp_servers.codex_app";
   const original = {
@@ -189,16 +195,10 @@ it("runs only the bundled app-tools server with the Desktop's current pipe and n
   };
   const transformed = await f.rewrite(original, f.root, "codex_app");
   const config = jsonObjectSchema.parse(transformed.params.config[key]);
-  expect(config.tools).toEqual(original.tools);
-  expect(config.command).toBe(process.execPath);
-  const { client } = await f.connect(config);
-  const result = await client.callTool({ name: "echo", arguments: {}, _meta: { turn: "fixture" } });
-  expect(result.structuredContent).toMatchObject({
-    appToolsPipe: "/synthetic/current-app-tools.sock",
-    deferredAppTools: "1",
-    meta: { turn: "fixture" },
+  expect(config).toEqual({
+    ...original,
+    env: { ...original.env, CODEX_MCP_NODE_PATH: f.wrapper },
   });
-  expect(result.structuredContent).not.toHaveProperty("marker");
 
   const otherScript = { ...original, args: ["../untrusted.mjs"] };
   expect((await f.rewrite(otherScript, f.root, "codex_app")).params.config[key]).toEqual(
@@ -214,8 +214,8 @@ it("runs only the bundled app-tools server with the Desktop's current pipe and n
     cwd: cached,
     command: path.join(cached, "scripts/launch_codex_app_tools_mcp"),
   };
-  expect((await f.rewrite(cachedDefinition, f.root, "codex_app")).params.config[key]?.args).toEqual(
-    config.args,
+  expect((await f.rewrite(cachedDefinition, f.root, "codex_app")).params.config[key]?.env).toEqual(
+    config.env,
   );
   await writeFile(path.join(cached, "server.mjs"), "modified fixture");
   expect((await f.rewrite(cachedDefinition, f.root, "codex_app")).params.config[key]).toEqual(
@@ -224,7 +224,7 @@ it("runs only the bundled app-tools server with the Desktop's current pipe and n
 });
 
 it.skipIf(process.platform === "win32")(
-  "keeps the bundled app-tools policy and the effective native tool selection at backend startup",
+  "leaves the native app-tools enablement and policy in the original plugin",
   async () => {
     const f = await setup();
     const cached = path.join(f.root, "plugins/cache/openai-bundled/codex-app-tools/version");
@@ -260,7 +260,6 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
     );
     const bridge = await createDesktopMcpBridge({
       nodeReplPath: process.execPath,
-      desktopResourcesPath: f.root,
       runtimePath: fileURLToPath(new URL("../dist/release-main.js", import.meta.url)),
       environment: {
         ...process.env,
@@ -271,15 +270,7 @@ process.stdout.write(JSON.stringify(process.argv.includes("features.plugins=fals
     });
     if (!bridge) throw new Error("Fixture bridge unavailable");
     cleanup.push(() => bridge.close());
-    expect(JSON.parse(String(bridge.environment.CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS))).toEqual(
-      expect.arrayContaining([
-        "mcp_servers.codex_app.enabled=true",
-        'mcp_servers.codex_app.default_tools_approval_mode="approve"',
-        'mcp_servers.codex_app.tools={"automation_update"={"approval_mode"="prompt"}}',
-        'mcp_servers.codex_app.enabled_tools=["automation_update"]',
-        'mcp_servers.codex_app.disabled_tools=["delete_thread"]',
-      ]),
-    );
+    expect(bridge.environment).toEqual({});
   },
 );
 

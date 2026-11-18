@@ -40,7 +40,7 @@ it("adapts nested server tables in per-thread overrides", () => {
   });
 });
 
-it("replaces only the transport in Desktop's dotted app-tools configuration", () => {
+it("replaces only the Node selection in Desktop's dotted app-tools configuration", () => {
   const input = {
     id: 6,
     method: "thread/start",
@@ -55,14 +55,13 @@ it("replaces only the transport in Desktop's dotted app-tools configuration", ()
   expect(
     rewriteDesktopMcpRequest(input, (server, _cwd, name) =>
       name === "codex_app" && server.command === "/official/launcher"
-        ? { ...server, command: "/bridge", args: ["connect"] }
+        ? { ...server, env: { CODEX_MCP_NODE_PATH: "/bridge/node" } }
         : undefined,
     ).params,
   ).toEqual({
     config: {
       ...input.params.config,
-      "mcp_servers.codex_app.command": "/bridge",
-      "mcp_servers.codex_app.args": ["connect"],
+      "mcp_servers.codex_app.env": { CODEX_MCP_NODE_PATH: "/bridge/node" },
     },
   });
 });

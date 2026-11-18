@@ -6,7 +6,7 @@ import type { desktopStdioConfig } from "./desktop-mcp-config.js";
 import { DESKTOP_APP_TOOLS_PIPE_ENV } from "./desktop-context-environment.js";
 
 const PLUGIN_PATH = "plugins/openai-bundled/plugins/codex-app-tools";
-const LAUNCHER_PATH = "scripts/launch_codex_app_tools_mcp";
+export const APP_TOOLS_LAUNCHER_PATH = "scripts/launch_codex_app_tools_mcp";
 const SERVER_PATH = "server.mjs";
 
 function matchesBundle(file: string, shipped: Buffer): boolean {
@@ -22,10 +22,10 @@ export interface DesktopToolLaunch {
 }
 
 /** Selects only the app-tools server shipped with the Desktop that owns this connection. */
-export function desktopAppToolsLaunch(
+export function findDesktopAppTools(
   resourcesPath: string | undefined,
   environment: NodeJS.ProcessEnv,
-): ((definition: z.infer<typeof desktopStdioConfig>) => DesktopToolLaunch | undefined) | undefined {
+) {
   const pipe = environment[DESKTOP_APP_TOOLS_PIPE_ENV];
   if (!resourcesPath || !pipe || !path.isAbsolute(pipe)) return;
   let bundledRoot: string;
@@ -41,7 +41,7 @@ export function desktopAppToolsLaunch(
   let bundle: { cwd: string; launcher: Buffer; server: Buffer } | undefined;
   for (const cwd of packaged) {
     try {
-      const launcher = path.join(cwd, LAUNCHER_PATH);
+      const launcher = path.join(cwd, APP_TOOLS_LAUNCHER_PATH);
       const server = path.join(cwd, SERVER_PATH);
       if (realpathSync(launcher) !== launcher || realpathSync(server) !== server) continue;
       bundle = { cwd, launcher: readFileSync(launcher), server: readFileSync(server) };
@@ -54,7 +54,7 @@ export function desktopAppToolsLaunch(
   const shipped = bundle;
   const codexHome = environment.CODEX_HOME ?? path.join(environment.HOME ?? homedir(), ".codex");
   const cache = path.join(codexHome, "plugins/cache/openai-bundled/codex-app-tools");
-  return (definition) => {
+  function matches(definition: z.infer<typeof desktopStdioConfig>): boolean {
     const [argument] = definition.args;
     if (
       definition.enabled === false ||
@@ -64,16 +64,16 @@ export function desktopAppToolsLaunch(
       definition.args.length !== 1 ||
       !argument
     )
-      return;
+      return false;
     try {
       const cwd = realpathSync(definition.cwd);
-      const launcher = path.join(cwd, LAUNCHER_PATH);
+      const launcher = path.join(cwd, APP_TOOLS_LAUNCHER_PATH);
       const server = path.join(cwd, SERVER_PATH);
       if (
         realpathSync(definition.command) !== launcher ||
         realpathSync(path.resolve(cwd, argument)) !== server
       )
-        return;
+        return false;
       if (cwd !== shipped.cwd) {
         const version = path.relative(realpathSync(cache), cwd);
         if (
@@ -81,20 +81,12 @@ export function desktopAppToolsLaunch(
           !matchesBundle(launcher, shipped.launcher) ||
           !matchesBundle(server, shipped.server)
         )
-          return;
+          return false;
       }
-      // Desktop's own process environment selects the socket. Config supplies only the mode.
-      return {
-        command: process.execPath,
-        args: [path.join(shipped.cwd, SERVER_PATH)],
-        env: {
-          [DESKTOP_APP_TOOLS_PIPE_ENV]: pipe,
-          CODEX_APP_TOOLS_DEFERRED: definition.env.CODEX_APP_TOOLS_DEFERRED === "1" ? "1" : "0",
-        },
-        cwd: shipped.cwd,
-      };
+      return true;
     } catch {
-      return;
+      return false;
     }
-  };
+  }
+  return { matches, pipe, codexHome, cwd: shipped.cwd, entry: path.join(shipped.cwd, SERVER_PATH) };
 }

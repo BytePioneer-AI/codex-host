@@ -67,9 +67,8 @@ export function rewriteDesktopMcpRequest(
         return [key, next];
       }),
     );
-    if (adapted?.command !== undefined && adapted.args !== undefined) {
-      config[`${APP_TOOLS_CONFIG}command`] = adapted.command;
-      config[`${APP_TOOLS_CONFIG}args`] = adapted.args;
+    if (adapted?.env !== undefined) {
+      config[`${APP_TOOLS_CONFIG}env`] = adapted.env;
       changed = true;
     }
     if (!changed) return message;
@@ -172,10 +171,7 @@ async function bundledServerPolicy(
 ): Promise<JsonObject> {
   const selected = desktopStdioConfig.safeParse(definition);
   if (!selected.success) return {};
-  const appTools = name === "codex_app";
-  const version = appTools
-    ? selected.data.cwd && path.basename(selected.data.cwd)
-    : selected.data.env.BROWSER_USE_CODEX_APP_VERSION;
+  const version = selected.data.env.BROWSER_USE_CODEX_APP_VERSION;
   if (!version || !/^[a-zA-Z0-9._-]+$/u.test(version)) return {};
   const cache = path.join(
     environment.CODEX_HOME ?? path.join(environment.HOME ?? homedir(), ".codex"),
@@ -190,7 +186,7 @@ async function bundledServerPolicy(
     value.env_vars,
     value.cwd ?? null,
   ];
-  const plugins = appTools ? ["codex-app-tools"] : await readdir(cache).catch(() => []);
+  const plugins = await readdir(cache).catch(() => []);
   for (const plugin of plugins) {
     try {
       const manifest = z
@@ -260,6 +256,7 @@ export async function desktopNativeMcpOverrides(
       for (const server of listed) {
         if (
           !server.enabled ||
+          server.name === "codex_app" ||
           !/^[a-zA-Z0-9_-]+$/u.test(server.name) ||
           server.transport.type !== "stdio"
         )
@@ -279,31 +276,8 @@ export async function desktopNativeMcpOverrides(
           server.name,
         );
         if (!adapted) continue;
-        let toolSelection: Partial<
-          Record<"enabled_tools" | "disabled_tools", string[] | null | undefined>
-        > = {};
-        if (server.name === "codex_app" && !globalNames.has(server.name)) {
-          try {
-            const details = await run(
-              native.executable,
-              [...configArguments, "mcp", "get", server.name, "--json"],
-              invocation,
-            );
-            toolSelection = z
-              .object({
-                enabled_tools: z.array(z.string()).nullish(),
-                disabled_tools: z.array(z.string()).nullish(),
-              })
-              .parse(JSON.parse(details.stdout));
-          } catch {
-            // Without effective tool selection, keep the native plugin definition.
-            continue;
-          }
-        }
         const fields = {
           ...policy,
-          ...toolSelection,
-          ...("enabled" in policy && { enabled: server.enabled }),
           startup_timeout_sec: server.startup_timeout_sec ?? policy.startup_timeout_sec,
           tool_timeout_sec: server.tool_timeout_sec ?? policy.tool_timeout_sec,
           command: adapted.command,

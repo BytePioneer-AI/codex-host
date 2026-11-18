@@ -1,4 +1,5 @@
 import { runDesktopMcpClient, runDesktopMcpServer } from "./desktop-mcp-bridge.js";
+import { runDesktopAppToolsClient } from "./desktop-app-tools-bridge.js";
 import { runDelegationCli } from "./delegation-cli.js";
 import { runHostRuntime } from "./run-host-runtime.js";
 import { runSharedHostService } from "./shared-host-service.js";
@@ -24,14 +25,16 @@ function runLoggedHostRuntime(): Promise<number> {
 process.exitCode =
   arguments_[0] === "--codexhost-desktop-mcp-server"
     ? await runDesktopMcpServer(arguments_.slice(1))
-    : arguments_[0] === "--codexhost-desktop-mcp-client"
-      ? await runDesktopMcpClient(arguments_.slice(1))
-      : arguments_[0] === "--codexhost-delegation-cli"
-        ? await runDelegationCli({ arguments: arguments_.slice(1), environment: process.env })
-        : arguments_[0] === "--codexhost-harness-broker"
-          ? await runClaudeAquaHarnessBroker(process.env, arguments_[1] ?? "claude-code")
-          : arguments_[0] === "--codexhost-remote"
-            ? await runRemoteHostCli({ arguments: arguments_.slice(1), environment: process.env })
-            : arguments_[0] === "--codexhost-remote-control-bridge"
-              ? await runRemoteControlAppServerBridge()
-              : await runLoggedHostRuntime();
+    : arguments_[0] === "--codexhost-desktop-app-tools-client"
+      ? await runDesktopAppToolsClient(arguments_.slice(1))
+      : arguments_[0] === "--codexhost-desktop-mcp-client"
+        ? await runDesktopMcpClient(arguments_.slice(1))
+        : arguments_[0] === "--codexhost-delegation-cli"
+          ? await runDelegationCli({ arguments: arguments_.slice(1), environment: process.env })
+          : arguments_[0] === "--codexhost-harness-broker"
+            ? await runClaudeAquaHarnessBroker(process.env, arguments_[1] ?? "claude-code")
+            : arguments_[0] === "--codexhost-remote"
+              ? await runRemoteHostCli({ arguments: arguments_.slice(1), environment: process.env })
+              : arguments_[0] === "--codexhost-remote-control-bridge"
+                ? await runRemoteControlAppServerBridge()
+                : await runLoggedHostRuntime();

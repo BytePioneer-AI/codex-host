@@ -17,7 +17,9 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 
 Desktop 原生 Browser 和 app-tools IPC 都校验调用进程的归属。本地 macOS 前端在当前 Desktop 进程树中启动需要原生校验的第一方 MCP 工具。Browser 使用所选运行时的 `node_repl` 和带 Browser 服务的配置。`codex_app` 使用当前 Desktop 随包的工具服务和 socket。接受的缓存定义须位于该插件的原生缓存中，启动脚本和服务入口须与随包文件一致。未知配置和远程执行环境仍交给原生处理。
 
-前端通过原生 CLI 读取启用的工具定义和 `codex_app` 的有效工具选择，为识别出的服务生成临时 stdio 命令覆盖，经认证的 Desktop 上下文传给共享后端。启动记录保留原始参数。`thread/start`、`thread/resume`、`thread/fork` 的 MCP 覆盖沿用同一转换。共享后端与 Desktop 工具进程通过经过认证的本机 Streamable HTTP MCP 交换原生消息和请求元数据。工具审批、超时、工具选择和 socket 对端校验由原生路径处理。
+Browser 的临时 stdio 命令覆盖经认证的 Desktop 上下文传给共享后端，通过本机 Streamable HTTP MCP 转发消息。`codex_app` 的启用状态和工具策略由原生插件配置决定。Desktop 仅提供临时 Node 启动入口，也识别 `thread/start`、`thread/resume`、`thread/fork` 中的显式 Node 配置。启动记录保留原始参数。
+
+app-tools 代理使用 Unix socket。Desktop 前端从内核取得连接进程的 PID，核对它是否是由本次共享 Host 管理的 stock Codex 所启动的 Node 进程，并检查 Host 的启动时间。验证通过后，前端才启动随包工具。工具连接当前 Desktop 的原生 socket 时，仍由 Desktop 校验对端。
 
 ## 原生 Codex Fork 的模型继承
 

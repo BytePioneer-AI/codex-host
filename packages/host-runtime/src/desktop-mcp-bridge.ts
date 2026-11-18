@@ -22,7 +22,7 @@ import {
 } from "./desktop-mcp-config.js";
 import { jsonBody } from "./delegation-control-server.js";
 import { OfficialProcessLifecycle } from "./official-process-lifecycle.js";
-import { desktopAppToolsLaunch, type DesktopToolLaunch } from "./desktop-app-tools.js";
+import type { DesktopToolLaunch, findDesktopAppTools } from "./desktop-app-tools.js";
 import {
   DESKTOP_BROWSER_ACCESS_ENV,
   DESKTOP_MCP_ARGUMENTS_ENV,
@@ -191,17 +191,19 @@ export interface DesktopMcpBridge {
 /** Hosts first-party MCP processes that need the Desktop's native process ancestry. */
 export async function createDesktopMcpBridge(options: {
   nodeReplPath: string;
-  desktopResourcesPath?: string;
+  appTools?: {
+    wrapper: string;
+    matches: NonNullable<ReturnType<typeof findDesktopAppTools>>["matches"];
+  };
   runtimePath: string;
   environment: NodeJS.ProcessEnv;
   native?: { executable: string; arguments: readonly string[] };
 }): Promise<DesktopMcpBridge | undefined> {
-  const appTools = desktopAppToolsLaunch(options.desktopResourcesPath, options.environment);
   let executable: string | undefined;
   try {
     executable = realpathSync(options.nodeReplPath);
   } catch {
-    if (!appTools) return undefined;
+    if (!options.appTools) return undefined;
   }
   const profiles = new Map<string, Profile>();
   const configurations = new Map<string, Profile>();
@@ -260,8 +262,12 @@ export async function createDesktopMcpBridge(options: {
   ): JsonObject | undefined {
     const parsed = desktopStdioConfig.safeParse(config);
     if (!parsed.success) return;
-    const launch =
-      name === "codex_app" ? appTools?.(parsed.data) : browserLaunch(parsed.data, threadCwd);
+    if (name === "codex_app") {
+      const appTools = options.appTools;
+      if (!appTools?.matches(parsed.data)) return;
+      return { ...config, env: { ...parsed.data.env, CODEX_MCP_NODE_PATH: appTools.wrapper } };
+    }
+    const launch = browserLaunch(parsed.data, threadCwd);
     if (!launch) return;
     const signature = createHash("sha256").update(JSON.stringify(launch)).digest("hex");
     let profile = configurations.get(signature);

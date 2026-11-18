@@ -608,6 +608,51 @@ it("does not treat resumed historical inProgress Turns as active work on this ba
   }
 });
 
+it("keeps the current Turn active when a slow client delivers an older Turn's lifecycle", async () => {
+  const f = fixture();
+  const fast = f.attach();
+  const blocked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const slowOutput: JsonObject[] = [];
+  const slow = f.owner.attach(async ({ value }) => {
+    const message = value as JsonObject;
+    if (message.method === "fixture/blocked") {
+      blocked.resolve();
+      await release.promise;
+    }
+    slowOutput.push(message);
+  });
+  const event = (method: string, id: string) => ({
+    method,
+    params: { threadId: "shared-thread", turn: { id } },
+  });
+  try {
+    await f.owner.start();
+    f.gate.initialized();
+    await Promise.all([fast.client.initialize(initialization), slow.initialize(initialization)]);
+    f.connection(0, 1).emit({ method: "fixture/blocked" });
+    await blocked.promise;
+    const earlier = [event("turn/started", "old"), event("turn/completed", "old")];
+    for (const message of earlier) {
+      f.connection(0, 0).emit(message);
+      f.connection(0, 1).emit(message);
+    }
+    f.connection(0, 0).emit(event("turn/started", "current"));
+    await vi.waitFor(() => expect(fast.output).toHaveLength(3));
+    expect(f.owner.hasActiveWork).toBe(true);
+    release.resolve();
+    await vi.waitFor(() => expect(slowOutput).toHaveLength(3));
+    expect(f.owner.hasActiveWork).toBe(true);
+    f.connection(0, 0).emit(event("turn/completed", "current"));
+    await vi.waitFor(() => expect(f.owner.hasActiveWork).toBe(false));
+  } finally {
+    release.resolve();
+    await f.owner.stop();
+    fast.client.close();
+    slow.close();
+  }
+});
+
 describe("owned loopback backend", () => {
   it("requires readiness, hashes capability authentication, and discards managed stderr", async () => {
     const child = Object.assign(new EventEmitter(), {

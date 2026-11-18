@@ -78,7 +78,7 @@ export class OfficialRuntimeOwner {
   readonly #diagnosticOutput: Writable;
   readonly #onIdle: (() => void) | undefined;
   readonly #clients = new Set<Client>();
-  readonly #activeTurns = new Map<string, string>();
+  readonly #activeTurns = new Map<string, Set<string>>();
   readonly #turnStarts = new Map<string, { pending: number; completed: Set<string> }>();
   readonly #threadModelSettings = new Map<string, JsonObject & { model: string }>();
   #backend: OwnedOfficialBackend | undefined;
@@ -128,6 +128,19 @@ export class OfficialRuntimeOwner {
 
   #notifyIdle(): void {
     if (this.running && !this.hasActiveWork) this.#onIdle?.();
+  }
+
+  #markTurnActive(threadId: string, turnId: string): void {
+    const turns = this.#activeTurns.get(threadId) ?? new Set<string>();
+    turns.add(turnId);
+    this.#activeTurns.set(threadId, turns);
+  }
+
+  #finishTurn(threadId: string, turnId: string): boolean {
+    const turns = this.#activeTurns.get(threadId);
+    if (!turns?.delete(turnId)) return false;
+    if (!turns.size) this.#activeTurns.delete(threadId);
+    return true;
   }
 
   start(): Promise<void> {
@@ -463,7 +476,7 @@ export class OfficialRuntimeOwner {
     const turnId =
       object(params.turn) && typeof params.turn.id === "string" ? params.turn.id : undefined;
     if (threadId) {
-      if (value.method === "turn/started" && turnId) this.#activeTurns.set(threadId, turnId);
+      if (value.method === "turn/started" && turnId) this.#markTurnActive(threadId, turnId);
       // A completion can precede the response that reports the Turn as in progress.
       if (value.method === "turn/completed" && turnId)
         this.#turnStarts.get(threadId)?.completed.add(turnId);
@@ -514,9 +527,9 @@ export class OfficialRuntimeOwner {
       if (
         threadId &&
         event.generation === this.#generation &&
-        (value.method === "thread/closed" ||
-          (value.method === "turn/completed" && this.#activeTurns.get(threadId) === turnId)) &&
-        this.#activeTurns.delete(threadId)
+        (value.method === "thread/closed"
+          ? this.#activeTurns.delete(threadId)
+          : value.method === "turn/completed" && turnId && this.#finishTurn(threadId, turnId))
       )
         this.#notifyIdle();
     }
@@ -533,7 +546,7 @@ export class OfficialRuntimeOwner {
         response.result.turn.status === "inProgress" &&
         !this.#turnStarts.get(params.threadId)?.completed.has(response.result.turn.id)
       )
-        this.#activeTurns.set(params.threadId, response.result.turn.id);
+        this.#markTurnActive(params.threadId, response.result.turn.id);
     }
     if (
       ["thread/archive", "thread/unsubscribe", "thread/delete"].includes(method) &&

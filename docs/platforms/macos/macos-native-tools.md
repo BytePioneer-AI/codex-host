@@ -32,30 +32,34 @@ The recovery console starts before Desktop discovery and uses the explicit Node
 override, installer Node, or npm Node so it can report an incomplete installation.
 
 Native browser and app-tools IPC check the connecting process's ancestry. The
-macOS Desktop frontend starts the recognized first-party `node_repl` and
-`codex_app` MCP servers in its own process tree. Native stdio command overrides
-connect through a Host transport client to standard Streamable HTTP MCP on an
-authenticated loopback listener. Each MCP session owns a separate stdio process
-beneath a signed Desktop Node tool host. Desktop still authorizes each connection
-to its native socket. The MCP SDK transports forward requests, metadata,
-notifications, elicitation, cancellation and responses.
+macOS Desktop frontend starts recognized first-party tool processes in its own
+process tree, beneath a signed Desktop Node tool host. Desktop authorizes each
+tool connection to its native socket.
 
-The frontend reads the enabled server definitions from the official CLI and
-preserves their tool policy and timeouts. A bundled `codex_app` definition also
-retains the CLI's effective tool selections. The bridge runs the app-tools
-entry point from the current Desktop bundle. A definition from the native
-plugin cache qualifies only when its launcher and entry point match the
-bundled files. The bridge takes the app-tools socket from the current Desktop
-launch environment.
+For `codex_app`, the Desktop frontend provides a temporary Node launcher.
+Stock Codex reads and applies the original plugin settings, including whether
+the plugin is enabled and which tools are allowed. The launcher recognizes
+the bundled app-tools entry point and the matching copy in the native plugin
+cache. Other Node invocations use the same Desktop Node directly.
+
+The app-tools client opens an ephemeral Unix socket. The frontend uses the
+kernel-provided peer PID to verify the client executable, its stock Codex
+parent, and that parent's ownership by the pinned shared Host process.
+Once admitted, the client exchanges stdio bytes with the bundled server in
+the current Desktop process tree. The server uses the current Desktop app-tools
+socket.
+
+Browser stdio overrides connect to the authenticated loopback MCP bridge, which
+forwards requests, metadata, notifications, elicitation, and cancellation with
+standard Streamable HTTP MCP.
 Authenticated MCP POST bodies are limited to 16 MiB before parsing. The stdio
 entry accepts the same payload budget with room for its line terminator.
 The limit applies to each request across fragmented or combined stdio reads.
 
-Profiles use a short-lived capability token and separate MCP session IDs.
-Transport overrides travel in authenticated Desktop context and apply when
-launching the backend. Native startup records keep the original arguments.
-Desktop frontend shutdown closes the listener and its tool processes, including
-when the shared task backend remains online.
+Browser profiles use a capability token and separate MCP session IDs.
+Transport overrides travel in authenticated Desktop context. Native startup
+records keep the original arguments. Closing the Desktop frontend closes its
+tool sockets and tool processes while the shared task backend remains available.
 
 The independent shared Host keeps the Node chosen by the caller that first
 starts it. Desktop and Web reuse an online Host without replacing its process or

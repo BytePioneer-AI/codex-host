@@ -14,8 +14,10 @@ export const DESKTOP_BROWSER_ACCESS_ENV: readonly string[] = [
 
 // Keep the existing name on the wire for shared Hosts launched by an older Desktop.
 export const DESKTOP_MCP_ARGUMENTS_ENV = "CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS";
+export const DESKTOP_APP_TOOLS_NODE_ENV = "CODEXHOST_DESKTOP_APP_TOOLS_NODE";
 export const DESKTOP_LAUNCH_CONTEXT_ENV: readonly string[] = [
   DESKTOP_APP_TOOLS_PIPE_ENV,
+  DESKTOP_APP_TOOLS_NODE_ENV,
   ...DESKTOP_BROWSER_ACCESS_ENV,
   DESKTOP_MCP_ARGUMENTS_ENV,
 ];

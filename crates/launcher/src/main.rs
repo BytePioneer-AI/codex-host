@@ -1565,6 +1565,28 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
+        #[cfg(target_os = "macos")]
+        Some("--desktop-mcp-peer") => match &arguments[1..] {
+            [action, pid] if action == "identify" => {
+                let process = codexhost_platform::process_identity(pid.parse()?)?;
+                println!("{}", process.started_at_micros);
+                Ok(())
+            }
+            [action, pid, start, codex, node] if action == "authorize" => {
+                if codexhost_platform::authorize_macos_mcp_peer(
+                    3,
+                    pid.parse()?,
+                    start.parse()?,
+                    Path::new(codex),
+                    Path::new(node),
+                ) {
+                    Ok(())
+                } else {
+                    Err("Desktop MCP peer is not owned by the shared Host".into())
+                }
+            }
+            _ => Err("invalid Desktop MCP peer arguments".into()),
+        },
         Some("host") if arguments.get(1).is_some_and(|arg| arg == "info") => {
             run_delegation_cli(arguments)
         }

@@ -73,8 +73,6 @@ for await (const line of createInterface({ input: process.stdin })) {
         cwd: process.cwd(),
         marker: process.env.FIXTURE_MARKER,
         browserPipe: process.env.BROWSER_USE_ACCESS_PIPE_PATH,
-        appToolsPipe: process.env.CODEX_APP_TOOLS_PIPE_PATH,
-        deferredAppTools: process.env.CODEX_APP_TOOLS_DEFERRED,
         calls: ++calls,
       };
       if (message.params._meta?.progressToken !== undefined) {

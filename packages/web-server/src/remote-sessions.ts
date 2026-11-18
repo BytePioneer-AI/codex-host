@@ -469,8 +469,7 @@ export class RemoteSessions {
             current.view.log.setProjection(key, value);
         current.view.log.setProjection("harnessIdentity", remoteHarnessIdentity(current) ?? null);
         applyRemoteControls(current, current.view);
-        if (current.controls?.configuration)
-          this.loadUsage(id, current, current.view, snapshot.epoch);
+        this.loadUsage(id, current, current.view, snapshot.epoch);
         this.interactions(id, current, snapshot.requests);
         if (
           snapshot.interactionsAvailable === false ||
@@ -511,28 +510,30 @@ export class RemoteSessions {
     return current.reading;
   }
   private loadUsage(id: string, entry: Entry, view: ChThreadView, epoch: string): void {
+    const updatedAt = view.thread.updatedAt;
     const previous = entry.usageRequest;
     if (
       previous?.view === view &&
-      (previous.pending ||
-        (previous.updatedAt === entry.row.updatedAt && Date.now() < previous.retryAt))
+      (previous.pending || (previous.updatedAt === updatedAt && Date.now() < previous.retryAt))
     )
       return;
-    const request = { view, updatedAt: entry.row.updatedAt, retryAt: 0, pending: true };
+    const request = { view, updatedAt, retryAt: 0, pending: true };
     entry.usageRequest = request;
+    const isCurrent = () =>
+      !this.closed &&
+      this.entries.get(id) === entry &&
+      entry.online &&
+      entry.view === view &&
+      entry.epoch === epoch &&
+      entry.usageRequest === request;
     void this.invoke({ kind: "usage", ...entry.identity, epoch })
       .then((raw) => {
         const parsed = threadUsageInspectionSchema.safeParse(raw);
         if (
           parsed.success &&
           parsed.data.threadId === entry.identity.threadId &&
-          !this.closed &&
-          this.entries.get(id) === entry &&
-          entry.online &&
-          entry.view === view &&
-          entry.row.updatedAt === request.updatedAt &&
-          entry.epoch === epoch &&
-          entry.usageRequest === request
+          isCurrent() &&
+          view.thread.updatedAt === updatedAt
         )
           applyUsageProjections(view.log, parsed.data);
       })
@@ -542,6 +543,9 @@ export class RemoteSessions {
       .finally(() => {
         request.pending = false;
         request.retryAt = Date.now() + 30_000;
+        // The latest applied history may have arrived while this request was in flight.
+        if (isCurrent() && view.thread.updatedAt !== updatedAt)
+          this.loadUsage(id, entry, view, epoch);
       });
   }
   private retireView(entry: Entry): void {

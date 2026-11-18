@@ -56,6 +56,52 @@ it("projects matching remote usage and makes repeat reads within the refresh per
   assert.deepEqual(view.log.projections.codexhostUsage, { usage });
 });
 
+it("refreshes usage after a pending read and ignores an older catalog row", async (t) => {
+  const identity = { hostId: "remote-control:a", threadId: "same" };
+  const sessionId = remoteSessionId(identity.hostId, identity.threadId);
+  const row = {
+    id: identity.threadId,
+    cwd: "/remote",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  const first = Promise.withResolvers<unknown>();
+  const latest = Promise.withResolvers<unknown>();
+  let requests = 0;
+  const remote = new RemoteSessions(new EventHub("remote-usage-refresh"), async (operation) => {
+    if (operation.kind === "hosts") return [{ hostId: identity.hostId, online: true }];
+    if (operation.kind === "list") return { data: [{ ...row, updatedAt: 2 }], nextCursor: null };
+    if (operation.kind === "read")
+      return { result: { thread: { ...row } }, epoch: "epoch", requests: [] };
+    assert.equal(operation.kind, "usage");
+    if (++requests === 1) return first.promise;
+    return latest.promise;
+  });
+  t.after(() => remote.close());
+
+  const view = await remote.read(sessionId);
+  row.updatedAt = 3;
+  await remote.read(sessionId);
+  row.updatedAt = 4;
+  await remote.read(sessionId);
+  assert.equal(requests, 1);
+
+  first.resolve({ threadId: identity.threadId, usage: { totalCostUsd: 1 } });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(requests, 2);
+  assert.equal(view.log.projections.codexhostUsage, null);
+
+  await remote.refresh();
+  const usage = { cacheHitRatePercent: 86, totalCostUsd: 3 };
+  latest.resolve({ threadId: identity.threadId, usage });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
+  assert.equal(requests, 2);
+});
+
 it("archives and undoes through workspace RPCs without losing local archives or other hosts", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "remote-archive-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -118,6 +164,7 @@ it("archives and undoes through workspace RPCs without losing local archives or 
         if (loseRead) throw new Error("read unavailable");
         return { result: { thread: row }, epoch: "epoch", requests: [] };
       }
+      if (op.kind === "usage") throw new Error("method unavailable");
       writes.push(op);
       if (loseWrite) throw new Error("unknown outcome");
       if (op.kind === "archive") {

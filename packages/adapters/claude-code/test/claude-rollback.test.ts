@@ -126,6 +126,7 @@ async function fixture(turns = 1) {
         init: async () => ({ status: "succeeded" as const }),
         recap: async () => ({ status: "succeeded" as const }),
         runTurn: async (text, userMessageId, onEvent) => {
+          assert.ok(typeof text === "string");
           const next = messages(input.sessionId, text);
           assert.ok(next[0]);
           assert.ok(next[1]);

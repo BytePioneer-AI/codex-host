@@ -160,7 +160,7 @@ export interface AntigravityActivePromptHandler {
 export type AntigravitySessionEventHandler = (event: AntigravityAcpEvent) => void;
 
 export interface AntigravityOpenAcpSessionInput {
-  kind: "create" | "resume" | "load";
+  kind: "create" | "resume";
   sessionId?: string;
   cwd: string;
   systemPromptAppend?: string;
@@ -185,7 +185,6 @@ export interface AntigravityAcpTransportLike {
   initialize(): Promise<InitializeResponse>;
   openSession(input: AntigravityOpenAcpSessionInput): Promise<{
     opened: AntigravityAcpSessionOpenResult;
-    replayedEvents: AntigravityAcpEvent[];
   }>;
   setMode(modeId: string): Promise<void>;
   setConfigOption(configId: string, value: string): Promise<AntigravityAcpConfigOption[]>;

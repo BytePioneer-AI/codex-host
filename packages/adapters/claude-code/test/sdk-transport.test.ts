@@ -3027,6 +3027,51 @@ describe("ClaudeSdkTransport Ultracode", () => {
     await value.transport.close();
   });
 
+  it("restores the previous Thinking when a Model switch into Ultracode is not honored", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("high"));
+    await value.transport.start();
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce({
+        applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+        effective: { enableWorkflows: true },
+      })
+      .mockResolvedValueOnce({ applied: { ultracode: false } });
+
+    await expect(value.transport.setModel("opus", ultracode)).rejects.toMatchObject({
+      name: "ClaudeUltracodeUnavailableError",
+    });
+    expect(value.fakeQuery.setModel.mock.calls).toEqual([["opus"], [undefined]]);
+    // The restored selection is read back as off.
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(2);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("medium"));
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [enter],
+      [{ alwaysThinkingEnabled: true, effortLevel: "high", ultracode: false }],
+      [{ alwaysThinkingEnabled: true, effortLevel: "medium" }],
+    ]);
+    await value.transport.close();
+  });
+
+  it("switches Thinking with the Model and restores the Model when that fails", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("xhigh"));
+    await value.transport.start();
+    const auto = harnessThinkingOptionIdSchema.parse("auto");
+
+    value.fakeQuery.applyFlagSettings.mockRejectedValueOnce(new Error("flag write failed"));
+    await expect(value.transport.setModel("gemini", auto)).rejects.toThrow("flag write failed");
+    expect(value.fakeQuery.setModel.mock.calls).toEqual([["gemini"], [undefined]]);
+
+    await value.transport.setModel("gemini", auto);
+    await value.transport.setModel("gemini", auto);
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [{ alwaysThinkingEnabled: true, effortLevel: null }],
+      [{ alwaysThinkingEnabled: true, effortLevel: null }],
+    ]);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.close();
+  });
+
   it("leaves other selections unconfirmed and untouched by Ultracode", async () => {
     const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("max"));
     await value.transport.start();

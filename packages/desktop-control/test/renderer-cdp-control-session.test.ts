@@ -86,7 +86,7 @@ describe("Renderer CDP Control Session", () => {
 
     expect(client.commands).toEqual([
       { method: "Runtime.enable" },
-      { method: "Debugger.enable" },
+      { method: "Debugger.enable", params: { maxScriptsCacheSize: 0 } },
       { method: "Page.enable" },
       { method: "Page.addScriptToEvaluateOnNewDocument", params: { source } },
       {

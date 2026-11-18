@@ -1,6 +1,10 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
   "file.download": "Download",
+  "file.openFolder": "Open containing folder",
+  "file.openFolder.remoteUnsupported":
+    "Opening the containing folder is only supported on the host computer.",
+  "file.openFolder.failed": "Could not open the containing folder.",
   "discovery.agents": "Delegation Agents",
   "discovery.sessions": "Sessions",
   "discovery.commands": "Native commands",
@@ -491,6 +495,9 @@ export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
   "file.download": "下载",
+  "file.openFolder": "打开所在文件夹",
+  "file.openFolder.remoteUnsupported": "仅支持在主机本地打开所在文件夹。",
+  "file.openFolder.failed": "打开所在文件夹失败。",
   "discovery.agents": "委派 Agent",
   "discovery.sessions": "会话",
   "discovery.commands": "原生命令",

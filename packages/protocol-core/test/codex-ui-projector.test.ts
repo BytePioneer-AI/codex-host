@@ -1413,6 +1413,55 @@ describe("Codex UI projector", () => {
     ]);
   });
 
+  it("keeps the failure reason on a web search that produced no output", () => {
+    const value = projector();
+    const failedId = itemId("search-failed-no-output");
+    const cancelledId = itemId("search-cancelled-no-output");
+    const failed: HostWebSearchItem = { type: "webSearch", itemId: failedId, query: "codex" };
+    const cancelled: HostWebSearchItem = { type: "webSearch", itemId: cancelledId, query: "codex" };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: failed });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: failed,
+        outcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "upstream timed out", retryable: false },
+        },
+      },
+    });
+    value.project({ type: "item.started", turnId, item: cancelled });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: cancelled, outcome: { status: "cancelled", reason: "Cancelled by user" } },
+    });
+    const { completedTurn } = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "failed", error: { code: "nativeFailure", message: "turn failed" } },
+    });
+    // The generic tool card has no outcome field, so the reason travels as its output.
+    expect(value.snapshotTurn(completedTurn).items).toMatchObject([
+      {
+        id: failedId,
+        type: "dynamicToolCall",
+        tool: "web_search",
+        status: "failed",
+        contentItems: [{ type: "inputText", text: "upstream timed out" }],
+      },
+      {
+        id: cancelledId,
+        type: "dynamicToolCall",
+        tool: "web_search",
+        status: "failed",
+        contentItems: [{ type: "inputText", text: "Cancelled by user" }],
+      },
+    ]);
+  });
+
   it("keeps a live web search in start order and in its presented form for snapshots", () => {
     const value = projector();
     const searchId = itemId("search-order");

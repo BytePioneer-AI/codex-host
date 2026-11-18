@@ -434,17 +434,35 @@ function planStatus(value: unknown): CodexPlanStepStatus {
 }
 
 /**
+ * The reason a presented Item ended without one of its own, so a card that has
+ * no output field can still say why it failed.
+ */
+function outcomeReason(outcome: HostItemOutcome): string {
+  return outcome.status === "failed"
+    ? outcome.error.message
+    : outcome.status === "cancelled"
+      ? (outcome.reason ?? "")
+      : "";
+}
+
+/**
  * Codex's web search Item has no status, so a search that did not succeed keeps
- * the generic tool card with its native error instead.
+ * the generic tool card with its native error instead. The generic card carries
+ * no outcome error, so a search that produced no output keeps the reason it
+ * failed as its output rather than showing a failure without one.
  */
 function presentedItem(item: HostItem, outcome: HostItemOutcome | null): HostItem {
   if (item.type !== "webSearch" || !outcome || outcome.status === "succeeded") return item;
+  const reason = item.output ? "" : outcomeReason(outcome);
+  const output =
+    item.output ??
+    (reason.trim() === "" ? undefined : { content: [{ type: "text" as const, text: reason }] });
   return {
     type: "toolExecution",
     itemId: item.itemId,
     toolName: "web_search",
     arguments: { query: item.query },
-    ...(item.output ? { output: item.output } : {}),
+    ...(output ? { output } : {}),
   };
 }
 

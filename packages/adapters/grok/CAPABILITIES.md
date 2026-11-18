@@ -13,7 +13,7 @@
 |---|---|---|---|---|---|---|---|
 | A1 | Manifest | 必做 | P0 | 支持 | manifest.json | test/account-presentation.test.ts |  |
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | packages/host-runtime/test/installed-harness-plugins.test.ts |  |
-| A3 | 检查 | 必做 | P0 | 支持 | src/grok-adapter.ts | test/grok-adapter.test.ts |  |
+| A3 | 检查 | 必做 | P0 | 支持 | src/grok-adapter.ts、src/acp-transport.ts | test/grok-adapter.test.ts、test/grok-acp-models.test.ts | 启动后读取原生 Model 目录；检查缓存 30 秒后过期 |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/grok-adapter.ts、src/acp-transport.ts | test/grok-adapter.test.ts |  |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | src/grok-adapter.ts | test/grok-adapter.test.ts |  |
 | A6 | 取消 | 必做 | P0 | 支持 | src/grok-adapter.ts、src/acp-transport.ts | test/grok-adapter.test.ts |  |
@@ -50,6 +50,12 @@
 | D3 | 加载测试 | 预装时必做 | P1 | 支持 | src/plugin.ts | packages/host-runtime/test/installed-harness-plugins.test.ts |  |
 | D4 | 文档 | 预装时必做 | P1 | 支持 | docs/harnesses/grok/ | docs/index.md |  |
 | D5 | 其他 | 可选 | P2 | 不适用 | — | 无需新增插件或展示分支 |  |
+
+## Model 目录检查
+
+检查先完成 ACP 初始化与原生 `session/list`（如支持），再通过 `_x.ai/models/list` 读取当前目录；不创建 Session、不发送 Prompt，也不补造 Model。该扩展返回 Method not found 时兼容使用初始化目录；其他错误或无效目录按现有检查错误返回。
+
+检查结果按 cwd 缓存 30 秒，显式 `refresh` 绕过缓存。初始化可能早于认证后的目录恢复，原生目录再次变化后由后续检查取得；缓存过期本身不会轮询或主动刷新已经打开的 Picker。
 
 ## 受限与已知缺口
 

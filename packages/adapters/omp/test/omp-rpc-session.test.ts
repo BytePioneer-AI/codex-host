@@ -431,9 +431,10 @@ describe("OMP RPC session", () => {
   it("reports the first stream credential and the replacement before message completion", async () => {
     const process = new FakeOmpProcess();
     const onAssistantStart = vi.fn();
+    const onAssistantSummary = vi.fn();
     const onUsage = vi.fn();
     const session = new OmpRpcSession(
-      { cwd: "/synthetic", onAssistantStart, onUsage },
+      { cwd: "/synthetic", onAssistantStart, onAssistantSummary, onUsage },
       { spawn: () => process as never },
     );
     await session.start();
@@ -447,6 +448,11 @@ describe("OMP RPC session", () => {
         assistantMessageEvent: { type: "start", partial },
       });
       expect(onAssistantStart.mock.calls).toEqual([[message], [partial]]);
+      process.sendFrame({
+        type: "agent_end",
+        messages: [message, partial, { role: "toolResult" }],
+      });
+      expect(onAssistantSummary).toHaveBeenCalledExactlyOnceWith(partial);
       expect(onUsage).not.toHaveBeenCalled();
     } finally {
       await session.close();

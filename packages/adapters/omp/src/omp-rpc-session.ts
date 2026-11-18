@@ -203,6 +203,8 @@ export interface OmpRpcSessionOptions {
   onSubagentEvent?: (event: OmpTurnEvent) => void;
   /** First assistant frame of an attempt, including a restarted stream after fallback. */
   onAssistantStart?: (message: unknown) => void;
+  /** Last assistant message in a run summary; used for attribution, not metering. */
+  onAssistantSummary?: (message: unknown) => void;
   /** Finished assistant messages, for Host usage metering. */
   onUsage?: (observation: OmpUsageObservation) => void;
   /**
@@ -1414,6 +1416,13 @@ export class OmpRpcSession {
 
   /** Every finished assistant message is one model request, with or without an active Turn. */
   #observeUsage(value: Record<string, unknown>): void {
+    if (value.type === "agent_end" && Array.isArray(value.messages)) {
+      const message = value.messages.findLast(
+        (entry: unknown) => isRecord(entry) && entry.role === "assistant",
+      );
+      if (message) this.#options.onAssistantSummary?.(message);
+      return;
+    }
     if (value.type === "message_start") {
       this.#usageRequestStartedAtMs = null;
       this.#usageRequestTimingUnavailable = false;

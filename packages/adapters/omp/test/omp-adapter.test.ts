@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1139,12 +1139,17 @@ describe("OMP Adapter usage metering", () => {
       },
     ];
     const transport = new FakeOmpTransport();
+    const launches: OmpRpcSessionOptions[] = [];
+    const probes = path.join(root, "probes");
     let onAssistantStart: OmpRpcSessionOptions["onAssistantStart"];
+    let onAssistantSummary: OmpRpcSessionOptions["onAssistantSummary"];
     let onUsage: OmpRpcSessionOptions["onUsage"];
     const adapter = new OmpAdapter(
-      { command },
+      { command, environment: { OMP_QUOTA_TEST_BASE: "base" } },
       {
         createTransport: (options) => {
+          launches.push(options);
+          onAssistantSummary = options.onAssistantSummary;
           onAssistantStart = options.onAssistantStart;
           onUsage = options.onUsage;
           return transport;
@@ -1154,7 +1159,10 @@ describe("OMP Adapter usage metering", () => {
     try {
       await writeFile(
         command,
-        `console.log(${JSON.stringify(JSON.stringify({ reports }))});`,
+        `require("node:fs").appendFileSync(${JSON.stringify(probes)}, process.env.OMP_QUOTA_TEST_PROFILE || "-");
+const reports = ${JSON.stringify(reports)};
+if (process.env.OMP_QUOTA_TEST_PROFILE === "b") reports[0].limits[0].amount.usedFraction = 0.6;
+console.log(JSON.stringify({ reports }));`,
         "utf8",
       );
       const opened = await adapter.open({ kind: "create", cwd: root });
@@ -1167,7 +1175,8 @@ describe("OMP Adapter usage metering", () => {
         input: [{ type: "text", text: "hi" }],
       });
       const assistant = { role: "assistant", provider: "synthetic", stopReason: "stop" };
-      if (!onAssistantStart || !onUsage) throw new Error("Missing account observers");
+      if (!onAssistantStart || !onAssistantSummary || !onUsage)
+        throw new Error("Missing account observers");
       onAssistantStart({ ...assistant, credentialId: 1 });
       expect(await session.readAccountCredits?.()).toMatchObject({
         usedPercent: 25,
@@ -1177,6 +1186,7 @@ describe("OMP Adapter usage metering", () => {
       onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 20, startedAtMs: null });
       onAssistantStart({ ...assistant, credentialId: 2 });
       expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onAssistantSummary({ ...assistant, credentialId: 2 });
       onAssistantStart({ ...assistant, provider: "other", credentialId: 1 });
       expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 90 });
       onUsage({
@@ -1184,7 +1194,7 @@ describe("OMP Adapter usage metering", () => {
         completedAtMs: 30,
         startedAtMs: null,
       });
-      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 25 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
       onUsage({ message: { ...assistant, credentialId: 2 }, completedAtMs: 40, startedAtMs: null });
       expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
       onUsage({
@@ -1219,9 +1229,24 @@ describe("OMP Adapter usage metering", () => {
         ],
         leafId: "active",
       };
-      const resumed = await adapter.open({ kind: "resume", cwd: root, nativeRef });
-      if (!resumed.ok) throw new Error(resumed.error.message);
-      expect(await resumed.value.readAccountCredits?.()).toMatchObject({ usedPercent: 25 });
+      const resume = (profile: string) =>
+        adapter.open({
+          kind: "resume",
+          cwd: root,
+          nativeRef,
+          environment: { OMP_QUOTA_TEST_PROFILE: profile },
+        });
+      const [first, second, other] = await Promise.all([resume("a"), resume("a"), resume("b")]);
+      if (!first.ok || !second.ok || !other.ok) throw new Error("Could not resume quota sessions");
+      expect(
+        launches.slice(-3).map((launch) => launch.environment?.OMP_QUOTA_TEST_PROFILE),
+      ).toEqual(["a", "a", "b"]);
+      expect(launches.at(-1)?.environment?.OMP_QUOTA_TEST_BASE).toBe("base");
+      const credits = await Promise.all(
+        [first, second, other].map((result) => result.value.readAccountCredits?.()),
+      );
+      expect(credits.map((value) => value?.usedPercent)).toEqual([25, 25, 60]);
+      expect([...(await readFile(probes, "utf8"))].sort().join("")).toBe("-ab");
     } finally {
       await adapter.close();
       await rm(root, { recursive: true, force: true });

@@ -389,8 +389,12 @@ function isCheckpointCandidate(message: ClaudeHistoryMessage): boolean {
   );
 }
 
-export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThreadSnapshot {
-  return mapClaudeSnapshotWithCheckpointIds(values, sessionId).snapshot;
+export function mapClaudeSnapshot(
+  values: unknown[],
+  sessionId: string,
+  mcpServers?: readonly string[],
+): HostThreadSnapshot {
+  return mapClaudeSnapshotWithCheckpointIds(values, sessionId, mcpServers).snapshot;
 }
 
 /**
@@ -402,6 +406,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
 export function mapClaudeSnapshotWithCheckpointIds(
   values: unknown[],
   sessionId: string,
+  mcpServers?: readonly string[],
 ): { snapshot: HostThreadSnapshot; turnCheckpointIds: string[][] } {
   const messages = conversationMessages(values, sessionId);
   const turns: HostThreadSnapshot["turns"] = [];
@@ -595,7 +600,7 @@ export function mapClaudeSnapshotWithCheckpointIds(
             continue;
           }
           items.push({
-            item: historyToolItem(itemId, block.name, block.input, output),
+            item: historyToolItem(itemId, block.name, block.input, output, mcpServers),
             outcome: toolOutcome,
           });
         }
@@ -613,12 +618,14 @@ function historyToolItem(
   toolName: string,
   input: unknown,
   output: string | undefined,
+  mcpServers?: readonly string[],
 ): ClaudeToolItem {
   const argumentsResult = jsonValueSchema.safeParse(input);
   const item = claudeToolItem(
     itemId,
     toolName,
     argumentsResult.success ? argumentsResult.data : null,
+    mcpServers,
   );
   return output ? { ...item, output: { content: [{ type: "text", text: output }] } } : item;
 }

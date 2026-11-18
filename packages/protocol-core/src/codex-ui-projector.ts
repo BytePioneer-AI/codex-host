@@ -1349,9 +1349,9 @@ export class CodexTurnProjector {
     if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
     const durationMs = resolvedItemDurationMs(projected.item, startedAtMs, emittedAtMs);
     // Keep the presented form so snapshots and reads match the live wire Item.
-    projected.item = presentedItem(
-      withResolvedDuration(projected.item, durationMs),
-      projected.outcome,
+    projected.item = withResolvedDuration(
+      presentedItem(projected.item, projected.outcome),
+      durationMs,
     );
     projected.durationMs = durationMs;
     if (itemFileChanges(projected.item) !== null) {

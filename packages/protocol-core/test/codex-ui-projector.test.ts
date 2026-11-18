@@ -1367,19 +1367,22 @@ describe("Codex UI projector", () => {
       contentItems: [{ type: "inputText", text: "rate limited" }],
       success: false,
     };
-    value.project({ type: "item.started", turnId, item: failedSearch });
+    value.project({ type: "item.started", turnId, item: failedSearch }, 2_000);
     expect(
-      value.project({
-        type: "item.completed",
-        turnId,
-        snapshot: { item: failedSearch, outcome: failure },
-      }).messages,
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: { item: failedSearch, outcome: failure },
+        },
+        2_125,
+      ).messages,
     ).toMatchObject([
       {
         method: "item/started",
         params: { item: { ...failedSearchItem, status: "inProgress", success: null } },
       },
-      { method: "item/completed", params: { item: failedSearchItem } },
+      { method: "item/completed", params: { item: { ...failedSearchItem, durationMs: 125 } } },
     ]);
 
     const snapshot: HostThreadSnapshot["turns"][number] = {
@@ -1409,7 +1412,7 @@ describe("Codex UI projector", () => {
       mcpCompleted,
       expect.objectContaining({ id: failedMcpId, ...failedMcpCompleted }),
       searchItem,
-      expect.objectContaining(failedSearchItem),
+      expect.objectContaining({ ...failedSearchItem, durationMs: null }),
     ]);
   });
 
@@ -1441,7 +1444,10 @@ describe("Codex UI projector", () => {
     const { completedTurn } = value.project({
       type: "turn.completed",
       turnId,
-      outcome: { status: "failed", error: { code: "nativeFailure", message: "turn failed" } },
+      outcome: {
+        status: "failed",
+        error: { code: "nativeFailure", message: "turn failed", retryable: false },
+      },
     });
     // The generic tool card has no outcome field, so the reason travels as its output.
     expect(value.snapshotTurn(completedTurn).items).toMatchObject([

@@ -385,6 +385,24 @@ describe("Claude history mapping", () => {
     ]);
   });
 
+  it("uses the longest known MCP server when replaying an ambiguous tool name", () => {
+    const history = [
+      message("user", "user-1", "search"),
+      message("assistant", "assistant-1", [
+        { type: "tool_use", id: "mcp-1", name: "mcp__team__docs__lookup__v2", input: {} },
+      ]),
+      message("user", "tool-results", [
+        { type: "tool_result", tool_use_id: "mcp-1", content: "found" },
+      ]),
+    ];
+    const [turn] = mapClaudeSnapshot(history, sessionId, ["team", "team..docs"]).turns;
+    expect(turn?.items[0]?.item).toMatchObject({
+      type: "mcpToolCall",
+      server: "team__docs",
+      tool: "lookup__v2",
+    });
+  });
+
   it("omits Claude model controls and metadata without hiding other human commands", () => {
     const synthetic = {
       ...message("user", "synthetic", "synthetic prompt"),

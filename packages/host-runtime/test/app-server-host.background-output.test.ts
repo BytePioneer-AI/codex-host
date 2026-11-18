@@ -372,12 +372,14 @@ describe("Host runtime idle background output on a completed Turn", () => {
         };
       };
 
-      for (const [index, type, text] of [
-        ["reasoning", "T1"],
-        ["agentMessage", "A1"],
-        ["reasoning", "T2"],
-        ["agentMessage", "A2"],
-      ] as const) {
+      for (const [index, [type, text]] of (
+        [
+          ["reasoning", "T1"],
+          ["agentMessage", "A1"],
+          ["reasoning", "T2"],
+          ["agentMessage", "A2"],
+        ] as const
+      ).entries()) {
         const itemId = hostItemIdSchema.parse(`live-alternating-${index}`);
         session.emitEvent({
           type: "item.background.started",
@@ -394,9 +396,9 @@ describe("Host runtime idle background output on a completed Turn", () => {
       expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
         [["T1"], ["T2"]],
       );
-      expect(
-        items.filter((item) => String(item.id).startsWith("live-alternating")),
-      ).toHaveLength(0);
+      expect(items.filter((item) => String(item.id).startsWith("live-alternating"))).toHaveLength(
+        0,
+      );
     } finally {
       await stopFixture(fixture);
     }

@@ -611,7 +611,7 @@ interface DraftUsageRequest {
   client: RendererModelClient | null;
   account: RendererCodexAccountState["usageAccount"];
   generation: number;
-  status: "pending" | "settled" | "deferred";
+  pending: boolean;
 }
 
 interface MountedCatalogRequest {
@@ -786,6 +786,7 @@ export function installRendererBindingProbe(
   const pendingDefaultPreferences = new Map<string, boolean>();
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
   const draftUsageRequests = new WeakMap<MountedComposer, DraftUsageRequest>();
+  const deferredCodexDraftUsage = new WeakSet<MountedComposer>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
@@ -1278,16 +1279,13 @@ export function installRendererBindingProbe(
 
   const refreshDraftUsage = async (mounted: MountedComposer): Promise<void> => {
     const agent = controller.get(mounted.composer).agent;
-    const previous = draftUsageRequests.get(mounted);
     if (!canRefreshDraftUsage(mounted)) {
       if (
         agent === "codex" &&
         threadIdFromComposerModelTarget(mounted.modelTarget) === null &&
-        controller.isSubmissionPending(mounted.composer) &&
-        previous?.status === "settled" &&
-        previous.generation === mounted.usageRequestGeneration
+        controller.isSubmissionPending(mounted.composer)
       ) {
-        previous.status = "deferred";
+        deferredCodexDraftUsage.add(mounted);
       }
       return;
     }
@@ -1295,13 +1293,15 @@ export function installRendererBindingProbe(
     const account = accounts?.usageAccount ?? null;
     const client = composerClient(mounted);
     const hostId = mounted.hostId;
+    const previous = draftUsageRequests.get(mounted);
     const sameScope =
       previous?.generation === mounted.usageRequestGeneration &&
       previous.client === client &&
       previous.account === account;
-    if (sameScope && previous.status === "pending") return;
+    if (sameScope && previous.pending) return;
+    deferredCodexDraftUsage.delete(mounted);
     const generation = ++mounted.usageRequestGeneration;
-    const request: DraftUsageRequest = { client, account, generation, status: "pending" };
+    const request: DraftUsageRequest = { client, account, generation, pending: true };
     draftUsageRequests.set(mounted, request);
     mounted.draftUsageClient = null;
     // Keep the last snapshot on screen while the same Codex Account refreshes.
@@ -1331,9 +1331,11 @@ export function installRendererBindingProbe(
         )
           return;
         if (!canRefreshDraftUsage(mounted)) {
-          if (controller.isSubmissionPending(mounted.composer)) request.status = "deferred";
+          if (controller.isSubmissionPending(mounted.composer))
+            deferredCodexDraftUsage.add(mounted);
           return;
         }
+        deferredCodexDraftUsage.delete(mounted);
         mounted.draftUsageAccount = account;
         mounted.usage = result.usage;
         mounted.accountCredits = result.accountCredits ?? null;
@@ -1351,7 +1353,11 @@ export function installRendererBindingProbe(
     } catch {
       // A failed refresh leaves the current snapshot intact. Scope changes clear it above.
     } finally {
-      if (request.status === "pending") request.status = "settled";
+      request.pending = false;
+      // A failed in-flight read may still have a later refresh waiting on it.
+      if (deferredCodexDraftUsage.has(mounted) && isCurrent() && canRefreshDraftUsage(mounted)) {
+        scheduleScan();
+      }
     }
   };
 
@@ -2768,7 +2774,10 @@ export function installRendererBindingProbe(
       if (!canRefreshDraftUsage(mounted)) continue;
       const request = draftUsageRequests.get(mounted);
       // Submission can defer a ready Account's quota refresh or its reply.
-      if (account && request && (request.account !== account || request.status === "deferred")) {
+      if (
+        account &&
+        (deferredCodexDraftUsage.has(mounted) || (request && request.account !== account))
+      ) {
         void refreshDraftUsage(mounted);
         continue;
       }
@@ -2778,7 +2787,7 @@ export function installRendererBindingProbe(
         (!request ||
           request.client !== client ||
           request.generation !== mounted.usageRequestGeneration ||
-          (retryDraftUsage && request.status !== "pending"))
+          (retryDraftUsage && !request.pending))
       ) {
         if (agent === "codex") void loadCodexAccountsForHost(mounted.hostId);
         else void refreshDraftUsage(mounted);
@@ -3276,7 +3285,7 @@ export function installRendererBindingProbe(
     if (!composer) return;
     if (controller.isSubmissionPending(composer)) {
       controller.clearPendingSubmission(composer);
-      scheduleScan();
+      scheduleScan(true);
     }
     const mounted = mountedByComposer.get(composer);
     if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);

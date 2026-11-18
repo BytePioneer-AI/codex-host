@@ -105,7 +105,13 @@ interface Entry {
   reading?: Promise<ChThreadView>;
   controls?: RemoteControls;
   historyError?: { code: string; message: string };
-  usageRequest?: { view: ChThreadView; updatedAt: number; retryAt: number; pending: boolean };
+  usageRequest?: {
+    view: ChThreadView;
+    updatedAt: number;
+    lastTurnId: string | undefined;
+    retryAt: number;
+    pending: boolean;
+  };
 }
 type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 
@@ -356,6 +362,7 @@ export class RemoteSessions {
   private offline(entry: Entry): void {
     const changed = entry.online;
     entry.online = false;
+    if (changed) delete entry.usageRequest;
     const id = remoteSessionId(entry.identity.hostId, entry.identity.threadId);
     this.clearPending(id);
     if (changed && !this.closed) this.events.emit("api-session/added", this.summary(id, entry));
@@ -511,14 +518,20 @@ export class RemoteSessions {
   }
   private loadUsage(id: string, entry: Entry, view: ChThreadView, epoch: string): void {
     const updatedAt = view.thread.updatedAt;
+    const lastTurnId = view.thread.turns.at(-1)?.id;
     const previous = entry.usageRequest;
     if (
       previous?.view === view &&
-      (previous.pending || (previous.updatedAt === updatedAt && Date.now() < previous.retryAt))
+      (previous.pending ||
+        (previous.updatedAt === updatedAt &&
+          previous.lastTurnId === lastTurnId &&
+          Date.now() < previous.retryAt))
     )
       return;
-    const request = { view, updatedAt, retryAt: 0, pending: true };
+    const request = { view, updatedAt, lastTurnId, retryAt: 0, pending: true };
     entry.usageRequest = request;
+    const matchesHistory = () =>
+      view.thread.updatedAt === updatedAt && view.thread.turns.at(-1)?.id === lastTurnId;
     const isCurrent = () =>
       !this.closed &&
       this.entries.get(id) === entry &&
@@ -533,7 +546,7 @@ export class RemoteSessions {
           parsed.success &&
           parsed.data.threadId === entry.identity.threadId &&
           isCurrent() &&
-          view.thread.updatedAt === updatedAt
+          matchesHistory()
         )
           applyUsageProjections(view.log, parsed.data);
       })
@@ -544,8 +557,7 @@ export class RemoteSessions {
         request.pending = false;
         request.retryAt = Date.now() + 30_000;
         // The latest applied history may have arrived while this request was in flight.
-        if (isCurrent() && view.thread.updatedAt !== updatedAt)
-          this.loadUsage(id, entry, view, epoch);
+        if (isCurrent() && !matchesHistory()) this.loadUsage(id, entry, view, epoch);
       });
   }
   private retireView(entry: Entry): void {

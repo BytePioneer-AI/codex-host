@@ -5,6 +5,7 @@ import { RemoteSessions, remoteSessionId, remoteSessionIdentity } from "../src/r
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import type { RemoteSessionOperation } from "@codexhost/shared-contracts";
 import { RemoteSessionError } from "@codexhost/desktop-control";
+import type { ChThread } from "../src/ch-thread-view.ts";
 import type { StreamSink } from "../src/transport.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,10 +13,11 @@ import { join } from "node:path";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 
-it("projects matching remote usage and makes repeat reads within the refresh period inexpensive", async (t) => {
+function paginatedUsageFixture(inspect: () => unknown) {
   const identity = { hostId: "remote-control:a", threadId: "same" };
   const sessionId = remoteSessionId(identity.hostId, identity.threadId);
-  const row = {
+  const host = { hostId: identity.hostId, online: true };
+  const row: ChThread = {
     id: identity.threadId,
     cwd: "/remote",
     modelProvider: "openai",
@@ -25,23 +27,34 @@ it("projects matching remote usage and makes repeat reads within the refresh per
     status: { type: "idle" },
     turns: [],
   };
-  let usage = { cacheHitRatePercent: 97.8, totalCostUsd: 2.45 };
   const calls: RemoteSessionOperation[] = [];
   const remote = new RemoteSessions(new EventHub("remote-usage"), async (operation) => {
-    if (operation.kind === "hosts") return [{ hostId: identity.hostId, online: true }];
+    if (operation.kind === "hosts") return [host];
     if (operation.kind === "list") return { data: [row], nextCursor: null };
-    if (operation.kind === "read")
+    if (operation.kind === "read") {
+      const { page } = operation;
+      const turns = page?.sortDirection === "desc" ? [...row.turns].reverse() : row.turns;
+      const start = page?.cursor ? turns.findIndex((turn) => turn.id === page.cursor) + 1 : 0;
+      const data = page ? turns.slice(start, start + (page.limit ?? 20)) : turns;
       return {
-        result: { thread: row },
-        ...(operation.page
-          ? { nextCursor: null }
+        result: { thread: { ...row, turns: data } },
+        ...(page
+          ? { nextCursor: start + data.length < turns.length ? data.at(-1)?.id : null }
           : { configuration: { owner: "codex", locked: true } }),
         epoch: "epoch",
         requests: [],
       };
+    }
+    assert.equal(operation.kind, "usage");
     calls.push(operation);
-    return { threadId: identity.threadId, usage };
+    return { threadId: identity.threadId, usage: await inspect() };
   });
+  return { identity, sessionId, host, row, calls, remote };
+}
+
+it("projects matching remote usage and makes repeat reads within the refresh period inexpensive", async (t) => {
+  let usage = { cacheHitRatePercent: 97.8, totalCostUsd: 2.45 };
+  const { identity, sessionId, row, calls, remote } = paginatedUsageFixture(() => usage);
   t.after(() => remote.close());
 
   const view = await remote.read(sessionId);
@@ -100,6 +113,65 @@ it("refreshes usage after a pending read and ignores an older catalog row", asyn
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(view.log.projections.codexhostUsage, { usage });
   assert.equal(requests, 2);
+});
+
+it("refreshes usage when paginated history gains a Turn in the same second", async (t) => {
+  let usage = { totalCostUsd: 1 };
+  let pending: Promise<typeof usage> | undefined;
+  const { sessionId, row, remote } = paginatedUsageFixture(() => pending ?? usage);
+  t.after(() => remote.close());
+
+  const view = await remote.read(sessionId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
+
+  row.turns.push({ id: "new", status: "completed", items: [] });
+  usage = { totalCostUsd: 2 };
+  await remote.read(sessionId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
+
+  const stale = Promise.withResolvers<typeof usage>();
+  pending = stale.promise;
+  row.turns.push({ id: "while-querying", status: "completed", items: [] });
+  await remote.read(sessionId);
+  row.turns.push({ id: "latest", status: "completed", items: [] });
+  await remote.read(sessionId);
+  const latest = Promise.withResolvers<typeof usage>();
+  pending = latest.promise;
+  stale.resolve({ totalCostUsd: 3 });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
+  usage = { totalCostUsd: 4 };
+  latest.resolve(usage);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
+});
+
+it("retries discarded usage on the first history read after reconnecting", async (t) => {
+  const confirmed = { totalCostUsd: 1 };
+  let usage: typeof confirmed | Promise<typeof confirmed> = confirmed;
+  const { sessionId, host, row, remote } = paginatedUsageFixture(() => usage);
+  t.after(() => remote.close());
+
+  const view = await remote.read(sessionId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const pending = Promise.withResolvers<typeof confirmed>();
+  usage = pending.promise;
+  row.updatedAt++;
+  await remote.read(sessionId);
+  host.online = false;
+  await remote.refresh();
+  pending.resolve({ totalCostUsd: 2 });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage: confirmed });
+
+  host.online = true;
+  usage = { totalCostUsd: 3 };
+  await remote.refresh();
+  await remote.read(sessionId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
 });
 
 it("archives and undoes through workspace RPCs without losing local archives or other hosts", async (t) => {

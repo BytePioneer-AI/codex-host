@@ -74,6 +74,7 @@ export async function packReleaseWeb(options: {
     external: [
       "bufferutil",
       "utf-8-validate",
+      "koffi",
       "@deepseek-ai/libreoffice-kit",
       "playwright-core",
       ...WEB_RUNTIME_PACKAGES,

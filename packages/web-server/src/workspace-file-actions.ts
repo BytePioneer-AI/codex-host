@@ -1,11 +1,175 @@
 /** Authenticated original-file downloads and local desktop handoff. */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { basename, isAbsolute, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { RpcError } from "./transport.ts";
+
+interface CabinetWindow {
+  readonly hwnd: unknown;
+  readonly addr: bigint;
+  readonly title: string;
+}
+
+interface Win32ExplorerActivator {
+  listCabinetWindows: () => CabinetWindow[];
+  forceForeground: (hwnd: unknown) => void;
+}
+
+let cachedWin32Activator: Win32ExplorerActivator | null | undefined;
+
+function getWin32ExplorerActivator(): Win32ExplorerActivator | null {
+  if (cachedWin32Activator !== undefined) return cachedWin32Activator;
+  try {
+    const require = createRequire(import.meta.url);
+    const koffi = require("koffi") as {
+      load: (dll: string) => { func: (sig: string) => (...args: unknown[]) => unknown };
+      address: (ptr: unknown) => bigint;
+    };
+    const user32 = koffi.load("user32.dll");
+    const kernel32 = koffi.load("kernel32.dll");
+    const findWindowExW = user32.func(
+      "void* __stdcall FindWindowExW(void* parent, void* after, const char16* cls, const char16* title)",
+    );
+    const getWindowTextW = user32.func(
+      "int __stdcall GetWindowTextW(void* hwnd, uint16* buf, int max)",
+    );
+    const getForegroundWindow = user32.func("void* __stdcall GetForegroundWindow()");
+    const getWindowThreadProcessId = user32.func(
+      "uint32 __stdcall GetWindowThreadProcessId(void* hwnd, uint32* pid)",
+    );
+    const getCurrentThreadId = kernel32.func("uint32 __stdcall GetCurrentThreadId()");
+    const attachThreadInput = user32.func(
+      "bool __stdcall AttachThreadInput(uint32 idAttach, uint32 idAttachTo, bool fAttach)",
+    );
+    const isIconic = user32.func("bool __stdcall IsIconic(void* hwnd)");
+    const showWindow = user32.func("bool __stdcall ShowWindow(void* hwnd, int nCmdShow)");
+    const setForegroundWindow = user32.func("bool __stdcall SetForegroundWindow(void* hwnd)");
+    const bringWindowToTop = user32.func("bool __stdcall BringWindowToTop(void* hwnd)");
+    const setWindowPos = user32.func(
+      "bool __stdcall SetWindowPos(void* hwnd, intptr insertAfter, int X, int Y, int cx, int cy, uint32 uFlags)",
+    );
+
+    const titleBuf = Buffer.alloc(1024);
+    const pidBuf = Buffer.alloc(4);
+    const SW_SHOW = 5;
+    const SW_RESTORE = 9;
+    const HWND_TOPMOST = -1n;
+    const HWND_NOTOPMOST = -2n;
+    const SWP_FLAGS = 0x0001 | 0x0002 | 0x0040;
+
+    cachedWin32Activator = {
+      listCabinetWindows: () => {
+        const windows: CabinetWindow[] = [];
+        let hwnd: unknown = null;
+        while ((hwnd = findWindowExW(null, hwnd, "CabinetWClass", null))) {
+          const len = Number(getWindowTextW(hwnd, titleBuf, 512));
+          const title = len > 0 ? titleBuf.subarray(0, len * 2).toString("utf16le") : "";
+          windows.push({ hwnd, addr: koffi.address(hwnd), title });
+        }
+        return windows;
+      },
+      forceForeground: (hwnd: unknown) => {
+        showWindow(hwnd, isIconic(hwnd) ? SW_RESTORE : SW_SHOW);
+        const fg = getForegroundWindow();
+        const fgTid = fg ? Number(getWindowThreadProcessId(fg, pidBuf)) : 0;
+        const curTid = Number(getCurrentThreadId());
+        const attached =
+          fgTid !== 0 && fgTid !== curTid ? Boolean(attachThreadInput(curTid, fgTid, true)) : false;
+        try {
+          // Briefly toggling TOPMOST breaks Windows' background foreground lock without leaving the window pinned.
+          setWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS);
+          setWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FLAGS);
+          setForegroundWindow(hwnd);
+          bringWindowToTop(hwnd);
+        } finally {
+          if (attached) attachThreadInput(curTid, fgTid, false);
+        }
+      },
+    };
+  } catch {
+    cachedWin32Activator = null;
+  }
+  return cachedWin32Activator;
+}
+
+async function bringExplorerWindowToFront(
+  beforeAddrs: ReadonlySet<bigint>,
+  folderPath: string,
+): Promise<void> {
+  const activator = getWin32ExplorerActivator();
+  if (!activator) return;
+  const folderName = (basename(folderPath) || folderPath).toLowerCase();
+  for (let i = 0; i < 24; i++) {
+    await new Promise((done) => setTimeout(done, 50));
+    const current = activator.listCabinetWindows();
+    const created = current.find((window) => !beforeAddrs.has(window.addr));
+    if (created) {
+      activator.forceForeground(created.hwnd);
+      return;
+    }
+    if (i >= 4) {
+      const matched =
+        current.find((window) => {
+          const title = window.title.toLowerCase();
+          return (
+            title === folderName ||
+            title.startsWith(`${folderName} `) ||
+            title.startsWith(`${folderName} -`) ||
+            title.includes(folderName)
+          );
+        }) ?? (current.length === 1 ? current[0] : undefined);
+      if (matched) {
+        activator.forceForeground(matched.hwnd);
+        return;
+      }
+    }
+  }
+}
+
+/** Reveal a workspace file or directory in the host OS file manager and bring it to the foreground. */
+export async function revealWorkspaceFileFolder(path: unknown): Promise<{ opened: true }> {
+  if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0"))
+    throw new RpcError("gateway/bad-request", "An absolute file path is required.");
+  const target = await realpath(path);
+  const info = await stat(target);
+  if (!info.isFile() && !info.isDirectory())
+    throw new RpcError("gateway/bad-request", "Only regular files or directories can be opened.");
+
+  if (process.platform === "win32") {
+    const folder = info.isFile() ? dirname(target) : target;
+    const activator = getWin32ExplorerActivator();
+    const beforeAddrs = new Set(
+      activator ? activator.listCabinetWindows().map((window) => window.addr) : [],
+    );
+    const args = [info.isFile() ? `/select,"${target}"` : `"${target}"`];
+    const child = spawn("explorer.exe", args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+      windowsVerbatimArguments: true,
+    });
+    child.on("error", () => {});
+    child.unref();
+    await bringExplorerWindowToFront(beforeAddrs, folder).catch(() => {});
+  } else if (process.platform === "darwin") {
+    const args = info.isFile() ? ["-R", target] : [target];
+    const child = spawn("open", args, { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    child.unref();
+  } else {
+    const child = spawn("xdg-open", [info.isFile() ? dirname(target) : target], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", () => {});
+    child.unref();
+  }
+  return { opened: true };
+}
 
 export async function openWorkspaceFile(
   launcher: string,

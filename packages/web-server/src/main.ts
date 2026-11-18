@@ -28,7 +28,11 @@ import {
   takeNpmEntrypoint,
 } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
-import { downloadWorkspaceFile, openWorkspaceFile } from "./workspace-file-actions.ts";
+import {
+  downloadWorkspaceFile,
+  openWorkspaceFile,
+  revealWorkspaceFileFolder,
+} from "./workspace-file-actions.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
 import { AccessTokenStore } from "./access-tokens.ts";
@@ -576,6 +580,37 @@ const server = createWebServer((request, response) => {
       }
       if (pathname === "/api/session/uploadFileBinary") {
         await serveFileUpload(sessions, request, response, trust.relaySockets.has(request.socket));
+        return;
+      }
+      if (pathname === "/api/workspace-file/open-folder") {
+        if (trust.relaySockets.has(request.socket)) {
+          response
+            .writeHead(403, { "content-type": "application/json", "cache-control": "no-store" })
+            .end(JSON.stringify({ error: "Remote connections cannot open Host folders." }));
+          return;
+        }
+        const body = await readBody(request, response);
+        if (body === undefined) return;
+        try {
+          const parsed = JSON.parse(body) as { sessionId?: unknown; path?: unknown };
+          const sessionId = typeof parsed?.sessionId === "string" ? parsed.sessionId : "";
+          const rawPath = typeof parsed?.path === "string" ? parsed.path : "";
+          const root = sessions.fileWorkspaceRoot(sessionId);
+          if (!root || !rawPath || rawPath.includes("\0")) {
+            response
+              .writeHead(400, { "content-type": "application/json", "cache-control": "no-store" })
+              .end(JSON.stringify({ error: "Invalid session or file path." }));
+            return;
+          }
+          await revealWorkspaceFileFolder(resolve(root, rawPath));
+          response
+            .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+            .end(JSON.stringify({ ok: true }));
+        } catch (error) {
+          response
+            .writeHead(400, { "content-type": "application/json", "cache-control": "no-store" })
+            .end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        }
         return;
       }
       const body = await readBody(request, response);

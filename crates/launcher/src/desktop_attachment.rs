@@ -143,15 +143,69 @@ pub(super) fn wait_for_host_chain_with_nodes(
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
+    let mut last_error = None;
     while started.elapsed() < timeout {
         for node in nodes {
-            if descendant_executable_pair_exists(desktop, &options.shim, node)? {
-                return Ok(true);
+            match descendant_executable_pair_exists(desktop, &options.shim, node) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => last_error = Some(error.to_string()),
             }
         }
         thread::sleep(Duration::from_millis(100));
     }
+    // Without evidence the timeout is indistinguishable from a broken Desktop
+    // launch, a stalled Controller, or an unobservable process tree (#882).
+    // Record what the wait was matching against and what was last observed so
+    // the next report can pin the failing stage.
+    crate::startup_trace(&host_chain_timeout_diagnostic(
+        desktop,
+        &options.shim,
+        nodes,
+        last_error.as_deref(),
+    ));
     Ok(false)
+}
+
+/// One-shot diagnostic snapshot taken when the Host chain wait times out.
+fn host_chain_timeout_diagnostic(
+    desktop: &ProcessSnapshot,
+    shim: &Path,
+    nodes: &[PathBuf],
+    last_error: Option<&str>,
+) -> String {
+    let nodes_display = nodes
+        .iter()
+        .map(|node| node.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut diagnostic = format!(
+        "Host chain wait timed out: Desktop root pid {} ({}), expected shim '{}' and node candidates [{}]",
+        desktop.id,
+        desktop.executable.display(),
+        shim.display(),
+        nodes_display,
+    );
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    match codexhost_platform::process_snapshots() {
+        Ok(snapshots) => {
+            let shim_running = snapshots.iter().any(|process| process.executable == shim);
+            let node_running = snapshots
+                .iter()
+                .any(|process| nodes.iter().any(|node| &process.executable == node));
+            diagnostic = format!(
+                "{diagnostic}; {} live processes observed, shim running: {shim_running}, node running: {node_running}",
+                snapshots.len()
+            );
+        }
+        Err(error) => {
+            diagnostic = format!("{diagnostic}; live process enumeration failed: {error}");
+        }
+    }
+    if let Some(error) = last_error {
+        diagnostic = format!("{diagnostic}; last process-tree inspection error: {error}");
+    }
+    diagnostic
 }
 
 pub(super) fn publish_runtime_descriptor(
@@ -308,7 +362,8 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
     let Some((launcher, controller)) = managed_processes(data)? else {
         return Ok(false);
     };
-    stop_controller(&launcher, &controller, Duration::from_secs(10))?;
+    stop_controller(&launcher, &controller, Duration::from_secs(10))
+        .map_err(|error| format!("stopping the managed Desktop failed: {error}"))?;
     Ok(true)
 }
 

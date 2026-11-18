@@ -164,6 +164,9 @@ pub(super) fn wait_for_host_chain_with_nodes(
         nodes,
         last_error.as_deref(),
     ));
+    if let Some(error) = last_error {
+        return Err(error.into());
+    }
     Ok(false)
 }
 
@@ -189,13 +192,15 @@ fn host_chain_timeout_diagnostic(
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     match codexhost_platform::process_snapshots() {
         Ok(snapshots) => {
-            let shim_running = snapshots.iter().any(|process| process.executable == shim);
-            let node_running = snapshots
+            let tree = snapshots_in_desktop_tree(desktop, &snapshots);
+            let shim_running = tree.iter().any(|process| process.executable == shim);
+            let node_running = tree
                 .iter()
                 .any(|process| nodes.iter().any(|node| &process.executable == node));
             diagnostic = format!(
-                "{diagnostic}; {} live processes observed, shim running: {shim_running}, node running: {node_running}",
-                snapshots.len()
+                "{diagnostic}; {} live processes observed, {} in this Desktop tree, shim running in this Desktop tree: {shim_running}, node running in this Desktop tree: {node_running}",
+                snapshots.len(),
+                tree.len()
             );
         }
         Err(error) => {
@@ -206,6 +211,31 @@ fn host_chain_timeout_diagnostic(
         diagnostic = format!("{diagnostic}; last process-tree inspection error: {error}");
     }
     diagnostic
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn snapshots_in_desktop_tree<'a>(
+    desktop: &ProcessSnapshot,
+    snapshots: &'a [ProcessSnapshot],
+) -> Vec<&'a ProcessSnapshot> {
+    let mut owned_ids = vec![desktop.id];
+    let mut tree: Vec<&ProcessSnapshot> = snapshots
+        .iter()
+        .filter(|process| process.id == desktop.id)
+        .collect();
+    loop {
+        let mut changed = false;
+        for snapshot in snapshots {
+            if !owned_ids.contains(&snapshot.id) && owned_ids.contains(&snapshot.parent_id) {
+                owned_ids.push(snapshot.id);
+                tree.push(snapshot);
+                changed = true;
+            }
+        }
+        if !changed {
+            return tree;
+        }
+    }
 }
 
 pub(super) fn publish_runtime_descriptor(

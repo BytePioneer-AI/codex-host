@@ -245,11 +245,10 @@ fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
         let runtime = owner
             .runtime
             .canonicalize()
-            .map_err(|error| format!("Web: canonicalizing runtime failed: {error}"))?;
-        let expected = options
-            .runtime
-            .canonicalize()
-            .map_err(|error| format!("Web: canonicalizing runtime failed: {error}"))?;
+            .map_err(|error| format!("Web: canonicalizing running Web runtime failed: {error}"))?;
+        let expected = options.runtime.canonicalize().map_err(|error| {
+            format!("Web: canonicalizing configured Web runtime failed: {error}")
+        })?;
         if runtime != expected {
             return Err("The running Web belongs to a different installation".into());
         }

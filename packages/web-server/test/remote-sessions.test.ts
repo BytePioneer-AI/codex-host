@@ -12,6 +12,50 @@ import { join } from "node:path";
 import { DataDir } from "../src/store.ts";
 import { Workspaces } from "../src/workspaces.ts";
 
+it("projects matching remote usage and makes repeat reads within the refresh period inexpensive", async (t) => {
+  const identity = { hostId: "remote-control:a", threadId: "same" };
+  const sessionId = remoteSessionId(identity.hostId, identity.threadId);
+  const row = {
+    id: identity.threadId,
+    cwd: "/remote",
+    modelProvider: "openai",
+    historyMode: "paginated",
+    createdAt: 1,
+    updatedAt: 2,
+    status: { type: "idle" },
+    turns: [],
+  };
+  let usage = { cacheHitRatePercent: 97.8, totalCostUsd: 2.45 };
+  const calls: RemoteSessionOperation[] = [];
+  const remote = new RemoteSessions(new EventHub("remote-usage"), async (operation) => {
+    if (operation.kind === "hosts") return [{ hostId: identity.hostId, online: true }];
+    if (operation.kind === "list") return { data: [row], nextCursor: null };
+    if (operation.kind === "read")
+      return {
+        result: { thread: row },
+        ...(operation.page
+          ? { nextCursor: null }
+          : { configuration: { owner: "codex", locked: true } }),
+        epoch: "epoch",
+        requests: [],
+      };
+    calls.push(operation);
+    return { threadId: identity.threadId, usage };
+  });
+  t.after(() => remote.close());
+
+  const view = await remote.read(sessionId);
+  await remote.read(sessionId);
+  assert.deepEqual(calls, [{ kind: "usage", ...identity, epoch: "epoch" }]);
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
+
+  row.updatedAt += 1;
+  usage = { cacheHitRatePercent: 85, totalCostUsd: 2.7 };
+  await remote.read(sessionId);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(view.log.projections.codexhostUsage, { usage });
+});
+
 it("archives and undoes through workspace RPCs without losing local archives or other hosts", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "remote-archive-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));

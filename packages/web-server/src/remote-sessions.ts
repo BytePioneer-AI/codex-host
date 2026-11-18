@@ -5,6 +5,7 @@ import {
   harnessConfigurationStateSchema,
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
+  threadUsageInspectionSchema,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   webToolOutputReferenceSchema,
   type RemoteSessionOperation,
@@ -40,6 +41,7 @@ import {
 import { readToolOutput } from "./tool-output.ts";
 import { followRemoteHistory } from "./remote-history-follow.ts";
 import type { Workspaces } from "./workspaces.ts";
+import { applyUsageProjections } from "./usage-projection.ts";
 import {
   remoteWorkspaceGroups,
   remoteHostDisplayName,
@@ -103,6 +105,7 @@ interface Entry {
   reading?: Promise<ChThreadView>;
   controls?: RemoteControls;
   historyError?: { code: string; message: string };
+  usageRequest?: { view: ChThreadView; updatedAt: number; retryAt: number; pending: boolean };
 }
 type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 
@@ -150,7 +153,7 @@ export class RemoteSessions {
     try {
       return await this.call(parsed.data);
     } catch (error) {
-      const write = !["hosts", "list", "read", "status"].includes(operation.kind);
+      const write = !["hosts", "list", "read", "status", "usage"].includes(operation.kind);
       if (!write && error instanceof RemoteSessionError && ![-32090, -32093].includes(error.code))
         throw new RpcError(
           error.code === -32094
@@ -466,6 +469,8 @@ export class RemoteSessions {
             current.view.log.setProjection(key, value);
         current.view.log.setProjection("harnessIdentity", remoteHarnessIdentity(current) ?? null);
         applyRemoteControls(current, current.view);
+        if (current.controls?.configuration)
+          this.loadUsage(id, current, current.view, snapshot.epoch);
         this.interactions(id, current, snapshot.requests);
         if (
           snapshot.interactionsAvailable === false ||
@@ -505,6 +510,40 @@ export class RemoteSessions {
     });
     return current.reading;
   }
+  private loadUsage(id: string, entry: Entry, view: ChThreadView, epoch: string): void {
+    const previous = entry.usageRequest;
+    if (
+      previous?.view === view &&
+      (previous.pending ||
+        (previous.updatedAt === entry.row.updatedAt && Date.now() < previous.retryAt))
+    )
+      return;
+    const request = { view, updatedAt: entry.row.updatedAt, retryAt: 0, pending: true };
+    entry.usageRequest = request;
+    void this.invoke({ kind: "usage", ...entry.identity, epoch })
+      .then((raw) => {
+        const parsed = threadUsageInspectionSchema.safeParse(raw);
+        if (
+          parsed.success &&
+          parsed.data.threadId === entry.identity.threadId &&
+          !this.closed &&
+          this.entries.get(id) === entry &&
+          entry.online &&
+          entry.view === view &&
+          entry.row.updatedAt === request.updatedAt &&
+          entry.epoch === epoch &&
+          entry.usageRequest === request
+        )
+          applyUsageProjections(view.log, parsed.data);
+      })
+      .catch(() => {
+        // Usage is optional. Keep the last confirmed projection if the remote read fails.
+      })
+      .finally(() => {
+        request.pending = false;
+        request.retryAt = Date.now() + 30_000;
+      });
+  }
   private retireView(entry: Entry): void {
     if (!entry.view) return;
     entry.viewOrigin = entry.view.log.lastSeq + 1;
@@ -512,6 +551,7 @@ export class RemoteSessions {
     entry.view.log.reconnectFollowers();
     delete entry.view;
     delete entry.viewHarnessId;
+    delete entry.usageRequest;
   }
   private createView(row: ChThread, harnessId: string, origin = 0): ChThreadView {
     const view = new ChThreadView(

@@ -670,10 +670,10 @@ describe("Antigravity ACP Session", () => {
     vi.restoreAllMocks();
     vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockResolvedValue(1);
     t1.result = deferred<AntigravityPromptResult>();
-    t1.handler = undefined;
-    await start(session, transports, "t-fallback");
-    required(t1.handler).onEvent({ type: "agent.text", text: "done" });
-    t1.result.resolve({ stopReason: "end_turn" });
+    delete t1.handler;
+    const t2 = await start(session, transports, "t-fallback");
+    required(t2.handler).onEvent({ type: "agent.text", text: "done" });
+    t2.result.resolve({ stopReason: "end_turn" });
     await completed(outputs, "t-fallback");
     expect(events(outputs)).toContainEqual(
       expect.objectContaining({

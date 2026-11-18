@@ -39,13 +39,17 @@ it("filters Desktop internal environments from connection hosts", async () => {
 
 const motionReentryState = vi.hoisted(() => ({
   ready: null as Promise<void> | null,
+  install: vi.fn(),
   dispose: vi.fn(),
 }));
 vi.mock("../src/renderer-motion-reentry.js", () => ({
-  installRendererMotionReentry: () => ({
-    ready: motionReentryState.ready ?? Promise.resolve(),
-    dispose: motionReentryState.dispose,
-  }),
+  installRendererMotionReentry: () => {
+    motionReentryState.install();
+    return {
+      ready: motionReentryState.ready ?? Promise.resolve(),
+      dispose: motionReentryState.dispose,
+    };
+  },
 }));
 
 const testState = vi.hoisted(() => ({
@@ -276,6 +280,7 @@ function installFakeBrowser(): void {
   testState.notifyMutations = null;
   testState.animationFrames = [];
   motionReentryState.ready = null;
+  motionReentryState.install.mockClear();
   motionReentryState.dispose.mockClear();
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
@@ -2277,10 +2282,9 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
 });
 
 describe("Renderer binding Motion reentry installation", () => {
-  it("reports a failed installation once and releases it on dispose", async () => {
+  it("reports a failed installation and installs again on the next ready", async () => {
     installFakeBrowser();
-    const error = new Error("Native Motion VisualElement is unavailable");
-    motionReentryState.ready = Promise.reject(error);
+    const error = new Error("Codex loaded module catalog changed during discovery.");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const local = {
       listHarnessPlugins: vi.fn(async () => ({ plugins: [] })),
@@ -2290,6 +2294,7 @@ describe("Renderer binding Motion reentry installation", () => {
     };
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    motionReentryState.ready = Promise.reject(error);
     probe.setAdapter(
       { state: "ready", reason: "ready", modelUpdates: 0, hook: null },
       undefined,
@@ -2301,6 +2306,16 @@ describe("Renderer binding Motion reentry installation", () => {
         ([message]) => message === "codexhost Motion reentry installation failed",
       );
     await vi.waitFor(() => expect(reported()).toHaveLength(1));
+    expect(reported()[0]?.[1]).toBe(error);
+
+    motionReentryState.ready = Promise.resolve();
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: null },
+      undefined,
+      undefined,
+      local as never,
+    );
+    expect(motionReentryState.install).toHaveBeenCalledTimes(2);
     probe.setAdapter(
       { state: "ready", reason: "ready", modelUpdates: 0, hook: null },
       undefined,
@@ -2308,6 +2323,7 @@ describe("Renderer binding Motion reentry installation", () => {
       local as never,
     );
     await Promise.resolve();
+    expect(motionReentryState.install).toHaveBeenCalledTimes(2);
     expect(reported()).toHaveLength(1);
 
     probe.dispose();

@@ -5880,6 +5880,49 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("publishes catalog Thinking options even when the selected option stays valid", async () => {
+    const { adapter, dependencies } = fixture();
+    dependencies.createInspector = () => ({
+      close: async () => undefined,
+      inspect: async () => ({
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+        models: [
+          {
+            value: "default",
+            displayName: "Default",
+            supportsThinkingOff: false,
+            supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          },
+        ],
+      }),
+    });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute({
+      type: "thinking.select",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: expect.arrayContaining([expect.objectContaining({ id: "off" })]),
+      },
+    });
+
+    await adapter.inspect({ cwd: "/synthetic" });
+    await session.close(); // A missing update fails immediately instead of waiting for a timeout.
+    const optionIds = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"];
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: optionIds.map((id) => ({ id })),
+      },
+    });
+  });
+
   it("dynamically switches Thinking on an Idle Query", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

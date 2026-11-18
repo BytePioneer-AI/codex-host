@@ -11,6 +11,7 @@ import {
 } from "./claude-prompt-cache.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   deleteSession as deleteClaudeSession,
@@ -1964,14 +1965,17 @@ class ClaudeHarnessSession implements HarnessSession {
    */
   refitThinking(cwd: string): void {
     if (this.#phase !== "open" || cwd !== this.#cwd || this.#transport) return;
-    const fitted = fitClaudeThinkingOptionId(
+    this.#requestedThinkingOptionId = fitClaudeThinkingOptionId(
       this.#requestedThinkingOptionId,
       this.#supportedThinkingOptionIds(this.#effectiveModelRef()),
     );
-    if (fitted === this.#requestedThinkingOptionId) return;
-    this.#requestedThinkingOptionId = fitted;
-    if (this.#state.effectiveThinkingOptionId !== undefined) {
-      this.#publishState(this.#configuredState());
+    if (this.#state.effectiveThinkingOptionId === undefined) return;
+    const state = this.#configuredState();
+    if (
+      state.effectiveThinkingOptionId !== this.#state.effectiveThinkingOptionId ||
+      !isDeepStrictEqual(state.availableThinkingOptions, this.#state.availableThinkingOptions)
+    ) {
+      this.#publishState(state);
     }
   }
 

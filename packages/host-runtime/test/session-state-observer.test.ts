@@ -34,6 +34,21 @@ describe("Host Session state observer", () => {
     await expect(observer.waitForChange(0)).resolves.toEqual({ effectiveModel: model });
   });
 
+  it("waits past buffered and live state without a Thinking confirmation", async () => {
+    const observer = new SessionStateObserver({});
+    const high = harnessThinkingOptionIdSchema.parse("high");
+    observer.update({});
+    const waiting = observer.waitForChange(
+      0,
+      undefined,
+      (state) => !!state.effectiveThinkingOptionId,
+    );
+    observer.update({ effectiveModel: model });
+    const confirmed = { effectiveThinkingOptionId: high };
+    observer.update(confirmed);
+    await expect(waiting).resolves.toEqual(confirmed);
+  });
+
   it("rejects pending state operations when the Session faults", async () => {
     const observer = new SessionStateObserver({});
     const waiting = observer.waitForChange(0);

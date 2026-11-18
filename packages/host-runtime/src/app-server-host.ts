@@ -4159,6 +4159,38 @@ export class AppServerHost {
     }
   }
 
+  async #saveThreadSelection(
+    request: JsonRpcRequest,
+    thread: ExternalThread,
+    transportModelId: string,
+    setting: "Model" | "Thinking" | "Permission Mode",
+  ): Promise<boolean> {
+    thread.transportModelId = transportModelId;
+    thread.thread = externalThreadValue({
+      record: { ...thread.record, transportModelId },
+      turns: thread.turns,
+      sessionId: thread.sessionId,
+      running: thread.running,
+    });
+    try {
+      thread.record = await this.#repository.setTransportModelId(
+        thread.record.hostThreadId,
+        transportModelId,
+      );
+      return true;
+    } catch (error) {
+      this.#diagnose(error);
+      await this.#writer.json(
+        rpcError(
+          request,
+          -32078,
+          `${setting} was applied but could not be saved: ${errorMessage(error)}`,
+        ),
+      );
+      return false;
+    }
+  }
+
   async #selectThreadModel(request: JsonRpcRequest): Promise<void> {
     const params = threadModelSelectParamsSchema.safeParse(request.params);
     if (!params.success) {
@@ -4195,7 +4227,11 @@ export class AppServerHost {
       return;
     }
     try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
+      const state = await thread.stateObserver.waitForChange(
+        beforeRevision,
+        undefined,
+        (candidate) => !!candidate.effectiveModel,
+      );
       const projected = harnessModelSelectionStateSchema.parse({
         ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
         ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
@@ -4213,26 +4249,22 @@ export class AppServerHost {
         throw new Error("Harness Session did not report an effective Model");
       }
       // Resume and Fork read the saved selection, so keep it on the confirmed Model.
+      const permissionModeId = decodeExternalTransportSelection(
+        thread.harnessId,
+        thread.transportModelId,
+      )?.permissionModeId;
       const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
-        ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
         model: projected.effectiveModel,
+        ...(projected.effectiveThinkingOptionId
+          ? { thinkingOptionId: projected.effectiveThinkingOptionId }
+          : {}),
+        ...(permissionModeId ? { permissionModeId } : {}),
       });
-      thread.transportModelId = transportModelId;
       thread.requestedModel = projected.effectiveModel;
-      try {
-        thread.record = await this.#repository.setTransportModelId(
-          thread.record.hostThreadId,
-          transportModelId,
-        );
-      } catch (error) {
-        this.#diagnose(error);
-      }
-      thread.thread = externalThreadValue({
-        record: { ...thread.record, transportModelId },
-        turns: thread.turns,
-        sessionId: thread.sessionId,
-        running: thread.running,
-      });
+      if (projected.effectiveThinkingOptionId)
+        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+      else delete thread.requestedThinkingOptionId;
+      if (!(await this.#saveThreadSelection(request, thread, transportModelId, "Model"))) return;
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {
       await this.#writer.json(
@@ -4277,7 +4309,11 @@ export class AppServerHost {
       return;
     }
     try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
+      const state = await thread.stateObserver.waitForChange(
+        beforeRevision,
+        undefined,
+        (candidate) => !!candidate.effectiveThinkingOptionId,
+      );
       const projected = harnessModelSelectionStateSchema.parse({
         ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
         ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
@@ -4307,22 +4343,9 @@ export class AppServerHost {
           model: effectiveModel,
           thinkingOptionId: projected.effectiveThinkingOptionId,
         });
-        thread.transportModelId = transportModelId;
         thread.requestedModel = effectiveModel;
-        try {
-          thread.record = await this.#repository.setTransportModelId(
-            thread.record.hostThreadId,
-            transportModelId,
-          );
-        } catch (error) {
-          this.#diagnose(error);
-        }
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
+        if (!(await this.#saveThreadSelection(request, thread, transportModelId, "Thinking")))
+          return;
       }
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {
@@ -4374,7 +4397,11 @@ export class AppServerHost {
       return;
     }
     try {
-      const state = await thread.stateObserver.waitForChange(beforeRevision);
+      const state = await thread.stateObserver.waitForChange(
+        beforeRevision,
+        undefined,
+        (candidate) => !!candidate.effectivePermissionModeId,
+      );
       const projected = harnessConfigurationStateSchema.parse({
         ...(state.effectiveModel ? { effectiveModel: state.effectiveModel } : {}),
         ...(state.resolvedModelLabel ? { resolvedModelLabel: state.resolvedModelLabel } : {}),
@@ -4404,32 +4431,11 @@ export class AppServerHost {
           model: effectiveModel,
           permissionModeId: projected.effectivePermissionModeId,
         });
-        thread.transportModelId = transportModelId;
         thread.requestedModel = effectiveModel;
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
-        // Resume restores the saved selection, so an unsaved change must not
-        // be reported as a completed selection.
-        try {
-          thread.record = await this.#repository.setTransportModelId(
-            thread.record.hostThreadId,
-            transportModelId,
-          );
-        } catch (error) {
-          this.#diagnose(error);
-          await this.#writer.json(
-            rpcError(
-              request,
-              -32078,
-              `Permission Mode was applied but could not be saved: ${errorMessage(error)}`,
-            ),
-          );
+        if (
+          !(await this.#saveThreadSelection(request, thread, transportModelId, "Permission Mode"))
+        )
           return;
-        }
       }
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {

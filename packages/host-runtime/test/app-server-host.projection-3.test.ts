@@ -7,6 +7,7 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  decodeExternalTransportSelection,
   encodeClaudeTransportModel,
   encodeGrokTransportModel,
   encodePiTransportModel,
@@ -19,6 +20,7 @@ import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -42,34 +44,113 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost HarnessAdapter projection", () => {
-  it("selects a registered non-Pi Thread Model through its owning Session", async () => {
-    const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
-    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-    const fixture = createFixture({
-      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
-        ["pi", pi],
-        ["claude-code", claude],
-      ]),
-    });
-    const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
-    const model = claude.catalog.models[1]?.ref;
-    if (!model) throw new Error("Fake Claude catalog has no secondary Model");
+  it.each([true, false])(
+    "persists the owning Session's Model with selectable Thinking = %s",
+    async (hasThinking) => {
+      const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+      const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"), {
+        ...pi.catalog,
+        models: pi.catalog.models.map((model, index) =>
+          index === 1 && !hasThinking ? { ...model, supportedThinkingOptionIds: [] } : model,
+        ),
+      });
+      const fixture = createFixture({
+        externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+          ["pi", pi],
+          ["claude-code", claude],
+        ]),
+      });
+      const threadId = await startExternalThread(
+        fixture,
+        encodeHarnessPluginRoute({
+          harnessId: claude.harnessId,
+          model: claude.catalog.defaultModel ?? undefined,
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        }),
+      );
+      const model = claude.catalog.models[1]?.ref;
+      if (!model) throw new Error("Fake Claude catalog has no secondary Model");
 
-    writeRequest(fixture.desktopInput, {
-      id: 33,
-      method: "codexhost/thread/model/select",
-      params: { threadId, model },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 33)),
-    ).resolves.toMatchObject({
-      id: 33,
-      result: { effectiveModel: model, effectiveThinkingOptionId: "off" },
-    });
-    expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
-    expect(pi.sessions).toHaveLength(0);
-    await stopFixture(fixture);
-  });
+      writeRequest(fixture.desktopInput, {
+        id: 33,
+        method: "codexhost/thread/model/select",
+        params: { threadId, model },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 33)),
+      ).resolves.toMatchObject({
+        id: 33,
+        result: {
+          effectiveModel: model,
+          ...(hasThinking
+            ? { effectiveThinkingOptionId: "off" }
+            : { availableThinkingOptions: [] }),
+        },
+      });
+      const saved = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+      expect(decodeExternalTransportSelection(claude.harnessId, saved?.transportModelId)).toEqual({
+        model,
+        ...(hasThinking ? { thinkingOptionId: "off" } : {}),
+      });
+      expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
+      expect(pi.sessions).toHaveLength(0);
+      await stopFixture(fixture);
+    },
+  );
+
+  it.each(["model", "thinking"] as const)(
+    "reports a confirmed %s change whose resume settings could not be saved",
+    async (setting) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const id = hostThreadIdSchema.parse(threadId);
+        const before = await fixture.mappingStore.getThread(id);
+        const model = fixture.adapter.catalog.models[1]?.ref;
+        if (!model) throw new Error("Fake catalog has no secondary Model");
+        const params =
+          setting === "model" ? { threadId, model } : { threadId, thinkingOptionId: "off" };
+        const effective =
+          setting === "model" ? { effectiveModel: model } : { effectiveThinkingOptionId: "off" };
+        vi.spyOn(fixture.mappingStore, "setTransportModelId").mockRejectedValueOnce(
+          new Error("disk full"),
+        );
+        writeRequest(fixture.desktopInput, {
+          id: 31,
+          method: `codexhost/thread/${setting}/select`,
+          params,
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 31)),
+        ).resolves.toMatchObject({
+          error: {
+            code: -32078,
+            message: expect.stringContaining("applied but could not be saved"),
+          },
+        });
+        expect(fixture.adapter.sessions[0]?.state).toMatchObject(effective);
+        expect((await fixture.mappingStore.getThread(id))?.transportModelId).toBe(
+          before?.transportModelId,
+        );
+        writeRequest(fixture.desktopInput, {
+          id: 32,
+          method: `codexhost/thread/${setting}/select`,
+          params,
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 32)),
+        ).resolves.toMatchObject({
+          result: effective,
+        });
+        const saved = await fixture.mappingStore.getThread(id);
+        expect(decodeExternalTransportSelection("pi", saved?.transportModelId)).toMatchObject(
+          setting === "model" ? { model } : { thinkingOptionId: "off" },
+        );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("routes Permission Mode through the owning capable Session and preserves rejection", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
@@ -237,6 +318,30 @@ describe("AppServerHost HarnessAdapter projection", () => {
       }),
     });
     expect(officialWrite).not.toHaveBeenCalled();
+    // Pi can accept xhigh and report high as the native level for this Model.
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Fake Pi Session was not opened");
+    const execute = session.execute.bind(session);
+    vi.spyOn(session, "execute").mockImplementationOnce(() =>
+      execute({
+        type: "thinking.select",
+        thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+      }),
+    );
+    writeRequest(fixture.desktopInput, {
+      id: 35,
+      method: "codexhost/thread/thinking/select",
+      params: { threadId, thinkingOptionId: "xhigh" },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 35)),
+    ).resolves.toMatchObject({
+      result: { effectiveThinkingOptionId: "high" },
+    });
+    const saved = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(decodeExternalTransportSelection("pi", saved?.transportModelId)).toMatchObject({
+      thinkingOptionId: "high",
+    });
     await stopFixture(fixture);
   });
 

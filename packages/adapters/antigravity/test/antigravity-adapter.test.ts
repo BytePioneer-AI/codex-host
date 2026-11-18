@@ -740,10 +740,244 @@ describe("Antigravity ACP Session", () => {
     expect(session.initialState.effectiveModel).toEqual(model("claude"));
     expect(events(outputs).some((event) => event.type === "session.state.changed")).toBe(true);
   });
+  it("switches away from a retired resume Model when opening a cold Session", async () => {
+    const { adapter, transports } = fixture();
+    const nativeRef = ref();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef,
+        model: model("gemini-4-carbon"),
+        thinkingOptionId: thinking("low"),
+      }),
+    );
+    expect(transports).toHaveLength(0);
+    expect(
+      await session.execute({ type: "model.select", model: model("still-retired") }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "unsupported", message: expect.stringContaining("still-retired") },
+    });
+    expect(session.initialState).toEqual({ nativeRef });
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toEqual([]);
+    expect(
+      await session.execute({ type: "model.select", model: model("claude-xhigh") }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "unsupported", message: expect.stringContaining("thinking=xhigh") },
+    });
+    expect(session.initialState).toEqual({ nativeRef });
+    // Neither command supplies a replacement for the saved Model.
+    const savedModelError = {
+      ok: false,
+      error: { code: "unsupported", message: expect.stringContaining("gemini-4-carbon") },
+    };
+    expect(
+      await session.execute({ type: "thinking.select", thinkingOptionId: thinking("high") }),
+    ).toMatchObject(savedModelError);
+    expect(
+      await session.execute({
+        type: "permissionMode.select",
+        permissionModeId: mode("dangerously-skip-permissions"),
+      }),
+    ).toMatchObject(savedModelError);
+    expect(await session.execute({ type: "model.select", model: model("claude-high") })).toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    const transport = required(transports.at(-1));
+    expect(transport.skipPermissions).toBe(false);
+    expect(transport.setConfigOption.mock.calls).toEqual([
+      ["model", "claude"],
+      ["thought_level", "high"],
+    ]);
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model("claude"),
+      effectiveThinkingOptionId: "high",
+    });
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toEqual([
+      { type: "session.state.changed", state: session.initialState },
+    ]);
+  });
+  it("publishes only the selected Thinking when a cold resume confirms it", async () => {
+    const { adapter, transports } = fixture();
+    const nativeRef = ref();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef,
+        model: model("gemini"),
+        thinkingOptionId: thinking("low"),
+      }),
+    );
+    const selected = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: thinking("high"),
+    });
+    const transport = required(transports[0]);
+    const gate = deferred<AntigravityAcpConfigOption[]>();
+    const apply = required(transport.setConfigOption.getMockImplementation());
+    transport.setConfigOption.mockImplementation((id, value) =>
+      id === "thought_level" && value === "high" ? gate.promise : apply(id, value),
+    );
+    await vi.waitFor(() =>
+      expect(transport.setConfigOption).toHaveBeenCalledWith("thought_level", "high"),
+    );
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toEqual([]);
+    expect(session.initialState).toEqual({ nativeRef });
+    gate.resolve(await apply("thought_level", "high"));
+    expect(await selected).toEqual({ ok: true, value: { completed: true } });
+    expect(session.initialState.effectiveThinkingOptionId).toBe("high");
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toEqual([
+      { type: "session.state.changed", state: session.initialState },
+    ]);
+  });
+  it("keeps the saved configuration when the second step of a cold Model selection fails", async () => {
+    const { adapter, transports } = fixture();
+    const nativeRef = ref();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef,
+        model: model("gemini"),
+        thinkingOptionId: thinking("high"),
+      }),
+    );
+    const gate = deferred<AntigravityAcpConfigOption[]>();
+    const selected = session.execute({ type: "model.select", model: model("claude-high") });
+    const first = required(transports[0]);
+    const apply = required(first.setConfigOption.getMockImplementation());
+    first.setConfigOption.mockImplementation((id, value) =>
+      id === "thought_level" ? gate.promise : apply(id, value),
+    );
+    await vi.waitFor(() =>
+      expect(first.setConfigOption).toHaveBeenCalledWith("thought_level", "high"),
+    );
+    expect(session.initialState).toEqual({ nativeRef });
+    gate.resolve(first.config);
+    expect(await selected).toMatchObject({ ok: false, error: { code: "protocolError" } });
+    expect(first.isClosed).toBe(true);
+    expect(session.initialState).toEqual({ nativeRef });
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toEqual([]);
+    const next = await start(session, transports);
+    expect(next.setConfigOption.mock.calls).toEqual([
+      ["model", "gemini"],
+      ["thought_level", "high"],
+    ]);
+  });
+  it.each(["gpt-oss", "gpt-oss-medium"])(
+    "selects the single ACP variant for %s across a cold resume and restart",
+    async (target) => {
+      const { adapter, transports } = fixture();
+      adapter.options.createTransport = (options) => {
+        const transport = new FakeTransport(options);
+        const modelOption = required(transport.config[0]);
+        modelOption.options.push({ value: "gpt-oss-medium", name: "GPT OSS (Medium)" });
+        transport.config = [modelOption];
+        transports.push(transport);
+        return transport;
+      };
+      const { session } = await sessionOf(
+        await adapter.open({
+          kind: "resume",
+          nativeRef: ref(),
+          cwd: process.cwd(),
+          model: model("retired"),
+          thinkingOptionId: thinking("high"),
+        }),
+      );
+      expect((await session.execute({ type: "model.select", model: model(target) })).ok).toBe(true);
+      expect(session.initialState.effectiveModel).toEqual(model("gpt-oss-medium"));
+      expect(session.initialState.effectiveThinkingOptionId).toBeUndefined();
+      expect(
+        (
+          await session.execute({
+            type: "permissionMode.select",
+            permissionModeId: mode("dangerously-skip-permissions"),
+          })
+        ).ok,
+      ).toBe(true);
+      expect(transports.map((transport) => transport.setConfigOption.mock.calls)).toEqual([
+        [["model", "gpt-oss-medium"]],
+        [["model", "gpt-oss-medium"]],
+      ]);
+    },
+  );
+  it("runs the first Turn on its opened native Session while Thinking confirmation is pending", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const accepted = session.execute({
+      type: "turn.start",
+      turnId: turnId("t1"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    const transport = required(transports[0]);
+    const gate = deferred<AntigravityAcpConfigOption[]>();
+    transport.setConfigOption.mockReturnValueOnce(gate.promise);
+    const selected = session.execute({
+      type: "thinking.select",
+      thinkingOptionId: thinking("high"),
+    });
+    expect((await accepted).ok).toBe(true);
+    await vi.waitFor(() => expect(transport.parts).toBeDefined());
+    expect(session.initialState.nativeRef?.nativeSessionId).toBe(transport.sessionId);
+    expect(session.initialState.effectiveThinkingOptionId).toBeUndefined();
+    gate.resolve(
+      config().map((entry) =>
+        entry.id === "thought_level" ? { ...entry, currentValue: "high" } : entry,
+      ),
+    );
+    expect((await selected).ok).toBe(true);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        outcome: expect.objectContaining({ status: "succeeded" }),
+      }),
+    );
+  });
+  it("can replace a retired Model while a Turn is already opening its saved Session", async () => {
+    const { adapter, transports } = fixture();
+    const nativeRef = ref();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef,
+        model: model("retired"),
+      }),
+    );
+    await session.execute({
+      type: "turn.start",
+      turnId: turnId("t1"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    const selected = session.execute({ type: "model.select", model: model("claude") });
+    expect(await selected).toEqual({ ok: true, value: { completed: true } });
+    await completed(outputs);
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        outcome: expect.objectContaining({ status: "failed" }),
+      }),
+    );
+    expect(transports).toHaveLength(2);
+    expect(transports[0]?.isClosed).toBe(true);
+    expect(transports[1]?.openSession).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "resume", sessionId: nativeRef.nativeSessionId }),
+    );
+    expect(session.initialState.effectiveModel).toEqual(model("claude"));
+  });
   it("restarts only across Skip permissions, keeps identity, and rejects a busy restart", async () => {
     const { adapter, transports } = fixture();
     const nativeRef = ref();
-    const { session } = await sessionOf(
+    const { session, outputs } = await sessionOf(
       await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef }),
     );
     expect(
@@ -763,6 +997,22 @@ describe("Antigravity ACP Session", () => {
     expect(transports[1]?.openSession).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "resume", sessionId: nativeRef.nativeSessionId }),
     );
+    const revision = events(outputs).filter(
+      (event) => event.type === "session.state.changed",
+    ).length;
+    expect(
+      (
+        await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: mode("dangerously-skip-permissions"),
+        })
+      ).ok,
+    ).toBe(true);
+    expect(
+      events(outputs)
+        .filter((event) => event.type === "session.state.changed")
+        .slice(revision),
+    ).toEqual([{ type: "session.state.changed", state: session.initialState }]);
     expect(
       (await session.execute({ type: "permissionMode.select", permissionModeId: mode("default") }))
         .ok,

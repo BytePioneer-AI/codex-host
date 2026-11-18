@@ -589,6 +589,44 @@ describe("history replay", () => {
     expect(result[0]?.nativeTurnRef.nativeTurnKey).toBe("stored-key");
     expect(result[0]?.checkpoint?.checkpointId).toBe("turn-0");
   });
+  it("aligns gapped knownTurnRefs by turn slot without producing duplicate nativeTurnKeys", () => {
+    const threeTurnsEvents: AntigravityAcpEvent[] = [
+      ...events,
+      { type: "user.text", text: "Third" },
+      { type: "agent.text", text: "Three" },
+    ];
+    const refFor = (nativeTurnKey: string) =>
+      nativeTurnRefSchema.parse({
+        harnessId: "antigravity",
+        nativeSessionId: "native",
+        nativeTurnKey,
+        formatVersion: 1,
+      });
+
+    const zeroBased = projectReplayedEventsToTurns({
+      nativeSessionId: "native",
+      cwd: "/repo",
+      events: threeTurnsEvents,
+      knownTurnRefs: [refFor("turn-0"), refFor("turn-2")],
+    });
+    expect(zeroBased.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn-0",
+      "turn-1",
+      "turn-2",
+    ]);
+
+    const legacyOneBased = projectReplayedEventsToTurns({
+      nativeSessionId: "native",
+      cwd: "/repo",
+      events: threeTurnsEvents,
+      knownTurnRefs: [refFor("turn:1"), refFor("turn:3")],
+    });
+    expect(legacyOneBased.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn:1",
+      "turn-1",
+      "turn:3",
+    ]);
+  });
   it("does not invent turns from metadata and marks unterminated tools interrupted", () => {
     expect(
       projectReplayedEventsToTurns({

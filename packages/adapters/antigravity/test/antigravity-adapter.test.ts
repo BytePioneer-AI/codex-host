@@ -646,6 +646,43 @@ describe("Antigravity ACP Session", () => {
     expect(nativeTurnRefSchema.safeParse(terminal?.nativeTurnRef).success).toBe(true);
     expect(stream.filter((event) => event.type === "turn.started")).toHaveLength(1);
   });
+  it("retries stale readNativeTurnCount and falls back when a succeeded turn produced output", async () => {
+    vi.spyOn(nativeBoundaries, "readNativeTurnCount")
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(1);
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const t1 = await start(session, transports, "t-retry");
+    required(t1.handler).onEvent({ type: "agent.text", text: "ok" });
+    t1.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t-retry");
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        turnId: turnId("t-retry"),
+        nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-0" }),
+      }),
+    );
+
+    vi.restoreAllMocks();
+    vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockResolvedValue(1);
+    t1.result = deferred<AntigravityPromptResult>();
+    t1.handler = undefined;
+    await start(session, transports, "t-fallback");
+    required(t1.handler).onEvent({ type: "agent.text", text: "done" });
+    t1.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t-fallback");
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        turnId: turnId("t-fallback"),
+        nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-1" }),
+      }),
+    );
+  });
   it("rejects busy/empty turns and foreign cancellation without extra lifecycle events", async () => {
     const { adapter, transports } = fixture();
     const { session, outputs } = await sessionOf(

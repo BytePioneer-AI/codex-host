@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type {
   CreateElicitationRequest,
   CreateElicitationResponse,
@@ -109,6 +110,7 @@ import { antigravityHome, createAntigravityUsageStatistics } from "./usage-stati
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
+const TURN_COUNT_RETRY_DELAYS_MS = [50, 100, 150, 250] as const;
 export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   configuration: {
     selectModel: true,
@@ -1002,11 +1004,25 @@ export class AntigravitySession implements HarnessSession {
               }
             : { status: "succeeded" };
       const before = this.#turnCount;
+      const dbPath = nativeConversationDbPath(
+        ref.nativeSessionId,
+        antigravityHome(this.#options.environment),
+      );
       let count: number;
       try {
-        count = await readNativeTurnCount(
-          nativeConversationDbPath(ref.nativeSessionId, antigravityHome(this.#options.environment)),
-        );
+        count = await readNativeTurnCount(dbPath);
+        if (count <= before && outcome.status === "succeeded") {
+          for (const delayMs of TURN_COUNT_RETRY_DELAYS_MS) {
+            if (this.#closed || this.#faulted || !this.#isCurrent(turn)) break;
+            await delay(delayMs, undefined, { signal: this.#abort.signal }).catch(() => undefined);
+            if (this.#closed || this.#faulted || !this.#isCurrent(turn)) break;
+            count = await readNativeTurnCount(dbPath);
+            if (count > before) break;
+          }
+          if (count <= before && (turn.firstOutputAtMs !== undefined || turn.hasToolCalls)) {
+            count = before + 1;
+          }
+        }
       } catch {
         count = outcome.status === "succeeded" ? before + 1 : before;
       }

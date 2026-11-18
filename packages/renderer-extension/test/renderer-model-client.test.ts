@@ -524,6 +524,7 @@ describe("Renderer fixed Model request client", () => {
       "installation",
       "invokeDesktopExtensionBackend",
       "listCodexAccounts",
+      "listDelegationChildren",
       "listDesktopExtensionCatalog",
       "listDesktopExtensions",
       "listHarnessAccountSources",

@@ -7,7 +7,9 @@ import {
   THREAD_QUESTION_RESPOND_METHOD,
   threadQuestionsListParamsSchema,
   threadQuestionRespondParamsSchema,
+  DELEGATION_CHILDREN_METHOD,
   DELEGATION_READ_METHOD,
+  delegationChildrenParamsSchema,
   delegationReadParamsSchema,
   EXTERNAL_THREAD_PREWARM_PARAM,
   THREAD_PREWARM_DISCARD_METHOD,
@@ -2029,6 +2031,19 @@ export class AppServerHost {
         ...(parsed.data.from !== undefined ? { from: parsed.data.from } : {}),
         ...(parsed.data.to !== undefined ? { to: parsed.data.to } : {}),
       });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+      return;
+    }
+    if (request.method === DELEGATION_CHILDREN_METHOD) {
+      const parsed = delegationChildrenParamsSchema.safeParse(request.params);
+      if (!parsed.success) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid delegation children request"));
+        return;
+      }
+      const result = await this.#delegationCoordinator.children(
+        parsed.data,
+        (await this.#threadTree.read()).parents,
+      );
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
       return;
     }

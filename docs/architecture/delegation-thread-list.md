@@ -34,3 +34,15 @@ Host 不承诺底层未提供的快照稳定性，也不额外维护已返回 Th
 ## 验证边界
 
 `delegation-thread-list-pagination.test.ts` 通过真实 AppServerHost、共享 Mapping Store、OfficialRuntimeScope 和可变 keyset 后端覆盖共享 catalog、插入／删除、cwd 校验、limit 变化及六种排序；`run-host-runtime.remote-control-catalog.test.ts` 检查生产 Remote Control 注册路径。它们不代替真实 Windows Remote Control 的连接验收，也不证明任意 native 后端具备快照能力。
+
+## 派出会话的状态
+
+`--parent` 列表来自 Delegation 记录。委派记录只保存子会话最近一次结束时的状态，已结束的子会话再收到后续消息开始新一轮时，记录仍是 `completed`；因此 Host 当前正在运行的子会话一律报 `running`，其余沿用记录。
+
+## Desktop 侧栏徽标
+
+徽标和 Web 会话树显示同一份父子关系：Host 的 `codexhost/thread/tree/read`（见 [Web 会话树](web-thread-tree.md)），所以置顶的子会话和外部客户端发起的任务不算在父会话下。
+
+Desktop 左侧本地会话行上，有子会话的会话在 Agent 图标右下角显示子会话数（超过 9 个显示 `9+`）。角标颜色取子会话中最紧急的状态：待回答（橙）> 运行中（蓝）> 无活动（灰）。待回答指子会话有未答的 Question（Host 的问题列表，不含权限审批）；运行中指 Host 当前正在运行该子会话。Web 侧栏的“待批准”“未读”由 Web 客户端维护，Desktop 不显示。该图标随之可点击，点击弹出子会话列表而不打开父会话。列表用角标同一份轮询结果当场打开，按状态从紧急到不紧急，同状态按派出时间从新到旧，打开期间随同一次轮询更新；每行为 Harness 图标、标题和状态，点击一行经 Desktop 自己的路由打开该会话。列表在图标下方放不下时向上展开；用键盘打开时焦点进入列表，上下方向键切换，Esc 关闭并把焦点还给图标。角标挂在侧栏 Agent 图标上，不另占标题位置，Desktop 悬停时在行尾显示的按钮不会使其移动；Agent 图标被重建时角标随下一次侧栏变化重新挂上。
+
+Renderer 通过 `codexhost/thread/delegation-children` 批量读取可见行的子会话（Host 用会话树的关系拼上子会话的 Harness、标题和状态），页面可见时每 5 秒一次，隐藏时不读；只观察侧栏节点的变化来恢复被重新渲染的徽标。原生 Codex 子会话没有 Host 记录，标题只在列表打开期间、对还没有标题的子会话各向官方读取一次，状态仍以轮询为准。轮询中途页面隐藏、Host 客户端被替换或模块被销毁时，这次结果整体丢弃。只处理本地 Host 的行；远程连接的行不显示徽标。

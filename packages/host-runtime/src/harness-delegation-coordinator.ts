@@ -21,9 +21,13 @@ import {
   harnessIdSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
+  type DelegationChildStatus,
+  type DelegationChildrenParams,
+  type DelegationChildrenResult,
   type HarnessDelegationDefault,
 } from "@codexhost/shared-contracts";
 
+import { delegationChildRows } from "./delegation-children.js";
 import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
@@ -679,16 +683,17 @@ export class HarnessDelegationCoordinator {
     }
     if (!input.parentThreadId) return this.#listOfficial(input);
     const parent = hostThreadIdSchema.parse(input.parentThreadId);
-    const delegations = await this.#repository.listDelegations(parent);
-    const records = await this.#repository.list();
-    const byId = new Map(records.map((record) => [record.hostThreadId, record] as const));
-    const rows = delegations.map((delegation) => {
-      const record = byId.get(delegation.childHostThreadId);
+    const children = delegationChildRows({
+      delegations: await this.#repository.listDelegations(parent),
+      records: await this.#repository.list(),
+      activeThreadIds: this.activeThreadIds(),
+    });
+    const rows = (children.get(parent) ?? []).map(({ delegation, record, status }) => {
       return {
         threadId: delegation.childHostThreadId,
         harnessId: delegation.targetHarnessId as RoutedHarnessId,
         deepLink: `codex://threads/${delegation.childHostThreadId}`,
-        status: delegation.status,
+        status,
         ...(record
           ? {
               cwd: record.cwd,
@@ -731,6 +736,77 @@ export class HarnessDelegationCoordinator {
       threads: page,
       nextCursor:
         nextOffset < rows.length ? Buffer.from(String(nextOffset)).toString("base64url") : null,
+    };
+  }
+
+  /**
+   * Children shown under each requested parent in the Desktop sidebar. Membership is the Thread
+   * tree's `parents` (the same relation the Web sidebar shows: pinned children and external
+   * client tasks are not children); status is the child's live state.
+   */
+  async children(
+    input: DelegationChildrenParams,
+    parents: Readonly<Record<string, string>>,
+  ): Promise<DelegationChildrenResult> {
+    const delegations = new Map(
+      (await this.#repository.listDelegations()).map((delegation) => [
+        delegation.childHostThreadId as string,
+        delegation,
+      ]),
+    );
+    const records = new Map(
+      (await this.#repository.listSummaries()).map((record) => [
+        record.hostThreadId as string,
+        record,
+      ]),
+    );
+    const byParent = new Map<string, StoredDelegationRecordV1[]>();
+    for (const [childId, parentId] of Object.entries(parents)) {
+      const delegation = delegations.get(childId);
+      if (!delegation) continue;
+      let siblings = byParent.get(parentId);
+      if (!siblings) byParent.set(parentId, (siblings = []));
+      siblings.push(delegation);
+    }
+    const title = async (delegation: StoredDelegationRecordV1): Promise<string | undefined> => {
+      const threadId = delegation.childHostThreadId;
+      const stored = records.get(threadId)?.title;
+      if (stored || !input.includeTitles || delegation.targetHarnessId !== "codex") return stored;
+      return this.#officialThreadMetadata(threadId).then(
+        (metadata) => metadata.title,
+        () => undefined,
+      );
+    };
+    const listed = await Promise.all(
+      input.threadIds.map(async (threadId) => {
+        const siblings = (byParent.get(threadId) ?? []).toSorted(
+          (left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt),
+        );
+        const titles = await Promise.all(siblings.map(title));
+        return { threadId, siblings, titles };
+      }),
+    );
+    // States are read after the title reads, in one synchronous step, so they are current.
+    const active = new Set(this.activeThreadIds());
+    const status = (threadId: string): DelegationChildStatus =>
+      this.#pendingQuestions(threadId).length
+        ? "question"
+        : active.has(threadId)
+          ? "running"
+          : "idle";
+    return {
+      parents: listed.map(({ threadId, siblings, titles }) => ({
+        threadId,
+        children: siblings.map((delegation, index) => {
+          const childTitle = titles[index];
+          return {
+            threadId: delegation.childHostThreadId,
+            harnessId: delegation.targetHarnessId,
+            status: status(delegation.childHostThreadId),
+            ...(childTitle ? { title: childTitle } : {}),
+          };
+        }),
+      })),
     };
   }
 

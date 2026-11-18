@@ -48,7 +48,7 @@ async function fixture(
   const notifications: unknown[] = [];
   const treeChanged = vi.fn<(threadId: string) => void>();
   const delivered: string[] = [];
-  const pending: DelegationPendingQuestion[] = [];
+  const pending = new Map<string, DelegationPendingQuestion[]>();
   const runtime = new ExternalThreadRuntime({
     adapters,
     environment,
@@ -98,7 +98,7 @@ async function fixture(
     },
     activeOfficialParents: () => [],
     externalThreadBusy,
-    pendingQuestions: () => [...pending],
+    pendingQuestions: (threadId) => [...(pending.get(threadId) ?? [])],
   });
   return {
     adapter,
@@ -817,6 +817,65 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
+  it("shows sidebar children from the Thread tree with question over running over idle", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "external child",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      for (const child of ["native-child", "pinned-child"]) {
+        await value.repository.createDelegation({
+          delegationId: hostThreadIdSchema.parse(`${child}-delegation`),
+          parentHostThreadId: hostThreadIdSchema.parse("parent-thread"),
+          childHostThreadId: hostThreadIdSchema.parse(child),
+          sourceHarnessId: harnessIdSchema.parse("pi"),
+          targetHarnessId: harnessIdSchema.parse("codex"),
+          status: "completed",
+          taskDigest: "a".repeat(64),
+        });
+      }
+      // The tree leaves out the pinned child, so the sidebar does too.
+      const parents = { [started.threadId]: "parent-thread", "native-child": "parent-thread" };
+      const statuses = async () => {
+        const result = await value.coordinator.children(
+          { threadIds: [hostThreadIdSchema.parse("parent-thread")] },
+          parents,
+        );
+        return result.parents.map(({ threadId, children }) => ({
+          threadId,
+          children: children
+            .map((child) => ({ threadId: child.threadId, status: child.status }))
+            .toSorted((left, right) => left.threadId.localeCompare(right.threadId)),
+        }));
+      };
+      const expected = (pi: string) => [
+        {
+          threadId: "parent-thread",
+          children: [
+            { threadId: started.threadId, status: pi },
+            { threadId: "native-child", status: "idle" },
+          ].toSorted((left, right) => left.threadId.localeCompare(right.threadId)),
+        },
+      ];
+
+      await expect(statuses()).resolves.toEqual(expected("running"));
+      value.pending.set(started.threadId, [
+        {
+          kind: "requestUserInput",
+          interactionId: "interaction-1",
+          turnId: started.turnId,
+          request: { questions: [{ id: "q", question: "Continue?", options: [{ label: "Yes" }] }] },
+        },
+      ]);
+      await expect(statuses()).resolves.toEqual(expected("question"));
+    } finally {
+      await value.close();
+    }
+  });
+
   it("wait returns terminal snapshots early and running snapshots on timeout without writing", async () => {
     const value = await fixture();
     try {
@@ -1191,14 +1250,18 @@ describe("HarnessDelegationCoordinator", () => {
         task: "work",
         parentThreadId: "parent",
       });
-      value.pending.push({
-        kind: "requestUserInput",
-        interactionId: "interaction-1",
-        turnId: started.turnId,
-        request: {
-          questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+      value.pending.set(started.threadId, [
+        {
+          kind: "requestUserInput",
+          interactionId: "interaction-1",
+          turnId: started.turnId,
+          request: {
+            questions: [
+              { id: "decision", question: "Continue?", options: [{ label: "Continue" }] },
+            ],
+          },
         },
-      });
+      ]);
 
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
@@ -1214,7 +1277,7 @@ describe("HarnessDelegationCoordinator", () => {
         pendingQuestions: [{ interactionId: "interaction-1" }],
       });
 
-      value.pending.length = 0;
+      value.pending.clear();
       await expect(
         value.coordinator.wait({ threadId: started.threadId, view: "result", timeoutMs: 10 }),
       ).resolves.toMatchObject({ timedOut: true, pendingQuestions: [] });

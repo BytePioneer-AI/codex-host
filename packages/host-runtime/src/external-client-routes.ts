@@ -70,7 +70,8 @@ function withHttpDefaults(route: string, body: Record<string, unknown>): Record<
           "INVALID_ARGUMENT",
           "harness and harnessId must name the same Harness",
         );
-      const harnessId = rest.harnessId ?? harness;
+      // Only an absent `harnessId` falls back to the alias; a value sent as `null` is for the Runtime to reject.
+      const harnessId = rest.harnessId === undefined ? harness : rest.harnessId;
       if (harnessId === undefined)
         throw new DelegationControlError("INVALID_ARGUMENT", "harnessId is required");
       return { ...rest, harnessId };

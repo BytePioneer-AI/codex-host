@@ -142,7 +142,7 @@ describe("external clients", () => {
 
   it("gives plain HTTP requests the same defaults as the CLI and accepts harness for harnessId", async () => {
     const api = {
-      start: vi.fn(async () => ({})),
+      start: vi.fn<DelegationControlApi["start"]>(async () => ({}) as never),
       read: vi.fn(async () => ({})),
       wait: vi.fn(async () => ({})),
       list: vi.fn(async () => ({})),

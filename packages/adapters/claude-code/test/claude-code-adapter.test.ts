@@ -2774,6 +2774,62 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
+  it("confirms persisted queued input by its source identity", async () => {
+    const { adapter, transports, history } = fixture();
+    const session = await openSession(adapter);
+    try {
+      await session.execute(textTurn("queued-history"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      const sent = transport.turns[0];
+      if (!sent) throw new Error("Fake Claude Turn was not submitted");
+      transport.event({ type: "message.completed", messageId: "answer", checkpointId: "answer" });
+      transport.finish({ status: "succeeded" });
+      await Promise.resolve();
+      history.push(
+        {
+          type: "user",
+          uuid: "root-input",
+          session_id: transport.sessionId,
+          message: { role: "user", content: "original request" },
+        },
+        queuedCommand(
+          "queued-attachment",
+          sent.userMessageId,
+          "queued-history",
+          transport.sessionId,
+        ),
+        {
+          type: "assistant",
+          uuid: "answer",
+          session_id: transport.sessionId,
+          message: { role: "assistant", content: "done" },
+        },
+      );
+      await expect(session.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              items: expect.arrayContaining([
+                {
+                  item: {
+                    type: "userMessage",
+                    itemId: "queued-attachment",
+                    input: [{ type: "text", text: "queued-history" }],
+                  },
+                  outcome: { status: "succeeded" },
+                },
+              ]),
+            },
+          ],
+        },
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("projects automatic Compaction and defers Usage refresh until Turn completion", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);

@@ -113,19 +113,21 @@ it.each(["client:grokbot-user", undefined])(
     try {
       await desktop.ready;
       const api = await registration.promise;
-      await expect(
-        registry.start({
-          harnessId: "codex",
-          task: "inspect workspace",
-          cwd: directory,
-          ...(parentThreadId ? { parentThreadId } : {}),
-          requestId: "headless-first",
-        }),
-      ).resolves.toMatchObject({
+      const input = {
+        harnessId: "codex" as const,
+        task: "inspect workspace",
+        cwd: directory,
+        ...(parentThreadId ? { parentThreadId } : {}),
+        requestId: "headless-first",
+      };
+      await expect(registry.start(input)).resolves.toMatchObject({
         threadId: "native-child",
         turnId: "native-turn",
         status: "running",
       });
+      await expect(
+        registry.start({ ...input, cwd: `${directory}${path.sep}` }),
+      ).resolves.toMatchObject({ threadId: "native-child", turnId: "native-turn" });
       const exported = await api.exportThread?.({ threadId: "native-child" });
       expect(exported).toMatchObject({
         threadId: "native-child",

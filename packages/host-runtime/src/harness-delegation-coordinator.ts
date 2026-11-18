@@ -242,7 +242,7 @@ export class HarnessDelegationCoordinator {
       );
     const parentThreadId = input.parentThreadId;
     const parent = parentThreadId ? await this.#parentMetadata(parentThreadId) : undefined;
-    const selectedCwd = input.cwd ?? parent?.cwd ?? process.cwd();
+    const selectedCwd = path.resolve(input.cwd ?? parent?.cwd ?? process.cwd());
     const title = delegationTitle(input);
     if (input.harnessId === "codex") {
       const result = await this.#startOfficial({
@@ -257,7 +257,7 @@ export class HarnessDelegationCoordinator {
         title: result.title ?? title,
       };
     }
-    const startInput = { ...input, cwd: path.resolve(selectedCwd) };
+    const startInput = { ...input, cwd: selectedCwd };
     if (!this.#adapters.has(input.harnessId)) {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",

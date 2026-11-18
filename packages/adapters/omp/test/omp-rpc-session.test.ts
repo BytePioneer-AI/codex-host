@@ -448,11 +448,12 @@ describe("OMP RPC session", () => {
         assistantMessageEvent: { type: "start", partial },
       });
       expect(onAssistantStart.mock.calls).toEqual([[message], [partial]]);
+      const messages = [message, partial, { role: "toolResult" }];
       process.sendFrame({
         type: "agent_end",
-        messages: [message, partial, { role: "toolResult" }],
+        messages,
       });
-      expect(onAssistantSummary).toHaveBeenCalledExactlyOnceWith(partial);
+      expect(onAssistantSummary).toHaveBeenCalledExactlyOnceWith(messages);
       expect(onUsage).not.toHaveBeenCalled();
     } finally {
       await session.close();

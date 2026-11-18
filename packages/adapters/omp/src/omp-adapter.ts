@@ -793,10 +793,20 @@ class OmpHarnessSession implements HarnessSession {
     if (previous !== account) this.#event({ type: "session.accountCredits.changed" });
   }
 
-  handleAssistantCompletion(message: unknown): void {
+  handleAssistantSummary(messages: readonly unknown[]): void {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const key = ompMessageAccount(messages[i]);
+      if (key !== undefined) {
+        this.#finishAccountAttempt(key);
+        return;
+      }
+    }
+    this.#finishAccountAttempt(undefined);
+  }
+
+  #finishAccountAttempt(accountKey: string | null | undefined): void {
     if (this.#phase !== "open") return;
     const previous = this.#displayedAccount();
-    const accountKey = ompMessageAccount(message);
     if (accountKey !== undefined) this.#accountKey = accountKey;
     this.#streamingAccountKey = undefined;
     if (previous !== this.#accountKey) this.#event({ type: "session.accountCredits.changed" });
@@ -804,7 +814,7 @@ class OmpHarnessSession implements HarnessSession {
 
   handleTransportUsage(observation: OmpUsageObservation): void {
     if (this.#phase !== "open") return;
-    this.handleAssistantCompletion(observation.message);
+    this.#finishAccountAttempt(ompMessageAccount(observation.message));
     const record = ompUsageRecord(observation.message, observation);
     if (record?.kind === "request") this.#event({ type: "usage.request", request: record.request });
     else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
@@ -1331,7 +1341,7 @@ class OmpHarnessSession implements HarnessSession {
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
       onAssistantStart: (message) => this.handleAssistantStart(message),
-      onAssistantSummary: (message) => this.handleAssistantCompletion(message),
+      onAssistantSummary: (messages) => this.handleAssistantSummary(messages),
       onUsage: (observation) => this.handleTransportUsage(observation),
     });
     try {
@@ -1692,7 +1702,7 @@ class OmpHarnessSession implements HarnessSession {
       onFault: (error) => queueMicrotask(() => this.#fault(error)),
       onSubagentEvent: (event) => this.handleTransportEvent(event),
       onAssistantStart: (message) => this.handleAssistantStart(message),
-      onAssistantSummary: (message) => this.handleAssistantCompletion(message),
+      onAssistantSummary: (messages) => this.handleAssistantSummary(messages),
       onUsage: (observation) => this.handleTransportUsage(observation),
       permissionMode: this.#permissionMode,
     });
@@ -2727,7 +2737,7 @@ export class OmpAdapter implements HarnessAdapter {
         onFault: (error) => session?.handleTransportFault(error),
         onSubagentEvent: (event) => session?.handleTransportEvent(event),
         onAssistantStart: (message) => session?.handleAssistantStart(message),
-        onAssistantSummary: (message) => session?.handleAssistantCompletion(message),
+        onAssistantSummary: (messages) => session?.handleAssistantSummary(messages),
         onUsage: (observation) => session?.handleTransportUsage(observation),
       });
       await transport.start();

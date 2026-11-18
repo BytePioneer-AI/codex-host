@@ -1186,15 +1186,13 @@ console.log(JSON.stringify({ reports }));`,
       onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 20, startedAtMs: null });
       onAssistantStart({ ...assistant, credentialId: 2 });
       expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
-      onAssistantSummary({ ...assistant, credentialId: 2 });
       onAssistantStart({ ...assistant, provider: "other", credentialId: 1 });
       expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 90 });
-      onUsage({
-        message: { ...assistant, credentialId: 2, stopReason: "error" },
-        completedAtMs: 30,
-        startedAtMs: null,
-      });
+      const failure = { ...assistant, provider: "other", credentialId: 1, stopReason: "error" };
+      onAssistantSummary([{ ...assistant, credentialId: 2 }, failure]);
       expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onAssistantSummary([{ ...assistant, credentialId: 2 }, assistant, failure]);
+      expect(await session.readAccountCredits?.()).toBeNull();
       onUsage({ message: { ...assistant, credentialId: 2 }, completedAtMs: 40, startedAtMs: null });
       expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
       onUsage({

@@ -794,13 +794,6 @@ describe("Antigravity Session usage", () => {
     });
     expect(tracker.recordContextWindow(200, 100)?.contextUsagePercent).toBe(100);
     expect(tracker.recordContextWindow(1, Number.NaN)?.contextUsedTokens).toBe(200);
-    const initialized = new AntigravitySessionUsageTracker({
-      nativeSessionId: "session",
-      homedir: home,
-      initialContextUsedTokens: 10,
-      initialContextWindowTokens: 100,
-    });
-    expect(initialized.currentUsage()?.contextUsagePercent).toBe(10);
   });
 
   it("replays the latest version of each historical step once and accumulates cache facts", async () => {

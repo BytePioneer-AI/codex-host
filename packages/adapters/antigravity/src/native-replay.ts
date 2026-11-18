@@ -1,92 +1,139 @@
 import type { AntigravityAcpEvent } from "./acp-types.js";
-import { AntigravityTransportError } from "./acp-types.js";
 import { nativeConversationDbPath } from "./fork.js";
-import { readProtoFields } from "./native-protobuf.js";
+import { readProtoFields, type ProtoField } from "./native-protobuf.js";
 
-interface ReplaySize {
-  users: number;
-  text: number;
-  thought: number;
-  tools: number;
+const USER_INPUT = 14;
+const PLANNER_RESPONSE = 15;
+const ERROR_MESSAGE = 17;
+const GENERIC_TOOL = 132;
+const DONE = 3;
+const ERROR = 7;
+const IN_FLIGHT = new Set([1, 2, 8, 9, 11]);
+
+function message(payload: unknown): ProtoField[] {
+  const fields = payload instanceof Uint8Array ? readProtoFields(payload) : null;
+  if (!fields) throw new Error("Invalid Antigravity history protobuf");
+  return fields;
 }
 
-/** Native user boundaries and planner payload sizes, including the final reply. */
-export async function readNativeReplaySize(sessionId: string, home: string): Promise<ReplaySize> {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(sessionId))
-    throw new AntigravityTransportError("protocolError", "Invalid native Session ID");
-  const { DatabaseSync } = await import("node:sqlite");
-  const db = new DatabaseSync(nativeConversationDbPath(sessionId, home), { readOnly: true });
-  const size: ReplaySize = { users: 0, text: 0, thought: 0, tools: 0 };
+function messageField(fields: readonly ProtoField[], number: number): Uint8Array | undefined {
+  const field = fields.find((entry) => entry.number === number && entry.wire === 2);
+  return field?.value instanceof Uint8Array ? field.value : undefined;
+}
+
+function nested(fields: readonly ProtoField[], number: number): ProtoField[] {
+  const payload = messageField(fields, number);
+  return payload ? message(payload) : [];
+}
+
+function textField(fields: readonly ProtoField[], number: number): string {
+  const bytes = messageField(fields, number);
+  return bytes ? Buffer.from(bytes).toString("utf8") : "";
+}
+
+function argsValue(raw: string): unknown {
+  if (!raw) return undefined;
   try {
-    for (const row of db
-      .prepare("SELECT step_type, step_payload FROM steps WHERE step_type IN (14, 15) ORDER BY idx")
-      .iterate()) {
-      if (row.step_type === 14) {
-        size.users++;
-        continue;
-      }
-      const planner =
-        row.step_payload instanceof Uint8Array
-          ? readProtoFields(row.step_payload)?.find((field) => field.number === 20)?.value
-          : undefined;
-      const fields = planner instanceof Uint8Array ? readProtoFields(planner) : null;
-      if (!fields)
-        throw new AntigravityTransportError(
-          "protocolError",
-          "Cannot verify Antigravity history replay",
-        );
-      for (const field of fields) {
-        if (!(field.value instanceof Uint8Array)) continue;
-        if (field.number === 1) size.text += Buffer.from(field.value).toString("utf8").length;
-        if (field.number === 3) size.thought += Buffer.from(field.value).toString("utf8").length;
-        if (field.number === 7) size.tools++;
-      }
-    }
-    return size;
-  } finally {
-    db.close();
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return raw;
   }
 }
 
-/** agy can answer session/load before its replay notifications have drained. */
-export function nativeReplayCompletion(expected: ReplaySize): {
-  complete: Promise<void>;
-  observe: (event: AntigravityAcpEvent) => void;
-} {
-  const received = {
-    users: 0,
-    text: 0,
-    thought: 0,
-    tools: 0,
-    usage: false,
-    sessionInfo: false,
+/** Read committed history in step order and feed the same event shapes as the history projector. */
+export async function readNativeHistory(
+  sessionId: string,
+  home: string,
+): Promise<{ events: AntigravityAcpEvent[]; turnCount: number }> {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(sessionId)) throw new Error("Invalid native Session ID");
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(nativeConversationDbPath(sessionId, home), { readOnly: true });
+  const events: AntigravityAcpEvent[] = [];
+  const pendingCalls = new Set<string>();
+  let turnCount = 0;
+  const append = (type: "agent.text" | "agent.thought", text: string) => {
+    if (text) events.push({ type, text: events.at(-1)?.type === type ? `\n\n${text}` : text });
   };
-  let resolve!: () => void;
-  const complete = new Promise<void>((done) => {
-    resolve = done;
-  });
-  const check = () => {
-    if (
-      received.users === expected.users &&
-      received.text === expected.text &&
-      received.thought === expected.thought &&
-      received.tools === expected.tools &&
-      received.usage &&
-      received.sessionInfo
-    )
-      resolve();
-  };
-  check();
-  return {
-    complete,
-    observe(event) {
-      if (event.type === "user.text") received.users++;
-      if (event.type === "agent.text") received.text += event.text.length;
-      if (event.type === "agent.thought") received.thought += event.text.length;
-      if (event.type === "tool.call") received.tools++;
-      if (event.type === "usage.context") received.usage = true;
-      if (event.type === "session.info") received.sessionInfo = true;
-      check();
-    },
-  };
+  try {
+    db.exec("BEGIN");
+    if (db.prepare("PRAGMA user_version").get()?.user_version !== 1)
+      throw new Error("Unsupported Antigravity history database version");
+    for (const row of db
+      .prepare(
+        `SELECT step_type, status, step_payload FROM steps
+       WHERE step_type IN (${USER_INPUT}, ${PLANNER_RESPONSE}, ${ERROR_MESSAGE}, ${GENERIC_TOOL})
+       ORDER BY idx`,
+      )
+      .iterate()) {
+      if (row.step_type === USER_INPUT) turnCount++;
+      if (IN_FLIGHT.has(Number(row.status))) continue;
+      const step = message(row.step_payload);
+      const number =
+        row.step_type === USER_INPUT
+          ? 19
+          : row.step_type === PLANNER_RESPONSE
+            ? 20
+            : row.step_type === ERROR_MESSAGE
+              ? 24
+              : 140;
+      const body = message(messageField(step, number));
+      switch (row.step_type) {
+        case USER_INPUT: {
+          const items = body.flatMap((field) =>
+            field.number === 3 && field.wire === 2 ? [textField(message(field.value), 1)] : [],
+          );
+          const text = items.join("") || textField(body, 2) || textField(body, 1);
+          pendingCalls.clear();
+          if (text) events.push({ type: "user.text", text });
+          break;
+        }
+        case PLANNER_RESPONSE: {
+          append("agent.thought", textField(body, 3));
+          append("agent.text", textField(body, 1));
+          for (const field of body) {
+            if (field.number !== 7 || field.wire !== 2) continue;
+            const call = message(field.value);
+            const toolCallId = textField(call, 1);
+            const name = textField(call, 2);
+            if (!toolCallId || !name) continue;
+            pendingCalls.add(toolCallId);
+            events.push({
+              type: "tool.call",
+              toolCallId,
+              name,
+              args: argsValue(textField(call, 3)),
+            });
+          }
+          break;
+        }
+        case ERROR_MESSAGE: {
+          const warning = textField(nested(body, 3), 2);
+          if (warning) append("agent.text", `⚠ ${warning}`);
+          break;
+        }
+        case GENERIC_TOOL: {
+          const toolCallId = textField(nested(nested(step, 5), 4), 1);
+          if (!pendingCalls.delete(toolCallId)) break;
+          const error = nested(step, 31);
+          const output =
+            textField(nested(body, 2), 1) ||
+            textField(error, 3) ||
+            textField(error, 2) ||
+            textField(error, 1);
+          const status =
+            row.status === DONE ? "completed" : row.status === ERROR ? "failed" : "cancelled";
+          events.push({
+            type: "tool.update",
+            toolCallId,
+            status,
+            ...(output ? { rawOutput: output } : {}),
+          });
+          break;
+        }
+      }
+    }
+    return { events, turnCount };
+  } finally {
+    db.close();
+  }
 }

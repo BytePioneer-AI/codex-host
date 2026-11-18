@@ -600,7 +600,7 @@ export function projectReplayedEventsToTurns(params: {
   const begin = () => {
     active?.tracker.finishPending({
       status: "cancelled",
-      reason: "No terminal tool status in ACP replay",
+      reason: "No terminal tool status in native history",
     });
     const index = turns.length;
     const turnId = hostTurnIdSchema.parse(`turn-${index}`);
@@ -619,7 +619,7 @@ export function projectReplayedEventsToTurns(params: {
       }),
       input: [],
       items: [],
-      outcome: { status: "unknown", reason: "ACP replay does not include prompt stop reasons" },
+      outcome: { status: "unknown", reason: "Native history does not include prompt stop reasons" },
     };
     turns.push(turn);
     sequence = 0;
@@ -675,7 +675,7 @@ export function projectReplayedEventsToTurns(params: {
   }
   active?.tracker.finishPending({
     status: "cancelled",
-    reason: "No terminal tool status in ACP replay",
+    reason: "No terminal tool status in native history",
   });
   return turns;
 }

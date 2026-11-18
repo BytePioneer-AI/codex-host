@@ -2377,10 +2377,13 @@ export class AppServerHost {
       ];
       if (serviceTiers.includes("ultrafast")) {
         const suffix = " · Ultrafast";
+        const label = model.label
+          .slice(0, HARNESS_MODEL_LABEL_MAX_LENGTH - suffix.length)
+          .replace(/[\uD800-\uDBFF]$/u, "");
         selections.push({
           ...model,
           ref: encodeOfficialCodexModelRef(candidate.model, "ultrafast"),
-          label: model.label.slice(0, HARNESS_MODEL_LABEL_MAX_LENGTH - suffix.length) + suffix,
+          label: label + suffix,
         });
       }
       return selections;

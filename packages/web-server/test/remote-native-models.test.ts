@@ -12,6 +12,24 @@ import {
   type RemoteControlsEntry,
 } from "../src/remote-session-controls.ts";
 
+it("uses native model and Thinking settings when the confirmed reference is malformed", () => {
+  const controls = parseRemoteControls({
+    configuration: {
+      owner: "codex",
+      locked: true,
+      effectiveModel: { id: "codex-model-v1." },
+      effectiveThinkingOptionId: "low",
+    },
+    nativeSettings: { model: "gpt-other", reasoningEffort: "high" },
+  });
+  assert.deepEqual(controls.configuration, {
+    owner: "codex",
+    locked: true,
+    effectiveModel: encodeOfficialCodexModelRef("gpt-other"),
+    effectiveThinkingOptionId: "high",
+  });
+});
+
 it("stops a combined selection when refresh moves to another connection", async () => {
   const entry: RemoteControlsEntry = {
     epoch: "original",

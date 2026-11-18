@@ -6,7 +6,10 @@ import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js"
 import { updateNativeThreadSettings } from "../src/codex-runtime/native-thread-controls.js";
 import { createFixture, stopFixture } from "./app-server-host-fixture.js";
 import type { DelegationControlApi } from "../src/delegation-types.js";
-import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  HARNESS_MODEL_LABEL_MAX_LENGTH,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -15,6 +18,9 @@ afterEach(async () => {
 });
 
 it("advertises Fast and Ultrafast only from the official service tiers", async () => {
+  const suffix = " · Ultrafast";
+  const labelPrefix = "a".repeat(HARNESS_MODEL_LABEL_MAX_LENGTH - suffix.length - 1);
+  const longLabel = `${labelPrefix}😀 tail`;
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));
   await fixture.ready;
@@ -40,7 +46,12 @@ it("advertises Fast and Ultrafast only from the official service tiers", async (
                 { model: "flex-only", serviceTiers: [{ id: "flex", name: "Fast" }] },
                 { model: "legacy-fast", additionalSpeedTiers: ["fast", "priority", "ultrafast"] },
                 { model: "no-tiers" },
-              ].map((model, i) => ({ ...model, displayName: model.model, isDefault: i === 0 })),
+                {
+                  model: "long-label",
+                  displayName: longLabel,
+                  serviceTiers: [{ id: "ultrafast" }],
+                },
+              ].map((model, i) => ({ displayName: model.model, ...model, isDefault: i === 0 })),
             }
           : { data: [] };
       fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -66,6 +77,11 @@ it("advertises Fast and Ultrafast only from the official service tiers", async (
           { ref: encodeOfficialCodexModelRef("flex-only") },
           { ref: encodeOfficialCodexModelRef("legacy-fast") },
           { ref: encodeOfficialCodexModelRef("no-tiers") },
+          { ref: encodeOfficialCodexModelRef("long-label"), label: longLabel },
+          {
+            ref: encodeOfficialCodexModelRef("long-label", "ultrafast"),
+            label: labelPrefix + suffix,
+          },
         ],
       },
     },

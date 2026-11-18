@@ -58,15 +58,20 @@ export function parseRemoteControls(snapshot: RemoteControlsSnapshot): RemoteCon
   if (configuration.success && configuration.data.owner === "codex" && native.success) {
     try {
       const confirmed = configuration.data.effectiveModel;
-      const effectiveModel =
-        native.data.serviceTier === undefined &&
-        confirmed &&
-        decodeOfficialCodexModelRef(confirmed) === native.data.model
-          ? confirmed
-          : encodeOfficialCodexModelRef(native.data.model, native.data.serviceTier);
+      let effectiveModel: typeof confirmed;
+      if (native.data.serviceTier === undefined && confirmed) {
+        try {
+          if (decodeOfficialCodexModelRef(confirmed) === native.data.model) {
+            effectiveModel = confirmed;
+          }
+        } catch {
+          /* Use the native settings if the confirmed reference is invalid. */
+        }
+      }
       const parsed = threadInspectionSchema.safeParse({
         ...configuration.data,
-        effectiveModel,
+        effectiveModel:
+          effectiveModel ?? encodeOfficialCodexModelRef(native.data.model, native.data.serviceTier),
         ...(native.data.reasoningEffort
           ? { effectiveThinkingOptionId: native.data.reasoningEffort }
           : {}),

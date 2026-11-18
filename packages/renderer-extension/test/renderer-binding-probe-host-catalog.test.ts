@@ -37,6 +37,17 @@ it("filters Desktop internal environments from connection hosts", async () => {
   expect(["durable", "env_e_internal"].filter(isListedConnectionHost)).toEqual([]);
 });
 
+const motionReentryState = vi.hoisted(() => ({
+  ready: null as Promise<void> | null,
+  dispose: vi.fn(),
+}));
+vi.mock("../src/renderer-motion-reentry.js", () => ({
+  installRendererMotionReentry: () => ({
+    ready: motionReentryState.ready ?? Promise.resolve(),
+    dispose: motionReentryState.dispose,
+  }),
+}));
+
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,
@@ -264,6 +275,8 @@ function installFakeBrowser(): void {
   testState.prewarmClears = 0;
   testState.notifyMutations = null;
   testState.animationFrames = [];
+  motionReentryState.ready = null;
+  motionReentryState.dispose.mockClear();
   const window_ = {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
@@ -2260,5 +2273,44 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(testState.renderedModelViews).not.toContainEqual(
       expect.objectContaining({ status: "error" }),
     );
+  });
+});
+
+describe("Renderer binding Motion reentry installation", () => {
+  it("reports a failed installation once and releases it on dispose", async () => {
+    installFakeBrowser();
+    const error = new Error("Native Motion VisualElement is unavailable");
+    motionReentryState.ready = Promise.reject(error);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const local = {
+      listHarnessPlugins: vi.fn(async () => ({ plugins: [] })),
+      currentHostId: () => "local",
+      knownHostIds: () => ["local"],
+      clientForHost: () => local,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: null },
+      undefined,
+      undefined,
+      local as never,
+    );
+    const reported = () =>
+      consoleError.mock.calls.filter(
+        ([message]) => message === "codexhost Motion reentry installation failed",
+      );
+    await vi.waitFor(() => expect(reported()).toHaveLength(1));
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: null },
+      undefined,
+      undefined,
+      local as never,
+    );
+    await Promise.resolve();
+    expect(reported()).toHaveLength(1);
+
+    probe.dispose();
+    expect(motionReentryState.dispose).toHaveBeenCalledOnce();
   });
 });

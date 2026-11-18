@@ -325,9 +325,7 @@ describe("Renderer binding Codex draft quota", () => {
     observedAt: null,
   });
 
-  async function mountWithAccountClient(
-    accountClient: AccountClient,
-  ): Promise<(replacement?: AccountClient) => void> {
+  async function mountWithAccountClient(accountClient: AccountClient) {
     const hostDefaults = {
       listHarnessPlugins: async () => ({ plugins: [] }),
       inspectThread: async () => {
@@ -337,8 +335,11 @@ describe("Renderer binding Codex draft quota", () => {
     let host = { ...hostDefaults, ...accountClient };
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    const replaceClient = (replacement: AccountClient): void => {
+      host = { ...hostDefaults, ...replacement };
+    };
     const setAdapter = (replacement?: AccountClient): void => {
-      if (replacement) host = { ...hostDefaults, ...replacement };
+      if (replacement) replaceClient(replacement);
       probe.setAdapter(
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
         undefined,
@@ -347,7 +348,33 @@ describe("Renderer binding Codex draft quota", () => {
       );
     };
     setAdapter();
-    return setAdapter;
+    return { setAdapter, replaceClient };
+  }
+
+  function flushFrame(): void {
+    for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+  }
+
+  function scanAfterMutation(): void {
+    const notify = testState.notifyMutations;
+    assert(notify);
+    notify([{ type: "attributes", target: testState.composer } as unknown as MutationRecord]);
+    flushFrame();
+  }
+
+  function submitDraft(): void {
+    const submit = testState.documentListeners.get("submit");
+    assert(submit);
+    const event = new Event("submit", { cancelable: true });
+    submit(event);
+    expect(event.defaultPrevented).toBe(false);
+  }
+
+  function resumeDraft(): void {
+    const beforeInput = testState.documentListeners.get("beforeinput");
+    assert(beforeInput);
+    beforeInput(new Event("beforeinput"));
+    flushFrame();
   }
 
   it("does not retry the account list on DOM changes for an existing Thread with failed ownership", async () => {
@@ -358,10 +385,7 @@ describe("Renderer binding Codex draft quota", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     const readsBeforeScan = listCodexAccounts.mock.calls.length;
-    const notify = testState.notifyMutations;
-    assert(notify);
-    notify([{ type: "attributes", target: testState.composer } as unknown as MutationRecord]);
-    for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    scanAfterMutation();
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(listCodexAccounts).toHaveBeenCalledTimes(readsBeforeScan);
@@ -410,7 +434,7 @@ describe("Renderer binding Codex draft quota", () => {
         .fn(async () => currentQuota)
         .mockReturnValueOnce(oldQuota.promise);
       let notifyAccount: ((snapshot: CodexAccountListResult) => void) | undefined;
-      const setAdapter = await mountWithAccountClient({
+      const { setAdapter } = await mountWithAccountClient({
         listCodexAccounts: async () => account,
         inspectCodexAccountUsage,
         subscribeCodexAccounts: (listener) => {
@@ -440,7 +464,7 @@ describe("Renderer binding Codex draft quota", () => {
     const oldQuota = Promise.withResolvers<CodexAccountUsageResult>();
     const initial = quota(8);
     const inspectCodexAccountUsage = vi.fn(async () => initial);
-    const setAdapter = await mountWithAccountClient({
+    const { setAdapter } = await mountWithAccountClient({
       listCodexAccounts: async () => account,
       inspectCodexAccountUsage,
     });
@@ -485,15 +509,8 @@ describe("Renderer binding Codex draft quota", () => {
       },
     });
     await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
-    const submit = testState.documentListeners.get("submit");
-    const beforeInput = testState.documentListeners.get("beforeinput");
-    assert(submit && beforeInput && notifyAccount);
-    const flushFrame = () => {
-      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
-    };
-    const event = new Event("submit", { cancelable: true });
-    submit(event);
-    expect(event.defaultPrevented).toBe(false);
+    assert(notifyAccount);
+    submitDraft();
     currentAccount = {
       ...account,
       currentAccountId: "new-account",
@@ -506,16 +523,74 @@ describe("Renderer binding Codex draft quota", () => {
     expect(testState.renderedCredits.at(-1)).toBeNull();
     expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
 
-    beforeInput(new Event("beforeinput"));
-    flushFrame();
+    resumeDraft();
     await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
-    const notify = testState.notifyMutations;
-    assert(notify);
-    notify([{ type: "attributes", target: testState.composer } as unknown as MutationRecord]);
-    flushFrame();
+    scanAfterMutation();
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
     expect(inspectCodexAccountUsage).toHaveBeenLastCalledWith({ accountId: "new-account" });
+  });
+
+  it.each([
+    { completion: "during", expectedUsage: 18, expectedReads: 2 },
+    { completion: "after", expectedUsage: 8, expectedReads: 1 },
+    { completion: "failed", expectedUsage: undefined, expectedReads: 1 },
+  ] as const)(
+    "reconciles quota on resuming an abandoned submission ($completion)",
+    async ({ completion, expectedUsage, expectedReads }) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const firstQuota = Promise.withResolvers<CodexAccountUsageResult>();
+      const inspectCodexAccountUsage = vi
+        .fn(async () => quota(18))
+        .mockReturnValueOnce(firstQuota.promise);
+      await mountWithAccountClient({
+        listCodexAccounts: async () => account,
+        inspectCodexAccountUsage,
+      });
+      await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1));
+      submitDraft();
+      if (completion !== "after") {
+        if (completion === "during") firstQuota.resolve(quota(8));
+        else firstQuota.reject(new Error("Usage query failed"));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      flushFrame();
+      expect(testState.renderedCredits.at(-1)).toBeNull();
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+      resumeDraft();
+      if (completion === "after") firstQuota.resolve(quota(8));
+      await vi.waitFor(() =>
+        expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(expectedUsage),
+      );
+      scanAfterMutation();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(expectedReads);
+    },
+  );
+
+  it("invalidates old quota when the Host client changes during submission", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const { replaceClient } = await mountWithAccountClient({
+      listCodexAccounts: async () => account,
+      inspectCodexAccountUsage: async () => quota(8),
+    });
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+    submitDraft();
+    const listCodexAccounts = vi.fn(async () => account);
+    const inspectCodexAccountUsage = vi.fn(async () => quota(18));
+    replaceClient({ listCodexAccounts, inspectCodexAccountUsage });
+    scanAfterMutation();
+    expect(testState.renderedCredits.at(-1) === null).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(listCodexAccounts).not.toHaveBeenCalled();
+    expect(inspectCodexAccountUsage).not.toHaveBeenCalled();
+
+    resumeDraft();
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
   });
 });
 

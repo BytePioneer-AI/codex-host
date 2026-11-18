@@ -607,6 +607,13 @@ interface MountedComposer {
   commandRequestGeneration: number;
 }
 
+interface DraftUsageRequest {
+  client: RendererModelClient | null;
+  account: RendererCodexAccountState["usageAccount"];
+  generation: number;
+  status: "pending" | "settled" | "deferred";
+}
+
 interface MountedCatalogRequest {
   client: RendererModelClient;
   hostId: string;
@@ -778,15 +785,7 @@ export function installRendererBindingProbe(
   // composerId belongs to the logical draft and survives DOM replacement.
   const pendingDefaultPreferences = new Map<string, boolean>();
   const catalogRequests = new WeakMap<MountedComposer, MountedCatalogRequest>();
-  const draftUsageRequests = new WeakMap<
-    MountedComposer,
-    {
-      client: RendererModelClient | null;
-      account: RendererCodexAccountState["usageAccount"];
-      generation: number;
-      pending: boolean;
-    }
-  >();
+  const draftUsageRequests = new WeakMap<MountedComposer, DraftUsageRequest>();
   const pendingReplacements = new Map<Element, PendingComposerReplacement>();
   let disposed = false;
   const disposeReasoningSoftWrap = installReasoningTranscriptSoftWrap(document);
@@ -1280,9 +1279,9 @@ export function installRendererBindingProbe(
       previous?.generation === mounted.usageRequestGeneration &&
       previous.client === client &&
       previous.account === account;
-    if (sameScope && previous.pending) return;
+    if (sameScope && previous.status === "pending") return;
     const generation = ++mounted.usageRequestGeneration;
-    const request = { client, account, generation, pending: true };
+    const request: DraftUsageRequest = { client, account, generation, status: "pending" };
     draftUsageRequests.set(mounted, request);
     mounted.draftUsageClient = null;
     // Keep the last snapshot on screen while the same Codex Account refreshes.
@@ -1297,8 +1296,7 @@ export function installRendererBindingProbe(
       mounted.composer.isConnected &&
       mountedByComposer.get(mounted.composer) === mounted &&
       mounted.usageRequestGeneration === generation &&
-      controller.get(mounted.composer).agent === agent &&
-      canRefreshDraftUsage(mounted);
+      controller.get(mounted.composer).agent === agent;
     try {
       if (!client) return;
       if (agent === "codex") {
@@ -1312,6 +1310,10 @@ export function installRendererBindingProbe(
           result.accountId !== account.accountId
         )
           return;
+        if (!canRefreshDraftUsage(mounted)) {
+          if (controller.isSubmissionPending(mounted.composer)) request.status = "deferred";
+          return;
+        }
         mounted.draftUsageAccount = account;
         mounted.usage = result.usage;
         mounted.accountCredits = result.accountCredits ?? null;
@@ -1321,7 +1323,7 @@ export function installRendererBindingProbe(
           harnessId: harnessIdSchema.parse(agent),
           refresh: true,
         });
-        if (!isCurrent() || result.harnessId !== agent) return;
+        if (!isCurrent() || !canRefreshDraftUsage(mounted) || result.harnessId !== agent) return;
         mounted.accountCredits = result.account?.credits ?? null;
       }
       mounted.draftUsageClient = client;
@@ -1329,7 +1331,7 @@ export function installRendererBindingProbe(
     } catch {
       // A failed refresh leaves the current snapshot intact. Scope changes clear it above.
     } finally {
-      request.pending = false;
+      if (request.status === "pending") request.status = "settled";
     }
   };
 
@@ -2732,18 +2734,19 @@ export function installRendererBindingProbe(
     reloadMountedOwnershipForHost();
     // Draft quota follows the concrete client, including connections without notifications.
     for (const mounted of mountedByComposer.values()) {
-      if (!canRefreshDraftUsage(mounted)) continue;
       const agent = controller.get(mounted.composer).agent;
+      const isCodexDraft =
+        agent === "codex" && threadIdFromComposerModelTarget(mounted.modelTarget) === null;
+      const account = isCodexDraft ? composerCodexAccounts(mounted.composer)?.usageAccount : null;
+      if (isCodexDraft && mounted.draftUsageAccount && mounted.draftUsageAccount !== account) {
+        renderMounted(mounted);
+      }
+      if (!canRefreshDraftUsage(mounted)) continue;
       const request = draftUsageRequests.get(mounted);
-      const account =
-        agent === "codex" ? composerCodexAccounts(mounted.composer)?.usageAccount : null;
-      // The Account can change while submission prevents the draft from refreshing.
-      if (account && request && request.account !== account) {
+      // Submission can defer a ready Account's quota refresh or its reply.
+      if (account && request && (request.account !== account || request.status === "deferred")) {
         void refreshDraftUsage(mounted);
         continue;
-      }
-      if (mounted.draftUsageAccount && mounted.draftUsageAccount !== account) {
-        renderMounted(mounted);
       }
       const client = composerClient(mounted);
       if (
@@ -2751,7 +2754,7 @@ export function installRendererBindingProbe(
         (!request ||
           request.client !== client ||
           request.generation !== mounted.usageRequestGeneration ||
-          (retryDraftUsage && !request.pending))
+          (retryDraftUsage && request.status !== "pending"))
       ) {
         if (agent === "codex") void loadCodexAccountsForHost(mounted.hostId);
         else void refreshDraftUsage(mounted);

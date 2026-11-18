@@ -195,7 +195,7 @@ function historyEnvironment(scenario: string): NodeJS.ProcessEnv {
             3,
             Buffer.concat([
               bytes(1, Buffer.from("Agent execution terminated due to error.")),
-              bytes(2, Buffer.from("Detail warning")),
+              bytes(2, Buffer.from("Full executor error")),
               bytes(9, Buffer.from("Detail warning")),
             ]),
           ),

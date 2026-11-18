@@ -91,12 +91,18 @@ export function fitClaudeThinkingOptionId(
 ): HarnessThinkingOptionId {
   if (!supported || supported.includes(requested)) return requested;
   const ceiling = CLAUDE_EFFORT_ORDER.indexOf(requested === "ultracode" ? "xhigh" : requested);
-  return (
-    supported.findLast((id) => {
-      const rank = CLAUDE_EFFORT_ORDER.indexOf(id);
-      return rank >= 0 && rank <= ceiling;
-    }) ?? CLAUDE_DEFAULT_THINKING_OPTION_ID
-  );
+  // Rank by effort, not by position: the caller's list is a set of supported
+  // levels, and its order is not part of the contract.
+  let best = CLAUDE_DEFAULT_THINKING_OPTION_ID;
+  let bestRank = -1;
+  for (const id of supported) {
+    const rank = CLAUDE_EFFORT_ORDER.indexOf(id);
+    if (rank > bestRank && rank <= ceiling) {
+      best = id;
+      bestRank = rank;
+    }
+  }
+  return best;
 }
 
 export function parseClaudeThinkingOptionId(value: unknown): HarnessThinkingOptionId {

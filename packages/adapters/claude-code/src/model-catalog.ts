@@ -283,11 +283,21 @@ function uniqueDisplayLabels(rows: Array<z.infer<typeof modelInfoSchema>>): Map<
   return labels;
 }
 
+/**
+ * `supportedEffortLevels` is a set. Deduplicate and order it so two rows for one
+ * Model that report the same levels in a different order merge instead of
+ * failing the whole catalog as conflicting.
+ */
+function canonicalRow(row: z.infer<typeof modelInfoSchema>): z.infer<typeof modelInfoSchema> {
+  if (row.supportedEffortLevels === undefined) return row;
+  return { ...row, supportedEffortLevels: [...new Set(row.supportedEffortLevels)].sort() };
+}
+
 function normalizeRows(value: unknown): Array<z.infer<typeof modelInfoSchema>> {
   if (!Array.isArray(value)) throw new Error("Claude Code Model catalog is not an array");
   const byValue = new Map<string, z.infer<typeof modelInfoSchema>>();
   for (const nativeRow of value) {
-    const row = modelInfoSchema.parse(nativeRow);
+    const row = canonicalRow(modelInfoSchema.parse(nativeRow));
     const existing = byValue.get(row.value);
     if (existing && JSON.stringify(existing) !== JSON.stringify(row)) {
       throw new Error("Claude Code Model catalog contains conflicting selectable values");

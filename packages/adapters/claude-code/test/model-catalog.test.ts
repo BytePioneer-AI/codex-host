@@ -208,6 +208,28 @@ describe("Claude Code runtime Model catalog", () => {
     expect(fit("off", ["auto", "low"])).toBe("auto");
     expect(fit("xhigh", ["off", "auto"])).toBe("auto");
     expect(fit("xhigh", undefined)).toBe("xhigh");
+    // The supported levels are a set: the highest one at or below the requested
+    // effort wins whatever order the caller lists them in.
+    expect(fit("max", ["auto", "high", "low"])).toBe("high");
+    expect(fit("max", ["low", "auto", "high"])).toBe("high");
+    expect(fit("xhigh", ["xhigh", "auto", "medium"])).toBe("xhigh");
+  });
+
+  it("merges duplicate Model rows whose effort levels differ only in order", () => {
+    const normalized = normalizeClaudeModelCatalog(
+      snapshot([
+        { value: "sonnet", displayName: "Sonnet", supportedEffortLevels: ["low", "high"] },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          supportedEffortLevels: ["high", "low", "low"],
+        },
+      ]),
+    );
+    expect(
+      normalized.catalog.models.find(({ ref }) => decodeClaudeModelRef(ref) === "sonnet")
+        ?.supportedThinkingOptionIds,
+    ).toEqual(["off", "auto", "low", "high"]);
   });
 
   it("rejects unavailable, empty, malformed, conflicting, and unbounded observations", () => {

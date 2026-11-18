@@ -609,6 +609,29 @@ describe("history replay", () => {
     expect(result[0]?.items[0]?.outcome.status).toBe("cancelled");
     expect(result[0]?.outcome.status).toBe("unknown");
   });
+  it("merges consecutive replayed agent text into one completed Item", () => {
+    const [turn] = projectReplayedEventsToTurns({
+      nativeSessionId: "native",
+      cwd,
+      events: [
+        { type: "user.text", text: "question" },
+        { type: "agent.text", text: "answer " },
+        { type: "agent.text", text: "before restart" },
+        { type: "agent.text", text: "after restart" },
+      ],
+    });
+    expect(turn?.input).toEqual([{ type: "text", text: "question" }]);
+    expect(turn?.items).toEqual([
+      {
+        item: {
+          type: "agentMessage",
+          itemId: "turn-0-item-0",
+          text: "answer before restartafter restart",
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+  });
 });
 
 it("merges live commands with built-ins and ignores duplicates/invalid names", () => {

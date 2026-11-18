@@ -330,6 +330,7 @@ export class AntigravitySession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #lastCompletedTurnId: HostTurnId | undefined;
   #background: BackgroundEpisode | undefined;
+  #postPromptBackground: Array<{ type: "agentMessage" | "reasoning"; text: string }> = [];
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
   #usageWork: Promise<void> = Promise.resolve();
@@ -471,10 +472,6 @@ export class AntigravitySession implements HarnessSession {
         );
       }
       this.#initializeUsage(opened.sessionId, replayedEvents);
-      // A fresh open replays history through session/load; the replayed turns
-      // supersede any live idle-output state from the previous connection.
-      this.#background = undefined;
-      this.#lastCompletedTurnId = undefined;
       transport.setSessionEventHandler((event) => {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
@@ -823,6 +820,7 @@ export class AntigravitySession implements HarnessSession {
             !command.input.some((part) => typeof part.text === "string" && part.text.trim())
           )
             return err("invalidRequest", "Prompt and Turn ID must not be empty");
+          this.#postPromptBackground.length = 0;
           const turn: ActiveTurn = { turnId: command.turnId, cancelled: false, ended: false };
           this.#active = turn;
           // A successor prompt ends the idle-output window of the previous Turn
@@ -924,6 +922,7 @@ export class AntigravitySession implements HarnessSession {
             thinkingOptionId: this.#state.effectiveThinkingOptionId,
             permissionModeId: command.permissionModeId,
           };
+          this.#settleBackground({ status: "succeeded" });
           old.setSessionEventHandler(null);
           await old.close();
           this.#transport = undefined;
@@ -1130,7 +1129,20 @@ export class AntigravitySession implements HarnessSession {
   /** Idle Harness output lands on the most recently completed user Turn. */
   #appendBackgroundText(type: "agentMessage" | "reasoning", text: string): void {
     if (!text) return;
-    if (this.#active || this.#opening || this.#configuring || this.#historyOperation) return;
+    if (this.#active) {
+      // prompt() has returned but the Turn still awaits its usage observation.
+      if (
+        !this.#active.promptSubmitted &&
+        !this.#active.ended &&
+        !this.#active.cancelled &&
+        !this.#opening &&
+        !this.#configuring &&
+        !this.#historyOperation
+      )
+        this.#postPromptBackground.push({ type, text });
+      return;
+    }
+    if (this.#opening || this.#configuring || this.#historyOperation) return;
     const turnId = this.#lastCompletedTurnId;
     if (!turnId) {
       // No completed Turn to attach to (e.g. tail output after resume); the
@@ -1194,6 +1206,12 @@ export class AntigravitySession implements HarnessSession {
           : {}),
       outcome,
     });
+    if (outcome.status === "succeeded" && !turn.cancelled && !this.#closed && !this.#faulted) {
+      for (const entry of this.#postPromptBackground.splice(0))
+        this.#appendBackgroundText(entry.type, entry.text);
+    } else {
+      this.#postPromptBackground.length = 0;
+    }
   }
   #permission(
     turn: ActiveTurn,
@@ -1319,6 +1337,7 @@ export class AntigravitySession implements HarnessSession {
     if (this.#closed || this.#faulted) return;
     this.#faulted = true;
     this.#abort.abort();
+    this.#postPromptBackground.length = 0;
     this.#closeInteractions("cancelled");
     if (this.#active)
       this.#finish(this.#active, { status: "failed", error: normalizeAntigravityError(error) });
@@ -1339,6 +1358,7 @@ export class AntigravitySession implements HarnessSession {
   async #close(): Promise<void> {
     this.#closed = true;
     this.#abort.abort();
+    this.#postPromptBackground.length = 0;
     this.#closeInteractions("cancelled");
     // The native transcript persists what was already delivered.
     this.#settleBackground({ status: "succeeded" });

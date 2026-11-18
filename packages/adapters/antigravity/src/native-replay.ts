@@ -10,6 +10,10 @@ interface ReplaySize {
   tools: number;
 }
 
+function countWithoutWhitespace(value: string): number {
+  return value.replace(/\s+/gu, "").length;
+}
+
 /** Native user boundaries and planner payload sizes, including the final reply. */
 export async function readNativeReplaySize(sessionId: string, home: string): Promise<ReplaySize> {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(sessionId))
@@ -37,8 +41,10 @@ export async function readNativeReplaySize(sessionId: string, home: string): Pro
         );
       for (const field of fields) {
         if (!(field.value instanceof Uint8Array)) continue;
-        if (field.number === 1) size.text += Buffer.from(field.value).toString("utf8").length;
-        if (field.number === 3) size.thought += Buffer.from(field.value).toString("utf8").length;
+        if (field.number === 1)
+          size.text += countWithoutWhitespace(Buffer.from(field.value).toString("utf8"));
+        if (field.number === 3)
+          size.thought += countWithoutWhitespace(Buffer.from(field.value).toString("utf8"));
         if (field.number === 7) size.tools++;
       }
     }
@@ -72,8 +78,8 @@ export function nativeReplayCompletion(expected: ReplaySize): {
     complete,
     observe(event) {
       if (event.type === "user.text") received.users++;
-      if (event.type === "agent.text") received.text += event.text.length;
-      if (event.type === "agent.thought") received.thought += event.text.length;
+      if (event.type === "agent.text") received.text += countWithoutWhitespace(event.text);
+      if (event.type === "agent.thought") received.thought += countWithoutWhitespace(event.text);
       if (event.type === "tool.call") received.tools++;
       check();
     },

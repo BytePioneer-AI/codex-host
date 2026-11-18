@@ -48,7 +48,7 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     update({sessionUpdate:'agent_thought_chunk',content:{type:'text',text:'Thinking'}},req.params.sessionId);
     update({sessionUpdate:'tool_call',toolCallId:'old-tool',name:'view_file',args:{path:'a'},status:'completed'},req.params.sessionId);
     const tail = () => {
-      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:scenario === 'split-history' ? 'swer' : 'Answer'}},req.params.sessionId);
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:scenario === 'split-history' ? 'swer' : scenario === 'separator-history' ? '\\n\\nAnswer' : 'Answer'}},req.params.sessionId);
       update({sessionUpdate:'usage_update',used:40,size:1000},req.params.sessionId);
       update({sessionUpdate:'session_info_update',title:'History'},req.params.sessionId);
     };
@@ -313,6 +313,20 @@ describe("native ACP stdio transport", () => {
       expect(sessionEvents).toEqual([]);
     },
   );
+  it("accepts replay whitespace that agy prepends after an idle wake", async () => {
+    const value = transport("separator-history", {
+      environment: historyEnvironment("separator-history"),
+      commandTimeoutMs: 500,
+    });
+    const loaded = await value.openSession({ kind: "load", sessionId: "saved", cwd: "/repo" });
+    expect(loaded.opened.sessionId).toBe("saved");
+    expect(
+      loaded.replayedEvents
+        .filter((event) => event.type === "agent.text")
+        .map((event) => event.text)
+        .join(""),
+    ).toBe("\n\nAnswer");
+  });
   it("rejects a truncated replay instead of publishing a successful partial snapshot", async () => {
     const value = transport("missing-history", {
       environment: historyEnvironment("missing-history"),
@@ -554,6 +568,6 @@ describe("native ACP stdio transport", () => {
     value.setSessionEventHandler((event) => sessionEvents.push(event));
     await value.prompt([], handler(promptEvents));
     expect(promptEvents).toContainEqual({ type: "agent.text", text: expect.any(String) });
-    expect(sessionEvents).not.toContainEqual({ type: "agent.text" });
+    expect(sessionEvents).not.toContainEqual(expect.objectContaining({ type: "agent.text" }));
   });
 });

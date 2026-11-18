@@ -1598,4 +1598,97 @@ describe("Antigravity idle background output episodes", () => {
       expect(settledTexts).toEqual(["one two", " pondering"]);
     });
   });
+
+  it("settles the open idle Item and keeps its Turn across a Skip permissions restart", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.text", text: "before restart" });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.background.started",
+          turnId: "t1",
+          item: expect.objectContaining({ type: "agentMessage" }),
+        }),
+      ),
+    );
+
+    expect(
+      (
+        await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: mode("dangerously-skip-permissions"),
+        })
+      ).ok,
+    ).toBe(true);
+    expect(transports).toHaveLength(2);
+    expect(events(outputs).find((event) => event.type === "item.completed")).toMatchObject({
+      turnId: "t1",
+      snapshot: {
+        item: { type: "agentMessage", text: "before restart" },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transports[1]?.eventHandler?.({ type: "agent.text", text: "after restart" });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter(
+          (event) => event.type === "item.background.started" && event.turnId === "t1",
+        ),
+      ).toHaveLength(2),
+    );
+    await session.close();
+    const settledTexts = events(outputs)
+      .filter((event) => event.type === "item.completed" && event.turnId === "t1")
+      .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
+    expect(settledTexts).toEqual(["before restart", "after restart"]);
+  });
+
+  it("buffers output that arrives after prompt() returns but before usage observation finishes", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    const gate = deferred<number>();
+    const readCount = vi
+      .spyOn(nativeBoundaries, "readNativeTurnCount")
+      .mockReturnValue(gate.promise);
+
+    transport.result.resolve({ stopReason: "end_turn" });
+    await vi.waitFor(() => expect(readCount).toHaveBeenCalledOnce());
+    transport.eventHandler?.({ type: "agent.text", text: "late text" });
+    transport.eventHandler?.({ type: "agent.thought", text: "late thought" });
+    expect(events(outputs).some((event) => event.type === "item.background.started")).toBe(false);
+
+    gate.resolve(1);
+    await completed(outputs);
+    const all = events(outputs);
+    const completedIndex = all.findIndex(
+      (event) => event.type === "turn.completed" && event.turnId === "t1",
+    );
+    const firstBackgroundIndex = all.findIndex(
+      (event) => event.type === "item.background.started" && event.turnId === "t1",
+    );
+    expect(completedIndex).toBeGreaterThanOrEqual(0);
+    expect(firstBackgroundIndex).toBeGreaterThan(completedIndex);
+    expect(
+      all.filter((event) => event.type === "item.updated" && event.turnId === "t1"),
+    ).toMatchObject([
+      { update: { type: "text.append", text: "late text" } },
+      { update: { type: "text.append", text: "late thought" } },
+    ]);
+
+    await session.close();
+    const settledTexts = events(outputs)
+      .filter((event) => event.type === "item.completed" && event.turnId === "t1")
+      .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
+    expect(settledTexts).toEqual(["late text", "late thought"]);
+  });
 });

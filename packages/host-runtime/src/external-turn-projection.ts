@@ -223,8 +223,7 @@ export class ExternalTurnProjection {
       projection.projector.completed &&
       !projection.projector.hasOpenDetachedItems
     ) {
-      // Fold the settled Item into the stored Turn snapshot so served history
-      // matches what live viewers already saw, then release the projector.
+      // Fold the settled Item into the stored Turn snapshot for served history.
       const index = thread.turns.findIndex(
         (turn) => (turn as { id?: unknown }).id === event.turnId,
       );
@@ -232,7 +231,11 @@ export class ExternalTurnProjection {
         const existing = thread.turns[index];
         if (existing) thread.turns[index] = projection.projector.snapshotTurn(existing);
       }
-      thread.projectedTurns.delete(event.turnId);
+      if (
+        event.turnId !== thread.projectedTerminalTurnId ||
+        event.snapshot.item.type === "commandExecution"
+      )
+        thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#host.writeJson(message);
     if (event.type === "turn.completed") {

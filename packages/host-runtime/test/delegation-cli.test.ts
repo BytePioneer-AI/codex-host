@@ -709,6 +709,7 @@ describe("delegation CLI", () => {
       "steer with interrupt",
       ["thread", "send", "thread-1", "--message", "adjust", "--steer", "true", "--interrupt"],
     ],
+    ["blank delegated task", ["delegate", "start", "--harness", "pi", "--task", "  "]],
     ["cancel option", ["thread", "cancel", "thread-1", "--message", "no"]],
     ["invalid list limit", ["thread", "list", "--limit", "101"]],
     ["invalid sort", ["thread", "list", "--sort", "newest"]],

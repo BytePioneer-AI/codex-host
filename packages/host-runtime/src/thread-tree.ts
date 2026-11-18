@@ -19,13 +19,16 @@ export class ThreadTree {
     const pinned = new Set(delegations.length ? await this.pinnedThreadIds() : []);
     return {
       parents: Object.fromEntries(
-        delegations
-          .filter(
-            (entry) =>
-              !pinned.has(entry.childHostThreadId) &&
-              originClientName(entry.parentHostThreadId) === undefined,
+        delegations.flatMap((entry) => {
+          const parent = entry.parentHostThreadId;
+          if (
+            parent === undefined ||
+            pinned.has(entry.childHostThreadId) ||
+            originClientName(parent) !== undefined
           )
-          .map((entry) => [entry.childHostThreadId, entry.parentHostThreadId]),
+            return [];
+          return [[entry.childHostThreadId, parent]];
+        }),
       ),
     };
   }

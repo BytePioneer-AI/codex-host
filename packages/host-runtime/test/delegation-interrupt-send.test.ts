@@ -31,7 +31,6 @@ function setup(initial: DelegationThreadStatus = "running") {
   });
   const api: DelegationControlRegistration = {
     ownsThread: () => true,
-    canHandleStart: () => true,
     listHarnesses: vi.fn(),
     inspect: vi.fn(),
     answer: vi.fn(),

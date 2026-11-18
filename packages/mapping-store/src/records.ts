@@ -275,9 +275,9 @@ export const storedDelegationRecordV1Schema = z
     formatVersion: z.literal(1),
     revision: z.number().int().positive(),
     delegationId: storedHostThreadIdSchema,
-    parentHostThreadId: hostThreadIdSchema,
+    parentHostThreadId: hostThreadIdSchema.optional(),
     childHostThreadId: hostThreadIdSchema,
-    sourceHarnessId: harnessIdSchema,
+    sourceHarnessId: harnessIdSchema.optional(),
     targetHarnessId: harnessIdSchema,
     status: delegationStatusSchema,
     requestId: nonBlankTextSchema.max(1_024).optional(),
@@ -295,9 +295,9 @@ export type StoredDelegationRecordV1 = z.infer<typeof storedDelegationRecordV1Sc
 
 export interface CreateDelegationInput {
   delegationId: HostThreadId;
-  parentHostThreadId: HostThreadId;
+  parentHostThreadId?: HostThreadId;
   childHostThreadId: HostThreadId;
-  sourceHarnessId: HarnessId;
+  sourceHarnessId?: HarnessId;
   targetHarnessId: HarnessId;
   status?: DelegationStatus;
   requestId?: string;

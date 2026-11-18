@@ -29,7 +29,6 @@ function registration(threadId: string): DelegationControlRegistration {
         },
       },
     })),
-    canHandleStart: (input) => input.parentThreadId === threadId,
     ownsThread: (candidate) => candidate === threadId,
     start: vi.fn(async () => ({
       delegationId: `delegation-${threadId}`,
@@ -83,6 +82,24 @@ function registration(threadId: string): DelegationControlRegistration {
 }
 
 describe("DelegationControlRegistry", () => {
+  it.each(["codex", "pi"] as const)(
+    "routes parentless %s creation through a unique session or shared owner",
+    async (harnessId) => {
+      const registry = new DelegationControlRegistry();
+      const session = registration("unrelated-parent");
+      registry.register(session);
+      const request = { harnessId, task: "independent" };
+      await expect(registry.start(request)).resolves.toMatchObject({
+        threadId: "child-unrelated-parent",
+      });
+      const shared = registration("shared-owner");
+      registry.register(shared, { harnessCatalog: true });
+      await expect(registry.start(request)).resolves.toMatchObject({
+        threadId: "child-shared-owner",
+      });
+      registry.close();
+    },
+  );
   it("uses only the calling Thread's execution identity for same-Host reads", async () => {
     const caller = registration("caller");
     caller.executionHostId = (id) => (id === "caller" ? "ssh:mac" : undefined);

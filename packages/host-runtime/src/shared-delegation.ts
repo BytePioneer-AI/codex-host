@@ -84,10 +84,6 @@ export function sharedDelegationRegistration(
     ...local,
     ownsThread: async (threadId) =>
       (await owner.ownership([threadId])).has(threadId) || local.ownsThread(threadId),
-    canHandleStart: async (input) =>
-      (input.parentThreadId !== undefined &&
-        (await owner.ownership([input.parentThreadId])).has(input.parentThreadId)) ||
-      local.canHandleStart(input),
     list: async (input) => {
       if (!input.parentThreadId) {
         const page = await local.list(input);

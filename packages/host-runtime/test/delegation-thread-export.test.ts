@@ -55,7 +55,6 @@ function registration(directory: string): DelegationControlRegistration {
     read: vi.fn(),
     wait: vi.fn(),
     list: vi.fn(),
-    canHandleStart: () => true,
     ownsThread: (id) => id === source.threadId,
     exportThread: (input) =>
       exportDelegationThread(input, source, { CODEXHOST_DATA_DIR: directory }),

@@ -423,11 +423,13 @@ export async function runDelegationCli(input: {
         );
       const harnessId = value(parsed, "--harness");
       const task = await resolveCliTextInput(parsed.options, "--task", input.stdin);
-      if (!harnessId || !task)
+      if (!harnessId || task === undefined)
         throw new DelegationControlError(
           "INVALID_ARGUMENT",
           "--harness and either --task or --task-file are required",
         );
+      if (!task.trim())
+        throw new DelegationControlError("INVALID_ARGUMENT", "Task must not be empty");
       const parentThread = value(parsed, "--parent-thread") ?? callerThreadId(environment);
       const watch = value(parsed, "--watch");
       if (watch !== undefined && watch !== "true" && watch !== "false")

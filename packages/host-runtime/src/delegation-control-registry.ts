@@ -324,13 +324,16 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         "External client work needs exactly one active Host Runtime session",
       );
     }
-    const matches = await this.#matching((registration) => registration.canHandleStart(input));
-    return only(
-      matches,
-      input.parentThreadId
-        ? "Parent Thread is not owned by exactly one active Host Runtime session"
-        : "Parent Thread cannot be inferred uniquely; pass --parent-thread explicitly",
-    );
+    if (!input.parentThreadId) {
+      if (this.#harnessCatalog) return this.#harnessCatalog;
+      return only(
+        [...this.#registrations],
+        "Independent task creation requires exactly one Host Runtime session",
+      );
+    }
+    const parentThreadId = input.parentThreadId;
+    const matches = await this.#matching((registration) => registration.ownsThread(parentThreadId));
+    return only(matches, "Parent Thread is not owned by exactly one active Host Runtime session");
   }
 
   async #registrationForThread(threadId: string): Promise<DelegationControlRegistration> {

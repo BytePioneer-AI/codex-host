@@ -34,7 +34,6 @@ function session(): DelegationControlRegistration & { starts: DelegationStartInp
     starts,
     listHarnesses: vi.fn(),
     inspect: vi.fn(),
-    canHandleStart: () => true,
     ownsThread: () => true,
     start: vi.fn(async (input: DelegationStartInput) => {
       starts.push(input);
@@ -208,7 +207,7 @@ describe("Thread references", () => {
 
   it("routes an external client's start to the only session and lists it by client", async () => {
     const host = session();
-    const other = { ...session(), canHandleStart: () => false };
+    const other = session();
     const registry = new DelegationControlRegistry({ refs: store });
     registry.register(host);
     const route = externalClientRouter({ api: registry, watchApi: registry });

@@ -149,11 +149,10 @@ export class HarnessDelegationCoordinator {
   readonly #sendOfficial: (input: ThreadSendInput) => Promise<ThreadSendResult>;
   readonly #cancelOfficial: (input: ThreadCancelInput) => Promise<ThreadCancelResult>;
   readonly #startOfficial: (
-    input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+    input: DelegationStartInput & { cwd: string; title: string },
   ) => Promise<DelegationStartResult>;
   readonly #listOfficial: (input: ThreadListInput) => Promise<DelegationThreadListResult>;
   readonly #officialThreadMetadata: (threadId: string) => Promise<ParentMetadata>;
-  readonly #activeOfficialParents: () => string[];
   readonly #externalThreadBusy: (thread: ExternalThread) => boolean;
   readonly #pendingQuestions: (threadId: string) => DelegationPendingQuestion[];
 
@@ -182,11 +181,10 @@ export class HarnessDelegationCoordinator {
     sendOfficial(input: ThreadSendInput): Promise<ThreadSendResult>;
     cancelOfficial(input: ThreadCancelInput): Promise<ThreadCancelResult>;
     startOfficial(
-      input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+      input: DelegationStartInput & { cwd: string; title: string },
     ): Promise<DelegationStartResult>;
     listOfficial(input: ThreadListInput): Promise<DelegationThreadListResult>;
     officialThreadMetadata(threadId: string): Promise<ParentMetadata>;
-    activeOfficialParents(): string[];
     externalThreadBusy(thread: ExternalThread): boolean;
     pendingQuestions(threadId: string): DelegationPendingQuestion[];
   }) {
@@ -207,7 +205,6 @@ export class HarnessDelegationCoordinator {
     this.#startOfficial = input.startOfficial;
     this.#listOfficial = input.listOfficial;
     this.#officialThreadMetadata = input.officialThreadMetadata;
-    this.#activeOfficialParents = input.activeOfficialParents;
     this.#externalThreadBusy = input.externalThreadBusy;
     this.#pendingQuestions = input.pendingQuestions;
   }
@@ -243,25 +240,24 @@ export class HarnessDelegationCoordinator {
         "INVALID_ARGUMENT",
         "--cwd is required when an external client starts work without a parent Thread",
       );
-    const parentThreadId = await this.#resolveParent(input.parentThreadId);
-    const parent = await this.#parentMetadata(parentThreadId);
-    const selectedCwd = input.cwd ?? parent.cwd ?? process.cwd();
+    const parentThreadId = input.parentThreadId;
+    const parent = parentThreadId ? await this.#parentMetadata(parentThreadId) : undefined;
+    const selectedCwd = input.cwd ?? parent?.cwd ?? process.cwd();
     const title = delegationTitle(input);
     if (input.harnessId === "codex") {
       const result = await this.#startOfficial({
         ...input,
-        parentThreadId,
         cwd: selectedCwd,
         title,
       });
       return {
         ...result,
-        parentThreadId,
+        ...(parentThreadId ? { parentThreadId } : {}),
         cwd: result.cwd ?? selectedCwd,
         title: result.title ?? title,
       };
     }
-    const startInput = { ...input, parentThreadId, cwd: path.resolve(selectedCwd) };
+    const startInput = { ...input, cwd: path.resolve(selectedCwd) };
     if (!this.#adapters.has(input.harnessId)) {
       throw new DelegationControlError(
         "HARNESS_NOT_FOUND",
@@ -273,16 +269,20 @@ export class HarnessDelegationCoordinator {
     const digest = taskDigest(startInput);
     const duplicate = input.requestId
       ? await this.#repository.findDelegationByRequest(input.requestId)
-      : await this.#repository.findRecentDelegation({
-          parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),
-          targetHarnessId: harnessIdSchema.parse(targetHarnessId),
-          taskDigest: digest,
-          since: new Date(Date.now() - IMPLICIT_DEDUPLICATION_MS),
-        });
+      : parentThreadId
+        ? await this.#repository.findRecentDelegation({
+            parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),
+            targetHarnessId: harnessIdSchema.parse(targetHarnessId),
+            taskDigest: digest,
+            since: new Date(Date.now() - IMPLICIT_DEDUPLICATION_MS),
+          })
+        : null;
     if (
       duplicate &&
       input.requestId &&
-      (duplicate.targetHarnessId !== targetHarnessId || duplicate.taskDigest !== digest)
+      (duplicate.targetHarnessId !== targetHarnessId ||
+        duplicate.taskDigest !== digest ||
+        duplicate.parentHostThreadId !== parentThreadId)
     ) {
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
@@ -336,9 +336,11 @@ export class HarnessDelegationCoordinator {
       try {
         delegation = await this.#repository.createDelegation({
           delegationId,
-          parentHostThreadId: hostThreadIdSchema.parse(parentThreadId),
+          ...(parentThreadId
+            ? { parentHostThreadId: hostThreadIdSchema.parse(parentThreadId) }
+            : {}),
           childHostThreadId: childThreadId,
-          sourceHarnessId: harnessIdSchema.parse(parent.harnessId),
+          ...(parent ? { sourceHarnessId: harnessIdSchema.parse(parent.harnessId) } : {}),
           targetHarnessId: harnessIdSchema.parse(targetHarnessId),
           status: "creating",
           ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -437,7 +439,7 @@ export class HarnessDelegationCoordinator {
           }),
           cwd: record.cwd,
           title: record.title,
-          parentThreadId,
+          ...(parentThreadId ? { parentThreadId } : {}),
         };
       } catch (error) {
         if (session) await session.close().catch(() => undefined);
@@ -710,31 +712,6 @@ export class HarnessDelegationCoordinator {
     };
   }
 
-  /** External and native Codex Threads that currently have an active Turn. */
-  activeThreadIds(): string[] {
-    const external = this.#externalRuntime
-      .values()
-      .filter((thread) => this.#externalThreadBusy(thread))
-      .map((thread) => thread.id);
-    return [...external, ...this.#activeOfficialParents()];
-  }
-
-  async #resolveParent(explicit?: string): Promise<string> {
-    if (explicit) return explicit;
-    const environmentThreadId = this.#environment[DELEGATION_THREAD_ID_ENV];
-    if (environmentThreadId) return environmentThreadId;
-    const active = this.activeThreadIds();
-    const onlyActive = active.length === 1 ? active[0] : undefined;
-    if (onlyActive) return onlyActive;
-    throw new DelegationControlError(
-      "PARENT_THREAD_AMBIGUOUS",
-      active.length === 0
-        ? "Parent Thread cannot be inferred because no active Turn was found"
-        : "Parent Thread cannot be inferred uniquely; pass --parent-thread explicitly",
-      { activeThreadIds: active },
-    );
-  }
-
   #validateConfiguration(
     inspection: Awaited<ReturnType<HarnessAdapter["inspect"]>>,
     model: HarnessModelRef | undefined,
@@ -810,7 +787,7 @@ export class HarnessDelegationCoordinator {
         delegation.status,
       ),
       ...(record ? { cwd: record.cwd, title: record.title } : {}),
-      parentThreadId: delegation.parentHostThreadId,
+      ...(delegation.parentHostThreadId ? { parentThreadId: delegation.parentHostThreadId } : {}),
     };
   }
 

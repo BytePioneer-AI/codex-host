@@ -286,6 +286,13 @@ describe("mapping-store package", () => {
       requestId: "delegate-request-1",
       taskDigest: "a".repeat(64),
     });
+    await first.createDelegation({
+      delegationId: hostThreadIdSchema.parse("independent-delegation"),
+      childHostThreadId: hostThreadIdSchema.parse("independent-thread"),
+      targetHarnessId: harnessIdSchema.parse("pi"),
+      requestId: "independent-request",
+      taskDigest: "b".repeat(64),
+    });
     await first.close();
 
     const second = new MappingStore({ directory, instanceId: "delegation-second" });
@@ -296,6 +303,11 @@ describe("mapping-store package", () => {
       status: "running",
       requestId: "delegate-request-1",
     });
+    const independent = await second.findDelegationByRequest("independent-request");
+    expect(independent).toMatchObject({ childHostThreadId: "independent-thread" });
+    expect(independent).not.toHaveProperty("parentHostThreadId");
+    expect(independent).not.toHaveProperty("sourceHarnessId");
+    expect(await second.listDelegations(threadId)).toHaveLength(1);
     await expect(second.findDelegationByRequest("delegate-request-1")).resolves.toMatchObject({
       delegationId,
     });

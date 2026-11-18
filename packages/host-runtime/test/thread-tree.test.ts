@@ -34,6 +34,12 @@ async function fixture() {
       taskDigest: "b".repeat(64),
     });
   }
+  await store.createDelegation({
+    delegationId: id("independent-delegation"),
+    childHostThreadId: id("independent-thread"),
+    targetHarnessId: harnessId,
+    taskDigest: "d".repeat(64),
+  });
   const pins = new Set<string>();
   const tree = new ThreadTree(new ExternalThreadRepository(store), async () => [...pins]);
   return { store, tree, id, pins };
@@ -42,7 +48,9 @@ async function fixture() {
 it("reads historical multilevel delegation without altering --parent results", async () => {
   const { store, tree, id } = await fixture();
   const delegatedToB = await store.listDelegations(id("b"));
-  expect(await tree.read()).toEqual({ parents: { b: "a", external: "b" } });
+  const result = await tree.read();
+  expect(result).toEqual({ parents: { b: "a", external: "b" } });
+  expect(result.parents).not.toHaveProperty("independent-thread");
   expect(await new ThreadTree(new ExternalThreadRepository(store), async () => []).read()).toEqual({
     parents: { b: "a", external: "b" },
   });

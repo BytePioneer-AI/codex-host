@@ -63,6 +63,7 @@ export class OfficialRuntimeScope {
       },
       diagnosticOutput: input.diagnosticOutput,
       gate: this.gate,
+      onIdle: input.onIdle,
     });
     this.gate.subscribe(() => {
       if (this.#started && this.gate.phase === "unavailable") this.#generationFailed();

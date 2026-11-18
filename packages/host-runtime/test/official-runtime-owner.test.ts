@@ -574,7 +574,7 @@ it("projects resolution IDs per client and retires another client's answered req
 
 it("does not treat resumed historical inProgress Turns as active work on this backend", async () => {
   const f = fixture();
-  const { client } = f.attach();
+  const { client, output } = f.attach();
   try {
     await f.owner.start();
     await client.initialize(initialization);
@@ -590,7 +590,17 @@ it("does not treat resumed historical inProgress Turns as active work on this ba
     expect(f.owner.hasActiveWork).toBe(false);
     await client.request("turn/start", { threadId: "thread-one", input: [] });
     expect(f.owner.hasActiveWork).toBe(true);
-    f.connection().emit({ method: "turn/completed", params: { threadId: "thread-one" } });
+    const staleCompletion = {
+      method: "turn/completed",
+      params: { threadId: "thread-one", turn: { id: "stale-turn", status: "completed" } },
+    };
+    f.connection().emit(staleCompletion);
+    await vi.waitFor(() => expect(output).toContainEqual(staleCompletion));
+    expect(f.owner.hasActiveWork).toBe(true);
+    f.connection().emit({
+      method: "turn/completed",
+      params: { threadId: "thread-one", turn: { id: "new-turn", status: "completed" } },
+    });
     await vi.waitFor(() => expect(f.owner.hasActiveWork).toBe(false));
   } finally {
     await f.owner.stop();

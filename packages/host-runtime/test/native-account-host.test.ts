@@ -62,7 +62,10 @@ function nativeFixture() {
           result = { userAgent: "synthetic" };
         } else {
           if (!initialized) throw new Error("Unexpected or uninitialized native request");
-          if (request.method === "account/read") {
+          if (request.method === "turn/start") {
+            // The test supplies the response independently of the Turn notifications.
+            continue;
+          } else if (request.method === "account/read") {
             result = { account, requiresOpenaiAuth: true };
           } else if (request.method === "thread/start" || request.method === "thread/resume") {
             result = { thread: { id: "voice-thread" } };
@@ -563,6 +566,83 @@ describe("local Codex read-only identity startup", () => {
     expect(first.stop).not.toHaveBeenCalled();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
     expect(diagnostics.read()?.toString()).toContain("preserving active official Codex work");
+  });
+
+  it("switches to the latest Desktop app-tools pipe after the last native Turn completes", async () => {
+    const first = nativeFixture();
+    const local = await startLocal(true);
+    const scope = local.officialRuntimeScope;
+    const notifications: JsonObject[] = [];
+    const client = new OfficialRuntimeClient({
+      scope,
+      output: async ({ value }) => {
+        notifications.push(jsonObjectSchema.parse(value));
+      },
+    });
+    try {
+      await client.initialize();
+      await client.initializeProtocol({ clientInfo: { name: "desktop", version: "1" } });
+      const notifyTurn = (threadId: string, completed: boolean) =>
+        first.notify({
+          method: completed ? "turn/completed" : "turn/started",
+          params: {
+            threadId,
+            turn: { id: `${threadId}-turn`, status: completed ? "completed" : "inProgress" },
+          },
+        });
+      notifyTurn("first-thread", false);
+      const start = client.request("turn/start", { threadId: "second-thread", input: [] });
+      void start.catch(() => undefined);
+      const startRequest = await vi.waitFor(() => {
+        const request = first.requests.find(({ method }) => method === "turn/start");
+        if (!request) throw new Error("Native Turn has not received its start request");
+        return request;
+      });
+      notifyTurn("second-thread", false);
+      await vi.waitFor(() => expect(notifications).toHaveLength(2));
+
+      const pipe = "CODEX_APP_TOOLS_PIPE_PATH";
+      for (const endpoint of ["/synthetic/desktop-first", "/synthetic/desktop-latest"]) {
+        await local.configureStartup({
+          stockCodexPath: "/synthetic/codex",
+          arguments: ["-c", "features.code_mode_host=true", "app-server"],
+          environment: { [pipe]: endpoint },
+        });
+      }
+
+      const next = nativeFixture();
+      next.signOut();
+      notifyTurn("first-thread", true);
+      await vi.waitFor(() => expect(notifications).toHaveLength(3));
+      expect(scope.owner.generation).toBe(1);
+
+      notifyTurn("second-thread", true);
+      await vi.waitFor(() => expect(notifications).toHaveLength(4));
+      await expect(client.request("account/read", { refreshToken: false })).resolves.toMatchObject({
+        result: { account: { type: "chatgpt" } },
+      });
+
+      // Native may report completion before acknowledging turn/start.
+      first.notify({
+        id: startRequest.id ?? null,
+        result: { turn: { id: "second-thread-turn", status: "inProgress" } },
+      });
+      await start;
+      await vi.waitFor(() => {
+        expect(scope.owner.generation).toBe(2);
+        expect(scope.gate.phase).toBe("ready");
+      });
+      expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          environment: expect.objectContaining({ [pipe]: "/synthetic/desktop-latest" }),
+        }),
+      );
+      await expect(client.request("account/read", { refreshToken: false })).resolves.toMatchObject({
+        result: { account: null },
+      });
+    } finally {
+      await client.close();
+    }
   });
 
   it.each(desktopConnectionVariables)("recovers with latest %s", async (key) => {

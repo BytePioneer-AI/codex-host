@@ -100,12 +100,34 @@ export async function prepareLocalCodex(input: {
   let running: typeof startup | undefined;
   let startupConfigured = false;
   let backendFiles: string[] = [];
+  let refreshWhenIdle = false;
+  let idleCheck: NodeJS.Immediate | undefined;
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
     // Local Desktop connections outlive a failed official backend generation.
     recovery: {},
+    onIdle: () => {
+      if (!refreshWhenIdle || idleCheck) return;
+      // Let the current response settle, then recheck admission before stopping.
+      idleCheck = setImmediate(() => {
+        idleCheck = undefined;
+        if (!refreshWhenIdle || scope.closed || !scope.owner.running || scope.owner.hasActiveWork)
+          return;
+        refreshWhenIdle = false;
+        void scope
+          .stop()
+          .then(() => {
+            if (!scope.closed) return scope.start();
+          })
+          .catch(() => {
+            input.diagnosticOutput.write("codexhost: could not refresh official Codex startup\n");
+          });
+      });
+      idleCheck.unref();
+    },
     createBackend: () => {
+      refreshWhenIdle = false;
       try {
         if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
         backendFiles = captureCodexRuntimeFiles(startup.stockCodexPath);
@@ -215,7 +237,8 @@ export async function prepareLocalCodex(input: {
       // An idle changed backend can still be replaced through the normal path below.
       if (scope.owner.running && (!changed || scope.owner.hasActiveWork))
         assertCodexRuntimeFilesPresent(backendFiles);
-      if (changed && scope.owner.generation > 0 && scope.owner.hasActiveWork) {
+      refreshWhenIdle = changed && scope.owner.generation > 0 && scope.owner.hasActiveWork;
+      if (refreshWhenIdle) {
         input.diagnosticOutput.write(
           "codexhost: Desktop startup differs; preserving active official Codex work\n",
         );
@@ -224,6 +247,7 @@ export async function prepareLocalCodex(input: {
       if (changed && scope.owner.generation > 0) await scope.stop();
     },
     close: async () => {
+      if (idleCheck) clearImmediate(idleCheck);
       await scope.close();
       identityReader.close();
     },

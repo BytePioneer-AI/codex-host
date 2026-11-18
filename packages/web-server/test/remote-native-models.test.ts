@@ -58,10 +58,14 @@ it("reads and changes the remote native model without consulting local defaults"
   const inspection = {
     status: "ready",
     catalog: {
-      models: ["gpt-6-astra", "gpt-other"].map((id) => ({
-        ref: encodeOfficialCodexModelRef(id),
-        label: id === "gpt-6-astra" ? "Astra" : "Other",
-      })),
+      models: [
+        { ref: encodeOfficialCodexModelRef("gpt-6-astra"), label: "Astra" },
+        {
+          ref: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast"),
+          label: "Astra · Ultrafast",
+        },
+        { ref: encodeOfficialCodexModelRef("gpt-other"), label: "Other" },
+      ],
       defaultModel: encodeOfficialCodexModelRef("gpt-other"),
       thinkingOptions: [],
     },
@@ -93,8 +97,13 @@ it("reads and changes the remote native model without consulting local defaults"
         result: { thread: row() },
         epoch,
         requests: [],
-        configuration: { owner: "codex", locked: true },
-        nativeSettings: { model, serviceTier: tier },
+        configuration: {
+          owner: "codex",
+          locked: true,
+          ...(model ? { effectiveModel: ref() } : {}),
+        },
+        // Some native Thread headers omit the tier even after the Host confirms it.
+        nativeSettings: { model, ...(tier === "ultrafast" ? {} : { serviceTier: tier }) },
         ...(available ? { inspection } : {}),
       };
     if (op.kind === "configure") {
@@ -129,11 +138,20 @@ it("reads and changes the remote native model without consulting local defaults"
   const catalog = await call("session/modelCatalog");
   assert.ok(catalog.ok);
   assert.equal((catalog.value as { default: { model: string } }).default.model, ref().id);
-  for (const target of [
-    encodeOfficialCodexModelRef("gpt-other"),
-    encodeOfficialCodexModelRef("gpt-6-astra", "priority"),
-  ]) {
+  assert.deepEqual(
+    (catalog.value as { groups: Array<{ models: unknown }> }).groups[0]?.models,
+    inspection.catalog.models.map(({ ref, label }) => ({ id: ref.id, name: label })),
+  );
+  for (const [targetModel, targetTier] of [
+    ["gpt-other", null],
+    ["gpt-6-astra", "priority"],
+    ["gpt-6-astra", "ultrafast"],
+    ["gpt-6-astra", null],
+  ] as const) {
+    const target = encodeOfficialCodexModelRef(targetModel, targetTier);
     assert.ok((await call("session/selectModel", { provider: "codex", model: target.id })).ok);
+    assert.equal(model, targetModel);
+    assert.equal(tier, targetTier);
     assert.equal(ref().id, target.id);
     const view = await call("session/projections");
     assert.ok(view.ok);
@@ -143,7 +161,7 @@ it("reads and changes the remote native model without consulting local defaults"
       target.id,
     );
   }
-  assert.equal(writes, 2);
+  assert.equal(writes, 4);
   assert.equal(
     (await call("session/selectModel", { provider: "claude-code", model: "wrong" })).ok,
     false,
@@ -153,5 +171,5 @@ it("reads and changes the remote native model without consulting local defaults"
   available = false;
   await remote.read(id);
   assert.equal((await call("session/modelCatalog")).ok, false);
-  assert.equal(writes, 2);
+  assert.equal(writes, 4);
 });

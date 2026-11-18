@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  decodeOfficialCodexModelRef,
   encodeOfficialCodexModelRef,
   harnessInspectionSchema,
   threadInspectionSchema,
@@ -56,9 +57,16 @@ export function parseRemoteControls(snapshot: RemoteControlsSnapshot): RemoteCon
     .safeParse(snapshot.nativeSettings);
   if (configuration.success && configuration.data.owner === "codex" && native.success) {
     try {
+      const confirmed = configuration.data.effectiveModel;
+      const effectiveModel =
+        native.data.serviceTier === undefined &&
+        confirmed &&
+        decodeOfficialCodexModelRef(confirmed) === native.data.model
+          ? confirmed
+          : encodeOfficialCodexModelRef(native.data.model, native.data.serviceTier);
       const parsed = threadInspectionSchema.safeParse({
         ...configuration.data,
-        effectiveModel: encodeOfficialCodexModelRef(native.data.model, native.data.serviceTier),
+        effectiveModel,
         ...(native.data.reasoningEffort
           ? { effectiveThinkingOptionId: native.data.reasoningEffort }
           : {}),

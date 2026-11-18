@@ -14,7 +14,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-it("advertises Fast only from the official priority service tier", async () => {
+it("advertises Fast and Ultrafast only from the official service tiers", async () => {
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));
   await fixture.ready;
@@ -33,10 +33,12 @@ it("advertises Fast only from the official priority service tier", async () => {
                   model: "priority-capable",
                   serviceTiers: [
                     { id: "priority", name: "Fast", description: "Priority processing" },
+                    { id: "ultrafast", name: "Ultrafast" },
                   ],
+                  supportedReasoningEfforts: [{ reasoningEffort: "high" }],
                 },
                 { model: "flex-only", serviceTiers: [{ id: "flex", name: "Fast" }] },
-                { model: "legacy-fast", additionalSpeedTiers: ["fast", "priority"] },
+                { model: "legacy-fast", additionalSpeedTiers: ["fast", "priority", "ultrafast"] },
                 { model: "no-tiers" },
               ].map((model, i) => ({ ...model, displayName: model.model, isDefault: i === 0 })),
             }
@@ -56,6 +58,11 @@ it("advertises Fast only from the official priority service tier", async () => {
             ref: encodeOfficialCodexModelRef("priority-capable"),
             fastModel: encodeOfficialCodexModelRef("priority-capable", "priority"),
           },
+          {
+            ref: encodeOfficialCodexModelRef("priority-capable", "ultrafast"),
+            label: "priority-capable · Ultrafast",
+            supportedThinkingOptionIds: ["high"],
+          },
           { ref: encodeOfficialCodexModelRef("flex-only") },
           { ref: encodeOfficialCodexModelRef("legacy-fast") },
           { ref: encodeOfficialCodexModelRef("no-tiers") },
@@ -68,7 +75,7 @@ it("advertises Fast only from the official priority service tier", async () => {
   expect(models.slice(1).every((model) => model.fastModel === undefined)).toBe(true);
 });
 
-it("selects priority and clears it only after matching confirmation, preserving Thinking", async () => {
+it("changes the native speed tier only after matching confirmation, preserving Thinking", async () => {
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));
   await fixture.ready;
@@ -94,7 +101,7 @@ it("selects priority and clears it only after matching confirmation, preserving 
         params: { threadId: "official", threadSettings: value },
       })}\n`,
     );
-  for (const tier of ["priority", null, "priority"]) {
+  for (const tier of ["priority", "ultrafast", null, "ultrafast"]) {
     let resolved = false;
     const selecting = fixture.host
       .handleClientRequest("codexhost/thread/model/select", {
@@ -130,7 +137,7 @@ it("selects priority and clears it only after matching confirmation, preserving 
   notify(settings);
   expect(await thinking).toMatchObject({
     result: {
-      effectiveModel: encodeOfficialCodexModelRef("native", "priority"),
+      effectiveModel: encodeOfficialCodexModelRef("native", "ultrafast"),
       effectiveThinkingOptionId: "low",
     },
   });

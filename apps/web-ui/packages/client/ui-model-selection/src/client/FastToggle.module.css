@@ -48,6 +48,13 @@
   box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 
+@media (forced-colors: active) {
+  .speed:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
 .speedSelect {
   position: absolute;
   inset: 0;

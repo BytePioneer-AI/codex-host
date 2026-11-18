@@ -7,10 +7,44 @@ import {
 import { RemoteSessions, remoteSessionId } from "../src/remote-sessions.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import {
+  mergeRemoteControls,
   parseRemoteControls,
   selectRemoteModel,
   type RemoteControlsEntry,
 } from "../src/remote-session-controls.ts";
+
+it("carries a confirmed speed tier across partial reads only for the same model and connection", () => {
+  const configuration = { owner: "codex", locked: true };
+  const previous = parseRemoteControls({
+    configuration,
+    nativeSettings: { model: "gpt-6-astra", serviceTier: "ultrafast" },
+  });
+  for (const [model, serviceTier, sameEpoch, expectedTier] of [
+    ["gpt-6-astra", undefined, true, "ultrafast"],
+    ["gpt-6-astra", null, true, null],
+    ["gpt-6-astra", "priority", true, "priority"],
+    ["gpt-other", undefined, true, null],
+    ["gpt-6-astra", undefined, false, null],
+  ] as const) {
+    const next = parseRemoteControls({
+      configuration,
+      nativeSettings: { model, serviceTier, reasoningEffort: "high" },
+    });
+    assert.deepEqual(mergeRemoteControls(previous, next, sameEpoch).configuration, {
+      ...configuration,
+      effectiveModel: encodeOfficialCodexModelRef(model, expectedTier),
+      effectiveThinkingOptionId: "high",
+    });
+  }
+  const confirmedStandard = parseRemoteControls({
+    configuration: { ...configuration, effectiveModel: encodeOfficialCodexModelRef("gpt-6-astra") },
+    nativeSettings: { model: "gpt-6-astra" },
+  });
+  assert.deepEqual(
+    mergeRemoteControls(previous, confirmedStandard, true).configuration,
+    confirmedStandard.configuration,
+  );
+});
 
 it("uses native model and Thinking settings when the confirmed reference is malformed", () => {
   const controls = parseRemoteControls({
@@ -81,15 +115,17 @@ it("reads and changes the remote native model without consulting local defaults"
           ref: encodeOfficialCodexModelRef("gpt-6-astra"),
           fastModel: encodeOfficialCodexModelRef("gpt-6-astra", "priority"),
           label: "Astra",
+          supportedThinkingOptionIds: ["high"],
         },
         {
           ref: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast"),
           label: "Astra · Ultrafast",
+          supportedThinkingOptionIds: ["high"],
         },
         { ref: encodeOfficialCodexModelRef("gpt-other"), label: "Other" },
       ],
       defaultModel: encodeOfficialCodexModelRef("gpt-other"),
-      thinkingOptions: [],
+      thinkingOptions: [{ id: "high", label: "High" }],
     },
     capabilities: {
       configuration: {
@@ -122,7 +158,7 @@ it("reads and changes the remote native model without consulting local defaults"
         configuration: {
           owner: "codex",
           locked: true,
-          ...(model ? { effectiveModel: ref() } : {}),
+          ...(model && tier !== "ultrafast" ? { effectiveModel: ref() } : {}),
         },
         // Some native Thread headers omit the tier even after the Host confirms it.
         nativeSettings: { model, ...(tier === "ultrafast" ? {} : { serviceTier: tier }) },
@@ -166,8 +202,18 @@ it("reads and changes the remote native model without consulting local defaults"
       name: "Astra",
       fastModel: encodeOfficialCodexModelRef("gpt-6-astra", "priority").id,
       ultrafastModel: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast").id,
+      reasoning: { efforts: [{ id: "high", name: "High" }] },
     },
-    { id: encodeOfficialCodexModelRef("gpt-other").id, name: "Other" },
+    {
+      id: encodeOfficialCodexModelRef("gpt-6-astra", "ultrafast").id,
+      name: "Astra · Ultrafast",
+      reasoning: { efforts: [{ id: "high", name: "High" }] },
+    },
+    {
+      id: encodeOfficialCodexModelRef("gpt-other").id,
+      name: "Other",
+      reasoning: { efforts: [{ id: "high", name: "High" }] },
+    },
   ]);
   for (const [targetModel, targetTier] of [
     ["gpt-other", null],

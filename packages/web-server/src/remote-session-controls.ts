@@ -6,6 +6,7 @@ import {
   harnessInspectionSchema,
   threadInspectionSchema,
   type HarnessInspection,
+  type HarnessModelRef,
   type ThreadInspection,
 } from "@codexhost/shared-contracts";
 import type { ChThreadView } from "./ch-thread-view.ts";
@@ -30,6 +31,7 @@ export interface RemoteControlsSnapshot {
 
 export interface RemoteControls {
   configuration?: ThreadInspection;
+  nativeModelWithoutTier?: string;
   inspection?: HarnessInspection;
   harness?: z.infer<typeof remoteHarnessDescriptorSchema>;
 }
@@ -42,6 +44,14 @@ export interface RemoteControlsEntry {
   epoch?: string;
   controls?: RemoteControls;
   row: { modelProvider: string };
+}
+
+function matchesNativeModel(ref: HarnessModelRef, model: string): boolean {
+  try {
+    return decodeOfficialCodexModelRef(ref) === model;
+  } catch {
+    return false;
+  }
 }
 
 export function parseRemoteControls(snapshot: RemoteControlsSnapshot): RemoteControls {
@@ -58,25 +68,23 @@ export function parseRemoteControls(snapshot: RemoteControlsSnapshot): RemoteCon
   if (configuration.success && configuration.data.owner === "codex" && native.success) {
     try {
       const confirmed = configuration.data.effectiveModel;
-      let effectiveModel: typeof confirmed;
-      if (native.data.serviceTier === undefined && confirmed) {
-        try {
-          if (decodeOfficialCodexModelRef(confirmed) === native.data.model) {
-            effectiveModel = confirmed;
-          }
-        } catch {
-          /* Use the native settings if the confirmed reference is invalid. */
-        }
-      }
+      const { model, serviceTier } = native.data;
+      const inheritedRef =
+        serviceTier === undefined && confirmed && matchesNativeModel(confirmed, model)
+          ? confirmed
+          : undefined;
       const parsed = threadInspectionSchema.safeParse({
         ...configuration.data,
-        effectiveModel:
-          effectiveModel ?? encodeOfficialCodexModelRef(native.data.model, native.data.serviceTier),
+        effectiveModel: inheritedRef ?? encodeOfficialCodexModelRef(model, serviceTier),
         ...(native.data.reasoningEffort
           ? { effectiveThinkingOptionId: native.data.reasoningEffort }
           : {}),
       });
-      if (parsed.success) controls.configuration = parsed.data;
+      if (parsed.success) {
+        controls.configuration = parsed.data;
+        if (serviceTier === undefined && inheritedRef === undefined)
+          controls.nativeModelWithoutTier = model;
+      }
     } catch {
       /* Invalid optional native metadata must not block history. */
     }
@@ -108,7 +116,15 @@ export function mergeRemoteControls(
     !sameOwner(previousConfiguration, nextConfiguration)
   )
     return next;
-  const configuration = nextConfiguration ?? previousConfiguration;
+  const confirmed =
+    previousConfiguration?.owner === "codex" ? previousConfiguration.effectiveModel : undefined;
+  const configuration =
+    nextConfiguration?.owner === "codex" &&
+    next.nativeModelWithoutTier !== undefined &&
+    confirmed &&
+    matchesNativeModel(confirmed, next.nativeModelWithoutTier)
+      ? { ...nextConfiguration, effectiveModel: confirmed }
+      : (nextConfiguration ?? previousConfiguration);
   if (configuration === undefined) return next;
   const previousExternal =
     previousConfiguration?.owner === "external" ? previousConfiguration : undefined;

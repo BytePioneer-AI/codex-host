@@ -116,44 +116,41 @@ export function groupOf(
           if (ids.has(base)) ultrafastByModel.set(base, ref.id);
         }
       } catch {
-        // Unrecognized remote references are kept as their original catalog rows.
+        // Unrecognized remote references have no speed control metadata.
       }
     }
   }
-  const ultrafastRefs = new Set(ultrafastByModel.values());
   return {
     id,
     name,
-    models: catalog.models
-      .filter(({ ref }) => !ultrafastRefs.has(ref.id))
-      .map((model) => {
-        const ultrafastModel = ultrafastByModel.get(model.ref.id);
-        const supported =
-          model.supportedThinkingOptionIds ?? catalog.thinkingOptions.map((option) => option.id);
-        const efforts = supported.flatMap((optionId) => {
-          const option = options.get(optionId);
-          return option === undefined ? [] : [{ id: option.id, name: option.label }];
-        });
-        return {
-          id: model.ref.id,
-          name: model.label,
-          ...(model.resolvedModelLabel !== undefined && model.resolvedModelLabel !== model.label
-            ? { description: model.resolvedModelLabel }
-            : {}),
-          ...(model.fastModel ? { fastModel: model.fastModel.id } : {}),
-          ...(ultrafastModel ? { ultrafastModel } : {}),
-          ...(efforts.length > 0
-            ? {
-                reasoning: {
-                  efforts,
-                  ...(catalog.defaultThinkingOptionId !== undefined &&
-                  supported.includes(catalog.defaultThinkingOptionId)
-                    ? { defaultEffort: catalog.defaultThinkingOptionId }
-                    : {}),
-                },
-              }
-            : {}),
-        };
-      }),
+    models: catalog.models.map((model) => {
+      const ultrafastModel = ultrafastByModel.get(model.ref.id);
+      const supported =
+        model.supportedThinkingOptionIds ?? catalog.thinkingOptions.map((option) => option.id);
+      const efforts = supported.flatMap((optionId) => {
+        const option = options.get(optionId);
+        return option === undefined ? [] : [{ id: option.id, name: option.label }];
+      });
+      return {
+        id: model.ref.id,
+        name: model.label,
+        ...(model.resolvedModelLabel !== undefined && model.resolvedModelLabel !== model.label
+          ? { description: model.resolvedModelLabel }
+          : {}),
+        ...(model.fastModel ? { fastModel: model.fastModel.id } : {}),
+        ...(ultrafastModel ? { ultrafastModel } : {}),
+        ...(efforts.length > 0
+          ? {
+              reasoning: {
+                efforts,
+                ...(catalog.defaultThinkingOptionId !== undefined &&
+                supported.includes(catalog.defaultThinkingOptionId)
+                  ? { defaultEffort: catalog.defaultThinkingOptionId }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+    }),
   };
 }

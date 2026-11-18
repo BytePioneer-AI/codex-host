@@ -19,7 +19,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import css from "./SelectionActions.module.css";
-import { SelectionCommentCard } from "./SelectionCommentCard.tsx";
+import { COMMENT_CARD_HEIGHT, SelectionCommentCard } from "./SelectionCommentCard.tsx";
 import type { SelectionCommentLabels } from "./SelectionCommentCard.tsx";
 
 /** Chrome that never contributes selected prose, excluded from the counted text. */
@@ -178,11 +178,16 @@ function serializeParagraph(node: Element, parent: Element): string {
  * right edge 8px above the selection's top and draws the box upward, keeping
  * the box inside the viewport with a CSS clamp rather than assuming its width;
  * a touch platform draws it below the selection instead, so the system callout
- * above stays reachable.
+ * above stays reachable. A box taller than a button also moves to the other
+ * side when its preferred side has no room for it and the other side does.
  * @param rect - the selection's last line in viewport coordinates.
+ * @param height - the box's height; omit for the one-line action.
  * @returns fixed-position anchor and the transform that bounds the box.
  */
-function placeSelection(rect: DOMRect): {
+function placeSelection(
+  rect: DOMRect,
+  height = 0,
+): {
   left: number;
   top: number;
   maxWidth: number;
@@ -193,7 +198,12 @@ function placeSelection(rect: DOMRect): {
   const width = viewport?.width ?? window.innerWidth;
   const offsetLeft = viewport?.offsetLeft ?? 0;
   const right = rect.right - offsetLeft;
-  const below = window.matchMedia("(hover: none)").matches;
+  const touch = window.matchMedia("(hover: none)").matches;
+  const topEdge = viewport?.offsetTop ?? 0;
+  const bottomEdge = topEdge + (viewport?.height ?? window.innerHeight);
+  const fitsAbove = rect.top - POPOVER_GAP - height >= topEdge + VIEWPORT_MARGIN;
+  const fitsBelow = rect.bottom + POPOVER_GAP + height <= bottomEdge - VIEWPORT_MARGIN;
+  const below = height === 0 ? touch : touch ? fitsBelow || !fitsAbove : !fitsAbove && fitsBelow;
   // The clamp bounds the drawn box: its own width decides how far left it may
   // pull itself, and its right edge never leaves the viewport margin.
   const room = width - VIEWPORT_MARGIN - right;
@@ -329,7 +339,7 @@ export function SelectionActions({
     passage.host.isConnected && container()?.contains(passage.host) === true;
 
   if (composing !== null) {
-    const placed = placeSelection(composing.rect);
+    const placed = placeSelection(composing.rect, COMMENT_CARD_HEIGHT);
     return createPortal(
       <SelectionCommentCard
         excerpt={composing.text}

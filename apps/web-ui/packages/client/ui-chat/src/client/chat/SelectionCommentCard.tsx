@@ -10,6 +10,9 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import css from "./SelectionCommentCard.module.css";
 
+/** The card's drawn height in px (excerpt, two-row field, button), used to place it before it is measured. */
+export const COMMENT_CARD_HEIGHT = 124;
+
 /** Owner-provided copy for the card. */
 export interface SelectionCommentLabels {
   /** Accessible name and placeholder of the note field. */
@@ -63,6 +66,14 @@ export function SelectionCommentCard({
       data-placement={below ? "below" : "above"}
       style={style}
       data-selection-actions
+      onKeyDown={(event) => {
+        // Escape closes from any control in the card, but while an IME is
+        // composing it belongs to the composition.
+        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
       onMouseDown={(event) => {
         // Pressing the card's padding or its button must not take focus from the
         // field; only the field itself may place the caret.
@@ -87,9 +98,6 @@ export function SelectionCommentCard({
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             submit();
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            onCancel();
           }
         }}
       />

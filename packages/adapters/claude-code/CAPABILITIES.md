@@ -21,9 +21,9 @@
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | test/plugin-warmup.test.ts | 保留受管远端 Broker 分支 |
 | A3 | 检查 | 必做 | P0 | 支持 | src/claude-code-adapter.ts | 原生 inspect ready；test/model-catalog.test.ts | 检查不发 Prompt |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/claude-code-adapter.ts、pending-session.ts | test/claude-code-adapter.test.ts | 原生延迟建 Session |
-| A5 | 执行 Turn | 必做 | P0 | 支持 | src/claude-code-adapter.ts、sdk-transport.ts | 既有 Haiku 实机；test/claude-code-adapter.test.ts | 本次不新增执行路径 |
+| A5 | 执行 Turn | 必做 | P0 | 支持 | src/claude-code-adapter.ts、sdk-transport.ts、turn-input.ts | 既有 Haiku 实机；test/claude-code-adapter.test.ts、turn-input.test.ts | Desktop 图片附件随文字以原生 image 块发送（开始 Turn 与 steer）；仅 ≤20 MiB 的 PNG/JPEG/GIF/WebP 发 image 块，steer 另限 base64 ≤5 MB 且宽高 ≤2000 px；其他格式、超限或读不到的文件只保留路径文字 |
 | A6 | 取消 | 必做 | P0 | 受限 | src/claude-code-adapter.ts、process-fence.ts | test/claude-code-adapter.test.ts | 有原生确认及超时升级，版本相关路径未全部实测 |
-| A7 | 只读快照 | 必做 | P0 | 受限 | src/claude-history.ts、claude-transcript.ts、claude-queued-command.ts | test/claude-queued-history.test.ts、claude-history.test.ts、claude-transcript.test.ts；默认 Adapter 回放三份 2.1.319 原生样本 | queued_command 恢复见历史文档；无 Result 时 outcome 为 unknown |
+| A7 | 只读快照 | 必做 | P0 | 受限 | src/claude-history.ts、claude-transcript.ts、claude-queued-command.ts | test/claude-queued-history.test.ts、claude-history.test.ts、claude-transcript.test.ts；默认 Adapter 回放三份 2.1.319 原生样本 | queued_command 恢复见历史文档；带图片的 prompt 取其 text 块；无 Result 时 outcome 为 unknown |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | src/claude-code-adapter.ts、pending-session.ts | test/claude-code-adapter.test.ts | Turn 使用原生 root UUID，非每次读取重建身份 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | src/claude-code-adapter.ts | test/claude-code-adapter.test.ts | sessionBusy / invalidState / protocolError |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/sdk-transport.ts、claude-code-adapter.ts | test/sdk-transport.test.ts、claude-code-adapter.test.ts | 本次不改进程生命周期 |
@@ -60,6 +60,7 @@
 ## 受限与已知缺口
 
 - 本清单记录现有实现与本次历史修复范围，不是所有原生版本、平台、Desktop、委派和发行加载的完整认证。
+- A5：图片输入只读取 Desktop 附件清单中的本地路径；未在真实 Desktop 附图流程与真实模型上验收。按 Agent SDK 0.3.273 内置 CLI 代码，原生只缩放作为 Turn 开始的输入中的 image 块，插入运行中 Turn 的 queued_command 图片原样发送，故 steer 在本地限尺寸；其他版本未逐一核对。带图片的 steer 历史按 CLI 2.1.323 源码中 queued_command prompt 可为内容块数组的形态解析，无原生样本。
 - A6、B4：取消、无头权限依赖原生能力和确认；不承诺所有 CLI 版本一致。
 - A7：只恢复有明确人类来源的 prompt queued_command；不推断其他附件。原生结果证据不完整时保持 unknown。公共历史 Item 不携带本地 Web requestId 或每条输入的发送时间。
 - B5、B7：只接受原生可精确保留且验证通过的前缀，不把附件 UUID 用作 checkpoint；原生 Fork 未保留内容时拒绝派生结果。
@@ -80,6 +81,7 @@
 | 插件加载 | `npm run build:typescript` 包含 `build:plugins`；不替换已安装插件 | 构建通过；已安装 CC 插件加载未验收 |
 | Host 集成 | 运行中共享 Host 保持原状 | 本次未部署修复 |
 | 真实原生验收 | 新模型执行、真实 Fork / rollback | 本次未执行；仅只读历史 |
+| 图片输入（2026-11-14） | `npx tsc -b`；vitest 指定 turn-input、claude-queued-history、claude-code-adapter、claude-rollback、sdk-transport 及 host-runtime external-thread-claude-continuation；所改文件 eslint / prettier；`node tools/check-boundaries.mjs` | 通过；未在真实 Desktop 附图与真实模型上验收 |
 | Desktop / 委派 | GUI 工具限制与本次范围 | 本次未执行 |
 
 本次原生回放和聚焦测试结果存于 `/tmp/cc-queued-command-analysis-7WczIV/`，这是本地临时证据，不是发行依赖。冷历史 Item 身份稳定于原生记录，不承诺与 Host 的实时 Item ID 或本地 Web requestId 相同。

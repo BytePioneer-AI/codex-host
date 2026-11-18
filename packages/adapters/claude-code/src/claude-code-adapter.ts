@@ -133,6 +133,7 @@ import { ClaudeBackgroundCommandItems } from "./background-command-items.js";
 import { ClaudeToolLifecycle } from "./tool-lifecycle.js";
 import { estimateClaudeRequestCostUsd } from "./usage-estimate.js";
 import { ClaudeSteerMissedTurnError } from "./transport.js";
+import { claudeUserContent } from "./turn-input.js";
 import type {
   ClaudeAdapterDependencies,
   ClaudeApprovalRequest,
@@ -954,6 +955,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
 
     this.#acceptingTurn = true;
+    const content = await claudeUserContent(text);
     const startingTransport = this.#transport === null;
     let transport: ClaudeTurnTransport;
     try {
@@ -1050,7 +1052,7 @@ class ClaudeHarnessSession implements HarnessSession {
         nativeTurnKey,
         formatVersion: 1,
       });
-      const running = transport.runTurn(text, nativeTurnRef.nativeTurnKey, (event) => {
+      const running = transport.runTurn(content, nativeTurnRef.nativeTurnKey, (event) => {
         this.#handleTurnEvent(active, event);
       });
       // Claude preserves caller-assigned User Message UUIDs in native history.
@@ -1067,14 +1069,6 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
-    const active = this.#active;
-    if (!active || active.command.turnId !== command.turnId) {
-      return { ok: false, error: invalidState("Claude Code steer target is not the active Turn") };
-    }
-    if (active.cancellationRequested) {
-      // A cancelled Turn must not take more input; its Segments are being interrupted.
-      return { ok: false, error: invalidState("Claude Code steer target is being cancelled") };
-    }
     const text = command.input.map((input) => input.text).join("\n");
     if (text.length === 0) {
       return {
@@ -1085,6 +1079,16 @@ class ClaudeHarnessSession implements HarnessSession {
           retryable: false,
         },
       };
+    }
+    // Attachments are read before the target checks, so the Turn cannot end in between.
+    const content = await claudeUserContent(text, { steer: true });
+    const active = this.#active;
+    if (!active || active.command.turnId !== command.turnId) {
+      return { ok: false, error: invalidState("Claude Code steer target is not the active Turn") };
+    }
+    if (active.cancellationRequested) {
+      // A cancelled Turn must not take more input; its Segments are being interrupted.
+      return { ok: false, error: invalidState("Claude Code steer target is being cancelled") };
     }
     const transport = this.#transport;
     if (!transport) {
@@ -1105,7 +1109,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const messageId = this.#randomUUID();
     active.steersAwaitingNative.add(messageId);
     try {
-      await transport.steer(text, messageId, (started) =>
+      await transport.steer(content, messageId, (started) =>
         this.#takeOverSteer(active, messageId, started),
       );
     } catch (error) {

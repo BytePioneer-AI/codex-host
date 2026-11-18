@@ -274,6 +274,18 @@ codexhost(){
             "",
             47,
         ),
+        (
+            // Both opt-ins come from one read, so a valid session does not
+            // survive a malformed shared directory in the same manifest.
+            "session-with-invalid-shared",
+            serde_json::json!({
+                "executionSession": "desktop",
+                "sharedDataDirectory": "relative/shared",
+            }),
+            "",
+            "",
+            47,
+        ),
     ] {
         let home = root.join(name);
         let manifest = home.join(".codexhost/remote/manifest.json");

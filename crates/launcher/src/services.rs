@@ -229,15 +229,29 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
 }
 
 fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
-    if let Some((runtime, _)) = host_service::current_runtime(&options.data)
-        && runtime.canonicalize()? != options.host_runtime.canonicalize()?
-    {
-        return Err("The running Host belongs to a different installation".into());
+    if let Some((runtime, _)) = host_service::current_runtime(&options.data) {
+        let runtime = runtime
+            .canonicalize()
+            .map_err(|error| format!("Host: canonicalizing runtime failed: {error}"))?;
+        let expected = options
+            .host_runtime
+            .canonicalize()
+            .map_err(|error| format!("Host: canonicalizing host runtime failed: {error}"))?;
+        if runtime != expected {
+            return Err("The running Host belongs to a different installation".into());
+        }
     }
-    if let Some(owner) = web_service::owner(&options.data)?
-        && owner.runtime.canonicalize()? != options.runtime.canonicalize()?
-    {
-        return Err("The running Web belongs to a different installation".into());
+    if let Some(owner) = web_service::owner(&options.data)? {
+        let runtime = owner
+            .runtime
+            .canonicalize()
+            .map_err(|error| format!("Web: canonicalizing running Web runtime failed: {error}"))?;
+        let expected = options.runtime.canonicalize().map_err(|error| {
+            format!("Web: canonicalizing configured Web runtime failed: {error}")
+        })?;
+        if runtime != expected {
+            return Err("The running Web belongs to a different installation".into());
+        }
     }
     if let Some((launcher, _)) = desktop_attachment::managed_processes(&options.data)?
         && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
@@ -250,10 +264,12 @@ fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
 fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
     let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
     validate_installation(options)?;
-    desktop_attachment::stop_managed(&options.data)?;
-    web_service::stop(options)?;
+    desktop_attachment::stop_managed(&options.data)
+        .map_err(|error| format!("stopping Desktop failed: {error}"))?;
+    web_service::stop(options).map_err(|error| format!("stopping Web failed: {error}"))?;
     if host_service::current_runtime(&options.data).is_some() {
-        host_service::run(&options.host_arguments("stop"))?;
+        host_service::run(&options.host_arguments("stop"))
+            .map_err(|error| format!("stopping Host failed: {error}"))?;
     }
     Ok(())
 }

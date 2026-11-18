@@ -25,7 +25,7 @@ mod remote_lifecycle;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod remote_listener_process;
 
-use local_runtime_lease::LocalRuntimeLease;
+use local_runtime_lease::{LocalRuntimeAdmission, admit_local_runtime};
 
 pub type ShimResult<T> = Result<T, Box<dyn Error>>;
 
@@ -577,6 +577,27 @@ fn stop_detached_listener(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// A managed remote listener owns the remote installation's Host state. It must never run
+/// with a local Launcher session or without the remote data directory, otherwise its Host
+/// Runtime would use, and lock, the local Desktop's Mapping Store.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn ensure_remote_listener_environment() -> ShimResult<()> {
+    if let Some(launcher_id) = env::var_os(LAUNCHER_PID_ENV) {
+        return Err(format!(
+            "refusing to start the managed remote listener inside a local codexhost Desktop session (Launcher PID {}); the remote SSH bootstrap leaked into a local process, so start remote listeners only from an SSH session",
+            launcher_id.to_string_lossy()
+        )
+        .into());
+    }
+    if env::var_os(DATA_DIRECTORY_ENV).is_none_or(|value| value.is_empty()) {
+        return Err(format!(
+            "refusing to start the managed remote listener without {DATA_DIRECTORY_ENV}; reinstall the remote SSH Host so its profile exports the remote data directory"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
     use std::os::unix::net::UnixStream;
@@ -619,6 +640,7 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
         // the startup timeout, so a connectable socket alone proves readiness.
         previous_socket = None;
     }
+    ensure_remote_listener_environment()?;
     let mut command = Command::new(&current_executable);
     command
         .args(arguments)
@@ -714,6 +736,9 @@ fn child_command(
     };
     if !desktop_helper && should_start_host_runtime(arguments) {
         if inherited_remote_profile {
+            if is_managed_remote_listener(arguments) {
+                return Err("managed remote listener inherited a local codexhost Launcher session; start remote listeners only from an SSH session".into());
+            }
             return Err("local Desktop inherited remote Host bootstrap; restart through codexhost with a clean local environment".into());
         }
         match host_paths {
@@ -819,6 +844,20 @@ fn resolve_stock_codex_path(
 }
 
 /// Runs the byte-transparent proxy and emits optional lifecycle observations.
+/// A child that exits before its identity is recorded leaves no process to snapshot. Its exit
+/// status and stderr are the real diagnosis, so the proxy reports them instead of the
+/// registration error; the unpublished lease is released when it drops.
+fn child_exited_during_startup(child: &mut codexhost_platform::SupervisedChild) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => return false,
+        }
+    }
+}
+
 pub fn run_proxy_with_observer(
     arguments: &[OsString],
     observer: &impl ProxyObserver,
@@ -829,25 +868,49 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
-    let local_host_runtime = !desktop_helper
+    let mut desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
+    let mut local_host_runtime = !desktop_helper
         && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()
         && !is_managed_remote_listener(arguments)
         && env::var_os(DATA_DIRECTORY_ENV).is_some();
-    let mut local_runtime_lease = if local_host_runtime {
-        Some(LocalRuntimeLease::acquire(&PathBuf::from(
+    let mut local_runtime_lease = None;
+    if local_host_runtime {
+        let data_directory = PathBuf::from(
             env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
-        ))?)
-    } else {
-        None
-    };
+        );
+        match admit_local_runtime(&data_directory, &stock_codex_path)? {
+            LocalRuntimeAdmission::Owner(lease) => local_runtime_lease = Some(lease),
+            LocalRuntimeAdmission::OfficialCli(reason) => {
+                eprintln!(
+                    "codexhost shim: {reason}; this app-server was not started by Codex Desktop, so it runs on the official CLI"
+                );
+                desktop_helper = true;
+                local_host_runtime = false;
+            }
+        }
+    }
     let mut command = child_command(
         arguments,
         &current_executable,
         &stock_codex_path,
         desktop_helper,
     )?;
+    #[cfg(target_os = "macos")]
+    if command.get_program() == stock_codex_path.as_os_str()
+        && !is_managed_remote_listener(arguments)
+        && (desktop_helper
+            || (!host_runtime_paths_are_configured()
+                && env::var_os(STOCK_CODEX_PATH_ENV).is_none()))
+        && (app_server_subcommand_index(arguments).is_some()
+            || arguments
+                .first()
+                .is_some_and(|argument| argument == "sandbox"))
+    {
+        // Native peer authorization requires the signed helper's original caller chain.
+        use std::os::unix::process::CommandExt;
+        return Err(command.exec().into());
+    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -856,6 +919,7 @@ pub fn run_proxy_with_observer(
     let child_id = child.id();
     if let Some(lease) = &mut local_runtime_lease
         && let Err(error) = lease.set_child_process_id(child_id)
+        && !child_exited_during_startup(&mut child)
     {
         let _ = child.force_terminate();
         let _ = child.wait();

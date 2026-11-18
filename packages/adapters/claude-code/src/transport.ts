@@ -1,3 +1,5 @@
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+
 import type { ClaudeUsageRecord } from "./claude-usage.js";
 import type {
   HarnessAccountSnapshot,
@@ -9,6 +11,9 @@ import type { ClaudeSlashCommandSnapshot } from "./slash-commands.js";
 import type { ClaudeNativeFileChange } from "./file-change.js";
 import type { ClaudeModelInspectionSnapshot } from "./model-catalog.js";
 import type { ClaudePermissionMode } from "./permission-modes.js";
+
+/** Native user message content: prompt text, or text followed by image blocks. */
+export type ClaudeUserContent = SDKUserMessage["message"]["content"];
 
 export type ClaudeTransportFailureKind =
   "authentication" | "cancellationUnproven" | "native" | "protocol" | "textConflict";
@@ -91,7 +96,8 @@ export interface ClaudeLastRequestUsage {
 }
 
 export type ClaudeTurnEvent =
-  | { type: "segment.started" }
+  /** `mcpServers` lists the configured MCP server names Claude reported for this Segment. */
+  | { type: "segment.started"; mcpServers?: string[] }
   | { type: "subagents.live"; nativeSubagentIds: string[] }
   | { type: "compaction.started" }
   | { type: "compaction.completed"; outcome: "succeeded" | "failed" }
@@ -301,7 +307,11 @@ export interface ClaudeTurnTransport {
    */
   canSteerActiveTurn?(): boolean;
   getPermissionMode(): ClaudePermissionMode;
-  setModel(model?: string): Promise<void>;
+  /**
+   * Switches the live Model. `thinkingOptionId`, when it differs from the current selection, is
+   * applied with the Model so a choice the new Model does not support is never left running.
+   */
+  setModel(model?: string, thinkingOptionId?: HarnessThinkingOptionId): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
   setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void>;
   compact(
@@ -323,12 +333,12 @@ export interface ClaudeTurnTransport {
    * with the events that Segment still holds.
    */
   runTurn(
-    text: string,
+    content: ClaudeUserContent,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult>;
   /**
-   * Inserts text into the active Turn at Claude's tool boundary (`priority: "next"`).
+   * Inserts input into the active Turn at Claude's tool boundary (`priority: "next"`).
    * Resolves when Claude emits `command_lifecycle` `queued` for that message, or after a bounded
    * wait once it is written: from then on Claude owns its delivery, joining the running Turn after
    * the current tool call, or running it next. The Turn ending first does not reject a written
@@ -339,7 +349,11 @@ export interface ClaudeTurnTransport {
    * (`command_lifecycle` `started`), `false` when it ends without one, the `queued` receipt never
    * arrives, or the transport closes or faults first.
    */
-  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void>;
+  steer(
+    content: ClaudeUserContent,
+    messageId: string,
+    onTakeover?: (started: boolean) => void,
+  ): Promise<void>;
   respondToInteraction(response: ClaudeInteractionResponse): Promise<void>;
   /** Interrupts the running requested or autonomous Turn; its Terminal still follows. */
   abort(): Promise<void>;

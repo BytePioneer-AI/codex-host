@@ -44,6 +44,9 @@ interface DetailGroup {
 }
 
 const MEASURE_STYLE: CSSProperties = { visibility: "hidden", left: 0, top: 0 };
+const HOVER_OPEN_DELAY_MS = 160;
+const HOVER_CLOSE_DELAY_MS = 140;
+const TAP_SLOP_PX = 8;
 
 function decimal(value: number, digits = 1): string {
   return value.toFixed(digits).replace(/\.?0+$/u, "");
@@ -583,7 +586,9 @@ function UsagePopover({
     onOpenChange?.(open);
   }, [onOpenChange, open]);
   const pinned = useRef(false);
+  const openTimer = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
+  const tapOrigin = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const rootRef = useRef<HTMLSpanElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const position = useAnchoredPosition({
@@ -594,16 +599,33 @@ function UsagePopover({
     gap: 8,
     margin: 12,
   });
-  const close = useCallback(() => {
-    pinned.current = false;
-    setOpen(false);
+  const cancelOpen = useCallback(() => {
+    if (openTimer.current === null) return;
+    window.clearTimeout(openTimer.current);
+    openTimer.current = null;
   }, []);
   const cancelClose = useCallback(() => {
     if (closeTimer.current === null) return;
     window.clearTimeout(closeTimer.current);
     closeTimer.current = null;
   }, []);
+  const close = useCallback(() => {
+    cancelOpen();
+    cancelClose();
+    pinned.current = false;
+    setOpen(false);
+  }, [cancelClose, cancelOpen]);
+  const scheduleOpen = useCallback(() => {
+    cancelClose();
+    if (open) return;
+    cancelOpen();
+    openTimer.current = window.setTimeout(() => {
+      openTimer.current = null;
+      setOpen(true);
+    }, HOVER_OPEN_DELAY_MS);
+  }, [cancelClose, cancelOpen, open]);
   const scheduleClose = useCallback(() => {
+    cancelOpen();
     cancelClose();
     closeTimer.current = window.setTimeout(() => {
       closeTimer.current = null;
@@ -614,8 +636,8 @@ function UsagePopover({
         !rootRef.current?.contains(document.activeElement)
       )
         setOpen(false);
-    }, 140);
-  }, [cancelClose]);
+    }, HOVER_CLOSE_DELAY_MS);
+  }, [cancelClose, cancelOpen]);
 
   useDismissOnOutsidePointer(
     rootRef,
@@ -630,11 +652,20 @@ function UsagePopover({
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") close();
     };
+    const onScroll = (event: Event): void => {
+      if (event.target instanceof Node && panelRef.current?.contains(event.target)) return;
+      close();
+    };
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("scroll", onScroll, true);
+    };
   }, [close, open]);
   useEffect(
     () => () => {
+      if (openTimer.current !== null) window.clearTimeout(openTimer.current);
       if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
     },
     [],
@@ -644,11 +675,14 @@ function UsagePopover({
       ref={rootRef}
       className={css.anchor}
       data-composer-stat={stat}
-      onPointerEnter={() => {
-        cancelClose();
-        setOpen(true);
+      onPointerEnter={(event) => {
+        if (event.pointerType !== "mouse") return;
+        scheduleOpen();
       }}
-      onPointerLeave={scheduleClose}
+      onPointerLeave={(event) => {
+        if (event.pointerType !== "mouse") return;
+        scheduleClose();
+      }}
     >
       <button
         type="button"
@@ -656,12 +690,35 @@ function UsagePopover({
         aria-label={label}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onFocus={() => {
+        onFocus={(event) => {
+          if (!event.currentTarget.matches(":focus-visible")) return;
           cancelClose();
           setOpen(true);
         }}
         onBlur={scheduleClose}
+        onPointerDown={(event) => {
+          if (event.pointerType === "mouse") {
+            tapOrigin.current = null;
+            return;
+          }
+          tapOrigin.current = { x: event.clientX, y: event.clientY, moved: false };
+        }}
+        onPointerMove={(event) => {
+          const origin = tapOrigin.current;
+          if (!origin || origin.moved) return;
+          if (Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > TAP_SLOP_PX) {
+            origin.moved = true;
+          }
+        }}
+        onPointerCancel={() => {
+          if (tapOrigin.current) tapOrigin.current.moved = true;
+        }}
         onClick={() => {
+          const origin = tapOrigin.current;
+          tapOrigin.current = null;
+          if (origin?.moved) return;
+          cancelOpen();
+          cancelClose();
           if (open && pinned.current) close();
           else {
             pinned.current = true;
@@ -679,8 +736,14 @@ function UsagePopover({
             style={{ ...panelStyle, ...(position ?? MEASURE_STYLE) }}
             role="dialog"
             aria-label={title}
-            onPointerEnter={cancelClose}
-            onPointerLeave={scheduleClose}
+            onPointerEnter={(event) => {
+              if (event.pointerType !== "mouse") return;
+              cancelClose();
+            }}
+            onPointerLeave={(event) => {
+              if (event.pointerType !== "mouse") return;
+              scheduleClose();
+            }}
           >
             {children}
           </div>,

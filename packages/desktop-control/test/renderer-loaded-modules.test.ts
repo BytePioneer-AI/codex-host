@@ -68,6 +68,7 @@ describe("Controller loaded Renderer module catalog", () => {
       "Debugger.enable",
       "Runtime.evaluate",
     ]);
+    expect(f.client.command).toHaveBeenCalledWith("Debugger.enable", { maxScriptsCacheSize: 0 });
     expect(f.page("main").__codexhostLoadedModulesV1).toMatchObject({
       documentUrl: "app://-/index.html",
       complete: true,

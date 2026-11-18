@@ -47,10 +47,97 @@ afterEach(async () => {
   vi.useRealTimers();
   for (const socket of sockets.splice(0)) socket.destroy();
   for (const relay of relays.splice(0)) await relay.close();
+  vi.restoreAllMocks();
 });
 
-describe("optional Relay resource limits", () => {
-  it("allows computers and pending TCP connections without a limit", async () => {
+describe("per-IP connection rate limits", () => {
+  it.each([
+    { mode: "defaults", options: {}, limit: 50, ban: 10_000 },
+    {
+      mode: "configured limits",
+      options: { ipConnectionLimit: 3, ipConnectionWindow: 2_000, ipBanDuration: 1_000 },
+      limit: 3,
+      ban: 1_000,
+    },
+  ])(
+    "rejects new TCP connections until the cooldown expires with $mode",
+    async ({ options, limit, ban }) => {
+      const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+      const relay = await start(options);
+      const tls = createTlsServer(credentials);
+      const agent = await fakeAgent({
+        port: relay.port,
+        tcp: (stream) => tls.emit("connection", stream),
+      });
+      await agent.registered;
+      const client = phone(agent.hostname, undefined, relay.port);
+      sockets.push(client);
+      await once(client, "secureConnect");
+
+      // Computer, phone and closed connections without a ClientHello share the same budget.
+      for (let index = 2; index < limit; index++) {
+        const pending = rawConnection(relay.port);
+        await once(pending, "connect");
+        await expectConnections(relay, 3);
+        pending.destroy();
+        await expectConnections(relay, 2);
+      }
+
+      const rejected = rawConnection(relay.port);
+      await vi.waitFor(() => expect(rejected.destroyed).toBe(true));
+      expect(rejected.bytesRead).toBe(0);
+      clock.mockReturnValue(ban - 1);
+      const stillRejected = rawConnection(relay.port);
+      await vi.waitFor(() => expect(stillRejected.destroyed).toBe(true));
+      expect(agent.ws.readyState).toBe(WebSocket.OPEN);
+      expect(client.destroyed).toBe(false);
+
+      // Attempts during the ban must not extend it, even when the window exceeds the ban.
+      clock.mockReturnValue(ban);
+      const recovered = phone(agent.hostname, undefined, relay.port);
+      sockets.push(recovered);
+      await once(recovered, "secureConnect");
+      await expectConnections(relay, 3);
+    },
+  );
+
+  it("expires individual attempts at the sliding-window boundary", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    const relay = await start({ ipConnectionLimit: 2, ipConnectionWindow: 1_000 });
+    const first = rawConnection(relay.port);
+    await once(first, "connect");
+    await expectConnections(relay, 1);
+    clock.mockReturnValue(999);
+    const second = rawConnection(relay.port);
+    await once(second, "connect");
+    await expectConnections(relay, 2);
+
+    clock.mockReturnValue(1_000);
+    const third = rawConnection(relay.port);
+    await once(third, "connect");
+    await expectConnections(relay, 3);
+    const rejected = rawConnection(relay.port);
+    await vi.waitFor(() => expect(rejected.destroyed).toBe(true));
+    expect([first, second, third].every((socket) => !socket.destroyed)).toBe(true);
+  });
+
+  it("also counts attempts rejected by the total TCP connection limit", async () => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
+    const relay = await start({ maxConnections: 1, ipConnectionLimit: 2 });
+    const first = rawConnection(relay.port);
+    await once(first, "connect");
+    await expectConnections(relay, 1);
+    await closed(rawConnection(relay.port));
+    first.destroy();
+    await expectConnections(relay, 0);
+
+    const rejected = rawConnection(relay.port);
+    await vi.waitFor(() => expect(rejected.destroyed).toBe(true));
+  });
+});
+
+describe("Relay resource limits", () => {
+  it("allows computers and pending TCP connections without a total TCP limit", async () => {
     const relay = await start();
     const agents = await Promise.all(
       Array.from({ length: 3 }, () => fakeAgent({ port: relay.port })),
@@ -63,13 +150,16 @@ describe("optional Relay resource limits", () => {
     expect(pending.destroyed).toBe(false);
   });
 
-  it("rejects an invalid maxConnections before creating a listener", () => {
-    for (const value of [0, -1, 1.5, Number.NaN, Infinity]) {
-      expect(() =>
-        createRelay({ domain: "relay.test", cert: certPath, key: keyPath, maxConnections: value }),
-      ).toThrow();
-    }
-  });
+  it.each(["maxConnections", "ipConnectionLimit", "ipConnectionWindow", "ipBanDuration"])(
+    "rejects an invalid %s before creating a listener",
+    (option) => {
+      for (const value of [0, -1, 1.5, Number.NaN, Infinity]) {
+        expect(() =>
+          createRelay({ domain: "relay.test", cert: certPath, key: keyPath, [option]: value }),
+        ).toThrow();
+      }
+    },
+  );
 
   it("counts computers, phones and incomplete ClientHellos toward the TCP limit and releases slots", async () => {
     const relay = await start({ maxConnections: 3 });

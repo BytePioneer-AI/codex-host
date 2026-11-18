@@ -124,6 +124,11 @@ export const clientChannelEventSchema = z.discriminatedUnion("type", [
     cursor: clientChannelCursorSchema,
     cwd: z.string().optional(),
   }),
+  z.object({
+    type: z.literal("harness-inspection-changed"),
+    cursor: clientChannelCursorSchema,
+    harnessId: z.string().min(1),
+  }),
   z.object({ type: z.literal("display-settings-changed"), cursor: clientChannelCursorSchema }),
   z.object({
     type: z.literal("preferences-changed"),

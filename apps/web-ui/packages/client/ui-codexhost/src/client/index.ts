@@ -36,6 +36,7 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
+import { DocumentDownload } from "./DocumentDownload.tsx";
 import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
@@ -91,6 +92,7 @@ export const inject = [
   "workspaces",
   "sessions",
   "remote",
+  "remote.session",
   "inputTriggers",
   "theme",
   "connection",
@@ -113,6 +115,23 @@ const HOST_SETTINGS_PAGES = [
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
+  ctx.slots.inject("sidebar.right.tab.document.actions", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.right.tab.document.actions",
+        id: "codexhost-download",
+        inject: (sessionId) => ({
+          sessionId,
+          label: t("file.download"),
+          openFolderLabel: t("file.openFolder"),
+          openFolderFailedLabel: t("file.openFolder.failed"),
+          revealFolder: (path: string) =>
+            ctx.remote.session.openWorkspacePath({ path, action: "reveal" }),
+        }),
+      },
+      DocumentDownload,
+    ),
+  );
   const installation = ctx.get("pwaInstall");
   if (installation !== undefined) {
     ctx.slots.inject("settings.general.item", () =>

@@ -169,6 +169,18 @@ export class OmpRpcFaultError extends Error {
   }
 }
 
+/** A correlated native response explicitly refused steer before acceptance. */
+export class OmpRpcSteerRejectedError extends Error {}
+
+export class OmpRpcSteerTargetEndedError extends OmpRpcFaultError {
+  constructor(readonly history: OmpSessionHistory) {
+    super(
+      "protocolError",
+      "Omp Turn ended before steer admission could be confirmed. Delivery is unknown; do not automatically resend the input",
+    );
+  }
+}
+
 export class OmpRpcUnsupportedCommandError extends Error {
   constructor(readonly command: string) {
     super(`Omp RPC does not support '${command}'`);
@@ -934,6 +946,37 @@ export class OmpRpcSession {
     }
   }
 
+  async steer(message: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Omp RPC Session is unavailable");
+    }
+    if (message.length === 0) throw new Error("Omp steer text must not be empty");
+    const target = this.#activeTurn;
+    let targetEnded = false;
+    const response = await this.#send("steer", { message }, undefined, () => {
+      // Check at the receipt frame: the Turn may settle before the await resumes.
+      targetEnded = target !== null && this.#activeTurn !== target;
+    });
+    if (
+      isRecord(response.data) &&
+      response.data.disposition !== undefined &&
+      response.data.disposition !== "queued"
+    ) {
+      // An input hook may have handled it already; retrying could repeat its effects.
+      throw new Error("Omp steer was handled without confirming same-Turn queue admission");
+    }
+    if (targetEnded) {
+      // Retain the terminal history before closing the runtime and its idle queue.
+      let history: OmpSessionHistory;
+      try {
+        history = await this.getEntries();
+      } finally {
+        await this.close().catch(() => undefined);
+      }
+      throw new OmpRpcSteerTargetEndedError(history);
+    }
+  }
+
   async runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult> {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Omp RPC Session is unavailable");
@@ -1657,7 +1700,12 @@ export class OmpRpcSession {
       pending.resolve(value);
     } else {
       const error = typeof value.error === "string" ? value.error : "Omp RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (pending.command === "steer" && value.command === "steer" && value.success === false) {
+        pending.reject(new OmpRpcSteerRejectedError(error));
+      } else if (
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new OmpRpcUnsupportedCommandError(pending.command));
       } else {
         pending.reject(new Error(error));
@@ -2026,6 +2074,7 @@ export class OmpRpcSession {
     type: string,
     payload: Record<string, unknown>,
     id = `codexhost-${randomUUID()}`,
+    onResponse?: () => void,
   ): Promise<Record<string, unknown>> {
     const child = this.#child;
     if (!child?.stdin.writable || this.#closed || this.#failed) {
@@ -2034,7 +2083,10 @@ export class OmpRpcSession {
     return new Promise((resolve, reject) => {
       const pending: PendingCommand = {
         command: type,
-        resolve,
+        resolve: (response) => {
+          onResponse?.();
+          resolve(response);
+        },
         reject,
         timeout: null,
       };

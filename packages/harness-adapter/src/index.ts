@@ -82,6 +82,8 @@ export type {
   HostTextInput,
   HostTextQuestion,
   HostToolExecutionItem,
+  HostMcpToolCallItem,
+  HostWebSearchItem,
   HostToolOutput,
   HostTurnSnapshot,
   InteractionClosedEvent,

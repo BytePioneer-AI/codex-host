@@ -26,6 +26,7 @@ import { normalizeUri } from "micromark-util-sanitize-uri";
 import type { CodeToolbarLabels } from "../CodeToolbar.tsx";
 import { CodeBlock } from "./CodeBlock.tsx";
 import { parseFileLink } from "./file-link.ts";
+import { linkContextMenuProps } from "./link-context-menu.ts";
 import { freshImageUrl, nextImageLoad } from "./image-load.ts";
 import { renderTexToReact } from "./katex.tsx";
 import { LinkIconMedium, classifyLinkPath } from "../LinkIcon.tsx";
@@ -605,7 +606,7 @@ function renderAnchor(
   const file = streaming ? undefined : parseFileLink(url);
   if (file !== undefined) {
     return (
-      <MarkdownFileLink key={key} file={file} glyph={glyph}>
+      <MarkdownFileLink key={key} href={url} file={file} glyph={glyph}>
         {children}
       </MarkdownFileLink>
     );
@@ -614,15 +615,17 @@ function renderAnchor(
 }
 
 function MarkdownFileLink({
+  href,
   file,
   glyph,
   children,
 }: {
+  readonly href: string;
   readonly file: { path: string; line?: number };
   readonly glyph: boolean;
   readonly children: ReactNode[];
 }): ReactNode {
-  const { openFile, fileImages } = useMarkdownDelegate();
+  const { openFile, onLinkContextMenu, fileImages } = useMarkdownDelegate();
   const [load] = useState(nextImageLoad);
   if (openFile === undefined) return <>{children}</>;
   // Pure-image anchors already contain their preview and keep one navigation target.
@@ -634,8 +637,12 @@ function MarkdownFileLink({
       type="button"
       className={clsx(css.fileMention, css.fileLink)}
       title={src === undefined ? file.path : undefined}
-      onClick={() => {
-        openFile(file.path, file.line === undefined ? undefined : { line: file.line });
+      {...linkContextMenuProps(onLinkContextMenu, { kind: "file", href, ...file })}
+      onClick={(event) => {
+        openFile(file.path, {
+          ...(file.line === undefined ? {} : { line: file.line }),
+          ...(event.ctrlKey || event.metaKey ? { external: true } : {}),
+        });
       }}
     >
       {glyph && <LinkIconMedium kind={classifyLinkPath(file.path)} className={css.linkIcon} />}

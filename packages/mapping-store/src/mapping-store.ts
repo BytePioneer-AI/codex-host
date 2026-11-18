@@ -26,6 +26,7 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import {
+  MAX_PENDING_INJECTED_TEXTS,
   THREAD_METADATA_FIELDS,
   storedDelegationRecordV1Schema,
   storedThreadMetadataV1Schema,
@@ -35,6 +36,7 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type InjectedTurnPrefix,
   type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
@@ -583,6 +585,10 @@ export class MappingStore {
         historyMode: input.historyMode,
         ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
         ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+        ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+        ...(input.inheritedTurnCount !== undefined
+          ? { inheritedTurnCount: input.inheritedTurnCount }
+          : {}),
         ...(input.subagent ? { subagent: input.subagent } : {}),
         turnMappings: [],
         createdAt: timestamp,
@@ -847,6 +853,58 @@ export class MappingStore {
   async setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
     return this.#update(hostThreadId, (current) =>
       current.archived === archived ? null : { ...current, archived },
+    );
+  }
+
+  /** Hold `thread/inject_items` text for the next Turn; over the limit, fail and keep the queue. */
+  async appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        if (texts.length === 0) return null;
+        const pending = [...(current.pendingInjectedText ?? []), ...texts];
+        if (pending.length > MAX_PENDING_INJECTED_TEXTS) {
+          throw new MappingStoreError(
+            "INVALID_RECORD",
+            `At most ${MAX_PENDING_INJECTED_TEXTS} injected texts can wait for the next Turn`,
+          );
+        }
+        return { ...current, pendingInjectedText: pending };
+      },
+      true,
+    );
+  }
+
+  /**
+   * Record that a started Turn delivered the held texts before position `through`, counted over
+   * every text ever held, and release the ones still queued. Another Turn may have released
+   * them already; texts held after that keep their own positions, even with the same content.
+   */
+  async consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    through: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => {
+        const released = current.releasedInjectedTexts ?? 0;
+        const queued = current.pendingInjectedText ?? [];
+        const count = Math.min(Math.max(through - released, 0), queued.length);
+        const pending = queued.slice(count);
+        const next: StoredThreadRecordV1 = {
+          ...current,
+          releasedInjectedTexts: released + count,
+          injectedTurnPrefixes: [...(current.injectedTurnPrefixes ?? []), prefix],
+        };
+        if (pending.length > 0) next.pendingInjectedText = pending;
+        else delete next.pendingInjectedText;
+        return next;
+      },
+      true,
     );
   }
 

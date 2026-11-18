@@ -589,6 +589,26 @@ describe("history replay", () => {
     expect(result[0]?.nativeTurnRef.nativeTurnKey).toBe("stored-key");
     expect(result[0]?.checkpoint?.checkpointId).toBe("turn-0");
   });
+  it("preserves known turn keys and skips them when generating a fallback", () => {
+    const result = projectReplayedEventsToTurns({
+      nativeSessionId: "native",
+      cwd: "/repo",
+      events: [...events, { type: "user.text", text: "Third" }],
+      knownTurnRefs: ["turn-0", "turn-2"].map((nativeTurnKey) =>
+        nativeTurnRefSchema.parse({
+          harnessId: "antigravity",
+          nativeSessionId: "native",
+          nativeTurnKey,
+          formatVersion: 1,
+        }),
+      ),
+    });
+    expect(result.map(({ nativeTurnRef }) => nativeTurnRef.nativeTurnKey)).toEqual([
+      "turn-0",
+      "turn-2",
+      "turn-3",
+    ]);
+  });
   it("does not invent turns from metadata and marks unterminated tools interrupted", () => {
     expect(
       projectReplayedEventsToTurns({

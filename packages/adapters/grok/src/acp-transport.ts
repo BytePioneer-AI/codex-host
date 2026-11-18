@@ -24,6 +24,7 @@ import {
 } from "@agentclientprotocol/sdk";
 
 import { parseGrokAvailableCommands, type GrokAvailableCommand } from "./grok-slash-commands.js";
+import { parseGrokModelState } from "./grok-models.js";
 import { GrokExecutableError, grokInvocation, resolveGrokExecutable } from "./command.js";
 import {
   GROK_SESSION_DELETE_METHOD,
@@ -600,16 +601,31 @@ export class GrokAcpTransport {
     if (this.#sessionId) throw new Error("Grok ACP inspection cannot reuse an open Session");
     try {
       const initialize = await this.#ensureInitialized();
+      const connection = this.#connection;
+      if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
       if (initialize.agentCapabilities?.sessionCapabilities?.list) {
-        const connection = this.#connection;
-        if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
         await withTimeout(
           connection.listSessions({ cwd: this.#options.cwd }),
           this.#options.commandTimeoutMs,
           "Grok Session inspection",
         );
       }
-      return initialize;
+      // initialize can contain the fallback catalog from before authentication recovered.
+      // Read the native catalog again after the startup round trips have completed.
+      try {
+        const response = await withTimeout(
+          connection.request("_x.ai/models/list", {}),
+          this.#options.commandTimeoutMs,
+          "Grok Model inspection",
+        );
+        const modelState = isRecord(response) ? response.result : undefined;
+        if (!parseGrokModelState(modelState))
+          throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
+        return { ...initialize, _meta: { ...initialize._meta, modelState } };
+      } catch (error) {
+        if (isGrokMethodNotFound(error)) return initialize;
+        throw error;
+      }
     } catch (error) {
       const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);

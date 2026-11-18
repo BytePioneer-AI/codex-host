@@ -18,8 +18,6 @@ import {
 export interface AntigravitySessionUsageTrackerOptions {
   nativeSessionId: string;
   homedir: string;
-  initialContextUsedTokens?: number;
-  initialContextWindowTokens?: number;
   expectedInitialTurns?: number;
 }
 
@@ -193,15 +191,6 @@ export class AntigravitySessionUsageTracker {
       "logs",
       "transcript.jsonl",
     );
-    if (
-      options.initialContextUsedTokens !== undefined &&
-      options.initialContextWindowTokens !== undefined
-    ) {
-      this.recordContextWindow(
-        options.initialContextUsedTokens,
-        options.initialContextWindowTokens,
-      );
-    }
   }
 
   currentUsage(): HostUsage | null {

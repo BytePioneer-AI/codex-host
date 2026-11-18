@@ -306,9 +306,13 @@ export interface InputActions {
   /**
    * Attach one selected passage to the next message, in attachment order.
    * @param annotation - selected text and its optional comment.
-   * @returns the new draft identity, or undefined while a submission holds the draft.
+   * @param options - optionally focus the mounted Composer at the draft's end after success.
+   * @returns the new draft identity, or undefined while locked or the requested Composer is unavailable.
    */
-  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined;
+  addResponseAnnotation(
+    annotation: ResponseAnnotation,
+    options?: { readonly focus: "end" },
+  ): DraftAttachmentId | undefined;
   /** Remove one attached annotation by draft identity; busy admission phases refuse. */
   removeResponseAnnotation(id: DraftAttachmentId): void;
   /** Enter submission (adjudication / claim transaction / default sink inside). */

@@ -67,6 +67,10 @@ export type UsePresentation = SnapshotSelectorHook<ChatPresentationPolicy>;
 export interface OpenFileOptions {
   /** 1-based line to reveal; absent = the file's beginning. */
   readonly line?: number;
+  /** Hand the original file to the Host operating system's default application. */
+  readonly external?: boolean;
+  /** Reveal the original file's containing folder on the Host desktop. */
+  readonly reveal?: boolean;
 }
 
 /** Owner currency of the completed-Turn extension chain. */
@@ -310,6 +314,8 @@ export interface ChatViewInjected {
   hooks: {
     /** Live presentation policy derived from the accepted work-details mode. */
     presentation: ObservableSnapshot<ChatPresentationPolicy>;
+    /** Whether the Sidebar Browser is registered. */
+    browserAvailable: ObservableSnapshot<boolean>;
   };
   keyedHooks: {
     /** Resolve the stable source for one Chat Node key. */
@@ -325,6 +331,8 @@ export interface ChatViewInjected {
   openSkill: (name: string) => void;
   /** Open one HTTP(S) message link at the selected destination, using an external tab if Sidebar Browser is unavailable. */
   openExternalLink: (url: string) => void;
+  /** Open one HTTP(S) message link in Sidebar Browser when available. */
+  openLinkInSidebar: (url: string) => boolean;
   /** Resolve product-specific message links without exposing their protocols to Chat. */
   resolveLink?: MarkdownLinkResolver | undefined;
   openFile: (path: string, options?: OpenFileOptions) => Promise<void>;

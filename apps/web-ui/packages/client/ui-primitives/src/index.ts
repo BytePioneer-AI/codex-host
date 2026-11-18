@@ -157,6 +157,7 @@ export type {
   MarkdownExternalLinkHandler,
   MarkdownLinkResolver,
 } from "./markdown/MarkdownDelegate.tsx";
+export type { MarkdownLinkMenuTarget } from "./markdown/link-context-menu.ts";
 export { MarkdownText } from "./markdown/MarkdownText.tsx";
 export { MarkdownAnchor } from "./markdown/MarkdownAnchor.tsx";
 export type {

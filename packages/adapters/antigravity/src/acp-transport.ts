@@ -12,8 +12,6 @@ import { commandInvocation as antigravityInvocation } from "@codexhost/harness-d
 
 import { projectAcpSessionUpdate } from "./acp-projection.js";
 import { resolveAntigravityExecutable } from "./command.js";
-import { nativeReplayCompletion, readNativeReplaySize } from "./native-replay.js";
-import { antigravityHome } from "./usage-statistics.js";
 import {
   AntigravityTransportError,
   type AntigravityAcpConfigOption,
@@ -40,7 +38,6 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   #acceptCallbacks = false;
   #promptInterrupted: AbortController | null = null;
   #opening: Array<{ sessionId: string; event: AntigravityAcpEvent }> | null = null;
-  #observeReplay: ((sessionId: string, event: AntigravityAcpEvent) => void) | null = null;
   #pendingEvents: AntigravityAcpEvent[] = [];
   #closed = false;
   #closing: Promise<void> | null = null;
@@ -116,7 +113,10 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       child.stdin.on("error", (error) => this.#fault(this.#error(error)));
       const stream = ndJsonStream(
         Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-        Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+        // Keep draining ACP stdout even when the consumer is slow.
+        Readable.toWeb(child.stdout, {
+          strategy: { highWaterMark: Infinity },
+        }) as ReadableStream<Uint8Array>,
       );
       // agy extends the SDK's tool/permission/form shapes (args, allow_session,
       // and oneOf array items). Dispatch those incoming payloads through the SDK's
@@ -131,7 +131,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
                 update: Record<string, unknown>;
               };
               // Consume updates in wire order: the SDK may resolve a response before
-              // queued notification handlers, dropping the tail of load/prompt output.
+              // queued notification handlers, dropping the tail of prompt output.
               this.#update(params.sessionId, params.update);
               return;
             }
@@ -203,7 +203,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
 
   async openSession(
     input: AntigravityOpenAcpSessionInput,
-  ): Promise<{ opened: AntigravityAcpSessionOpenResult; replayedEvents: AntigravityAcpEvent[] }> {
+  ): Promise<{ opened: AntigravityAcpSessionOpenResult }> {
     await this.initialize();
     if (this.#closed || !this.#connection || this.#active || this.#opening || this.#sessionId)
       throw new AntigravityTransportError(
@@ -225,33 +225,12 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
         : {}),
     };
     try {
-      const replay =
-        input.kind === "load" && input.sessionId
-          ? nativeReplayCompletion(
-              await readNativeReplaySize(
-                input.sessionId,
-                antigravityHome(this.options.environment ?? process.env),
-              ),
-            )
-          : undefined;
-      this.#observeReplay = replay
-        ? (sessionId, event) => {
-            if (sessionId === input.sessionId) replay.observe(event);
-          }
-        : null;
       let request: Promise<unknown>;
       if (input.kind === "create") request = connection.newSession(params);
       else {
         if (!input.sessionId)
-          throw new AntigravityTransportError(
-            "protocolError",
-            "Session ID required for resume/load",
-          );
-        const target = { ...params, sessionId: input.sessionId };
-        request =
-          input.kind === "resume"
-            ? connection.resumeSession(target)
-            : connection.loadSession(target);
+          throw new AntigravityTransportError("protocolError", "Session ID required for resume");
+        request = connection.resumeSession({ ...params, sessionId: input.sessionId });
       }
       const result = await this.#request(
         request,
@@ -268,11 +247,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
           "Antigravity session/new returned no sessionId",
         );
       this.#sessionId = sessionId;
-      if (replay) await this.#request(replay.complete, "session/load replay");
-      const events = buffered
-        .filter((entry) => entry.sessionId === sessionId)
-        .map(({ event }) => event);
-      if (input.kind !== "load") for (const event of events) this.#dispatch(event);
+      for (const entry of buffered) if (entry.sessionId === sessionId) this.#dispatch(entry.event);
       return {
         opened: {
           sessionId,
@@ -281,11 +256,9 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
           ...(raw.configOptions ? { configOptions: raw.configOptions } : {}),
           ...(raw._meta?.antigravity?.tier ? { tier: raw._meta.antigravity.tier } : {}),
         },
-        replayedEvents: input.kind === "load" ? events : [],
       };
     } finally {
       this.#opening = null;
-      this.#observeReplay = null;
     }
   }
 
@@ -399,7 +372,6 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     if (!event) return;
     if (this.#opening) {
       this.#opening.push({ sessionId, event });
-      this.#observeReplay?.(sessionId, event);
       return;
     }
     if (sessionId === this.#sessionId) this.#dispatch(event);

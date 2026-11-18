@@ -15,7 +15,7 @@ import {
   type ObservableSnapshot,
   type SnapshotStore,
 } from "@deepseek-ai/dsh-client-store";
-import type { LexicalEditor } from "lexical";
+import { $getRoot, type LexicalEditor } from "lexical";
 import type {
   CommandClaim,
   ComposerPrimaryAction,
@@ -196,7 +196,20 @@ export class SessionInputShell implements SessionInput {
     pruneAttachments: (ids) => {
       this.pruneAttachments(ids);
     },
-    addResponseAnnotation: (annotation) => this.addResponseAnnotation(annotation),
+    addResponseAnnotation: (annotation, options) => {
+      if (options?.focus === "end" && !this.canInsertReferences()) return undefined;
+      const id = this.addResponseAnnotation(annotation);
+      if (id !== undefined && options?.focus === "end" && this.canInsertReferences()) {
+        this.editor.update(
+          () => {
+            $getRoot().selectEnd();
+          },
+          { discrete: true },
+        );
+        this.focus();
+      }
+      return id;
+    },
     removeResponseAnnotation: (id) => {
       this.removeResponseAnnotation(id);
     },

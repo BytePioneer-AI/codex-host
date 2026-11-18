@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -144,6 +145,19 @@ describe("Claude Code user content", () => {
     ]);
     const unreadable = desktopPrompt([missing], "Look");
     await expect(claudeUserContent(unreadable)).resolves.toBe(unreadable);
+  });
+
+  it("leaves a FIFO attachment as path text instead of blocking the turn", async () => {
+    if (process.platform === "win32") return;
+    const { "a.png": present = "" } = await files({ "a.png": PNG });
+    const fifo = path.join(path.dirname(present), "pipe.png");
+    execFileSync("mkfifo", [fifo]);
+    const text = desktopPrompt([fifo, present], "Look");
+    // A plain open would wait for a writer and leave the Turn unfinished.
+    await expect(claudeUserContent(text)).resolves.toEqual([
+      { type: "text", text },
+      image("image/png", PNG),
+    ]);
   });
 
   it("leaves files over 20 MiB as path text only", async () => {

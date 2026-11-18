@@ -1,3 +1,4 @@
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 
 import { desktopImageAttachmentPaths } from "@codexhost/shared-contracts";
@@ -98,7 +99,10 @@ function fitsSteer(data: Buffer, mediaType: ClaudeImageMediaType): boolean {
 async function imageBlock(file: string, steer: boolean): Promise<ClaudeImageBlock | null> {
   let handle;
   try {
-    handle = await open(file, "r");
+    // A path that names a FIFO with no writer would block a plain open until a
+    // writer appears, leaving the Turn that carries it unfinished. O_NONBLOCK
+    // makes the open return, and the isFile check below then keeps a FIFO out.
+    handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch {
     return null;
   }
@@ -108,11 +112,22 @@ async function imageBlock(file: string, steer: boolean): Promise<ClaudeImageBloc
     if (steer && Math.ceil(stats.size / 3) * 4 > MAX_STEER_BASE64_BYTES) return null;
     const header = Buffer.alloc(HEADER_BYTES);
     const { bytesRead } = await handle.read(header, 0, HEADER_BYTES, 0);
-    const mediaType = imageMediaType(header.subarray(0, bytesRead));
+    if (!imageMediaType(header.subarray(0, bytesRead))) return null;
+    // Read one byte past stat so growth is visible, and never more than the
+    // cap, instead of letting readFile() allocate whatever the file grew to.
+    const buffer = Buffer.alloc(stats.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = await handle.read(buffer, length, buffer.length - length, length);
+      if (read.bytesRead === 0) break;
+      length += read.bytesRead;
+    }
+    if (length > stats.size) return null;
+    const data = buffer.subarray(0, length);
+    // The bytes sent are the ones read here, not the header sample: the file
+    // can be rewritten in between, so identify the format again.
+    const mediaType = imageMediaType(data.subarray(0, HEADER_BYTES));
     if (!mediaType) return null;
-    const data = await handle.readFile();
-    // The file can grow after stat.
-    if (data.length > MAX_IMAGE_FILE_BYTES) return null;
     if (steer && !fitsSteer(data, mediaType)) return null;
     return {
       type: "image",

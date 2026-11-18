@@ -6351,6 +6351,11 @@ export class AppServerHost {
       if (this.#externalQueue.pause(thread.id, "outcome-unknown"))
         await this.#publishExternalQueue(thread.id);
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      for (const { projector } of [...thread.projectedTurns.values()]) {
+        for (const failure of projector.failureEvents(event.error)) {
+          await this.#projectHarnessOutput(thread, { kind: "event", event: failure });
+        }
+      }
       // Idle Threads must not keep a dead Session; the next open restores from disk.
       if (
         !thread.running &&

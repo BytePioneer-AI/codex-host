@@ -127,6 +127,11 @@ export class ExternalTurnProjection {
     if (event.type === "turn.completed" && thread.pendingSteerProjections.size > 0) {
       await Promise.allSettled([...thread.pendingSteerProjections]);
     }
+    // A faulted Session's late output must not reopen a Turn the Host already settled.
+    if (thread.sessionUnavailable) {
+      const settled = thread.projectedTurns.get(event.turnId);
+      if (!settled || settled.projector.completed) return;
+    }
     const projection = projectedTurn(thread, event.turnId);
     await waitForTurnResponse(thread, event.turnId);
     if (

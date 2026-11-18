@@ -17,8 +17,8 @@ import { z } from "zod";
 
 import {
   CLAUDE_DEFAULT_THINKING_OPTION_ID,
-  CLAUDE_THINKING_OPTION_IDS,
   CLAUDE_THINKING_OPTIONS,
+  claudeSupportedThinkingOptionIds,
 } from "./thinking-options.js";
 
 const CLAUDE_MODEL_REF_PREFIX = "claude-model-v1.";
@@ -29,6 +29,12 @@ const modelInfoSchema = z.object({
   displayName: z.string().trim().min(1).max(HARNESS_MODEL_LABEL_MAX_LENGTH),
   description: z.string().trim().max(HARNESS_MODEL_LABEL_MAX_LENGTH).optional(),
   resolvedModel: harnessResolvedModelLabelSchema.optional(),
+  // Malformed capability fields count as unreported instead of failing the whole catalog;
+  // unknown effort levels are ignored when mapping Thinking options.
+  supportsEffort: z.boolean().optional().catch(undefined),
+  supportedEffortLevels: z.array(z.string()).optional().catch(undefined),
+  supportsAdaptiveThinking: z.boolean().optional().catch(undefined),
+  supportsThinkingOff: z.boolean().optional().catch(undefined),
 });
 
 const modelPickerOptionSchema = z.object({
@@ -277,11 +283,21 @@ function uniqueDisplayLabels(rows: Array<z.infer<typeof modelInfoSchema>>): Map<
   return labels;
 }
 
+/**
+ * `supportedEffortLevels` is a set. Deduplicate and order it so two rows for one
+ * Model that report the same levels in a different order merge instead of
+ * failing the whole catalog as conflicting.
+ */
+function canonicalRow(row: z.infer<typeof modelInfoSchema>): z.infer<typeof modelInfoSchema> {
+  if (row.supportedEffortLevels === undefined) return row;
+  return { ...row, supportedEffortLevels: [...new Set(row.supportedEffortLevels)].sort() };
+}
+
 function normalizeRows(value: unknown): Array<z.infer<typeof modelInfoSchema>> {
   if (!Array.isArray(value)) throw new Error("Claude Code Model catalog is not an array");
   const byValue = new Map<string, z.infer<typeof modelInfoSchema>>();
   for (const nativeRow of value) {
-    const row = modelInfoSchema.parse(nativeRow);
+    const row = canonicalRow(modelInfoSchema.parse(nativeRow));
     const existing = byValue.get(row.value);
     if (existing && JSON.stringify(existing) !== JSON.stringify(row)) {
       throw new Error("Claude Code Model catalog contains conflicting selectable values");
@@ -306,7 +322,7 @@ export function normalizeClaudeModelCatalog(
       ref: encodeClaudeModelRef(row.value),
       label: labels.get(row.value) ?? row.displayName,
       ...(row.resolvedModel ? { resolvedModelLabel: row.resolvedModel } : {}),
-      supportedThinkingOptionIds: [...CLAUDE_THINKING_OPTION_IDS],
+      supportedThinkingOptionIds: claudeSupportedThinkingOptionIds(row),
     };
   });
   models.sort((left, right) => {

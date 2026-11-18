@@ -644,7 +644,12 @@ export class ClaudeNativeTurnAccumulator {
   #consumeSegmentLevel(message: Record<string, unknown>, events: ClaudeNativeEvent[]): void {
     if (message.type !== "system") return;
     if (message.subtype === "init") {
-      events.push({ type: "segment.started" });
+      const mcpServers = Array.isArray(message.mcp_servers)
+        ? message.mcp_servers.flatMap((server) =>
+            isRecord(server) && typeof server.name === "string" ? [server.name] : [],
+          )
+        : undefined;
+      events.push({ type: "segment.started", ...(mcpServers ? { mcpServers } : {}) });
       return;
     }
     if (message.subtype !== "background_tasks_changed" || !Array.isArray(message.tasks)) return;

@@ -542,6 +542,25 @@ describe("Pi RPC steer", () => {
     await rpc.close();
   });
 
+  it("closes a late native queue even when terminal history cannot be read", async () => {
+    const fake = new FakePiProcess();
+    fake.steerReceipt = "after-settled";
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), commandTimeoutMs: 2_000, closeTimeoutMs: 500 },
+      { spawn: () => fake as unknown as ChildProcessWithoutNullStreams },
+    );
+    await rpc.start();
+    fake.entriesError = "terminal history unavailable";
+    const running = rpc.runTurn("run the tool", () => undefined);
+    try {
+      await expect(rpc.steer("late input")).rejects.toThrow("terminal history unavailable");
+      await expect(running).resolves.toMatchObject({ text: "original answer", cancelled: false });
+      expect(fake.exitCode).toBe(0);
+    } finally {
+      await rpc.close();
+    }
+  });
+
   it("does not dispatch native steering without an active requested run", async () => {
     const fake = new FakePiProcess();
     const rpc = new PiRpcSession(
@@ -578,6 +597,7 @@ class FakePiProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   readonly steered: string[] = [];
   rejectSteer: string | null = null;
+  entriesError: string | null = null;
   steerReceipt = "queued";
   history: PiSessionHistory = { entries: [], leafId: null };
   #buffer = Buffer.alloc(0);
@@ -607,7 +627,17 @@ class FakePiProcess extends EventEmitter {
 
   #onCommand(command: Record<string, unknown>): void {
     if (command.type === "get_entries") {
-      this.#respond(command, this.history);
+      if (this.entriesError) {
+        this.#output({
+          id: command.id,
+          type: "response",
+          command: "get_entries",
+          success: false,
+          error: this.entriesError,
+        });
+      } else {
+        this.#respond(command, this.history);
+      }
       return;
     }
     if (command.type === "prompt") {

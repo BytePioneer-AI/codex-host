@@ -96,7 +96,8 @@ export interface ClaudeLastRequestUsage {
 }
 
 export type ClaudeTurnEvent =
-  | { type: "segment.started" }
+  /** `mcpServers` lists the configured MCP server names Claude reported for this Segment. */
+  | { type: "segment.started"; mcpServers?: string[] }
   | { type: "subagents.live"; nativeSubagentIds: string[] }
   | { type: "compaction.started" }
   | { type: "compaction.completed"; outcome: "succeeded" | "failed" }
@@ -306,7 +307,11 @@ export interface ClaudeTurnTransport {
    */
   canSteerActiveTurn?(): boolean;
   getPermissionMode(): ClaudePermissionMode;
-  setModel(model?: string): Promise<void>;
+  /**
+   * Switches the live Model. `thinkingOptionId`, when it differs from the current selection, is
+   * applied with the Model so a choice the new Model does not support is never left running.
+   */
+  setModel(model?: string, thinkingOptionId?: HarnessThinkingOptionId): Promise<void>;
   setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void>;
   setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void>;
   compact(

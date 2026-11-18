@@ -3,6 +3,7 @@ import { Fragment, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import { LinkIconMedium } from "../LinkIcon.tsx";
 import { useMarkdownDelegate } from "./MarkdownDelegate.tsx";
+import { linkContextMenuProps } from "./link-context-menu.ts";
 import css from "./MarkdownText.module.css";
 
 export function sanitizeMarkdownUrl(url: string): string {
@@ -32,7 +33,7 @@ export function MarkdownAnchor({
   readonly glyph: boolean;
   readonly children: ReactNode[];
 }): ReactNode {
-  const { openExternalLink, resolveLink } = useMarkdownDelegate();
+  const { openExternalLink, onLinkContextMenu, resolveLink } = useMarkdownDelegate();
   const destination = () => resolveLink?.(href)?.href;
   const resolvedHref = useSyncExternalStore(
     resolveLink?.subscribe ?? noLinkChanges,
@@ -53,6 +54,10 @@ export function MarkdownAnchor({
     <a
       href={safeHref}
       {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+      {...linkContextMenuProps(external ? onLinkContextMenu : undefined, {
+        kind: "web",
+        href: safeHref,
+      })}
       onClick={
         open === undefined
           ? undefined

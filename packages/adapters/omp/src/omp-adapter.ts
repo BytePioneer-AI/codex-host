@@ -104,6 +104,7 @@ import {
   OmpRpcFaultError,
   OmpRpcSession,
   OmpRpcSteerRejectedError,
+  OmpRpcSteerTargetEndedError,
   OmpRpcUnsupportedCommandError,
   type OmpInteractionRequest,
   type OmpInteractionResponse,
@@ -221,6 +222,7 @@ interface ActiveTurn {
   acceptedSteerCount: number;
   acceptingSteers: boolean;
   pendingSteers: Set<Promise<void>>;
+  steerFailure?: OmpRpcSteerTargetEndedError;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -1451,6 +1453,7 @@ class OmpHarnessSession implements HarnessSession {
       if (error instanceof OmpRpcSteerRejectedError) {
         return { ok: false, error: invalidState(error.message) };
       }
+      if (error instanceof OmpRpcSteerTargetEndedError) active.steerFailure = error;
       // A missing acknowledgement may follow native acceptance; never invite stop-and-resend.
       throw error;
     } finally {
@@ -2163,7 +2166,8 @@ class OmpHarnessSession implements HarnessSession {
   ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef }> {
     active.acceptingSteers = false;
     await Promise.allSettled([...active.pendingSteers]);
-    const snapshot = mapOmpSnapshot(await transport.getEntries(), {
+    const history = active.steerFailure?.history ?? (await transport.getEntries());
+    const snapshot = mapOmpSnapshot(history, {
       sessionId: transport.state.sessionId,
       model: nativeModelForHistory(transport.state),
     });
@@ -2227,6 +2231,11 @@ class OmpHarnessSession implements HarnessSession {
       ...(ephemeral ? { ephemeral } : {}),
     });
     active.resolveCompletion();
+    if (active.steerFailure) {
+      // Fault only after publishing the Turn's outcome, so the Host can resume safely.
+      this.#fault(active.steerFailure);
+      return;
+    }
     queueMicrotask(() => {
       if (this.#phase === "open") void this.#refreshUsage(active.command.turnId);
     });

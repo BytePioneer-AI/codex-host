@@ -13,7 +13,6 @@ export function DocumentDownload({
   sessionId,
   label,
   openFolderLabel,
-  remoteUnsupportedLabel,
   openFolderFailedLabel,
   revealFolder,
 }: {
@@ -21,18 +20,18 @@ export function DocumentDownload({
   readonly sessionId: string;
   readonly label: string;
   readonly openFolderLabel: string;
-  readonly remoteUnsupportedLabel: string;
   readonly openFolderFailedLabel: string;
   readonly revealFolder: (
     path: string,
   ) => Promise<
-    { readonly ok: true } | { readonly ok: false; readonly error: { readonly code: string } }
+    { readonly ok: true } | { readonly ok: false; readonly error: { readonly message: string } }
   >;
 }) {
   const query = new URLSearchParams({ sessionId, path: absolutePath });
   const [opening, setOpening] = useState(false);
   const [toast, setToast] = useState<{ seq: number; text: string } | null>(null);
-  const showError = (text: string) => {
+  const showError = (message?: string) => {
+    const text = message ? `${openFolderFailedLabel} ${message}` : openFolderFailedLabel;
     setToast((prev) => ({ seq: (prev?.seq ?? 0) + 1, text }));
   };
   return (
@@ -45,22 +44,16 @@ export function DocumentDownload({
           disabled={opening}
           onClick={() => {
             setOpening(true);
-            void revealFolder(absolutePath)
-              .then((result) => {
-                if (!result.ok) {
-                  showError(
-                    result.error.code === "session/open-unavailable"
-                      ? remoteUnsupportedLabel
-                      : openFolderFailedLabel,
-                  );
-                }
-              })
-              .catch(() => {
-                showError(openFolderFailedLabel);
-              })
-              .finally(() => {
+            void (async () => {
+              try {
+                const result = await revealFolder(absolutePath);
+                if (!result.ok) showError(result.error.message);
+              } catch (error) {
+                showError(error instanceof Error ? error.message : undefined);
+              } finally {
                 setOpening(false);
-              });
+              }
+            })();
           }}
         >
           <IconFolderOpenOutlineRegular />

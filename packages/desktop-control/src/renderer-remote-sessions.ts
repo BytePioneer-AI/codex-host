@@ -195,6 +195,8 @@ export async function rendererRemoteSession(
       }),
     );
   const threadId = operation.threadId;
+  if (operation.kind === "usage")
+    return read(() => manager.sendRequest("codexhost/thread/usage/inspect", { threadId }));
   if (operation.kind === "status") {
     const result = (await read(() =>
       manager.sendRequest("thread/read", {

@@ -3,6 +3,9 @@ import {
   harnessPluginDescriptorSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
+  type AccountCreditsSnapshot,
+  type CodexAccountListResult,
+  type CodexAccountUsageResult,
 } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +15,7 @@ import {
   rendererModelSelectionFailed,
   type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
+import type { RendererModelClient } from "../src/renderer-model-client.js";
 import type { RendererRequestOptions } from "../src/renderer-request-sender.js";
 import type { installRendererSidebarAgentIcons } from "../src/renderer-sidebar-agent-icons.js";
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
@@ -23,6 +27,7 @@ const testState = vi.hoisted(() => ({
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
+  renderedCredits: [] as Array<AccountCreditsSnapshot | null>,
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
@@ -82,8 +87,12 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       _switching: unknown,
       _availability: unknown,
       modelView: RendererModelControlView,
+      _permissionModeView: unknown,
+      _usage: unknown,
+      accountCredits: AccountCreditsSnapshot | null,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
+      testState.renderedCredits.push(accountCredits);
     },
     reconcileComposerNativeControls: vi.fn(),
     disposeComposerAgentControl: vi.fn(),
@@ -214,6 +223,7 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.renderedCredits = [];
   testState.selectModel = null;
   testState.selectThinking = null;
   testState.getConnectionDiagnostics = null;
@@ -293,6 +303,94 @@ afterEach(() => {
   api?.dispose();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+});
+
+describe("Renderer binding Codex draft quota", () => {
+  const account: CodexAccountListResult = {
+    version: 2,
+    currentAccountId: "test-account",
+    phase: "ready",
+    revision: 1,
+    accounts: [{ accountId: "test-account", label: "Test account" }],
+  };
+
+  async function mountWithAccountClient(
+    accountClient: Pick<RendererModelClient, "listCodexAccounts" | "inspectCodexAccountUsage">,
+  ): Promise<void> {
+    const host = {
+      listHarnessPlugins: async () => ({ plugins: [] }),
+      inspectThread: async () => {
+        throw new Error("Thread ownership unavailable");
+      },
+      ...accountClient,
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      { currentHostId: () => "local", clientForHost: () => host } as never,
+    );
+  }
+
+  it("does not retry the account list on DOM changes for an existing Thread with failed ownership", async () => {
+    installFakeBrowser();
+    const listCodexAccounts = vi.fn(async () => account);
+    await mountWithAccountClient({ listCodexAccounts });
+    await vi.waitFor(() => expect(listCodexAccounts).toHaveBeenCalled());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const readsBeforeScan = listCodexAccounts.mock.calls.length;
+    const notify = testState.notifyMutations;
+    assert(notify);
+    notify([{ type: "attributes", target: testState.composer } as MutationRecord]);
+    for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(listCodexAccounts).toHaveBeenCalledTimes(readsBeforeScan);
+  });
+
+  it("keeps the same Codex Account's quota visible while refreshing it", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const initial: CodexAccountUsageResult = {
+      accountId: "test-account",
+      usage: null,
+      accountCredits: { usedPercent: 8, periodType: "weekly" },
+      freshness: "live",
+      observedAt: null,
+    };
+    const inspectCodexAccountUsage = vi.fn(async () => initial);
+    await mountWithAccountClient({
+      listCodexAccounts: async () => account,
+      inspectCodexAccountUsage,
+    });
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(initial.accountCredits),
+    );
+
+    const pending = Promise.withResolvers<CodexAccountUsageResult>();
+    inspectCodexAccountUsage.mockReturnValue(pending.promise);
+    const readsBeforeFocus = inspectCodexAccountUsage.mock.calls.length;
+    const rendersBeforeFocus = testState.renderedCredits.length;
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() =>
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(readsBeforeFocus + 1),
+    );
+    const hidQuota = testState.renderedCredits
+      .slice(rendersBeforeFocus)
+      .some((credits) => credits === null);
+    const updated = {
+      ...initial,
+      accountCredits: { usedPercent: 18, periodType: "weekly" as const },
+    };
+    pending.resolve(updated);
+    expect(hidQuota).toBe(false);
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(updated.accountCredits),
+    );
+  });
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {

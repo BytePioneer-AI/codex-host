@@ -502,6 +502,11 @@ export interface SessionUsageChangedEvent {
   observedForTurnId?: HostTurnId;
 }
 
+/** Invalidate an account quota projection without changing token usage. */
+export interface SessionAccountCreditsChangedEvent {
+  type: "session.accountCredits.changed";
+}
+
 /** One native model request's usage; Host derives cost, cache and speed metrics from these. */
 export interface UsageRequestEvent {
   type: "usage.request";
@@ -593,6 +598,7 @@ export interface SessionFaultedEvent {
 export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
+  | SessionAccountCreditsChangedEvent
   | UsageRequestEvent
   | UsageHistoryEvent
   | SubagentStateChangedEvent
@@ -632,6 +638,8 @@ export interface HarnessSession {
    */
   readCapabilities?(): Promise<HarnessSessionCapabilities>;
   refreshUsage?(): Promise<void>;
+  /** Account quota attributed to this Session, rather than shared across the Adapter. */
+  readAccountCredits?(): Promise<AccountCreditsSnapshot | null>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;
   /** Stops every running detached Item; each still settles through its own events. */

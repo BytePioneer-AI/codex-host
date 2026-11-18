@@ -3702,21 +3702,25 @@ export class AppServerHost {
       return;
     }
     if (params.data.refresh === "exact") void resolution.thread.session.refreshUsage?.();
+    const session = resolution.thread.session;
     const adapter = this.#externalAdapters.get(resolution.thread.harnessId);
-    if (adapter?.credits && adapter.refreshCredits)
+    if (!session.readAccountCredits && adapter?.credits && adapter.refreshCredits)
       void Promise.resolve()
         .then(() => adapter.refreshCredits?.())
         .catch(() => undefined);
     let credits: AccountCreditsSnapshot | null = null;
     try {
-      credits = parseHarnessAccountCredits(adapter?.credits?.());
+      credits = parseHarnessAccountCredits(
+        session.readAccountCredits ? await session.readAccountCredits() : adapter?.credits?.(),
+      );
     } catch {
       // Optional account telemetry cannot fail the Thread's usage inspection.
     }
     const result = threadUsageInspectionSchema.parse({
       threadId: params.data.threadId,
       usage: await this.#threadUsage(resolution.thread),
-      accountCreditsSupported: typeof adapter?.credits === "function",
+      accountCreditsSupported:
+        typeof session.readAccountCredits === "function" || typeof adapter?.credits === "function",
       ...(credits ? { accountCredits: credits } : {}),
     });
     await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
@@ -6012,6 +6016,15 @@ export class AppServerHost {
         thread.stateObserver.fault(thread.persistenceError);
         this.#diagnose("External Session state could not be persisted");
       }
+      return;
+    }
+    if (event.type === "session.accountCredits.changed") {
+      if (this.#externalRuntime.get(thread.id) !== thread) return;
+      this.clientEvents.changed(thread.id, THREAD_USAGE_UPDATED_METHOD);
+      await this.#writer.json({
+        method: THREAD_USAGE_UPDATED_METHOD,
+        params: { threadId: thread.id },
+      });
       return;
     }
     if (event.type === "session.usage.changed") {

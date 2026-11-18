@@ -1114,6 +1114,120 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
 }
 
 describe("OMP Adapter usage metering", () => {
+  it("switches quota when a response starts and restores the confirmed account on failure", async () => {
+    const root = path.join(tmpdir(), `codexhost-omp-quota-${randomUUID()}`);
+    await mkdir(root);
+    const command = path.join(root, "omp.cjs");
+    const reports = [
+      {
+        provider: "synthetic",
+        metadata: { credentialId: 1 },
+        limits: [
+          { amount: { usedFraction: 0.25 }, window: { durationMs: 18_000_000 } },
+          { amount: { usedFraction: 0.5 }, window: { durationMs: 604_800_000 } },
+        ],
+      },
+      {
+        provider: "synthetic",
+        metadata: { credentialId: 2 },
+        limits: [{ amount: { usedFraction: 0.75 } }],
+      },
+      {
+        provider: "other",
+        metadata: { credentialId: 1 },
+        limits: [{ amount: { usedFraction: 0.9 } }],
+      },
+    ];
+    const transport = new FakeOmpTransport();
+    let onAssistantStart: OmpRpcSessionOptions["onAssistantStart"];
+    let onUsage: OmpRpcSessionOptions["onUsage"];
+    const adapter = new OmpAdapter(
+      { command },
+      {
+        createTransport: (options) => {
+          onAssistantStart = options.onAssistantStart;
+          onUsage = options.onUsage;
+          return transport;
+        },
+      },
+    );
+    try {
+      await writeFile(
+        command,
+        `console.log(${JSON.stringify(JSON.stringify({ reports }))});`,
+        "utf8",
+      );
+      const opened = await adapter.open({ kind: "create", cwd: root });
+      if (!opened.ok || !opened.value.readAccountCredits) throw new Error("No session credits");
+      const session = opened.value;
+      expect(await session.readAccountCredits?.()).toBeNull();
+      await session.execute({
+        type: "turn.start",
+        turnId: "turn-quota" as HostTurnId,
+        input: [{ type: "text", text: "hi" }],
+      });
+      const assistant = { role: "assistant", provider: "synthetic", stopReason: "stop" };
+      if (!onAssistantStart || !onUsage) throw new Error("Missing account observers");
+      onAssistantStart({ ...assistant, credentialId: 1 });
+      expect(await session.readAccountCredits?.()).toMatchObject({
+        usedPercent: 25,
+        periodType: "five_hour",
+        productUsage: [{ usagePercent: 50, periodType: "seven_day" }],
+      });
+      onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 20, startedAtMs: null });
+      onAssistantStart({ ...assistant, credentialId: 2 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onAssistantStart({ ...assistant, provider: "other", credentialId: 1 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 90 });
+      onUsage({
+        message: { ...assistant, credentialId: 2, stopReason: "error" },
+        completedAtMs: 30,
+        startedAtMs: null,
+      });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 25 });
+      onUsage({ message: { ...assistant, credentialId: 2 }, completedAtMs: 40, startedAtMs: null });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onUsage({
+        message: { ...assistant, credentialId: 99 },
+        completedAtMs: 50,
+        startedAtMs: null,
+      });
+      expect(await session.readAccountCredits?.()).toBeNull();
+      await session.close();
+
+      transport.state = { ...transport.state, sessionFile: path.join(root, "session.jsonl") };
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "omp",
+        nativeSessionId: transport.state.sessionId,
+        formatVersion: 1,
+        locator: { sessionFile: transport.state.sessionFile },
+      });
+      transport.history = {
+        entries: [
+          {
+            id: "active",
+            parentId: null,
+            type: "message",
+            message: { ...assistant, credentialId: 1 },
+          },
+          {
+            id: "other",
+            parentId: null,
+            type: "message",
+            message: { ...assistant, credentialId: 2 },
+          },
+        ],
+        leafId: "active",
+      };
+      const resumed = await adapter.open({ kind: "resume", cwd: root, nativeRef });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(await resumed.value.readAccountCredits?.()).toMatchObject({ usedPercent: 25 });
+    } finally {
+      await adapter.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("declares empty history on create and meters live assistant messages", async () => {
     const transport = new FakeOmpTransport();
     let onUsage: OmpRpcSessionOptions["onUsage"];

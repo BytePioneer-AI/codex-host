@@ -17,6 +17,7 @@ export class ChRealtime {
       thread: (id: string) => Promise<unknown>;
       catalog: () => Promise<void>;
       archived?: (id: string, archived: boolean) => void;
+      usageChanged?: (id: string) => void;
       connection: (online: boolean) => void;
       /** `full` is the hello's `reset`: the cursor could not be replayed. */
       reset: (epoch: string, full: boolean) => void;
@@ -52,6 +53,10 @@ export class ChRealtime {
       for (const id of this.watched.keys()) this.schedule(id);
       this.schedule("");
     } else if (event.type === "changed") {
+      if (event.method === "codexhost/thread/usage/updated") {
+        if (this.watched.has(event.threadId)) this.callbacks.usageChanged?.(event.threadId);
+        return;
+      }
       if (event.method === "thread/archived" || event.method === "thread/unarchived")
         this.callbacks.archived?.(event.threadId, event.method === "thread/archived");
       if (this.watched.has(event.threadId)) this.schedule(event.threadId);

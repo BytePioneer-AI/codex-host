@@ -166,6 +166,10 @@ export class ChSessions {
     this.realtime = host.realtime
       ? new ChRealtime(host.realtime, {
           thread: (id) => this.view(id),
+          usageChanged: (id) => {
+            const view = this.threads.view(id);
+            if (view) this.loadUsage(view, true);
+          },
           catalog: async () => {
             await this.refresh();
           },

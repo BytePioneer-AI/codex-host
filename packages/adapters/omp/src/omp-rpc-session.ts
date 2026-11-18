@@ -201,6 +201,8 @@ export interface OmpRpcSessionOptions {
   cancelTimeoutMs?: number;
   closeTimeoutMs?: number;
   onSubagentEvent?: (event: OmpTurnEvent) => void;
+  /** First assistant frame of an attempt, including a restarted stream after fallback. */
+  onAssistantStart?: (message: unknown) => void;
   /** Finished assistant messages, for Host usage metering. */
   onUsage?: (observation: OmpUsageObservation) => void;
   /**
@@ -1415,10 +1417,13 @@ export class OmpRpcSession {
     if (value.type === "message_start") {
       this.#usageRequestStartedAtMs = null;
       this.#usageRequestTimingUnavailable = false;
+      this.#options.onAssistantStart?.(value.message);
       return;
     }
     if (value.type === "message_update") {
       const event = value.assistantMessageEvent;
+      if (isRecord(event) && event.type === "start")
+        this.#options.onAssistantStart?.(event.partial ?? value.message);
       if (
         this.#usageRequestStartedAtMs === null &&
         !this.#usageRequestTimingUnavailable &&

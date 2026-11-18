@@ -427,6 +427,32 @@ describe("OMP RPC session", () => {
       await session.close();
     }
   });
+
+  it("reports the first stream credential and the replacement before message completion", async () => {
+    const process = new FakeOmpProcess();
+    const onAssistantStart = vi.fn();
+    const onUsage = vi.fn();
+    const session = new OmpRpcSession(
+      { cwd: "/synthetic", onAssistantStart, onUsage },
+      { spawn: () => process as never },
+    );
+    await session.start();
+    try {
+      const message = { role: "assistant", provider: "test", credentialId: 1, content: [] };
+      process.sendFrame({ type: "message_start", message });
+      const partial = { ...message, credentialId: 2 };
+      process.sendFrame({
+        type: "message_update",
+        message: { role: "assistant" },
+        assistantMessageEvent: { type: "start", partial },
+      });
+      expect(onAssistantStart.mock.calls).toEqual([[message], [partial]]);
+      expect(onUsage).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+  });
+
   it.each(["thinking_start", "reasoning_start", "thought_start"])(
     "includes hidden thinking time from %s",
     async (type) => {

@@ -29,6 +29,7 @@ export type TurnScopedEvent = Exclude<
     type:
       | "session.state.changed"
       | "session.usage.changed"
+      | "session.accountCredits.changed"
       | "usage.request"
       | "usage.history"
       | "subagent.state.changed"

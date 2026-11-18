@@ -1,4 +1,8 @@
-import type { CodexAccountListResult, CodexAccountSummary } from "@codexhost/shared-contracts";
+import type {
+  CodexAccountListResult,
+  CodexAccountSummary,
+  CodexAccountUsageResult,
+} from "@codexhost/shared-contracts";
 import type { RendererModelClient } from "./renderer-model-client.js";
 
 export function resolveCurrentCodexAccountId(
@@ -21,6 +25,8 @@ export function shouldApplyCodexAccountSnapshot(
   return next.revision >= current.revision;
 }
 
+type CodexUsageAccount = { readonly accountId: string };
+
 /** One Host-wide current Account snapshot; no Composer or draft override. */
 export class RendererCodexAccountState {
   accounts: readonly CodexAccountSummary[] = [];
@@ -30,6 +36,8 @@ export class RendererCodexAccountState {
   instanceId: string | undefined;
   #hasSnapshot = false;
   #request: Promise<void> | null = null;
+  #usageAccount: (CodexUsageAccount & { pending: Promise<CodexAccountUsageResult> | null }) | null =
+    null;
   readonly #unsubscribe: (() => void) | undefined;
 
   constructor(
@@ -52,6 +60,22 @@ export class RendererCodexAccountState {
       this.accounts,
       this.phase === "ready" ? this.currentAccountId : null,
     );
+  }
+
+  /** Identity of the ready Account on this Host instance. */
+  get usageAccount(): CodexUsageAccount | null {
+    return this.#usageAccount;
+  }
+
+  inspectUsage(account: CodexUsageAccount): Promise<CodexAccountUsageResult> | null {
+    const current = this.#usageAccount;
+    if (current !== account || !this.client.inspectCodexAccountUsage) return null;
+    current.pending ??= this.client
+      .inspectCodexAccountUsage({ accountId: current.accountId })
+      .finally(() => {
+        current.pending = null;
+      });
+    return current.pending;
   }
 
   refresh(): Promise<void> {
@@ -84,12 +108,17 @@ export class RendererCodexAccountState {
     ) {
       return false;
     }
+    const instanceChanged = this.instanceId !== result.instanceId;
     this.#hasSnapshot = true;
     this.accounts = result.accounts;
     this.currentAccountId = result.currentAccountId;
     this.phase = result.phase;
     this.revision = result.revision;
     this.instanceId = result.instanceId;
+    const accountId = this.readyAccountId;
+    if (instanceChanged || (this.#usageAccount?.accountId ?? null) !== accountId) {
+      this.#usageAccount = accountId === null ? null : { accountId, pending: null };
+    }
     return true;
   }
 }

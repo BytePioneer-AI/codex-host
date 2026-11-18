@@ -306,6 +306,10 @@ afterEach(() => {
 });
 
 describe("Renderer binding Codex draft quota", () => {
+  type AccountClient = Pick<
+    RendererModelClient,
+    "listCodexAccounts" | "inspectCodexAccountUsage" | "subscribeCodexAccounts"
+  >;
   const account: CodexAccountListResult = {
     version: 2,
     currentAccountId: "test-account",
@@ -313,25 +317,37 @@ describe("Renderer binding Codex draft quota", () => {
     revision: 1,
     accounts: [{ accountId: "test-account", label: "Test account" }],
   };
+  const quota = (usedPercent: number): CodexAccountUsageResult => ({
+    accountId: "test-account",
+    usage: null,
+    accountCredits: { usedPercent, periodType: "weekly" },
+    freshness: "live",
+    observedAt: null,
+  });
 
   async function mountWithAccountClient(
-    accountClient: Pick<RendererModelClient, "listCodexAccounts" | "inspectCodexAccountUsage">,
-  ): Promise<void> {
-    const host = {
+    accountClient: AccountClient,
+  ): Promise<(replacement?: AccountClient) => void> {
+    const hostDefaults = {
       listHarnessPlugins: async () => ({ plugins: [] }),
       inspectThread: async () => {
         throw new Error("Thread ownership unavailable");
       },
-      ...accountClient,
     };
+    let host = { ...hostDefaults, ...accountClient };
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
-    probe.setAdapter(
-      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
-      undefined,
-      undefined,
-      { currentHostId: () => "local", clientForHost: () => host } as never,
-    );
+    const setAdapter = (replacement?: AccountClient): void => {
+      if (replacement) host = { ...hostDefaults, ...replacement };
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        undefined,
+        { currentHostId: () => "local", clientForHost: () => host } as never,
+      );
+    };
+    setAdapter();
+    return setAdapter;
   }
 
   it("does not retry the account list on DOM changes for an existing Thread with failed ownership", async () => {
@@ -344,7 +360,7 @@ describe("Renderer binding Codex draft quota", () => {
     const readsBeforeScan = listCodexAccounts.mock.calls.length;
     const notify = testState.notifyMutations;
     assert(notify);
-    notify([{ type: "attributes", target: testState.composer } as MutationRecord]);
+    notify([{ type: "attributes", target: testState.composer } as unknown as MutationRecord]);
     for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
     await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -354,13 +370,7 @@ describe("Renderer binding Codex draft quota", () => {
   it("keeps the same Codex Account's quota visible while refreshing it", async () => {
     installFakeBrowser();
     testState.modelTarget = ["default", "client-new-thread:quota"];
-    const initial: CodexAccountUsageResult = {
-      accountId: "test-account",
-      usage: null,
-      accountCredits: { usedPercent: 8, periodType: "weekly" },
-      freshness: "live",
-      observedAt: null,
-    };
+    const initial = quota(8);
     const inspectCodexAccountUsage = vi.fn(async () => initial);
     await mountWithAccountClient({
       listCodexAccounts: async () => account,
@@ -381,14 +391,79 @@ describe("Renderer binding Codex draft quota", () => {
     const hidQuota = testState.renderedCredits
       .slice(rendersBeforeFocus)
       .some((credits) => credits === null);
-    const updated = {
-      ...initial,
-      accountCredits: { usedPercent: 18, periodType: "weekly" as const },
-    };
+    const updated = quota(18);
     pending.resolve(updated);
     expect(hidQuota).toBe(false);
     await vi.waitFor(() =>
       expect(testState.renderedCredits.at(-1)).toEqual(updated.accountCredits),
+    );
+  });
+
+  it.each(["adapter", "Host epoch"])(
+    "starts a new quota request after changing the %s on the same client",
+    async (change) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const oldQuota = Promise.withResolvers<CodexAccountUsageResult>();
+      const currentQuota = quota(18);
+      const inspectCodexAccountUsage = vi
+        .fn(async () => currentQuota)
+        .mockReturnValueOnce(oldQuota.promise);
+      let notifyAccount: ((snapshot: CodexAccountListResult) => void) | undefined;
+      const setAdapter = await mountWithAccountClient({
+        listCodexAccounts: async () => account,
+        inspectCodexAccountUsage,
+        subscribeCodexAccounts: (listener) => {
+          notifyAccount = listener;
+          return () => undefined;
+        },
+      });
+      await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1));
+
+      if (change === "adapter") {
+        setAdapter();
+      } else {
+        assert(notifyAccount);
+        notifyAccount({ ...account, instanceId: "next-host" });
+      }
+      await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+      oldQuota.resolve(quota(8));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+      expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18);
+    },
+  );
+
+  it("hides old quota while the replacement client reads its Account list", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const oldQuota = Promise.withResolvers<CodexAccountUsageResult>();
+    const initial = quota(8);
+    const inspectCodexAccountUsage = vi.fn(async () => initial);
+    const setAdapter = await mountWithAccountClient({
+      listCodexAccounts: async () => account,
+      inspectCodexAccountUsage,
+    });
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(initial.accountCredits),
+    );
+    inspectCodexAccountUsage.mockReturnValue(oldQuota.promise);
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2));
+
+    const replacementAccount = Promise.withResolvers<CodexAccountListResult>();
+    const replacementQuota = quota(18);
+    setAdapter({
+      listCodexAccounts: () => replacementAccount.promise,
+      inspectCodexAccountUsage: async () => replacementQuota,
+    });
+    expect(testState.renderedCredits.at(-1) === null).toBe(true);
+    oldQuota.resolve(initial);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(testState.renderedCredits.at(-1) === null).toBe(true);
+    replacementAccount.resolve(account);
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(replacementQuota.accountCredits),
     );
   });
 });

@@ -466,6 +466,57 @@ describe("Renderer binding Codex draft quota", () => {
       expect(testState.renderedCredits.at(-1)).toEqual(replacementQuota.accountCredits),
     );
   });
+
+  it("loads a changed Account once when typing resumes after an abandoned submission", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    let currentAccount = account;
+    let notifyAccount: ((snapshot: CodexAccountListResult) => void) | undefined;
+    const inspectCodexAccountUsage = vi.fn(async ({ accountId }: { accountId: string }) => ({
+      ...quota(accountId === "test-account" ? 8 : 18),
+      accountId,
+    }));
+    await mountWithAccountClient({
+      listCodexAccounts: async () => currentAccount,
+      inspectCodexAccountUsage,
+      subscribeCodexAccounts: (listener) => {
+        notifyAccount = listener;
+        return () => undefined;
+      },
+    });
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+    const submit = testState.documentListeners.get("submit");
+    const beforeInput = testState.documentListeners.get("beforeinput");
+    assert(submit && beforeInput && notifyAccount);
+    const flushFrame = () => {
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    };
+    const event = new Event("submit", { cancelable: true });
+    submit(event);
+    expect(event.defaultPrevented).toBe(false);
+    currentAccount = {
+      ...account,
+      currentAccountId: "new-account",
+      revision: 2,
+      accounts: [{ accountId: "new-account", label: "New account" }],
+    };
+    notifyAccount(currentAccount);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    flushFrame();
+    expect(testState.renderedCredits.at(-1)).toBeNull();
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+    beforeInput(new Event("beforeinput"));
+    flushFrame();
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+    const notify = testState.notifyMutations;
+    assert(notify);
+    notify([{ type: "attributes", target: testState.composer } as unknown as MutationRecord]);
+    flushFrame();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+    expect(inspectCodexAccountUsage).toHaveBeenLastCalledWith({ accountId: "new-account" });
+  });
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {

@@ -36,8 +36,12 @@ export class RendererCodexAccountState {
   instanceId: string | undefined;
   #hasSnapshot = false;
   #request: Promise<void> | null = null;
-  #usageAccount: (CodexUsageAccount & { pending: Promise<CodexAccountUsageResult> | null }) | null =
-    null;
+  #usageAccount:
+    | (CodexUsageAccount & {
+        email: string | undefined;
+        pending: Promise<CodexAccountUsageResult> | null;
+      })
+    | null = null;
   readonly #unsubscribe: (() => void) | undefined;
 
   constructor(
@@ -116,8 +120,14 @@ export class RendererCodexAccountState {
     this.revision = result.revision;
     this.instanceId = result.instanceId;
     const accountId = this.readyAccountId;
-    if (instanceChanged || (this.#usageAccount?.accountId ?? null) !== accountId) {
-      this.#usageAccount = accountId === null ? null : { accountId, pending: null };
+    // Some native Accounts share the fallback ID "current".
+    const email = this.accounts.find(({ accountId: id }) => id === accountId)?.email;
+    if (
+      instanceChanged ||
+      (this.#usageAccount?.accountId ?? null) !== accountId ||
+      this.#usageAccount?.email !== email
+    ) {
+      this.#usageAccount = accountId === null ? null : { accountId, email, pending: null };
     }
     return true;
   }

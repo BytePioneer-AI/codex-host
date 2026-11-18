@@ -2733,14 +2733,19 @@ export function installRendererBindingProbe(
     // Draft quota follows the concrete client, including connections without notifications.
     for (const mounted of mountedByComposer.values()) {
       if (!canRefreshDraftUsage(mounted)) continue;
-      if (
-        mounted.draftUsageAccount &&
-        mounted.draftUsageAccount !== composerCodexAccounts(mounted.composer)?.usageAccount
-      ) {
+      const agent = controller.get(mounted.composer).agent;
+      const request = draftUsageRequests.get(mounted);
+      const account =
+        agent === "codex" ? composerCodexAccounts(mounted.composer)?.usageAccount : null;
+      // The Account can change while submission prevents the draft from refreshing.
+      if (account && request && request.account !== account) {
+        void refreshDraftUsage(mounted);
+        continue;
+      }
+      if (mounted.draftUsageAccount && mounted.draftUsageAccount !== account) {
         renderMounted(mounted);
       }
       const client = composerClient(mounted);
-      const request = draftUsageRequests.get(mounted);
       if (
         mounted.draftUsageClient !== client &&
         (!request ||
@@ -2748,8 +2753,7 @@ export function installRendererBindingProbe(
           request.generation !== mounted.usageRequestGeneration ||
           (retryDraftUsage && !request.pending))
       ) {
-        if (controller.get(mounted.composer).agent === "codex")
-          void loadCodexAccountsForHost(mounted.hostId);
+        if (agent === "codex") void loadCodexAccountsForHost(mounted.hostId);
         else void refreshDraftUsage(mounted);
       }
     }
@@ -3243,7 +3247,10 @@ export function installRendererBindingProbe(
   const onBeforeInput = (event: InputEvent): void => {
     const composer = composerForTarget(event.target);
     if (!composer) return;
-    controller.clearPendingSubmission(composer);
+    if (controller.isSubmissionPending(composer)) {
+      controller.clearPendingSubmission(composer);
+      scheduleScan();
+    }
     const mounted = mountedByComposer.get(composer);
     if (mounted) pendingDefaultPreferences.set(controller.get(mounted.composer).composerId, false);
     if (mounted && isOwnershipSubmissionBlocked(mounted.ownershipStatus)) return;

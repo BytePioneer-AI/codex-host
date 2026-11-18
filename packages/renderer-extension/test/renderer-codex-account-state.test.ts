@@ -19,6 +19,15 @@ const snapshot = (currentAccountId: string | null, revision: number, instanceId 
   accounts: currentAccountId ? [account(currentAccountId)] : [],
 });
 
+const fallbackAccountSnapshot = (
+  revision: number,
+  instanceId?: string,
+  email = "first@example.test",
+) => ({
+  ...snapshot("current", revision, instanceId),
+  accounts: [{ ...account("current"), email }],
+});
+
 function createState(sendRequest: (method: string, params: unknown) => Promise<unknown>) {
   const client = createRendererModelClient([{ sendRequest }]);
   if (!client) throw new Error("Test client is unavailable");
@@ -41,9 +50,13 @@ describe("Host-scoped Codex Account state", () => {
 
   it.each([
     ["Account", snapshot("other", 3)],
-    ["Host instance", snapshot("default", 1, "host-b")],
+    [
+      "Account email under the fallback ID",
+      fallbackAccountSnapshot(3, "host-a", "second@example.test"),
+    ],
+    ["Host instance", fallbackAccountSnapshot(1, "host-b")],
   ] as const)("shares pending usage across drafts until the %s changes", async (_, replacement) => {
-    let accounts = snapshot("default", 1);
+    let accounts: ReturnType<typeof snapshot> = fallbackAccountSnapshot(1);
     const oldUsage = Promise.withResolvers<unknown>();
     const newUsage = Promise.withResolvers<unknown>();
     const inspectUsage = vi
@@ -59,7 +72,7 @@ describe("Host-scoped Codex Account state", () => {
     const first = state.inspectUsage(firstAccount);
     assert(first);
 
-    accounts = snapshot("default", 2);
+    accounts = fallbackAccountSnapshot(2);
     await state.refresh();
     expect(state.inspectUsage(firstAccount)).toBe(first);
     expect(inspectUsage).toHaveBeenCalledTimes(1);
@@ -72,7 +85,7 @@ describe("Host-scoped Codex Account state", () => {
     const next = state.inspectUsage(nextAccount);
     assert(next);
 
-    const usage = { accountId: "default", usage: null, freshness: "live", observedAt: null };
+    const usage = { accountId: "current", usage: null, freshness: "live", observedAt: null };
     oldUsage.resolve(usage);
     await first;
     expect(state.inspectUsage(nextAccount)).toBe(next);

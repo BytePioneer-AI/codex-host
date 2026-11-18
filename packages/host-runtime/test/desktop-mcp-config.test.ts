@@ -40,6 +40,33 @@ it("adapts nested server tables in per-thread overrides", () => {
   });
 });
 
+it("replaces only the transport in Desktop's dotted app-tools configuration", () => {
+  const input = {
+    id: 6,
+    method: "thread/start",
+    params: {
+      config: {
+        "mcp_servers.codex_app.command": "/official/launcher",
+        "mcp_servers.codex_app.args": ["./server.mjs"],
+        "mcp_servers.codex_app.tools": { automation_update: { approval_mode: "prompt" } },
+      },
+    },
+  };
+  expect(
+    rewriteDesktopMcpRequest(input, (server, _cwd, name) =>
+      name === "codex_app" && server.command === "/official/launcher"
+        ? { ...server, command: "/bridge", args: ["connect"] }
+        : undefined,
+    ).params,
+  ).toEqual({
+    config: {
+      ...input.params.config,
+      "mcp_servers.codex_app.command": "/bridge",
+      "mcp_servers.codex_app.args": ["connect"],
+    },
+  });
+});
+
 it("preserves Desktop's wrapped thread parameters and workspace", () => {
   const request = { cwd: "/fixture/wrapped", config: { "mcp_servers.node_repl": original } };
   const input = { id: 5, method: "thread/start", params: { request, future: true } };

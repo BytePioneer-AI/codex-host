@@ -12,11 +12,7 @@ import { officialEnvironment } from "./app-server-host.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedLoopbackBackend } from "./codex-runtime/owned-official-backends.js";
 import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
-import {
-  DESKTOP_APP_TOOLS_PIPE_ENV,
-  DESKTOP_BROWSER_CONTEXT_ENV,
-  desktopBrowserMcpArguments,
-} from "./desktop-context-environment.js";
+import { DESKTOP_LAUNCH_CONTEXT_ENV, desktopMcpArguments } from "./desktop-context-environment.js";
 import {
   captureCodexRuntimeFiles,
   assertCodexRuntimeFilesPresent,
@@ -135,7 +131,7 @@ export async function prepareLocalCodex(input: {
         const backend = createOwnedLoopbackBackend({
           stockCodexPath: startup.stockCodexPath,
           cwd: home,
-          arguments: [...startup.arguments, ...desktopBrowserMcpArguments(startup.environment)],
+          arguments: [...startup.arguments, ...desktopMcpArguments(startup.environment)],
           environment: { ...officialEnvironment(startup.environment), CODEX_HOME: home },
         });
         startupConfigured = true;
@@ -225,10 +221,7 @@ export async function prepareLocalCodex(input: {
       const changed =
         current.stockCodexPath !== next.stockCodexPath ||
         JSON.stringify(current.arguments) !== JSON.stringify(next.arguments) ||
-        // A reopened Desktop serves its app tools on a new pipe; the old one is gone.
-        current.environment[DESKTOP_APP_TOOLS_PIPE_ENV] !==
-          next.environment[DESKTOP_APP_TOOLS_PIPE_ENV] ||
-        DESKTOP_BROWSER_CONTEXT_ENV.some(
+        DESKTOP_LAUNCH_CONTEXT_ENV.some(
           (key) => current.environment[key] !== next.environment[key],
         );
       // Whatever happens to the running generation, the next one starts from this request.

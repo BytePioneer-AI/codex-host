@@ -22,9 +22,10 @@ import {
 } from "./desktop-mcp-config.js";
 import { jsonBody } from "./delegation-control-server.js";
 import { OfficialProcessLifecycle } from "./official-process-lifecycle.js";
+import { desktopAppToolsLaunch, type DesktopToolLaunch } from "./desktop-app-tools.js";
 import {
   DESKTOP_BROWSER_ACCESS_ENV,
-  DESKTOP_BROWSER_MCP_ARGUMENTS_ENV,
+  DESKTOP_MCP_ARGUMENTS_ENV,
 } from "./desktop-context-environment.js";
 
 const MAX_MCP_REQUEST_BYTES = 16 * 1024 * 1024;
@@ -187,18 +188,20 @@ export interface DesktopMcpBridge {
   close(): Promise<void>;
 }
 
-/** Hosts only Desktop-selected first-party browser MCP processes inside its tree. */
+/** Hosts first-party MCP processes that need the Desktop's native process ancestry. */
 export async function createDesktopMcpBridge(options: {
   nodeReplPath: string;
+  desktopResourcesPath?: string;
   runtimePath: string;
   environment: NodeJS.ProcessEnv;
   native?: { executable: string; arguments: readonly string[] };
 }): Promise<DesktopMcpBridge | undefined> {
-  let executable: string;
+  const appTools = desktopAppToolsLaunch(options.desktopResourcesPath, options.environment);
+  let executable: string | undefined;
   try {
     executable = realpathSync(options.nodeReplPath);
   } catch {
-    return undefined;
+    if (!appTools) return undefined;
   }
   const profiles = new Map<string, Profile>();
   const configurations = new Map<string, Profile>();
@@ -206,10 +209,11 @@ export async function createDesktopMcpBridge(options: {
   let closing: Promise<void> | undefined;
   let address = "";
 
-  function register(config: JsonObject, threadCwd?: string): JsonObject | undefined {
-    const parsed = desktopStdioConfig.safeParse(config);
-    if (!parsed.success) return;
-    const definition = parsed.data;
+  function browserLaunch(
+    definition: ReturnType<typeof desktopStdioConfig.parse>,
+    threadCwd: string | undefined,
+  ): DesktopToolLaunch | undefined {
+    if (!executable) return;
     try {
       const wrapper =
         definition.command === "/bin/sh" &&
@@ -240,21 +244,33 @@ export async function createDesktopMcpBridge(options: {
       const value = options.environment[name];
       if (value !== undefined) env[name] = value;
     }
-    const childEnv = { ...env, ...overrides };
     const cwd = definition.cwd ?? threadCwd;
-    const signature = createHash("sha256")
-      .update(JSON.stringify([config.command, args, childEnv, cwd]))
-      .digest("hex");
+    return {
+      command: definition.command,
+      args,
+      env: { ...env, ...overrides },
+      ...(cwd === undefined ? {} : { cwd }),
+    };
+  }
+
+  function register(
+    config: JsonObject,
+    threadCwd: string | undefined,
+    name: string,
+  ): JsonObject | undefined {
+    const parsed = desktopStdioConfig.safeParse(config);
+    if (!parsed.success) return;
+    const launch =
+      name === "codex_app" ? appTools?.(parsed.data) : browserLaunch(parsed.data, threadCwd);
+    if (!launch) return;
+    const signature = createHash("sha256").update(JSON.stringify(launch)).digest("hex");
     let profile = configurations.get(signature);
     if (!profile) {
       profile = {
         id: randomUUID(),
         token: randomBytes(32).toString("base64url"),
         runtimePath: options.runtimePath,
-        command: definition.command,
-        args,
-        env: childEnv,
-        ...(cwd === undefined ? {} : { cwd }),
+        ...launch,
         sessions: new Map(),
       };
       profiles.set(profile.id, profile);
@@ -375,9 +391,7 @@ export async function createDesktopMcpBridge(options: {
   const overrides = await desktopNativeMcpOverrides(options.native, options.environment, register);
   return {
     input: new DesktopMcpConfigTransform(register),
-    environment: overrides.length
-      ? { [DESKTOP_BROWSER_MCP_ARGUMENTS_ENV]: JSON.stringify(overrides) }
-      : {},
+    environment: overrides.length ? { [DESKTOP_MCP_ARGUMENTS_ENV]: JSON.stringify(overrides) } : {},
     close() {
       closing ??= Promise.resolve().then(async () => {
         const closed = new Promise<void>((resolve, reject) => {

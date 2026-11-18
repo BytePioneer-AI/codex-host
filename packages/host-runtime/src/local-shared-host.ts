@@ -119,7 +119,7 @@ export async function connectLocalSharedExternalHost(
   return peer;
 }
 
-/** Desktop owns its browser MCP children while the shared Host owns task execution. */
+/** Desktop owns its native MCP children while the shared Host owns task execution. */
 export async function runLocalDesktopBridge(
   environment: NodeJS.ProcessEnv,
   runtime: string,
@@ -135,6 +135,7 @@ export async function runLocalDesktopBridge(
           runtimePath: runtime,
           native: { executable: stockCodex, arguments: arguments_ },
           nodeReplPath: path.join(path.dirname(process.execPath), "node_repl"),
+          desktopResourcesPath: path.resolve(path.dirname(process.execPath), "../.."),
           environment,
         })
       : undefined;

@@ -170,7 +170,7 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
   }
 });
 
-it.each([true, false])("forwards current Desktop browser access (%s)", async (enabled) => {
+it.each([true, false])("uses only the connected Desktop's tool context (%s)", async (enabled) => {
   const pipe = path.join(tmpdir(), "codex-app-tools-synthetic.sock");
   const browserAccess = {
     BROWSER_USE_ACCESS_EXECUTOR_ID: "synthetic-executor",
@@ -183,6 +183,7 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
       {
         environment: {
           CODEXHOST_DATA_DIR: f.root,
+          CODEX_APP_TOOLS_PIPE_PATH: "stale-service-pipe",
           ...Object.fromEntries(
             Object.keys(browserAccess).map((key) => [key, "stale-service-value"]),
           ),
@@ -225,8 +226,7 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
       {
         CODEXHOST_LAUNCHER_EXECUTABLE: path.join(f.root, "unused-launcher"),
         CODEXHOST_DATA_DIR: f.root,
-        CODEX_APP_TOOLS_PIPE_PATH: pipe,
-        ...(enabled ? browserAccess : {}),
+        ...(enabled ? { ...browserAccess, CODEX_APP_TOOLS_PIPE_PATH: pipe } : {}),
         BROWSER_USE_ACCESS_UNRELATED: "must-not-cross",
         NODE_OPTIONS: "must-not-cross",
         UNRELATED_DESKTOP_SECRET: "must-not-cross",
@@ -236,7 +236,8 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
       ["app-server"],
     );
     expect(configured).toHaveLength(1);
-    expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
+    if (enabled) expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
+    else expect(configured[0]).not.toHaveProperty("CODEX_APP_TOOLS_PIPE_PATH");
     for (const [key, value] of Object.entries(browserAccess)) {
       if (enabled) expect(configured[0]?.[key]).toBe(value);
       else expect(configured[0]).not.toHaveProperty(key);

@@ -31,27 +31,31 @@ The Desktop's peer authorization remains enabled and rejects untrusted runtimes.
 The recovery console starts before Desktop discovery and uses the explicit Node
 override, installer Node, or npm Node so it can report an incomplete installation.
 
-Native browser IPC also requires the connecting process to descend from the
-current Desktop process. The macOS Desktop frontend therefore starts the
-Desktop-provided first-party browser `node_repl` MCP servers in its own process
-tree. It reads the effective native and plugin server definitions through the
-official CLI's `mcp list --json`. Native stdio command overrides connect through
-a Host transport client to standard Streamable HTTP MCP on an authenticated
-loopback listener. Each MCP session owns a separate stdio process beneath a
-signed Desktop Node tool host. This keeps the peer and its two checked ancestors
-on the selected signed runtime. Requests, metadata, notifications, elicitation,
-cancellation and responses pass through the MCP SDK transports. The native
-configuration supplies tool approvals, tool selection, output limits and timeouts.
+Native browser and app-tools IPC check the connecting process's ancestry. The
+macOS Desktop frontend starts the recognized first-party `node_repl` and
+`codex_app` MCP servers in its own process tree. Native stdio command overrides
+connect through a Host transport client to standard Streamable HTTP MCP on an
+authenticated loopback listener. Each MCP session owns a separate stdio process
+beneath a signed Desktop Node tool host. Desktop still authorizes each connection
+to its native socket. The MCP SDK transports forward requests, metadata,
+notifications, elicitation, cancellation and responses.
+
+The frontend reads the enabled server definitions from the official CLI and
+preserves their tool policy and timeouts. A bundled `codex_app` definition also
+retains the CLI's effective tool selections. The bridge runs the app-tools
+entry point from the current Desktop bundle. A definition from the native
+plugin cache qualifies only when its launcher and entry point match the
+bundled files. The bridge takes the app-tools socket from the current Desktop
+launch environment.
 Authenticated MCP POST bodies are limited to 16 MiB before parsing. The stdio
 entry accepts the same payload budget with room for its line terminator.
 The limit applies to each request across fragmented or combined stdio reads.
 
-The listener accepts profiles received through Desktop's stdin and validates
-the first-party executable against the selected runtime's `node_repl`. Profiles
-use a short-lived capability token per profile and separate MCP session IDs. Transport overrides travel in authenticated Desktop
-context and are applied when launching the backend. Native startup records keep
-the original arguments. Desktop frontend shutdown closes the listener and its tool processes. Browser MCP JavaScript state follows
-that Desktop lifetime, including when the shared task backend remains online.
+Profiles use a short-lived capability token and separate MCP session IDs.
+Transport overrides travel in authenticated Desktop context and apply when
+launching the backend. Native startup records keep the original arguments.
+Desktop frontend shutdown closes the listener and its tool processes, including
+when the shared task backend remains online.
 
 The independent shared Host keeps the Node chosen by the caller that first
 starts it. Desktop and Web reuse an online Host without replacing its process or

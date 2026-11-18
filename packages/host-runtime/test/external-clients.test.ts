@@ -166,6 +166,14 @@ describe("external clients", () => {
     await expect(
       route(call, "/v1/delegate/start", { harness: "pi", harnessId: "codex", task: "go" }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    // A malformed id is refused before any worktree could be created for it.
+    await expect(
+      route(call, "/v1/delegate/start", { harnessId: null, task: "go", worktree: "fix/x" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "harnessId must be a non-empty string",
+    });
+    expect(api.start).toHaveBeenCalledTimes(1);
 
     await route(call, "/v1/thread/read", { threadId: "t" });
     expect(api.read).toHaveBeenCalledWith({ threadId: "t", view: "result" });

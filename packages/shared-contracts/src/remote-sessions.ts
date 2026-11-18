@@ -39,6 +39,7 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
       })
       .optional(),
   }),
+  z.strictObject({ kind: z.literal("usage"), ...thread, epoch: identity }),
   z
     .strictObject({
       kind: z.literal("configure"),

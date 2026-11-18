@@ -931,7 +931,14 @@ export function installRendererBindingProbe(
   const codexAccountsForHost = (hostId: string | null): RendererCodexAccountState | null => {
     if (!hostId) return null;
     const client = modelClientForHost(hostId);
-    if (!client) return null;
+    if (!client) {
+      const state = harnessAvailabilityByHost.get(hostId);
+      if (state?.codexAccounts) {
+        state.codexAccounts.dispose();
+        state.codexAccounts = null;
+      }
+      return null;
+    }
     const state = hostHarnessAvailabilityState(hostId);
     if (state.codexAccounts?.client !== client) {
       state.codexAccounts?.dispose();
@@ -1090,6 +1097,8 @@ export function installRendererBindingProbe(
       mounted.draftUsageAccount !== accounts?.usageAccount
     ) {
       clearDraftUsageSnapshot(mounted);
+      mounted.draftUsageClient = null;
+      mounted.usageRequestGeneration += 1;
     }
     const currentCodexAccount = accounts?.accounts.find(
       ({ accountId }) => accountId === accounts.readyAccountId,
@@ -1268,13 +1277,24 @@ export function installRendererBindingProbe(
     threadIdFromComposerModelTarget(mounted.modelTarget) === null;
 
   const refreshDraftUsage = async (mounted: MountedComposer): Promise<void> => {
-    if (!canRefreshDraftUsage(mounted)) return;
     const agent = controller.get(mounted.composer).agent;
+    const previous = draftUsageRequests.get(mounted);
+    if (!canRefreshDraftUsage(mounted)) {
+      if (
+        agent === "codex" &&
+        threadIdFromComposerModelTarget(mounted.modelTarget) === null &&
+        controller.isSubmissionPending(mounted.composer) &&
+        previous?.status === "settled" &&
+        previous.generation === mounted.usageRequestGeneration
+      ) {
+        previous.status = "deferred";
+      }
+      return;
+    }
     const accounts = agent === "codex" ? composerCodexAccounts(mounted.composer) : null;
     const account = accounts?.usageAccount ?? null;
     const client = composerClient(mounted);
     const hostId = mounted.hostId;
-    const previous = draftUsageRequests.get(mounted);
     const sameScope =
       previous?.generation === mounted.usageRequestGeneration &&
       previous.client === client &&
@@ -2737,7 +2757,11 @@ export function installRendererBindingProbe(
       const agent = controller.get(mounted.composer).agent;
       const isCodexDraft =
         agent === "codex" && threadIdFromComposerModelTarget(mounted.modelTarget) === null;
-      const account = isCodexDraft ? composerCodexAccounts(mounted.composer)?.usageAccount : null;
+      const accounts = isCodexDraft ? composerCodexAccounts(mounted.composer) : null;
+      const account = accounts?.usageAccount;
+      if (isCodexDraft && !accounts && draftUsageRequests.delete(mounted)) {
+        mounted.draftUsageClient = null;
+      }
       if (isCodexDraft && mounted.draftUsageAccount && mounted.draftUsageAccount !== account) {
         renderMounted(mounted);
       }

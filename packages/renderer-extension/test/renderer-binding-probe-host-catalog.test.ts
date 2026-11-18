@@ -333,6 +333,7 @@ describe("Renderer binding Codex draft quota", () => {
       },
     };
     let host = { ...hostDefaults, ...accountClient };
+    let connected = true;
     const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
     const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
     const replaceClient = (replacement: AccountClient): void => {
@@ -344,11 +345,17 @@ describe("Renderer binding Codex draft quota", () => {
         { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
         undefined,
         undefined,
-        { currentHostId: () => "local", clientForHost: () => host } as never,
+        { currentHostId: () => "local", clientForHost: () => (connected ? host : null) } as never,
       );
     };
     setAdapter();
-    return { setAdapter, replaceClient };
+    return {
+      setAdapter,
+      replaceClient,
+      setConnected(value: boolean) {
+        connected = value;
+      },
+    };
   }
 
   function flushFrame(): void {
@@ -591,6 +598,65 @@ describe("Renderer binding Codex draft quota", () => {
     resumeDraft();
     await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
     expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["loaded", "pending"] as const)(
+    "reloads %s quota after the same client reconnects during submission",
+    async (status) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const oldQuota = Promise.withResolvers<CodexAccountUsageResult>();
+      const inspectCodexAccountUsage = vi
+        .fn(async () => quota(18))
+        .mockReturnValueOnce(oldQuota.promise);
+      const { setConnected } = await mountWithAccountClient({
+        listCodexAccounts: async () => account,
+        inspectCodexAccountUsage,
+      });
+      await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1));
+      if (status === "loaded") {
+        oldQuota.resolve(quota(8));
+        await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+      }
+      submitDraft();
+
+      setConnected(false);
+      scanAfterMutation();
+      expect(testState.renderedCredits.at(-1)).toBeNull();
+      setConnected(true);
+      scanAfterMutation();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+      resumeDraft();
+      await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+      if (status === "pending") oldQuota.resolve(quota(8));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18);
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("performs one deferred focus refresh after the draft resumes", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const listCodexAccounts = vi.fn(async () => account);
+    const inspectCodexAccountUsage = vi.fn(async () => quota(18)).mockResolvedValueOnce(quota(8));
+    await mountWithAccountClient({ listCodexAccounts, inspectCodexAccountUsage });
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+    submitDraft();
+    const accountReads = listCodexAccounts.mock.calls.length;
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(listCodexAccounts).toHaveBeenCalledTimes(accountReads + 1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8);
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+    resumeDraft();
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+    scanAfterMutation();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
   });
 });
 

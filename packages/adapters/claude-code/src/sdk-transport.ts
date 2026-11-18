@@ -56,6 +56,7 @@ import {
   type ClaudeTransportTurnResult,
   type ClaudeTurnEvent,
   type ClaudeTurnTransport,
+  type ClaudeUserContent,
 } from "./transport.js";
 
 const CLIENT_APP = "codexhost-claude-code-adapter/0.0.0";
@@ -574,7 +575,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         // Adaptive Thinking is redacted by default: the API streams `thinking_delta`
         // frames carrying only token estimates and empty text, so no Reasoning Item
         // would ever start. Summarized display is the official channel for readable
-        // Thinking and is what Claude Code's own TUI renders.
+        // Thinking and is what Claude Code's own TUI renders. The SDK passes this as
+        // `--thinking adaptive`, which only turns Thinking on: Claude Code sends adaptive
+        // Thinking to Models that support it and a token budget to the rest. The caller
+        // fits the effort to the Model's catalog levels.
         thinking: thinking.enabled
           ? { type: "adaptive", display: "summarized" }
           : { type: "disabled" },
@@ -694,28 +698,44 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     return this.#permissionMode;
   }
 
-  async setModel(model?: string): Promise<void> {
+  async setModel(
+    model?: string,
+    thinkingOptionId: HarnessThinkingOptionId = this.#thinkingOptionId,
+  ): Promise<void> {
     const activeQuery = this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
-    const thinking = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const id = parseClaudeThinkingOptionId(thinkingOptionId);
+    const previous = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const thinking = claudeThinkingConfiguration(id);
     const previousModel = this.#currentModel;
     await activeQuery.setModel(model);
+    if (id !== this.#thinkingOptionId && !thinking.ultracode) {
+      try {
+        await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, previous));
+      } catch (error) {
+        await this.#restoreOrFault(() => activeQuery.setModel(previousModel));
+        throw error;
+      }
+    }
     if (thinking.ultracode) {
       try {
         await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, thinking));
         await this.#verifyUltracode(activeQuery);
       } catch (error) {
-        // Ultracode stays selected, so the Model it cannot run on is rejected instead.
+        // The Model it cannot run on is rejected; restore the previous Model and Thinking.
         await this.#restoreOrFault(async () => {
           await activeQuery.setModel(previousModel);
-          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(previous, thinking));
           // A write Claude Code accepts may still not take effect; confirm the restored state.
-          await this.#verifyUltracode(activeQuery);
+          await (previous.ultracode
+            ? this.#verifyUltracode(activeQuery)
+            : this.#verifyUltracodeOff(activeQuery));
         });
         throw error;
       }
     }
     this.#currentModel = model;
+    this.#thinkingOptionId = id;
   }
 
   async setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void> {
@@ -816,7 +836,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   runTurn(
-    text: string,
+    content: ClaudeUserContent,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
@@ -844,7 +864,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     for (const event of unclaimed) onEvent(event);
     this.#input.push({
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content },
       parent_tool_use_id: null,
       session_id: this.sessionId,
       uuid: userMessageId as `${string}-${string}-${string}-${string}-${string}`,
@@ -862,7 +882,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
    * The Turn ending first therefore does not reject it, and a missing `queued` receipt resolves
    * after a bounded wait so callers that serialize requests are never held indefinitely.
    */
-  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void> {
+  steer(
+    content: ClaudeUserContent,
+    messageId: string,
+    onTakeover?: (started: boolean) => void,
+  ): Promise<void> {
     if (this.#closePromise || !this.#started || !this.#query || !this.canSteerActiveTurn()) {
       return Promise.reject(new ClaudeSteerMissedTurnError());
     }
@@ -872,7 +896,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     try {
       this.#input.push({
         type: "user",
-        message: { role: "user", content: text },
+        message: { role: "user", content },
         parent_tool_use_id: null,
         session_id: this.sessionId,
         uuid: messageId as `${string}-${string}-${string}-${string}-${string}`,

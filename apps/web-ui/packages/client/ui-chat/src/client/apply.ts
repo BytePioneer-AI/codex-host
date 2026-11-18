@@ -14,7 +14,11 @@ import type {} from "@deepseek-ai/dsh-client-ui-sidebar-browser/client";
 import type {} from "@deepseek-ai/dsh-client-ui-input-trigger/client";
 // The `file` entry of `SidebarRightResourceParamsMap`, which types `{ params: { line } }` below.
 import type {} from "@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client";
-import { fileAddressFor } from "@deepseek-ai/dsh-util-workspace-path";
+import {
+  fileAddressFor,
+  isAbsoluteWorkspacePath,
+  resolveWorkspacePath,
+} from "@deepseek-ai/dsh-util-workspace-path";
 // Type-only service and declaration merges used by the apply world.
 import type {} from "@deepseek-ai/dsh-client-locale/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
@@ -154,12 +158,16 @@ export function apply(ctx: Context): void {
       if (accepted !== undefined) linkOpening.set(accepted);
     }),
   );
+  const browserAvailable: ObservableSnapshot<boolean> = {
+    getSnapshot: () => ctx.get("sidebarRightTabs")?.get("browser") !== undefined,
+    subscribe: (listener) => ctx.get("sidebarRightTabs")?.subscribe(listener) ?? (() => {}),
+  };
+  const openLinkInSidebar = (url: string): boolean => {
+    if (!browserAvailable.getSnapshot()) return false;
+    ctx.sidebarRight.openTab("browser", { params: { url } });
+    return true;
+  };
   ctx.inject(["sidebarRightTabs"], (scope) => {
-    const tabs = scope.sidebarRightTabs;
-    const browserAvailable: ObservableSnapshot<boolean> = {
-      getSnapshot: () => tabs.get("browser") !== undefined,
-      subscribe: (listener) => tabs.subscribe(listener),
-    };
     scope.slots.inject("settings.general.item", () =>
       scope.slots.register(
         {
@@ -232,7 +240,7 @@ export function apply(ctx: Context): void {
           const turnDiffs = ctx.get("chatTurnDiffs");
           return {
             connection: ctx.get("connection") as ConnectionHandle,
-            hooks: { presentation },
+            hooks: { presentation, browserAvailable },
             keyedHooks: {
               chatNode: (key) => chat.getSnapshot().nodes.source(key),
               chatNodeProcess: (key) => chat.getSnapshot().nodes.processSource(key),
@@ -258,11 +266,16 @@ export function apply(ctx: Context): void {
             // to land.
             openFile: async (path, options) => {
               const cwd = ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd;
-              if (options?.external) {
-                const meta = await ctx.remote.workspaceFiles.stat(sessionId, path);
-                if (!meta.ok) throw new Error(meta.error.message);
+              if (options?.external || options?.reveal) {
+                let absolutePath = resolveWorkspacePath(cwd, path);
+                if (!options.reveal || !isAbsoluteWorkspacePath(absolutePath)) {
+                  const meta = await ctx.remote.workspaceFiles.stat(sessionId, path);
+                  if (!meta.ok) throw new Error(meta.error.message);
+                  absolutePath = meta.value.absolutePath;
+                }
                 const result = await ctx.remote.session.openWorkspacePath({
-                  path: meta.value.absolutePath,
+                  path: absolutePath,
+                  ...(options.reveal ? { action: "reveal" } : {}),
                 });
                 if (!result.ok) throw new Error(result.error.message);
                 return;
@@ -281,15 +294,10 @@ export function apply(ctx: Context): void {
                 .openReference("skill", { ref: `/${name}` });
             },
             resolveLink: ctx.get("chatLinks")?.resolve,
+            openLinkInSidebar,
             openExternalLink: (url) => {
-              if (
-                linkOpening.getSnapshot() === "sidebar" &&
-                ctx.get("sidebarRightTabs")?.get("browser") !== undefined
-              ) {
-                ctx.sidebarRight.openTab("browser", { params: { url } });
-              } else {
-                window.open(url, "_blank", "noopener,noreferrer");
-              }
+              if (linkOpening.getSnapshot() === "sidebar" && openLinkInSidebar(url)) return;
+              window.open(url, "_blank", "noopener,noreferrer");
             },
             loadOlder: () => {
               void session.loadOlder();

@@ -189,6 +189,19 @@ export class PiRpcFaultError extends Error {
   }
 }
 
+/** A correlated native response explicitly refused steer before acceptance. */
+export class PiRpcSteerRejectedError extends Error {}
+
+/** An idle queue cannot establish delivery to the requested Turn. Never replay this input. */
+export class PiRpcSteerTargetEndedError extends PiRpcFaultError {
+  constructor(readonly history: PiSessionHistory) {
+    super(
+      "protocolError",
+      "Pi Turn ended before steer admission could be confirmed; the isolated runtime was closed. Input hook effects are unknown, so do not automatically resend the input",
+    );
+  }
+}
+
 export class PiRpcUnsupportedCommandError extends Error {
   constructor(readonly command: string) {
     super(`Pi RPC does not support '${command}'`);
@@ -1049,6 +1062,45 @@ export class PiRpcSession {
     }
   }
 
+  async steer(message: string): Promise<void> {
+    if (!this.#child || !this.#state || this.#closed || this.#failed) {
+      throw new Error("Pi RPC Session is unavailable");
+    }
+    if (message.length === 0) throw new Error("Pi steer text must not be empty");
+    const target = this.#activeTurn;
+    if (!target || target.origin !== "requested" || target.settlement !== "pending") {
+      throw new PiRpcSteerRejectedError("Pi Turn is not accepting native input");
+    }
+    let admitted = false;
+    const response = await this.#send("steer", { message }, () => {
+      // Capture native frame order, not the state after an awaiting continuation runs.
+      admitted = this.#activeTurn === target && target.settlement === "pending";
+    });
+    if (
+      isRecord(response.data) &&
+      response.data.disposition !== undefined &&
+      response.data.disposition !== "queued"
+    ) {
+      // An input hook may have handled it already; retrying could repeat its effects.
+      throw new Error("Pi steer was handled without confirming same-Turn queue admission");
+    }
+    if (!admitted) {
+      // Native input hooks may outlive the run and then enqueue into an idle Session.
+      // Preserve the terminal history before closing this owned process and its queue.
+      let history: PiSessionHistory | undefined;
+      try {
+        history = await this.getEntries();
+      } finally {
+        try {
+          await this.close();
+        } catch (error) {
+          if (history !== undefined) throw error;
+        }
+      }
+      throw new PiRpcSteerTargetEndedError(history);
+    }
+  }
+
   async runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult> {
     if (!this.#child || !this.#state || this.#closed || this.#failed) {
       throw new Error("Pi RPC Session is unavailable");
@@ -1734,7 +1786,12 @@ export class PiRpcSession {
     if (value.success === true) pending.resolve(value);
     else {
       const error = typeof value.error === "string" ? value.error : "Pi RPC command failed";
-      if (value.command === pending.command && error === `Unknown command: ${pending.command}`) {
+      if (pending.command === "steer" && value.command === "steer" && value.success === false) {
+        pending.reject(new PiRpcSteerRejectedError(error));
+      } else if (
+        value.command === pending.command &&
+        error === `Unknown command: ${pending.command}`
+      ) {
         pending.reject(new PiRpcUnsupportedCommandError(pending.command));
       } else {
         pending.reject(new Error(error));
@@ -2094,7 +2151,11 @@ export class PiRpcSession {
     });
   }
 
-  #send(type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  #send(
+    type: string,
+    payload: Record<string, unknown>,
+    onResponse?: () => void,
+  ): Promise<Record<string, unknown>> {
     const child = this.#child;
     if (!child?.stdin.writable || this.#closed || this.#failed) {
       return Promise.reject(new Error("Pi RPC stdin is unavailable"));
@@ -2103,7 +2164,10 @@ export class PiRpcSession {
     return new Promise((resolve, reject) => {
       const pending: PendingCommand = {
         command: type,
-        resolve,
+        resolve: (response) => {
+          onResponse?.();
+          resolve(response);
+        },
         reject,
         timeout: null,
       };

@@ -33,8 +33,12 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
-import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
+import {
+  answerStep,
+  createNativeHistoryDatabase,
+  userStep,
+} from "./support/native-history-fixture.js";
 import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
 
 const mode = harnessPermissionModeIdSchema.parse;
@@ -90,7 +94,6 @@ class FakeTransport implements AntigravityAcpTransportLike {
   parts?: readonly AntigravityPromptInputPart[];
   result = deferred<AntigravityPromptResult>();
   config = config();
-  replayedEvents: AntigravityAcpEvent[] = [];
   constructor(readonly options: AntigravityAcpTransportOptions) {}
   initialize = vi.fn(async (): Promise<InitializeResponse> => ({
     protocolVersion: 1,
@@ -108,7 +111,6 @@ class FakeTransport implements AntigravityAcpTransportLike {
         configOptions: this.config,
         modes: { currentModeId: "default", availableModes: [] },
       },
-      replayedEvents: this.replayedEvents,
     };
   });
   setMode = vi.fn(async (value: string) => {
@@ -313,17 +315,20 @@ describe("Antigravity ACP Session", () => {
       const replay = vi
         .spyOn(AntigravitySessionUsageTracker.prototype, "replayHistoricalRequests")
         .mockReturnValueOnce(gate.promise);
-      const { adapter, transports } = fixture();
+      const home = await mkdtemp(path.join(os.tmpdir(), "agy-usage-open-"));
+      directories.push(home);
+      const nativeRef = ref();
+      if (kind === "resume")
+        (await createNativeHistoryDatabase(home, nativeRef.nativeSessionId)).close();
+      const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
       const { session, outputs } = await sessionOf(
         await adapter.open(
-          kind === "resume"
-            ? { kind, cwd: process.cwd(), nativeRef: ref() }
-            : { kind, cwd: process.cwd() },
+          kind === "resume" ? { kind, cwd: home, nativeRef } : { kind, cwd: home },
         ),
       );
       if (kind === "resume") {
         expect((await session.readSnapshot()).ok).toBe(true);
-        expect(transports[0]?.prompt).not.toHaveBeenCalled();
+        expect(transports).toHaveLength(0);
       }
       await session.execute({
         type: "turn.start",
@@ -385,10 +390,13 @@ describe("Antigravity ACP Session", () => {
   it("marks missing derived history incomplete instead of publishing an empty zero-cost ledger", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-derived-usage-"));
     directories.push(home);
-    vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockResolvedValue(3);
+    const nativeRef = ref();
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    userStep(db, 0, "Persisted input without usage");
+    db.close();
     const { adapter } = fixture({ environment: { HOME: home, USERPROFILE: home } });
     const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "resume", nativeRef: ref(), cwd: home }),
+      await adapter.open({ kind: "resume", nativeRef, cwd: home }),
     );
     expect((await session.readSnapshot()).ok).toBe(true);
     await session.refreshUsage?.();
@@ -868,219 +876,52 @@ describe("Antigravity ACP Session", () => {
       expect(prompt).not.toContain(value);
     expect(prompt).toContain("CODEXHOST_RUNTIME_TOKEN");
   });
-  it("reads cold history using only load, then resumes once with saved configuration for writing", async () => {
-    const { adapter, transports } = fixture();
+  it("reads cold SQLite history, then resumes with the saved configuration for writing", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-history-resume-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
     const nativeRef = ref(undefined, { permissionModeId: "dangerously-skip-permissions" });
-    const { session, outputs } = await sessionOf(
-      await adapter.open({
-        kind: "resume",
-        cwd: process.cwd(),
-        nativeRef,
-        model: model("claude"),
-        thinkingOptionId: thinking("high"),
-      }),
-    );
-    expect(transports).toHaveLength(0);
-    expect(session.initialState).toEqual({ nativeRef });
-    const reading = session.readSnapshot();
-    await Promise.resolve();
-    const reader = required(transports[0]);
-    reader.replayedEvents = [
-      { type: "user.text", text: "old question" },
-      { type: "agent.text", text: "old answer" },
-    ];
-    const snapshot = await reading;
-    expect(snapshot).toMatchObject({
-      ok: true,
-      value: {
-        turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" } }],
-      },
-    });
-    expect(snapshot.ok && snapshot.value.state).toBeUndefined();
-    expect(session.initialState.effectiveModel).toBeUndefined();
-    expect(transports).toHaveLength(1);
-    expect(reader.skipPermissions).toBe(true);
-    expect(reader.openSession).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ kind: "load", sessionId: nativeRef.nativeSessionId }),
-    );
-    expect(reader.setConfigOption).not.toHaveBeenCalled();
-    expect(reader.prompt).not.toHaveBeenCalled();
-    expect(reader.closeSession).toHaveBeenCalledOnce();
-    expect(reader.close).not.toHaveBeenCalled();
-    const writer = await start(session, transports);
-    expect(transports).toHaveLength(2);
-    expect(writer.openSession).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ kind: "resume", sessionId: nativeRef.nativeSessionId }),
-    );
-    expect(writer.setConfigOption.mock.calls).toEqual([
-      ["model", "claude"],
-      ["thought_level", "high"],
-    ]);
-    writer.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs);
-    expect(events(outputs)).toContainEqual(
-      expect.objectContaining({
-        type: "turn.completed",
-        nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-1" }),
-      }),
-    );
-    await adapter.close();
-    expect(reader.close).toHaveBeenCalledOnce();
-  });
-  it("reuses one read-only process serially across Sessions and isolates by permission and account environment", async () => {
-    const { adapter, transports } = fixture();
-    const firstRef = ref();
-    const secondRef = ref();
-    const skipRef = ref(undefined, { permissionModeId: "dangerously-skip-permissions" });
-    const otherHome = await mkdtemp(path.join(os.tmpdir(), "agy-reader-home-"));
-    directories.push(otherHome);
-    const otherAccountRef = ref();
-    const [
-      { session: first },
-      { session: second },
-      { session: skipSession },
-      { session: otherAccount },
-    ] = await Promise.all([
-      sessionOf(
-        await adapter.open({
-          kind: "resume",
-          cwd: process.cwd(),
-          nativeRef: firstRef,
-          environment: { CODEXHOST_THREAD_ID: "thread-1" },
-        }),
-      ),
-      sessionOf(
-        await adapter.open({
-          kind: "resume",
-          cwd: otherHome,
-          nativeRef: secondRef,
-          environment: { CODEXHOST_THREAD_ID: "thread-2" },
-        }),
-      ),
-      sessionOf(
-        await adapter.open({
-          kind: "resume",
-          cwd: process.cwd(),
-          nativeRef: skipRef,
-          environment: { CODEXHOST_THREAD_ID: "thread-3" },
-        }),
-      ),
-      sessionOf(
-        await adapter.open({
-          kind: "resume",
-          cwd: process.cwd(),
-          nativeRef: otherAccountRef,
-          environment: { HOME: otherHome, CODEXHOST_THREAD_ID: "thread-4" },
-        }),
-      ),
-    ]);
-    const closeGate = deferred<undefined>();
-    const firstRead = first.readSnapshot();
-    await Promise.resolve();
-    const sharedReader = required(transports[0]);
-    sharedReader.closeSession.mockReturnValueOnce(closeGate.promise);
-    const secondRead = second.readSnapshot();
-    await vi.waitFor(() => expect(sharedReader.closeSession).toHaveBeenCalledOnce());
-    expect(sharedReader.openSession).toHaveBeenCalledTimes(1);
-    closeGate.resolve(undefined);
-    expect((await firstRead).ok).toBe(true);
-    expect((await secondRead).ok).toBe(true);
-    expect(transports).toHaveLength(1);
-    expect(sharedReader.initialize).toHaveBeenCalledTimes(1);
-    expect(sharedReader.openSession.mock.calls).toEqual([
-      [{ kind: "load", sessionId: firstRef.nativeSessionId, cwd: process.cwd() }],
-      [{ kind: "load", sessionId: secondRef.nativeSessionId, cwd: otherHome }],
-    ]);
-    expect(sharedReader.closeSession).toHaveBeenCalledTimes(2);
-    expect(sharedReader.close).not.toHaveBeenCalled();
-
-    await first.close();
-    expect(sharedReader.close).not.toHaveBeenCalled();
-
-    expect((await skipSession.readSnapshot()).ok).toBe(true);
-    expect((await otherAccount.readSnapshot()).ok).toBe(true);
-    expect(transports).toHaveLength(3);
-    expect(transports[1]?.skipPermissions).toBe(true);
-    expect(transports[2]?.options.environment?.HOME).toBe(otherHome);
-
-    await adapter.close();
-    expect(transports.every((transport) => transport.close.mock.calls.length === 1)).toBe(true);
-  });
-  it("retires a faulted reader process, starts a fresh reader on the next snapshot, and joins cleanup on Adapter close", async () => {
-    const { adapter, transports } = fixture();
-    const { session: first } = await sessionOf(
-      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
-    );
-    const { session: second } = await sessionOf(
-      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
-    );
-    const retiredExited = deferred<undefined>();
-    const readingFirst = first.readSnapshot();
-    await Promise.resolve();
-    const brokenReader = required(transports[0]);
-    brokenReader.closeSession.mockRejectedValueOnce(
-      new AntigravityTransportError("unavailable", "session/close timed out"),
-    );
-    brokenReader.close.mockReturnValue(retiredExited.promise);
-    expect(await readingFirst).toMatchObject({ ok: false, error: { code: "nativeFailure" } });
-    expect(brokenReader.close).toHaveBeenCalledOnce();
-
-    expect((await second.readSnapshot()).ok).toBe(true);
-    expect(transports).toHaveLength(2);
-    const healthyReader = required(transports[1]);
-    expect(healthyReader.close).not.toHaveBeenCalled();
-
-    let adapterClosed = false;
-    const closing = adapter.close().then(() => {
-      adapterClosed = true;
-    });
-    await vi.waitFor(() => expect(healthyReader.close).toHaveBeenCalledOnce());
-    expect(adapterClosed).toBe(false);
-    retiredExited.resolve(undefined);
-    await closing;
-    expect(adapterClosed).toBe(true);
-  });
-  it("propagates pooled reader cleanup failure when the Adapter closes", async () => {
-    const { adapter, transports } = fixture();
-    const { session } = await sessionOf(
-      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
-    );
-    expect((await session.readSnapshot()).ok).toBe(true);
-    const reader = required(transports[0]);
-    reader.close.mockRejectedValueOnce(new Error("reader cleanup failed"));
-    await expect(adapter.close()).rejects.toThrow("reader cleanup failed");
-    await expect(adapter.close()).rejects.toThrow("reader cleanup failed");
-    adapters.splice(adapters.indexOf(adapter), 1);
-  });
-  it("does not let a pending cold history reader overwrite writable configuration", async () => {
-    const { adapter, transports } = fixture();
-    const { session } = await sessionOf(
-      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
-    );
-    const gate = deferred<undefined>();
-    const reading = session.readSnapshot();
-    await Promise.resolve();
-    const reader = required(transports[0]);
-    const open = required(reader.openSession.getMockImplementation());
-    reader.openSession.mockImplementationOnce(async (input) => {
-      await gate.promise;
-      return open(input);
-    });
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
     try {
-      expect(await session.execute({ type: "model.select", model: model("claude") })).toEqual({
+      userStep(db, 0, "old question");
+      answerStep(db, 1, "old answer");
+      const { session, outputs } = await sessionOf(
+        await adapter.open({
+          kind: "resume",
+          cwd: home,
+          nativeRef,
+          model: model("claude"),
+          thinkingOptionId: thinking("high"),
+        }),
+      );
+      const snapshot = await session.readSnapshot();
+      expect(snapshot).toMatchObject({
         ok: true,
-        value: { completed: true },
+        value: { turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" } }] },
       });
-      expect(transports).toHaveLength(2);
-      gate.resolve(undefined);
-      expect(await reading).toMatchObject({
-        ok: true,
-        value: { state: { effectiveModel: model("claude") } },
+      expect(snapshot.ok && snapshot.value.state).toBeUndefined();
+      expect(session.initialState).toEqual({ nativeRef });
+      expect(transports).toHaveLength(0);
+      const writer = await start(session, transports);
+      expect(writer.skipPermissions).toBe(true);
+      expect(writer.openSession).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ kind: "resume", sessionId: nativeRef.nativeSessionId }),
+      );
+      expect(session.initialState).toMatchObject({
+        effectiveModel: model("claude"),
+        effectiveThinkingOptionId: "high",
       });
-      expect(session.initialState.effectiveModel).toEqual(model("claude"));
+      userStep(db, 2, "hello");
+      writer.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "turn.completed",
+          nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-1" }),
+        }),
+      );
     } finally {
-      gate.resolve(undefined);
-      await reading;
+      db.close();
     }
   });
   it("closes an unopened restored Session without starting a process", async () => {
@@ -1092,27 +933,7 @@ describe("Antigravity ACP Session", () => {
     await session.close();
     expect(transports).toHaveLength(0);
   });
-  it("loads history on a temporary connection even during an active Turn, without prompting", async () => {
-    const { adapter, transports } = fixture();
-    const { session } = await sessionOf(
-      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
-    );
-    await start(session, transports);
-    const snapshot = await session.readSnapshot();
-    expect(snapshot.ok).toBe(true);
-    const reader = required(transports[1]);
-    expect(reader.openSession.mock.calls[0]?.[0].kind).toBe("load");
-    expect(reader.prompt).not.toHaveBeenCalled();
-    expect(reader.closeSession).toHaveBeenCalledOnce();
-    expect(reader.close).not.toHaveBeenCalled();
-    reader.options.onFault?.(
-      new AntigravityTransportError("processExited", "read-only connection died"),
-    );
-    expect(reader.close).toHaveBeenCalledOnce();
-    expect(
-      (await session.execute({ type: "thinking.select", thinkingOptionId: thinking("high") })).ok,
-    ).toBe(true);
-  });
+
   it("applies resume configuration hints and rejects native identity mismatch", async () => {
     const { adapter, transports } = fixture();
     const { session } = await sessionOf(
@@ -1146,7 +967,6 @@ describe("Antigravity ACP Session", () => {
             configOptions: config(),
             modes: { currentModeId: "default", availableModes: [] },
           },
-          replayedEvents: [],
         }));
         return transport;
       },
@@ -1155,10 +975,8 @@ describe("Antigravity ACP Session", () => {
     const { session: brokenSession } = await sessionOf(
       await broken.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
     );
-    expect(await brokenSession.readSnapshot()).toMatchObject({
-      ok: false,
-      error: { code: "protocolError" },
-    });
+    assert(brokenSession instanceof AntigravitySession);
+    await expect(brokenSession.initialize()).rejects.toMatchObject({ kind: "protocolError" });
   });
   it("accepts slash commands and inline images through the same ACP prompt path", async () => {
     const { adapter, transports } = fixture();

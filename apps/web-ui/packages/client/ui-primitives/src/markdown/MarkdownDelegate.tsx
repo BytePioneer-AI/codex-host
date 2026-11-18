@@ -2,6 +2,7 @@
 import { createContext, useContext, useMemo } from "react";
 import type { ReactNode } from "react";
 import type { ImageLightboxLabels } from "../ImageLightbox.tsx";
+import type { MarkdownLinkMenuTarget } from "./link-context-menu.ts";
 
 /**
  * Handle one sanitized absolute HTTP(S) URL selected from Markdown.
@@ -32,8 +33,7 @@ export interface MarkdownDelegate {
     | undefined;
   /** Ordinary HTTP(S) activation; absent handlers retain native anchor behavior. */
   readonly openExternalLink?: MarkdownExternalLinkHandler | undefined;
-  /** Localized context-menu action for opening a file outside the current application. */
-  readonly openFileExternalLabel?: string | undefined;
+  readonly onLinkContextMenu?: ((target: MarkdownLinkMenuTarget) => void) | undefined;
   /**
    * Open a decoded local destination from settled Markdown; absent handlers leave plain text.
    * @param path - Absolute or workspace-relative file path.
@@ -59,14 +59,14 @@ export interface MarkdownDelegateProviderProps extends MarkdownDelegate {
 export function MarkdownDelegateProvider({
   children,
   openExternalLink,
-  openFileExternalLabel,
+  onLinkContextMenu,
   openFile,
   fileImages,
   resolveLink,
 }: MarkdownDelegateProviderProps): ReactNode {
   const delegate = useMemo(
-    () => ({ openExternalLink, openFileExternalLabel, openFile, fileImages, resolveLink }),
-    [openExternalLink, openFileExternalLabel, openFile, fileImages, resolveLink],
+    () => ({ openExternalLink, onLinkContextMenu, openFile, fileImages, resolveLink }),
+    [openExternalLink, onLinkContextMenu, openFile, fileImages, resolveLink],
   );
   return (
     <MarkdownDelegateContext.Provider value={delegate}>{children}</MarkdownDelegateContext.Provider>

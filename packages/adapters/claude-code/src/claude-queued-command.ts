@@ -35,15 +35,28 @@ export function readClaudeQueuedCommand(
   ) {
     return null;
   }
+  const prompt = promptText(attachment.prompt);
   if (
     typeof value.uuid !== "string" ||
     value.uuid.length === 0 ||
     typeof attachment.source_uuid !== "string" ||
     attachment.source_uuid.length === 0 ||
-    typeof attachment.prompt !== "string" ||
-    attachment.prompt.length === 0
+    prompt.length === 0
   ) {
     throw new Error("Claude queued human input has an invalid identity or text prompt");
   }
-  return { uuid: value.uuid, sourceUuid: attachment.source_uuid, prompt: attachment.prompt };
+  return { uuid: value.uuid, sourceUuid: attachment.source_uuid, prompt };
+}
+
+/** A prompt with images is persisted as content blocks; its text blocks are the prompt. */
+function promptText(prompt: unknown): string {
+  if (typeof prompt === "string") return prompt;
+  if (!Array.isArray(prompt)) return "";
+  return prompt
+    .flatMap((block) =>
+      isRecord(block) && block.type === "text" && typeof block.text === "string"
+        ? [block.text]
+        : [],
+    )
+    .join("\n");
 }

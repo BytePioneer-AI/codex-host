@@ -20,7 +20,6 @@ import type { PendingSubmission } from "@deepseek-ai/dsh-api-session-controller/
 import {
   Button,
   IconChevronDownOutlineRegular,
-  MarkdownDelegateProvider,
   Modal,
   StateDot,
   useSustainedRecovery,
@@ -43,6 +42,7 @@ import { useChatScroll } from "./use-chat-scroll.ts";
 import { fileMediaUrl, resolveWorkspacePath } from "@deepseek-ai/dsh-util-workspace-path";
 import { useSentMessageEditing } from "./SentMessageEditor.tsx";
 import { SelectionActions } from "./SelectionActions.tsx";
+import { ChatMarkdown } from "./ChatMarkdown.tsx";
 import css from "./ChatView.module.css";
 
 declare module "@deepseek-ai/dsh-session-projection/types" {
@@ -184,6 +184,8 @@ export function ChatView({
   openFile,
   openSkill,
   openExternalLink,
+  openLinkInSidebar,
+  useBrowserAvailable,
   resolveLink,
   loadOlder,
   loadThrough,
@@ -200,6 +202,7 @@ export function ChatView({
   t,
 }: ChatViewSlotProps) {
   const order = useChat((s) => s.order);
+  const browserAvailable = useBrowserAvailable((available) => available);
   const groupedEntries = useConversation((snapshot) => snapshot.views.grouped("chat")?.entries);
   const entries = useMemo<readonly RenderEntry[]>(
     () => groupedEntries ?? order.map((key) => ({ kind: "node", key: key as NodeKey })),
@@ -269,9 +272,11 @@ export function ChatView({
   const hasMore = useSession((s) => s.hasMore);
   const loadingOlder = useSession((s) => s.loadingOlder);
   const olderError = useSession((s) => s.olderError);
-  const [fileOpenError, setFileOpenError] = useState<{ path: string; message: string } | null>(
-    null,
-  );
+  const [fileOpenError, setFileOpenError] = useState<{
+    path: string;
+    options: OpenFileOptions | undefined;
+    message: string;
+  } | null>(null);
   const [fileOpenBusy, setFileOpenBusy] = useState(false);
   // Close/retry must ignore a settlement that started before the latest
   // gesture; otherwise a cancelled in-flight refusal reopens the dialog.
@@ -291,7 +296,11 @@ export function ChatView({
           if (id !== fileOpenRequest.current) return;
           setFileOpenError({
             path,
-            message: openFailureMessage(error, t("fileOpen.unknown")),
+            options,
+            message: openFailureMessage(
+              error,
+              t(options?.reveal ? "fileOpen.folder" : "fileOpen.unknown"),
+            ),
           });
           setFileOpenBusy(false);
         },
@@ -437,12 +446,14 @@ export function ChatView({
                 )}
               </div>
             )}
-            <MarkdownDelegateProvider
+            <ChatMarkdown
+              key={sessionId}
               openExternalLink={openExternalLink}
-              openFileExternalLabel={t("fileOpen.external")}
+              openLinkInSidebar={browserAvailable ? openLinkInSidebar : undefined}
               resolveLink={resolveLink}
               openFile={requestOpenFile}
               fileImages={fileImages}
+              t={t}
             >
               <ChatNodeList
                 entries={entries}
@@ -468,7 +479,7 @@ export function ChatView({
                 renderSlot={renderSlot}
                 t={t}
               />
-            </MarkdownDelegateProvider>
+            </ChatMarkdown>
             {messageEditing.draft && !editNodeVisible && (
               <SentMessageRecovery
                 editing={messageEditing}
@@ -515,11 +526,12 @@ export function ChatView({
       )}
       {fileOpenError !== null && (
         <FileOpenErrorDialog
+          title={t(fileOpenError.options?.reveal ? "fileOpen.folder" : "fileOpen.title")}
           message={fileOpenError.message}
           busy={fileOpenBusy}
           onClose={closeFileOpenError}
           onRetry={() => {
-            requestOpenFile(fileOpenError.path);
+            requestOpenFile(fileOpenError.path, fileOpenError.options);
           }}
           t={t}
         />
@@ -530,12 +542,14 @@ export function ChatView({
 
 /** In-page Host open-path refusal: the wire reason plus a retry of the same path. */
 function FileOpenErrorDialog({
+  title,
   message,
   busy,
   onClose,
   onRetry,
   t,
 }: {
+  title: string;
   message: string;
   busy: boolean;
   onClose: () => void;
@@ -547,7 +561,7 @@ function FileOpenErrorDialog({
       open
       onClose={onClose}
       closeLabel={t("close")}
-      title={t("fileOpen.title")}
+      title={title}
       description={message}
       footer={
         <>

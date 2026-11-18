@@ -233,7 +233,7 @@ fn delegation_node(bundled: &Path, host_node: Option<OsString>) -> Result<PathBu
     }
 }
 
-fn startup_trace(stage: &str) {
+pub(crate) fn startup_trace(stage: &str) {
     startup_record::stage(stage);
     if env::var_os(STARTUP_TRACE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
@@ -1541,6 +1541,18 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             codexhost_platform::open_external_url(path).map_err(Into::into)
         }
         Some("open-file") => Err("open-file requires one file path".into()),
+        Some("reveal-file") if arguments.len() == 2 => {
+            let path = Path::new(&arguments[1]);
+            if !path.is_absolute() {
+                return Err("reveal-file requires an absolute path".into());
+            }
+            let info = path.metadata()?;
+            if !info.is_file() && !info.is_dir() {
+                return Err("reveal-file requires a regular file or directory".into());
+            }
+            codexhost_platform::reveal_file(path).map_err(Into::into)
+        }
+        Some("reveal-file") => Err("reveal-file requires one path".into()),
         Some("open-loopback-url") if arguments.len() == 1 => {
             let url = read_bounded_loopback_url(std::io::stdin().lock())?;
             validate_loopback_root_url(&url)?;

@@ -24,7 +24,7 @@
 |---|---|---|---|---|---|---|---|
 | A1 | Manifest | 必做 | P0 | 支持 | `manifest.json` | 既有校验与 `installed-harness-plugins.test.ts` | ID 为 `antigravity` |
 | A2 | 工厂 | 必做 | P0 | 支持 | `src/plugin.ts` | `test/plugin.test.ts`、`installed-harness-plugins.test.ts` | 传播环境变量并默认关闭后台自更新弹窗 |
-| A3 | 检查 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/model-catalog.ts` | `test/antigravity-adapter.test.ts`；实测 `agy --version` / `agy models` | 校验最低 ACP 版本（`>= 1.5.8`），不创建用户会话 |
+| A3 | 检查 | 必做 | P0 | 支持 | `src/command.ts`、`src/antigravity-adapter.ts`、`src/model-catalog.ts` | `test/antigravity-adapter.test.ts`、`test/desktop-launcher.test.ts`；实测 `agy --version` / `agy models` | 跳过 Electron 桌面启动脚本，校验原生 CLI 最低 ACP 版本（`>= 1.5.8`），不创建用户会话 |
 | A4 | 创建 Session | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/new` | 未传配置时保持原生默认；预热不产生 `session/list` 空记录 |
 | A5 | 执行 Turn | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts`、`src/acp-projection.ts` | `test/antigravity-adapter.test.ts`；实测 `session/prompt` | 支持文本与图片输入、流式文本与思考块 |
 | A6 | 取消 | 必做 | P0 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/antigravity-adapter.test.ts`；实测 `session/cancel` | 取消关闭活动交互与工具项，保留会话继续下一轮 |
@@ -50,12 +50,12 @@
 | B16 | 向下委派 | 原生有则必做 | P2 | 支持 | `src/delegation.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts`；实测 `_meta.antigravity.systemPrompt.append` | 注入环境变量并通过原生 `systemPrompt.append` 告知变量名 |
 | C1 | 展示元数据 | 必做 | P1 | 支持 | `manifest.json`、`src/permission-modes.ts` | `test/plugin.test.ts` | 含图标、链接与中英文权限模式文案 |
 | C2 | 手动安装指引 | 必做 | P1 | 支持 | `manifest.json` | `test/plugin.test.ts` | macOS/Linux 与 Windows 官方安装脚本及登录提示 |
-| C3 | 版本检查与更新 | 必做 | P1 | 支持 | `src/installation.ts` | `test/installation.test.ts` | 复用 `agy update` 与版本解析 |
+| C3 | 版本检查与更新 | 必做 | P1 | 支持 | `src/installation.ts` | `test/installation.test.ts`、`test/desktop-launcher.test.ts` | 复用所选 CLI 的 `update` 与版本解析；未发现原生入口时拒绝更新，不重新执行未限定路径的 `agy` |
 | C4 | 首次安装 | 可选 | P2 | 支持 | `src/plugin.ts` | `test/plugin.test.ts` | 使用 `createHarnessInstaller` 调用官方安装脚本 |
 | C5 | 自定义启动路径 | 条件必做 | P1 | 不适用 | — | `agy` 为独立命令行工具而非桌面应用私藏二进制；另支持 `CODEXHOST_ANTIGRAVITY_COMMAND` 环境变量覆盖 | |
 | C6 | 会话导入 | 可选 | P2 | 支持 | `src/session-import.ts` | `test/session-import.test.ts` | 只读扫描 `conversation_summaries.db` 与 `conversations/<id>.db`，过滤空会话与子代理 |
 | C7 | 全局用量统计 | 可选 | P2 | 支持 | `src/usage-statistics.ts` | `test/usage-statistics.test.ts`；实测跨会话分叉去重 | 只读解析 `brain/<id>/.system_generated/logs/transcript.jsonl`，归一 `1.5.9` `model` 并按 Gemini/GPT 隐式零缓存写与 Claude 未知缓存写区分计价 |
-| C8 | 账号额度 | 可选 | P2 | 支持 | `src/quota.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts`；实测 `accounts/inspect` | 通过 `agy --print=/usage` 流式读取 `command_result` 配额窗口并维护独立账号缓存 |
+| C8 | 账号额度 | 可选 | P2 | 支持 | `src/quota.ts`、`src/antigravity-adapter.ts` | `test/antigravity-adapter.test.ts`、`test/desktop-launcher.test.ts`；实测 `accounts/inspect` | 通过原生 CLI 的 `--print=/usage` 流式读取 `command_result` 配额窗口并维护独立账号缓存；仅有桌面启动脚本时返回空额度，不执行该脚本 |
 | D1 | Workspace / 构建 | 预装时必做 | P1 | 支持 | `tsconfig.json`、`package-lock.json` | `npm run typecheck`、`npm run build:typescript` | 已在根工程引用中注册 |
 | D2 | 预装清单 | 预装时必做 | P1 | 支持 | `scripts/release/harness-plugins.json` | `npm run build:typescript`（含 `build:plugins`） | `@agentclientprotocol/sdk` 与 `diff` 已在 `runtimePackages` |
 | D3 | 加载测试 | 预装时必做 | P1 | 支持 | `packages/host-runtime/test/installed-harness-plugins.test.ts` | `npx vitest run -c tests/vitest.config.js packages/host-runtime/test/installed-harness-plugins.test.ts` | 真实 Loader 加载验证通过 |
@@ -64,6 +64,7 @@
 
 ## 受限与已知缺口
 
+- 桌面版提供的同名 `agy` 别名可能指向 Electron 编辑器启动脚本，版本号不能证明它支持后台协议。发现入口会读取有限的脚本前缀识别该启动器，并继续搜索其他原生 CLI；显式覆盖指向桌面脚本时返回未安装 CLI。识别基于脚本内容，位于同一路径的原生 CLI 仍可使用。
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
 - Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
@@ -81,6 +82,7 @@
 
 | 层次 | 命令或方式 | 结果 |
 |---|---|---|
+| 桌面启动器识别 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/desktop-launcher.test.ts packages/adapters/antigravity/test/installation.test.ts packages/adapters/antigravity/test/antigravity-adapter.test.ts packages/adapters/antigravity/test/plugin.test.ts` | macOS arm64：4 个测试文件、71 项通过；覆盖显式路径、环境变量、PATH 别名、后续原生 CLI、同路径原生入口和更新操作，不执行桌面脚本 |
 | 历史回放完整性与未知终态 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-transport.test.ts packages/protocol-core/test/final-answer-phase.test.ts`；`node --import tsx --test packages/web-server/test/ch-thread-history.test.ts`；变更包 `tsc -b` | 35 项 Vitest + 17 项 Web 后端测试通过；类型构建通过。覆盖成功响应后迟到正文、分块尾部、尾部上下文用量与 Session 信息不泄漏到实时通道、不完整回放超时报错和未知终态保留正文；真实 `agy 1.5.9` 每块延迟 10ms 的只读探针收齐 28 轮、25 条正文，未发送 Prompt 或重启服务 |
 | Turn 内费用累计 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test/acp-usage.test.ts packages/adapters/antigravity/test/antigravity-adapter.test.ts` | 147 项通过；覆盖历史基线、轮内多请求累计、重复刷新去重、轮末核对与缺失用量保护；未进行真实 CLI/UI 验证 |
 | 历史恢复生命周期 | `npx vitest run --config tests/vitest.config.js packages/adapters/antigravity/test packages/host-runtime/test/antigravity-history.test.ts packages/host-runtime/test/installed-harness-plugins.test.ts` | 427 项通过；验证冷读仅 `load`、首次写入才 `resume`、保存配置不被读连接覆盖、取消、派生恢复及延迟进程回收的等待和错误报告；1 项 OpenCode 真实探针未启用 |

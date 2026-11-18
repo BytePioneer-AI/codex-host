@@ -107,6 +107,14 @@ Pi RPC 在 Windows UNC 工作目录（例如 `\\wsl.localhost\Ubuntu\home\user\p
 
 > Claude Code、Pi、OMP、Grok 和 Qwen Code 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
 
+## Antigravity 的桌面启动脚本
+
+Antigravity 后台使用独立的 `agy` CLI（`agy acp`）。桌面版也可能提供同名别名，其 Electron 启动脚本通过 `ELECTRON_RUN_AS_NODE` 调用编辑器的 `out/cli.js`；该脚本的版本输出不代表它支持 ACP、模型目录或额度查询。
+
+Antigravity 的发现声明通过 `runnableCandidate` 读取候选入口前 4096 字节，识别并跳过这类桌面脚本，再按现有顺序搜索 `PATH` 和安装目录中的原生 CLI。显式覆盖指向桌面脚本时不执行它。识别依据是脚本内容，位于同一路径的原生 CLI 仍参与正常发现。
+
+版本检查和更新复用同一发现结果。未发现原生 CLI 时报告未安装，不重新执行未限定路径的 `agy`。仅安装桌面版时，检查返回 `notInstalled`，额度查询返回空值；桌面版仍由其原入口供用户使用。
+
 ## DeepSeek Harness 的特殊性
 
 DeepSeek Adapter 只对接写 Session Format V4 的 DSH，已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`、`0.2.2-rc.1` 和 `0.2.2-rc.2` 验证。低于最低版本 `0.1.7-rc.1` 的 CLI 在启动托管 Web 前被拒绝；不低于门槛的其他 SemVer 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：

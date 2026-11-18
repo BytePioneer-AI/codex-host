@@ -44,13 +44,14 @@ export function createAntigravityInstallation(
 ) {
   const run =
     dependencies.run ??
-    ((args: readonly string[], timeout?: number) =>
-      runInstallationCommand(
-        resolveAntigravityExecutable({ environment, ...(command ? { command } : {}) }) ?? "agy",
-        args,
+    ((args: readonly string[], timeout?: number) => {
+      const executable = resolveAntigravityExecutable({
         environment,
-        timeout,
-      ));
+        ...(command ? { command } : {}),
+      });
+      if (!executable) throw new Error("Antigravity CLI (agy) is not installed");
+      return runInstallationCommand(executable, args, environment, timeout);
+    });
   const fetchText = dependencies.fetchText ?? fetchInstallationText;
   const platform = dependencies.platform ?? process.platform;
   const arch = dependencies.arch ?? process.arch;

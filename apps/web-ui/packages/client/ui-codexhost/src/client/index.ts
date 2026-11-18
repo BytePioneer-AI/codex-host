@@ -123,6 +123,8 @@ export function apply(ctx: ClientContext): void {
           sessionId,
           label: t("file.download"),
           openFolderLabel: t("file.openFolder"),
+          remoteUnsupportedLabel: t("file.openFolder.remoteUnsupported"),
+          openFolderFailedLabel: t("file.openFolder.failed"),
         }),
       },
       DocumentDownload,

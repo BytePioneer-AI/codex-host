@@ -1,5 +1,5 @@
 /** Authenticated original-file downloads and local desktop handoff. */
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type SpawnOptions } from "node:child_process";
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -112,22 +112,42 @@ async function bringExplorerWindowToFront(
       return;
     }
     if (i >= 4) {
-      const matched =
-        current.find((window) => {
-          const title = window.title.toLowerCase();
-          return (
-            title === folderName ||
-            title.startsWith(`${folderName} `) ||
-            title.startsWith(`${folderName} -`) ||
-            title.includes(folderName)
-          );
-        }) ?? (current.length === 1 ? current[0] : undefined);
+      const matched = current.find((window) => {
+        const title = window.title.toLowerCase();
+        return (
+          title === folderName ||
+          title.startsWith(`${folderName} `) ||
+          title.startsWith(`${folderName} -`) ||
+          title.includes(folderName)
+        );
+      });
       if (matched) {
         activator.forceForeground(matched.hwnd);
         return;
       }
     }
   }
+}
+
+async function spawnDetachedFileManager(
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+): Promise<void> {
+  await new Promise<void>((resolveSpawn, rejectSpawn) => {
+    const child = spawn(command, args, options);
+    const onSpawn = () => {
+      child.off("error", onError);
+      child.unref();
+      resolveSpawn();
+    };
+    const onError = (error: Error) => {
+      child.off("spawn", onSpawn);
+      rejectSpawn(error);
+    };
+    child.once("spawn", onSpawn);
+    child.once("error", onError);
+  });
 }
 
 /** Reveal a workspace file or directory in the host OS file manager and bring it to the foreground. */
@@ -146,27 +166,21 @@ export async function revealWorkspaceFileFolder(path: unknown): Promise<{ opened
       activator ? activator.listCabinetWindows().map((window) => window.addr) : [],
     );
     const args = [info.isFile() ? `/select,"${target}"` : `"${target}"`];
-    const child = spawn("explorer.exe", args, {
+    await spawnDetachedFileManager("explorer.exe", args, {
       detached: true,
       stdio: "ignore",
       windowsHide: false,
       windowsVerbatimArguments: true,
     });
-    child.on("error", () => {});
-    child.unref();
-    await bringExplorerWindowToFront(beforeAddrs, folder).catch(() => {});
+    void bringExplorerWindowToFront(beforeAddrs, folder).catch(() => {});
   } else if (process.platform === "darwin") {
     const args = info.isFile() ? ["-R", target] : [target];
-    const child = spawn("open", args, { detached: true, stdio: "ignore" });
-    child.on("error", () => {});
-    child.unref();
+    await spawnDetachedFileManager("open", args, { detached: true, stdio: "ignore" });
   } else {
-    const child = spawn("xdg-open", [info.isFile() ? dirname(target) : target], {
+    await spawnDetachedFileManager("xdg-open", [info.isFile() ? dirname(target) : target], {
       detached: true,
       stdio: "ignore",
     });
-    child.on("error", () => {});
-    child.unref();
   }
   return { opened: true };
 }

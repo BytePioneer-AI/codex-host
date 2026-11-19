@@ -288,6 +288,7 @@ import { ThreadListTiming } from "./thread-list-timing.js";
 import { allocateProjectlessWorkspace } from "./projectless-workspace.js";
 import {
   updateNativeThreadSettings,
+  nativeDraftSkillCommands,
   nativeThreadCommands,
 } from "./codex-runtime/native-thread-controls.js";
 import {
@@ -3847,6 +3848,25 @@ export class AppServerHost {
   }
 
   /**
+   * Official Codex Skills for a draft that has no Thread yet. The workspace comes
+   * from the draft, so nothing is started or resumed; without one the catalog is empty.
+   */
+  async #inspectOfficialDraftSkills(request: JsonRpcRequest, cwd?: string): Promise<void> {
+    let catalog = nativeDraftSkillCommands({ data: [] });
+    if (cwd) {
+      try {
+        const response = await this.#requestOfficial("skills/list", { cwds: [cwd] });
+        if (isRecord(response.error)) throw new Error(String(response.error.message));
+        catalog = nativeDraftSkillCommands(isRecord(response.result) ? response.result : {});
+      } catch (error) {
+        this.#diagnose(error);
+        catalog = { ...catalog, warnings: [`Codex Skills unavailable: ${errorMessage(error)}`] };
+      }
+    }
+    await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(catalog) }));
+  }
+
+  /**
    * Catalog of a loaded Session, marked live or static. A live catalog is
    * remembered for its Harness and workspace so later drafts there can show it.
    */
@@ -3867,6 +3887,10 @@ export class AppServerHost {
     cwd?: string,
     inspectedThreadId?: string,
   ): Promise<void> {
+    if (harnessId === "codex") {
+      await this.#inspectOfficialDraftSkills(request, cwd);
+      return;
+    }
     await this.#waitForPlugins();
     const adapter = this.#externalAdapters.get(harnessId);
     if (!adapter) {

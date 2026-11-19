@@ -54,6 +54,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/thread/thinking/select",
   "codexhost/thread/permission-mode/select",
   "codexhost/thread/commands/inspect",
+  "codexhost/harness/commands/inspect",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
   "codexhost/harness/session-import/sources",

@@ -20,6 +20,7 @@ import {
 } from "./installation.js";
 import { buildDiagnosticReport, issueUrl, serializeDiagnosticReport } from "./diagnostic-report.js";
 import { ConsoleHarnessError, type ConsoleHarnesses } from "./harnesses.js";
+import { extensionsRoute } from "./extensions.js";
 import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
@@ -350,6 +351,12 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         sendJson(response, 400, { error: (error as Error).message });
         return;
       }
+    }
+
+    const extensions = await extensionsRoute(route, body, options.paths.dataDirectory);
+    if (extensions) {
+      sendJson(response, extensions.status, extensions.body);
+      return;
     }
 
     if (route === "POST /api/shutdown") {

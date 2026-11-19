@@ -13,8 +13,8 @@
 
 ## 3. 扩展文件与 Console（harness-plugin-files、console-server、renderer-extension/console）
 
-- [ ] 3.1 在 `harness-plugin-files` 中新增 `extension-discovery.ts` 和 `extension-configuration.ts`，复用 `pluginResourcePath` 与 `readPluginFile`。功能包括：目录名必须等于 id、大小上限、POSIX 属主与权限检查、`contentHash`、启用配置的原子写入与 `expectedRevision`、配置缺失或损坏时视为空集合并给出诊断、`reloadToken`。验证：使用临时目录的聚焦测试，覆盖有效、无效、符号链接逃逸、超限、可被他人写入、不兼容、版本号冲突、损坏的配置；在现有 Harness 发现测试中补一个"扩展根目录存在时 Harness 诊断不变"的断言。
-- [ ] 3.2 在 console-server 中新增 `extensions.ts` 和 `/api/extensions` 系列路由（list、enable、disable、disable-all-and-reload），沿用 `request-guard`；在 `renderer-extension/src/console/pages/extensions.ts` 新增管理页面（列表、状态、冲突与不兼容原因、兜底按钮）。验证：console-server 聚焦测试覆盖以下情况——状态文件过期时显示"等待 Desktop"、启用冲突扩展返回 409 并给出占用者、拒绝启用不兼容扩展、禁用全部时写入空集合和新令牌、未通过 request guard 的请求被拒绝；页面由维护者手动检查，不写页面测试。同步更新 `docs/operations/codexhost-console.md`。
+- [x] 3.1 在 `harness-plugin-files` 中新增 `extension-discovery.ts` 和 `extension-configuration.ts`，复用 `pluginResourcePath` 与 `readPluginFile`。功能包括：目录名必须等于 id、大小上限、POSIX 属主与权限检查、`contentHash`、启用配置的原子写入与 `expectedRevision`、配置缺失或损坏时视为空集合并给出诊断、`reloadToken`。验证：使用临时目录的聚焦测试，覆盖有效、无效、符号链接逃逸、超限、可被他人写入、不兼容、版本号冲突、损坏的配置；在现有 Harness 发现测试中补一个"扩展根目录存在时 Harness 诊断不变"的断言。
+- [x] 3.2 在 console-server 中新增 `extensions.ts` 和 `/api/extensions` 系列路由（list、enable、disable、disable-all-and-reload），沿用 `request-guard`；在 `renderer-extension/src/console/pages/extensions.ts` 新增管理页面（列表、状态、冲突与不兼容原因、兜底按钮）。验证：console-server 聚焦测试覆盖以下情况——状态文件过期时显示"等待 Desktop"、启用冲突扩展返回 409 并给出占用者、拒绝启用不兼容扩展、禁用全部时写入空集合和新令牌、未通过 request guard 的请求被拒绝；页面由维护者手动检查，不写页面测试。同步更新 `docs/operations/codexhost-console.md`。
 
 ## 4. Desktop 注入与宿主 API（renderer-extension、desktop-control）
 

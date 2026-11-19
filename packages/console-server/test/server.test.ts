@@ -116,6 +116,72 @@ async function start(
 
 const CHANGE = { "x-codexhost-console": "1" };
 
+it("manages Desktop extensions offline and protects all selection changes", async () => {
+  const root = path.join(directory, "extensions");
+  for (const [id, desktopApi] of [
+    ["layout", 1],
+    ["badge", 1],
+    ["future", 2],
+  ] as const) {
+    const folder = path.join(root, id);
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    await writeFile(
+      path.join(folder, "manifest.json"),
+      JSON.stringify({
+        id,
+        desktopApi,
+        manifestVersion: 1,
+        version: "1",
+        name: id,
+        desktop: { script: "desktop.js" },
+        slots: ["sidebar.thread-badge"],
+      }),
+    );
+    await writeFile(path.join(folder, "desktop.js"), "define({activate(){}})");
+  }
+  const diagnostics = path.join(directory, "diagnostics");
+  await mkdir(diagnostics, { recursive: true });
+  await writeFile(
+    path.join(diagnostics, "desktop-extensions-v1.json"),
+    JSON.stringify({
+      controllerPid: process.pid,
+      updatedAt: new Date(0).toISOString(),
+      targetId: "old-target",
+      extensions: {},
+    }),
+  );
+  const { base } = await start();
+  const send = (action: string, body: unknown, headers = CHANGE) =>
+    fetch(`${base}/api/extensions/${action}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  expect(
+    (await send("enable", { id: "layout", expectedRevision: 0 }, {} as typeof CHANGE)).status,
+  ).toBe(403);
+  expect((await send("enable", { id: "future", expectedRevision: 0 })).status).toBe(400);
+  expect((await send("enable", { id: "layout", expectedRevision: 0 })).status).toBe(200);
+  const conflict = await send("enable", { id: "badge", expectedRevision: 1 });
+  expect(conflict.status).toBe(409);
+  expect(await conflict.json()).toMatchObject({ conflictWith: "layout" });
+  expect(await (await fetch(`${base}/api/extensions`)).json()).toMatchObject({
+    desktopConnected: false,
+    extensions: expect.arrayContaining([
+      { id: "layout", enabled: true, manifest: expect.any(Object), status: { state: "waiting" } },
+    ]),
+  });
+  const first = await (await send("disable-all-and-reload", {})).json();
+  const second = await (await send("disable-all-and-reload", {})).json();
+  expect(first).toMatchObject({
+    configuration: { enabled: [], revision: 2, reloadToken: expect.any(String) },
+  });
+  expect(second.configuration.reloadToken).not.toBe(first.configuration.reloadToken);
+  expect(await (await fetch(`${base}/api/extensions`)).json()).toMatchObject({
+    configuration: second.configuration,
+  });
+});
+
 function rawRequest(
   port: number,
   host: string,

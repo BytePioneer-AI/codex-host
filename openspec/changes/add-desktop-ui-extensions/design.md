@@ -131,7 +131,7 @@ interface DesktopSidebarRow {
   - `GET /api/extensions`：返回 discover 结果、保存的选择和状态文件（Controller 进程不在时显示"等待 Desktop"）。
   - `POST /api/extensions/enable|disable {id, expectedRevision}`：enable 时做兼容性检查和 D6 冲突预检，冲突时返回 409 并给出占用者。
   - `POST /api/extensions/disable-all-and-reload`：原子写入 `enabled: []` 和新的 `reloadToken`。
-- Controller 发现 `reloadToken` 与状态文件中的 `handledReloadToken` 不同时，依次执行：移除快照脚本标识 → 实时对账为空集合（有超时，尽力而为）→ `Page.reload` → 记录 `handledReloadToken`，避免 Controller 重启后再次触发。
+- Controller 发现 `reloadToken` 与状态文件中的 `handledReloadToken` 不同时，依次执行：移除快照脚本标识 → 实时对账为空集合（有超时，尽力而为）→ `Page.reload` → 记录 `handledReloadToken`，避免 Controller 重启后再次触发。若读取到令牌时已有更新的非空启用集合，则只记录令牌，按新集合对账，不重载。
 - 整个兜底流程只依赖文件和 Controller，**不依赖 Host 或 Desktop 界面可用**，Console 自身也不需要 Desktop。
 - 页面放在 `renderer-extension/src/console/pages/extensions.ts`，沿用现有 Console 页面的结构。
 

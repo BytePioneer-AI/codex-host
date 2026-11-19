@@ -21,7 +21,7 @@
   - `mapping-store/`: external Thread metadata persistence
   - `harness-adapter/`: public Harness session and plugin contracts
   - `harness-discovery/`: Harness executable discovery and invocation helpers
-  - `harness-plugin-files/`: installed Harness plugin manifests and per-plugin launch settings, read without importing plugin code
+  - `harness-plugin-files/`: on-disk discovery and configuration for installed Harness plugins and Desktop UI extensions, without executing either
   - `harness-broker/`: native Broker communication; currently retains Claude Code-specific semantics
   - `adapters/`: Harness-specific implementations and plugin entry points
   - `desktop-control/`: CDP / Electron Inspector-driven Desktop interaction
@@ -29,7 +29,8 @@
   - `update-manager/`: background update preparation
   - `console-server/`: local codexhost console that works without Codex Desktop (diagnostics, updates, Harness launch settings)
   - `shared-contracts/`: browser-safe types and runtime schemas
-  - `renderer-extension/`: browser JavaScript extension
+  - `renderer-extension/`: injected browser UI and Desktop extension host
+  - `desktop-extensions/`: optional Desktop UI extension examples; see [Desktop UI extensions](docs/architecture/desktop-ui-extensions.md) when authoring or testing one
 
 ### Build and Release
 

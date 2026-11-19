@@ -1167,7 +1167,10 @@ export class ChSessions {
       await this.refresh().catch(() => undefined);
       return result;
     });
-    rpc.register("session/modelCatalog", () => this.catalog.models());
+    rpc.register("session/modelCatalog", (args) => {
+      const request = requestOf<{ refresh?: true; harnessId?: string } | undefined>(args);
+      return this.catalog.models(request?.refresh === true, request?.harnessId);
+    });
     rpc.register("session/selectModel", async (args) => {
       const request = requestOf<ModelSelection & { sessionId: string }>(args);
       const draft = this.drafts.get(request.sessionId);

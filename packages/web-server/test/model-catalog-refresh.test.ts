@@ -36,6 +36,7 @@ interface Result {
 interface Catalog {
   load(): Promise<Value>;
   refresh(): void;
+  refreshModels(harnessId?: string): Promise<Value>;
   resetGeneration(): void;
   dispose(): void;
   store: { getSnapshot(): { value: Value | null; status: string } };
@@ -78,12 +79,14 @@ const flush = async () => {
 };
 function fixture() {
   const reads: Array<ReturnType<typeof Promise.withResolvers<Result>>> = [];
+  const requests: unknown[] = [];
   let active = 0,
     peak = 0;
   const catalog = new Constructor({
     remote: {
       session: {
-        modelCatalog: () => {
+        modelCatalog: (request: unknown) => {
+          requests.push(request);
           const reply = Promise.withResolvers<Result>();
           reads.push(reply);
           active++;
@@ -95,7 +98,7 @@ function fixture() {
       },
     },
   });
-  return { catalog, reads, peak: () => peak };
+  return { catalog, reads, requests, peak: () => peak };
 }
 
 it("coalesces a notification burst during initial read and only publishes the latest sorting", async () => {
@@ -110,6 +113,54 @@ it("coalesces a notification burst during initial read and only publishes the la
   f.reads[1]?.resolve(response(["grok", "pi"]));
   await loading;
   assert.deepEqual(f.catalog.store.getSnapshot().value?.harnessOrder, ["grok", "pi"]);
+  assert.equal(f.peak(), 1);
+  f.catalog.dispose();
+});
+
+it("queues a targeted user refresh and reads notifications without refreshing other Harnesses", async () => {
+  const f = fixture();
+  const initial = f.catalog.load();
+  const refreshing = f.catalog.refreshModels("pi");
+  assert.deepEqual(f.requests, [undefined]);
+  f.reads[0]?.resolve(response(["old"]));
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.requests)), [
+    null,
+    { refresh: true, harnessId: "pi" },
+  ]);
+  f.catalog.refresh();
+  f.reads[1]?.resolve(response(["pi", "grok"]));
+  await flush();
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.requests[2], undefined);
+  f.reads[2]?.resolve(response(["new"]));
+  await initial;
+  await refreshing;
+  assert.deepEqual(f.catalog.store.getSnapshot().value?.harnessOrder, ["new"]);
+  assert.equal(f.peak(), 1);
+  f.catalog.dispose();
+});
+
+it("preserves different queued refresh targets and falls back to all only without a target", async () => {
+  const f = fixture();
+  const pi = f.catalog.refreshModels("pi");
+  const claude = f.catalog.refreshModels("claude-code");
+  const grok = f.catalog.refreshModels("grok");
+  for (const index of [0, 1, 2]) {
+    assert.equal(f.reads.length, index + 1);
+    f.reads[index]?.resolve(response(["pi", "claude-code", "grok"]));
+    await flush();
+  }
+  await Promise.all([pi, claude, grok]);
+  const all = f.catalog.refreshModels();
+  f.reads[3]?.resolve(response(["pi", "claude-code", "grok"]));
+  await all;
+  assert.deepEqual(JSON.parse(JSON.stringify(f.requests)), [
+    { refresh: true, harnessId: "pi" },
+    { refresh: true, harnessId: "claude-code" },
+    { refresh: true, harnessId: "grok" },
+    { refresh: true },
+  ]);
   assert.equal(f.peak(), 1);
   f.catalog.dispose();
 });
@@ -164,7 +215,14 @@ it("keeps the optional model catalog request in the pinned Remote wire descripto
   assert.deepEqual(parameter.codec.create().parse({ sessionId: "web-remote:wire-test" }), {
     sessionId: "web-remote:wire-test",
   });
-  assert.throws(() => parameter.codec.create().parse({}), /sessionId/);
+  assert.deepEqual(parameter.codec.create().parse({ refresh: true }), { refresh: true });
+  assert.deepEqual(parameter.codec.create().parse({ refresh: true, harnessId: "pi" }), {
+    refresh: true,
+    harnessId: "pi",
+  });
+  assert.throws(() => parameter.codec.create().parse({ refresh: true, harnessId: 1 }));
+  assert.throws(() => parameter.codec.create().parse({}));
+  assert.throws(() => parameter.codec.create().parse({ refresh: false }));
 });
 
 it("keeps the shared local catalog separate from per-remote session catalogs", async () => {

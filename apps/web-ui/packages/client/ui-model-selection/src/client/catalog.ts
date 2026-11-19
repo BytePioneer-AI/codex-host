@@ -38,6 +38,7 @@ export class ModelCatalogDirectory {
 
   private disposed = false;
   private refreshRequested = false;
+  private readonly hostRefreshes = new Set<string | undefined>();
   private generation = 0;
   private inflight: Promise<ModelCatalog> | undefined;
 
@@ -71,17 +72,29 @@ export class ModelCatalogDirectory {
       let failure: unknown;
       do {
         this.refreshRequested = false;
+        const target = this.hostRefreshes.values().next();
+        if (!target.done) this.hostRefreshes.delete(target.value);
         try {
           response = await (this.sessionId === undefined
             ? // The pinned gateway requires one argument slot; undefined is omitted on the wire.
-              this.ctx.remote.session.modelCatalog(undefined)
+              this.ctx.remote.session.modelCatalog(
+                target.done
+                  ? undefined
+                  : {
+                      refresh: true,
+                      ...(target.value === undefined ? {} : { harnessId: target.value }),
+                    },
+              )
             : this.ctx.remote.session.modelCatalog({ sessionId: this.sessionId }));
           failed = false;
         } catch (error) {
           failure = error;
           failed = true;
         }
-      } while (generation === this.generation && this.refreshRequested);
+      } while (
+        generation === this.generation &&
+        (this.refreshRequested || this.hostRefreshes.size > 0)
+      );
       if (failed) throw failure;
       if (!response) throw new Error("Model catalog response missing");
       if (!response.ok) throw new Error(`${response.error.code}: ${response.error.message}`);
@@ -121,6 +134,7 @@ export class ModelCatalogDirectory {
   private invalidate(clear = false): void {
     this.generation += 1;
     this.refreshRequested = false;
+    this.hostRefreshes.clear();
     this.inflight = undefined;
     const value = clear ? null : this.store.getSnapshot().value;
     this.store.set({ value, status: "idle", error: null });
@@ -139,11 +153,18 @@ export class ModelCatalogDirectory {
     });
   }
 
-  /** Clear Host-specific values and load the replacement Host generation. */
+  /** Refresh the local Host, serialized with any already-running catalog read. */
+  refreshModels(harnessId?: string): Promise<ModelCatalog> {
+    if (!this.inflight) this.invalidate();
+    this.hostRefreshes.add(harnessId);
+    return this.load();
+  }
+
   dispose(): void {
     this.disposed = true;
     this.generation++;
     this.refreshRequested = false;
+    this.hostRefreshes.clear();
     this.inflight = undefined;
   }
 

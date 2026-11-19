@@ -326,6 +326,106 @@ describe("Claude live autonomous continuation (issue #495)", () => {
     }
   });
 
+  it.each([true, false])(
+    "rereads an occupancy-held Agent continuation on its live Turn (explicit background=%s)",
+    async (background) => {
+      const live = await liveSession();
+      try {
+        await live.session.execute(textTurn("held-agent"));
+        const launch = [
+          {
+            type: "assistant",
+            uuid: "agent-launch",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "agent-call",
+                  name: "Agent",
+                  input: { prompt: "inspect", run_in_background: background },
+                },
+              ],
+            },
+          },
+          {
+            type: "user",
+            uuid: "agent-result",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "agent-call",
+                  content: "The agent is working in the background.",
+                  is_error: false,
+                },
+              ],
+            },
+            tool_use_result: { isAsync: true, agentId: "agent-1" },
+          },
+          {
+            type: "assistant",
+            uuid: "agent-waiting",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "waiting" }],
+              stop_reason: "end_turn",
+            },
+          },
+        ];
+        for (const entry of launch) push(live.fakeQuery, entry);
+        result(live.fakeQuery);
+        await vi.waitFor(() => expect(turnTexts(live.events, "held-agent")).toContain("waiting"));
+        expect(completion(live.events, "held-agent")).toBeUndefined();
+        commandNotification(live.fakeQuery, "agent-notification", "agent-call", "agent-1");
+        assistantText(live.fakeQuery, "agent-continuation", "finished");
+        result(live.fakeQuery);
+        await vi.waitFor(() => expect(completion(live.events, "held-agent")).toBeDefined());
+        const terminal = completion(live.events, "held-agent");
+        if (terminal?.type !== "turn.completed" || !terminal.nativeTurnRef)
+          throw new Error("Missing native Turn");
+        live.history.push(
+          {
+            type: "user",
+            uuid: terminal.nativeTurnRef.nativeTurnKey,
+            session_id: SESSION_ID,
+            message: { role: "user", content: "held-agent" },
+          },
+          ...launch.map((entry) => ({ ...entry, session_id: SESSION_ID })),
+          {
+            type: "user",
+            uuid: "agent-notification",
+            session_id: SESSION_ID,
+            origin: { kind: "task-notification" },
+            message: {
+              role: "user",
+              content:
+                "<task-notification><task-id>agent-1</task-id><tool-use-id>agent-call</tool-use-id><status>completed</status></task-notification>",
+            },
+          },
+          {
+            type: "assistant",
+            uuid: "agent-continuation",
+            session_id: SESSION_ID,
+            message: { role: "assistant", content: "finished", stop_reason: "end_turn" },
+          },
+        );
+        expect(autonomousTurnIds(live.events)).toEqual([]);
+        await expect(live.session.readSnapshot()).resolves.toMatchObject({
+          ok: true,
+          value: {
+            turns: [
+              { nativeTurnRef: terminal.nativeTurnRef, checkpoint: terminal.outcome.checkpoint },
+            ],
+          },
+        });
+      } finally {
+        await live.close();
+      }
+    },
+  );
+
   it("shows a background command continuation live and keeps each Segment in its own Turn", async () => {
     const live = await liveSession();
     try {

@@ -20,6 +20,8 @@ export interface ConsoleHarness {
   links: { documentation?: string | undefined; installation?: string | undefined } | null;
   icon: string | null;
   launchPath: string | null;
+  /** Why the saved launch settings cannot be read; saving or resetting replaces them. */
+  launchPathError: string | null;
 }
 
 /**
@@ -78,12 +80,15 @@ export function createConsoleHarnesses(
       const icon = manifest.icon
         ? await readPluginIcon(plugin.root, manifest.icon).catch(() => null)
         : null;
-      const launchPath = manifest.launchCommand
-        ? await store.get(manifest.id).then(
-            (settings) => settings.path,
-            () => null,
-          )
-        : null;
+      let launchPath: string | null = null;
+      let launchPathError: string | null = null;
+      if (manifest.launchCommand) {
+        try {
+          launchPath = (await store.get(manifest.id)).path;
+        } catch (error) {
+          launchPathError = error instanceof Error ? error.message : String(error);
+        }
+      }
       harnesses.push({
         id: manifest.id,
         name: manifest.name,
@@ -93,6 +98,7 @@ export function createConsoleHarnesses(
         links: manifest.links ?? null,
         icon,
         launchPath,
+        launchPathError,
       });
     }
     return harnesses.sort(
@@ -110,7 +116,7 @@ export function createConsoleHarnesses(
       }
       try {
         const settings = await store.set(id, value);
-        return { ...harness, launchPath: settings.path };
+        return { ...harness, launchPath: settings.path, launchPathError: null };
       } catch (error) {
         throw new ConsoleHarnessError(400, error instanceof Error ? error.message : String(error));
       }

@@ -146,11 +146,12 @@ describe("Renderer draft Agent controller", () => {
     });
   });
 
-  it("uses only the most recently submitted Agent for new default Composers", async () => {
+  it("uses only the Agent of the most recent new-Thread submission for new default Composers", async () => {
     const submittedPi = {};
     const unsubmittedDraft = {};
     const openedCodex = {};
     const afterPassiveWork = {};
+    const afterFollowUp = {};
     const afterCodexSubmission = {};
     const agents = controller();
     const model = harnessModelRefSchema.parse({ id: "pi-model-v1.submitted" });
@@ -162,8 +163,9 @@ describe("Renderer draft Agent controller", () => {
     agents.mount(submittedPi, ["default"]);
     await agents.switchAgent(submittedPi, "pi", operations);
     agents.setExternalModel(submittedPi, "pi", model);
-    agents.lock(submittedPi);
+    agents.markSubmissionPending(submittedPi);
     agents.recordSubmission(submittedPi);
+    agents.lock(submittedPi);
 
     agents.mount(unsubmittedDraft, ["default"]);
     expect(agents.get(unsubmittedDraft)).toEqual({
@@ -186,6 +188,12 @@ describe("Renderer draft Agent controller", () => {
     expect(agents.modelForAgent(afterPassiveWork, "pi")).toBeUndefined();
 
     agents.recordSubmission(openedCodex);
+    agents.mount(afterFollowUp, ["default"]);
+    expect(agents.get(afterFollowUp)).toMatchObject({ agent: "pi", phase: "draft" });
+
+    await agents.switchAgent(afterFollowUp, "codex", operations);
+    agents.markSubmissionPending(afterFollowUp);
+    agents.recordSubmission(afterFollowUp);
     agents.mount(afterCodexSubmission, ["default"]);
     expect(agents.get(afterCodexSubmission)).toMatchObject({
       agent: "codex",

@@ -1,0 +1,73 @@
+/* Section headers share the pinned heading's typography, so the three
+   sidebar sections read as one list of peers. The family is inherited: the
+   sidebar shell owns the Codex text face. */
+.heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: var(--dsw-radius-sm);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 21px;
+}
+
+.heading[data-row-key] {
+  cursor: pointer;
+}
+
+.heading[data-row-key]:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.heading[data-row-key]:focus-visible,
+.action:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron,
+.collapsed {
+  flex-shrink: 0;
+}
+
+.collapsed {
+  transform: rotate(-90deg);
+}
+
+.action {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-inline-start: auto;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+@media (pointer: coarse) {
+  .heading {
+    min-height: 44px;
+  }
+
+  .action {
+    width: 44px;
+    height: 44px;
+  }
+}

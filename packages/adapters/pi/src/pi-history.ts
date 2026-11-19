@@ -1,5 +1,7 @@
 import type {
   HostAgentMessageItem,
+  HostContextCompactionItem,
+  HostCommandExecutionItem,
   HostFileChangeItem,
   HostItemOutcome,
   HostItemSnapshot,
@@ -22,8 +24,16 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { piNestedCallFileChanges, piToolFileChanges } from "./pi-file-change.js";
+import {
+  piHistoryMessageIdentities,
+  piMessageItemId,
+  type PiMessageIdentity,
+} from "./pi-message-item-id.js";
+import { piAssistantPhase, piAssistantWasAborted } from "./pi-assistant-outcome.js";
 import { PiSubagents } from "./pi-subagents.js";
 import { encodePiModelRef, type PiNativeModelRef } from "./pi-model-catalog.js";
+import { piHistoryNotices, type PiProgressMessage } from "./pi-progress.js";
+import { piToolCommand } from "./pi-tool-command.js";
 
 export interface PiSessionHistory {
   entries: JsonObject[];
@@ -126,7 +136,7 @@ function assistantOutcome(entries: PiEntry[]): HistoricalTurnOutcome {
   const final = assistants.at(-1);
   if (!final) return { status: "unknown", reason: "Pi history has no Assistant terminal" };
   const stopReason = final.stopReason;
-  if (stopReason === "aborted") {
+  if (piAssistantWasAborted(final)) {
     return { status: "cancelled", reason: "Pi Assistant was aborted" };
   }
   if (stopReason === "error") {
@@ -197,6 +207,8 @@ function historicalFileChanges(
 
 function snapshotItems(
   entries: PiEntry[],
+  messageIdentities: Map<string, PiMessageIdentity>,
+  notices: Map<string, PiProgressMessage>,
   outcome: HistoricalTurnOutcome,
   subagents?: PiSubagents,
   cwd?: string,
@@ -207,6 +219,30 @@ function snapshotItems(
     { entryId: string; ordinal: number; name: string; arguments: JsonValue }
   >();
   for (const entry of entries) {
+    if (entry.type === "compaction") {
+      const item: HostContextCompactionItem = {
+        type: "contextCompaction",
+        itemId: itemId(entry.id, "compaction", 0),
+      };
+      // Pi writes this Entry only after the native summary has landed. Both
+      // manual and automatic compaction use the same durable Entry shape, so
+      // history recovery preserves the confirmed event without guessing its source.
+      snapshots.push({ item, outcome: { status: "succeeded" } });
+      continue;
+    }
+    const notice = notices.get(entry.id);
+    if (notice) {
+      snapshots.push({
+        item: {
+          type: "agentMessage",
+          itemId: notice.itemId,
+          text: notice.text,
+          phase: "commentary",
+        },
+        outcome: { status: "succeeded" },
+      });
+      continue;
+    }
     const nativeMessage = message(entry);
     if (!nativeMessage) continue;
     const content = Array.isArray(nativeMessage.content) ? nativeMessage.content : [];
@@ -220,7 +256,9 @@ function snapshotItems(
         if (part.type === "thinking" && !projectedReasoning && reasoning.length > 0) {
           const item: HostReasoningItem = {
             type: "reasoning",
-            itemId: itemId(entry.id, "reasoning", 0),
+            itemId:
+              piMessageItemId(messageIdentities.get(entry.id), "reasoning") ??
+              itemId(entry.id, "reasoning", 0),
             text: reasoning,
           };
           snapshots.push({ item, outcome: itemOutcome(outcome) });
@@ -228,10 +266,14 @@ function snapshotItems(
           continue;
         }
         if (part.type === "text" && !projectedText && text.length > 0) {
+          const phase = piAssistantPhase(nativeMessage);
           const item: HostAgentMessageItem = {
             type: "agentMessage",
-            itemId: itemId(entry.id, "assistant", 0),
+            itemId:
+              piMessageItemId(messageIdentities.get(entry.id), "assistant") ??
+              itemId(entry.id, "assistant", 0),
             text,
+            ...(phase ? { phase } : {}),
           };
           snapshots.push({ item, outcome: itemOutcome(outcome) });
           projectedText = true;
@@ -265,13 +307,38 @@ function snapshotItems(
     const call = toolCalls.get(nativeMessage.toolCallId);
     if (!call || call.name !== nativeMessage.toolName) continue;
     const output = toolOutput(nativeMessage.content);
-    const item: HostToolExecutionItem = {
-      type: "toolExecution",
+    const shell = piToolCommand(call.name, call.arguments);
+    const commandCwd = shell?.cwd ?? cwd;
+    const durationMs =
+      typeof nativeMessage.durationMs === "number" &&
+      Number.isFinite(nativeMessage.durationMs) &&
+      nativeMessage.durationMs >= 0
+        ? nativeMessage.durationMs
+        : undefined;
+    const base = {
       itemId: itemId(call.entryId, "tool", call.ordinal),
-      toolName: call.name,
-      arguments: call.arguments,
-      ...(output ? { output } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
     };
+    const exitCode =
+      typeof nativeMessage.exitCode === "number" && Number.isInteger(nativeMessage.exitCode)
+        ? nativeMessage.exitCode
+        : undefined;
+    const item: HostToolExecutionItem | HostCommandExecutionItem = shell
+      ? {
+          ...base,
+          type: "commandExecution",
+          command: shell.command,
+          ...(commandCwd ? { cwd: commandCwd } : {}),
+          ...(output ? { output: textContent(nativeMessage.content) } : {}),
+          ...(exitCode !== undefined ? { exitCode } : {}),
+        }
+      : {
+          ...base,
+          type: "toolExecution",
+          toolName: call.name,
+          arguments: call.arguments,
+          ...(output ? { output } : {}),
+        };
     const toolSucceeded = nativeMessage.isError === false;
     const delegation = subagents?.project(
       call.name,
@@ -310,13 +377,51 @@ function modelChange(entry: PiEntry): PiNativeModelRef | null {
     : null;
 }
 
+/** Extensions may wake an idle model with an empty user message after their custom notice. */
+function isEmptyWakeup(entry: PiEntry): boolean {
+  const content = message(entry)?.content;
+  return (
+    content === "" ||
+    (Array.isArray(content) &&
+      content.every((part) => isRecord(part) && part.type === "text" && part.text === ""))
+  );
+}
+
+function turnStarts(active: PiEntry[]): { entry: PiEntry; index: number }[] {
+  const starts: { entry: PiEntry; index: number }[] = [];
+  let terminal = true;
+  let pending: { entry: PiEntry; index: number } | null = null;
+  for (const [index, entry] of active.entries()) {
+    const role = messageRole(entry);
+    if (role === "user") {
+      if (pending && isEmptyWakeup(entry)) continue;
+      starts.push({ entry, index });
+      pending = null;
+      terminal = false;
+    } else if ((entry.type === "custom_message" || role === "custom") && terminal) {
+      pending ??= { entry, index };
+    } else if (role === "assistant") {
+      // Custom messages can also be injected during a run, or appended without
+      // triggering one. Only a subsequent Assistant after a terminal starts a run.
+      if (pending) starts.push(pending);
+      pending = null;
+      terminal = ["stop", "aborted", "error"].includes(String(message(entry)?.stopReason));
+    }
+  }
+  return starts;
+}
+
 export function mapPiSnapshot(
   history: PiSessionHistory,
   state: PiHistoryState,
   subagents: PiSubagents = new PiSubagents(() => undefined),
 ): HostThreadSnapshot {
   const active = activePiEntries(history);
+  const { identities } = piHistoryMessageIdentities(state.sessionId, active);
+  const { notices } = piHistoryNotices(state.sessionId, active);
   const turns: HostThreadSnapshot["turns"] = [];
+  const starts = turnStarts(active);
+  const byIndex = new Map(starts.map((start, ordinal) => [start.index, ordinal]));
   let effectiveModel = state.model;
   for (let index = 0; index < active.length;) {
     const model = modelChange(active[index] as PiEntry);
@@ -326,12 +431,13 @@ export function mapPiSnapshot(
       continue;
     }
     const user = active[index] as PiEntry;
-    if (messageRole(user) !== "user") {
+    const ordinal = byIndex.get(index);
+    if (ordinal === undefined) {
       index += 1;
       continue;
     }
-    let end = index + 1;
-    while (end < active.length && messageRole(active[end] as PiEntry) !== "user") end += 1;
+    const next = starts[ordinal + 1];
+    const end = next?.index ?? active.length;
     const entries = active.slice(index, end);
     const outcome = assistantOutcome(entries);
     const userText = textContent(message(user)?.content);
@@ -349,9 +455,9 @@ export function mapPiSnapshot(
     }) as NativeCheckpointRef;
     turns.push({
       nativeTurnRef,
-      checkpoint,
-      input: [{ type: "text", text: userText }],
-      items: snapshotItems(entries, outcome, subagents, state.cwd),
+      ...(!next || messageRole(next.entry) === "user" ? { checkpoint } : {}),
+      input: messageRole(user) === "user" ? [{ type: "text", text: userText }] : [],
+      items: snapshotItems(entries, identities, notices, outcome, subagents, state.cwd),
       outcome,
       ...(effectiveModel ? { model: encodePiModelRef(effectiveModel) } : {}),
     });
@@ -366,10 +472,15 @@ export function mapPiSnapshot(
 
 export function resolvePiLastTurnBoundary(
   history: PiSessionHistory,
-): { lastUserEntryId: string; sourceTurnCount: number } | null {
-  const users = activePiEntries(history).filter((entry) => messageRole(entry) === "user");
-  const last = users.at(-1);
-  return last ? { lastUserEntryId: last.id, sourceTurnCount: users.length } : null;
+): { lastUserEntryId: string | null; sourceTurnCount: number } | null {
+  const starts = turnStarts(activePiEntries(history));
+  const last = starts.at(-1)?.entry;
+  return last
+    ? {
+        lastUserEntryId: messageRole(last) === "user" ? last.id : null,
+        sourceTurnCount: starts.length,
+      }
+    : null;
 }
 
 export function resolvePiForkBoundary(
@@ -377,11 +488,12 @@ export function resolvePiForkBoundary(
   checkpointId: string,
 ): { targetTurnIndex: number; nextUserEntryId: string | null } {
   const active = activePiEntries(history);
-  const users = active.filter((entry) => messageRole(entry) === "user");
-  const targetTurnIndex = users.findIndex((entry) => entry.id === checkpointId);
+  const starts = turnStarts(active);
+  const targetTurnIndex = starts.findIndex(({ entry }) => entry.id === checkpointId);
   if (targetTurnIndex < 0) throw new Error("Pi Checkpoint is not on the active branch");
-  return {
-    targetTurnIndex,
-    nextUserEntryId: users[targetTurnIndex + 1]?.id ?? null,
-  };
+  const next = starts[targetTurnIndex + 1]?.entry;
+  if (next && messageRole(next) !== "user") {
+    throw new Error("Pi cannot Fork immediately before a custom-triggered Turn");
+  }
+  return { targetTurnIndex, nextUserEntryId: next?.id ?? null };
 }

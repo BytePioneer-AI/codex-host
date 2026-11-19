@@ -17,6 +17,7 @@ import type {
 } from "@codexhost/shared-contracts";
 
 import { withHostSessionTitles, type UsageSessionTitleRecord } from "./usage-session-titles.js";
+import { readUsageStatisticsSources } from "./usage-statistics-sources.js";
 import {
   createUsageStatisticsCalendar,
   shiftUsageDate,
@@ -31,7 +32,7 @@ import {
 } from "./model-prices.js";
 
 /** Bump when a reader's output changes meaning, so cached parses are read again. */
-const CACHE_VERSION = 7;
+const CACHE_VERSION = 8;
 const STALE_AFTER_MS = 10_000;
 const WARM_DELAY_MS = 3_000;
 /** At most one rewrite of a Harness's cache file per interval while its sessions keep growing. */
@@ -158,6 +159,8 @@ function emptyTotals(): UsageStatisticsTotals {
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
     cacheKnownInputTokens: 0,
+    cacheHitCachedInputTokens: 0,
+    cacheHitInputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
     costUsd: 0,
@@ -176,6 +179,10 @@ function addEntry(totals: UsageStatisticsTotals, entry: HarnessUsageEntry, cost:
   totals.inputTokens += entry.inputTokens;
   totals.outputTokens += entry.outputTokens;
   totals.reasoningOutputTokens += entry.reasoningOutputTokens ?? 0;
+  if (entry.cachedInputTokens !== undefined) {
+    totals.cacheHitCachedInputTokens += entry.cachedInputTokens;
+    totals.cacheHitInputTokens += entry.inputTokens;
+  }
   if (entry.cachedInputTokens !== undefined && entry.cacheWriteInputTokens !== undefined) {
     totals.cachedInputTokens += entry.cachedInputTokens;
     totals.cacheWriteInputTokens += entry.cacheWriteInputTokens;
@@ -402,26 +409,28 @@ export class UsageStatistics {
     }
     for (const { harness, capability, ids } of listed) {
       const cache = this.#cache(harness);
-      const present = new Set<string>();
+      const present = new Set(ids.map(({ id }) => id));
       let failed: string | null = null;
-      for (const { id, fingerprint } of ids) {
-        present.add(id);
-        if (cache.sources.get(id)?.fingerprint !== fingerprint) {
-          try {
-            const entries = (await capability.readSource(id, signal))
-              .map(parseHarnessUsageEntry)
-              .filter((entry): entry is HarnessUsageEntry => entry !== null);
-            cache.sources.set(id, { fingerprint, entries });
+      const pending = ids.filter(
+        ({ id, fingerprint }) => cache.sources.get(id)?.fingerprint !== fingerprint,
+      );
+      this.#progress.read += ids.length - pending.length;
+      try {
+        for await (const result of readUsageStatisticsSources(capability, pending, signal)) {
+          const { id, fingerprint } = result.source;
+          if ("entries" in result) {
+            cache.sources.set(id, { fingerprint, entries: result.entries });
             cache.dirty = true;
             this.#generation += 1;
-          } catch (error) {
-            if (signal.aborted) return;
-            failed ??= message(error);
-          }
+          } else if ("error" in result) failed ??= message(result.error);
+          else present.delete(id);
+          this.#progress.read += 1;
           // Large histories are parsed in pieces; other Host requests run in between.
           await yieldToEventLoop();
         }
-        this.#progress.read += 1;
+      } catch (error) {
+        if (signal.aborted) return;
+        throw error;
       }
       for (const id of cache.sources.keys()) {
         if (!present.has(id)) {

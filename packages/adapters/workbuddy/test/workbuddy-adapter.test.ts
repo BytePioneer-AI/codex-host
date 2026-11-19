@@ -2,19 +2,30 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HarnessOutput } from "@codexhost/harness-adapter";
+import {
+  parseHostUsage,
+  type HarnessOutput,
+  type HarnessSession,
+} from "@codexhost/harness-adapter";
+import type { SessionNotification } from "@agentclientprotocol/sdk";
 import {
   codeBuddyProjectSlug,
+  CodeBuddyAdapter,
   CodeBuddyError,
   modelRef,
   type CodeBuddyClient,
   type CodeBuddyClientFactory,
 } from "@codexhost/adapter-codebuddy";
-import { hostTurnIdSchema, nativeSessionRefSchema } from "@codexhost/shared-contracts";
+import {
+  harnessPermissionModeIdSchema,
+  harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
+  nativeSessionRefSchema,
+} from "@codexhost/shared-contracts";
 import { WorkBuddyAdapter } from "../src/workbuddy-adapter.js";
 import { WORKBUDDY_RUNTIME_PROFILE } from "../src/common.js";
 
-const adapters: WorkBuddyAdapter[] = [];
+const adapters: CodeBuddyAdapter[] = [];
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map((adapter) => adapter.close()));
 });
@@ -57,6 +68,198 @@ function fakeFactory(): CodeBuddyClientFactory {
       close: async () => {},
     }) satisfies CodeBuddyClient;
 }
+
+async function contextFixture(Adapter: typeof CodeBuddyAdapter, history = "") {
+  let handlers: Parameters<CodeBuddyClientFactory>[0]["handlers"] | undefined;
+  const options = (model = "native/model") =>
+    configOptions.map((option) => ({
+      ...option,
+      type: "select" as const,
+      name: option.id,
+      ...(option.id === "model"
+        ? {
+            currentValue: model,
+            options: [...option.options, { value: "other", name: "Other Model" }],
+          }
+        : {}),
+    }));
+  const configure = vi.fn<CodeBuddyClient["configure"]>(async (_sessionId, id, value) => ({
+    configOptions: options().map((option) => ({
+      ...option,
+      currentValue: option.id === id ? value : option.currentValue,
+    })),
+  }));
+  const adapter = new Adapter({
+    environment: {},
+    readHistory: async () => history,
+    clientFactory: (context) => {
+      handlers = context.handlers;
+      return {
+        ...fakeFactory()(context),
+        open: async () => ({ sessionId: "context-session", configOptions: options() }),
+        configure,
+      };
+    },
+  });
+  adapters.push(adapter);
+  const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
+  if (!opened.ok) throw Error(opened.error.message);
+  const session = opened.value;
+  const outputs: HarnessOutput[] = [];
+  const collected = (async () => {
+    for await (const output of session.outputs) outputs.push(output);
+  })();
+  return {
+    session,
+    outputs,
+    configure,
+    options,
+    update(update: SessionNotification["update"]) {
+      if (!handlers) throw Error("No native client");
+      handlers.update({ sessionId: "context-session", update });
+    },
+    async usage() {
+      await session.close();
+      await collected;
+      return outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "session.usage.changed"
+          ? [output.event.usage === null ? null : parseHostUsage(output.event.usage)]
+          : [],
+      );
+    },
+  };
+}
+
+describe.each([
+  { name: "CodeBuddy", Adapter: CodeBuddyAdapter },
+  { name: "WorkBuddy", Adapter: WorkBuddyAdapter },
+])("$name context ownership", ({ Adapter }) => {
+  it("clears the previous context when a Model selection has no new usage", async () => {
+    const f = await contextFixture(Adapter);
+    f.update({ sessionUpdate: "usage_update", used: 30000, size: 300000 });
+    expect(
+      await f.session.execute({ type: "model.select", model: modelRef("other") }),
+    ).toMatchObject({
+      ok: true,
+    });
+    await f.session.refreshUsage?.();
+    expect((await f.usage()).at(-1)).toBeNull();
+    const cleared = f.outputs.findIndex(
+      (output) =>
+        output.kind === "event" &&
+        output.event.type === "session.usage.changed" &&
+        output.event.usage === null,
+    );
+    const changed = f.outputs.findIndex(
+      (output) =>
+        output.kind === "event" &&
+        output.event.type === "session.state.changed" &&
+        output.event.state.effectiveModel?.id === modelRef("other").id,
+    );
+    expect(cleared).toBeGreaterThanOrEqual(0);
+    expect(changed).toBeGreaterThan(cleared);
+  });
+
+  it.each(["selection", "native update"])(
+    "keeps cumulative usage when %s invalidates the context",
+    async (trigger) => {
+      const history = JSON.stringify({
+        id: "assistant",
+        type: "message",
+        role: "assistant",
+        content: "reply",
+        providerData: {
+          messageId: "request",
+          model: "native/model",
+          rawUsage: {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            credit: 2,
+          },
+        },
+      });
+      const f = await contextFixture(Adapter, history);
+      await f.session.refreshUsage?.();
+      f.update({ sessionUpdate: "usage_update", used: 30000, size: 300000 });
+      if (trigger === "selection")
+        expect(
+          await f.session.execute({ type: "model.select", model: modelRef("other") }),
+        ).toMatchObject({ ok: true });
+      else f.update({ sessionUpdate: "config_option_update", configOptions: f.options("other") });
+      await f.session.refreshUsage?.();
+      const usage = (await f.usage()).at(-1);
+      expect(usage).toEqual({
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        totalCredits: 2,
+      });
+    },
+  );
+
+  it.each(["before", "after"])(
+    "handles usage arriving %s Model confirmation and before the configure response",
+    async (timing) => {
+      const f = await contextFixture(Adapter);
+      f.update({ sessionUpdate: "usage_update", used: 30000, size: 300000 });
+      f.configure.mockImplementationOnce(async () => {
+        if (timing === "after")
+          f.update({ sessionUpdate: "config_option_update", configOptions: f.options("other") });
+        f.update({ sessionUpdate: "usage_update", used: 40000, size: 1000000 });
+        return { configOptions: f.options("other") };
+      });
+      expect(
+        await f.session.execute({ type: "model.select", model: modelRef("other") }),
+      ).toMatchObject({ ok: true });
+      const usage = await f.usage();
+      expect(usage[0]).toMatchObject({ contextWindowTokens: 300000 });
+      if (timing === "before") expect(usage.at(-1)).toBeNull();
+      else {
+        const firstNew = usage.findIndex((value) => value?.contextWindowTokens === 1000000);
+        expect(firstNew).toBeGreaterThan(0);
+        expect(usage.slice(firstNew)).toEqual(
+          expect.arrayContaining([
+            { contextUsedTokens: 40000, contextWindowTokens: 1000000, contextUsagePercent: 4 },
+          ]),
+        );
+        expect(usage.slice(firstNew).every((value) => value?.contextWindowTokens === 1000000)).toBe(
+          true,
+        );
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: "same Model",
+      select: (session: HarnessSession) =>
+        session.execute({ type: "model.select", model: modelRef("native/model") }),
+    },
+    {
+      name: "Thinking",
+      select: (session: HarnessSession) =>
+        session.execute({
+          type: "thinking.select",
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        }),
+    },
+    {
+      name: "Permission Mode",
+      select: (session: HarnessSession) =>
+        session.execute({
+          type: "permissionMode.select",
+          permissionModeId: harnessPermissionModeIdSchema.parse("plan"),
+        }),
+    },
+  ])("keeps context across $name selection without a Model change", async ({ select }) => {
+    const f = await contextFixture(Adapter);
+    f.update({ sessionUpdate: "usage_update", used: 30000, size: 300000 });
+    expect(await select(f.session)).toMatchObject({ ok: true });
+    f.update({ sessionUpdate: "config_option_update", configOptions: f.options() });
+    expect((await f.usage()).every((usage) => usage?.contextWindowTokens === 300000)).toBe(true);
+  });
+});
 
 describe("WorkBuddy Adapter identity", () => {
   it.each(["notification", "explicit refresh"])(

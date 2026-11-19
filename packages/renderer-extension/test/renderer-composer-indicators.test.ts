@@ -14,6 +14,7 @@ class FakeElement {
   parentElement: FakeElement | null = null;
   setAttribute = vi.fn();
   remove = vi.fn();
+  addEventListener = vi.fn();
   append(...children: FakeElement[]) {
     this.children.push(...children);
   }
@@ -66,7 +67,14 @@ it("renders localized countdowns, refreshes each minute, hides expired/absent da
   control.render(indicators, "zh-CN");
   const root = control.root as unknown as FakeElement;
   expect(root.hidden).toBe(false);
-  expect(root.children[0]?.title).toBe("提示词缓存 · 剩余 48 分钟");
+  expect(root.children[0]?.setAttribute).toHaveBeenCalledWith(
+    "aria-label",
+    "提示词缓存 · 剩余 48 分钟",
+  );
+  expect(root.children[0]?.addEventListener).toHaveBeenCalledWith(
+    "mouseenter",
+    expect.any(Function),
+  );
   expect(root.children[0]?.children[1]?.textContent).toBe("48m");
   expect(root.children[0]?.children[0]?.setAttribute).toHaveBeenCalledWith("aria-hidden", "true");
   vi.advanceTimersByTime(60_000);
@@ -81,7 +89,10 @@ it("renders localized countdowns, refreshes each minute, hides expired/absent da
   expect(root.hidden).toBe(true);
   expect(vi.getTimerCount()).toBe(0);
   control.render(indicators, "en");
-  expect(root.children[0]?.title).toBe("Prompt cache · 47m remaining");
+  expect(root.children[0]?.setAttribute).toHaveBeenCalledWith(
+    "aria-label",
+    "Prompt cache · 47m remaining",
+  );
   vi.advanceTimersByTime(47 * 60_000);
   expect(root.hidden).toBe(true);
   expect(root.children).toEqual([]);

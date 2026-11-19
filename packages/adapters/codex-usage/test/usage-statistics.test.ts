@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setImmediate as setImmediatePromise } from "node:timers/promises";
 import { zstdCompressSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { HarnessUsageSourceChangedError } from "@codexhost/harness-adapter/usage-statistics";
 import { createCodexUsageStatistics, readCodexRollouts } from "../src/usage-statistics.js";
 import { createUsageStatisticsAdapter } from "../src/plugin.js";
 import { copyRelation, rolloutBytes, rolloutLines } from "../src/rollout-io.js";
@@ -357,6 +359,35 @@ describe("Codex native counters", () => {
 });
 
 describe("Codex read-only storage", () => {
+  it("rejects an append during parsing and accepts it only after relisting", async () => {
+    const target = await file(`sessions/${filename()}`, [
+      meta(),
+      context(),
+      count(tokens(100, 10), tokens(100, 10)),
+    ]);
+    let appended = false;
+    const reader = createCodexUsageStatistics(
+      { CODEX_HOME: root },
+      {
+        onTokenCount: () => {
+          if (appended) return;
+          appended = true;
+          appendFileSync(target, `${JSON.stringify(count(tokens(250, 30), tokens(150, 20), 2))}\n`);
+        },
+      },
+    );
+    const source = (await reader.listSources(signal))[0];
+    if (!source) throw new Error("missing fixture source");
+    await expect(reader.readSource(source.id, signal)).rejects.toSatisfy(
+      HarnessUsageSourceChangedError.is,
+    );
+    const fresh = (await reader.listSources(signal))[0];
+    expect(fresh?.fingerprint).not.toBe(source.fingerprint);
+    expect((await reader.readSource(source.id, signal)).map((e) => e.inputTokens)).toEqual([
+      100, 150,
+    ]);
+  });
+
   it("discovers configured home, combines resumed files, proves archive prefixes, and detects changes", async () => {
     const initial = [meta(), context(), count(tokens(100, 10), tokens(100, 10))];
     const a = await file(`sessions/2026/01/01/${filename()}`, initial);

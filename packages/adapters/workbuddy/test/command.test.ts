@@ -131,6 +131,7 @@ describe("WorkBuddy command invocation", () => {
     });
 
     expect(invocation.command).toBe(WORKBUDDY_MACOS_ELECTRON);
+    expect(invocation.bundledCliPath).toBe(WORKBUDDY_MACOS_CLI);
     expect(invocation.arguments).toEqual([
       "--eval",
       expect.any(String),
@@ -298,6 +299,7 @@ describe("WorkBuddy command invocation", () => {
     );
 
     expect(invocation.command).toBe("/custom/workbuddy-cli");
+    expect(invocation.bundledCliPath).toBeUndefined();
     expect(invocation.arguments).toEqual(["--acp"]);
     expect(invocation.environment).toMatchObject({
       CODEBUDDY_CONFIG_DIR: "/custom/workbuddy-root",

@@ -1,7 +1,13 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import path from "node:path";
 import { fetchCursorAccount } from "./account-usage.js";
 import { CursorSessionImport } from "./session-import.js";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   sanitizeDiagnosticTail,
   type HarnessAdapter,
@@ -22,6 +28,8 @@ import {
   type TurnStartCommand,
   type TurnStartAccepted,
   type TurnCancelCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnCancelAccepted,
   type InteractionRespondCommand,
   type InteractionRespondAccepted,
@@ -551,7 +559,25 @@ export class CursorSession implements HarnessSession {
     this.#unattendedApproval = true;
     return this.transport.cancel();
   }
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.initialState;
+    const model = state.effectiveModel ? cursorModels(this.info).current : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return rejected("invalidState", "Cursor session is closed");
     if (this.#active || this.#configuring) return rejected("sessionBusy", "Cursor session is busy");
     this.#configuring = true;
@@ -597,6 +623,7 @@ export class CursorSession implements HarnessSession {
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -609,6 +636,7 @@ export class CursorSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -618,6 +646,8 @@ export class CursorSession implements HarnessSession {
   > {
     if (this.#closed) return rejected("invalidState", "Cursor session is closed");
     if (command.type === "interaction.respond") return this.#interactions.respond(command);
+    // Cursor ACP cancels the running prompt on a second session/prompt; it has no native steer.
+    if (command.type === "turn.steer") return unsupportedSteer("Cursor ACP");
     if (command.type === "turn.cancel") {
       if (!this.#active || this.#active.command.turnId !== command.turnId)
         return rejected("invalidState", "Cursor turn is not active");
@@ -725,7 +755,11 @@ export class CursorSession implements HarnessSession {
     let fault: HarnessError | undefined;
     const output = new CursorTurnOutput(
       command.turnId,
-      (event) => this.#channel.emit({ kind: "event", event }),
+      (event) =>
+        this.#channel.emit({
+          kind: "event",
+          event: configureSubagentEvent(event, this.#subagentConfiguration()),
+        }),
       before.length,
     );
     this.#subagentOutput = output.subagents;
@@ -807,24 +841,34 @@ export class CursorSession implements HarnessSession {
       if (administrative && JSON.stringify(before) === JSON.stringify(after)) {
         // This native command returns a local message without persisting a user Turn.
       } else {
+        // Cursor appends its own user records when a background task finishes; those are not
+        // the echo of this prompt and must not make the prompt's identity ambiguous.
+        const prompted = added.filter((turn) => !turn.notification);
+        const own = prompted[0];
         if (
-          added.length !== 1 ||
-          after.length !== before.length + 1 ||
+          !own ||
+          prompted.length !== 1 ||
+          after.length !== before.length + added.length ||
           before.some((turn, index) => after[index]?.id !== turn.id) ||
-          added[0]?.text !== command.input.map((part) => part.text).join("\n")
+          own.text !== command.input.map((part) => part.text).join("\n")
         )
           throw new Error("Cursor terminal has no unique, verified native turn identity");
         nativeTurnRef = nativeTurnRefSchema.parse({
           harnessId: "cursor-cli",
           nativeSessionId: this.transport.sessionId,
-          nativeTurnKey: added[0].id,
+          nativeTurnKey: own.id,
           formatVersion: 1,
         });
         this.#fresh = false;
-        if (outcome.status === "succeeded" && cursorForkAvailable())
+        const ownIndex = after.findIndex((turn) => turn.id === own.id);
+        if (
+          outcome.status === "succeeded" &&
+          cursorForkAvailable() &&
+          (ownIndex === after.length - 1 || after[ownIndex + 1]?.rewindRoot)
+        )
           outcome = {
             ...outcome,
-            checkpoint: cursorCheckpoint(this.transport.sessionId, added[0].id),
+            checkpoint: cursorCheckpoint(this.transport.sessionId, own.id),
           };
       }
     } catch (error) {

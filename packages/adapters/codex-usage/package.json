@@ -9,6 +9,10 @@
     "fixtures/NOTICE"
   ],
   "exports": {
+    "./session-usage": {
+      "types": "./dist/session-usage.d.ts",
+      "import": "./dist/session-usage.js"
+    },
     "./plugin": {
       "types": "./dist/plugin.d.ts",
       "import": "./dist/plugin.js"

@@ -134,9 +134,11 @@ function* turnEntries(
 }
 
 function turnWithItemsView(turn: JsonObject, view: ItemsView): JsonObject {
-  if (view === "notLoaded") return { ...turn, items: [], itemsView: "notLoaded" };
   const items = Array.isArray(turn.items) ? turn.items : [];
   if (view === "full") return { ...turn, items: items.filter(isItem), itemsView: "full" };
+  const metadata = { ...turn };
+  delete metadata.codexhostFileOperations;
+  if (view === "notLoaded") return { ...metadata, items: [], itemsView: "notLoaded" };
   const user = items.find(
     (item): item is JsonObject => isItem(item) && item.type === "userMessage",
   );
@@ -144,7 +146,7 @@ function turnWithItemsView(turn: JsonObject, view: ItemsView): JsonObject {
     (item): item is JsonObject => isItem(item) && item.type === "agentMessage",
   );
   return {
-    ...turn,
+    ...metadata,
     items:
       user && agent && user.id !== agent.id ? [user, agent] : user ? [user] : agent ? [agent] : [],
     itemsView: "summary",

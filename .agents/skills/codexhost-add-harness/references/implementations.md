@@ -38,7 +38,7 @@ packages/adapters/pi/
 | ACP stdio | `codebuddy` | `codebuddy-adapter.ts`、`acp-client.ts`、`session.ts`、`derivation.ts` | 组合方式的 Fork/修订（复制 + `/fork` + rollback）、原生压缩确认、附加系统提示的委派 | 中间副本的回收见专属文档 |
 | ACP（复用） | `workbuddy` | `plugin.ts`、`workbuddy-adapter.ts`、`credential-bootstrap.ts`、`delegation.ts` | **复用另一个 Adapter 包**、桌面应用内置 CLI、`launchCommand`、`versionKind:"application"` 与手动更新 | 不连接 WorkBuddy Desktop 的私有 runtime |
 | ACP | `cursor-cli` | `adapter.ts`、`transport.ts`、`fork.ts` | 平台受限的 Fork、参数化 Thinking、无人值守时明确返回 unsupported | Windows 不支持 Fork |
-| ACP + 私有扩展 | `grok` | `grok-adapter.ts`、`acp-transport.ts` | 创建时固定权限（`atCreate`）、Credits | 私有历史扩展不是标准 ACP |
+| ACP + 私有扩展 | `grok` | `grok-adapter.ts`、`acp-transport.ts` | 会话内权限切换与原生生效确认、Credits | 私有历史扩展不是标准 ACP |
 | 官方 Gateway | `hermes` | `hermes-adapter.ts`、`gateway-transport.ts`、`gateway-open.ts` | 常驻 Gateway、按原生 Git 渠道更新、进程内临时 Skill 的委派、SessionDB 只读导入 | |
 | 托管 Web Remote | `deepseek-harness` | `deepseek-harness-adapter.ts`、`generation-selector.ts`、`modern/`、`profiles/v4.ts` | 常驻 Host RPC 与共享订阅、最低版本门槛、请求级计量 | 线格式集中在 `profiles/v4.ts` |
 | CLI stream-json | `antigravity` | `antigravity-adapter.ts`、`stream-events.ts`、`history.ts` | 流式 CLI、通过 Hook 桥接提问、额度 | |
@@ -57,7 +57,7 @@ packages/adapters/pi/
 | Last-Turn Rollback | Pi 的 `pi-last-turn-rollback.ts`、OMP 的 `omp-last-turn-rollback.ts`、Kimi 的 `native-rollback.ts` |
 | Fork（原生 / 组合实现） | Claude 的 `claude-fork.ts`；CodeBuddy 的 `derivation.ts`；Cursor 的 `fork.ts` |
 | 审批、提问与工具投影 | Claude 的 `claude-code-adapter.ts`；OMP；Antigravity 的 `question-bridge.ts` |
-| 权限的确认与恢复 | OMP 的 `omp-permission-modes.ts`；OpenCode 的 `permission-modes.ts`；Grok（`atCreate`） |
+| 权限的确认与恢复 | OMP 的 `omp-permission-modes.ts`；OpenCode 的 `permission-modes.ts`；Grok 的 `permission-confirmation.ts` |
 | Subagent、自主 Turn、后台结果 | OMP、Claude 的生命周期模块；Pi 的 `pi-subagents.ts` |
 | 请求级计量 | Pi 的 `pi-usage.ts`；DSH 的 `modern/usage-metering.ts` |
 | 全局统计 | Hermes、Grok 的 `usage-statistics.ts`；Qoder 的 `qoder-usage-statistics.ts`；Pi 的 `pi-usage-statistics.ts` |

@@ -11,6 +11,7 @@ export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
 export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics.js";
 export { validateHostQuestionResponse } from "./question.js";
+export { unsupportedSteer } from "./steer.js";
 export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
 export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
 export type {
@@ -43,6 +44,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessSessionImportCandidate,
   HarnessSessionImportCapability,
+  HarnessSessionImportPrepared,
   HarnessSessionImportSource,
   HarnessSubagentCapability,
   HarnessWebUiAction,
@@ -72,6 +74,7 @@ export type {
   HostQuestionInteraction,
   HostQuestionResponse,
   HostReasoningItem,
+  HostUserMessageItem,
   HostSubagentDelegationItem,
   HostSubagentState,
   HostSubagentStatus,
@@ -79,11 +82,14 @@ export type {
   HostTextInput,
   HostTextQuestion,
   HostToolExecutionItem,
+  HostMcpToolCallItem,
+  HostWebSearchItem,
   HostToolOutput,
   HostTurnSnapshot,
   InteractionClosedEvent,
   InteractionRespondAccepted,
   InteractionRespondCommand,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
   ItemDetachedEvent,
   ItemStartedEvent,
@@ -108,6 +114,8 @@ export type {
   TurnCompletedEvent,
   TurnCancelAccepted,
   TurnCancelCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
@@ -128,3 +136,11 @@ export {
   type LiveCommandExclusions,
   type LiveHarnessCommand,
 } from "./live-command-catalog.js";
+
+export {
+  subagentConfiguration,
+  inheritSubagentConfiguration,
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "./subagent-configuration.js";

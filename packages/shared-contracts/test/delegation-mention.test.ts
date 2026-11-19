@@ -54,6 +54,9 @@ describe("Harness command carrier", () => {
 
   it("restores the chip as a leading command with the remaining text as arguments", () => {
     expect(restoreHarnessCommandMentions(`${link("/review")} PR 42`)).toBe("/review PR 42");
+    expect(restoreHarnessCommandMentions(`${link("$build")} check  tests`)).toBe(
+      "$build check  tests",
+    );
     expect(restoreHarnessCommandMentions(`please ${link("/eli5")}  quantum`)).toBe(
       "/eli5 please quantum",
     );

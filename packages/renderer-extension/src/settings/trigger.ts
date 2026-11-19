@@ -116,7 +116,7 @@ export function mountRendererSettingsTrigger(
   button.style.cursor = available ? "pointer" : "not-allowed";
   button.style.opacity = available ? "1" : "0.5";
   button.style.outlineOffset = "2px";
-  button.append(createRendererSettingsBrandGlyph(20));
+  button.append(createRendererSettingsBrandGlyph(22));
 
   const updateBadge = ownerDocument.createElement("span");
   updateBadge.setAttribute("aria-hidden", "true");

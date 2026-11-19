@@ -37,6 +37,8 @@ A Grok HarnessSession SHALL create or load one Grok Native Session, accept seque
 
 GrokAdapter SHALL derive Model, Thinking/Effort, Permission Mode, and Usage support only from validated ACP initialization, Session configuration, and structured Grok metadata. Missing or malformed optional metadata MUST disable or omit that capability without failing an otherwise usable text Session.
 
+Permission Mode confirmation MAY use the dedicated native permission manager's applied-flag diagnostics when the native protocol has no permission getter or reply. This signal SHALL be confined to the Grok Adapter and combined with a round trip identifying the target Session. Missing or mismatched confirmation SHALL fail closed rather than publish a requested value as effective.
+
 #### Scenario: Grok advertises Models and Effort
 - **WHEN** validated initialization and Session responses expose selectable Models and Thinking/Effort values
 - **THEN** inspection SHALL return normalized opaque Model Refs and Thinking options

@@ -12,11 +12,23 @@
 
 以上实现归各 Harness 插件所有，不在公共 Adapter、Host 或 Renderer 中添加 Harness 专用分支。跨插件参考实现不等于共用原生协议；各自保留配置确认、取消、持久化和权限语义。
 
+## Kimi 接收委派
+
+委派创建会话时的 `unattended-full-access` 映射到 Kimi ACP 原生 `mode=yolo`，并核对 `set_config_option` 返回的 `currentValue`。原生未确认时关闭 Transport 并返回错误；显式指定其他权限模式时拒绝创建。普通会话未指定权限模式时保留原生默认值。CLI 启动参数与 ACP 模式 ID 分别遵守各自接口，不互相替代。
+
+## Kimi 计划审批
+
+Kimi Code ACP 的 `ExitPlanMode` 请求包含原生 `plan_approve` / `plan_opt_N`、`plan_revise` 和 `plan_reject_and_exit` 选项时，Adapter 使用公共 Question 交互投影到 Codex 原生选择界面。计划正文、选项顺序和标签保留，选中结果原样回传 ACP `optionId`；修改计划、拒绝并退出和取消保持各自语义，不合并成同一个拒绝动作。
+
+识别依赖工具名和完整的计划选项格式。其他工具审批、未知选项、重复标签或不完整格式仍走既有审批路径；普通会话权限、其他提问和公共审批投影不受此映射影响。
+
 ## Kimi Thinking 配置
 
 Kimi 通过 ACP `configOptions` 提供当前会话、当前 Model 的 Thinking 列表和选中值。插件在创建、恢复、配置命令响应及 `config_option_update` 通知中读取这些事实，将列表保存在会话内存状态的 `availableThinkingOptions` 中，沿公共状态事件更新 Desktop；不轮询，也不在启动检查时遍历切换 Model。不同会话或 Host 不共享可变列表。
 
-启动检查只读取配置文件中的 Model 目录并检查认证。配置文件不是 Thinking 能力目录，因此草稿目录不猜测 `medium` 或 `off/on`，也不自动发送 Thinking 默认值；未显式选择时保留原生默认配置。会话建立后使用原生列表。切换 Model 以返回的新配置整体替换旧列表，不自动重放旧 Thinking；原生未提供列表时清除旧列表。当前 Model 的选项不扩散到其他 Model。
+启动检查读取配置文件中的 Model 目录并检查认证，不创建会话。草稿目录按每个 Model 明确声明的 `capabilities`、`support_efforts` 和 `default_effort` 展示 Thinking：`thinking` 提供声明的强度列表，无强度列表时提供 `off/on`；`always_thinking` 排除 `off`；未声明思考能力的 Model 不提供选项。默认值仅在当前默认 Model 的选项内有效，显式 `[thinking]` 设置优先于 `default_effort`，不将其他 Model 的档位作为默认值。配置声明不代表后端实际支持，插件不自动补写用户配置。
+
+会话建立后使用 ACP 原生列表和确认值，不以草稿默认值冒充已生效配置；未显式选择时保留原生默认配置。切换 Model 以返回的新配置整体替换旧列表，不自动重放旧 Thinking；原生未提供列表时清除旧列表。当前 Model 的选项不扩散到其他 Model。
 
 显式选择或持久化恢复的 Thinking 值不在当前原生列表中时返回错误，不将 `medium` 映射为 `on`，也不静默替换用户选择。应重新选择原生支持的值或清除旧选择。`off/on` 是部分 Model 的原生取值，不是所有 Kimi Model 的固定能力。
 
@@ -42,10 +54,15 @@ Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数
 
 依据：[Pi 官方 README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md) 的 Philosophy 与 Extensions，以及本机 `pi --help` / RPC 文档。官方核心不提供 permission popups，允许通过扩展自定义确认流程；permission-gate / plan-mode 扩展示例分别采用命令匹配和工具过滤，不是核心权限模式。
 
-## Antigravity 工具审批与压缩
+## Antigravity ACP 审批、派生与压缩
 
-已核对本机 agy `1.2.5` 的 `--help` 及 `-p /help --output-format json`。headless 输入接受 Prompt，不接受双向工具权限回答；官方说明需要交互批准的操作在 headless 下被 soft-denied。现有插件的 Skip permissions 仍是原生启动选项，官方 PreToolUse Hook 支持 allow/deny/ask 等决策，但它在工具执行前触发，并非原生审批请求/应答通道；headless 中 ask 仍被 soft-denied，不能将 Hook 拦截重建为另一套工具权限策略。提问 Hook 仅用于 ask_question，不等于普通工具审批。Python SDK 的 [ask_user policy](https://antigravity.google/docs/sdk/policies/) 是独立 runtime 的能力，不是已登录 CLI Session 的审批回传入口。
+Antigravity 通过官方 `agy acp`（要求 `agy >= 1.5.8`，已用本机 `1.5.9` 实测）接入：
 
-原生 headless 命令目录未公布 `/compact` 或 `/compress`，也没有经验证的压缩命令或自动压缩开始/完成事件。SDK/交互终端中存在压缩实现不能证明当前 CLI Session 暴露等价调用入口。后续需原生 headless/RPC 增加可确认的会话压缩操作与结果，再在 Antigravity 插件内映射为命令与 contextCompaction Item；不发送普通“请总结”Prompt 伪装上下文压缩。当前 Python SDK 的 token_threshold 控制自动阈值，官方[按需压缩请求](https://github.com/google-antigravity/antigravity-sdk-python/issues/63)仍未关闭。
+- **权限与交互**：原生提供 `default`、`accept-edits`、`auto`、`plan` 四种 ACP 模式（`session/set_mode`）及进程启动级 `dangerously-skip-permissions`；工具审批走原生 `session/request_permission`，`ask_question` 走原生客户端 `elicitation/create`（`form` 模式），不使用私有 Hook 桥。详见 [Antigravity 权限与交互](antigravity/antigravity-tool-approval.md)。
+- **历史读取**：只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`，不启动 `agy`，不走 `session/load`（ACP 回放在 stdout 受阻时会提前回复并跨轮乱序，不可作为完整来源）。活动库读取已提交的 WAL 快照并跳过仍在生成的步骤；数据库不可读或格式未知时返回“历史不可用”，不降级。连续用户输入沿用既有分组规则合并，保证已存 Turn 身份稳定。
+- **历史派生（Fork / Rollback）**：`agy acp` 1.5.9 未提供 `session/fork` RPC（返回 `-32601 Method not found`）。Adapter 在会话空闲态克隆 `~/.gemini/antigravity-cli/conversations/<id>.db`，按原生 `steps` 表 `step_type = 14`（`user_input`）边界裁剪并同步 `conversation_summaries.db` 后，经 `session/resume` 打开派生会话；活动 Turn 期间返回 `sessionBusy`。
+- **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行，但 ACP 流不推送旧 PrintMode 专有的 `checkpoint` 步骤事件，因此不合成独立的 `contextCompaction` Item。
 
-依据：[官方 Hooks 文档](https://antigravity.google/docs/hooks)、[官方 headless 文档](https://antigravity.google/docs/cli/headless/)、[官方权限文档](https://antigravity.google/docs/cli/permissions)、[现有插件权限边界](antigravity/antigravity-tool-approval.md)。此次 `/help` 原生探针返回 num_turns=0，没有发起模型请求。
+## Copilot 原生接入
+
+Copilot 使用官方 SDK 连接实际安装的 headless CLI，保留目标 Host 的原生认证和配置。本机验证为 SDK 1.0.25 / CLI 1.0.102 / macOS arm64 / gh-cli；目录为空时仍保留原生 auto，不编造 Model 或 Thinking 选项。原生会话、历史派生和公共接收委派已有实测，Desktop 及剩余自主/后台矩阵尚未完成。详见 [Copilot 接入与验证边界](copilot/copilot-harness-integration.md)。

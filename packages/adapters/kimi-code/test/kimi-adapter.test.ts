@@ -98,6 +98,78 @@ describe("KimiAdapter", () => {
     expect(adapter.harnessId).toBe("kimi-code");
   });
 
+  it.each(
+    ([undefined, "default"] as const).flatMap((executionPolicy) =>
+      ([undefined, "default", "plan", "auto", "yolo"] as const).map((mode) => ({
+        executionPolicy,
+        mode,
+      })),
+    ),
+  )(
+    "preserves ordinary creation with policy $executionPolicy and mode $mode",
+    async ({ executionPolicy, mode }) => {
+      const adapter = new KimiAdapter(
+        { homeDirectory: tempDir },
+        { resolveExecutable: () => "kimi", createTransport: () => fakeTransport },
+      );
+      try {
+        const result = await adapter.open({
+          kind: "create",
+          cwd: tempDir,
+          ...(executionPolicy ? { executionPolicy } : {}),
+          ...(mode ? { permissionModeId: harnessPermissionModeIdSchema.parse(mode) } : {}),
+        });
+        expect(result.ok).toBe(true);
+        expect(fakeTransport.configOptionsSet).toEqual(
+          mode ? [{ configId: "mode", value: mode }] : [],
+        );
+        if (result.ok)
+          expect(result.value.initialState.effectivePermissionModeId).toBe(mode ?? "default");
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
+  it.each([undefined, "yolo"] as const)(
+    "confirms native yolo mode for unattended creation with mode %s",
+    async (mode) => {
+      const adapter = new KimiAdapter(
+        { homeDirectory: tempDir },
+        { resolveExecutable: () => "kimi", createTransport: () => fakeTransport },
+      );
+      const result = await adapter.open({
+        kind: "create",
+        cwd: tempDir,
+        executionPolicy: "unattended-full-access",
+        ...(mode ? { permissionModeId: harnessPermissionModeIdSchema.parse(mode) } : {}),
+      });
+      expect(result.ok).toBe(true);
+      expect(fakeTransport.configOptionsSet).toEqual([{ configId: "mode", value: "yolo" }]);
+      if (result.ok) expect(result.value.initialState.effectivePermissionModeId).toBe("yolo");
+      await adapter.close();
+    },
+  );
+
+  it.each(["default", "plan", "auto"])(
+    "rejects conflicting unattended permission mode %s before opening a session",
+    async (mode) => {
+      const adapter = new KimiAdapter(
+        { homeDirectory: tempDir },
+        { resolveExecutable: () => "kimi", createTransport: () => fakeTransport },
+      );
+      const result = await adapter.open({
+        kind: "create",
+        cwd: tempDir,
+        executionPolicy: "unattended-full-access",
+        permissionModeId: harnessPermissionModeIdSchema.parse(mode),
+      });
+      expect(result).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+      expect(fakeTransport.openSession).not.toHaveBeenCalled();
+      await adapter.close();
+    },
+  );
+
   describe("inspect()", () => {
     it("returns notInstalled when executable cannot be resolved", async () => {
       const adapter = new KimiAdapter(
@@ -164,6 +236,9 @@ default_model = "relay"
 [models.relay]
 model = "claude-sonnet-5"
 provider = "bedrock"
+capabilities = ["thinking"]
+support_efforts = ["low", "medium", "high"]
+default_effort = "high"
 
 [thinking]
 enabled = true
@@ -184,8 +259,19 @@ effort = "medium"
       expect(inspection.status).toBe("ready");
       if (inspection.status === "ready") {
         expect(inspection.catalog.models).toHaveLength(1);
-        expect(inspection.catalog.defaultThinkingOptionId).toBeUndefined();
-        expect(inspection.catalog.thinkingOptions).toEqual([]);
+        expect(inspection.catalog.defaultThinkingOptionId).toBe("medium");
+        expect(inspection.catalog.thinkingOptions.map(({ id }) => id)).toEqual([
+          "off",
+          "low",
+          "medium",
+          "high",
+        ]);
+        expect(inspection.catalog.models[0]?.supportedThinkingOptionIds).toEqual([
+          "off",
+          "low",
+          "medium",
+          "high",
+        ]);
         expect(fakeTransport.openSession).not.toHaveBeenCalled();
         expect(inspection.capabilities.configuration.selectModel).toBe(true);
         expect(inspection.permissionModes?.defaultModeId).toBe("default");

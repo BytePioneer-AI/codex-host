@@ -45,9 +45,10 @@ fn script(request: &Request) -> Result<String, Box<dyn Error>> {
     }
     // The login shell has loaded the user's version manager. Existing installations keep
     // their recorded runtime ahead of that default, provided the executable still exists.
+    // The version gate follows the published npm engines: >=22.19.0 <23.0.0 || >=24.0.0.
     let node = r#"if [ -n "${CODEXHOST_HOST_NODE_PATH:-}" ] && [ -x "$CODEXHOST_HOST_NODE_PATH" ]; then PATH="$(dirname "$CODEXHOST_HOST_NODE_PATH"):$PATH"; export PATH; fi;
 command -v node >/dev/null 2>&1 || exit 45;
-node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major === 24 || (major === 22 && minor >= 19) ? 0 : 1)' >/dev/null 2>&1 || exit 55;
+node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major >= 24 || (major === 22 && minor >= 19) ? 0 : 1)' >/dev/null 2>&1 || exit 55;
 "#;
     // With a damaged installation SSH sessions fall through to stock Codex, which then owns the
     // control socket. There is no managed service to stop in that case; starting replaces it.
@@ -80,9 +81,19 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         }
         // A damaged installation is exactly what the CLI refuses to stop, so the first stop is
         // best effort; once the installation is rewritten, the second one must succeed.
-        "repair" => Ok(format!(
-            "{node}set -e; command -v codexhost >/dev/null 2>&1 || exit 58; {lock}codexhost remote stop >/dev/null 2>&1 || true; codexhost remote uninstall >/dev/null 2>&1 || exit 51; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
-        )),
+        "repair" => {
+            // Uninstall removes the manifest, so both opt-ins are read in one pass before any
+            // service mutation: a second read could see a manifest written by an install running
+            // at the same time, which does not take this lock, and mix the two revisions'
+            // options. The session opt-in stays empty for legacy SSH installs. A custom shared
+            // Host directory is otherwise recovered only from the profile environment, which a
+            // damaged installation may have lost; without it the reinstalled SSH Host would
+            // silently bridge to a different shared owner. A malformed value fails closed.
+            let opt_ins = r#"CH_OPT_INS=$(node -e 'const fs = require("node:fs"), path = require("node:path"); try { const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const session = manifest.executionSession; if (session !== undefined && session !== "ssh" && session !== "desktop") process.exit(1); const shared = manifest.sharedDataDirectory; if (shared !== undefined && (typeof shared !== "string" || !path.isAbsolute(shared) || /[\0\n\r]/.test(shared))) process.exit(1); process.stdout.write([session === "desktop" ? "desktop" : "", shared === undefined ? "" : shared].join("\n")); } catch (error) { if (error.code !== "ENOENT") process.exit(1); }' "$HOME/.codexhost/remote/manifest.json" 2>/dev/null) || exit 47; CH_SESSION=$(printf '%s\n' "$CH_OPT_INS" | sed -n 1p); CH_SHARED=$(printf '%s\n' "$CH_OPT_INS" | sed -n 2p); "#;
+            Ok(format!(
+                "{node}set -e; command -v codexhost >/dev/null 2>&1 || exit 58; {lock}{opt_ins}set -- remote install; [ \"$CH_SESSION\" != desktop ] || set -- \"$@\" --session desktop; [ -z \"$CH_SHARED\" ] || set -- \"$@\" --shared-data \"$CH_SHARED\"; codexhost remote stop >/dev/null 2>&1 || true; codexhost remote uninstall >/dev/null 2>&1 || exit 51; codexhost \"$@\" >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
+            ))
+        }
         "uninstall" => {
             let package_check = if request.uninstall_package {
                 r#"command -v npm >/dev/null 2>&1 || exit 56;
@@ -220,7 +231,7 @@ pub fn apply() -> Result<(), Box<dyn Error>> {
             Some(58) => "codexhost was not detected over SSH. Install it on the remote computer or add it to the login shell PATH, then retry",
             Some(59) => "The active codexhost does not match the global npm installation. Uninstall only the remote service, or remove the package manually on the remote computer",
             Some(60) => "The remote service was uninstalled, but removing the codexhost package failed. Check npm permissions on the remote computer and retry",
-            Some(55) => "Remote Node.js is unsupported. Select Node.js 22.19 or later in the 22.x series, or Node.js 24.x",
+            Some(55) => "Remote Node.js is unsupported. Select Node.js 22.19 or later, except 23.x",
             Some(46) => "npm installation failed. Check network access and global installation permissions",
             Some(47) => "Remote service configuration failed. Check Codex CLI and the remote desktop login",
             Some(50) => "Remote service could not stop. Check the remote service before retrying",

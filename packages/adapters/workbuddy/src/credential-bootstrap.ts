@@ -196,7 +196,9 @@ export const WORKBUDDY_CREDENTIAL_PRELOAD = String.raw`
       if (!reply.includes("\n")) return;
       if (!acceptReply(reply.slice(0, reply.indexOf("\n")))) finish(false);
     });
-    socket.once("end", () => { if (!done && !acceptReply(reply)) finish(false); });
+    socket.once("end", () => {
+      if (!done && (!legacyBootstrap || !acceptReply(reply))) finish(false);
+    });
     socket.once("error", error => {
       socket.destroy();
       if (error.code === "ENOENT" || error.code === "ECONNREFUSED") setTimeout(connect, 20);

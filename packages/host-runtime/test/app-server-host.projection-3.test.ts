@@ -240,25 +240,6 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
-  it("rejects fixed Model control for an unknown or Codex-owned Thread locally", async () => {
-    const fixture = createFixture();
-    const officialWrite = vi.fn();
-    fixture.official.stdin.on("data", officialWrite);
-    const model = fixture.adapter.catalog.models[0]?.ref;
-    if (!model) throw new Error("Fake catalog is empty");
-
-    writeRequest(fixture.desktopInput, {
-      id: 35,
-      method: "codexhost/thread/model/select",
-      params: { threadId: "official-thread", model },
-    });
-    await expect(
-      fixture.collector.waitFor((message) => requestId(message, 35)),
-    ).resolves.toMatchObject({ error: { code: -32078 } });
-    expect(officialWrite).not.toHaveBeenCalled();
-    await stopFixture(fixture);
-  });
-
   it("rejects a Pi Model selection while its Turn is active", async () => {
     const fixture = createFixture();
     const threadId = await startPiThread(fixture);

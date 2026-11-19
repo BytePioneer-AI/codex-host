@@ -31,7 +31,9 @@ export function createRendererUsageStatisticsSource(options: {
       const names = new Map(
         connections.map((connection) => [connection.hostId, connection.displayName]),
       );
-      const known = options.routing()?.knownHostIds?.() ?? [];
+      const known = (options.routing()?.knownHostIds?.() ?? []).filter(
+        (hostId) => hostId !== "durable",
+      );
       return [...new Set([...known, ...names.keys()])].map((hostId) => {
         const label = names.get(hostId);
         return label === undefined ? { hostId } : { hostId, label };

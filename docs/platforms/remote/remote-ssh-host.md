@@ -17,9 +17,10 @@ Update local codexhost to the latest version before installing the remote end be
 
 Log in to the remote computer once through SSH from your local terminal and confirm its identity. The page uses your existing SSH key or alias and does not show a password prompt.
 
-The remote computer needs Node.js, npm and Codex CLI, with permission for your user to install npm packages. Use Node.js 22.19 or later in the 22.x series, or Node.js 24.x. Installation loads your interactive login shell, including configured version managers such as nvm. Existing installations prefer the executable Node.js path recorded by codexhost; an unsupported recorded version must be updated before maintenance. On a remote Mac, keep the desktop user logged in when using Claude Code.
+The remote computer needs Node.js, npm and Codex CLI, with permission for your user to install npm packages. Use Node.js 22.19 or later, except 23.x. Installation loads your interactive login shell, including configured version managers such as nvm. Existing installations prefer the executable Node.js path recorded by codexhost; an unsupported recorded version must be updated before maintenance. On a remote Mac, keep the desktop user logged in when using Claude Code.
 
 ## Step 2: Add an SSH connection
+
 
 1. Launch Codex Desktop through codexhost on your local computer.
 2. Open **codexhost settings → Remote connections** and click **Add connection**.
@@ -42,19 +43,41 @@ In the remote project's composer, choose your Harness and model from the **Agent
 
 You can work in local and remote projects at the same time. Each shows the tools and models available on its own computer.
 
+New external Harness conversations on the remote computer share the same independent Host as that computer’s local Desktop and Web clients. They keep the same Thread ID and native session when opened or continued over SSH. Existing conversations in the older SSH-only store remain readable through SSH; they are not copied or silently reassigned. Update and restart both the shared Host and SSH listener together. An unavailable shared owner produces an error instead of creating a native Codex conversation.
+
 If you only use Codex's built-in remote coding features, you do not need codexhost on the remote computer.
+
+If Desktop or Web uses a custom Host data directory, run `codexhost remote install --shared-data /absolute/path/to/host-data` on that computer, then restart the SSH listener. Installation captures `CODEXHOST_SHARED_DATA_DIR` (or a non-SSH `CODEXHOST_DATA_DIR`) when no option is supplied and preserves the saved selection on reinstall. This shared directory is stored in the remote manifest and SSH profile; it never replaces the separate SSH-only data directory. Native agents use the shared owner for delegation reads, sends, cancellation and waits too; historical SSH-owned parents keep their local delegation owner.
 
 ### Image and file attachments
 
 External Harnesses continue to receive text and file paths, not Harness-specific image inputs. Ordinary files use Desktop's native upload and remote path references. Reading files, interpreting images, and parsing their formats depend on the Harness's tools and the selected model.
 
-For ordinary submissions to remote external Threads (including automatic submission from Desktop's local queue), if Desktop supplies inline images without a complete set of image paths in the message, codexhost uses **that same remote connection's native attachment store**, waits for successful storage, then adds remote paths to the text. Complete native image references are reused without another upload. Local Threads and native Codex Threads are unchanged; changing direction retains its existing rejection of non-text input.
+For ordinary submissions to remote external Threads (including automatic submission from Desktop's local queue), if Desktop supplies inline images without a complete set of image paths in the message, codexhost uses **that same remote connection's native attachment store**, waits for successful storage, then adds remote paths to the text. Complete native image references are reused without another upload. For external starts, queued inputs and steering that reach the Host with missing image paths, the Host stores supported inline images in its own `$CODEX_HOME/attachments/codexhost-inline/` directory before forwarding their paths to the Harness. This also supports Desktop browser annotations on local external Threads. Native Codex Threads are unaffected. Harness commands and images must be sent separately, even when the command follows `## My request:` in native attachment context.
 
-Fallback storage uses Desktop's `$CODEX_HOME/attachments/` directory and native management, not a separate SSH transfer channel or Host attachment database. When native paths are only partially available, their correspondence to individual inline images is ambiguous, so all inline images are stored rather than guessing which is missing. Fallback storage allows up to 20 images, 20 MiB per image and 32 MiB total (decoded image data). Invalid data, an unavailable native storage interface, upload failure or replacement of the connection prevents submission. Files are retained when a dispatched Turn's outcome is unknown; the message is not automatically retried.
+The remote Desktop fallback uses its native `$CODEX_HOME/attachments/` management, not a separate SSH transfer channel. When native paths are only partially available, their correspondence to individual inline images is ambiguous, so all inline images are stored rather than guessing which is missing. The partial native context is retained; the Host permits surplus path references from this fallback instead of requiring an exact image count, while still rejecting insufficient references. Both fallbacks allow up to 20 images, 20 MiB per image and 32 MiB total (decoded image data). Invalid data or a storage failure prevents submission. Files are retained after submission so the Harness can read them and retries can reuse them.
 
 This binding follows the attachment storage and request interfaces in Desktop 26.930.31730 and requires compatibility review after Desktop updates.
 
+## macOS: use desktop login credentials
+
+Native Codex shell tools such as `gh` can fail to read a valid login-keychain credential from the default SSH security session. To use the remote Mac's logged-in desktop session, run on that Mac:
+
+```sh
+codexhost remote stop
+codexhost remote install --session desktop
+codexhost remote start
+```
+
+Stopping interrupts active remote tasks. Reconnect the remote project after starting. The choice is preserved by later installs, updates and repairs. `remote status` reports `executionSession: "desktop"` when selected; an absent field means the default SSH session. Use the same commands with `--session ssh` to restore the default background execution. Existing installations stay in SSH mode unless explicitly changed. The option is macOS-only.
+
+The desktop user must match the SSH user and remain logged in. Screen lock, a screen saver and turning off the display do not end that login session. Logging out, restarting or shutting down ends its tasks. System sleep pauses execution until wake. A separately locked keychain may still require user interaction; this mode does not unlock it automatically.
+
+The native startup bridge runs once in the desktop session, then exits and unloads its temporary LaunchAgent. Arguments, the SSH environment and the working directory pass through an owner-private local socket; they are not written into the plist. The managed listener retains its own native supervisor and existing verified stop path. Explicit desktop mode reports an unavailable desktop session rather than falling back to SSH. Existing Harness Aqua Brokers remain separate.
+
 ## Manage connections
+
+While the connections page is visible, it checks stable state every 30 seconds and checks every 5 seconds during operations, updates, or failed checks. Periodic checks pause while hidden or after leaving the page. Returning to the page refreshes immediately; manual refresh and post-operation checks remain available.
 
 Use **Remote connections** to edit connection details, disconnect, or remove a connection you no longer use.
 

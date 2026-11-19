@@ -13,6 +13,9 @@ export const harnessPluginRouteSchema = z
     model: harnessModelRefSchema.optional(),
     thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
     permissionModeId: harnessPermissionModeIdSchema.optional(),
+    /** A draft prewarm create: stays unsubmitted until the user's first Turn.
+     * Desktop forwards only the Model of a main-process prewarm to thread/start. */
+    prewarm: z.literal(true).optional(),
   })
   .strict();
 export type HarnessPluginRoute = z.infer<typeof harnessPluginRouteSchema>;

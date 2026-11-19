@@ -212,7 +212,10 @@ export function retainedRowCount(
   profile: CodeBuddyRuntimeProfile = CODEBUDDY_RUNTIME_PROFILE,
 ) {
   const rows = nativeHistoryRows(contents);
-  const turns = snapshotFromHistory(contents, input.sourceRef, sourceCwd, profile).turns;
+  // Count against the same physical chain the rows above came from.
+  const turns = snapshotFromHistory(contents, input.sourceRef, sourceCwd, profile, {
+    includeCompactionHistory: false,
+  }).turns;
   let excluded: string | undefined;
   if (input.kind === "rollbackLastTurn") {
     if (!turns.length)
@@ -357,6 +360,10 @@ function referencedChildren(rows: Row[]): ReferencedChild[] {
   const children = new Map<string, ReferencedChild>();
   for (const row of rows) {
     if (row.type === "function_call" && row.name === "Agent") {
+      const data = record(row.providerData);
+      // A discarded partial stream never started a child, but remains in the parent chain.
+      if (row.status === "incomplete" && data.isPartialAborted === true && data.discard === true)
+        continue;
       const callId = text(row.callId);
       if (!callId || calls.has(callId))
         throw new CodeBuddyError("protocolError", "Agent delegation identity is ambiguous");

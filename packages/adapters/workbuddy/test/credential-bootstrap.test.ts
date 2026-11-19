@@ -51,8 +51,8 @@ async function fixture(
   const environment: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(process.env).filter(
       ([name]) =>
-        !name.startsWith("CODEBUDDY_SIDECAR_") &&
         !name.startsWith("CODEXHOST_") &&
+        !name.startsWith("CODEBUDDY_SIDECAR_") &&
         name !== "WORKBUDDY_AT_REST_ENCRYPTION",
     ),
   );
@@ -333,12 +333,23 @@ describe("WorkBuddy bundled credential startup", () => {
     });
   });
 
-  it("stops when the native receiver does not acknowledge credential protection", async () => {
+  it.each([
+    ["rejects credential protection", '{"ok":false}\n'],
+    ["echoes the wrong policy", '{"ok":true,"policy":"disabled"}\n'],
+    ["omits the newline in the fields protocol", '{"ok":true,"policy":"fields"} '],
+  ])("stops when the native receiver %s", async (_name, reply) => {
     const secret = Buffer.alloc(32, 7).toString("base64");
     await expect(
       fixture(
         `return {loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))}};`,
-        `require('node:net').createServer(socket => socket.on('data', () => socket.end('{"ok":false}\\n'))).listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
+        `const net = require('node:net');
+        const server = net.createServer(socket => {
+          socket.once('data', () => {
+            socket.end(${JSON.stringify(reply)});
+            server.close();
+          });
+        });
+        server.listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
       ),
     ).rejects.toMatchObject({
       code: 1,

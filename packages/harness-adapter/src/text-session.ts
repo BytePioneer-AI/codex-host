@@ -150,6 +150,19 @@ export interface TurnStartCommand {
   input: HostTextInput[];
 }
 
+/**
+ * Native same-Turn input. Capability inspection is advisory; the Adapter must recheck the target
+ * and native admission conditions before writing. A failure result guarantees input was not taken.
+ * Once written, an uncertain receipt must not be reported as rejection or retried automatically.
+ * The Harness takes input at its safe boundary without cancelling the Turn. The Host shows accepted
+ * input live; history snapshots group it however the native history does.
+ */
+export interface TurnSteerCommand {
+  type: "turn.steer";
+  turnId: HostTurnId;
+  input: HostTextInput[];
+}
+
 export interface TurnCancelCommand {
   type: "turn.cancel";
   turnId: HostTurnId;
@@ -264,6 +277,7 @@ export interface HarnessCommandCapability {
 
 export type HostCommand =
   | TurnStartCommand
+  | TurnSteerCommand
   | TurnCancelCommand
   | InteractionRespondCommand
   | ModelSelectCommand
@@ -272,6 +286,10 @@ export type HostCommand =
 
 export interface TurnStartAccepted {
   turnId: HostTurnId;
+}
+
+export interface TurnSteerAccepted {
+  accepted: true;
 }
 
 export interface TurnCancelAccepted {
@@ -304,6 +322,13 @@ export interface HostAgentMessageItem {
    * Set `commentary` to keep such a message out of that inference.
    */
   phase?: "commentary" | "final_answer";
+}
+
+/** User input steered into a running Turn; the Host publishes it when the Harness accepts it. */
+export interface HostUserMessageItem {
+  type: "userMessage";
+  itemId: HostItemId;
+  input: HostTextInput[];
 }
 
 export interface HostReasoningItem {
@@ -345,6 +370,29 @@ export interface HostToolExecutionItem {
   durationMs?: number;
 }
 
+/** A call to a tool served by an MCP server; Codex shows it as an MCP tool call. */
+export interface HostMcpToolCallItem {
+  type: "mcpToolCall";
+  itemId: HostItemId;
+  /** The MCP server name as the Harness configured it. */
+  server: string;
+  /** The tool name on that server, without any Harness prefix. */
+  tool: string;
+  arguments: JsonValue;
+  /** The tool result; a failed outcome presents its text as the call error. */
+  output?: HostToolOutput;
+  durationMs?: number;
+}
+
+/** A native web search; Codex shows its query. */
+export interface HostWebSearchItem {
+  type: "webSearch";
+  itemId: HostItemId;
+  query: string;
+  /** The native result; Codex's web search Item has no status, so only an unsuccessful search shows it. */
+  output?: HostToolOutput;
+}
+
 export interface HostFileChange {
   path: string;
   kind: "add" | "update" | "delete";
@@ -368,9 +416,9 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
-  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
+  /** Native child Model ID, or the parent selection when the CLI does not report one. */
   model?: string;
-  /** Native child reasoning effort, when known; do not infer from parent settings. */
+  /** Native child reasoning effort; falls back to the parent selection when unreported. */
   reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
@@ -386,11 +434,14 @@ export interface HostSubagentDelegationItem {
 }
 
 export type HostItem =
+  | HostUserMessageItem
   | HostAgentMessageItem
   | HostReasoningItem
   | HostContextCompactionItem
   | HostCommandExecutionItem
   | HostToolExecutionItem
+  | HostMcpToolCallItem
+  | HostWebSearchItem
   | HostFileChangeItem
   | HostSubagentDelegationItem;
 
@@ -518,6 +569,19 @@ export interface ItemDetachedEvent {
   itemId: HostItemId;
 }
 
+/**
+ * The Harness produced new output after its Turn completed (idle-time
+ * background work). The Item starts and stays detached on the completed
+ * Turn; it settles later with `item.updated` / `item.completed` on the
+ * same Turn, exactly like an `item.detached` Item. Adapters must emit it
+ * only while no successor Turn has started, and only for text Items.
+ */
+export interface ItemBackgroundStartedEvent {
+  type: "item.background.started";
+  turnId: HostTurnId;
+  item: HostItem;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
@@ -552,6 +616,7 @@ export type HostEvent =
   | ItemUpdatedEvent
   | ItemCompletedEvent
   | ItemDetachedEvent
+  | ItemBackgroundStartedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
@@ -574,6 +639,12 @@ export interface HarnessSession {
   readonly outputs: AsyncIterable<HarnessOutput>;
   readonly commands?: HarnessCommandCapability;
 
+  /**
+   * Fresh capabilities for transports whose synchronous property is only an open-time snapshot.
+   * Direct Adapters may omit this and expose live capabilities through the property instead.
+   * A read is advisory: turn.steer must recheck admission before handing input to the Harness.
+   */
+  readCapabilities?(): Promise<HarnessSessionCapabilities>;
   refreshUsage?(): Promise<void>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;
@@ -581,6 +652,7 @@ export interface HarnessSession {
   stopBackgroundWork?(): Promise<HarnessResult<void>>;
   readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>>;
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -609,11 +681,26 @@ export interface HarnessSessionImportSource {
   nativeRef: NativeSessionRef;
 }
 
+/** Confirmed import destination, with its live Session when initialization succeeded. */
+export interface HarnessSessionImportPrepared {
+  nativeRef: NativeSessionRef;
+  session?: HarnessSession;
+}
+
 /** Optional discovery of existing Native Sessions that codexhost can map and resume. */
 export interface HarnessSessionImportCapability {
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
   /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
   resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+  /** Prepare an import, optionally deriving a different Native Session. A failure result confirms
+   * that no derived Session was created; reject when the outcome is unconfirmed. Any known new
+   * nativeRef must be returned successfully, even without a usable Session. The Host owns a
+   * returned Session and persists the destination before reading its snapshot.
+   */
+  prepareImport?(input: {
+    source: HarnessSessionImportSource;
+    environment?: Record<string, string | undefined>;
+  }): Promise<HarnessResult<HarnessSessionImportPrepared>>;
 }
 
 export interface HarnessAdapter {

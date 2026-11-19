@@ -12,6 +12,7 @@ import {
   type SessionConfigOption,
 } from "@agentclientprotocol/sdk";
 import { cursorInvocation } from "./command.js";
+import { cursorCliApprovalModeIsUnrestricted } from "./native-history.js";
 import { parseCursorNativeModels } from "./models.js";
 import type { HarnessExecutionPolicy } from "@codexhost/harness-adapter";
 
@@ -20,7 +21,7 @@ export interface CursorTransportOptions {
   environment: NodeJS.ProcessEnv;
   command?: string;
   timeoutMs?: number;
-  /** Native `--force` is requested only for delegated unattended full access. */
+  /** Native `--force` is requested for delegated unattended full access, and for interactive sessions when the user's Cursor CLI config already asks for Run Everything. */
   executionPolicy?: HarnessExecutionPolicy;
   /** History replay needs session/load, not the account model catalog. */
   loadModelCatalog?: boolean;
@@ -83,7 +84,7 @@ export class CursorTransport {
     }
   }
 
-  /** Start/authenticate the owned process without touching any native session. */
+  /** Start the owned process with existing native authentication, without touching any session. */
   prepare(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Cursor session closed"));
     return (this.#preparation ??= this.#prepare());
@@ -91,10 +92,16 @@ export class CursorTransport {
 
   async #prepare(): Promise<void> {
     // Program options must precede the `acp` subcommand; --force also trusts the workspace.
+    // Unattended full access always requests Run Everything. Interactive sessions only do so
+    // when the user's own CLI config already set approvalMode to unrestricted; that does not
+    // change Host executionPolicy or the unattended cancel-and-fail approval path.
+    const useForce =
+      this.options.executionPolicy === "unattended-full-access" ||
+      cursorCliApprovalModeIsUnrestricted(this.options.environment, this.options.cwd);
     const invocation = cursorInvocation(
       this.options.environment,
       this.options.command,
-      this.options.executionPolicy === "unattended-full-access" ? ["--force", "acp"] : ["acp"],
+      useForce ? ["--force", "acp"] : ["acp"],
     );
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.options.cwd,
@@ -152,8 +159,8 @@ export class CursorTransport {
       if (init.protocolVersion !== 1)
         throw new Error("Cursor does not support the required ACP session protocol");
       this.#canLoad = init.agentCapabilities?.loadSession === true;
-      // This reuses an existing native login. The adapter never launches login or reads credentials.
-      await this.#bounded(this.#connection.authenticate({ methodId: "cursor_login" }));
+      // ACP startup reads existing credentials. Calling authenticate(cursor_login) can open a browser;
+      // leave missing authentication to the native session request instead of starting a login flow.
       if (this.#closed) throw new Error("Cursor session closed");
     } catch (error) {
       await this.close();

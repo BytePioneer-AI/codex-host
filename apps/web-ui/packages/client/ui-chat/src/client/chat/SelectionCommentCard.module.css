@@ -1,0 +1,92 @@
+.card {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 280px;
+  padding: 8px;
+  box-sizing: border-box;
+  background: #000000;
+  border-radius: 14px;
+  border: 0.5px solid rgba(255, 255, 255, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 6px 18px rgba(0, 0, 0, 0.75),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+  color: #f5f5f7;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  animation: selection-comment-in 140ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.excerpt {
+  overflow: hidden;
+  padding: 0 2px;
+  color: rgba(245, 245, 247, 0.58);
+  font-size: 11.5px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  max-height: 120px;
+  padding: 6px 8px;
+  border: 0.5px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  resize: none;
+  outline: none;
+}
+
+.field::placeholder {
+  color: rgba(245, 245, 247, 0.42);
+}
+
+.field:focus {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.submit {
+  align-self: flex-end;
+  height: 25px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 9999px;
+  background: #f5f5f7;
+  color: #000000;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    opacity 120ms ease,
+    transform 120ms cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.submit:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.submit:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+@keyframes selection-comment-in {
+  from {
+    opacity: 0;
+    scale: 0.96;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}

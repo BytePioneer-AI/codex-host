@@ -6,9 +6,9 @@
 
 当前源码启动路径可以加载原先不认识的外部 Harness ID，通过 `codexhost/harness/plugins/list` 返回描述，并通过公共 Harness 检查接口和 `thread/start` 调用该插件。
 
-16 个预装 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
+预装 Adapter 通过同样的 `manifest.json` 和 `createHarnessAdapter` 工厂加载；`adapter-composition.ts` 已删除，Host 源码、包依赖和 TypeScript references 不再直接引用具体 Adapter 包。预装集合仅由发行清单 [`scripts/release/harness-plugins.json`](../../scripts/release/harness-plugins.json) 决定。原生构造参数、预取和 Claude Code 的直接/Broker 选择仍由相应插件负责。
 
-本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
+本地会话导入已使用公共 `sessionImport` 契约、Host 映射事务与动态设置页；Claude Code、Pi、Hermes 和 DSH 已提供实际实现。DSH 通过本机托管 Web 接入，只对接 V4；`0.1.7-rc.1` / `0.1.7-rc.2` / `0.2.0-rc.1` / `0.2.0-rc.2` / `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1-rc.3` / `0.2.1-rc.4` / `0.2.1-rc.5` / `0.2.2-rc.1` / `0.2.2-rc.2` 已通过对应验证，低于 `0.1.7-rc.1` 的版本明确拒绝，其他 SemVer 版本可尝试连接，但仍须通过原生协议校验。Legacy 协议与 V0/V3 已移除。完整原生引用只在 Adapter 与 Host 间流转，详见[会话导入](harness-session-import.md)。普通 Agent Picker、Sidebar 和连接设置也读取同一 Host 的插件描述，不再内置外部 Harness 名单或图标。
 
 尚未实现的目标包括：
 
@@ -54,7 +54,13 @@ plugins/
 }
 ```
 
-每个根目录都有自己的 `enabled.json`。发行版生成预装目录的启用文件，作为对随包交付插件的显式信任；用户目录由用户配置。发现但未启用的插件不执行，也不进入目录查询结果。缺少某个根目录或其 `enabled.json` 时不加载该根目录插件；配置无效时拒绝该根目录，不回退到硬编码内置实现。不扫描项目目录，不自动安装或下载依赖，不热替换。
+默认启用配置来自每个根目录的 `enabled.json`。发行版生成预装目录的启用文件，作为对随包交付插件的显式信任；用户目录由用户配置。发现但未启用的插件不执行，也不进入目录查询结果。缺少某个根目录或其 `enabled.json` 时不加载该根目录插件；配置无效时拒绝该根目录，不回退到硬编码内置实现。不扫描项目目录，不自动安装或下载依赖，不热替换。
+
+服务端装配的 owner 也可以通过公共 Loader 的 `enabledIds` 提供显式启用集合，替代读取这些根目录的 `enabled.json`；该集合不是浏览器参数，不写回 external 配置。此路径仍复用公共发现、校验、超时、工厂调用和 Registry 关闭机制。
+
+启用许可与运行时所有权是两个条件。公共 Manifest、配置和通用描述可以使用 `codex` ID；Desktop / CH Host 加载器和 Registry 只使用 `external` 范围，在模块导入、工厂和预取之前排除 `codex`。`onlyIds`、`enabled.json` 或显式启用集合都不能扩大这个范围，也没有第二个执行范围。范围由服务端装配决定，不由浏览器请求或插件自行声明。
+
+Desktop / CH 的公开插件目录、外部 Harness 路由、Broker 和会话导入仍拒绝 `codex`。GUI 原生 Codex 不注册成 external Thread，也不通过这个执行插件创建、恢复或操作会话；是否共用进程不改变这些边界。
 
 用户目录不是覆盖层；两个根目录出现相同 ID 时，两份候选都拒绝加载。用户 `enabled.json` 也不用于修改预装根目录的启用集合。
 
@@ -80,7 +86,7 @@ plugins/
 }
 ```
 
-- ID 为最长 128 字符的小写可移植标识；`codex` 保留给官方路径。
+- ID 为最长 128 字符的小写可移植标识；通用安装身份允许 `codex`，外部 Harness 身份仍将其保留给 GUI 官方路径。
 - `manifestVersion` 当前为 `1`；`adapterApiVersion` 与 Host 的整数 API 版本精确匹配。尚未采用版本范围协商。
 - `entry` 是插件内的 `.js` 或 `.mjs` ESM 文件；`.js` 需要按 Node.js ESM 规则声明所属包。Manifest 不负责安装依赖。
 - 资源只能是插件内部相对路径；拒绝目录遍历和解析后逃出根目录的符号链接。
@@ -113,7 +119,7 @@ Context 包含环境变量快照、平台、是否为受管远程 Host，以及�
 
 这类插件复用同一可信目录、显式启用、身份校验、加载超时、失败隔离和关闭流程；目录描述保留 `kind: "usage"`。Registry 将其与可创建 Session 的 Adapter 分开，Host 把统计能力接入公共全局统计，可选的 `sessionUsage` 能力接入会话浮窗，不将它加入聊天、模型选择、会话导入或委派路由。加载失败通过统计失败信息报告，不伪造空结果或 Session 方法。
 
-预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份仍保留给原生路径；插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
+预装的 `codex-usage`（显示名 Codex）是这种插件，实现在 `packages/adapters/codex-usage`。官方 `codex` 身份属于 Web 与 Desktop 共用的原生路径，不是执行插件。统计插件只读 rollout，并观察现有官方连接的会话用量与轮次通知，不改变 Codex 的聊天、分叉和恢复操作，也不读取账户配额。统计插件可以脱离 Desktop 加载，私有解析与公共 Host 汇总分离，详见[全局用量统计](../product/usage-statistics.md)。
 
 ### 可选的独立会话用量
 
@@ -138,6 +144,8 @@ Codex 的会话用量解析已从公共协议层迁入 `codex-usage`，账户配
 `codexhost/harness/launch-settings/get` 接受 `{ harnessId }`，`codexhost/harness/launch-settings/set` 接受 `{ harnessId, path }`；`path: null` 清除设置。返回 `{ path, restartRequired }`。只允许已加载目录中声明该设置的本地插件。保存时校验绝对路径及安装目录存在性，兼容已保存的文件入口，不执行文件，不把保存成功等同于原生协议或认证可用。路径不包含命令行参数或包裹引号。
 
 配置按插件保存到 `${CODEXHOST_DATA_DIR}/harness-launch-settings/<id>.json`，未设置数据目录时使用 `~/.codexhost`；采用临时文件加原子替换，不写 Renderer localStorage，不改进程全局环境。下次 Host 构造插件时，经公共 `HarnessPluginContext.launchCommand` 传给声明支持的工厂。WorkBuddy 工厂将其映射到原生启动配置，优先于继承的命令环境变量；清除设置后恢复环境变量或自动发现。
+
+设置文件无法读取（非 JSON、不是字符串或不是绝对路径）时，读取错误包含文件路径；Host 不回退到自动发现，而以 `launchSettingsUnreadable` 诊断将该插件标为不可用。保存或清除设置不读取旧文件，直接替换或删除它，因此损坏的文件可在连接设置页或控制台中修复，重启 codexhost 后生效。读取失败不会被永久缓存。
 
 **修改需要重启 codexhost。** 已创建的 Adapter 与 Session 不热替换；`restartRequired` 比较当前持久化值与此 Host 构造时的值。仅刷新连接状态不会应用新路径。设置页填写应用安装目录，例如 `D:\program\WorkBuddy`，不要求用户定位 `.exe` 或脚本。WorkBuddy Adapter 定位 `WorkBuddy.exe` / `WorkBuddy AI.exe` / `WorkBuddyAI.exe` 及同目录内置脚本。目录布局不完整时检查失败，不借用其他安装的文件，也不回退到 PATH 或默认安装。底层保留原有文件入口覆盖兼容能力。注册表自动发现不在本功能范围内。
 
@@ -173,10 +181,11 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 | --- | --- |
 | Pi | `--version` 和 `pi.dev/api/latest-version`；执行原生 `pi update`。 |
 | Cursor CLI | 原生 `about --format json` / `update`，保留 Windows bundled Node 入口；macOS 受管远程 Broker 尚不转发该能力。 |
+| Copilot | 原生 `--version`；仅识别的 npm 全局安装通过原 prefix 检查并显式更新，其他安装使用原包管理器；不自动下载 SDK runtime。 |
 | Qoder 海外版 / 中国版 | 原生 `--version`、`update --check` / `update`；两版分别解析自己的安装入口，中国版先确认 CLI 支持 `--check`，旧版只显示已安装版本及手动更新说明。 |
 | Grok | 原生 `update --check --json` / `update`；npm 安装保留原生更新路径及所需安装脚本允许项。 |
 | Kimi Code | 原生 `--version` 和区域 CDN 最新版本；仅识别的全局 npm 安装或带手动更新能力的原生二进制允许更新，其他安装使用原安装方式。 |
-| Antigravity CLI | 原生 `--version` 与按 OS/CPU 的官方更新清单；执行 `agy update`。 |
+| Antigravity CLI | 原生 `--version` 与按 OS/CPU 的官方更新清单；执行 `agy update`。Host 在 Windows 和 macOS 上为自身启动的 CLI 进程默认设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，更新仍通过显式 `agy update` 执行；安装器和用户已有设置不变。 |
 | OMP | 原生 `update --check` / `update`，保留配置的 stable/canary 渠道；校验原生更新器在 PATH 中选择的目标与所选安装一致，Nix 和目标不一致的自定义入口保留手动更新。 |
 | OpenCode | `--version`；npm 安装查询原包版本并更新其准确 prefix，标准 `~/.opencode/bin/opencode` 原生安装查询官方 GitHub Release 并执行 `upgrade <version> --method curl`。其他包管理器、自定义安装和 Windows 原生安装只检查，不进入交互式安装回退。 |
 | Claude Code | `--version` 和官方 stable/latest 版本源；读取用户及本机文件型受管设置，使用原生 `claude update` 保留策略执行。识别的全局 npm 安装固定 npm prefix，标准原生 launcher 允许更新；版本限制、其他安装渠道及 macOS 受管远程 Broker 保留手动更新。 |
@@ -199,7 +208,15 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 
 恢复时，Host 将旧映射解码为 Model、Thinking、Permission Mode 提示并传给 `open({ kind: "resume" })`。Adapter 决定恢复提示还是保留权威原生配置；Host 不再按 Harness ID 补发配置命令。OMP、DSH 在各自 Adapter 内恢复权限；OpenCode 保留原生确认的权限状态。成功读到原生配置后，Host 用共享载体保存确认值，旧映射仍可读取。
 
+Antigravity 普通恢复只保留持久身份，查看历史通过独立原生 `session/load` 连接完成，不预先启动可写 `session/resume`。首次发送或修改配置时再恢复可写连接，并应用保存的配置提示；只读连接的配置不作为可写 Session 的确认状态返回，避免覆盖这些提示。只读进程按命令、权限与账号环境边界在 Adapter 内串行复用：每次重放后等待原生 `session/close` 确认即释放给后续读取，异常进程立即退役重建，Adapter 关闭时统一回收，不与可写连接混用，也不建立本地历史镜像。活动 Turn 的历史读取仍与写连接隔离，历史用量回放保持可用。Fork/回滚派生的 Session 在交付前确认目标目录与配置的可写恢复。
+
 Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶层字段：当前版本不使用它们，更新文件时原样保留，不因新增字段隔离会话。已知字段的类型、必填要求及身份和映射约束仍照常校验；已知元数据字段的清除不影响同文件中的未知字段。
+
+主记录和备份均无法恢复时，Mapping Store 先将独立元数据原样复制到 `quarantine/<id>.json.<时间戳>.invalid.metadata`，再将主记录移到同名的 `.invalid` 文件，不覆盖已有隔离文件。任一步失败只跳过该 Thread，保留源记录及元数据供后续启动重试，并将其元数据排除在孤儿清理之外；健康 Thread 仍可访问。成功隔离后才尽力清理源元数据，清理失败会在后续启动重试。隔离文件用于人工恢复，不会自动重新导入；Harness 原生会话不受此流程删除。
+
+Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。Windows 发生锁冲突时，通过本机 CIM `Win32_Process` 查询进程路径和创建时间；创建时间显式转换为 UTC ISO 字符串，查询最多等待 5 秒。即使系统进程路径不可读，只要创建时间与锁中记录相差超过既有的 5 秒容差，也能识别 PID 复用并回收旧锁，不结束占用该 PID 的进程。查询失败、超时或身份信息不足时仍保留锁并报 `STORE_LOCKED`；旧锁缺少进程创建时间时，不以锁文件的创建时间代替进程身份。
+
+锁记录先写入同目录临时文件并关闭，再通过硬链接原子发布到 `store.lock`，避免其他实例把尚未写完的记录当成失效锁。回收失效锁时，竞争者创建硬链接快照，只在内容与已检查记录一致、链接数为 2、当前路径仍指向同一 inode 时删除旧锁，并保留快照直到删除完成；并发竞争失败报 `STORE_LOCKED`。发布文件和快照带有进程身份，后续竞争者可清除已退出进程的残留链接。存储目录所在文件系统必须支持硬链接；不支持时获取锁失败。
 
 ## 加载与关闭行为
 
@@ -211,6 +228,7 @@ Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶�
 - 诊断仅包含稳定错误码和公开 ID，不透传插件抛出的路径、环境值或异常正文。
 - Manifest 最大 32 KiB，图标最大 128 KiB，总候选插件最多 128；加载器 API 最多接受 8 个根目录，当前启动组合使用预装和用户两个根目录。
 - 最多 4 个加载 worker；每个插件的异步导入和工厂有独立的默认 10 秒超时，后加载的插件不会分到前一个插件剩下的时间。文件系统发现、同步代码和关闭操作不保证可被超时中断。
+- 插件模块导入在同步求值，worker 之间逐个执行导入，每次导入前先让出一次事件循环，使后台加载期间最长停顿限于单个插件，Host 端点仍能响应健康检查；工厂与预取仍并发。排队时间计入该插件的超时，超时或取消的插件轮到时不再执行其模块。客户端健康检查的 5 秒上限与事件通道连接期限一致：已停止的 Host 会立即拒绝连接，上限只约束仍在启动的繁忙 Host。
 - Host 先初始化官方 app-server，再后台整体加载已启用插件。涉及外部 Harness 的查询、创建、恢复及委派等待同一批加载完成，不采用按需加载或按 Harness 独立等待，原有同步 Adapter 注册表保持不变。
 - Desktop 请求在读取循环之外派发，同 Thread 的请求路由和 Session 打开按接收顺序执行；不同 Thread 及无 Thread 的请求独立处理。命令列表、创建或恢复等待插件时，不阻塞后续官方请求。官方初始化仍在读取循环内完成；运行中 Turn、命令及中断维持原有异步处理方式，不把整个 Turn 串行排队。
 - 关闭或 Desktop 输入 EOF 时先取消插件加载，再等待已接收的路由和 Session 打开任务完成，最后取 Session 快照并关闭资源，避免遗漏迟到的 Session。取消后迟到的 Adapter 仍会关闭；未加载或不可用的外部 Harness 不回退到官方 Codex。
@@ -222,7 +240,7 @@ Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶�
 
 本机与远程均保留 Desktop 原生的草稿预热；它只提前创建 Session，不发送用户消息。Desktop Control 只给外部、非 ephemeral 的预热 `thread/start` 加上 `codexhostPrewarm: true`，正式创建与官方 Codex 请求不加此标记。配置变更、策略清理或退役时，已返回的外部预热与之后迟到的结果通过 `codexhost/thread/prewarm/discard { threadId }` 请求释放，不能只在前端丢弃结果。
 
-未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。普通非预热 Thread 的创建行为不变。
+未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。首轮已提交但原生身份尚未就绪的当前运行时 Thread 会进入目录与会话列表，包括初始化失败后保留的首轮；身份就绪不改变 Host Thread ID，归档仍按正常列表过滤处理。普通非预热 Thread 的创建行为不变。
 
 Host 在现有每 Thread 请求队列内裁决接管与释放：Turn、原生命令、配置选择、恢复等操作接管后，迟到清理返回 `discarded: false`，不关闭 Session；普通空 Thread 也不能被此接口删除。未接管且没有活动工作或历史的预热先关闭 Session、等待输出结束，再移除 Host 映射；重复清理无副作用，关闭报告失败时保留映射并阻止继续使用这个未确认关闭的预热。该标记只是当前 Host 的内存所有权，不把预分配身份持久化为原生历史。
 
@@ -230,11 +248,11 @@ Host 在现有每 Thread 请求队列内裁决接管与释放：Turn、原生命
 
 图标只接受识别出的 PNG、JPEG、WebP 或受限 SVG，由 Host 转成数据 URL。SVG 拒绝脚本、事件属性及部分外部资源构造。图片资源通过 `img` 渲染，不得把 SVG 或描述字段当作 HTML 注入。`iconStyle.vector` 只接受受限的 viewBox、颜色和 path 数据，使用主分支原有的 DOM SVG 工厂构造固定的 `svg`/`path` 元素；不接收 SVG 文本、事件属性或任意元素。原有 inline SVG 的路径、尺寸和颜色不变，只移入插件 Manifest；底色、圆角和内边距仍按原有样式显示。
 
-Qoder 以两个独立预装插件展示：`qoder`（海外版，保留原 ID）和 `qoder-cn`（中国版）。两者共用 `packages/adapters/qoder` 的 Adapter/Session 实现，中国版包只提供独立 Manifest 和工厂入口。插件固定选择各自的 SDK `1.0.39`：海外版 `@qoder-ai/qoder-agent-sdk`，中国版 `@qodercn-ai/qodercn-agent-sdk`；查询、认证、历史读取与 Fork 均使用同一版本对应的 SDK，不自动切换版本。海外版发现 `qodercli` / `qoder`，中国版发现 `qoderclicn` / `qodercn`，显式命令覆盖分别为 `CODEXHOST_QODER_COMMAND` / `CODEXHOST_QODERCN_COMMAND`。SDK 默认用户目录分别是 `~/.qoder` / `~/.qoder-cn`，PAT 环境变量分别是 `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCN_PERSONAL_ACCESS_TOKEN`；凭据和历史由各自原生 SDK 管理。Native Ref 使用对应 Harness ID，拒绝跨版本 Resume/Fork/Rollback；Desktop 的模型、Thinking、权限和偏好按两个 Agent 分别保存。公共 Adapter 契约和路由格式不变。
+Qoder 以两个独立预装插件展示：`qoder`（海外版，保留原 ID）和 `qoder-cn`（中国版）。两者共用 `packages/adapters/qoder` 的 Adapter/Session 实现，中国版包只提供独立 Manifest 和工厂入口。插件固定选择各自的 SDK `1.0.58`：海外版 `@qoder-ai/qoder-agent-sdk`，中国版 `@qodercn-ai/qodercn-agent-sdk`；查询、认证、历史读取与 Fork 均使用同一版本对应的 SDK，不自动切换版本。SDK `1.0.58` 起，Qoder CLI `1.1.81+` 通过其 `--sdk` 工作进程协议执行会话（旧版 SDK worker 子进程协议已被 CLI 移除），SDK 在随包 worker runtime 不可用时自动回退到该协议。海外版发现 `qodercli` / `qoder`，中国版发现 `qoderclicn` / `qodercn`，显式命令覆盖分别为 `CODEXHOST_QODER_COMMAND` / `CODEXHOST_QODERCN_COMMAND`。SDK 默认用户目录分别是 `~/.qoder` / `~/.qoder-cn`，PAT 环境变量分别是 `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCN_PERSONAL_ACCESS_TOKEN`；凭据和历史由各自原生 SDK 管理。Native Ref 使用对应 Harness ID，拒绝跨版本 Resume/Fork/Rollback；Desktop 的模型、Thinking、权限和偏好按两个 Agent 分别保存。公共 Adapter 契约和路由格式不变。
 
 Qoder 的启动认证失败或消息流意外结束会终结活动 Turn、发布 `session.faulted` 并关闭 Session，后续请求返回 `invalidState`。取消回执只表示受理；收到原生 Turn 结果前仍保持忙碌，迟到输出归属原 Turn。无人值守创建策略 `unattended-full-access` 映射为原生 `bypassPermissions`，与显式非 bypass 权限冲突时拒绝创建。
 
-Qoder 沿用现有公共 Model Catalog 和工具投影契约，不增加专用分组、禁用状态或文件全文字段。模型目录保留 SDK 返回的模型及顺序，不因 `isEnabled` 字段过滤模型；模型选择是否成功由原生接口决定。两版 Adapter 均按工作目录缓存成功目录，不设时间有效期，显式 `refresh` 清除对应缓存，关闭 Adapter 时清空；失败结果不缓存。SDK 查询仍使用 `fetchStrategy: "cache"`，显式刷新仅绕过 Adapter 缓存，不强制原生联网更新。Write/Edit 沿用 Pi/OMP 已使用的公共工具投影兼容路径，不增加 namespace 开关或原生 patch 门槛，也不改变其他 Harness 的历史状态投影。
+Qoder 沿用现有公共 Model Catalog 和工具投影契约，不增加专用分组、禁用状态或文件全文字段。模型目录保留 SDK 返回的模型及顺序，不因 `isEnabled` 字段过滤模型；模型选择是否成功由原生接口决定。两版 Adapter 均按工作目录缓存成功目录，不设时间有效期，显式 `refresh` 清除对应缓存；被替代的旧检查不能覆盖新缓存。未指定 `cwd` 的检查使用 Host 当前目录启动探测，但其缓存与显式项目目录分开；`open()` 始终读取或检查 `input.cwd` 对应的目录，不借用 Host 或其他项目的结果。首次检查和显式刷新均先等待 SDK Query 初始化完成，再通过一次 `fetchStrategy: "live"` 获取原生模型目录，不轮询或重试。初始化与模型查询共用 10 秒预算；超时返回不可用，不缓存失败结果，取消并释放探测资源。关闭 Adapter 会取消并等待全部在途检查（包括被刷新替代的旧检查），随后不会发布或缓存迟到结果。普通读取命中 Adapter 缓存时不启动 SDK 查询。不显式选择 Model 时，Session 的 `effectiveModel` 取项目目录的原生默认 Model，目录无默认值时才回落到 `auto`；启动 CLI 时仍省略 `model`，由 CLI 自己决定实际默认配置。Write/Edit 沿用 Pi/OMP 已使用的公共工具投影兼容路径，不增加 namespace 开关或原生 patch 门槛，也不改变其他 Harness 的历史状态投影。
 
 WorkBuddy 以独立的 `workbuddy` 预装插件接入 WorkBuddy AI 随应用分发的 CLI，普通 Session 使用该 CLI 公开的标准 `--acp` stdio 接口；精确 Fork 与修订组合公开 CLI 管理参数、原生命令和公开 rollback 扩展，跨目录时使用受来源与目标校验的临时历史桥接。它可以复用 CodeBuddy ACP 的协议实现，但拥有独立的 Harness ID 和固定安全命令目录；未显式配置时主动注入 `~/.workbuddy-ai`，避免内置 CLI 回退到 `~/.codebuddy`。插件不会自动改用 PATH 中的独立 CodeBuddy。它不连接 WorkBuddy Desktop 私有 owner runtime，不调用私有激活、admission 或 grant 接口，也不能接管 Desktop 已有任务、连接器或登录态。macOS App 已包含所需 CLI；首次 ACP 认证仍按需在 Host 外通过该内置 CLI 完成。详细能力和验证边界见 [WorkBuddy Harness 集成](../harnesses/workbuddy/workbuddy-harness-integration.md)。
 
@@ -266,6 +284,8 @@ Composer 配置按动态插件 ID 存储，不再为每个 Harness 增加字段�
 
 `codexhost/harness/accounts/sources` 先返回当前连接中实现该能力的 Harness ID 与 Manifest 名称，Renderer 再为每个来源并行调用 `codexhost/harness/accounts/inspect`。Host 分别校验快照并隔离失败和超时，不透传原生错误或凭据；任一有效结果可立即显示，不等待其他 Harness。未实现、无数据或返回非法快照的插件不产生账号行。`codexhost/harness/accounts/list` 保留为旧 Renderer 的聚合兼容接口，新 Renderer 连接旧 Host 时也回退使用它。Renderer 在账号设置页只读展示，不注册 Codex 账号或参与多账号路由。Claude Code 的 Aqua Broker 转发 `adapter.inspectAccount`；旧 Broker 不支持时无数据。产品说明见[账号设置](../product/codex-accounts.md)。
 
+账号查询缓存归当前 Host 实例所有，按 Harness 隔离；普通 `accounts/inspect` / `accounts/list` 查询可复用 15 秒内的结果并合并同一 Harness 的在途查询。显式 `refresh: true` 跳过已完成缓存及既有在途查询，启动新的原生账号检查；被替代的查询仍可回应其原调用方，但不能覆盖新查询的缓存或清除其在途记录。
+
 ## 插件拥有的展示元数据
 
 权限模式和命令目录可提供 `localizations: { [locale]: { label?, description? } }`。公共 `localizeHarnessPresentation` 按精确 locale、语言、原文逐字段回退；不根据模式 ID、英文文案或 `/compact` 推断语义。插件拥有翻译、原生动态目录的已知文案映射及版本兼容，未知原生文案保留原样。元数据不允许覆盖 ID、危险标记、参数或执行行为，限制 locale 数量、键和文本长度。`atCreate` 的锁定提示属于通用能力说明，不点名某个 Harness。
@@ -286,7 +306,7 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 支持配置选择的 Adapter 不因已有活动 Turn 而拒绝 `model.select` / `thinking.select`；通过原生配置接口执行，或更新供下一次原生调用使用的配置。生效时机由 Harness 决定，Host 不承诺当前 Turn 中途换模型，也不统一排队到 Turn 结束。原生拒绝仍作为失败返回，配置成功后发布已确认的 `session.state.changed`。
 
-仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 按启动该 CLI 进程时的 Model 计算当前 Turn 用量，后续配置选择不会重标已运行请求。
+仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 通过 ACP `session/set_config_option` 切换模型与推理档位，并按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 逐请求计费，后续配置选择不会重标已完成请求。
 
 ## 运行中调整方向
 
@@ -317,3 +337,5 @@ DeepSeek 插件通过自身的 HTTP/WebSocket 实现连接受支持的本机 DSH
 - 恢复、Pi/DeepSeek 导入、委派、协议路由和 Renderer 的定向回归。
 
 这些是合成测试、构建和分离 Bundle 冒烟检查，不等同于真实 Codex Desktop、所有原生 Harness、macOS Broker、SSH 远端或完整安装/升级验收。后续仍须按架构方案的能力基线和发布 Gate 完成迁移与验证。
+
+官方 Codex 通过 Host 的原生通道接入，不使用 Adapter 工厂；宿主的来源隔离与会话存储职责不进入插件。

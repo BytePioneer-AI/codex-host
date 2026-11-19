@@ -11,8 +11,10 @@ import {
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
+  hostTurnIdSchema,
   hostThreadIdSchema,
   nativeSessionRefSchema,
+  nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 import {
   encodeGrokTransportModel,
@@ -52,6 +54,101 @@ function record(): StoredThreadRecordV1 {
     updatedAt: "2026-08-01T01:00:00.000Z",
   } as StoredThreadRecordV1;
 }
+
+describe("ExternalThreadRuntime delete", () => {
+  it("waits for output consumption to finish before removing the mapping and Session owner", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const close = vi.spyOn(opened.value, "close");
+    const outputDrained = Promise.withResolvers<undefined>();
+    const removeThread = vi.fn(async () => undefined);
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { removeThread } as unknown as ExternalThreadRepository,
+      consumeOutputs: () => outputDrained.promise,
+      diagnose: () => undefined,
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+    });
+    const deleting = runtime.deleteThread(hostThreadId);
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(removeThread).not.toHaveBeenCalled();
+      expect(runtime.get(hostThreadId)).toBe(thread);
+    } finally {
+      outputDrained.resolve(undefined);
+      await deleting;
+    }
+    expect(removeThread).toHaveBeenCalledWith(hostThreadId);
+    expect(runtime.get(hostThreadId)).toBeUndefined();
+  });
+});
+
+describe("ExternalThreadRuntime terminal identity", () => {
+  it("reports the persistence cause and recovers after a transient failure", async () => {
+    const adapter = new FakeHarnessAdapter(harnessId);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic" });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const persistTurn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Turn identity mapping conflicts"))
+      .mockResolvedValueOnce(record());
+    const diagnostics: unknown[] = [];
+    const runtime = new ExternalThreadRuntime({
+      adapters: new Map([["pi", adapter]]),
+      repository: { persistTurn } as unknown as ExternalThreadRepository,
+      consumeOutputs: async () => undefined,
+      diagnose: (error) => diagnostics.push(error),
+    });
+    const thread = runtime.register({
+      record: record(),
+      session: opened.value,
+      sessionId: hostThreadId,
+      thread: { id: hostThreadId },
+      turns: [],
+    });
+    const nativeTurnRef = nativeTurnRefSchema.parse({
+      harnessId,
+      nativeSessionId: "native-1",
+      nativeTurnKey: "turn:1",
+      formatVersion: 1,
+    });
+
+    const first = await runtime.persistTerminalIdentity(thread, {
+      type: "turn.completed",
+      turnId: hostTurnIdSchema.parse("turn-1"),
+      nativeTurnRef,
+      outcome: { status: "succeeded" },
+    });
+
+    expect(first).toBeInstanceOf(Error);
+    expect(first?.message).toContain(
+      "External Turn identity could not be persisted: Turn identity mapping conflicts",
+    );
+    expect(thread.persistenceError).toBe(first);
+    expect(diagnostics).toEqual([first]);
+
+    const retry = await runtime.persistTerminalIdentity(thread, {
+      type: "turn.completed",
+      turnId: hostTurnIdSchema.parse("turn-2"),
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        ...nativeTurnRef,
+        nativeTurnKey: "turn:2",
+      }),
+      outcome: { status: "succeeded" },
+    });
+
+    expect(retry).toBeNull();
+    expect(persistTurn).toHaveBeenCalledTimes(2);
+    expect(thread.persistenceError).toBeNull();
+  });
+});
 
 describe("ExternalThreadRuntime register", () => {
   it("exposes the requested create Model before the Session publishes state", async () => {
@@ -400,7 +497,7 @@ describe("ExternalThreadRuntime register", () => {
         null,
         permissionModes,
         false,
-        "atCreate",
+        "live",
       );
       const model = adapter.catalog.defaultModel;
       if (!model) throw new Error("Fake Grok catalog has no default Model");
@@ -462,7 +559,7 @@ describe("ExternalThreadRuntime register", () => {
       expect(resolved.kind).toBe("external");
       if (resolved.kind !== "external") throw new Error("Grok Thread did not restore");
       expect(execute).not.toHaveBeenCalled();
-      expect(session.capabilities.configuration.permissionModeScope).toBe("atCreate");
+      expect(session.capabilities.configuration.permissionModeScope).toBe("live");
       expect(resolved.thread.stateObserver.state.effectivePermissionModeId).toBe(storedMode);
       expect(resolved.thread.record.transportModelId).toBe(
         encodeGrokTransportModel(model, storedMode),

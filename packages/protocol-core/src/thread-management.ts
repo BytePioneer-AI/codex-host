@@ -12,7 +12,9 @@ const UINT32_MAX = 4_294_967_295;
 const THREAD_LIST_FIELDS = new Set([
   "ancestorThreadId",
   "archived",
+  "attachedToThreadId",
   "cursor",
+  "includeAttachedThreads",
   "cwd",
   "isPinned",
   "limit",
@@ -67,6 +69,10 @@ export interface DecodedThreadListRequest {
   modelProviders: string[] | null;
   parentThreadId: string | null;
   ancestorThreadId: string | null;
+  /** Side Chats attached to this Thread. Without it, attached Threads stay out of the list. */
+  attachedToThreadId: string | null;
+  /** A search that also returns attached Threads. */
+  includeAttachedThreads: boolean;
   /** Undefined includes every project; `null` selects unassigned Threads. */
   projectId: string | null | undefined;
   searchTerm: string | null;
@@ -300,11 +306,26 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   if (parentThreadId !== null && ancestorThreadId !== null) {
     throw new Error("thread/list cannot combine parentThreadId and ancestorThreadId");
   }
+  const attachedToThreadId = nullableText(
+    params.attachedToThreadId,
+    "thread/list params.attachedToThreadId",
+  );
+  if (attachedToThreadId !== null && (parentThreadId !== null || ancestorThreadId !== null)) {
+    throw new Error(
+      "thread/list cannot combine attachedToThreadId with parentThreadId or ancestorThreadId",
+    );
+  }
+  const includeAttachedThreads =
+    nullableBoolean(params.includeAttachedThreads, "thread/list params.includeAttachedThreads") ??
+    false;
   const projectId =
     params.projectId === undefined
       ? undefined
       : nullableText(params.projectId, "thread/list params.projectId");
   const searchTerm = nullableText(params.searchTerm, "thread/list params.searchTerm");
+  if (includeAttachedThreads && !searchTerm) {
+    throw new Error("thread/list includeAttachedThreads requires a non-empty searchTerm");
+  }
   const sectionId =
     params.sectionId === undefined
       ? undefined
@@ -321,6 +342,8 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
   const fingerprint = queryFingerprint({
     ancestorThreadId,
     archived,
+    attachedToThreadId,
+    includeAttachedThreads,
     cwd,
     isPinned,
     modelProviders,
@@ -365,6 +388,8 @@ export function decodeThreadListRequest(request: JsonRpcRequest): DecodedThreadL
     modelProviders,
     parentThreadId,
     ancestorThreadId,
+    attachedToThreadId,
+    includeAttachedThreads,
     projectId,
     searchTerm,
     sectionId,

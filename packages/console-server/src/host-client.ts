@@ -1,5 +1,13 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readdir, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
+
+import {
+  harnessInstallationRequestTimeoutMs,
+  updateCheckResultSchema,
+  updateStartResultSchema,
+  updateStatusResultSchema,
+} from "@codexhost/shared-contracts";
+import type { ConsoleUpdates } from "./updates.js";
 
 import { processIsAlive } from "./diagnostics.js";
 
@@ -13,6 +21,7 @@ export interface HostEndpoint {
   port: number;
   token: string;
   startedAt: number;
+  runtimePath?: string;
 }
 
 export class HostUnavailableError extends Error {
@@ -35,7 +44,15 @@ function parseDescriptor(value: unknown): HostEndpoint | null {
   ) {
     return null;
   }
-  return { pid: record.pid, port: record.port, token: record.token, startedAt: record.startedAt };
+  return {
+    pid: record.pid,
+    port: record.port,
+    token: record.token,
+    startedAt: record.startedAt,
+    ...(typeof record.runtimePath === "string" && path.isAbsolute(record.runtimePath)
+      ? { runtimePath: record.runtimePath }
+      : {}),
+  };
 }
 
 /**
@@ -70,28 +87,59 @@ export async function findHost(
 }
 
 export interface ConsoleHostClient {
+  displayEvents?(signal: AbortSignal): Promise<Response>;
   available(): Promise<boolean>;
   request(method: string, params: unknown): Promise<HostReply>;
 }
 
 export function createConsoleHostClient(
   descriptorDirectory: string,
-  options: { isAlive?: (pid: number) => boolean; timeoutMs?: number } = {},
+  options: {
+    isAlive?: (pid: number) => boolean;
+    timeoutMs?: number;
+    updateAppDirectory?: string;
+  } = {},
 ): ConsoleHostClient {
   const timeoutMs = options.timeoutMs ?? 150_000;
   return {
+    async displayEvents(signal) {
+      const host = await findHost(descriptorDirectory, options.isAlive);
+      if (!host) throw new HostUnavailableError();
+      return fetch(`http://127.0.0.1:${host.port}/display-events`, {
+        headers: { authorization: `Bearer ${host.token}` },
+        signal,
+      });
+    },
     async available() {
       return (await findHost(descriptorDirectory, options.isAlive)) !== null;
     },
     async request(method, params) {
       const host = await findHost(descriptorDirectory, options.isAlive);
       if (!host) throw new HostUnavailableError();
+      if (method.startsWith("codexhost/update/") && options.updateAppDirectory) {
+        if (!host.runtimePath)
+          throw new Error(
+            "The running Host does not identify its installation; restart it before updating",
+          );
+        const [hostDirectory, requestedDirectory] = await Promise.all([
+          realpath(path.dirname(host.runtimePath)),
+          realpath(options.updateAppDirectory),
+        ]).catch(() => {
+          throw new Error("The running Host installation could not be verified");
+        });
+        if (hostDirectory !== requestedDirectory)
+          throw new Error("The running Host belongs to a different codexhost installation");
+      }
       const response = await fetch(`http://127.0.0.1:${host.port}/rpc`, {
         method: "POST",
         headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" },
         body: JSON.stringify({ method, params: params ?? {} }),
         signal: AbortSignal.timeout(
-          method === "codexhost/remote/ssh-setup" ? Math.max(timeoutMs, 330_000) : timeoutMs,
+          Math.max(
+            timeoutMs,
+            method === "codexhost/remote/ssh-setup" ? 330_000 : 0,
+            harnessInstallationRequestTimeoutMs(method, params) ?? 0,
+          ),
         ),
       });
       const body = (await response.json().catch(() => null)) as HostReply | null;
@@ -102,5 +150,20 @@ export function createConsoleHostClient(
       }
       return body;
     },
+  };
+}
+
+export function createHostUpdates(host: ConsoleHostClient): ConsoleUpdates {
+  const request = async (method: string): Promise<unknown> => {
+    const reply = await host.request(method, {});
+    if ("error" in reply) throw new Error(reply.error.message);
+    if (reply.result === null)
+      throw new Error("Application updates are unavailable on the running Host");
+    return reply.result;
+  };
+  return {
+    check: async () => updateCheckResultSchema.parse(await request("codexhost/update/check")),
+    start: async () => updateStartResultSchema.parse(await request("codexhost/update/start")),
+    status: async () => updateStatusResultSchema.parse(await request("codexhost/update/status")),
   };
 }

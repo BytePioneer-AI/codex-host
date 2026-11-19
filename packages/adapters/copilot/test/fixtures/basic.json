@@ -1,0 +1,209 @@
+[
+  {
+    "id": "51377fcd-94cf-4263-af68-3e70035cdbbc",
+    "timestamp": "2026-10-22T10:11:07.846Z",
+    "parentId": null,
+    "type": "session.start",
+    "data": {
+      "sessionId": "4c47b75e-1f33-4e80-a592-032e42c24f4b",
+      "version": 1,
+      "producer": "copilot-agent",
+      "copilotVersion": "1.0.102",
+      "startTime": "2026-10-22T10:11:07.843Z"
+    }
+  },
+  {
+    "id": "49e64e2a-6fb0-46fd-b681-e296cb67d111",
+    "timestamp": "2026-10-22T10:11:10.463Z",
+    "parentId": "e0d28789-7a93-47be-9385-17e283f5966e",
+    "type": "user.message",
+    "data": {
+      "content": "Reply exactly PROBE_ONE. Do not use tools.",
+      "messageId": "2c6eb0b3-511a-4d24-b2d1-ffbbed9cea27",
+      "delivery": "idle",
+      "parentAgentTaskId": "228e8624-85fd-4d3b-94de-b9613c14da19"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "50656708-dd0d-40d9-96d4-4806c435e057",
+    "timestamp": "2026-10-22T10:11:10.466Z",
+    "parentId": "d8b0584e-ffea-47ea-ae5e-746b860451f7",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "236e0c74-d66f-42b9-8b76-ec413355638d",
+    "timestamp": "2026-10-22T10:11:10.469Z",
+    "parentId": "50656708-dd0d-40d9-96d4-4806c435e057",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 13606,
+      "messagesLength": 3
+    }
+  },
+  {
+    "id": "1fcca11d-d4cc-476d-acb3-34e8dd20df55",
+    "timestamp": "2026-10-22T10:11:13.015Z",
+    "parentId": "50656708-dd0d-40d9-96d4-4806c435e057",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "1f172507-b837-45a3-b389-3ecec3e2941e",
+      "deltaContent": "PRO"
+    }
+  },
+  {
+    "id": "563d376d-74e0-46f9-bacf-c32197edcf0f",
+    "timestamp": "2026-10-22T10:11:13.015Z",
+    "parentId": "50656708-dd0d-40d9-96d4-4806c435e057",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "1f172507-b837-45a3-b389-3ecec3e2941e",
+      "deltaContent": "BE"
+    }
+  },
+  {
+    "id": "00b260b2-0900-418e-9b34-fa21c864befd",
+    "timestamp": "2026-10-22T10:11:13.015Z",
+    "parentId": "50656708-dd0d-40d9-96d4-4806c435e057",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "1f172507-b837-45a3-b389-3ecec3e2941e",
+      "deltaContent": "_ONE"
+    }
+  },
+  {
+    "id": "192216d9-c840-46ba-a87c-82eb7fe94430",
+    "timestamp": "2026-10-22T10:11:13.107Z",
+    "parentId": "42f08d4f-409f-4359-87dd-3fa400c570e0",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "1f172507-b837-45a3-b389-3ecec3e2941e",
+      "originatingMessageId": "2c6eb0b3-511a-4d24-b2d1-ffbbed9cea27",
+      "content": "PROBE_ONE",
+      "phase": "final_answer"
+    }
+  },
+  {
+    "id": "ab2df2a1-48f3-4a41-b727-aedcbabb9dfa",
+    "timestamp": "2026-10-22T10:11:13.107Z",
+    "parentId": "192216d9-c840-46ba-a87c-82eb7fe94430",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "5be50621-babf-438a-a688-383ff167e477",
+    "timestamp": "2026-10-22T10:11:13.120Z",
+    "parentId": "fd9fe783-33b2-4b10-bf3f-879ed3e92abf",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "mode": "interactive"
+    }
+  },
+  {
+    "id": "7622624f-9487-404d-bd10-eddc60034ab3",
+    "timestamp": "2026-10-22T10:11:14.399Z",
+    "parentId": "19626433-1df1-49dc-937d-dd5d513c76ae",
+    "type": "user.message",
+    "data": {
+      "content": "Reply exactly PROBE_TWO. Do not use tools.",
+      "messageId": "ea3294e7-9a68-401c-b18b-9230b338b62d",
+      "delivery": "idle",
+      "parentAgentTaskId": "a322a063-7b41-40a0-8e31-6e91686998cf"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "b118d75f-26a7-4fb6-83ca-015ca720a2ea",
+    "timestamp": "2026-10-22T10:11:14.401Z",
+    "parentId": "90576bbc-5852-4c10-8755-7a1149f28ae2",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "066f2951-dbb2-43e2-86ad-680483058880",
+    "timestamp": "2026-10-22T10:11:14.402Z",
+    "parentId": "b118d75f-26a7-4fb6-83ca-015ca720a2ea",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 13654,
+      "messagesLength": 5
+    }
+  },
+  {
+    "id": "2faf711a-7ebd-4aa3-bdff-736b62ed0aa5",
+    "timestamp": "2026-10-22T10:11:15.379Z",
+    "parentId": "b118d75f-26a7-4fb6-83ca-015ca720a2ea",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "09b6a489-c8e5-4221-a66c-d9a82c7c8384",
+      "deltaContent": "PRO"
+    }
+  },
+  {
+    "id": "951f6327-9577-403f-b802-3bed1dc9e5ee",
+    "timestamp": "2026-10-22T10:11:15.379Z",
+    "parentId": "b118d75f-26a7-4fb6-83ca-015ca720a2ea",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "09b6a489-c8e5-4221-a66c-d9a82c7c8384",
+      "deltaContent": "BE"
+    }
+  },
+  {
+    "id": "7b0b1034-ed30-4dd6-a84b-28ddbe00c8f8",
+    "timestamp": "2026-10-22T10:11:15.381Z",
+    "parentId": "b118d75f-26a7-4fb6-83ca-015ca720a2ea",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "09b6a489-c8e5-4221-a66c-d9a82c7c8384",
+      "deltaContent": "_TWO"
+    }
+  },
+  {
+    "id": "e630d056-5c9a-47ab-a5e8-24c04f6e0f26",
+    "timestamp": "2026-10-22T10:11:15.536Z",
+    "parentId": "83ed44d8-305f-44de-98b0-5ef391914b55",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "09b6a489-c8e5-4221-a66c-d9a82c7c8384",
+      "originatingMessageId": "ea3294e7-9a68-401c-b18b-9230b338b62d",
+      "content": "PROBE_TWO",
+      "phase": "final_answer"
+    }
+  },
+  {
+    "id": "ad0239b4-f244-4ec9-8fec-e5aba7d987c2",
+    "timestamp": "2026-10-22T10:11:15.537Z",
+    "parentId": "e630d056-5c9a-47ab-a5e8-24c04f6e0f26",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "d34b7c7f-7ff8-413b-b0d7-75c794d3f8c4",
+    "timestamp": "2026-10-22T10:11:15.549Z",
+    "parentId": "31cdea29-0bda-4e10-88af-f5a2033ab0e9",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "mode": "interactive"
+    }
+  }
+]

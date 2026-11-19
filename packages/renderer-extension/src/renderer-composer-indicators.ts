@@ -15,6 +15,9 @@ export interface RendererComposerIndicators {
   dispose(): void;
 }
 
+/** Countdowns stay hidden until this little time remains. */
+const SHOW_WITHIN_SECONDS = 50 * 60;
+
 export function mountRendererComposerIndicators(composer: Element): RendererComposerIndicators {
   const doc = composer.ownerDocument;
   ensureRendererTriggerChipStyle(doc);
@@ -27,16 +30,56 @@ export function mountRendererComposerIndicators(composer: Element): RendererComp
   let timer: ReturnType<typeof setInterval> | undefined;
   let anchor: HTMLElement | null = null;
   let contentKey = "";
+  let tip: HTMLElement | null = null;
+
+  // Native `title` tooltips appear only after a multi-second delay, so show our own immediately.
+  const hideTip = (): void => {
+    tip?.remove();
+    tip = null;
+  };
+  const showTip = (chip: HTMLElement, textContent: string): void => {
+    hideTip();
+    const el = doc.createElement("div");
+    el.setAttribute("role", "tooltip");
+    el.textContent = textContent;
+    Object.assign(el.style, {
+      position: "fixed",
+      zIndex: "2147483647",
+      pointerEvents: "none",
+      padding: "4px 8px",
+      borderRadius: "8px",
+      fontSize: "12px",
+      whiteSpace: "nowrap",
+      background: "rgba(30, 30, 30, 0.92)",
+      color: "#fff",
+      visibility: "hidden",
+    });
+    (doc.body ?? doc.documentElement).append(el);
+    const rect = chip.getBoundingClientRect();
+    const width = el.offsetWidth;
+    const left = Math.max(
+      4,
+      Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 4),
+    );
+    el.style.left = `${left}px`;
+    el.style.top = `${Math.max(4, rect.top - el.offsetHeight - 6)}px`;
+    el.style.visibility = "visible";
+    tip = el;
+  };
 
   const refresh = (): void => {
     const now = Date.now() / 1000;
-    const active = indicators.filter((indicator) => indicator.expiresAtUnix > now);
+    const active = indicators.filter(
+      (indicator) =>
+        indicator.expiresAtUnix > now && indicator.expiresAtUnix - now <= SHOW_WITHIN_SECONDS,
+    );
     const nextKey = JSON.stringify([
       locale,
       active.map((indicator) => [indicator, Math.ceil((indicator.expiresAtUnix - now) / 60)]),
     ]);
     if (nextKey !== contentKey) {
       contentKey = nextKey;
+      hideTip();
       root.replaceChildren();
       for (const indicator of active) {
         const minutes = Math.ceil((indicator.expiresAtUnix - now) / 60);
@@ -46,8 +89,10 @@ export function mountRendererComposerIndicators(composer: Element): RendererComp
         const chip = doc.createElement("span");
         chip.className = TRIGGER_CHIP_CLASS;
         chip.setAttribute("data-indicator-id", indicator.id);
-        chip.title = [label, tooltip, remaining].filter(Boolean).join(" · ");
-        chip.setAttribute("aria-label", chip.title);
+        const summary = [label, tooltip, remaining].filter(Boolean).join(" · ");
+        chip.setAttribute("aria-label", summary);
+        chip.addEventListener("mouseenter", () => showTip(chip, summary));
+        chip.addEventListener("mouseleave", hideTip);
         Object.assign(chip.style, {
           height: "28px",
           padding: "0 6px",
@@ -80,7 +125,8 @@ export function mountRendererComposerIndicators(composer: Element): RendererComp
     // This optional chip gives up its width before public controls and never shows a clipped clock.
     const visibility = root.scrollWidth > root.clientWidth ? "hidden" : "visible";
     if (root.style.visibility !== visibility) root.style.visibility = visibility;
-    if (!active.length && timer !== undefined) {
+    const pending = indicators.some(({ expiresAtUnix }) => expiresAtUnix > now);
+    if (!pending && timer !== undefined) {
       clearInterval(timer);
       timer = undefined;
     }
@@ -113,6 +159,7 @@ export function mountRendererComposerIndicators(composer: Element): RendererComp
     },
     dispose() {
       observer.disconnect();
+      hideTip();
       if (timer !== undefined) clearInterval(timer);
       root.remove();
     },

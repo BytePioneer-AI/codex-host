@@ -433,6 +433,7 @@ function isRootOutput(event: ClaudeTurnEvent): boolean {
     case "text.delta":
     case "reasoning.delta":
     case "reasoning.completed":
+    case "narration.completed":
     case "message.completed":
     case "tool.started":
     case "tool.progress":
@@ -846,16 +847,17 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (this.#active || this.#autonomous?.live) {
       return Promise.reject(new Error("Claude SDK transport is busy"));
     }
-    // A Segment without Root output has no Turn yet. The requested Turn takes over the native
-    // stream, so the events that Segment still holds must not reappear in a later Turn.
-    const unclaimed = this.#autonomous?.events ?? [];
+    // A Segment without Root output has no Turn yet. Transfer its accumulator and held
+    // events to the requested Turn. A thinking delta is Root output, just like text.
+    const takeover = this.#autonomous;
+    const unclaimed = takeover?.events ?? [];
     this.#autonomous = null;
     const promise = new Promise<ClaudeTransportTurnResult>((resolve, reject) => {
       this.#rootToolCalls.clear();
       this.#active = {
-        accumulator: new ClaudeNativeTurnAccumulator(
-          this.#provider ? { provider: this.#provider } : {},
-        ),
+        accumulator:
+          takeover?.accumulator ??
+          new ClaudeNativeTurnAccumulator(this.#provider ? { provider: this.#provider } : {}),
         onEvent,
         resolve,
         reject,

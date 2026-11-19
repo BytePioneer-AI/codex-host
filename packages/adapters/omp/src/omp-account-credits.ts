@@ -127,7 +127,7 @@ function reportAccount(value: unknown): HarnessAccountSnapshot | null {
   };
 }
 
-/** One cache per OMP launch environment; credential IDs are local to its profile. */
+/** One cache per OMP launch context; credential IDs are local to its profile. */
 export class OmpAccountCredits {
   #cached: { fetchedAt: number; accounts: Map<string, HarnessAccountSnapshot> } | undefined;
   #pending: Promise<Map<string, HarnessAccountSnapshot>> | undefined;
@@ -139,12 +139,13 @@ export class OmpAccountCredits {
   }
 
   async inspectAccounts(): Promise<HarnessAccountSnapshot[]> {
-    return [...(await this.#read()).values()];
+    // The Host already caches settings reads and explicitly bypasses that cache on refresh.
+    return [...(await this.#read(true)).values()];
   }
 
-  #read(): Promise<Map<string, HarnessAccountSnapshot>> {
+  #read(refresh = false): Promise<Map<string, HarnessAccountSnapshot>> {
     if (this.#pending) return this.#pending;
-    if (this.#cached && Date.now() - this.#cached.fetchedAt < CACHE_MS)
+    if (!refresh && this.#cached && Date.now() - this.#cached.fetchedAt < CACHE_MS)
       return Promise.resolve(this.#cached.accounts);
     this.#pending = (async () => {
       const accounts = new Map<string, HarnessAccountSnapshot>();
@@ -180,14 +181,16 @@ export class OmpAccountCredits {
 export function createOmpAccountCredits(
   command: string | undefined,
   environment: NodeJS.ProcessEnv,
+  cwd?: string,
 ) {
-  const env = { ...environment, OMP_SKIP_VERSION_CHECK: "1" };
+  const env = { ...environment, OMP_SKIP_VERSION_CHECK: "1", OMP_TELEMETRY: "0" };
   return new OmpAccountCredits(() =>
     runInstallationCommand(
       resolveOmpExecutable({ ...(command ? { command } : {}), environment: env }),
       ["usage", "--json", "--no-extensions"],
       env,
       5_000,
+      cwd,
     ),
   );
 }

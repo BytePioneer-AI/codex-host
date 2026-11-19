@@ -6,8 +6,8 @@
 
 - **OMP**：现有原生提问与工具审批已接入。选择题使用原生逐项说明，超时与主动取消分别回传 `timedOut` / `cancelled`，详见 [OMP 交互](omp/omp-interactions.md)。子代理投影依赖 OMP RPC 的 `set_subagent_subscription` 订阅（服务端默认 `off`）：Host 启动连接时请求 `events` 级别；不支持该命令的旧版 OMP 优雅降级为无子代理投影，不阻塞会话。子代理转写读取优先直接读父会话文件旁的 `<子代理ID>.jsonl`（OMP RPC 的子代理注册表仅存于内存，冷启动进程无法按 ID 解析已完成的子代理）；文件不存在时回退 RPC 读取。
   OMP 的 `/context` 及原生明确报告未调用 Agent 的动态命令使用非持久化完成语义，显示原生文本后释放当前轮次，不合成历史身份；普通轮次的终结与取消检查保持不变。首次本地命令不产生历史文件时，以原生空消息确认下一轮可继续。详见 [本地命令边界](omp/omp-interactions.md#不调用-agent-的本地命令)。
-  会话额度使用同一启动环境的 `omp usage --json --no-extensions`。圆环按 OMP 开始回复时报告的 Provider 与凭证编号匹配；重试换号时跟随新的流，失败后恢复最近一次完成的模型回复所用账号。打开已有会话时，从活动分支恢复该账号；无法确认时不显示圆环。账号列表独立展示该环境可读取的额度。
-  相同启动环境的会话共享额度查询；不同环境的凭证编号不互通。原生运行摘要可以补齐缺失的回复结束事件，只更新账号归属，不补记用量。
+  会话额度在同一工作目录和启动环境下运行 `omp usage --json --no-extensions`，避免项目 `.env` 选中另一套凭证。圆环按 OMP 开始回复时报告的 Provider 与凭证编号匹配；重试换号时跟随新的流，回合结束后清除未确认的账号。打开已有会话时，从活动分支恢复最近一次完成回复所用账号；无法确认时不显示圆环。
+  相同目录和启动环境的会话共享额度查询，忽略 Host 注入的逐会话委派标识；设置页显式刷新不使用会话额度缓存。原生运行摘要可以补齐缺失的回复结束事件，只更新账号归属，不补记用量。
 - **CodeBuddy**：从 ACP 动态目录读取斜杠命令，按原生压缩事件及持久化结果确认上下文压缩；通过原生附加系统提示让会话发现 Host 委派 CLI。Fork 和修订通过无模型的原生复制、原生 `/fork` 与仅作用于新副本的 rollback 完成，校验完整历史前缀与源会话不变；派生配置随原生引用恢复。成功派生后通过同一临时 ACP 进程的原生 HTTP 接口删除中间副本；早期失败或强杀仍可能残留，详见专属文档。详见 [CodeBuddy 接入](codebuddy/codebuddy-harness-integration.md)。
 - **Cursor**：参数化模型目录提供 Thinking 组合；ACP 原生命令目录提供命令；原生 shell 通过 Host 安装的 `codexhost-delegation` skill 调用 CLI 向外委派。详见 [Cursor 接入](cursor/cursor-cli-experimental.md)。
 - **Hermes**：会话统一使用官方 Gateway，不以版本数值差异阻断，接入提问、Thinking、命令、压缩、原生 Diff，以及未压缩历史的独立 Fork/修订；通过进程内注册的私有临时 Skill 发现 Host CLI 并保留父任务环境，不向共享技能目录写入临时 Skill。不再保留 ACP 实现或 SDK 依赖；历史发现和导入使用原生 SessionDB 只读查询，导入的原生身份通过 Gateway 恢复。详见 [Hermes 能力与边界](hermes/hermes-capabilities.md)。

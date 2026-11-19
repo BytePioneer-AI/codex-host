@@ -10,7 +10,7 @@ import {
   type OmpModelListResult,
 } from "./omp-model-list.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -2255,6 +2255,7 @@ class OmpHarnessSession implements HarnessSession {
   ): void {
     if (this.#active !== active) return;
     this.#active = null;
+    this.#finishAccountAttempt(undefined);
     const itemOutcome: HostItemOutcome =
       outcome.status === "failed"
         ? { status: "failed", error: outcome.error }
@@ -2421,7 +2422,6 @@ export class OmpAdapter implements HarnessAdapter {
   readonly #accountCredits: OmpAccountCredits;
   readonly #accountCommand: string | undefined;
   readonly #environment: NodeJS.ProcessEnv;
-  readonly #environmentKey: string;
   readonly #sessionQuota = new Map<string, { credits: OmpAccountCredits; sessions: number }>();
   readonly #createTransport: OmpAdapterDependencies["createTransport"];
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
@@ -2447,7 +2447,6 @@ export class OmpAdapter implements HarnessAdapter {
     this.#createTransport = dependencies.createTransport;
     this.#accountCommand = options.command;
     this.#environment = { ...process.env, ...options.environment };
-    this.#environmentKey = this.#quotaEnvironmentKey(this.#environment);
     this.#accountCredits = createOmpAccountCredits(options.command, this.#environment);
     const listModels = dependencies.listModels ?? listOmpModels;
     this.#listModels = ({ cwd, signal }) =>
@@ -2848,12 +2847,6 @@ export class OmpAdapter implements HarnessAdapter {
     }
   }
 
-  #quotaEnvironmentKey(environment: NodeJS.ProcessEnv): string {
-    return JSON.stringify(
-      Object.entries(environment).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-    );
-  }
-
   #trackSession(
     cwd: string,
     options: {
@@ -2871,27 +2864,34 @@ export class OmpAdapter implements HarnessAdapter {
     },
   ): OmpHarnessSession {
     const environment = options.environment;
-    const effectiveKey =
-      environment === this.#environment
-        ? this.#environmentKey
-        : this.#quotaEnvironmentKey(environment);
-    const key = effectiveKey === this.#environmentKey ? undefined : effectiveKey;
-    let quota = key === undefined ? undefined : this.#sessionQuota.get(key);
-    if (key !== undefined && !quota) {
-      quota = { credits: createOmpAccountCredits(this.#accountCommand, environment), sessions: 0 };
+    // OMP loads project dotenv files from its working directory. Only the Host's
+    // per-thread delegation marker can be ignored when sharing a quota probe.
+    const entries = Object.entries(environment)
+      .filter(([name]) => name !== "CODEXHOST_THREAD_ID")
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const key = createHash("sha256")
+      .update(JSON.stringify([cwd, entries]))
+      .digest("hex");
+    let quota = this.#sessionQuota.get(key);
+    if (!quota) {
+      quota = {
+        credits: createOmpAccountCredits(this.#accountCommand, environment, cwd),
+        sessions: 0,
+      };
       this.#sessionQuota.set(key, quota);
     }
-    if (quota) quota.sessions++;
+    const shared = quota;
+    shared.sessions++;
     const session = new OmpHarnessSession(
       cwd,
       (input) => this.#createTransport({ ...input, environment }),
       () => {
         this.#sessions.delete(session);
-        if (quota && key !== undefined && --quota.sessions === 0) this.#sessionQuota.delete(key);
+        if (--shared.sessions === 0) this.#sessionQuota.delete(key);
       },
       {
         closeTimeoutMs: this.#closeTimeoutMs,
-        accountCredits: quota?.credits ?? this.#accountCredits,
+        accountCredits: shared.credits,
         ...(options.initialAccountKey !== undefined
           ? { initialAccountKey: options.initialAccountKey }
           : {}),

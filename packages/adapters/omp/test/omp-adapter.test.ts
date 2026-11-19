@@ -1117,6 +1117,9 @@ describe("OMP Adapter usage metering", () => {
   it("switches quota when a response starts and restores the confirmed account on failure", async () => {
     const root = path.join(tmpdir(), `codexhost-omp-quota-${randomUUID()}`);
     await mkdir(root);
+    const project = path.join(root, "project");
+    await mkdir(project);
+    await writeFile(path.join(project, ".env"), "TEST_QUOTA=0.4", "utf8");
     const command = path.join(root, "omp.cjs");
     const reports = [
       {
@@ -1139,13 +1142,14 @@ describe("OMP Adapter usage metering", () => {
       },
     ];
     const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
     const launches: OmpRpcSessionOptions[] = [];
     const probes = path.join(root, "probes");
     let onAssistantStart: OmpRpcSessionOptions["onAssistantStart"];
     let onAssistantSummary: OmpRpcSessionOptions["onAssistantSummary"];
     let onUsage: OmpRpcSessionOptions["onUsage"];
     const adapter = new OmpAdapter(
-      { command, environment: { OMP_QUOTA_TEST_BASE: "base" } },
+      { command, environment: { HOME: root, OMP_QUOTA_TEST_BASE: "base" } },
       {
         createTransport: (options) => {
           launches.push(options);
@@ -1162,6 +1166,8 @@ describe("OMP Adapter usage metering", () => {
         `require("node:fs").appendFileSync(${JSON.stringify(probes)}, process.env.OMP_QUOTA_TEST_PROFILE || "-");
 const reports = ${JSON.stringify(reports)};
 if (process.env.OMP_QUOTA_TEST_PROFILE === "b") reports[0].limits[0].amount.usedFraction = 0.6;
+const dotenv = require("node:fs").existsSync(".env") && require("node:fs").readFileSync(".env", "utf8");
+if (dotenv) reports[0].limits[0].amount.usedFraction = Number(dotenv.split("=")[1]);
 console.log(JSON.stringify({ reports }));`,
         "utf8",
       );
@@ -1169,6 +1175,7 @@ console.log(JSON.stringify({ reports }));`,
       if (!opened.ok || !opened.value.readAccountCredits) throw new Error("No session credits");
       const session = opened.value;
       expect(await session.readAccountCredits?.()).toBeNull();
+      const iterator = session.outputs[Symbol.asyncIterator]();
       await session.execute({
         type: "turn.start",
         turnId: "turn-quota" as HostTurnId,
@@ -1201,6 +1208,24 @@ console.log(JSON.stringify({ reports }));`,
         startedAtMs: null,
       });
       expect(await session.readAccountCredits?.()).toBeNull();
+      onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 60, startedAtMs: null });
+      onAssistantStart({ ...assistant, credentialId: 2 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      transport.history = {
+        entries: historyTurn({
+          userId: "cancelled-user",
+          assistantId: "cancelled-assistant",
+          parentId: null,
+          text: "Partial response",
+        }),
+        leafId: "cancelled-assistant",
+      };
+      transport.completeWithoutHistory({ text: "", cancelled: true, agentInvoked: true });
+      expect((await nextTurnEvents(iterator)).at(-1)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "cancelled" },
+      });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 25 });
       await session.close();
 
       transport.state = { ...transport.state, sessionFile: path.join(root, "session.jsonl") };
@@ -1227,24 +1252,35 @@ console.log(JSON.stringify({ reports }));`,
         ],
         leafId: "active",
       };
-      const resume = (profile: string) =>
+      const resume = (profile: string, threadId: string, cwd = root) =>
         adapter.open({
           kind: "resume",
-          cwd: root,
+          cwd,
           nativeRef,
-          environment: { OMP_QUOTA_TEST_PROFILE: profile },
+          environment: { OMP_QUOTA_TEST_PROFILE: profile, CODEXHOST_THREAD_ID: threadId },
         });
-      const [first, second, other] = await Promise.all([resume("a"), resume("a"), resume("b")]);
-      if (!first.ok || !second.ok || !other.ok) throw new Error("Could not resume quota sessions");
+      const resumed = await Promise.all([
+        resume("a", "thread-1"),
+        resume("a", "thread-2"),
+        resume("b", "thread-3"),
+        resume("a", "thread-4", project),
+      ]);
+      expect(resumed.every((result) => result.ok)).toBe(true);
       expect(
-        launches.slice(-3).map((launch) => launch.environment?.OMP_QUOTA_TEST_PROFILE),
-      ).toEqual(["a", "a", "b"]);
+        launches.slice(-4).map((launch) => launch.environment?.OMP_QUOTA_TEST_PROFILE),
+      ).toEqual(["a", "a", "b", "a"]);
       expect(launches.at(-1)?.environment?.OMP_QUOTA_TEST_BASE).toBe("base");
       const credits = await Promise.all(
-        [first, second, other].map((result) => result.value.readAccountCredits?.()),
+        resumed.map((result) => result.ok && result.value.readAccountCredits?.()),
       );
-      expect(credits.map((value) => value?.usedPercent)).toEqual([25, 25, 60]);
-      expect([...(await readFile(probes, "utf8"))].sort().join("")).toBe("-ab");
+      expect(credits.map((value) => (value ? value.usedPercent : undefined))).toEqual([
+        25, 25, 60, 40,
+      ]);
+      expect([...(await readFile(probes, "utf8"))].sort().join("")).toBe("-aab");
+
+      expect((await adapter.inspectAccounts())[0]?.credits?.usedPercent).toBe(25);
+      await writeFile(path.join(root, ".env"), "TEST_QUOTA=0.55", "utf8");
+      expect((await adapter.inspectAccounts())[0]?.credits?.usedPercent).toBeCloseTo(55);
     } finally {
       await adapter.close();
       await rm(root, { recursive: true, force: true });

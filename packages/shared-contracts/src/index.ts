@@ -463,3 +463,4 @@ export {
   canonicalizeOfficialCodexModelRef,
   OFFICIAL_CODEX_MODEL_REF_PREFIX,
 } from "./official-codex-model-ref.js";
+export { desktopProjectDefinitions } from "./desktop-project-definitions.js";

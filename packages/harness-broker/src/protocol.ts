@@ -39,6 +39,8 @@ export const harnessBrokerHelloSchema = z
     sequence: z.literal(1),
     kind: z.literal("hello"),
     token: z.string().regex(/^[a-f0-9]{64}$/u),
+    // A declared limit must leave room for the hello and frame-size error responses.
+    maxResponseBytes: z.number().int().min(512).max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .strict();
 

@@ -329,6 +329,7 @@ class BrokerConnection {
       sequence: 1,
       kind: "hello",
       token: descriptor.token,
+      maxResponseBytes: HARNESS_BROKER_MAX_RESPONSE_BYTES,
     });
     await hello;
     return connection;

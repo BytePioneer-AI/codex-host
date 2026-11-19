@@ -11,23 +11,51 @@ import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { BrokeredHarnessAdapter, startHarnessBrokerServer } from "../src/index.js";
 import { HARNESS_BROKER_MAX_RESPONSE_BYTES } from "../src/protocol.js";
 
-it("returns an oversized-response error without skipping a broker sequence", async () => {
+function adapterWithSnapshot(payloadBytes: number) {
+  const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+  const open = native.open.bind(native);
+  vi.spyOn(native, "open").mockImplementation(async (input) => {
+    const result = await open(input);
+    if (result.ok)
+      result.value.readSnapshot = async () => ({
+        ok: true,
+        value: {
+          turns: [],
+          state: result.value.initialState,
+          historyPayload: "x".repeat(payloadBytes),
+        },
+      });
+    return result;
+  });
+  return native;
+}
+
+const snapshotLimits = [
+  {
+    client: "legacy Client without a declaration",
+    helloOptions: {},
+    responseLimit: 8 * 1024 * 1024,
+    snapshotBytes: 15 * 1024 * 1024,
+  },
+  {
+    client: "Client declaring more than the server limit",
+    helloOptions: { maxResponseBytes: 2 * HARNESS_BROKER_MAX_RESPONSE_BYTES },
+    responseLimit: HARNESS_BROKER_MAX_RESPONSE_BYTES,
+    snapshotBytes: HARNESS_BROKER_MAX_RESPONSE_BYTES,
+  },
+];
+
+it.each(snapshotLimits)("rejects oversized snapshots for $client", async (testCase) => {
+  const { helloOptions, responseLimit, snapshotBytes } = testCase;
   const root = await mkdtemp(path.join(os.tmpdir(), "cx-broker-frame-size-"));
   const socketPath =
     process.platform === "win32"
       ? `\\\\.\\pipe\\cx-broker-size-${randomUUID()}`
       : path.join(root, "b.sock");
-  const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-  const baseline = await native.inspect();
-  vi.spyOn(native, "inspect").mockResolvedValueOnce(
-    Object.assign({}, baseline, {
-      oversizedFixture: "x".repeat(HARNESS_BROKER_MAX_RESPONSE_BYTES),
-    }),
-  );
   const server = await startHarnessBrokerServer({
     descriptorPath: path.join(root, "broker.json"),
     socketPath,
-    adapter: native,
+    adapter: adapterWithSnapshot(snapshotBytes),
   });
   const socket = net.createConnection(socketPath);
   const reader = createInterface({ input: socket });
@@ -35,11 +63,16 @@ it("returns an oversized-response error without skipping a broker sequence", asy
   const receive = async () => {
     const next = await frames.next();
     if (next.done) throw new Error("Broker disconnected instead of returning an error");
-    return JSON.parse(next.value) as {
-      sequence: number;
-      ok: boolean;
-      value?: { status?: string };
-      error?: { message: string };
+    const bytes = Buffer.byteLength(next.value) + 1;
+    expect(bytes).toBeLessThanOrEqual(responseLimit);
+    return {
+      bytes,
+      frame: JSON.parse(next.value) as {
+        sequence: number;
+        ok: boolean;
+        value?: { status?: string; value?: { sessionId: string; sessionGeneration: number } };
+        error?: { message: string };
+      },
     };
   };
   const send = (sequence: number, payload: object) =>
@@ -53,14 +86,35 @@ it("returns an oversized-response error without skipping a broker sequence", asy
     );
   try {
     await once(socket, "connect");
-    send(1, { kind: "hello", token: server.descriptor.token });
-    expect(await receive()).toMatchObject({ sequence: 1, ok: true });
-    send(2, { kind: "request", id: randomUUID(), method: "adapter.inspect", params: {} });
+    send(1, { kind: "hello", token: server.descriptor.token, ...helloOptions });
+    expect((await receive()).frame).toMatchObject({ sequence: 1, ok: true });
+    send(2, {
+      kind: "request",
+      id: randomUUID(),
+      method: "adapter.open",
+      params: { kind: "create", cwd: root },
+    });
+    const opened = (await receive()).frame;
+    const session = opened.value?.value;
+    if (!session) throw new Error("Broker did not open a session");
+    const { sessionId, sessionGeneration } = session;
+    const id = randomUUID();
+    send(3, {
+      kind: "request",
+      id,
+      method: "session.readSnapshot",
+      params: { sessionId, sessionGeneration },
+    });
     const rejected = await receive();
-    expect(rejected.error?.message).toContain("frame exceeds the maximum size");
-    expect(rejected.sequence).toBe(2);
-    send(3, { kind: "request", id: randomUUID(), method: "adapter.inspect", params: {} });
-    expect(await receive()).toMatchObject({ sequence: 3, ok: true, value: { status: "ready" } });
+    expect(rejected.bytes).toBeLessThan(1024);
+    expect(rejected.frame.error?.message).toContain("frame exceeds the maximum size");
+    expect(rejected.frame).toMatchObject({ id, sequence: 3, ok: false });
+    send(4, { kind: "request", id: randomUUID(), method: "adapter.inspect", params: {} });
+    expect((await receive()).frame).toMatchObject({
+      sequence: 4,
+      ok: true,
+      value: { status: "ready" },
+    });
   } finally {
     reader.close();
     socket.destroy();
@@ -76,22 +130,11 @@ it("reads a large native snapshot and keeps its broker connection usable", async
       ? `\\\\.\\pipe\\cx-broker-history-${randomUUID()}`
       : path.join(root, "b.sock");
   const descriptorPath = path.join(root, "broker.json");
-  const native = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
-  const open = native.open.bind(native);
-  vi.spyOn(native, "open").mockImplementation(async (input) => {
-    const result = await open(input);
-    if (result.ok)
-      result.value.readSnapshot = async () => ({
-        ok: true,
-        value: {
-          turns: [],
-          state: result.value.initialState,
-          historyPayload: "x".repeat(15 * 1024 * 1024),
-        },
-      });
-    return result;
+  const server = await startHarnessBrokerServer({
+    descriptorPath,
+    socketPath,
+    adapter: adapterWithSnapshot(15 * 1024 * 1024),
   });
-  const server = await startHarnessBrokerServer({ descriptorPath, socketPath, adapter: native });
   const client = new BrokeredHarnessAdapter({ descriptorPath });
   try {
     const opened = await client.open({ kind: "create", cwd: root });

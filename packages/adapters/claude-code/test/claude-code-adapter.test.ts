@@ -2459,50 +2459,118 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("projects signed native narration as a commentary Agent Message before the answer", async () => {
-    const { adapter, transports } = fixture();
-    const session = await openSession(adapter);
-    const iterator = session.outputs[Symbol.asyncIterator]();
+  it.each([false, true])(
+    "adds signed narration as commentary before the answer (complete-only: %s)",
+    async (completeOnly) => {
+      const { adapter, history, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
 
-    await session.execute(textTurn("narration-commentary"));
-    await nextEvent(iterator);
-    await nextEvent(iterator);
-    const liveStarted = await nextEvent(iterator);
-    if (liveStarted.type !== "item.started" || liveStarted.item.type !== "agentMessage") {
-      throw new Error("Claude live Agent Message did not start");
-    }
-    const transport = transports[0];
-    if (!transport) throw new Error("Fake Claude Turn did not start");
+      await session.execute(textTurn("narration-commentary"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const liveStarted = await nextEvent(iterator);
+      if (liveStarted.type !== "item.started" || liveStarted.item.type !== "agentMessage") {
+        throw new Error("Claude live Agent Message did not start");
+      }
+      const transport = transports[0];
+      const nativeTurnKey = transport?.turns[0]?.userMessageId;
+      if (!transport || !nativeTurnKey) throw new Error("Fake Claude Turn did not start");
 
-    transport.event({
-      type: "narration.completed",
-      messageId: "native-message:thinking:0",
-      text: "Checking the files first.",
-    });
-    await nextEvent(iterator);
-    const narration = await nextEvent(iterator);
-    expect(narration).toMatchObject({
-      type: "item.completed",
-      snapshot: {
-        item: {
-          type: "agentMessage",
-          itemId: liveStarted.item.itemId,
-          text: "Checking the files first.",
-          phase: "commentary",
+      const narrationId = "native-message:thinking:0";
+      if (!completeOnly) {
+        transport.reasoning(narrationId, "Checking the files");
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.started",
+          item: { type: "reasoning" },
+        });
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.updated",
+          update: { type: "text.append", text: "Checking the files" },
+        });
+        transport.completeReasoning(narrationId);
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.completed",
+          snapshot: { item: { type: "reasoning", text: "Checking the files" } },
+        });
+      }
+      transport.event({
+        type: "narration.completed",
+        messageId: narrationId,
+        text: "Checking the files first.",
+        ...(completeOnly ? { completeOnly: true } : {}),
+      });
+      await nextEvent(iterator);
+      const narration = await nextEvent(iterator);
+      expect(narration).toMatchObject({
+        type: "item.completed",
+        snapshot: {
+          item: {
+            type: "agentMessage",
+            itemId: liveStarted.item.itemId,
+            text: "Checking the files first.",
+            phase: "commentary",
+          },
+          outcome: { status: "succeeded" },
         },
-        outcome: { status: "succeeded" },
-      },
-    });
+      });
 
-    transport.delta("The answer.", "native-message");
-    const answer = await nextEvent(iterator);
-    expect(answer).toMatchObject({ type: "item.started", item: { type: "agentMessage" } });
-    if (answer.type !== "item.started" || answer.item.type !== "agentMessage") return;
-    expect(answer.item.itemId).not.toBe(liveStarted.item.itemId);
-    expect(answer.item).not.toHaveProperty("phase");
-    transport.finish({ status: "succeeded" });
-    await session.close();
-  });
+      const reasoningId = "native-message:thinking:1";
+      transport.reasoning(reasoningId, "One more thought");
+      const answer = await nextEvent(iterator);
+      if (answer.type !== "item.started" || answer.item.type !== "agentMessage") {
+        throw new Error("Claude live answer did not start");
+      }
+      expect(answer.item.itemId).not.toBe(liveStarted.item.itemId);
+      expect(answer.item).not.toHaveProperty("phase");
+      const reasoning = await nextEvent(iterator);
+      if (reasoning.type !== "item.started" || reasoning.item.type !== "reasoning") {
+        throw new Error("Claude ordinary Reasoning did not start");
+      }
+      transport.completeReasoning(reasoningId);
+      transport.delta("The answer.", "native-message");
+      transport.finish({ status: "succeeded" });
+      while ((await nextEvent(iterator)).type !== "turn.completed") {
+        // Wait for the live Turn to settle before reading history.
+      }
+
+      history.push(
+        {
+          type: "user",
+          uuid: nativeTurnKey,
+          session_id: transport.sessionId,
+          message: { role: "user", content: "narration-commentary" },
+        },
+        {
+          type: "assistant",
+          uuid: "native-assistant",
+          session_id: transport.sessionId,
+          message: {
+            id: "native-message",
+            role: "assistant",
+            content: [
+              {
+                type: "thinking",
+                thinking: "Checking the files first.",
+                signature: "Eg0KC0IJbmFycmF0aW9u",
+              },
+              { type: "thinking", thinking: "One more thought" },
+              { type: "text", text: "The answer." },
+            ],
+            stop_reason: "end_turn",
+          },
+        },
+      );
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toEqual([
+        { ...liveStarted.item, phase: "commentary", text: "Checking the files first." },
+        { ...reasoning.item, text: "One more thought" },
+        { ...answer.item, text: "The answer." },
+      ]);
+      await session.close();
+    },
+  );
 
   it("uses one Item identity for a live response and its native history snapshot", async () => {
     const { adapter, history, transports } = fixture();

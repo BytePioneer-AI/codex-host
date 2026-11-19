@@ -104,8 +104,8 @@ export type ClaudeTurnEvent =
   | { type: "text.delta"; messageId: string; delta: string }
   | { type: "reasoning.delta"; messageId: string; delta: string }
   | { type: "reasoning.completed"; messageId: string }
-  /** A thinking block Claude marks as user-facing narration; it is commentary, not reasoning. */
-  | { type: "narration.completed"; messageId: string; text: string }
+  /** User-facing commentary. Complete-only narration did not open a live Reasoning Item. */
+  | { type: "narration.completed"; messageId: string; text: string; completeOnly?: true }
   | {
       type: "message.completed";
       messageId: string;

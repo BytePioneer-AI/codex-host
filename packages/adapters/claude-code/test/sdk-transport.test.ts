@@ -967,10 +967,27 @@ describe("ClaudeSdkTransport live autonomous continuation", () => {
         "00000000-0000-4000-8000-0000000000b1",
         (event) => events.push(event),
       );
-      pushAssistantText(value.fakeQuery, "ANSWER", "00000000-0000-4000-8000-0000000000b2");
+      const assistantId = "00000000-0000-4000-8000-0000000000b2";
+      value.fakeQuery.push({
+        type: "stream_event",
+        uuid: assistantId,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Planning" },
+        },
+      } as unknown as SDKMessage);
+      const reasoning = {
+        type: "reasoning.delta",
+        messageId: `${assistantId}:thinking:0`,
+        delta: "Planning",
+      };
+      await vi.waitFor(() => expect(events).toContainEqual(reasoning));
+      pushAssistantText(value.fakeQuery, "ANSWER", assistantId);
       completeTurn(value.fakeQuery);
       await expect(requested).resolves.toEqual({ status: "succeeded" });
       expect(texts(events)).toEqual(["ANSWER"]);
+      expect(events.filter((event) => event.type === "reasoning.delta")).toEqual([reasoning]);
       expect(turns).toEqual([]);
 
       // The next continuation starts fresh instead of inheriting the abandoned Segment.
@@ -985,9 +1002,9 @@ describe("ClaudeSdkTransport live autonomous continuation", () => {
     }
   });
 
-  it("keeps a taken-over Segment's buffered thinking in the requested Turn", async () => {
+  it("starts an autonomous Turn on the first thinking delta and rejects requested takeover", async () => {
     const value = fixture();
-    recordAutonomousTurns(value.transport);
+    const turns = recordAutonomousTurns(value.transport);
     value.transport.setThreadEventHandler(() => undefined);
     await value.transport.start();
     try {
@@ -1001,31 +1018,49 @@ describe("ClaudeSdkTransport live autonomous continuation", () => {
           delta: { type: "thinking_delta", thinking: "pending" },
         },
       } as unknown as SDKMessage);
-      await delay(10);
-      const events: ClaudeTurnEvent[] = [];
-      const requested = value.transport.runTurn(
-        "user message",
-        "00000000-0000-4000-8000-0000000000d2",
-        (event) => events.push(event),
-      );
+      const prefix = {
+        type: "reasoning.delta",
+        messageId: `${assistantId}:thinking:0`,
+        delta: "pending",
+      };
+      await vi.waitFor(() => expect(turns[0]?.events).toEqual([prefix]));
+      const requestedEvents: ClaudeTurnEvent[] = [];
+      await expect(
+        value.transport.runTurn("user message", "00000000-0000-4000-8000-0000000000d2", (event) =>
+          requestedEvents.push(event),
+        ),
+      ).rejects.toThrow("Claude SDK transport is busy");
+      value.fakeQuery.push({
+        type: "stream_event",
+        uuid: assistantId,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: " summary" },
+        },
+      } as unknown as SDKMessage);
+      const suffix = { ...prefix, delta: " summary" };
+      await vi.waitFor(() => expect(turns[0]?.events).toEqual([prefix, suffix]));
       value.fakeQuery.push({
         type: "assistant",
         uuid: assistantId,
         parent_tool_use_id: null,
         message: {
-          content: [{ type: "thinking", thinking: "pending", signature: "unknown" }],
+          content: [{ type: "thinking", thinking: "pending summary", signature: "unknown" }],
         },
       } as unknown as SDKMessage);
       pushAssistantText(value.fakeQuery, "ANSWER", "00000000-0000-4000-8000-0000000000d3");
       completeTurn(value.fakeQuery);
 
-      await expect(requested).resolves.toEqual({ status: "succeeded" });
-      // The streamed prefix was still pending when the Segment was taken over.
-      expect(events.slice(0, 2)).toEqual([
-        { type: "reasoning.delta", messageId: `${assistantId}:thinking:0`, delta: "pending" },
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
+      const events = turns[0]?.events ?? [];
+      expect(events.filter((event) => event.type.startsWith("reasoning"))).toEqual([
+        prefix,
+        suffix,
         { type: "reasoning.completed", messageId: `${assistantId}:thinking:0` },
       ]);
       expect(texts(events)).toEqual(["ANSWER"]);
+      expect(requestedEvents).toEqual([]);
     } finally {
       await value.transport.close();
     }
@@ -1574,17 +1609,18 @@ describe("ClaudeSdkTransport Question callbacks", () => {
         delta: { type: "thinking_delta", thinking: "unfinished" },
       },
     } as unknown as SDKMessage);
+    const expected = [
+      { type: "reasoning.delta", messageId: `${assistantId}:thinking:0`, delta: "unfinished" },
+    ];
+    await vi.waitFor(() => expect(events).toEqual(expected));
     value.fakeQuery.close();
 
     await expect(turn).rejects.toThrow("Claude SDK Query ended unexpectedly");
-    // No signature confirmed narration, so the summary stays Reasoning.
-    expect(events).toEqual([
-      { type: "reasoning.delta", messageId: `${assistantId}:thinking:0`, delta: "unfinished" },
-    ]);
+    expect(events).toEqual(expected);
     await value.transport.close();
   });
 
-  it("delivers buffered thinking when an autonomous Segment ends without a Result", async () => {
+  it("does not replay autonomous thinking on stream failure without a Result", async () => {
     const value = fixture();
     const autonomous = recordAutonomousTurns(value.transport);
     await value.transport.start();
@@ -1598,17 +1634,17 @@ describe("ClaudeSdkTransport Question callbacks", () => {
         delta: { type: "thinking_delta", thinking: "unfinished" },
       },
     } as unknown as SDKMessage);
-    value.fakeQuery.close();
-
-    await vi.waitFor(() => expect(value.onFault).toHaveBeenCalled());
-    // The Segment had not started a Turn yet; its buffered thinking still reaches one.
-    expect(autonomous).toHaveLength(1);
-    expect(autonomous[0]).toMatchObject({
+    const expected = {
       nativeTurnKey: expect.stringMatching(/^autonomous-/u),
       events: [
         { type: "reasoning.delta", messageId: `${assistantId}:thinking:0`, delta: "unfinished" },
       ],
-    });
+    };
+    await vi.waitFor(() => expect(autonomous).toMatchObject([expected]));
+    value.fakeQuery.close();
+
+    await vi.waitFor(() => expect(value.onFault).toHaveBeenCalled());
+    expect(autonomous).toMatchObject([expected]);
     await value.transport.close();
   });
 

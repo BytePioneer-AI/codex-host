@@ -2051,6 +2051,7 @@ class ClaudeHarnessSession implements HarnessSession {
         return;
       case "narration.completed":
         this.#observeRootOutput(active);
+        if (event.completeOnly) active.reasoningOrdinal += 1;
         this.#appendText(active, event.messageId, event.text, "commentary");
         this.#completeAgentItem(active, { status: "succeeded" }, false);
         return;

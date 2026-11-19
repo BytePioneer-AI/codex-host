@@ -17,35 +17,65 @@ function stream(index: number, thinking: string) {
   };
 }
 
+function signatureDelta(index: number) {
+  return {
+    type: "stream_event",
+    event: { type: "content_block_delta", index, delta: { type: "signature_delta", signature } },
+  };
+}
+
+function stop(index: number) {
+  return { type: "stream_event", event: { type: "content_block_stop", index } };
+}
+
 function assistant(content: unknown[], uuid = "reply") {
   return { type: "assistant", uuid, message: { id: "native-reply", role: "assistant", content } };
 }
 
 describe("Claude native narration", () => {
-  it("waits for the signature and separates two streamed thinking blocks before the tool", () => {
+  it("streams each thinking delta and publishes narration only at the block stop", () => {
     const turn = new ClaudeNativeTurnAccumulator();
     turn.consume({
       type: "stream_event",
       event: { type: "message_start", message: { id: "native-reply" } },
     });
-    expect(turn.consume(stream(0, reasoning.thinking)).events).toEqual([]);
-    expect(turn.consume(stream(1, narration.thinking)).events).toEqual([]);
+    expect(turn.consume(stream(0, "Compare ")).events).toEqual([
+      { type: "reasoning.delta", messageId: "native-reply:thinking:0", delta: "Compare " },
+    ]);
+    expect(turn.consume(stream(0, "the old defaults.")).events).toEqual([
+      { type: "reasoning.delta", messageId: "native-reply:thinking:0", delta: "the old defaults." },
+    ]);
+    expect(turn.consume(stop(0)).events).toEqual([
+      { type: "reasoning.completed", messageId: "native-reply:thinking:0" },
+    ]);
+    expect(turn.consume(stream(1, narration.thinking)).events).toEqual([
+      { type: "reasoning.delta", messageId: "native-reply:thinking:1", delta: narration.thinking },
+    ]);
+    expect(turn.consume(signatureDelta(1)).events).toEqual([]);
+    expect(turn.consume(stop(1)).events).toEqual([
+      { type: "reasoning.completed", messageId: "native-reply:thinking:1" },
+      {
+        type: "narration.completed",
+        messageId: "native-reply:thinking:1",
+        text: narration.thinking,
+      },
+    ]);
+    expect(turn.consume(stop(1)).events).toEqual([]);
     const wrapper = assistant([
       reasoning,
       narration,
       { type: "tool_use", id: "ask", name: "AskUserQuestion", input: {} },
     ]);
     const events = turn.consume(wrapper).events;
-    expect(events.slice(0, 4)).toEqual([
-      { type: "reasoning.delta", messageId: "native-reply:thinking:0", delta: reasoning.thinking },
-      { type: "reasoning.completed", messageId: "native-reply:thinking:0" },
-      {
-        type: "narration.completed",
-        messageId: "native-reply:thinking:1",
-        text: narration.thinking,
-      },
-      { type: "tool.started", callId: "ask", toolName: "AskUserQuestion", arguments: {} },
-    ]);
+    expect(events[0]).toEqual({
+      type: "tool.started",
+      callId: "ask",
+      toolName: "AskUserQuestion",
+      arguments: {},
+    });
+    expect(
+      events.filter((e) => e.type.startsWith("reasoning") || e.type === "narration.completed"),
+    ).toEqual([]);
     expect(turn.consume(wrapper).events.some((e) => e.type === "narration.completed")).toBe(false);
   });
 
@@ -56,18 +86,22 @@ describe("Claude native narration", () => {
       event: { type: "message_start", message: { id: "native-reply" } },
     });
     turn.consume(stream(0, reasoning.thinking));
-    expect(turn.consume(assistant([reasoning], "reasoning-record")).events[0]).toMatchObject({
-      type: "reasoning.delta",
+    expect(turn.consume(assistant([reasoning], "reasoning-record")).events[0]).toEqual({
+      type: "reasoning.completed",
+      messageId: "native-reply:thinking:0",
     });
     turn.consume(stream(1, narration.thinking));
+    turn.consume(signatureDelta(1));
+    expect(turn.consume(stop(1)).events[1]).toMatchObject({ type: "narration.completed" });
     const events = turn.consume(assistant([narration], "narration-record")).events;
-    expect(events[0]).toMatchObject({ type: "narration.completed", text: narration.thinking });
-    expect(events.some((e) => e.type === "reasoning.delta")).toBe(false);
-    turn.consume(stream(2, "Later summary"));
-    expect(
-      turn.consume(assistant([{ ...reasoning, thinking: "Later summary" }], "later-record"))
-        .events[0],
-    ).toMatchObject({ type: "reasoning.delta", delta: "Later summary" });
+    expect(events.some((e) => e.type === "narration.completed")).toBe(false);
+    expect(turn.consume(stream(2, "Later summary")).events).toEqual([
+      { type: "reasoning.delta", messageId: "native-reply:thinking:2", delta: "Later summary" },
+    ]);
+    expect(turn.consume(assistant([reasoning], "later-record")).events[0]).toEqual({
+      type: "reasoning.completed",
+      messageId: "native-reply:thinking:2",
+    });
   });
 
   it("accepts signed complete-only narration without exposing unknown complete-only thinking", () => {
@@ -77,35 +111,49 @@ describe("Claude native narration", () => {
         type: "narration.completed",
         messageId: "native-reply:thinking:1",
         text: narration.thinking,
+        completeOnly: true,
       },
       { type: "message.completed", messageId: "native-reply", checkpointId: "reply" },
     ]);
   });
 
-  it("reconciles the complete narration suffix exactly once after streaming", () => {
-    const turn = new ClaudeNativeTurnAccumulator();
-    turn.consume(stream(0, "Please choose"));
-    expect(turn.consume(assistant([narration])).events[0]).toMatchObject({
-      type: "narration.completed",
-      text: narration.thinking,
-    });
-  });
+  it.each([false, true])(
+    "reconciles the narration suffix when only the wrapper is signed (stop: %s)",
+    (hasStop) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      expect(turn.consume(stream(0, "Please choose")).events[0]).toMatchObject({
+        type: "reasoning.delta",
+        delta: "Please choose",
+      });
+      if (hasStop) {
+        expect(turn.consume(stop(0)).events).toMatchObject([{ type: "reasoning.completed" }]);
+      }
+      const wrapper = assistant([narration]);
+      expect(turn.consume(wrapper).events.slice(0, hasStop ? 1 : 2)).toMatchObject([
+        ...(hasStop ? [] : [{ type: "reasoning.completed" }]),
+        { type: "narration.completed", text: narration.thinking },
+      ]);
+      expect(turn.consume(wrapper).events.some((e) => e.type === "narration.completed")).toBe(
+        false,
+      );
+    },
+  );
 
   it("preserves unfinished or unrecognized thinking on cancellation", () => {
     const turn = new ClaudeNativeTurnAccumulator();
-    turn.consume(stream(0, "Unfinished summary"));
+    expect(turn.consume(stream(0, "Unfinished summary")).events[0]).toMatchObject({
+      type: "reasoning.delta",
+      delta: "Unfinished summary",
+    });
+    turn.requestCancel();
     const result = turn.consume({
       type: "result",
       subtype: "error_during_execution",
       is_error: true,
       terminal_reason: "aborted_streaming",
     });
-    expect(result.events[0]).toMatchObject({
-      type: "reasoning.delta",
-      delta: "Unfinished summary",
-    });
-    expect(result.events.some((e) => e.type === "narration.completed")).toBe(false);
-    expect(result.events.some((e) => e.type === "reasoning.completed")).toBe(false);
+    expect(result.terminal).toEqual({ status: "cancelled", reason: "aborted_streaming" });
+    expect(result.events).toEqual([]);
   });
 
   it("keeps nested narration out of the root output", () => {
@@ -152,7 +200,7 @@ describe("Claude narration history", () => {
       },
       {
         type: "reasoning",
-        itemId: "claude-item-v2-user-reasoning-2",
+        itemId: "claude-item-v2-user-reasoning-3",
         text: laterReasoning.thinking,
       },
       {

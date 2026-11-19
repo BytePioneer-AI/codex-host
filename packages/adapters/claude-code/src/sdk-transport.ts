@@ -847,9 +847,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     if (this.#active || this.#autonomous?.live) {
       return Promise.reject(new Error("Claude SDK transport is busy"));
     }
-    // A Segment without Root output has no Turn yet. The requested Turn takes over the native
-    // stream, so its held events and buffered thinking continue in that Turn instead of
-    // reappearing in a later Segment.
+    // A Segment without Root output has no Turn yet. Transfer its accumulator and held
+    // events to the requested Turn. A thinking delta is Root output, just like text.
     const takeover = this.#autonomous;
     const unclaimed = takeover?.events ?? [];
     this.#autonomous = null;
@@ -1475,15 +1474,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           handler.onTerminal(interpreted.terminal);
         }
       }
-      this.#flushPendingThinking();
       if (!this.#closePromise) throw new Error("Claude SDK Query ended unexpectedly");
     } catch (error) {
-      try {
-        this.#flushPendingThinking();
-      } catch {
-        // A failed consumer cannot accept the summary; the original fault still
-        // owns cleanup of requests, pending inputs and the Turn below.
-      }
       const active = this.#active;
       if (!this.#closePromise) this.#onFault(error);
       this.#closeInteractions("all", "cancelled");
@@ -1491,33 +1483,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       this.#rootToolCalls.clear();
       this.#active = null;
       active?.reject(error);
-    }
-  }
-
-  /** A stream that ends without a native Result still delivers its unconfirmed thinking. */
-  #flushPendingThinking(): void {
-    const active = this.#active;
-    if (active) {
-      for (const event of active.accumulator.flushPendingThinking()) active.onEvent(event);
-      return;
-    }
-    const idle = this.#idleLive ? this.#idleHandler : null;
-    if (idle && this.#idleAccumulator) {
-      for (const event of this.#idleAccumulator.flushPendingThinking()) idle.onEvent(event);
-      return;
-    }
-    const autonomous = this.#autonomous;
-    const handler = this.#autonomousTurnHandler;
-    if (!autonomous || !handler) return;
-    // Buffered thinking has not started a Turn yet, so flushing uses the same
-    // start and held-event release path as consume.
-    for (const event of autonomous.accumulator.flushPendingThinking()) {
-      if (autonomous.live) {
-        handler.onEvent(event);
-        continue;
-      }
-      autonomous.events.push(event);
-      if (isRootOutput(event)) this.#startAutonomousTurn(autonomous, handler);
     }
   }
 

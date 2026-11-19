@@ -518,8 +518,9 @@ export function mapClaudeSnapshotWithCheckpointIds(
           if (!isRecord(block)) continue;
           if (block.type === "thinking" && typeof block.thinking === "string") {
             if (block.thinking.length === 0) continue;
-            // Each native block keeps its own boundary, matching the live per-block
-            // Reasoning Item so a later reopen addresses the same Items in the same order.
+            // Narration occupies a live thinking ordinal even though history maps it
+            // only to commentary. Reserve that slot for stable later Reasoning IDs.
+            reasoningOrdinal += 1;
             if (isClaudeNarrationSignature(block.signature)) {
               items.push({
                 item: {
@@ -538,7 +539,7 @@ export function mapClaudeSnapshotWithCheckpointIds(
               items.push({
                 item: {
                   type: "reasoning" as const,
-                  itemId: claudeTranscriptItemId(user.uuid, "reasoning", (reasoningOrdinal += 1)),
+                  itemId: claudeTranscriptItemId(user.uuid, "reasoning", reasoningOrdinal),
                   text: block.thinking,
                 },
                 outcome: assistantOutcome,

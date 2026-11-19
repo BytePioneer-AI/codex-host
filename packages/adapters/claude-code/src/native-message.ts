@@ -30,9 +30,18 @@ type ClaudeNativeEvent = Exclude<
   { type: "interaction.requested" | "interaction.closed" }
 >;
 
+interface ThinkingBlockState {
+  text: string;
+  signature: string;
+  streamed: boolean;
+  stopped: boolean;
+  matched: boolean;
+  narrationPublished: boolean;
+}
+
 interface AssistantMessageState {
   completed: boolean;
-  reasoning: Map<number, string>;
+  thinking: Map<number, ThinkingBlockState>;
   text: string;
   usagePublished: boolean;
 }
@@ -510,15 +519,6 @@ export class ClaudeNativeTurnAccumulator {
     this.#cancelRequested = true;
   }
 
-  /** A stream can end without a native Result; unconfirmed prose remains Reasoning. */
-  flushPendingThinking(): ClaudeNativeEvent[] {
-    const events: ClaudeNativeEvent[] = [];
-    for (const [messageId, state] of this.#messages) {
-      this.#flushThinking(messageId, state, events, false);
-    }
-    return events;
-  }
-
   #usageRequest: {
     id: string;
     model: string;
@@ -569,9 +569,6 @@ export class ClaudeNativeTurnAccumulator {
     }
 
     if (message.type !== "result") return { events };
-    // An interrupted block may never receive its signature or Assistant wrapper.
-    // Preserve its streamed summary as Reasoning; no narration was confirmed.
-    events.push(...this.flushPendingThinking());
     if (this.#usageRequest) {
       // Cancellation/failure can end a request without message_stop. Its final usage is
       // unknown: invalidate metering rather than silently publish a partial Session total.
@@ -843,27 +840,70 @@ export class ClaudeNativeTurnAccumulator {
       this.#messageState(event.message.id);
       return;
     }
-    if (event.type !== "content_block_delta" || !isRecord(event.delta)) return;
+    const index = typeof event.index === "number" ? event.index : 0;
+    if (event.type === "content_block_stop") {
+      const messageId = this.#activeRootStreamMessageId;
+      if (messageId === null) return;
+      const thinking = this.#messages.get(messageId)?.thinking.get(index);
+      if (thinking && !thinking.stopped) {
+        const blockId = `${messageId}:thinking:${index}`;
+        this.#completeStreamedThinking(thinking, blockId, events);
+        this.#publishNarration(thinking, blockId, thinking.signature, thinking.text, events);
+      }
+      return;
+    }
+    const start =
+      event.type === "content_block_start" &&
+      isRecord(event.content_block) &&
+      event.content_block.type === "thinking"
+        ? event.content_block
+        : null;
+    const delta =
+      event.type === "content_block_delta" && isRecord(event.delta) ? event.delta : null;
+    if (!start && !delta) return;
     const messageId =
       this.#activeRootStreamMessageId ?? nativeUuid(message) ?? this.#nextMessageId();
     if (!this.#activeRootStreamMessageId) this.#activeRootStreamMessageId = messageId;
     const state = this.#messageState(messageId);
     if (state.completed) {
-      if (event.delta.type === "text_delta") this.#textConflict = true;
+      if (delta?.type === "text_delta") this.#textConflict = true;
       return;
     }
-    if (event.delta.type === "text_delta" && typeof event.delta.text === "string") {
-      if (event.delta.text.length === 0) return;
-      state.text += event.delta.text;
-      events.push({ type: "text.delta", messageId, delta: event.delta.text });
+    if (delta?.type === "text_delta" && typeof delta.text === "string") {
+      if (delta.text.length === 0) return;
+      state.text += delta.text;
+      events.push({ type: "text.delta", messageId, delta: delta.text });
       return;
     }
-    if (event.delta.type === "thinking_delta" && typeof event.delta.thinking === "string") {
-      if (event.delta.thinking.length === 0) return;
-      // The signature arrives after the prose. Keep the block boundary until the
-      // complete native block confirms whether this is narration or reasoning.
-      const index = typeof event.index === "number" ? event.index : 0;
-      state.reasoning.set(index, (state.reasoning.get(index) ?? "") + event.delta.thinking);
+    const text =
+      delta?.type === "thinking_delta" && typeof delta.thinking === "string" ? delta.thinking : "";
+    const signature =
+      delta?.type === "signature_delta" && typeof delta.signature === "string"
+        ? delta.signature
+        : "";
+    if (!start && !text && !signature) return;
+    let thinking = state.thinking.get(index);
+    if (!thinking) {
+      thinking = {
+        text: typeof start?.thinking === "string" ? start.thinking : "",
+        signature: typeof start?.signature === "string" ? start.signature : "",
+        streamed: false,
+        stopped: false,
+        matched: false,
+        narrationPublished: false,
+      };
+      state.thinking.set(index, thinking);
+    }
+    if (thinking.stopped) return;
+    thinking.signature += signature;
+    if (text) {
+      thinking.text += text;
+      thinking.streamed = true;
+      events.push({
+        type: "reasoning.delta",
+        messageId: `${messageId}:thinking:${index}`,
+        delta: text,
+      });
     }
   }
 
@@ -876,26 +916,45 @@ export class ClaudeNativeTurnAccumulator {
     const content = assistantContent(message) ?? [];
     for (const [index, block] of content.entries()) {
       if (!isRecord(block) || block.type !== "thinking") continue;
-      let streamedIndex = index;
-      if (content.length === 1 && state.reasoning.size === 1) {
-        for (const candidate of state.reasoning.keys()) streamedIndex = candidate;
-      }
-      const streamed = state.reasoning.get(streamedIndex);
-      state.reasoning.delete(streamedIndex);
       const identity = `${checkpointId ?? nativeMessageId ?? messageId}:${index}`;
       if (this.#completedThinkingBlocks.has(identity)) continue;
       this.#completedThinkingBlocks.add(identity);
-      const blockId = `${messageId}:thinking:${streamedIndex}`;
-      if (isClaudeNarrationSignature(block.signature)) {
-        const complete = typeof block.thinking === "string" ? block.thinking : "";
-        const text = streamed === undefined || complete.startsWith(streamed) ? complete : streamed;
-        if (text.length > 0) events.push({ type: "narration.completed", messageId: blockId, text });
-      } else if (streamed) {
-        events.push({ type: "reasoning.delta", messageId: blockId, delta: streamed });
-        events.push({ type: "reasoning.completed", messageId: blockId });
+      // The SDK can send one Assistant record per block. Those wrappers only
+      // carry index 0, so pair them with the next unmatched streamed block.
+      const streamedIndex =
+        content.length === 1
+          ? [...state.thinking].find(([, thinking]) => !thinking.matched)?.[0]
+          : index;
+      const thinking = streamedIndex === undefined ? undefined : state.thinking.get(streamedIndex);
+      const blockId = `${messageId}:thinking:${streamedIndex ?? index}`;
+      if (thinking) {
+        thinking.matched = true;
+        this.#completeStreamedThinking(thinking, blockId, events);
+      }
+      const streamed = thinking?.text ?? "";
+      const complete = typeof block.thinking === "string" ? block.thinking : "";
+      this.#publishNarration(
+        thinking,
+        blockId,
+        block.signature || thinking?.signature,
+        complete.startsWith(streamed) ? complete : streamed,
+        events,
+      );
+    }
+    // A thinking-only record can precede more deltas with the same API message
+    // ID. Publish its checkpoint without closing that stream to later blocks.
+    const keepsStreaming =
+      nativeMessageId !== null &&
+      nativeMessageId === this.#activeRootStreamMessageId &&
+      content.length === 1 &&
+      isRecord(content[0]) &&
+      content[0].type === "thinking";
+    if (keepsStreaming && checkpointId && this.#publishedCheckpointIds.has(checkpointId)) return;
+    if (!keepsStreaming) {
+      for (const [index, thinking] of state.thinking) {
+        this.#completeStreamedThinking(thinking, `${messageId}:thinking:${index}`, events);
       }
     }
-    this.#flushThinking(messageId, state, events, true);
     if (state.completed) {
       // Non-streaming Claude can split one request into several records that share
       // `message.id`. A later record with its own UUID carries new text, so append it
@@ -953,8 +1012,10 @@ export class ClaudeNativeTurnAccumulator {
     this.#consumeToolUseBlocks(message, events, false);
 
     if (!this.#protocolConflict && !this.#textConflict) {
-      const usage = assistantRequestUsage(message, this.#provider);
-      state.usagePublished = usage !== undefined;
+      const usage = state.usagePublished
+        ? undefined
+        : assistantRequestUsage(message, this.#provider);
+      if (usage) state.usagePublished = true;
       events.push({
         type: "message.completed",
         messageId,
@@ -962,23 +1023,37 @@ export class ClaudeNativeTurnAccumulator {
         ...(usage ? { lastRequestUsage: usage } : {}),
       });
     }
-    state.completed = true;
     if (checkpointId) this.#publishedCheckpointIds.add(checkpointId);
+    if (keepsStreaming) return;
+    state.completed = true;
     if (this.#activeRootStreamMessageId === messageId) this.#activeRootStreamMessageId = null;
   }
 
-  #flushThinking(
+  #completeStreamedThinking(
+    thinking: ThinkingBlockState,
     messageId: string,
-    state: AssistantMessageState,
     events: ClaudeNativeEvent[],
-    complete: boolean,
   ): void {
-    for (const [index, text] of state.reasoning) {
-      const blockId = `${messageId}:thinking:${index}`;
-      events.push({ type: "reasoning.delta", messageId: blockId, delta: text });
-      if (complete) events.push({ type: "reasoning.completed", messageId: blockId });
-    }
-    state.reasoning.clear();
+    if (thinking.stopped) return;
+    thinking.stopped = true;
+    if (thinking.streamed) events.push({ type: "reasoning.completed", messageId });
+  }
+
+  #publishNarration(
+    thinking: ThinkingBlockState | undefined,
+    messageId: string,
+    signature: unknown,
+    text: string,
+    events: ClaudeNativeEvent[],
+  ): void {
+    if (!text || thinking?.narrationPublished || !isClaudeNarrationSignature(signature)) return;
+    if (thinking) thinking.narrationPublished = true;
+    events.push({
+      type: "narration.completed",
+      messageId,
+      text,
+      ...(thinking?.streamed ? {} : { completeOnly: true }),
+    });
   }
 
   #consumeToolUseBlocks(
@@ -1163,7 +1238,7 @@ export class ClaudeNativeTurnAccumulator {
     if (existing) return existing;
     const created: AssistantMessageState = {
       completed: false,
-      reasoning: new Map<number, string>(),
+      thinking: new Map(),
       text: "",
       usagePublished: false,
     };

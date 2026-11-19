@@ -1,6 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { parseEnv } from "node:util";
 
 import {
   harnessAccountSnapshotSchema,
@@ -58,36 +59,52 @@ export function readCredentialRef(text: string, name: string): string | undefine
   return undefined;
 }
 
-function readDotEnv(text: string, name: string): string | undefined {
-  for (const line of text.split(/\r?\n/u)) {
-    const match = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=(.*)$`, "u").exec(line);
-    if (match) return unquote(match[1] ?? "") || undefined;
-  }
-  return undefined;
-}
-
-async function readOptional(file: string): Promise<string | undefined> {
+async function readOptional(file: string, signal?: AbortSignal): Promise<string | undefined> {
   try {
-    return await readFile(file, "utf8");
-  } catch {
-    return undefined;
+    signal?.throwIfAborted();
+    // Credential sources are files, not devices or pipes that can wait indefinitely.
+    if (!(await stat(file)).isFile()) throw new Error("Expected a regular DSH configuration file");
+    return await readFile(file, { encoding: "utf8", ...(signal ? { signal } : {}) });
+  } catch (error) {
+    // Missing files are normal; a file we cannot read is not an authoritative absence.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
 }
 
-/** Same precedence as DSH: `.credentials.yaml`, then the process environment, then `.env`. */
+/** Resolve the standard API-key reference only for the public API. */
 export async function readDeepSeekApiKey(
   environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
   const home = dshHome(environment);
-  const credentials = await readOptional(path.join(home, ".credentials.yaml"));
+  const dotEnv = parseEnv((await readOptional(path.join(home, ".env"), signal)) ?? "");
+  const baseUrl = environment.DEEPSEEK_BASE_URL ?? dotEnv.DEEPSEEK_BASE_URL;
+  if (baseUrl !== undefined) {
+    const endpoint = URL.parse(baseUrl);
+    if (
+      endpoint?.protocol !== "https:" ||
+      endpoint.origin !== new URL(DEEPSEEK_BALANCE_ENDPOINT).origin
+    ) {
+      return undefined;
+    }
+  }
+  // DSH applies these patches after the built-in Web profile. They can change both the
+  // endpoint and credential reference; don't evaluate arbitrary DSH configuration here.
+  for (const directory of [home, path.join(home, "profiles", "web")]) {
+    const patch = await readOptional(path.join(directory, "cordis.patch.yml"), signal);
+    if (patch !== undefined && patch.trim() !== "[]") return undefined;
+  }
+  const credentials = await readOptional(path.join(home, ".credentials.yaml"), signal);
   const fromCredentials = credentials
     ? readCredentialRef(credentials, DEEPSEEK_API_KEY_REF)
     : undefined;
-  if (fromCredentials) return fromCredentials;
-  const fromEnvironment = environment[DEEPSEEK_API_KEY_REF]?.trim();
-  if (fromEnvironment) return fromEnvironment;
-  const dotEnv = await readOptional(path.join(home, ".env"));
-  return dotEnv ? readDotEnv(dotEnv, DEEPSEEK_API_KEY_REF) : undefined;
+  return (
+    fromCredentials ||
+    environment[DEEPSEEK_API_KEY_REF]?.trim() ||
+    dotEnv[DEEPSEEK_API_KEY_REF]?.trim() ||
+    undefined
+  );
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -140,19 +157,27 @@ export async function fetchDeepSeekBalances(
   } = {},
 ): Promise<HarnessAccountSnapshot[]> {
   try {
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
+    signal.throwIfAborted();
     const environment = input.environment ?? process.env;
-    const key = await (input.readApiKey ? input.readApiKey() : readDeepSeekApiKey(environment));
+    const key = await (input.readApiKey
+      ? input.readApiKey()
+      : readDeepSeekApiKey(environment, signal));
     if (!key) return [];
-    const signal = input.signal
-      ? AbortSignal.any([input.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
-      : AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    signal.throwIfAborted();
     const response = await (input.fetch ?? fetch)(DEEPSEEK_BALANCE_ENDPOINT, {
       headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
       redirect: "error",
       signal,
     });
-    if (!response.ok) return [];
-    return projectDeepSeekBalances(await response.json());
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      return [];
+    }
+    const payload: unknown = await response.json();
+    signal.throwIfAborted();
+    return projectDeepSeekBalances(payload);
   } catch {
     return [];
   }

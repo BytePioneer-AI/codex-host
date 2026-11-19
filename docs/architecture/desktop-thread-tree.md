@@ -30,12 +30,12 @@ Codex Desktop 侧栏把委派出去的子 Thread 收在父 Thread 下面，可�
 | 标题、Harness、归档状态 | `codexhost/thread/tree/nodes`（`includeOfficial: true`） | 每次读取父子关系之后，以及出现尚未读取过的 Thread 时；读取范围是可见行所在树的根及其全部后代 |
 | 运行状态 | `codexhost/thread/tree/nodes` | 页面可见且有可显示的树时每 5 秒 |
 
-`codexhost/thread/tree/nodes` 接收 1–100 个不重复的 Thread ID，按请求顺序返回每个 Thread 的 `harnessId`、`status`（`question` / `running` / `idle`）、可选的 `title`、`archived` 和 `delegatedAt`。
+`codexhost/thread/tree/nodes` 接收 1–100 个不重复的 Thread ID，按请求顺序返回每个 Thread 的 `harnessId`、`status`（`pending` / `running` / `idle`）、可选的 `title`、`archived` 和 `delegatedAt`。
 
 - 外部 Thread 的标题与归档状态取自 Mapping Store；记录已删除的外部 Thread 不在结果中。
-- 官方 Codex Thread 没有 Host 记录，只有带 `includeOfficial` 时才读取：标题各向官方 app-server 读取一次（并发上限 8）；官方 Thread 对象不带归档标记，归档状态取自官方的已归档列表，每次请求最多读取 10 页、每页 100 条，超出部分按未归档处理。不带 `includeOfficial` 时不访问官方 app-server，也不返回这两个字段。
+- 官方 Codex Thread 没有 Host 记录，只有带 `includeOfficial` 时才读取：标题各向官方 app-server 读取一次（并发上限 8）；官方 Thread 对象不带归档标记，归档状态取自官方的已归档列表，每次请求最多读取 10 页、每页 100 条；列表在上限处截断时，不在已读部分里的官方 Thread 归档状态未知，不进入树。不带 `includeOfficial` 时不访问官方 app-server，也不返回这两个字段。
 - 读取失败的字段不返回，不做猜测。归档状态未知的 Thread 不进入树，它自己的原生行保持原样。
-- 状态是读取时刻的实时状态：有未答的 Question 为 `question`，Host 正在运行为 `running`。通过 codexhost 启动的 Desktop 连接的是共享 Host 中的前端 Host，它与运行外部 Thread 的 Host 共用记录但不共用运行状态，因此前端 Host 会向后者请求同一方法，并取两者中更紧急的状态；后者不可达时使用本端状态。
+- 状态是读取时刻的实时状态：在等用户处理（待批准的操作或未答的问题，官方与外部 Thread 都算）为 `pending`，Host 正在运行为 `running`。通过 codexhost 启动的 Desktop 连接的是共享 Host 中的前端 Host，它与运行外部 Thread 的 Host 共用记录但不共用运行状态，因此前端 Host 会向后者请求同一方法，并取两者中更紧急的状态；后者不可达时使用本端状态。
 - 读取不会打开或恢复 Harness Session。
 - 请求按后台优先级发送，30 秒超时。
 - Host 没有这两个方法，或本机 Host 连接不存在时，Renderer 撤回全部显示，侧栏恢复 Desktop 原样；方法不可用时在该连接上不再请求。
@@ -53,9 +53,10 @@ Codex Desktop 侧栏把委派出去的子 Thread 收在父 Thread 下面，可�
 
 ## 验证
 
-- `thread-tree-nodes.test.ts`：请求顺序、已删除的外部 Thread、`includeOfficial`、读取失败时不猜测、状态优先级、标题上限。
+- `thread-tree-nodes.test.ts`：请求顺序、已删除的外部 Thread、`includeOfficial`、读取失败时不猜测、截断的归档列表、状态优先级、标题上限。
+- `app-server-host.thread-tree.test.ts`：等待批准的 Thread 报告为 `pending` 而不是 `running`。
 - `local-shared-host.test.ts`：前端 Host 报告由所有者 Host 运行的外部 Thread 的实时状态。
 - `sidebar-thread-tree.test.ts`：树画在根自己的行或排得最靠上的成员处、每个列表各自成树、子 Thread 的子 Thread、收起时的计数与运行中和等待处理的数量、归档与未知的 Thread、成环、缩进上限。
-- `renderer-sidebar-thread-tree.test.ts`：展开按钮叠在图标上且标题不动、汇总行与连线、在子 Thread 的位置画出父 Thread 的树、逐级展开、第 4 级起的嵌套与缩进、点击汇总展开、点击行只打开、切换 Thread 快捷键的标记、状态刷新后焦点留在汇总上、两种打开方式、状态轮询与行变化后的重读、Desktop 重新渲染、祖先自动展开（含先打开后读到关系）、折叠的项目、无法挂载的行、子行卸载后的打开方式、其他 Host 与旧 Host、Host 不再提供时撤回、卸载恢复、客户端替换。
+- `renderer-sidebar-thread-tree.test.ts`：展开按钮叠在图标上且标题不动、汇总行与连线、在子 Thread 的位置画出父 Thread 的树、逐级展开、第 4 级起的嵌套与缩进、点击汇总展开、点击行只打开、切换 Thread 快捷键的标记、状态刷新后焦点留在汇总上、以屏幕上的 Composer 为准、两种打开方式、状态轮询与行变化后的重读、Desktop 重新渲染、祖先自动展开（含先打开后读到关系）、折叠的项目、无法挂载的行、子行卸载后的打开方式、其他 Host 与旧 Host、Host 不再提供或连接断开时撤回、被替换连接的迟到失败、卸载恢复、客户端替换。
 - `renderer-sidebar-thread-tree-motion.test.ts`：新行渐显、移动的行滑动、离开的行在不可交互的覆盖层中渐隐后移除、汇总随所在行出现与消失、减少动态效果时不动。
 - 在真实 Chrome 中用捕获的 Desktop 侧栏离线检查：图标、标题与同列表原生行的对齐（像素一致）、浅色与深色、展开与收起动效的逐帧截图。

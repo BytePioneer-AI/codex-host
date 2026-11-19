@@ -96,7 +96,7 @@ export interface SidebarThreadTreeLabels {
   status(status: SidebarThreadTreeStatus): string;
   children(count: number): string;
   running(count: number): string;
-  question(count: number): string;
+  pending(count: number): string;
   expandSummary(title: string, summary: string): string;
 }
 
@@ -235,8 +235,11 @@ function metricsFor(row: HTMLElement, item: HTMLElement): TreeMetrics {
     }
   }
   const measuredItem = measured?.closest<HTMLElement>('[role="listitem"]');
-  if (!view || !measured || !measuredItem)
+  if (!view || !measured || !measuredItem) {
+    // Nothing of the list is laid out; the pass keeps what it found instead of looking again.
+    if (list) measuredInPass.set(list, measuringPass);
     return (list && metricsByList.get(list)) ?? DEFAULT_METRICS;
+  }
   const itemRect = measuredItem.getBoundingClientRect();
   const rowRect = measured.getBoundingClientRect();
   const trigger = measured.querySelector<HTMLElement>("[data-thread-title-trigger]");
@@ -354,7 +357,7 @@ function statusNode(
 
 interface SummaryPart {
   text: string;
-  activity?: "running" | "question";
+  activity?: "running" | "pending";
 }
 
 /** The Web sidebar's summary: the count, then running and waiting work when there is any. */
@@ -366,8 +369,8 @@ function summaryParts(
   const parts: SummaryPart[] = [{ text: labels.children(count) }];
   if (activity.running > 0)
     parts.push({ text: ` · ${labels.running(activity.running)}`, activity: "running" });
-  if (activity.question > 0)
-    parts.push({ text: ` · ${labels.question(activity.question)}`, activity: "question" });
+  if (activity.pending > 0)
+    parts.push({ text: ` · ${labels.pending(activity.pending)}`, activity: "pending" });
   return parts;
 }
 
@@ -834,6 +837,8 @@ export function renderSidebarThreadTreeVirtual(
   if (!container) {
     container = ownerDocument.createElement("div");
     container.className = SIDEBAR_TREE_VIRTUAL_CLASS;
+    // Its root row is a treeitem, which needs a group or tree around it.
+    container.setAttribute("role", "group");
     wireContainer(container);
   }
   if (container.getAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE) !== view.threadId)

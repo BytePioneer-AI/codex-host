@@ -76,10 +76,10 @@ export function rendererSidebarThreadTreeLabels(
     expand: (count) => (chinese ? `展开 ${count} 个子会话` : `Expand ${count} child sessions`),
     collapse: (count) => (chinese ? `收起 ${count} 个子会话` : `Collapse ${count} child sessions`),
     status: (status) =>
-      status === "question"
+      status === "pending"
         ? chinese
-          ? "等待回答"
-          : "Waiting for an answer"
+          ? "等待处理"
+          : "Waiting for you"
         : status === "running"
           ? chinese
             ? "正在运行"
@@ -87,7 +87,7 @@ export function rendererSidebarThreadTreeLabels(
           : "",
     children: (count) => (chinese ? `${count} 个子会话` : `${count} child sessions`),
     running: (count) => (chinese ? `${count} 运行中` : `${count} running`),
-    question: (count) => (chinese ? `${count} 待批准` : `${count} needs approval`),
+    pending: (count) => (chinese ? `${count} 待批准` : `${count} needs approval`),
     expandSummary: (title, summary) =>
       chinese ? `${title}，${summary}，展开` : `${title}, ${summary}, expand`,
   };
@@ -283,11 +283,16 @@ export function installRendererSidebarThreadTree(options: {
 
   /** The open Thread: the Composer names it even when it has no sidebar row. */
   const openThreadId = (rows: ReadonlyMap<string, HTMLElement[]>): string | null => {
-    const composers = new Set<string>();
+    const shown = new Set<string>();
+    const all = new Set<string>();
     for (const portal of root.querySelectorAll(`[${COMPOSER_THREAD_ATTRIBUTE}]`)) {
       const threadId = portal.getAttribute(COMPOSER_THREAD_ATTRIBUTE);
-      if (threadId) composers.add(threadId);
+      if (!threadId) continue;
+      all.add(threadId);
+      if (portal.getClientRects().length > 0) shown.add(threadId);
     }
+    // A hidden Composer of an earlier view may still name its own Thread.
+    const composers = shown.size > 0 ? shown : all;
     if (composers.size === 1) return [...composers][0] ?? null;
     for (const [threadId, list] of rows) {
       if (list.some((row) => row.getAttribute(ACTIVE_ATTRIBUTE) === "true")) return threadId;
@@ -519,13 +524,18 @@ export function installRendererSidebarThreadTree(options: {
     scheduleApply();
   };
 
-  const reportFailure = (error: unknown): void => {
-    // An older Host has neither method: stay out of the sidebar for this connection.
-    if (!(error instanceof RendererMethodUnavailableError)) return;
-    const source = options.getClient(LOCAL_HOST_ID);
+  /** Steps out for the connection `source`, when it is still the current one. */
+  const stepOut = (source: RendererModelClient): void => {
+    if (options.getClient(LOCAL_HOST_ID) !== source) return;
     withdraw();
     unavailable = true;
     structureClient = source;
+  };
+
+  const reportFailure = (error: unknown, source: RendererModelClient | null): void => {
+    // An older Host has neither method: stay out of the sidebar for this connection. A failure
+    // that arrives after its connection was replaced says nothing about the current one.
+    if (error instanceof RendererMethodUnavailableError && source) stepOut(source);
   };
 
   let describing = false;
@@ -535,10 +545,11 @@ export function installRendererSidebarThreadTree(options: {
     if (missing.length === 0) return;
     describing = true;
     const started = generation;
+    const source = client();
     try {
       if (await readNodes(missing, true, started)) scheduleApply();
     } catch (error) {
-      reportFailure(error);
+      reportFailure(error, source);
     } finally {
       describing = false;
     }
@@ -552,7 +563,12 @@ export function installRendererSidebarThreadTree(options: {
     }
     const source = client();
     structureClient = options.getClient(LOCAL_HOST_ID);
-    if (!source?.readThreadTree || !source.listThreadTreeNodes) return;
+    if (!source) return;
+    // A connection without the tree leaves the sidebar as Desktop draws it.
+    if (!source.readThreadTree || !source.listThreadTreeNodes) {
+      stepOut(source);
+      return;
+    }
     structureBusy = true;
     const started = (generation += 1);
     let usedSignature: string | null = null;
@@ -571,7 +587,7 @@ export function installRendererSidebarThreadTree(options: {
       );
       if (threadIds.length > 0) await readNodes(threadIds, true, started);
     } catch (error) {
-      reportFailure(error);
+      reportFailure(error, source);
     } finally {
       structureBusy = false;
       // The new relation is shown even when describing its Threads failed part-way.
@@ -591,10 +607,11 @@ export function installRendererSidebarThreadTree(options: {
     });
     if (threadIds.length === 0) return;
     statusBusy = true;
+    const source = client();
     try {
       if (await readNodes(threadIds, false, generation)) scheduleApply();
     } catch (error) {
-      reportFailure(error);
+      reportFailure(error, source);
     } finally {
       statusBusy = false;
     }
@@ -647,10 +664,11 @@ export function installRendererSidebarThreadTree(options: {
     subtree: true,
   });
 
-  const statusTimer = view.setInterval(
-    () => void (clientChanged() ? refreshStructure() : pollStatus()),
-    STATUS_POLL_MS,
-  );
+  const statusTimer = view.setInterval(() => {
+    // A lost connection takes the tree down even when nothing in the sidebar changes.
+    if (options.getClient(LOCAL_HOST_ID) === null) withdraw();
+    else void (clientChanged() ? refreshStructure() : pollStatus());
+  }, STATUS_POLL_MS);
   const structureTimer = view.setInterval(() => void refreshStructure(), STRUCTURE_REFRESH_MS);
   const onVisibility = (): void => {
     if (root.visibilityState !== "hidden") void refreshStructure();

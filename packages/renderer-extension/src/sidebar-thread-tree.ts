@@ -8,11 +8,11 @@
  * for the root. Members whose rows the tree replaces are hidden.
  */
 
-export type SidebarThreadTreeStatus = "question" | "running" | "idle";
+export type SidebarThreadTreeStatus = "pending" | "running" | "idle";
 
-/** A pending question outranks running; anything else is idle. */
+/** Waiting for the user (an approval or a question) outranks running; anything else is idle. */
 const STATUS_PRIORITY: Record<SidebarThreadTreeStatus, number> = {
-  question: 0,
+  pending: 0,
   running: 1,
   idle: 2,
 };
@@ -42,7 +42,7 @@ export interface SidebarThreadTreeThread {
 /** Live work below a Thread, for the collapsed summary. */
 export interface SidebarThreadTreeActivity {
   running: number;
-  question: number;
+  pending: number;
 }
 
 export interface SidebarThreadTreeNode {
@@ -170,7 +170,7 @@ export function planSidebarThreadTree(input: {
         descendants: 0,
         expanded,
         rollup: "idle",
-        activity: { running: 0, question: 0 },
+        activity: { running: 0, pending: 0 },
       };
       if (emit) out.push(node);
       const below = walk(childId, depth + 1, emit && expanded, out);
@@ -228,10 +228,10 @@ export function planSidebarThreadTree(input: {
 
 function activityOf(statuses: readonly SidebarThreadTreeStatus[]): SidebarThreadTreeActivity {
   let running = 0;
-  let question = 0;
+  let pending = 0;
   for (const status of statuses) {
     if (status === "running") running += 1;
-    else if (status === "question") question += 1;
+    else if (status === "pending") pending += 1;
   }
-  return { running, question };
+  return { running, pending };
 }

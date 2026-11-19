@@ -8,25 +8,33 @@ import {
   type ThreadTreeNodesResult,
 } from "@codexhost/shared-contracts";
 
+/** The official archived listing as far as it was read. */
+export interface OfficialArchive {
+  ids: ReadonlySet<string>;
+  /** False when the listing was cut off at its bound: a Thread missing from it may be archived. */
+  complete: boolean;
+}
+
 /** What one Host knows about the Threads a sidebar tree shows. */
 export interface ThreadTreeNodeSource {
   listDelegations(): Promise<readonly StoredDelegationRecordV1[]>;
   listSummaries(): Promise<readonly StoredThreadSummaryV1[]>;
   /** Threads this Host is running a Turn for. */
   activeThreadIds(): readonly string[];
-  hasPendingQuestion(threadId: string): boolean;
+  /** Whether the Thread waits for the user: an approval or a question. */
+  waitsForUser(threadId: string): boolean;
   /** Title of an official Codex Thread; null when it could not be read. */
   readOfficialTitle(threadId: string): Promise<string | null>;
   /**
    * Official Threads that are archived; null when that could not be read. The official Thread
    * object carries no archive flag, so membership comes from the archived listing.
    */
-  listOfficialArchived(): Promise<ReadonlySet<string> | null>;
+  listOfficialArchived(): Promise<OfficialArchive | null>;
 }
 
 const OFFICIAL_READ_CONCURRENCY = 8;
 const CODEX_HARNESS_ID = harnessIdSchema.parse("codex");
-const STATUS_PRIORITY: Record<ThreadTreeNodeStatus, number> = { question: 0, running: 1, idle: 2 };
+const STATUS_PRIORITY: Record<ThreadTreeNodeStatus, number> = { pending: 0, running: 1, idle: 2 };
 
 export function moreUrgentThreadTreeStatus(
   left: ThreadTreeNodeStatus,
@@ -72,7 +80,7 @@ export async function readThreadTreeNodes(
   };
 
   const officialTitles = new Map<string, string | null>();
-  let officialArchived: ReadonlySet<string> | null = null;
+  let officialArchive: OfficialArchive | null = null;
   if (params.includeOfficial) {
     const pending = params.threadIds.filter(isOfficial);
     let next = 0;
@@ -81,7 +89,7 @@ export async function readThreadTreeNodes(
         officialTitles.set(threadId, await source.readOfficialTitle(threadId).catch(() => null));
     };
     if (pending.length > 0) {
-      [officialArchived] = await Promise.all([
+      [officialArchive] = await Promise.all([
         source.listOfficialArchived().catch(() => null),
         ...Array.from({ length: Math.min(OFFICIAL_READ_CONCURRENCY, pending.length) }, worker),
       ]);
@@ -103,17 +111,17 @@ export async function readThreadTreeNodes(
       continue;
     } else if (params.includeOfficial) {
       title = officialTitles.get(threadId) ?? undefined;
-      archived = officialArchived?.has(threadId);
+      archived = officialArchive?.ids.has(threadId)
+        ? true
+        : officialArchive?.complete
+          ? false
+          : undefined;
     }
     const bounded = boundedTitle(title);
     threads.push({
       threadId,
       harnessId: summary?.harnessId ?? delegation?.targetHarnessId ?? CODEX_HARNESS_ID,
-      status: source.hasPendingQuestion(threadId)
-        ? "question"
-        : active.has(threadId)
-          ? "running"
-          : "idle",
+      status: source.waitsForUser(threadId) ? "pending" : active.has(threadId) ? "running" : "idle",
       ...(bounded !== undefined ? { title: bounded } : {}),
       ...(archived !== undefined ? { archived } : {}),
       ...(delegation ? { delegatedAt: delegation.createdAt } : {}),

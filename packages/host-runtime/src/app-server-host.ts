@@ -344,7 +344,11 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
-import { moreUrgentThreadTreeStatus, readThreadTreeNodes } from "./thread-tree-nodes.js";
+import {
+  moreUrgentThreadTreeStatus,
+  readThreadTreeNodes,
+  type OfficialArchive,
+} from "./thread-tree-nodes.js";
 import {
   externalThreadListEntries,
   type ExternalThreadListRuntimeState,
@@ -3795,7 +3799,9 @@ export class AppServerHost {
         listDelegations: () => this.#repository.listDelegations(),
         listSummaries: () => this.#repository.listSummaries(),
         activeThreadIds: () => this.#delegationCoordinator.activeThreadIds(),
-        hasPendingQuestion: (threadId) => this.#pendingDelegationQuestions(threadId).length > 0,
+        waitsForUser: (threadId) =>
+          this.#pendingDelegationQuestions(threadId).length > 0 ||
+          this.#client.hasPendingInteraction(threadId),
         readOfficialTitle: (threadId) => this.#readOfficialTreeNodeTitle(threadId),
         listOfficialArchived: () => this.#listOfficialArchivedThreadIds(),
       });
@@ -3825,9 +3831,9 @@ export class AppServerHost {
     return typeof title === "string" ? title : "";
   }
 
-  /** A bounded read of the archived listing; a longer archive is cut off at the bound. */
-  async #listOfficialArchivedThreadIds(): Promise<ReadonlySet<string> | null> {
-    const archived = new Set<string>();
+  /** The archived listing, read up to a bound; a longer archive is reported as incomplete. */
+  async #listOfficialArchivedThreadIds(): Promise<OfficialArchive | null> {
+    const ids = new Set<string>();
     const seen = new Set<string>();
     let cursor: string | null = null;
     for (let page = 0; page < THREAD_TREE_ARCHIVED_PAGES; page += 1) {
@@ -3839,13 +3845,14 @@ export class AppServerHost {
       if (isRecord(response.error)) return null;
       const result = officialThreadListPageFromResponse(response);
       for (const thread of result.data) {
-        if (typeof thread.id === "string") archived.add(thread.id);
+        if (typeof thread.id === "string") ids.add(thread.id);
       }
       cursor = result.nextCursor;
-      if (cursor === null || seen.has(cursor)) break;
+      if (cursor === null) return { ids, complete: true };
+      if (seen.has(cursor)) break;
       seen.add(cursor);
     }
-    return archived;
+    return { ids, complete: false };
   }
 
   /** Live state from the Host that runs the shared external Threads; empty when unavailable. */

@@ -65,7 +65,7 @@ it("shows a tree on its root's row, newest delegation first, and hides the rows 
     a: { parent: "root", order: 1 },
     b: { parent: "root", order: 3, status: "running" as const },
     c: { parent: "root", order: 2 },
-    b1: { parent: "b", status: "question" as const },
+    b1: { parent: "b", status: "pending" as const },
     other: {},
   };
   const result = plan(tree, ["p:root", "p:b", "p:other"], ["root", "b"]);
@@ -106,14 +106,14 @@ it("counts what a collapsed row hides, with its live work", () => {
     root: {},
     a: { parent: "root", status: "running" as const },
     a1: { parent: "a", status: "running" as const },
-    a2: { parent: "a", status: "question" as const },
+    a2: { parent: "a", status: "pending" as const },
   };
   const collapsed = plan(tree, ["p:root"]);
   expect(collapsed.plans["p:root"]).toEqual({ kind: "root", root: "root", count: 3, nodes: [] });
   const root = collapsed.raw.get("p:root");
   expect(root?.kind === "root" && root.tree).toMatchObject({
-    rollup: "question",
-    activity: { running: 2, question: 1 },
+    rollup: "pending",
+    activity: { running: 2, pending: 1 },
   });
 
   const expanded = plan(tree, ["p:root"], ["root"]);
@@ -126,8 +126,8 @@ it("counts what a collapsed row hides, with its live work", () => {
       status: "running",
       descendants: 2,
       expanded: false,
-      rollup: "question",
-      activity: { running: 1, question: 1 },
+      rollup: "pending",
+      activity: { running: 1, pending: 1 },
     },
   ]);
 });

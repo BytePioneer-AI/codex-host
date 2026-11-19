@@ -5,7 +5,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
 import {
   createFixture,
+  method,
+  requestId,
   startPiThread,
+  startPiTurn,
   stopFixture,
   writeRequest,
 } from "./app-server-host-fixture.js";
@@ -251,4 +254,23 @@ it("observes out-of-process Desktop pin membership on canonical reads, without e
   await fixture.mappingStore.replaceSectionPlacements([]);
   await read();
   expect(changed).toHaveBeenCalledExactlyOnceWith(external, "codexhost/thread/tree/changed");
+});
+
+it("reports a Thread waiting on an approval as pending, not running", async () => {
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  const threadId = await startPiThread(fixture);
+  await startPiTurn(fixture, threadId);
+  const nodes = async (id: number) => {
+    writeRequest(fixture.desktopInput, {
+      id,
+      method: "codexhost/thread/tree/nodes",
+      params: { threadIds: [threadId] },
+    });
+    return (await fixture.collector.waitFor((message) => requestId(message, id))).result;
+  };
+  expect(await nodes(950)).toMatchObject({ threads: [{ threadId, status: "running" }] });
+  fixture.adapter.sessions[0]?.requestApproval("Run the tests");
+  await fixture.collector.waitFor((message) => method(message, "mcpServer/elicitation/request"));
+  expect(await nodes(951)).toMatchObject({ threads: [{ threadId, status: "pending" }] });
 });

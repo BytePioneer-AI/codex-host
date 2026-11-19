@@ -163,6 +163,16 @@ export class ClientChannelHost {
     this.#native?.resetGeneration();
   }
 
+  /** Whether the Thread waits for the user: a pending approval or question, native or external. */
+  hasPendingInteraction(threadId: string): boolean {
+    if ((this.#native?.interactions(threadId).length ?? 0) > 0) return true;
+    for (const pending of this.#host.interactions.approvals.values())
+      if (pending.thread.id === threadId) return true;
+    for (const pending of this.#host.interactions.questions().values())
+      if (pending.thread.id === threadId) return true;
+    return false;
+  }
+
   nativeQuestions(threadId: string) {
     return (this.#native?.interactions(threadId) ?? []).flatMap((pending) => {
       const params = pending.request.params;

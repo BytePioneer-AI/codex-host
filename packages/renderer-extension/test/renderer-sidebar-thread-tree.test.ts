@@ -208,7 +208,7 @@ it("draws the tree where its topmost member stands when the root row is lower or
   const leadInProject = mountRow(project, "lead", "Lead");
   install(
     host({
-      worker: { parent: "lead", title: "Worker", status: "question" },
+      worker: { parent: "lead", title: "Worker", status: "pending" },
       helper: { parent: "worker", title: "Helper" },
     }).client,
   );
@@ -218,6 +218,7 @@ it("draws the tree where its topmost member stands when the root row is lower or
   const anchor = itemOf(worker);
   expect(anchor?.hasAttribute(ANCHOR)).toBe(true);
   expect(anchor?.firstElementChild?.getAttribute(VIRTUAL)).toBe("lead");
+  expect(anchor?.firstElementChild?.getAttribute("role")).toBe("group");
   expect(anchor?.querySelector(`[${NODE}="lead"] .cxh-tree-title`)?.textContent).toBe("Lead");
   expect(summaryOf(anchor)).toBe("2 child sessions · 1 needs approval");
   expect(itemOf(lead)?.style.display).toBe("none");
@@ -368,7 +369,7 @@ it("follows live state with state-only reads and reads the tree again when rows 
   await settle();
   expect(summaryOf(itemOf(parent))).toBe("1 child sessions");
 
-  tree.child = { ...tree.child, parent: "parent", status: "question", title: "Renamed elsewhere" };
+  tree.child = { ...tree.child, parent: "parent", status: "pending", title: "Renamed elsewhere" };
   await vi.advanceTimersByTimeAsync(5_000);
   await settle();
   expect(summaryOf(itemOf(parent))).toBe("1 child sessions · 1 needs approval");
@@ -559,14 +560,53 @@ it("gives the sidebar back when the Host stops serving the tree", async () => {
   expect(itemOf(child)?.style.display).toBe("");
   expect(toggleOf(parent)).toBeNull();
 
-  // And again when the connection is gone altogether.
+  // And again when the connection is gone, even if nothing in the sidebar changes.
   current = fake.client;
   await vi.advanceTimersByTimeAsync(5_000);
   await settle();
   expect(itemOf(child)?.style.display).toBe("none");
   current = null;
-  list.append(document.createElement("span"));
+  await vi.advanceTimersByTimeAsync(5_000);
   await settle();
   expect(itemOf(child)?.style.display).toBe("");
   expect(document.querySelectorAll(OWNED)).toHaveLength(0);
+});
+
+it("ignores a failure that arrives after its connection was replaced", async () => {
+  const list = mountList();
+  const parent = mountRow(list, "parent", "Orchestrator");
+  mountRow(list, "child", "Child");
+  const first = host({ child: { parent: "parent" } });
+  const late = Promise.withResolvers<{ parents: Record<string, string> }>();
+  first.readThreadTree.mockReturnValueOnce(late.promise);
+  const second = host({ child: { parent: "parent" } });
+  let current: RendererModelClient | null = first.client;
+  install(null, () => current);
+  await settle();
+  current = second.client;
+  late.reject(new RendererMethodUnavailableError("codexhost/thread/tree/read", { code: -32601 }));
+  await vi.advanceTimersByTimeAsync(5_000);
+  await settle();
+  expect(second.readThreadTree).toHaveBeenCalledTimes(1);
+  expect(toggleOf(parent)).not.toBeNull();
+});
+
+it("takes the open Thread from the Composer on screen, not from a hidden one", async () => {
+  const list = mountList();
+  mountRow(list, "parent", "Orchestrator");
+  install(
+    host({
+      child: { parent: "parent", title: "Child" },
+      grandchild: { parent: "child", title: "Grandchild" },
+    }).client,
+  );
+  await settle();
+  const hidden = document.createElement("div");
+  hidden.setAttribute("data-above-composer-conversation-id", "earlier-view");
+  const shown = document.createElement("div");
+  shown.setAttribute("data-above-composer-conversation-id", "grandchild");
+  Object.defineProperty(shown, "getClientRects", { value: () => [new DOMRect(0, 0, 10, 10)] });
+  document.body.append(hidden, shown);
+  await settle();
+  expect(nodeTitles()).toEqual(["Child", "Grandchild*"]);
 });

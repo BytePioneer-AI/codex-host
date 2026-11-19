@@ -36,8 +36,8 @@ export const threadTreeNodesParamsSchema = z
   });
 export type ThreadTreeNodesParams = z.infer<typeof threadTreeNodesParamsSchema>;
 
-/** A pending question outranks running; anything else is idle. */
-export const threadTreeNodeStatusSchema = z.enum(["question", "running", "idle"]);
+/** Waiting for the user (an approval or a question) outranks running; anything else is idle. */
+export const threadTreeNodeStatusSchema = z.enum(["pending", "running", "idle"]);
 export type ThreadTreeNodeStatus = z.infer<typeof threadTreeNodeStatusSchema>;
 
 export const threadTreeNodeSchema = z

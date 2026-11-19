@@ -37,9 +37,9 @@ function source(overrides: Partial<ThreadTreeNodeSource> = {}): ThreadTreeNodeSo
       summary("archived", { archived: true }),
     ],
     activeThreadIds: () => [],
-    hasPendingQuestion: () => false,
+    waitsForUser: () => false,
     readOfficialTitle: async () => "Official task",
-    listOfficialArchived: async () => new Set<string>(),
+    listOfficialArchived: async () => ({ ids: new Set<string>(), complete: true }),
     ...overrides,
   };
 }
@@ -52,7 +52,10 @@ it("describes stored and official Threads in request order and leaves out delete
   expect(
     await readThreadTreeNodes(
       { threadIds, includeOfficial: true },
-      source({ readOfficialTitle, listOfficialArchived: async () => new Set(["official"]) }),
+      source({
+        readOfficialTitle,
+        listOfficialArchived: async () => ({ ids: new Set(["official"]), complete: true }),
+      }),
     ),
   ).toEqual({
     threads: [
@@ -112,14 +115,14 @@ it("reports an official Thread without guessing what could not be read", async (
 
 it("keeps official Threads without reading them unless asked, and reports live state", async () => {
   const readOfficialTitle = vi.fn(async () => "unused");
-  const listOfficialArchived = vi.fn(async () => new Set<string>());
+  const listOfficialArchived = vi.fn(async () => ({ ids: new Set<string>(), complete: true }));
   const result = await readThreadTreeNodes(
     { threadIds: ["official", "external", "undelegated"].map(id) },
     source({
       readOfficialTitle,
       listOfficialArchived,
       activeThreadIds: () => ["official", "external"],
-      hasPendingQuestion: (threadId) => threadId === "external",
+      waitsForUser: (threadId) => threadId === "external",
     }),
   );
   expect(readOfficialTitle).not.toHaveBeenCalled();
@@ -131,9 +134,20 @@ it("keeps official Threads without reading them unless asked, and reports live s
       status: "running",
       delegatedAt: "2026-01-04T00:00:00.000Z",
     },
-    // A pending question outranks running.
-    expect.objectContaining({ threadId: "external", status: "question" }),
+    // Waiting for the user outranks running.
+    expect.objectContaining({ threadId: "external", status: "pending" }),
     { threadId: "undelegated", harnessId: "codex", status: "idle" },
+  ]);
+});
+
+it("leaves the archive state unknown past a listing cut off at its bound", async () => {
+  const result = await readThreadTreeNodes(
+    { threadIds: ["official", "undelegated"].map(id), includeOfficial: true },
+    source({ listOfficialArchived: async () => ({ ids: new Set(["official"]), complete: false }) }),
+  );
+  expect(result.threads.map((node) => [node.threadId, node.archived])).toEqual([
+    ["official", true],
+    ["undelegated", undefined],
   ]);
 });
 

@@ -178,7 +178,7 @@ export function ensureRendererSidebarThreadTreeStyle(ownerDocument: Document): v
     .${SIDEBAR_TREE_SUMMARY_CLASS} [data-activity="running"] {
       color: ${RUNNING};
     }
-    .${SIDEBAR_TREE_SUMMARY_CLASS} [data-activity="question"] {
+    .${SIDEBAR_TREE_SUMMARY_CLASS} [data-activity="pending"] {
       color: ${PENDING};
     }
 
@@ -247,7 +247,7 @@ export function ensureRendererSidebarThreadTreeStyle(ownerDocument: Document): v
       height: 14px;
       animation: cxh-tree-spin 1s linear infinite;
     }
-    .${SIDEBAR_TREE_STATUS_CLASS}[data-status="question"]::before {
+    .${SIDEBAR_TREE_STATUS_CLASS}[data-status="pending"]::before {
       content: "";
       width: 8px;
       height: 8px;

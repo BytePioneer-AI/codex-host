@@ -593,6 +593,7 @@ export function projectReplayedEventsToTurns(params: {
   outputLimit?: number;
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
+  const usedTurnKeys = new Set(params.knownTurnRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
   let active: { turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
@@ -604,11 +605,18 @@ export function projectReplayedEventsToTurns(params: {
     });
     const index = turns.length;
     const turnId = hostTurnIdSchema.parse(`turn-${index}`);
+    let nativeTurnKey = params.knownTurnRefs?.[index]?.nativeTurnKey;
+    if (nativeTurnKey === undefined) {
+      let n = index;
+      nativeTurnKey = `turn-${n}`;
+      while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
+      usedTurnKeys.add(nativeTurnKey);
+    }
     const turn: HostTurnSnapshot = {
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: "antigravity",
         nativeSessionId: params.nativeSessionId,
-        nativeTurnKey: params.knownTurnRefs?.[index]?.nativeTurnKey ?? `turn-${index}`,
+        nativeTurnKey,
         formatVersion: 1,
       }),
       checkpoint: nativeCheckpointRefSchema.parse({

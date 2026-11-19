@@ -30,16 +30,16 @@ Content-Type: application/json
 
 所有业务接口都是 **`POST`** 请求，传 JSON 对象即可：
 
-| 接口路径                  | 干什么用的                 | 常用请求字段                                                                       |
-| :------------------------ | :------------------------- | :--------------------------------------------------------------------------------- |
-| `POST /v1/harness/list`   | 查看当前可用的 Agent 列表  | `{}`                                                                               |
-| `POST /v1/project/list`   | 搜索本机已配置的 Git 仓库  | 可选 `query`、`limit`、`offset`                                                    |
-| `POST /v1/delegate/start` | 新建会话并派发任务         | `harness`、`task`、`cwd`（绝对路径），可选 `taskName`、`worktree`、`base`、`watch` |
-| `POST /v1/thread/send`    | 继续发消息、插话或打断重发 | `threadId`、`message`，可选 `steer`、`interrupt`、`watch`                          |
-| `POST /v1/thread/read`    | 立刻读取最新结果或多轮对话 | `threadId`，可选 `view`（`"result"` 或 `"messages"`）、`from`、`to`                |
-| `POST /v1/thread/wait`    | 等待本轮跑完再返回结果     | `threadId`，可选 `timeoutMs`、`view`                                               |
-| `POST /v1/thread/cancel`  | 停掉当前正在跑的这一轮     | `threadId`                                                                         |
-| `POST /v1/thread/watches` | 查看还在等待完成的监听列表 | `{}`                                                                               |
+| 接口路径                  | 干什么用的                 | 常用请求字段                                                                                         |
+| :------------------------ | :------------------------- | :--------------------------------------------------------------------------------------------------- |
+| `POST /v1/harness/list`   | 查看当前可用的 Agent 列表  | `{}`                                                                                                 |
+| `POST /v1/project/list`   | 搜索本机已配置的 Git 仓库  | 可选 `query`、`limit`、`offset`                                                                      |
+| `POST /v1/delegate/start` | 新建会话并派发任务         | `harnessId`（或 `harness`）、`task`、`cwd`（绝对路径），可选 `taskName`、`worktree`、`base`、`watch` |
+| `POST /v1/thread/send`    | 继续发消息、插话或打断重发 | `threadId`、`message`，可选 `steer`、`interrupt`、`watch`                                            |
+| `POST /v1/thread/read`    | 立刻读取最新结果或多轮对话 | `threadId`，可选 `view`（`"result"` 或 `"messages"`，默认 `"result"`）、`from`、`to`                 |
+| `POST /v1/thread/wait`    | 等待本轮跑完再返回结果     | `threadId`，可选 `timeoutMs`（默认 30000）、`view`                                                   |
+| `POST /v1/thread/cancel`  | 停掉当前正在跑的这一轮     | `threadId`                                                                                           |
+| `POST /v1/thread/watches` | 查看还在等待完成的监听列表 | `{}`                                                                                                 |
 
 ### 调用示例：派活并开启完成通知
 
@@ -48,7 +48,7 @@ curl -X POST http://127.0.0.1:4398/v1/delegate/start \
   -H "Authorization: Bearer chc_你的令牌" \
   -H "Content-Type: application/json" \
   -d '{
-    "harness": "pi",
+    "harnessId": "pi",
     "cwd": "/Users/me/projects/my-app",
     "taskName": "排查登录超时",
     "worktree": "fix/login-timeout",

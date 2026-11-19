@@ -1087,8 +1087,16 @@ export class PiRpcSession {
     if (!admitted) {
       // Native input hooks may outlive the run and then enqueue into an idle Session.
       // Preserve the terminal history before closing this owned process and its queue.
-      const history = await this.getEntries();
-      await this.close();
+      let history: PiSessionHistory | undefined;
+      try {
+        history = await this.getEntries();
+      } finally {
+        try {
+          await this.close();
+        } catch (error) {
+          if (history !== undefined) throw error;
+        }
+      }
       throw new PiRpcSteerTargetEndedError(history);
     }
   }

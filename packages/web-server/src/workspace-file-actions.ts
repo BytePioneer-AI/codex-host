@@ -1,7 +1,7 @@
 /** Authenticated original-file downloads and local desktop handoff. */
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename, isAbsolute, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -10,23 +10,45 @@ import { RpcError } from "./transport.ts";
 export async function openWorkspaceFile(
   launcher: string,
   path: unknown,
+  action?: "reveal",
 ): Promise<{ opened: true }> {
   if (!launcher || !isAbsolute(launcher))
     throw new RpcError("session/open-unavailable", "The native launcher is unavailable.");
-  if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0"))
-    throw new RpcError("gateway/bad-request", "An absolute file path is required.");
-  const target = await realpath(path);
-  const file = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
-  try {
-    if (!(await file.stat()).isFile())
-      throw new RpcError("gateway/bad-request", "Only regular files can be opened.");
-  } finally {
-    await file.close();
+  if (typeof path !== "string" || path.includes("\0"))
+    throw new RpcError("gateway/bad-request", "An absolute path is required.");
+  // Markdown links can spell Windows drive paths with a leading slash.
+  const nativePath = process.platform === "win32" ? path.replace(/^\/(?=[a-z]:[/\\])/iu, "") : path;
+  if (!isAbsolute(nativePath))
+    throw new RpcError("gateway/bad-request", "An absolute path is required.");
+  const target = await realpath(nativePath);
+  if (action === "reveal") {
+    const info = await stat(target);
+    if (!info.isFile() && !info.isDirectory())
+      throw new RpcError(
+        "gateway/bad-request",
+        "Only regular files and directories can be revealed.",
+      );
+  } else {
+    const file = await open(target, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      if (!(await file.stat()).isFile())
+        throw new RpcError("gateway/bad-request", "Only regular files can be opened.");
+    } finally {
+      await file.close();
+    }
   }
+  const command = action === "reveal" ? "reveal-file" : "open-file";
   await new Promise<void>((resolve, reject) => {
-    execFile(launcher, ["open-file", target], { timeout: 10_000, windowsHide: true }, (error) => {
+    execFile(launcher, [command, target], { timeout: 10_000, windowsHide: true }, (error) => {
       if (error)
-        reject(new RpcError("session/open-failed", "The system could not open this file."));
+        reject(
+          new RpcError(
+            "session/open-failed",
+            action === "reveal"
+              ? "The system could not open the containing folder."
+              : "The system could not open this file.",
+          ),
+        );
       else resolve();
     });
   });

@@ -268,7 +268,7 @@ const sessions = new ChSessions(
   displayEntries,
   preferences,
   enabledHarnesses,
-  (path) => openWorkspaceFile(launcher, path),
+  (path, action) => openWorkspaceFile(launcher, path, action),
 );
 // The right Sidebar's DSH backend runs in this process; a failure disables the
 // panel without taking Web down.

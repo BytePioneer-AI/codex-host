@@ -274,6 +274,52 @@ describe("Omp turn.steer", () => {
     expect(transport.steer).toHaveBeenCalledOnce();
   });
 
+  it("retires a late steer queue without failing the original Turn", async () => {
+    let fake: FakeOmpProcess | undefined;
+    const adapter = new OmpAdapter(
+      {},
+      {
+        createTransport: (options) =>
+          new OmpRpcSession(
+            { ...options, commandTimeoutMs: 2_000 },
+            {
+              spawn: () => {
+                fake = new FakeOmpProcess();
+                fake.steerReceipt = "after-settled";
+                return fake as unknown as ChildProcessWithoutNullStreams;
+              },
+            },
+          ),
+      },
+    );
+    adapters.push(adapter);
+    const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    void (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const turnId = await startTurn(session);
+    const failure = await session
+      .execute({ type: "turn.steer", turnId, input: [{ type: "text", text: "late input" }] })
+      .catch((error: unknown) => error);
+
+    await vi.waitFor(() =>
+      expect(hostEvents(outputs).find((event) => event.type === "turn.completed")).toMatchObject({
+        turnId,
+        nativeTurnRef: { nativeTurnKey: "user-1" },
+        outcome: { status: "succeeded" },
+      }),
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toHaveProperty(
+      "message",
+      expect.stringContaining("do not automatically resend"),
+    );
+    expect(fake?.exitCode).toBe(0);
+  });
+
   it("still fails when the new user entry count does not match accepted steers", async () => {
     const { session, transports, outputs } = await openSession();
     const turnId = await startTurn(session);
@@ -450,6 +496,7 @@ class FakeOmpProcess extends EventEmitter {
   readonly steered: string[] = [];
   rejectSteer: string | null = null;
   steerReceipt = "queued";
+  #messages: unknown[] = [];
   #buffer = Buffer.alloc(0);
 
   constructor() {
@@ -487,13 +534,18 @@ class FakeOmpProcess extends EventEmitter {
         toolName: "bash",
         args: { command: "echo hello" },
       });
-      this.#output({
-        type: "tool_execution_end",
-        toolCallId: "call-1",
-        toolName: "bash",
-        result: { output: "hello" },
-        isError: false,
-      });
+      if (this.steerReceipt === "after-settled") {
+        this.#messages = historyOf([String(command.message)]).entries.map((entry) => ({
+          ...(entry.message as Record<string, unknown>),
+          id: entry.id,
+        }));
+      } else {
+        this.#finishTool();
+      }
+      return;
+    }
+    if (command.type === "get_messages") {
+      this.#respond(command, { messages: this.#messages });
       return;
     }
     if (command.type === "steer") {
@@ -511,6 +563,12 @@ class FakeOmpProcess extends EventEmitter {
       if (this.steerReceipt === "missing") return;
       if (this.steerReceipt === "handled") {
         this.#respond(command, { disposition: "handled" });
+        return;
+      }
+      if (this.steerReceipt === "after-settled") {
+        this.#finishTool();
+        this.#output({ type: "agent_end", isTerminal: true, messages: this.#messages });
+        setImmediate(() => this.#respond(command, { disposition: "queued" }));
         return;
       }
       this.#respond(command);
@@ -536,6 +594,16 @@ class FakeOmpProcess extends EventEmitter {
       model: { provider: "synthetic", id: "model", thinking: { efforts: ["high"] } },
       thinkingLevel: "high",
       isStreaming: false,
+    });
+  }
+
+  #finishTool(): void {
+    this.#output({
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "bash",
+      result: { output: "hello" },
+      isError: false,
     });
   }
 

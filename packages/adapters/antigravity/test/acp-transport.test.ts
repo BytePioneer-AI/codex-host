@@ -1,6 +1,7 @@
 import type * as ChildProcess from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable } from "node:stream";
+import { TransformStream } from "node:stream/web";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";

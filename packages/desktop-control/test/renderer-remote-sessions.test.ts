@@ -40,6 +40,24 @@ function fixture() {
   return { target, routes, read, requests, route };
 }
 describe("Desktop existing remote session boundary", () => {
+  it("reads usage on the selected remote host and rejects a stale connection", async () => {
+    const f = fixture();
+    const hostId = "remote-ssh-discovered:a";
+    const snapshot = await f.read();
+    const request = { kind: "usage", hostId, threadId: "same", epoch: snapshot.epoch } as const;
+    await rendererRemoteSession(f.target, request);
+    expect(f.route(hostId).manager.sendRequest).toHaveBeenCalledWith(
+      "codexhost/thread/usage/inspect",
+      { threadId: "same" },
+    );
+    expect(f.route("remote-control:b").manager.sendRequest).not.toHaveBeenCalled();
+
+    const replacement = fixture().route(hostId);
+    f.routes.set(hostId, replacement);
+    await expect(rendererRemoteSession(f.target, request)).rejects.toThrow("connection changed");
+    expect(replacement.manager.sendRequest).not.toHaveBeenCalled();
+  });
+
   it("shows configured offline hosts and restores only already-enabled connections once", async () => {
     const f = fixture();
     const writes: unknown[] = [];

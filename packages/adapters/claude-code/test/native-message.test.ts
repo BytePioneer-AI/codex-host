@@ -625,6 +625,14 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume({ type: "system", subtype: "init", cwd: "/tmp" }).events).toEqual([
       { type: "segment.started" },
     ]);
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "init",
+        cwd: "/tmp",
+        mcp_servers: [{ name: "team..docs", status: "connected" }, { status: "failed" }],
+      }).events,
+    ).toEqual([{ type: "segment.started", mcpServers: ["team..docs"] }]);
   });
 
   it("maps SendMessage to an existing native Subagent without marking the Agent complete", () => {
@@ -937,11 +945,7 @@ describe("Claude native Turn interpretation", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     expect(turn.consume(thinkingPartial("visible ", "assistant-thinking")).events).toEqual([
-      {
-        type: "reasoning.delta",
-        messageId: "assistant-thinking",
-        delta: "visible ",
-      },
+      { type: "reasoning.delta", messageId: "assistant-thinking:thinking:0", delta: "visible " },
     ]);
     expect(
       turn.consume(
@@ -954,7 +958,7 @@ describe("Claude native Turn interpretation", () => {
         ),
       ).events,
     ).toEqual([
-      { type: "reasoning.completed", messageId: "assistant-thinking" },
+      { type: "reasoning.completed", messageId: "assistant-thinking:thinking:0" },
       { type: "text.delta", messageId: "assistant-thinking", delta: "answer" },
       {
         type: "message.completed",
@@ -992,7 +996,9 @@ describe("Claude native Turn interpretation", () => {
   it("ignores conflicting complete reasoning without failing the Turn", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
-    turn.consume(thinkingPartial("streamed", "reasoning-conflict"));
+    expect(turn.consume(thinkingPartial("streamed", "reasoning-conflict")).events).toEqual([
+      { type: "reasoning.delta", messageId: "reasoning-conflict:thinking:0", delta: "streamed" },
+    ]);
     expect(
       turn.consume(
         assistantBlocks(
@@ -1001,7 +1007,7 @@ describe("Claude native Turn interpretation", () => {
         ),
       ).events,
     ).toEqual([
-      { type: "reasoning.completed", messageId: "reasoning-conflict" },
+      { type: "reasoning.completed", messageId: "reasoning-conflict:thinking:0" },
       {
         type: "message.completed",
         messageId: "reasoning-conflict",

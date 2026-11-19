@@ -11,6 +11,7 @@ import {
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HostItemId,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -19,8 +20,10 @@ import {
   claudeSendMessageFailed,
 } from "./native-message.js";
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
+import { claudeToolItem, type ClaudeToolItem } from "./claude-tool-item.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeQueuedCommand } from "./claude-queued-command.js";
+import { isClaudeNarrationSignature } from "./thinking-signature.js";
 
 interface ClaudeHistoryRecord {
   uuid: string;
@@ -76,15 +79,6 @@ function textParts(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((part) =>
     isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : [],
-  );
-}
-
-function thinkingParts(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((part) =>
-    isRecord(part) && part.type === "thinking" && typeof part.thinking === "string"
-      ? [part.thinking]
-      : [],
   );
 }
 
@@ -387,8 +381,12 @@ function isCheckpointCandidate(message: ClaudeHistoryMessage): boolean {
   );
 }
 
-export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThreadSnapshot {
-  return mapClaudeSnapshotWithCheckpointIds(values, sessionId).snapshot;
+export function mapClaudeSnapshot(
+  values: unknown[],
+  sessionId: string,
+  mcpServers?: readonly string[],
+): HostThreadSnapshot {
+  return mapClaudeSnapshotWithCheckpointIds(values, sessionId, mcpServers).snapshot;
 }
 
 /**
@@ -400,6 +398,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
 export function mapClaudeSnapshotWithCheckpointIds(
   values: unknown[],
   sessionId: string,
+  mcpServers?: readonly string[],
 ): { snapshot: HostThreadSnapshot; turnCheckpointIds: string[][] } {
   const messages = conversationMessages(values, sessionId);
   const turns: HostThreadSnapshot["turns"] = [];
@@ -495,7 +494,6 @@ export function mapClaudeSnapshotWithCheckpointIds(
             : itemOutcome(outcome);
         const content = message.message.content;
         const text = textParts(content).join("");
-        const reasoning = thinkingParts(content).join("");
         if (!Array.isArray(content)) {
           return text.length > 0
             ? [
@@ -515,20 +513,38 @@ export function mapClaudeSnapshotWithCheckpointIds(
             : [];
         }
         const items: HostThreadSnapshot["turns"][number]["items"] = [];
-        let projectedReasoning = false;
         let projectedText = false;
         for (const [blockIndex, block] of content.entries()) {
           if (!isRecord(block)) continue;
-          if (block.type === "thinking" && !projectedReasoning && reasoning.length > 0) {
-            items.push({
-              item: {
-                type: "reasoning" as const,
-                itemId: claudeTranscriptItemId(user.uuid, "reasoning", (reasoningOrdinal += 1)),
-                text: reasoning,
-              },
-              outcome: assistantOutcome,
-            });
-            projectedReasoning = true;
+          if (block.type === "thinking" && typeof block.thinking === "string") {
+            if (block.thinking.length === 0) continue;
+            // Narration occupies a live thinking ordinal even though history maps it
+            // only to commentary. Reserve that slot for stable later Reasoning IDs.
+            reasoningOrdinal += 1;
+            if (isClaudeNarrationSignature(block.signature)) {
+              items.push({
+                item: {
+                  type: "agentMessage",
+                  itemId: claudeTranscriptItemId(
+                    user.uuid,
+                    "agentMessage",
+                    (agentMessageOrdinal += 1),
+                  ),
+                  text: block.thinking,
+                  phase: "commentary",
+                },
+                outcome: assistantOutcome,
+              });
+            } else {
+              items.push({
+                item: {
+                  type: "reasoning" as const,
+                  itemId: claudeTranscriptItemId(user.uuid, "reasoning", reasoningOrdinal),
+                  text: block.thinking,
+                },
+                outcome: assistantOutcome,
+              });
+            }
             continue;
           }
           if (block.type === "text" && !projectedText && text.length > 0) {
@@ -592,15 +608,8 @@ export function mapClaudeSnapshotWithCheckpointIds(
             });
             continue;
           }
-          const argumentsResult = jsonValueSchema.safeParse(block.input);
           items.push({
-            item: {
-              type: "toolExecution",
-              itemId,
-              toolName: block.name,
-              arguments: argumentsResult.success ? argumentsResult.data : null,
-              ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-            },
+            item: historyToolItem(itemId, block.name, block.input, output, mcpServers),
             outcome: toolOutcome,
           });
         }
@@ -611,6 +620,23 @@ export function mapClaudeSnapshotWithCheckpointIds(
     index = end;
   }
   return { snapshot: { turns }, turnCheckpointIds };
+}
+
+function historyToolItem(
+  itemId: HostItemId,
+  toolName: string,
+  input: unknown,
+  output: string | undefined,
+  mcpServers?: readonly string[],
+): ClaudeToolItem {
+  const argumentsResult = jsonValueSchema.safeParse(input);
+  const item = claudeToolItem(
+    itemId,
+    toolName,
+    argumentsResult.success ? argumentsResult.data : null,
+    mcpServers,
+  );
+  return output ? { ...item, output: { content: [{ type: "text", text: output }] } } : item;
 }
 
 function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<string, unknown>> {
@@ -723,7 +749,9 @@ export function mapClaudeSubagentSnapshot(
         if (block.type === "thinking" && typeof block.thinking === "string") {
           if (block.thinking.length > 0) {
             items.push({
-              item: { type: "reasoning", itemId, text: block.thinking },
+              item: isClaudeNarrationSignature(block.signature)
+                ? { type: "agentMessage", itemId, text: block.thinking, phase: "commentary" }
+                : { type: "reasoning", itemId, text: block.thinking },
               outcome: itemOutcome(outcome),
             });
           }
@@ -776,15 +804,8 @@ export function mapClaudeSubagentSnapshot(
           });
           continue;
         }
-        const argumentsResult = jsonValueSchema.safeParse(block.input);
         items.push({
-          item: {
-            type: "toolExecution",
-            itemId,
-            toolName: block.name,
-            arguments: argumentsResult.success ? argumentsResult.data : null,
-            ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-          },
+          item: historyToolItem(itemId, block.name, block.input, output),
           outcome: toolOutcome,
         });
       }

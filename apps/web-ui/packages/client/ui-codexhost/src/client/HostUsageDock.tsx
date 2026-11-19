@@ -639,29 +639,14 @@ function UsagePopover({
     }, HOVER_CLOSE_DELAY_MS);
   }, [cancelClose, cancelOpen]);
 
-  useDismissOnOutsidePointer(
-    rootRef,
-    open,
-    (next) => {
-      if (!next) close();
-    },
-    panelRef,
-  );
+  useDismissOnOutsidePointer(rootRef, open, close, panelRef);
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") close();
     };
-    const onScroll = (event: Event): void => {
-      if (event.target instanceof Node && panelRef.current?.contains(event.target)) return;
-      close();
-    };
     document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", onScroll, true);
-    };
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [close, open]);
   useEffect(
     () => () => {

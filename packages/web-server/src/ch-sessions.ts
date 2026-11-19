@@ -114,7 +114,7 @@ export class ChSessions {
     displayEntries?: () => Promise<HarnessDisplayEntries>,
     private readonly preferences?: WebHarnessPreferences,
     harnesses?: ReadonlySet<string>,
-    private readonly openFile?: (path: unknown) => Promise<{ opened: true }>,
+    private readonly openFile?: (path: unknown, action?: "reveal") => Promise<{ opened: true }>,
   ) {
     this.catalog = new ChHarnessCatalog(host, events, displayEntries, preferences, harnesses);
     this.attachments = images ? new ChAttachments(images, files) : undefined;
@@ -1505,14 +1505,17 @@ export class ChSessions {
           "Remote connections cannot open Host files.",
         );
       const request = requestOf<{ path: string; action?: string; application?: string }>(args);
-      if (request.action !== undefined || request.application !== undefined)
+      if (
+        (request.action !== undefined && request.action !== "reveal") ||
+        request.application !== undefined
+      )
         throw new RpcError(
           "session/open-unavailable",
           "Only the system default application is supported.",
         );
       if (!this.openFile)
         throw new RpcError("session/open-unavailable", "The native launcher is unavailable.");
-      return this.openFile(request.path);
+      return this.openFile(request.path, request.action);
     });
     for (const [method, archived] of [
       ["workspace/archiveSession", true],

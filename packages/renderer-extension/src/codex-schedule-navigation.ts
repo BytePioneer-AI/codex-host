@@ -86,3 +86,13 @@ export async function openCodexSchedules(
     }
   });
 }
+
+/** Opens a local Thread through Desktop's own router, the route its sidebar rows use. */
+export async function openCodexThread(
+  threadId: string,
+  ownerWindow: Window = window,
+): Promise<void> {
+  const bus = await loadCodexNativeServices(ownerWindow, isNavigationBus);
+  if (!bus) throw new Error("Codex navigation is unavailable");
+  bus.dispatchHostMessage({ type: "navigate-to-route", path: `/local/${threadId}` });
+}

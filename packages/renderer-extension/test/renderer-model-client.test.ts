@@ -444,11 +444,13 @@ describe("Renderer fixed Model request client", () => {
       "listSessionImportSources",
       "listSkills",
       "listThreadOwnership",
+      "listThreadTreeNodes",
       "openConsole",
       "openHarnessWebUi",
       "openWeb",
       "patchHarnessPreferences",
       "readDelegationThread",
+      "readThreadTree",
       "readUpdateStatus",
       "refreshCodexAccounts",
       "runtimeStatus",
@@ -889,6 +891,38 @@ describe("Renderer fixed Model request client", () => {
         threadIds: [hostThreadIdSchema.parse("thread-1"), hostThreadIdSchema.parse("thread-2")],
       }),
     ).rejects.toThrow("does not match");
+  });
+
+  it("reads the Thread tree and validates tree node requests and results", async () => {
+    const child = hostThreadIdSchema.parse("child");
+    const sendRequest = vi.fn(async (method: string): Promise<unknown> =>
+      method === "codexhost/thread/tree/read"
+        ? { parents: { child: "parent" } }
+        : { threads: [{ threadId: "child", harnessId: "pi", status: "running", archived: false }] },
+    );
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.readThreadTree || !client.listThreadTreeNodes)
+      throw new Error("Synthetic Model client was not created");
+
+    await expect(client.readThreadTree()).resolves.toEqual({ parents: { child: "parent" } });
+    await expect(
+      client.listThreadTreeNodes({ threadIds: [child], includeOfficial: true }),
+    ).resolves.toEqual({
+      threads: [{ threadId: "child", harnessId: "pi", status: "running", archived: false }],
+    });
+    // Sidebar decoration waits behind interactive requests and gives up instead of hanging.
+    expect(sendRequest).toHaveBeenLastCalledWith(
+      "codexhost/thread/tree/nodes",
+      { threadIds: ["child"], includeOfficial: true },
+      { priority: "background", timeoutMs: 30_000 },
+    );
+    // Duplicate IDs never reach the Host, and an unknown state is not rendered.
+    await expect(client.listThreadTreeNodes({ threadIds: [child, child] })).rejects.toThrow();
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+    sendRequest.mockResolvedValueOnce({
+      threads: [{ threadId: "child", harnessId: "pi", status: "waiting" }],
+    });
+    await expect(client.listThreadTreeNodes({ threadIds: [child] })).rejects.toThrow();
   });
 
   it("accepts a null update check when the Host has no update capability", async () => {

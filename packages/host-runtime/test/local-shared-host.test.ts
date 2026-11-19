@@ -355,6 +355,46 @@ it.each(["Web", "Desktop"])(
   },
 );
 
+it("reports the owner's live state for shared external Threads in Desktop tree nodes", async () => {
+  const { web, adapter, gui } = await setup();
+  const { viewer, bridge } = gui();
+  await viewer.ready;
+  await bridge.list({});
+  const { thread } = await web.request<{ thread: { id: string } }>("thread/start", {
+    model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }),
+    cwd: "/synthetic",
+  });
+  let requestId = 40;
+  const nodes = async () => {
+    const id = (requestId += 1);
+    writeRequest(viewer.desktopInput, {
+      id,
+      method: "codexhost/thread/tree/nodes",
+      params: { threadIds: [thread.id, "native-thread"] },
+    });
+    return (await viewer.collector.waitFor((message) => message.id === id)).result;
+  };
+  const native = { threadId: "native-thread", harnessId: "codex", status: "idle" };
+  expect(await nodes()).toMatchObject({
+    threads: [{ threadId: thread.id, harnessId: "pi", status: "idle", archived: false }, native],
+  });
+  // The Turn runs in the owner Host; the Desktop front only shares its records.
+  await web.request("turn/start", {
+    threadId: thread.id,
+    input: [{ type: "text", text: "shared input" }],
+  });
+  await vi.waitFor(() => expect(adapter.sessions).toHaveLength(1));
+  expect(await nodes()).toMatchObject({
+    threads: [{ threadId: thread.id, status: "running" }, native],
+  });
+  adapter.sessions[0]?.succeedTurn();
+  await vi.waitFor(async () =>
+    expect(await nodes()).toMatchObject({
+      threads: [{ threadId: thread.id, status: "idle" }, native],
+    }),
+  );
+});
+
 it.each([0, 1])("shutdown reports %i running tasks before stopping", async (count) => {
   const { root, web, adapter, stop } = await setup();
   if (count === 1) {

@@ -1,6 +1,6 @@
 # Web 会话树
 
-Web 侧栏把本机 Host 的 Thread 显示成可以展开、收起的树。树关系只来自委派，只决定 Thread 在侧栏中的位置，不改变 Thread 的 Harness 归属、执行、路由、输入能力、标题或委派状态。Codex Desktop 的侧栏、置顶和归档不受影响。
+Web 侧栏把本机 Host 的 Thread 显示成可以展开、收起的树。树关系只来自委派，只决定 Thread 在侧栏中的位置，不改变 Thread 的 Harness 归属、执行、路由、输入能力、标题或委派状态。Codex Desktop 的置顶和归档不受影响；Desktop 侧栏按同一份关系显示子 Thread，规则见 [Desktop 侧栏会话树](desktop-thread-tree.md)。
 
 ## 显示父 Thread
 

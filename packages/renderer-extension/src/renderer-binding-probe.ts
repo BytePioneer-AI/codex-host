@@ -122,7 +122,8 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
-import { openCodexSchedules } from "./codex-schedule-navigation.js";
+import { openCodexSchedules, openCodexThread } from "./codex-schedule-navigation.js";
+import { installRendererSidebarThreadTree } from "./renderer-sidebar-thread-tree.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
@@ -828,25 +829,29 @@ export function installRendererBindingProbe(
     return null;
   };
   const sidebarThreadState = installRendererSidebarThreadState();
+  const sidebarPlugins = (hostId: string): readonly HarnessPluginDescriptor[] | undefined => {
+    if (hostId === "durable") return undefined;
+    const state = hostHarnessAvailabilityState(hostId);
+    const client = modelClientForHost(hostId);
+    // Sidebar ownership is enough to discover this Host's artwork; opening a Composer
+    // must not be required. Keep directory requests deduplicated and client-scoped.
+    if (client && (state.directoryClient !== client || (!state.plugins && !state.directoryError))) {
+      void refreshHarnessAvailabilityForHost(hostId);
+    }
+    return state.directoryClient === client
+      ? state.plugins?.map((plugin) => pluginForHost(hostId, plugin.id) ?? plugin)
+      : undefined;
+  };
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     getClient: (hostId) => modelClientForHost(hostId),
-    getPlugins: (hostId) => {
-      if (hostId === "durable") return undefined;
-      const state = hostHarnessAvailabilityState(hostId);
-      const client = modelClientForHost(hostId);
-      // Sidebar ownership is enough to discover this Host's artwork; opening a Composer
-      // must not be required. Keep directory requests deduplicated and client-scoped.
-      if (
-        client &&
-        (state.directoryClient !== client || (!state.plugins && !state.directoryError))
-      ) {
-        void refreshHarnessAvailabilityForHost(hostId);
-      }
-      return state.directoryClient === client
-        ? state.plugins?.map((plugin) => pluginForHost(hostId, plugin.id) ?? plugin)
-        : undefined;
-    },
+    getPlugins: sidebarPlugins,
     getLocalAgent: localAgentForSidebarThread,
+  });
+  const sidebarThreadTree = installRendererSidebarThreadTree({
+    getClient: (hostId) => modelClientForHost(hostId),
+    getPlugins: sidebarPlugins,
+    getLocale: () => settingsLifecycle.locale,
+    openThread: (threadId) => openCodexThread(threadId),
   });
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
@@ -3622,6 +3627,7 @@ export function installRendererBindingProbe(
       skillLibrary.dispose();
       disposeSkillReferences();
       sidebarAgentIcons.dispose();
+      sidebarThreadTree.dispose();
       sidebarThreadState.dispose();
       nativeScheduleControls.dispose();
       settingsLifecycle.dispose();

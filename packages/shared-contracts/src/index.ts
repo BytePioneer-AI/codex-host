@@ -7,6 +7,7 @@ export * from "./skills.js";
 export * from "./skill-reference.js";
 export * from "./web-access-tokens.js";
 export * from "./delegation-read.js";
+export * from "./thread-tree-nodes.js";
 export * from "./credential-imports.js";
 export * from "./harness-display-settings.js";
 export * from "./harness-preferences.js";

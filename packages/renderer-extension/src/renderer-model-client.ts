@@ -119,6 +119,13 @@ import {
   type ThreadThinkingSelectParams,
   type ThreadOwnershipListParams,
   type ThreadOwnershipListResult,
+  THREAD_TREE_NODES_METHOD,
+  clientThreadTreeSchema,
+  threadTreeNodesParamsSchema,
+  threadTreeNodesResultSchema,
+  type ClientThreadTree,
+  type ThreadTreeNodesParams,
+  type ThreadTreeNodesResult,
   type ThreadUsageInspection,
   type ThreadUsageInspectionParams,
   type UpdateCheckResult,
@@ -171,6 +178,12 @@ export const THREAD_MODEL_SELECT_METHOD = "codexhost/thread/model/select";
 export const THREAD_THINKING_SELECT_METHOD = "codexhost/thread/thinking/select";
 export const THREAD_PERMISSION_MODE_SELECT_METHOD = "codexhost/thread/permission-mode/select";
 export const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
+export const THREAD_TREE_READ_METHOD = "codexhost/thread/tree/read";
+/** Sidebar decoration: never ahead of interactive work, and never left waiting forever. */
+const THREAD_TREE_REQUEST_OPTIONS: RendererRequestOptions = {
+  priority: "background",
+  timeoutMs: 30_000,
+};
 export const THREAD_USAGE_INSPECT_METHOD = "codexhost/thread/usage/inspect";
 export const THREAD_USAGE_UPDATED_METHOD = "codexhost/thread/usage/updated";
 export const THREAD_TOKEN_USAGE_UPDATED_METHOD = "thread/tokenUsage/updated";
@@ -255,6 +268,9 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
+  /** Delegation parents of the sidebar Thread tree; absent on Hosts without it. */
+  readThreadTree?(): Promise<ClientThreadTree>;
+  listThreadTreeNodes?(input: ThreadTreeNodesParams): Promise<ThreadTreeNodesResult>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
@@ -564,6 +580,20 @@ export function createRendererModelClient(
         throw new Error("Thread ownership-list result does not match the requested IDs");
       }
       return result;
+    },
+    async readThreadTree(): Promise<ClientThreadTree> {
+      return clientThreadTreeSchema.parse(
+        await manager.sendRequest(THREAD_TREE_READ_METHOD, {}, THREAD_TREE_REQUEST_OPTIONS),
+      );
+    },
+    async listThreadTreeNodes(input: ThreadTreeNodesParams): Promise<ThreadTreeNodesResult> {
+      return threadTreeNodesResultSchema.parse(
+        await manager.sendRequest(
+          THREAD_TREE_NODES_METHOD,
+          threadTreeNodesParamsSchema.parse(input),
+          THREAD_TREE_REQUEST_OPTIONS,
+        ),
+      );
     },
     inspectThreadUsage,
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {

@@ -135,6 +135,10 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  THREAD_TREE_NODES_METHOD,
+  threadTreeNodesParamsSchema,
+  threadTreeNodesResultSchema,
+  type ThreadTreeNodeStatus,
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
   threadSteeringContextSchema,
@@ -271,6 +275,8 @@ import type { HostConsoleOpener } from "./console-opener.js";
 import type { HostWebOpener } from "./web-opener.js";
 
 const CONSOLE_REQUEST_TIMEOUT_MS = 120_000;
+/** Pages of 100 read from the official archived listing for the sidebar tree. */
+const THREAD_TREE_ARCHIVED_PAGES = 10;
 
 import { ClientChannelEvents } from "./client-channel-events.js";
 import { ClientChannelHost } from "./client-channel-host.js";
@@ -338,6 +344,7 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
+import { moreUrgentThreadTreeStatus, readThreadTreeNodes } from "./thread-tree-nodes.js";
 import {
   externalThreadListEntries,
   type ExternalThreadListRuntimeState,
@@ -1862,6 +1869,10 @@ export class AppServerHost {
         await this.#waitForPlugins();
         await this.#writer.json(await this.#threadTree.handle(request));
       });
+      return;
+    }
+    if (request.method === THREAD_TREE_NODES_METHOD) {
+      this.#dispatchDesktopReply(request, () => this.#readThreadTreeNodes(request));
       return;
     }
 
@@ -3764,6 +3775,102 @@ export class AppServerHost {
         rpcError(request, -32081, "Thread ownership metadata could not be read"),
       );
     }
+  }
+
+  #sharedTreeStatusFailureReported = false;
+
+  /**
+   * Display data for sidebar tree Threads. Records are shared with the Host that owns the
+   * external Threads, but live state is not: that Host runs them, so its state is merged in.
+   */
+  async #readThreadTreeNodes(request: JsonRpcRequest): Promise<void> {
+    const params = threadTreeNodesParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread tree node params"));
+      return;
+    }
+    try {
+      await this.#waitForPlugins();
+      const local = await readThreadTreeNodes(params.data, {
+        listDelegations: () => this.#repository.listDelegations(),
+        listSummaries: () => this.#repository.listSummaries(),
+        activeThreadIds: () => this.#delegationCoordinator.activeThreadIds(),
+        hasPendingQuestion: (threadId) => this.#pendingDelegationQuestions(threadId).length > 0,
+        readOfficialTitle: (threadId) => this.#readOfficialTreeNodeTitle(threadId),
+        listOfficialArchived: () => this.#listOfficialArchivedThreadIds(),
+      });
+      const shared = await this.#sharedThreadTreeStatuses(params.data.threadIds);
+      const result = threadTreeNodesResultSchema.parse({
+        threads: local.threads.map((node) => {
+          const status = shared.get(node.threadId);
+          return status
+            ? { ...node, status: moreUrgentThreadTreeStatus(node.status, status) }
+            : node;
+        }),
+      });
+      await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(result) }));
+    } catch {
+      await this.#writer.json(rpcError(request, -32081, "Thread tree nodes could not be read"));
+    }
+  }
+
+  async #readOfficialTreeNodeTitle(threadId: string): Promise<string | null> {
+    const response = await this.#requestOfficial("thread/read", { threadId, includeTurns: false });
+    if (isRecord(response.error)) return null;
+    const result = isRecord(response.result) ? response.result : null;
+    const thread = result && isRecord(result.thread) ? result.thread : null;
+    if (!thread) return null;
+    const title =
+      typeof thread.name === "string" && thread.name.trim() ? thread.name : thread.preview;
+    return typeof title === "string" ? title : "";
+  }
+
+  /** A bounded read of the archived listing; a longer archive is cut off at the bound. */
+  async #listOfficialArchivedThreadIds(): Promise<ReadonlySet<string> | null> {
+    const archived = new Set<string>();
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < THREAD_TREE_ARCHIVED_PAGES; page += 1) {
+      const response = await this.#requestOfficial("thread/list", {
+        archived: true,
+        limit: 100,
+        cursor,
+      });
+      if (isRecord(response.error)) return null;
+      const result = officialThreadListPageFromResponse(response);
+      for (const thread of result.data) {
+        if (typeof thread.id === "string") archived.add(thread.id);
+      }
+      cursor = result.nextCursor;
+      if (cursor === null || seen.has(cursor)) break;
+      seen.add(cursor);
+    }
+    return archived;
+  }
+
+  /** Live state from the Host that runs the shared external Threads; empty when unavailable. */
+  async #sharedThreadTreeStatuses(
+    threadIds: readonly string[],
+  ): Promise<Map<string, ThreadTreeNodeStatus>> {
+    const statuses = new Map<string, ThreadTreeNodeStatus>();
+    const shared = this.#options.sharedThreads;
+    if (!shared) return statuses;
+    try {
+      const response = await shared.request(THREAD_TREE_NODES_METHOD, {
+        threadIds: [...threadIds],
+      });
+      const result = threadTreeNodesResultSchema.parse(response.result);
+      for (const node of result.threads) statuses.set(node.threadId, node.status);
+      this.#sharedTreeStatusFailureReported = false;
+    } catch (error) {
+      // An older or disconnected owner: keep this Host's own view rather than fail the read.
+      // The Renderer polls this method, so the reason is reported once per Host.
+      if (!this.#sharedTreeStatusFailureReported) {
+        this.#sharedTreeStatusFailureReported = true;
+        this.#diagnose(error);
+      }
+    }
+    return statuses;
   }
 
   /** Read the same delivery decision that Desktop `turn/steer` will follow. */

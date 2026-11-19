@@ -18,6 +18,8 @@ use crate::host_service::{clean, lifecycle_lock, publish_status, readiness};
 
 const SETTINGS_CHANGED_EXIT_CODE: i32 = 42;
 const READY: &str = "web-service-ready.json";
+// Ensure and stop hold the lifecycle lock while waiting for the supervisor.
+const READY_LOCK: &str = "web-service-ready.lock";
 const STOP: &str = "web-service.stop";
 pub(super) const FAILURE: &str = "web-service-failure.txt";
 
@@ -53,6 +55,11 @@ fn remove_file(file: &Path) -> Result<(), Box<dyn Error>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn publish_ready_record(data: &Path, record: &ReadyOwner) -> Result<(), Box<dyn Error>> {
+    let _guard = lifecycle_lock(data, READY_LOCK)?;
+    publish_status(&data.join(READY), &serde_json::to_string(record)?)
 }
 
 pub(super) fn owner(data: &Path) -> Result<Option<ReadyOwner>, Box<dyn Error>> {
@@ -217,9 +224,9 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
                 }
                 if !published && node_ready.exists() {
                     let access: WebAccess = serde_json::from_slice(&fs::read(&node_ready)?)?;
-                    publish_status(
-                        &options.data.join(READY),
-                        &serde_json::to_string(&ReadyOwner {
+                    publish_ready_record(
+                        &options.data,
+                        &ReadyOwner {
                             pid: supervisor.id,
                             started_at_micros: supervisor.started_at_micros,
                             executable: supervisor.executable.clone(),
@@ -227,7 +234,7 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
                             version: env!("CARGO_PKG_VERSION").into(),
                             runtime: options.runtime.clone(),
                             access,
-                        })?,
+                        },
                     )?;
                     if !announced {
                         publish_status(ready, "ready\n")?;
@@ -291,10 +298,32 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
             publish_status(ready, &error.to_string())?;
         }
     }
-    remove_file(&options.data.join(READY))?;
+    remove_ready_record_if_owned(&options.data, &supervisor)?;
     remove_file(&node_ready)?;
     remove_file(&stop)?;
     outcome
+}
+
+// A Web supervisor that failed before publishing, or whose record a newer
+// service replaced, must not erase the identity of a live Web service. PID
+// reuse is excluded by the started_at_micros comparison.
+fn remove_ready_record_if_owned(
+    data: &Path,
+    supervisor: &codexhost_platform::ProcessSnapshot,
+) -> Result<(), Box<dyn Error>> {
+    let _guard = lifecycle_lock(data, READY_LOCK)?;
+    let file = data.join(READY);
+    let bytes = match fs::read(&file) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if serde_json::from_slice::<ReadyOwner>(&bytes).is_ok_and(|record| {
+        record.pid == supervisor.id && record.started_at_micros == supervisor.started_at_micros
+    }) {
+        remove_file(&file)?;
+    }
+    Ok(())
 }
 
 pub(super) fn stop(options: &Options) -> Result<bool, Box<dyn Error>> {

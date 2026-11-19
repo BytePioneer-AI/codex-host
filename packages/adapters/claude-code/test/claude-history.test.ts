@@ -30,6 +30,11 @@ describe("Claude history mapping", () => {
           message("assistant", "assistant-string-progress", "preparing the export"),
           message("assistant", "assistant-progress", [
             { type: "thinking", thinking: "inspect the existing files" },
+            {
+              type: "thinking",
+              thinking: "I will check the existing files",
+              signature: "Eg0KC0IJbmFycmF0aW9u",
+            },
             { type: "text", text: "checking the existing files" },
           ]),
           {
@@ -52,6 +57,14 @@ describe("Claude history mapping", () => {
             },
             {
               item: { type: "reasoning", text: "inspect the existing files" },
+              outcome: { status: "succeeded" },
+            },
+            {
+              item: {
+                type: "agentMessage",
+                text: "I will check the existing files",
+                phase: "commentary",
+              },
               outcome: { status: "succeeded" },
             },
             {

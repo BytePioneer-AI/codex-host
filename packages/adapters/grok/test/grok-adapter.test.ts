@@ -32,6 +32,7 @@ import {
 } from "../src/index.js";
 
 import { parseGrokQuestionRequest } from "../src/grok-questions.js";
+import { encodeGrokModelRef } from "../src/grok-models.js";
 
 const initialize: InitializeResponse = {
   protocolVersion: 1,
@@ -56,6 +57,36 @@ const initialize: InitializeResponse = {
     },
   },
 };
+
+const nativeGatewayModel = "magpie/grok-2/grok-4.7";
+const gatewayAliasModel = "magpie-grok47";
+const gatewayModelIds = [nativeGatewayModel, gatewayAliasModel, "grok-4.6", "grok-4.5"];
+
+function gatewayModelInitialize(currentModelId = nativeGatewayModel): InitializeResponse {
+  return {
+    ...initialize,
+    _meta: {
+      modelState: {
+        currentModelId,
+        availableModels: gatewayModelIds.map((modelId) => ({
+          modelId,
+          name: modelId,
+          _meta: {
+            totalContextTokens:
+              modelId === nativeGatewayModel
+                ? 500000
+                : modelId === gatewayAliasModel
+                  ? 272000
+                  : 256000,
+            ...(modelId === nativeGatewayModel ? { contextWindows: [256000, 500000] } : {}),
+            reasoningEffort: "high",
+            reasoningEfforts: [{ id: "high", label: "High" }],
+          },
+        })),
+      },
+    },
+  };
+}
 
 const nativeResponseUsage = {
   input_tokens: 100,
@@ -903,6 +934,78 @@ describe("Grok Adapter ACP projection", () => {
       modelId: "grok-4.6",
     });
     await adapter.close();
+  });
+
+  it("round-trips a native slash Model ID through inspection, creation, and selection", async () => {
+    const transport = new FakeGrokTransport();
+    transport.initializeResponse = gatewayModelInitialize();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const inspection = await adapter.inspect({ cwd: "/synthetic" });
+    if (inspection.status !== "ready") throw new Error("Expected a ready Grok inspection");
+    expect(inspection.catalog.models.map(({ ref }) => ref.id)).toEqual(
+      gatewayModelIds.map((id) => encodeGrokModelRef(id).id),
+    );
+
+    const nativeRef = encodeGrokModelRef(nativeGatewayModel);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model: nativeRef });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.openCalls).toContainEqual({
+      kind: "create",
+      permissionModeId: "ask",
+      modelId: nativeGatewayModel,
+    });
+    expect(opened.value.initialState.effectiveModel).toEqual(nativeRef);
+
+    await expect(
+      opened.value.execute({
+        type: "model.select",
+        model: encodeGrokModelRef(gatewayAliasModel),
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setModel).toHaveBeenLastCalledWith(gatewayAliasModel, "high", undefined);
+    await expect(
+      opened.value.execute({ type: "model.select", model: nativeRef }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setModel).toHaveBeenLastCalledWith(nativeGatewayModel, "high", 500000);
+    await adapter.close();
+  });
+
+  it("restores the saved native slash Model when cold resume returns no Model state", async () => {
+    const transport = new FakeGrokTransport();
+    transport.initializeResponse = gatewayModelInitialize(gatewayAliasModel);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const model = encodeGrokModelRef(nativeGatewayModel);
+
+    try {
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: {
+          harnessId: adapter.harnessId,
+          nativeSessionId: transport.sessionId,
+          formatVersion: 1,
+        },
+        model,
+      });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(transport.setModel).toHaveBeenCalledWith(nativeGatewayModel, "high", 500000);
+      expect(resumed.value.initialState.effectiveModel).toEqual(model);
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("passes user input unchanged without injecting Model identity instructions", async () => {
@@ -2917,6 +3020,74 @@ describe("Grok Adapter ACP projection", () => {
     await session.close();
     await adapter.close();
   });
+
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "restores a native slash Model ID after %s",
+    async (kind) => {
+      const transport = new FakeGrokTransport();
+      transport.initializeResponse = gatewayModelInitialize();
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: vi.fn(() => "id"),
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      const created = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        model: encodeGrokModelRef(nativeGatewayModel),
+      });
+      if (!created.ok) throw new Error(created.error.message);
+      const sourceRef = created.value.initialState.nativeRef;
+      if (!sourceRef) throw new Error("Created Session is missing its Native reference");
+      const sourceHistory: GrokTransportEvent[] = [
+        { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+        { type: "agent.text", text: "answer-1" },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+        { type: "agent.text", text: "answer-2" },
+        { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+      ];
+      transport.histories.set(sourceRef.nativeSessionId, sourceHistory);
+      transport.forkImpl = async () => {
+        transport.histories.set("child-session", sourceHistory.slice(0, 3));
+        return { sessionId: "child-session" };
+      };
+      transport.rewindImpl = async (input) => {
+        transport.histories.set(input.sessionId, [
+          ...sourceHistory,
+          { type: "rewind.marker", targetPromptIndex: input.targetPromptIndex },
+        ]);
+      };
+      transport.setModel.mockClear();
+      transport.initializeResponse = gatewayModelInitialize(gatewayAliasModel);
+
+      const opened = await adapter.open(
+        kind === "fork"
+          ? {
+              kind,
+              cwd: "/synthetic",
+              sourceRef,
+              checkpoint: nativeCheckpointRefSchema.parse({
+                harnessId: adapter.harnessId,
+                nativeSessionId: sourceRef.nativeSessionId,
+                checkpointId: "0",
+                formatVersion: 1,
+              }),
+            }
+          : { kind, cwd: "/synthetic", sourceRef },
+      );
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(transport.setModel).toHaveBeenCalledWith(nativeGatewayModel, "high", 500000);
+      expect(opened.value.initialState.effectiveModel).toEqual(
+        encodeGrokModelRef(nativeGatewayModel),
+      );
+      await created.value.close();
+      await opened.value.close();
+    },
+  );
 
   it("restores the source Session Model and Thinking after Rewind", async () => {
     const transport = new FakeGrokTransport();

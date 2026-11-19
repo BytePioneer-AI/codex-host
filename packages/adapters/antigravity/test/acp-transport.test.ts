@@ -1,11 +1,17 @@
 import type * as ChildProcess from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { TransformStream } from "node:stream/web";
 import { setTimeout as delay } from "node:timers/promises";
 
+import type { HostEvent } from "@codexhost/harness-adapter";
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityAcpTransport } from "../src/acp-transport.js";
+import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import { resolveAntigravityExecutable } from "../src/command.js";
 import type { AntigravityAcpEvent, AntigravityActivePromptHandler } from "../src/acp-types.js";
 
@@ -53,6 +59,15 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     promptId=req.id;
     if (scenario === 'exit-prompt') return setTimeout(() => process.exit(8), 10);
     if (scenario === 'stall-prompt' || scenario === 'close-stalled') return;
+    if (scenario === 'same-write-tail') {
+      const chunk = (sessionUpdate, text) => ({method:'session/update',params:{sessionId:'native',update:{sessionUpdate,content:{type:'text',text}}}});
+      return process.stdout.write([
+        chunk('agent_message_chunk','answer'),
+        {id:req.id,result:{stopReason:'end_turn'}},
+        chunk('agent_thought_chunk','T1'),
+        chunk('agent_message_chunk','A1'),
+      ].map(value => JSON.stringify({jsonrpc:'2.0',...value})+'\\n').join(''));
+    }
     if (scenario === 'drained-prompt') {
       update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'A'.repeat(512 * 1024)}},'native',() => process.stderr.write('prompt-flushed\\n'));
       return result(req.id,{stopReason:'end_turn'});
@@ -76,6 +91,9 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'late-close-notification'}});
     if (scenario === 'close-stalled') return;
     return result(req.id,{});
+  }
+  if (req.method === 'antigravity/idle-notify' && !req.id) {
+    return update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'background note'}});
   }
 });
 `,
@@ -284,6 +302,51 @@ describe("native ACP stdio transport", () => {
       { type: "agent.text", text: JSON.stringify(parts) },
     ]);
   });
+  it("projects chunks following a prompt response in the same write after Turn completion", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "agy-acp-tail-"));
+    const adapter = new AntigravityAdapter({
+      environment: { HOME: home, USERPROFILE: home, AGY_TEST_SCENARIO: "same-write-tail" },
+    });
+    try {
+      const opened = await adapter.open({ kind: "create", cwd: home });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const events: HostEvent[] = [];
+      void (async () => {
+        for await (const output of opened.value.outputs)
+          if (output.kind === "event") events.push(output.event);
+      })();
+      const turnId = hostTurnIdSchema.parse("same-write-tail");
+      expect(
+        await opened.value.execute({
+          type: "turn.start",
+          turnId,
+          input: [{ type: "text", text: "hello" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await vi.waitFor(() =>
+        expect(events.filter((event) => event.type === "item.updated")).toHaveLength(3),
+      );
+      const completedIndex = events.findIndex((event) => event.type === "turn.completed");
+      expect(completedIndex).toBeGreaterThanOrEqual(0);
+      expect(
+        events.slice(0, completedIndex).filter((event) => event.type === "item.updated"),
+      ).toMatchObject([{ update: { text: "answer" } }]);
+      expect(
+        events
+          .slice(completedIndex + 1)
+          .filter((event) => event.type === "item.background.started"),
+      ).toMatchObject([
+        { turnId, item: { type: "reasoning" } },
+        { turnId, item: { type: "agentMessage" } },
+      ]);
+      expect(
+        events.slice(completedIndex + 1).filter((event) => event.type === "item.updated"),
+      ).toMatchObject([{ update: { text: "T1" } }, { update: { text: "A1" } }]);
+    } finally {
+      await adapter.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   it.each(["auth-code", "auth-text"])("normalizes %s authentication failures", async (scenario) => {
     const value = transport(scenario);
     await expect(value.initialize()).rejects.toMatchObject({ kind: "authenticationRequired" });
@@ -460,5 +523,32 @@ describe("native ACP stdio transport", () => {
     await expect(value.prompt([], handler())).rejects.toThrow("already active");
     await value.close();
     await pending;
+  });
+  it("routes idle agent output without an active prompt to the session handler", async () => {
+    const value = transport();
+    await open(value);
+    const events: AntigravityAcpEvent[] = [];
+    value.setSessionEventHandler((event) => events.push(event));
+    const child = fixture.children.at(-1);
+    child?.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "antigravity/idle-notify",
+        params: {},
+      }) + "\n",
+    );
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({ type: "agent.text", text: "background note" }),
+    );
+  });
+  it("keeps prompt-time output on the active handler", async () => {
+    const value = transport();
+    await open(value);
+    const sessionEvents: AntigravityAcpEvent[] = [];
+    const promptEvents: AntigravityAcpEvent[] = [];
+    value.setSessionEventHandler((event) => sessionEvents.push(event));
+    await value.prompt([], handler(promptEvents));
+    expect(promptEvents).toContainEqual({ type: "agent.text", text: expect.any(String) });
+    expect(sessionEvents).not.toContainEqual(expect.objectContaining({ type: "agent.text" }));
   });
 });

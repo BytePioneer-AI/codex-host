@@ -29,7 +29,7 @@ import type { ModelSelectInjected } from "./slots.ts";
 import { ModelControls } from "./ModelControls.tsx";
 import { en, zh, type ModelKey } from "./locales.ts";
 import { orderModelProviders } from "./provider-order.ts";
-import { isModelRoute } from "./fast-model.ts";
+import { isModelRoute, modelRowSelection } from "./fast-model.ts";
 
 export { ModelDirectory } from "./directory.ts";
 export type { ModelDirectoryState } from "./directory.ts";
@@ -90,17 +90,12 @@ function selectionOf(state: ModelDirectoryState, id: string): ModelSelection | u
   for (const group of state.groups) {
     for (const model of group.models) {
       if (rowId(group.id, model.id) !== id) continue;
-      const { current } = state;
-      const sameRoute = current?.provider === group.id && isModelRoute(model, current.model);
-      const reasoningEffort = sameRoute
-        ? (current.reasoningEffort ?? model.reasoning?.defaultEffort)
-        : model.reasoning?.defaultEffort;
-      return {
+      const reasoningEffort = model.reasoning?.defaultEffort;
+      return modelRowSelection(state.groups, state.current, {
         provider: group.id,
-        // Re-picking the current Model keeps its Fast variant.
-        model: sameRoute ? current.model : model.id,
+        model: model.id,
         ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      };
+      });
     }
   }
   return undefined;

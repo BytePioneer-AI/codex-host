@@ -4,8 +4,10 @@ import { Readable, Writable } from "node:stream";
 import {
   ClientSideConnection,
   ndJsonStream,
+  type AnyMessage,
   type Client,
   type InitializeResponse,
+  type JsonRpcId,
 } from "@agentclientprotocol/sdk";
 import { sanitizeDiagnosticTail } from "@codexhost/harness-adapter";
 import { commandInvocation as antigravityInvocation } from "@codexhost/harness-discovery";
@@ -34,6 +36,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   #sessionId: string | null = null;
   #sessionHandler: AntigravitySessionEventHandler | null = null;
   #active: AntigravityActivePromptHandler | null = null;
+  #promptRequestId: JsonRpcId | undefined;
   #callbacks = new Set<() => void>();
   #acceptCallbacks = false;
   #promptInterrupted: AbortController | null = null;
@@ -118,6 +121,16 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
           strategy: { highWaterMark: Infinity },
         }) as ReadableStream<Uint8Array>,
       );
+      const writer = stream.writable.getWriter();
+      stream.writable = new WritableStream<AnyMessage>({
+        write: (message) => {
+          if ("method" in message && message.method === "session/prompt" && "id" in message)
+            this.#promptRequestId = message.id;
+          return writer.write(message);
+        },
+        close: () => writer.close(),
+        abort: (reason) => writer.abort(reason),
+      });
       // agy extends the SDK's tool/permission/form shapes (args, allow_session,
       // and oneOf array items). Dispatch those incoming payloads through the SDK's
       // extension handlers so its standard schemas do not discard native fields.
@@ -137,6 +150,16 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
             }
             if ("method" in message && nativeMethods.has(message.method))
               message.method = `_antigravity/${message.method}`;
+            if (
+              !("method" in message) &&
+              "id" in message &&
+              message.id === this.#promptRequestId &&
+              ("result" in message || "error" in message)
+            ) {
+              // The next update is idle output, even if the SDK has not settled prompt().
+              this.#promptRequestId = undefined;
+              this.#active?.onResponse?.();
+            }
             controller.enqueue(message);
           },
         }),
@@ -298,6 +321,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       this.#clearCallbacks();
       this.#acceptCallbacks = false;
       this.#active = null;
+      this.#promptRequestId = undefined;
       this.#promptInterrupted = null;
     }
   }
@@ -317,6 +341,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
       new AntigravityTransportError("unavailable", "ACP session closed"),
     );
     this.#active = null;
+    this.#promptRequestId = undefined;
     this.#pendingEvents = [];
     this.#clearCallbacks();
     if (sessionId && this.#connection)
@@ -381,7 +406,10 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     if (
       ["config.update", "mode.update", "commands.update", "session.info", "usage.context"].includes(
         event.type,
-      )
+      ) ||
+      // The wire request bounds foreground updates; the handler may still
+      // be present to let the SDK finish processing earlier callbacks.
+      (this.#promptRequestId === undefined && !this.#opening)
     ) {
       if (this.#sessionHandler) this.#sessionHandler(event);
       else this.#pendingEvents.push(event);

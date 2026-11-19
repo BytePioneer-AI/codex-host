@@ -147,6 +147,7 @@ import type {
   ClaudeModelInspector,
   ClaudePlanApprovalRequest,
   ClaudePlanLimitEvent,
+  ClaudePlanLimitWindow,
   ClaudeQuestionRequest,
   ClaudeTransportFailureKind,
   ClaudeTransportTurnResult,
@@ -554,6 +555,49 @@ function claudeCacheHitRatePercent(usage: {
  */
 function isoFromUnix(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString();
+}
+
+function unixFromIso(iso: string): number | undefined {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return undefined;
+  const unix = Math.trunc(ms / 1000);
+  return Number.isSafeInteger(unix) ? unix : undefined;
+}
+
+function planLimitWindowFromCredits(
+  utilizationPercent: number,
+  resetsAt: string | undefined,
+): ClaudePlanLimitWindow {
+  const resetsAtUnix = resetsAt === undefined ? undefined : unixFromIso(resetsAt);
+  return {
+    utilizationPercent,
+    ...(resetsAtUnix !== undefined ? { resetsAtUnix } : {}),
+  };
+}
+
+/** Inverse of `projectClaudePlanLimitToCredits`, for seeding the cache from an account inspection. */
+export function planLimitFromAccountCredits(
+  credits: AccountCreditsSnapshot | null | undefined,
+): ClaudePlanLimitEvent | null {
+  if (!credits) return null;
+  const event: ClaudePlanLimitEvent = {};
+  if (credits.periodType === "five_hour") {
+    event.fiveHour = planLimitWindowFromCredits(credits.usedPercent, credits.resetsAt);
+    const sevenDay = credits.productUsage?.find(
+      (product) => product.periodType === "seven_day" && !product.scope,
+    );
+    if (sevenDay) {
+      event.sevenDay = planLimitWindowFromCredits(sevenDay.usagePercent, sevenDay.resetsAt);
+    }
+  } else if (credits.periodType === "seven_day" && !credits.scope) {
+    event.sevenDay = planLimitWindowFromCredits(credits.usedPercent, credits.resetsAt);
+  } else {
+    return null;
+  }
+  if (!accountCreditsSnapshotSchema.safeParse(projectClaudePlanLimitToCredits(event)).success) {
+    return null;
+  }
+  return event.fiveHour || event.sevenDay ? event : null;
 }
 
 export function projectClaudePlanLimitToCredits(
@@ -2049,6 +2093,12 @@ class ClaudeHarnessSession implements HarnessSession {
         if (event.delta.length > 0) this.#observeRootOutput(active);
         this.#appendText(active, event.messageId, event.delta);
         return;
+      case "narration.completed":
+        this.#observeRootOutput(active);
+        if (event.completeOnly) active.reasoningOrdinal += 1;
+        this.#appendText(active, event.messageId, event.text, "commentary");
+        this.#completeAgentItem(active, { status: "succeeded" }, false);
+        return;
       case "reasoning.delta":
         if (event.delta.length > 0) this.#observeRootOutput(active);
         this.#activateAssistantMessage(active, event.messageId);
@@ -2397,11 +2447,11 @@ class ClaudeHarnessSession implements HarnessSession {
     active.assistantMessageId = messageId;
   }
 
-  #appendText(active: ActiveTurn, messageId: string, delta: string): void {
+  #appendText(active: ActiveTurn, messageId: string, delta: string, phase?: "commentary"): void {
     if (this.#active !== active || delta.length === 0) return;
     this.#activateAssistantMessage(active, messageId);
     if (!active.item) throw new Error("Claude Assistant text has no active Item");
-    active.item = { ...active.item, text: active.item.text + delta };
+    active.item = { ...active.item, ...(phase ? { phase } : {}), text: active.item.text + delta };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
@@ -3373,8 +3423,21 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       // A native quota push received during inspection is newer evidence than this result.
       if (this.#latestPlanLimit === planLimitAtStart) {
         this.#accountCreditsSupported = account?.credits !== undefined;
+        const inspected = planLimitFromAccountCredits(account?.credits);
+        if (inspected) {
+          const next: ClaudePlanLimitEvent = { ...(this.#latestPlanLimit ?? {}) };
+          if (inspected.fiveHour) next.fiveHour = inspected.fiveHour;
+          if (inspected.sevenDay) next.sevenDay = inspected.sevenDay;
+          if (
+            accountCreditsSnapshotSchema.safeParse(projectClaudePlanLimitToCredits(next)).success
+          ) {
+            this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
+            this.#accountCreditsSupported = true;
+          }
+        }
         for (const session of this.#sessions) {
           session.publishAccountCreditsSupport(this.#accountCreditsSupported);
+          if (this.#latestPlanLimit && inspected) session.publishPlanLimit(this.#latestPlanLimit);
         }
       }
       return account;
@@ -3751,6 +3814,10 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
 
   credits(): AccountCreditsSnapshot | null {
     return projectClaudePlanLimitToCredits(this.#latestPlanLimit);
+  }
+
+  refreshCredits(): Promise<AccountCreditsSnapshot | null> {
+    return this.inspectAccount().then(() => this.credits());
   }
 
   close(): Promise<void> {

@@ -410,12 +410,13 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   });
   mkdirSync(root, { recursive: true });
   const file = path.join(root, ".codex-global-state.json");
-  const text = JSON.stringify({
-    "project-order": ["selected"],
-    "local-projects": {
-      a: { id: "selected", name: "Project", rootPaths: ["/real/project"] },
-      b: { id: "hidden", name: "Hidden", rootPaths: ["/other"] },
-    },
+  const selected = { id: "selected", name: "Project", rootPaths: ["/real/project"] };
+  const first = { id: "first", name: "First", rootPaths: ["/first"] };
+  const hidden = { id: "hidden", name: "Hidden", rootPaths: ["/other"] };
+  const foreign = { id: "foreign", name: "Foreign", rootPaths: ["/foreign"] };
+  const state = {
+    "project-order": ["remote-project", "first", "selected", "first"],
+    "local-projects": { a: selected, b: hidden, c: first, duplicate: hidden, foreign },
     "thread-project-assignments": {
       thread: { projectKind: "local", projectId: "selected" },
       remote: { projectKind: "remote", projectId: "remote" },
@@ -423,15 +424,42 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     "projectless-thread-ids": ["unselected"],
     "pinned-thread-ids": ["thread"],
     privateData: "must not be projected",
-  });
+  };
+  const text = JSON.stringify(state);
   writeFileSync(file, text);
   expect(await readNativeWorkspaceSnapshot(environment)).toEqual({
-    projects: [{ id: "selected", name: "Project", rootPaths: ["/real/project"] }],
+    projects: [first, selected],
     assignments: { thread: "selected" },
     projectless: ["unselected"],
     pinned: [],
   });
   expect(readFileSync(file, "utf8")).toBe(text);
+  const migrated = {
+    ...state,
+    "app-server-project-id-by-legacy-project-id-by-host": {
+      [`local:${path.resolve(root)}`]: { hidden: "native-hidden", first: "native-first" },
+      "remote-ssh:other": { foreign: "native-foreign" },
+    },
+  };
+  writeFileSync(file, JSON.stringify(migrated));
+  expect((await readNativeWorkspaceSnapshot(environment)).projects).toEqual([
+    first,
+    selected,
+    hidden,
+  ]);
+  for (const key of ["a", "duplicate"] as const) {
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...migrated,
+        "local-projects": {
+          ...state["local-projects"],
+          [key]: { ...state["local-projects"][key], rootPaths: [123] },
+        },
+      }),
+    );
+    await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow(/rootPaths/u);
+  }
   for (const invalid of ["{bad", "[]", "null", '"wrong"', '{"project-order":[123]}']) {
     writeFileSync(file, invalid);
     await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow();

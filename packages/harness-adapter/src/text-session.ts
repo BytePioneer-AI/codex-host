@@ -1,6 +1,7 @@
 import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
   HarnessAccountSnapshot,
+  AccountBalanceSnapshot,
   AccountCreditsSnapshot,
   HarnessInstallationState,
   HarnessCommandCatalog,
@@ -574,6 +575,19 @@ export interface ItemDetachedEvent {
   itemId: HostItemId;
 }
 
+/**
+ * The Harness produced new output after its Turn completed (idle-time
+ * background work). The Item starts and stays detached on the completed
+ * Turn; it settles later with `item.updated` / `item.completed` on the
+ * same Turn, exactly like an `item.detached` Item. Adapters must emit it
+ * only while no successor Turn has started, and only for text Items.
+ */
+export interface ItemBackgroundStartedEvent {
+  type: "item.background.started";
+  turnId: HostTurnId;
+  item: HostItem;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
@@ -609,6 +623,7 @@ export type HostEvent =
   | ItemUpdatedEvent
   | ItemCompletedEvent
   | ItemDetachedEvent
+  | ItemBackgroundStartedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
@@ -736,6 +751,14 @@ export interface HarnessAdapter {
    * observes a later read, does not await this call, and isolates rejection.
    */
   refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
+  /** Optional cached prepaid balance for Harnesses whose Billing Source reports funds, not a
+   * percentage quota. Same contract as `credits()`: synchronous, no I/O, null when unknown.
+   */
+  balance?(): AccountBalanceSnapshot | null;
+  /** Best-effort refresh of the `balance()` cache. Must not start a model Turn; Host does
+   * not await it and isolates rejection.
+   */
+  refreshBalance?(): Promise<AccountBalanceSnapshot | null>;
   /**
    * The same read when one Harness exposes several Billing Sources. Host prefers
    * this method and retains the first snapshot as the compatibility `account`.

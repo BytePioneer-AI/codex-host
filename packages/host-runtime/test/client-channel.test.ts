@@ -58,6 +58,20 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
+  it("rejects non-Codex draft command inspection before reading the Adapter catalog", async () => {
+    const { fixture, a } = await setup();
+    const readCatalog = vi.fn(() => ({ commands: [] }));
+    Object.defineProperty(fixture.adapter, "commandCatalog", { get: readCatalog });
+
+    await expect(
+      a.request("codexhost/harness/commands/inspect", { harnessId: "pi", cwd: "/synthetic" }),
+    ).rejects.toMatchObject({
+      code: -32602,
+      message: 'Client draft command inspection requires harnessId "codex"',
+    });
+    expect(readCatalog).not.toHaveBeenCalled();
+  });
+
   it("broadcasts completed explicit inspection refreshes, including normalized failures", async () => {
     const { fixture, a, events } = await setup();
     const inspect = vi.spyOn(fixture.adapter, "inspect");

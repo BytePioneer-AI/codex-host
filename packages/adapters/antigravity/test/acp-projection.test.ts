@@ -629,6 +629,29 @@ describe("history replay", () => {
     expect(result[0]?.items[0]?.outcome.status).toBe("cancelled");
     expect(result[0]?.outcome.status).toBe("unknown");
   });
+  it("merges consecutive replayed agent text into one completed Item", () => {
+    const [turn] = projectReplayedEventsToTurns({
+      nativeSessionId: "native",
+      cwd,
+      events: [
+        { type: "user.text", text: "question" },
+        { type: "agent.text", text: "answer " },
+        { type: "agent.text", text: "before restart" },
+        { type: "agent.text", text: "after restart" },
+      ],
+    });
+    expect(turn?.input).toEqual([{ type: "text", text: "question" }]);
+    expect(turn?.items).toEqual([
+      {
+        item: {
+          type: "agentMessage",
+          itemId: "turn-0-item-0",
+          text: "answer before restartafter restart",
+        },
+        outcome: { status: "succeeded" },
+      },
+    ]);
+  });
 });
 
 it("merges live commands with built-ins and ignores duplicates/invalid names", () => {
@@ -643,4 +666,60 @@ it("merges live commands with built-ins and ignores duplicates/invalid names", (
     description: "Limits",
   });
   expect(catalog.commands.some(({ invocation }) => invocation === "/two words")).toBe(false);
+});
+
+describe("idle background output replay consistency", () => {
+  const nativeSessionId = "native";
+  const idleTail: AntigravityAcpEvent[] = [
+    { type: "user.text", text: "first question" },
+    { type: "agent.text", text: "first answer" },
+    // Idle background output arrives after end_turn, before the next prompt.
+    { type: "agent.text", text: "awake: " },
+    { type: "agent.text", text: "done" },
+    { type: "user.text", text: "second question" },
+    { type: "agent.text", text: "second answer" },
+  ];
+
+  it("attributes idle tail output to the preceding Turn exactly like the live adapter", () => {
+    const turns = projectReplayedEventsToTurns({
+      nativeSessionId,
+      cwd: "/repo",
+      events: idleTail,
+    });
+    expect(turns).toHaveLength(2);
+    // Live attribution: the idle episode belongs to the most recently completed
+    // Turn (turn index 0). Replay merges the answer and the idle tail into one
+    // consecutive agentMessage run; without a native messageId, Item-level
+    // granularity stays a protocol limit (design §10.1), while Turn attribution
+    // and full text content stay identical on both sides.
+    const first = turns[0];
+    const texts = first?.items
+      .filter(({ item }) => item.type === "agentMessage")
+      .map(({ item }) => (item as { text: string }).text);
+    expect(texts).toEqual(["first answerawake: done"]);
+    expect(turns[1]?.items.map(({ item }) => item.type)).toEqual(["agentMessage"]);
+    // Native Turn keys stay positional and untouched by idle output.
+    expect(turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual(["turn-0", "turn-1"]);
+  });
+
+  it("keeps replay idempotent across repeated loads", () => {
+    const params = { nativeSessionId, cwd: "/repo", events: idleTail };
+    const first = projectReplayedEventsToTurns(params);
+    expect(projectReplayedEventsToTurns(params)).toEqual(first);
+    expect(projectReplayedEventsToTurns(params)).toEqual(first);
+  });
+
+  it("keeps idle-only tails on the last Turn without inventing a new Turn", () => {
+    const turns = projectReplayedEventsToTurns({
+      nativeSessionId,
+      cwd: "/repo",
+      events: [
+        { type: "user.text", text: "only question" },
+        { type: "agent.text", text: "answer" },
+        { type: "agent.thought", text: "late thought" },
+      ],
+    });
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.items.map(({ item }) => item.type)).toEqual(["agentMessage", "reasoning"]);
+  });
 });

@@ -263,24 +263,23 @@ export class RendererDesktopExtensions {
     if (this.#target !== target || this.#closed) return;
     target.enabled = configuration.enabled.length > 0;
     const token = configuration.reloadToken;
-    if (token && token !== this.#handled && configuration.enabled.length === 0) {
-      await this.#replaceSnapshot(target, []);
-      if (token !== this.#attempted) {
-        await target.renderer.evaluate(reconciliation([]), 1_000).catch(() => undefined);
-        if (this.#target !== target || this.#closed) return;
-        await target.renderer.command("Page.reload");
-        this.#attempted = token;
+    if (token && token !== this.#handled) {
+      if (target.enabled) {
+        // A newer enable supersedes recovery, even if applying that selection fails.
+        await this.#recordReloadToken(target, token);
+      } else {
+        await this.#replaceSnapshot(target, []);
+        if (token !== this.#attempted) {
+          await target.renderer.evaluate(reconciliation([]), 1_000).catch(() => undefined);
+          if (this.#target !== target || this.#closed) return;
+          await target.renderer.command("Page.reload");
+          this.#attempted = token;
+        }
+        target.extensions = {};
+        await this.#recordReloadToken(target, token);
+        this.hint();
+        return;
       }
-      this.#handled = token;
-      target.extensions = {};
-      try {
-        await this.#publish(target);
-      } catch (error) {
-        this.#handled = undefined;
-        throw error;
-      }
-      this.hint();
-      return;
     }
     const desired: Application[] = [];
     const statuses = new Map<string, DesktopExtensionStatus>();
@@ -348,14 +347,17 @@ export class RendererDesktopExtensions {
       if (!statuses.has(id) && status.state === "disabled" && status.error)
         statuses.set(id, status);
     target.extensions = Object.fromEntries(statuses);
-    // An enable can arrive before the controller observes the recovery token.
-    // Consume that token without reloading a window with a newer selection.
-    const previousToken = this.#handled;
-    if (token) this.#handled = token;
+    await this.#publish(target);
+  }
+
+  async #recordReloadToken(target: Target, token: string): Promise<void> {
+    if (this.#target !== target || this.#closed) return;
+    const previous = this.#handled;
+    this.#handled = token;
     try {
       await this.#publish(target);
     } catch (error) {
-      this.#handled = previousToken;
+      this.#handled = previous;
       throw error;
     }
   }

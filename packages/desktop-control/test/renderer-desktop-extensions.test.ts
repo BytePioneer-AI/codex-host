@@ -75,6 +75,7 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
   };
   return {
     failBindingRead: false,
+    failLiveApply: false,
     pages,
     events,
     evaluations,
@@ -104,6 +105,8 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
           adapter: { state: "ready", reason: "ready" },
         } as T;
       }
+      if (this.failLiveApply && expression.includes(".reconcile("))
+        throw new Error("Live reconciliation unavailable");
       return runInNewContext(expression, context) as T;
     },
     async command(method: string, params?: Record<string, unknown>): Promise<unknown> {
@@ -218,25 +221,42 @@ it.each(["same", "new"])(
   },
 );
 
-it("consumes a stale recovery token without reloading and resends a failed script", async () => {
-  const script = "/* badge body */ define({activate(){}})";
-  await install("badge", script);
+it("records a superseded recovery token even if the newer enabled selection cannot be applied", async () => {
+  await install("badge", "define({activate(){}})");
+  const failures: unknown[] = [];
+  const c = new RendererDesktopExtensions(directory, (error) => failures.push(error));
+  controllers.push(c);
+  const renderer = fakeRenderer();
+  c.attach("target", renderer);
+  await c.refresh();
   const reloadToken = "e3472f62-d37b-46e4-9a56-b421680b920c";
   await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["badge"], reloadToken }));
+  renderer.failLiveApply = true;
+  await c.refresh();
+  expect(failures).toEqual([new Error("Live reconciliation unavailable")]);
+  const doc = desktopExtensionsDiagnosticSchema.parse(
+    JSON.parse(await readFile(desktopExtensionsStatusPath(directory), "utf8")),
+  );
+  expect(doc.handledReloadToken).toBe(reloadToken);
+  renderer.failLiveApply = false;
+  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: [] }));
+  await c.refresh();
+  expect(renderer.reloads).toBe(0);
+  expect(renderer.state).toEqual({});
+});
+
+it("resends the script when the registered hash matches but its state is failed", async () => {
+  const script = "/* badge body */ define({activate(){}})";
+  await install("badge", script);
+  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["badge"] }));
   const c = controller();
   const renderer = fakeRenderer();
   c.attach("target", renderer);
   await c.refresh();
-  expect(renderer.reloads).toBe(0);
-  expect(renderer.state.badge?.state).toBe("running");
-  renderer.state.badge!.state = "failed";
+  renderer.state.badge = { ...renderer.state.badge, state: "failed" };
   renderer.evaluations.length = 0;
   await c.refresh();
   expect(renderer.evaluations.some((expression) => expression.includes(script))).toBe(true);
-  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: [], reloadToken }));
-  await c.refresh();
-  expect(renderer.reloads).toBe(0);
-  expect(renderer.state).toEqual({});
 });
 
 it("leaves offline reloads extension-free and reconnects from the latest selection", async () => {

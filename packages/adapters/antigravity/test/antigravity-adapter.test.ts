@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -1237,6 +1237,34 @@ describe("inspection and errors", () => {
       expect(await adapter.inspect({ cwd: home, refresh: true })).toMatchObject({
         status: "unavailable",
         error: { message: expect.stringContaining("1.5.8") },
+      });
+    },
+  );
+  it.skipIf(process.platform === "win32")(
+    "refreshing project availability invalidates the default model catalog without mixing directories",
+    async () => {
+      const project = await mkdtemp(path.join(os.tmpdir(), "agy-catalog-"));
+      directories.push(project);
+      const command = path.join(project, "agy");
+      const writeModels = (model: string) =>
+        writeFile(
+          command,
+          `#!/bin/sh\nif [ "$1" = '--version' ]; then echo 'agy 1.5.8'; else printf '${model}\\t%s\\n' "$PWD"; fi\n`,
+          { mode: 0o755 },
+        );
+      const { adapter } = fixture({ command });
+      await writeModels("old-model");
+      expect(await adapter.inspect()).toMatchObject({
+        catalog: { models: [{ ref: { id: "old-model" } }] },
+      });
+      await adapter.inspect({ cwd: project });
+      await writeModels("new-model");
+      await adapter.inspect({ cwd: project, purpose: "availability", refresh: true });
+      expect(await adapter.inspect()).toMatchObject({
+        catalog: { models: [{ ref: { id: "new-model" }, label: await realpath(process.cwd()) }] },
+      });
+      expect(await adapter.inspect({ cwd: project })).toMatchObject({
+        catalog: { models: [{ ref: { id: "new-model" }, label: await realpath(project) }] },
       });
     },
   );

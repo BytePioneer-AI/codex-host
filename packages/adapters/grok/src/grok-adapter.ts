@@ -1712,14 +1712,19 @@ export class GrokAdapter implements HarnessAdapter {
     return this.#credits;
   }
 
+  #inspectionGeneration = 0;
+
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closePromise)
       return { status: "unavailable", error: invalidState("Grok Adapter is closed") };
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached && Date.now() < cached.expiresAt) return cached.inspection;
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionGeneration++;
     }
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached && Date.now() < cached.expiresAt) return cached.inspection;
+    const generation = this.#inspectionGeneration;
     let transport: GrokAcpTransportLike | null = null;
     const startedAt = Date.now();
     let stage = "spawn";
@@ -1738,10 +1743,12 @@ export class GrokAdapter implements HarnessAdapter {
         permissionModes: GROK_PERMISSION_MODE_CATALOG,
         capabilities: capabilitiesForModels(modelState),
       };
-      this.#inspectionCache.set(cwd, {
-        inspection: ready,
-        expiresAt: Date.now() + INSPECTION_CACHE_TTL_MS,
-      });
+      if (!this.#closePromise && generation === this.#inspectionGeneration) {
+        this.#inspectionCache.set(cwd, {
+          inspection: ready,
+          expiresAt: Date.now() + INSPECTION_CACHE_TTL_MS,
+        });
+      }
       this.#scheduleCreditsRefresh();
       return ready;
     } catch (error) {

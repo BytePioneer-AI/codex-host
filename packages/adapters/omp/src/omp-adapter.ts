@@ -2397,13 +2397,22 @@ export class OmpAdapter implements HarnessAdapter {
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     if (this.#closePromise) return closedInspection();
     const cwd = input.cwd ?? process.cwd();
+    if (input.refresh) {
+      const catalog =
+        input.purpose === "availability" ? undefined : this.#inspectionInFlight.get(cwd);
+      const availability =
+        input.purpose === "availability" ? this.#availabilityInFlight.get(cwd) : undefined;
+      this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
+      this.#availabilityInFlight.clear();
+      if (catalog) this.#inspectionInFlight.set(cwd, catalog);
+      if (availability) this.#availabilityInFlight.set(cwd, availability);
+    }
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
-    }
-    if (input.purpose === "availability") return this.#inspectAvailability(cwd, input.refresh);
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) return cached;
+    if (input.purpose === "availability") return this.#inspectAvailability(cwd);
     return this.#startFullInspection(cwd);
   }
 
@@ -2414,9 +2423,7 @@ export class OmpAdapter implements HarnessAdapter {
    * update `#thinkingSelectionSupported`. When the list cannot answer, a full inspection answers
    * instead, reusing one that is in flight or finished meanwhile.
    */
-  async #inspectAvailability(cwd: string, refresh = false): Promise<HarnessInspection> {
-    // An explicit re-check must not leave an older full catalog to answer the next catalog load.
-    if (refresh) this.#inspectionCache.delete(cwd);
+  async #inspectAvailability(cwd: string): Promise<HarnessInspection> {
     let pending = this.#availabilityInFlight.get(cwd);
     if (!pending) {
       const listing = this.#listAvailability(cwd);
@@ -2438,7 +2445,8 @@ export class OmpAdapter implements HarnessAdapter {
 
   #startFullInspection(cwd: string): Promise<HarnessInspection> {
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection)
+        this.#inspectionCache.set(cwd, result);
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);

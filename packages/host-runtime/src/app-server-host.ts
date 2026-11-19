@@ -1026,8 +1026,19 @@ export class AppServerHost {
       {
         listHarnesses: () =>
           this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
-        inspect: (input) =>
-          this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
+        inspect: async (input) => {
+          await this.#waitForPlugins();
+          try {
+            return await this.#delegationCoordinator.inspect(input);
+          } finally {
+            if (
+              input.refresh === true &&
+              (input.harnessId === "codex" || this.#externalAdapters.has(input.harnessId))
+            ) {
+              this.clientEvents.harnessInspectionChanged(input.harnessId);
+            }
+          }
+        },
         start: (input) =>
           maintenanceOperation(async () => {
             if (options.sharedDelegation && input.harnessId !== "codex") {

@@ -709,6 +709,79 @@ it("projectRootTitles: falls back to the full path when the basename is empty or
   const unique = projectRootTitles([{ name: "app", rootPaths: ["/srv/app", "/srv/extra"] }]);
   assert.equal(unique.get(resolve("/srv/app")), "app");
   assert.equal(unique.get(resolve("/srv/extra")), "extra", "unique titles keep the folder name");
+  // One folder listed by several projects is a single sidebar entry, not a title conflict.
+  const shared = projectRootTitles([
+    { name: "thesis", rootPaths: ["/docs/writing"] },
+    { name: "chapter3", rootPaths: ["/docs/chapter3", "/docs/writing"] },
+    { name: "chapter4", rootPaths: ["/docs/chapter4", "/docs/writing", "/docs/chapter3"] },
+  ]);
+  assert.equal(
+    shared.get(resolve("/docs/writing")),
+    "thesis",
+    "a folder keeps the name of the project it is the first root of",
+  );
+  assert.equal(shared.get(resolve("/docs/chapter3")), "chapter3");
+  assert.equal(shared.get(resolve("/docs/chapter4")), "chapter4");
+  assert.equal(shared.size, 3);
+  const sharedExtra = projectRootTitles([
+    { name: "one", rootPaths: ["/a/one", "/shared/notes"] },
+    { name: "two", rootPaths: ["/b/two", "/shared/notes"] },
+  ]);
+  assert.equal(
+    sharedExtra.get(resolve("/shared/notes")),
+    "notes",
+    "a folder that is only an extra root keeps its folder name",
+  );
+});
+
+it("workspace mirror: native project roots follow the project order until reordered in Web", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const paths = { a: join(root, "a"), b: join(root, "b"), c: join(root, "c") };
+  const project = (name: keyof typeof paths) => ({ name, rootPaths: [paths[name]] });
+  const web = workspaces.create(root).workspace;
+  // An older build stored the roots in the order it first saw them.
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [project("c"), project("a")]);
+  const titles = () => workspaces.list().map((workspace) => workspace.title);
+  assert.deepEqual(titles(), ["c", "a", web.title], "project roots come first, in project order");
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    project("b"),
+    project("a"),
+    project("c"),
+  ]);
+  assert.deepEqual(titles(), ["b", "a", "c", web.title], "a changed project order is followed");
+  assert.deepEqual(
+    new Workspaces(data, root).list().map((workspace) => workspace.title),
+    titles(),
+    "the order is saved",
+  );
+  const writes = t.mock.method(data, "writeJson");
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    project("b"),
+    project("a"),
+    project("c"),
+  ]);
+  assert.equal(writes.mock.callCount(), 0, "an unchanged order is not rewritten");
+  writes.mock.restore();
+
+  const rpc = new RpcRegistry();
+  workspaces.register(rpc, new StreamRegistry());
+  const idOf = (path: string) => workspaces.byPath(path)?.workspaceId;
+  assert.ok(
+    (
+      await rpc.dispatch("workspace/insertBefore", {
+        args: { request: { workspaceId: idOf(paths.c), beforeWorkspaceId: idOf(paths.b) } },
+      })
+    ).ok,
+  );
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    project("a"),
+    project("b"),
+    project("c"),
+  ]);
+  assert.deepEqual(titles(), ["c", "b", "a", web.title], "a Web reorder is kept afterwards");
 });
 
 it("workspace mirror: propagates a failed save without accepting the mirror", (t) => {

@@ -432,6 +432,21 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     pinned: [],
   });
   expect(readFileSync(file, "utf8")).toBe(text);
+  // Desktop shows projects in `project-order`, not in the order they were first stored.
+  writeFileSync(
+    file,
+    JSON.stringify({
+      "project-order": ["newest", "middle", "oldest", "newest"],
+      "local-projects": {
+        a: { id: "oldest", name: "Oldest", rootPaths: ["/oldest"] },
+        b: { id: "middle", name: "Middle", rootPaths: ["/middle"] },
+        c: { id: "newest", name: "Newest", rootPaths: ["/newest"] },
+      },
+    }),
+  );
+  expect(
+    (await readNativeWorkspaceSnapshot(environment)).projects.map((project) => project.name),
+  ).toEqual(["Newest", "Middle", "Oldest"]);
   for (const invalid of ["{bad", "[]", "null", '"wrong"', '{"project-order":[123]}']) {
     writeFileSync(file, invalid);
     await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow();

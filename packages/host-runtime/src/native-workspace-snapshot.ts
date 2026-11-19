@@ -53,10 +53,18 @@ export async function readNativeWorkspaceSnapshot(
     Array.isArray(assigned)
   )
     throw new Error("Invalid native project metadata");
+  // `project-order` is both the visible set and Desktop's sidebar order; the object's own key
+  // order is only the order projects were first stored in.
+  const projects = new Map<unknown, { id: unknown; name: unknown; rootPaths: unknown }>();
+  for (const value of Object.values(local)) {
+    if (value && typeof value === "object" && !projects.has(value.id))
+      projects.set(value.id, value);
+  }
   return clientWorkspaceSnapshotSchema.parse({
-    projects: Object.values(local)
-      .filter((value) => value && typeof value === "object" && order.includes(value.id))
-      .map(({ id, name, rootPaths }) => ({ id, name, rootPaths })),
+    projects: order.flatMap((id, index) => {
+      const project = order.indexOf(id) === index ? projects.get(id) : undefined;
+      return project ? [{ id: project.id, name: project.name, rootPaths: project.rootPaths }] : [];
+    }),
     assignments: Object.fromEntries(
       Object.entries(assigned).flatMap(([id, value]) => {
         if (!value || typeof value !== "object") return [];

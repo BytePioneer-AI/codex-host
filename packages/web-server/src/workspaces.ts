@@ -23,43 +23,71 @@ interface WorkspaceState {
   items: WorkspaceView[];
   archivedSessionIds: string[];
   pinnedSessionIds: string[];
+  /** Set once workspaces are reordered in Web; native project roots then stop following the
+   * GUI project order. */
+  manualOrder?: boolean;
 }
 
 const FILE = "workspaces.json";
 
-/** Titles for native project roots: the first root carries the project name,
- * later roots fall back to their folder name (or the full path when the folder
- * name is empty, e.g. the filesystem root). When several roots would share the
- * same title — the project name matching another root's folder name, or two
- * roots with identical folder names — every conflicting root falls back to its
- * full path so the Web sidebar keeps them apart. */
-export function projectRootTitles(
-  projects: readonly { name: string; rootPaths: string[] }[],
-): Map<string, string> {
-  const entries: { path: string; title: string; firstRoot: boolean }[] = [];
+interface NativeProject {
+  name: string;
+  rootPaths: string[];
+}
+
+/** One native project root folder, with the project and root position its title comes from. */
+interface ProjectRoot {
+  path: string;
+  title: string;
+  project: NativeProject;
+  index: number;
+}
+
+/** The distinct root folders of the native projects, in project order then root order.
+ *
+ * Several projects may list the same folder. A folder that is the first root of a project
+ * carries that project's name (the earliest such project); any other folder uses its folder
+ * name, or the full path when that name is empty (the filesystem root). Titles are compared
+ * between different folders only: a project name that another project name repeats, or a
+ * folder name that any other title repeats, falls back to the full path so the Web sidebar
+ * keeps the folders apart. */
+function projectRoots(projects: readonly NativeProject[]): ProjectRoot[] {
+  const named = new Map<string, { project: NativeProject; index: number }>();
+  for (const project of projects) {
+    const first = project.rootPaths[0];
+    if (first !== undefined && !named.has(resolve(first)))
+      named.set(resolve(first), { project, index: 0 });
+  }
+  const roots = new Map<string, ProjectRoot & { named: boolean }>();
   for (const project of projects)
     for (const [index, root] of project.rootPaths.entries()) {
       const path = resolve(root);
-      entries.push({
+      if (roots.has(path)) continue;
+      const owner = named.get(path);
+      roots.set(
         path,
-        title: index === 0 ? project.name : basename(path) || path,
-        firstRoot: index === 0,
-      });
+        owner
+          ? { path, title: owner.project.name, ...owner, named: true }
+          : { path, title: basename(path) || path, project, index, named: false },
+      );
     }
   const counts = new Map<string, number>();
-  for (const entry of entries) counts.set(entry.title, (counts.get(entry.title) ?? 0) + 1);
   const nameCounts = new Map<string, number>();
-  for (const entry of entries)
-    if (entry.firstRoot) nameCounts.set(entry.title, (nameCounts.get(entry.title) ?? 0) + 1);
-  return new Map(
-    entries.map((entry) => {
-      // A project name only conflicts with another project name; a folder name
-      // conflicts with any other root title.
-      const conflicting =
-        (entry.firstRoot ? (nameCounts.get(entry.title) ?? 0) : (counts.get(entry.title) ?? 0)) > 1;
-      return [entry.path, conflicting ? entry.path : entry.title];
-    }),
-  );
+  for (const root of roots.values()) {
+    counts.set(root.title, (counts.get(root.title) ?? 0) + 1);
+    if (root.named) nameCounts.set(root.title, (nameCounts.get(root.title) ?? 0) + 1);
+  }
+  return [...roots.values()].map(({ named: isNamed, ...root }) => {
+    // A project name only conflicts with another project name; a folder name
+    // conflicts with any other root title.
+    const conflicting = ((isNamed ? nameCounts : counts).get(root.title) ?? 0) > 1;
+    return conflicting ? { ...root, title: root.path } : root;
+  });
+}
+
+/** Sidebar title of every native project root folder, keyed by resolved path. */
+export function projectRootTitles(projects: readonly NativeProject[]): Map<string, string> {
+  return new Map(projectRoots(projects).map((root) => [root.path, root.title]));
 }
 
 /** Title the pre-deduplication logic assigned to a project root. */
@@ -341,37 +369,32 @@ export class Workspaces {
     const byPath = new Map(items.map((workspace) => [workspace.path, workspace]));
     const members = new Map<string, Set<string>>();
     const now = new Date().toISOString();
-    const projectRoots = new Set<string>();
-    const rootTitles = projectRootTitles(projects);
-    for (const project of projects) {
-      for (const [index, root] of project.rootPaths.entries()) {
-        const path = resolve(root);
-        projectRoots.add(path);
-        // One native project can hold several root folders; only the first root
-        // carries the project name so the Web sidebar never repeats it.
-        const title = rootTitles.get(path) ?? (index === 0 ? project.name : basename(path) || path);
-        let workspace = byPath.get(path);
-        if (!workspace) {
-          workspace = {
-            workspaceId: randomUUID(),
-            path,
-            title,
-            sessionIds: [],
-            createdAt: now,
-            updatedAt: now,
-            origin: "codexhost",
-          };
-          items.push(workspace);
-          byPath.set(path, workspace);
-        } else if (workspace.origin !== "web") workspace.title = title;
-        else if (
-          workspace.title === project.name ||
-          workspace.title === legacyProjectRootTitle(project, index, path)
-        )
-          // Older builds used the project name for every root; the initial
-          // folder-title fix used basenames. Migrate either default, not custom titles.
-          workspace.title = title;
-      }
+    const roots = projectRoots(projects);
+    const rootPaths = new Set(roots.map((root) => root.path));
+    for (const { path, title, project, index } of roots) {
+      let workspace = byPath.get(path);
+      if (!workspace) {
+        workspace = {
+          workspaceId: randomUUID(),
+          path,
+          title,
+          sessionIds: [],
+          createdAt: now,
+          updatedAt: now,
+          origin: "codexhost",
+        };
+        items.push(workspace);
+        byPath.set(path, workspace);
+      } else if (workspace.origin !== "web") workspace.title = title;
+      else if (
+        workspace.title === project.name ||
+        workspace.title === legacyProjectRootTitle(project, index, path) ||
+        workspace.title === path
+      )
+        // Older builds used the project name for every root, then folder names, then the
+        // full path for a folder shared by several projects. Migrate those defaults, not
+        // custom titles.
+        workspace.title = title;
     }
     for (const { sessionId, cwd, title } of sessions) {
       let workspace = byPath.get(resolve(cwd));
@@ -408,11 +431,21 @@ export class Workspaces {
         workspace.sessionIds.push(sessionId);
       }
     }
-    let changed = false;
+    // Native project roots follow the GUI project order until workspaces are reordered in Web;
+    // every other workspace keeps its place after them.
+    const ordered = this.state.manualOrder
+      ? items
+      : [
+          ...roots.flatMap((root) => byPath.get(root.path) ?? []),
+          ...items.filter((workspace) => !rootPaths.has(workspace.path)),
+        ];
+    let changed = ordered.some(
+      (workspace, index) => workspace.workspaceId !== this.state.items[index]?.workspaceId,
+    );
     const originals = new Map(
       this.state.items.map((workspace) => [workspace.workspaceId, workspace]),
     );
-    for (const workspace of items) {
+    for (const workspace of ordered) {
       const original = originals.get(workspace.workspaceId);
       if (
         !original ||
@@ -425,11 +458,11 @@ export class Workspaces {
       }
     }
     if (changed) {
-      const state = { ...this.state, items };
+      const state = { ...this.state, items: ordered };
       this.data.writeJson(FILE, state);
       this.state = state;
     }
-    this.referenceProjectRoots = projectRoots;
+    this.referenceProjectRoots = rootPaths;
     this.referenceGroups = groups;
     this.referenceProjectless = projectless;
     const after = this.list();
@@ -501,6 +534,7 @@ export class Workspaces {
           : rest.findIndex((item) => item.workspaceId === request.beforeWorkspaceId);
       rest.splice(index < 0 ? rest.length : index, 0, workspace);
       this.state.items = rest;
+      this.state.manualOrder = true;
       this.save();
       const workspaceIds = rest.map((item) => item.workspaceId);
       this.broadcast({ type: "order", workspaceIds });
@@ -557,7 +591,6 @@ export class Workspaces {
       sink.push({
         type: "baseline",
         value: {
-          ...this.state,
           items: this.list(),
           pinnedSessionIds: this.pinnedSessionIds(),
           archivedSessionIds: this.archivedSessionIds(),

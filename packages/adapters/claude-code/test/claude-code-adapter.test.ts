@@ -21,7 +21,10 @@ import type {
   HarnessSessionState,
 } from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
-import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
+import {
+  planLimitFromAccountCredits,
+  projectClaudePlanLimitToCredits,
+} from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
@@ -795,6 +798,52 @@ describe("Claude Code usage metering", () => {
     }
     await opened.value.close();
     await adapter.close();
+  });
+});
+
+describe("planLimitFromAccountCredits", () => {
+  it("round-trips a five-hour window with a seven-day sidecar", () => {
+    const credits = projectClaudePlanLimitToCredits({
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    });
+    expect(planLimitFromAccountCredits(credits)).toEqual({
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    });
+  });
+
+  it("returns null when there is no snapshot", () => {
+    expect(planLimitFromAccountCredits(null)).toBeNull();
+    expect(planLimitFromAccountCredits(undefined)).toBeNull();
+  });
+
+  it("ignores model-scoped seven-day product windows when seeding the account cache", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 10,
+        periodType: "five_hour",
+        productUsage: [
+          {
+            product: "Sonnet · 7-day",
+            periodType: "seven_day",
+            scope: { id: "Sonnet", label: "Sonnet" },
+            usagePercent: 91,
+          },
+        ],
+      }),
+    ).toEqual({ fiveHour: { utilizationPercent: 10 } });
+  });
+
+  it("does not treat a scoped primary seven-day window as the account weekly limit", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 91,
+        periodType: "seven_day",
+        scope: { id: "Sonnet", label: "Sonnet" },
+        label: "Sonnet · 7-day",
+      }),
+    ).toBeNull();
   });
 });
 
@@ -7254,6 +7303,88 @@ describe("Claude Code HarnessAdapter", () => {
   it("has no plan usage on the Adapter before any rate-limit event is observed", () => {
     const { adapter } = fixture();
     expect(adapter.credits()).toBeNull();
+  });
+
+  it("seeds the credits cache from an account inspection so a restarted chat can show quota without a new message", async () => {
+    const { adapter } = fixture({}, { accountCreditsSupported: true });
+    expect(adapter.credits()).toBeNull();
+    await expect(adapter.inspectAccount()).resolves.toEqual({
+      credits: { usedPercent: 10, periodType: "five_hour" },
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("refreshCredits inspects the account and returns the seeded snapshot", async () => {
+    const { adapter } = fixture({}, { accountCreditsSupported: true });
+    await expect(adapter.refreshCredits()).resolves.toEqual({
+      usedPercent: 10,
+      periodType: "five_hour",
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("keeps a previously observed weekly window when inspection only returns the five-hour window", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("inspect-partial-windows"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 44 },
+      sevenDay: { utilizationPercent: 18 },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 44, planSevenDayUsedPercent: 18 },
+    });
+    await adapter.inspectAccount();
+    expect(adapter.credits()).toEqual({
+      usedPercent: 10,
+      periodType: "five_hour",
+      productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 18 }],
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 10, planSevenDayUsedPercent: 18 },
+    });
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("does not let a slower account inspection overwrite a native plan-limit push", async () => {
+    const { adapter, dependencies, transports } = fixture({}, { accountCreditsSupported: true });
+    const accountResult = deferred<{ credits: { usedPercent: number; periodType: "five_hour" } }>();
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => ({
+      ...createInspector(input),
+      inspectAccount: () => accountResult.promise,
+    });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("inspect-race"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    const inspection = adapter.inspectAccount();
+    transport.planLimit({ fiveHour: { utilizationPercent: 44 } });
+    await nextEvent(iterator);
+    accountResult.resolve({ credits: { usedPercent: 10, periodType: "five_hour" } });
+    await expect(inspection).resolves.toEqual({
+      credits: { usedPercent: 10, periodType: "five_hour" },
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 44, periodType: "five_hour" });
+    transport.finish({ status: "succeeded" });
+    await session.close();
   });
 
   it("projects the five-hour window as the primary credits pill, with the seven-day window riding along", async () => {

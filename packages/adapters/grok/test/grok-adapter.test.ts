@@ -130,7 +130,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
 
   async inspect(): Promise<InitializeResponse> {
-    return initialize;
+    return this.initializeResponse;
   }
 
   async open(input: GrokOpenInput): Promise<GrokOpenResult> {
@@ -928,6 +928,37 @@ describe("Grok Adapter ACP projection", () => {
     ).resolves.toMatchObject({ ok: true });
     expect(transport.setModel).toHaveBeenLastCalledWith(nativeGatewayModel, "high", 500000);
     await adapter.close();
+  });
+
+  it("restores the saved native slash Model when cold resume returns no Model state", async () => {
+    const transport = new FakeGrokTransport();
+    transport.initializeResponse = gatewayModelInitialize(gatewayAliasModel);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const model = encodeGrokModelRef(nativeGatewayModel);
+
+    try {
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: {
+          harnessId: adapter.harnessId,
+          nativeSessionId: transport.sessionId,
+          formatVersion: 1,
+        },
+        model,
+      });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(transport.setModel).toHaveBeenCalledWith(nativeGatewayModel, "high", 500000);
+      expect(resumed.value.initialState.effectiveModel).toEqual(model);
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("passes user input unchanged without injecting Model identity instructions", async () => {

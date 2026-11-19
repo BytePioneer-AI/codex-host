@@ -1885,9 +1885,8 @@ export class GrokAdapter implements HarnessAdapter {
           },
         };
       }
-      const modelState =
-        modelStateFromSessionResponse(opened.session) ??
-        modelStateFromInitialize(opened.initialize);
+      const sessionModelState = modelStateFromSessionResponse(opened.session);
+      const modelState = sessionModelState ?? modelStateFromInitialize(opened.initialize);
       if (!modelState)
         throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
       const nativeModelId = modelState.currentModel.id;
@@ -1953,10 +1952,22 @@ export class GrokAdapter implements HarnessAdapter {
           else delete modelState.currentThinkingOptionId;
         }
       }
+      const savedModel =
+        input.kind === "resume" && !sessionModelState && input.model
+          ? modelState.catalog.models.find(({ ref }) => ref.id === input.model?.id)
+          : undefined;
+      if (savedModel) {
+        modelState.currentModel = savedModel.ref;
+        const thinking = modelState.currentThinkingOptionId;
+        if (thinking && !savedModel.supportedThinkingOptionIds?.includes(thinking)) {
+          delete modelState.currentThinkingOptionId;
+        }
+      }
       const contextWindow = modelState.defaultContextWindowTokensByModel.get(
         modelState.currentModel.id,
       );
       if (
+        savedModel ||
         modelState.currentModel.id !== nativeModelId ||
         modelState.currentThinkingOptionId !== nativeThinkingOptionId ||
         (contextWindow !== undefined &&

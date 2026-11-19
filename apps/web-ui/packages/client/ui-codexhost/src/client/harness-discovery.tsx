@@ -54,12 +54,16 @@ export function registerHarnessDiscovery(ctx: Context): void {
   };
   const supported = (id: SessionId) => {
     const row = ctx.sessions.list.getSnapshot().byId[id];
+    if (!row || ctx.sessions.subagentAddress(id) !== undefined) return false;
+    // A Codex draft has no Thread yet; the Host lists its workspace Skills from the draft's cwd.
+    if (row.blank)
+      return (
+        row.projectionValues?.harnessIdentity?.id === "codex" &&
+        (row.projectionValues.threadReference?.hostId ?? "local") === "local"
+      );
     return (
-      !!row &&
-      !row.blank &&
       row.projectionValues?.nativeDiscovery === true &&
-      row.projectionValues.threadReference?.hostId === "local" &&
-      ctx.sessions.subagentAddress(id) === undefined
+      row.projectionValues.threadReference?.hostId === "local"
     );
   };
   const supportsDelegation = (id: SessionId) => {

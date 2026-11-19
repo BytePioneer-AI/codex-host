@@ -334,7 +334,7 @@ export const skillLibraryApi = {
     skillsListResultSchema.parse(await call<unknown>("codexhost/skills/list", { sessionId })),
 };
 
-/** Thread-only discovery; never falls back to a draft Harness query. */
+/** A Thread's native catalog; a draft only gets official Codex Skills from its workspace. */
 export const harnessCommandApi = {
   inspect: (sessionId: string) =>
     call<HarnessCommandCatalog>("codexhost/threadCommands", {

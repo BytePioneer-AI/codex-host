@@ -189,6 +189,13 @@ export class ClientChannelHost {
     if (!parsed.success || !isRecord(parsed.data.params))
       return { error: { code: -32602, message: "Invalid client parameters" } };
     const params = parsed.data.params as JsonObject;
+    if (method === "codexhost/harness/commands/inspect" && params.harnessId !== "codex")
+      return {
+        error: {
+          code: -32602,
+          message: 'Client draft command inspection requires harnessId "codex"',
+        },
+      };
     if (method === THREAD_ARCHIVE_CONFIRM_METHOD) {
       const confirm = threadArchiveConfirmParamsSchema.safeParse(params);
       if (!confirm.success)

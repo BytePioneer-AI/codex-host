@@ -1,14 +1,8 @@
 import {
-  threadOwnershipListResultSchema,
-  threadSteeringInspectResultSchema,
   THREAD_REFERENCE_SOURCE_HOST_PARAM,
   THREAD_STEER_DELIVERY_PARAM,
 } from "@codexhost/shared-contracts";
-import { verifyNativeCodexThread } from "./renderer-native-thread.js";
-import { isUnsupportedMethod } from "./renderer-request-sender.js";
-
-const THREAD_STEERING_INSPECT_METHOD = "codexhost/thread/steering/inspect";
-const THREAD_OWNERSHIP_LIST_METHOD = "codexhost/thread/ownership/list";
+import { inspectRendererSteeringDelivery } from "./renderer-steering-delivery.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -233,42 +227,12 @@ export function installRendererExternalSteering(
     });
   };
 
-  /**
-   * The Host's delivery for this steer. A Host without steering inspection (an older or remote
-   * Host) still answers Thread ownership, where every External Thread stops and restarts; a stock
-   * app-server answers neither, so its Thread is confirmed native first.
-   */
-  const inspectDelivery = async (
-    threadId: string,
-    text: string | undefined,
-  ): Promise<"official" | "activeTurn" | "newTurn"> => {
-    try {
-      const response = await originalSend.call(manager, THREAD_STEERING_INSPECT_METHOD, {
-        threadId,
-        ...(text !== undefined ? { text } : {}),
-      });
-      return threadSteeringInspectResultSchema.parse(response).delivery;
-    } catch (error) {
-      if (!isUnsupportedMethod(error, THREAD_STEERING_INSPECT_METHOD)) throw error;
-    }
-    let ownershipResponse: unknown;
-    try {
-      ownershipResponse = await originalSend.call(manager, THREAD_OWNERSHIP_LIST_METHOD, {
-        threadIds: [threadId],
-      });
-    } catch (error) {
-      if (!isUnsupportedMethod(error, THREAD_OWNERSHIP_LIST_METHOD)) throw error;
-      await verifyNativeCodexThread(
-        (method, params) => originalSend.call(manager, method, params),
-        threadId,
-      );
-      return "official";
-    }
-    const ownership = threadOwnershipListResultSchema.parse(ownershipResponse);
-    const owner = ownership.threads.find((thread) => thread.threadId === threadId)?.owner;
-    if (!owner) throw new Error("Thread ownership could not be resolved for steering");
-    return owner === "codex" ? "official" : "newTurn";
-  };
+  const inspectDelivery = (threadId: string, text: string | undefined) =>
+    inspectRendererSteeringDelivery(
+      (method, params) => originalSend.call(manager, method, params),
+      threadId,
+      text,
+    );
 
   const steer: RendererMethod = async function (...args) {
     const [
@@ -281,6 +245,8 @@ export function installRendererExternalSteering(
       additionalContext,
       toolOutput,
       onMessageAdded,
+      beforeSendRequest,
+      assertRequestCurrent,
     ] = args;
     if (typeof threadId !== "string") return originalSteer.apply(manager, args);
     const role = manager.getStreamRole?.(threadId);
@@ -322,13 +288,22 @@ export function installRendererExternalSteering(
     if (
       !Array.isArray(input) ||
       input.length === 0 ||
-      input.some(
-        (item) => !isRecord(item) || item.type !== "text" || typeof item.text !== "string",
-      ) ||
-      !input.some((item) => isRecord(item) && typeof item.text === "string" && item.text.trim())
+      input.some((item) => {
+        if (!isRecord(item)) return true;
+        if (item.type === "text") return typeof item.text !== "string";
+        if (item.type === "localImage") return typeof item.path !== "string" || !item.path;
+        if (item.type === "image") return typeof item.url !== "string" || !item.url;
+        return true;
+      }) ||
+      !input.some(
+        (item) =>
+          isRecord(item) &&
+          (item.type !== "text" || (typeof item.text === "string" && item.text.trim())),
+      )
     ) {
-      throw new Error("External steering requires non-empty text input");
+      throw new Error("External steering requires non-empty text or image input");
     }
+    // Keep image-only follow-ups intact. Host validates saved paths before stopping the Turn.
     if (toolOutput != null) throw new Error("External steering cannot replace a tool response");
     if (!isRecord(restoreMessage) || !isRecord(restoreMessage.context)) {
       throw new Error("Desktop steering message context is unavailable");
@@ -380,6 +355,8 @@ export function installRendererExternalSteering(
               commentAttachments: context.commentAttachments ?? [],
               mcpAppModelContextAttachments: context.mcpAppModelContextAttachments,
               useAppServerPermissionDefault: true,
+              beforeSendRequest,
+              assertRequestCurrent,
             },
           },
           onMessageAdded,

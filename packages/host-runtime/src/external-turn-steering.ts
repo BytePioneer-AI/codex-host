@@ -24,6 +24,7 @@ import type {
 
 import { rewriteDelegationMentionText } from "./delegation-mention-rewrite.js";
 import { isExternalCommandCandidate } from "./external-command-routing.js";
+import { externalTurnInputText } from "./external-turn-input.js";
 import type { TurnProjectionGate } from "./external-thread-runtime.js";
 
 interface SteeringThread {
@@ -77,6 +78,8 @@ export class ExternalSteerError extends Error {
   constructor(
     readonly code: number,
     message: string,
+    /** Set only where this operation proves the submitted input was not taken. */
+    readonly notStarted = false,
   ) {
     super(message);
   }
@@ -85,7 +88,15 @@ export class ExternalSteerError extends Error {
 /** The Harness did not take native same-Turn input, so stopping and restarting is still safe. */
 export class ExternalSteerNotTakenError extends ExternalSteerError {
   constructor(message: string) {
-    super(-32074, message);
+    super(-32074, message, true);
+  }
+}
+
+/** The Harness may have taken the input; automatic replay could duplicate its effects. */
+export class ExternalSteerOutcomeUnknownError extends ExternalSteerError {
+  constructor(cause: unknown) {
+    super(-32074, cause instanceof Error ? cause.message : "Native steering outcome is unknown");
+    this.cause = cause;
   }
 }
 
@@ -101,23 +112,12 @@ function parseInput(params: JsonObject): SteeringInput {
   if (typeof params.expectedTurnId !== "string" || !params.expectedTurnId.trim()) {
     throw new ExternalSteerError(-32602, "External steering requires expectedTurnId");
   }
-  if (
-    !Array.isArray(params.input) ||
-    params.input.length === 0 ||
-    params.input.some(
-      (item) =>
-        !item ||
-        typeof item !== "object" ||
-        Array.isArray(item) ||
-        item.type !== "text" ||
-        typeof item.text !== "string",
-    )
-  ) {
-    throw new ExternalSteerError(-32602, "External steering requires text input");
+  let text: string;
+  try {
+    text = externalTurnInputText(params.input);
+  } catch (error) {
+    throw new ExternalSteerError(-32602, error instanceof Error ? error.message : String(error));
   }
-  const text = params.input.map((item) => (item as JsonObject).text).join("\n");
-  if (!text.trim())
-    throw new ExternalSteerError(-32602, "External steering input must not be empty");
   const clientUserMessageId = params.clientUserMessageId;
   if (
     clientUserMessageId != null &&
@@ -163,11 +163,16 @@ export async function insertNativeSteer(
   const projectionDone = Promise.withResolvers<undefined>();
   thread.pendingSteerProjections.add(projectionDone.promise);
   try {
-    const result = await thread.session.execute({
-      type: "turn.steer",
-      turnId: input.turnId,
-      input: steered,
-    });
+    let result: HarnessResult<TurnSteerAccepted>;
+    try {
+      result = await thread.session.execute({
+        type: "turn.steer",
+        turnId: input.turnId,
+        input: steered,
+      });
+    } catch (error) {
+      throw new ExternalSteerOutcomeUnknownError(error);
+    }
     if (!result.ok) throw new ExternalSteerNotTakenError(result.error.message);
     thread.steeredTurnIds.add(input.turnId);
     const item: HostUserMessageItem = {
@@ -253,29 +258,32 @@ export class ExternalTurnSteering {
         return receipt.result;
       }
       if (this.hasPending(thread.id))
-        throw new ExternalSteerError(-32072, "External Thread is already changing direction");
+        throw new ExternalSteerError(-32072, "External Thread is already changing direction", true);
       if (!thread.running || thread.activeTurnId !== input.expectedTurnId) {
         // Do not use Codex's mismatch wording: Desktop automatically retries it against another Turn.
-        throw new ExternalSteerError(-32074, "External steering must reference the active Turn");
+        throw new ExternalSteerError(
+          -32074,
+          "External steering must reference the active Turn",
+          true,
+        );
       }
       const result = this.#deliver(thread, input, start, insert);
       if (key) {
         const receipt = { fingerprint, result, settled: false };
         this.#receipts.set(key, receipt);
-        void result.then(
-          () => {
-            receipt.settled = true;
-            // Bound completed receipts; never evict an in-flight delivery reservation.
-            while (this.#receipts.size > 128) {
-              const oldest = [...this.#receipts].find(([, entry]) => entry.settled)?.[0];
-              if (oldest === undefined) break;
-              this.#receipts.delete(oldest);
-            }
-          },
-          () => {
-            this.#receipts.delete(key);
-          },
-        );
+        const settle = (): void => {
+          receipt.settled = true;
+          // Bound completed receipts; never evict an in-flight delivery reservation.
+          while (this.#receipts.size > 128) {
+            const oldest = [...this.#receipts].find(([, entry]) => entry.settled)?.[0];
+            if (oldest === undefined) break;
+            this.#receipts.delete(oldest);
+          }
+        };
+        void result.then(settle, (error: unknown) => {
+          if (error instanceof ExternalSteerOutcomeUnknownError) settle();
+          else this.#receipts.delete(key);
+        });
       }
       return result;
     } catch (error) {
@@ -301,10 +309,10 @@ export class ExternalTurnSteering {
     const deliver = (mode: ThreadSteerDelivery): Promise<ExternalSteerStarted> => {
       // A broker capability read may have yielded while the target ended or another request won.
       if (this.#closed || !thread.running || thread.activeTurnId !== input.expectedTurnId) {
-        throw new ExternalSteerError(-32074, "External steering target is no longer active");
+        throw new ExternalSteerError(-32074, "External steering target is no longer active", true);
       }
       if (this.hasPending(thread.id))
-        throw new ExternalSteerError(-32072, "External Thread is already changing direction");
+        throw new ExternalSteerError(-32072, "External Thread is already changing direction", true);
       if (mode === "newTurn") return this.#replace(thread, input, start);
       const native = insert({
         turnId: thread.activeTurnId,
@@ -356,7 +364,7 @@ export class ExternalTurnSteering {
     if (this.#pending.get(threadId)?.turnId === turnId) {
       this.fault(
         threadId,
-        new ExternalSteerError(-32074, "External replacement was stopped before starting"),
+        new ExternalSteerError(-32074, "External replacement was stopped before starting", true),
       );
     }
   }
@@ -402,6 +410,7 @@ export class ExternalTurnSteering {
           new ExternalSteerError(
             -32074,
             "Timed out waiting for the previous External Turn to stop; replacement was not started",
+            true,
           ),
         ),
       this.timeoutMs,

@@ -16,6 +16,8 @@ export interface DecodedThreadForkRequest {
   cwd?: string;
   excludeTurns: boolean;
   ephemeral?: boolean;
+  /** Desktop's persistent Side Chat: a new Thread attached to the source, not a history copy. */
+  attachToSource?: boolean;
   runtimeWorkspaceRoots?: string[];
   approvalPolicy?: string;
   sandbox?: string;
@@ -83,6 +85,10 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
   }
   const path = optionalText(params, "path", { allowEmpty: true });
   const ephemeral = optionalBoolean(params, "ephemeral");
+  const attachToSource = optionalBoolean(params, "attachToSource");
+  if (attachToSource && ephemeral) {
+    throw new Error("thread/fork cannot combine attachToSource with ephemeral");
+  }
   return {
     threadId,
     ...(lastTurnText ? { lastTurnId: hostTurnIdSchema.parse(lastTurnText) } : {}),
@@ -93,6 +99,7 @@ export function decodeThreadForkRequest(request: JsonRpcRequest): DecodedThreadF
     ...optionalField(params, "cwd"),
     excludeTurns: optionalBoolean(params, "excludeTurns") ?? false,
     ...(ephemeral !== undefined ? { ephemeral } : {}),
+    ...(attachToSource ? { attachToSource } : {}),
     ...(Array.isArray(runtimeWorkspaceRoots)
       ? { runtimeWorkspaceRoots: runtimeWorkspaceRoots as string[] }
       : {}),
@@ -148,7 +155,13 @@ export function mapExternalThreadHarnessError(
     case "invalidRequest":
       return { code: -32602, message: `External Thread ${operation} request is invalid` };
     case "sessionBusy":
-      return { code: -32072, message: "External Thread has an active operation" };
+      return {
+        code: -32072,
+        message:
+          operation === "resume"
+            ? "External Native Session is busy. Close it in the other client or wait for its active operation to finish, then retry."
+            : "External Thread has an active operation",
+      };
     case "unsupported":
       return { code: -32076, message: `External Harness does not support ${operation}` };
     case "sessionNotFound":

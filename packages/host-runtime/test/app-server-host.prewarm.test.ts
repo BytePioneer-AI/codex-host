@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessOutput } from "@codexhost/harness-adapter";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
+  encodeHarnessPluginRoute,
   harnessCommandDescriptorSchema,
+  harnessPluginRouteSchema,
   hostThreadIdSchema,
   hostTurnIdSchema,
   THREAD_PREWARM_DISCARD_METHOD,
@@ -118,6 +120,24 @@ describe("external Thread prewarm lifecycle", () => {
       }
     },
   );
+
+  it("accepts the prewarm marker carried by the Model when Desktop drops the start parameter", async () => {
+    const f = createFixture();
+    answerEmptyOfficialLists(f);
+    try {
+      const route = { harnessId: "pi", model: { id: "fake-model-v1.secondary" } };
+      const threadId = await startExternalThread(
+        f,
+        encodeHarnessPluginRoute(harnessPluginRouteSchema.parse({ ...route, prewarm: true })),
+      );
+      expect(await list(f, 10)).toEqual([]);
+      expect(startedThreads(f, threadId)).toEqual([]);
+      expect(await discard(f, threadId)).not.toHaveProperty("error");
+      expect(await f.mappingStore.getThread(hostThreadIdSchema.parse(threadId))).toBeNull();
+    } finally {
+      await stopFixture(f);
+    }
+  });
 
   it.each([false, true])(
     "does not publish state changes, inspection, or configuration (deferred identity: %s)",

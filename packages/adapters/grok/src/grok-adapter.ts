@@ -1,3 +1,9 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import { createGrokUsageStatistics } from "./usage-statistics.js";
 import { randomUUID } from "node:crypto";
 import { readGrokCredentials } from "./grok-credential-export.js";
@@ -57,6 +63,7 @@ import {
   type TurnSteerAccepted,
   type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
+import { LocalMediaMarkdownStream } from "@codexhost/harness-adapter/local-media-markdown";
 import {
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
@@ -89,7 +96,12 @@ import {
   type GrokTransportEvent,
 } from "./acp-transport.js";
 import { GrokSessionImport } from "./session-import.js";
-import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "./local-media-markdown.js";
+import {
+  GrokQuestions,
+  type GrokQuestionRequest,
+  type GrokQuestionResponse,
+} from "./grok-questions.js";
+import { grokMediaResolveRoots } from "./local-media-markdown.js";
 import { GrokSubagentLifecycle } from "./grok-subagent-lifecycle.js";
 import {
   grokNativeSubagentId,
@@ -122,6 +134,7 @@ import {
   type GrokProjectedToolItem,
 } from "./grok-tool-output.js";
 import {
+  decodeGrokModelRef,
   modelStateFromInitialize,
   modelStateFromSessionResponse,
   stateForGrokModel,
@@ -176,6 +189,7 @@ export interface GrokAcpTransportLike {
     text: string,
     onEvent: (event: GrokTransportEvent) => void,
     onPermission: (request: GrokPermissionRequest) => Promise<RequestPermissionResponse>,
+    onQuestion: (request: GrokQuestionRequest) => Promise<GrokQuestionResponse>,
   ): Promise<PromptResponse>;
   compact(
     userContext: string | undefined,
@@ -205,8 +219,7 @@ interface ActiveTurn {
   usage?: GrokTurnUsage;
   agent: HostAgentMessageItem | null;
   agentMessageId: string | null;
-  rawAgentText: string;
-  projectedAgentText: string;
+  agentMedia: LocalMediaMarkdownStream | null;
   reasoning: HostReasoningItem | null;
   reasoningMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
@@ -216,6 +229,7 @@ interface ActiveTurn {
   subagents: GrokSubagentLifecycle;
   completedItems: HostItemSnapshot[];
   approvals: Map<HostInteractionId, ActiveApproval>;
+  questions: GrokQuestions;
   cancellationRequested: boolean;
   beforeNativeTurnKeys: Set<string>;
   completion: Promise<void>;
@@ -250,6 +264,7 @@ function capabilitiesForModels(modelState: GrokModelState): HarnessSessionCapabi
   };
 }
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
+const INSPECTION_CACHE_TTL_MS = 30_000;
 
 function invalidState(message: string): HarnessError {
   return { code: "invalidState", message, retryable: false };
@@ -430,7 +445,25 @@ class GrokHarnessSession implements HarnessSession {
     };
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? state.effectiveModel.id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Grok Session is not open") };
     }
@@ -517,11 +550,13 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command,
+      questions: new GrokQuestions(command.turnId, this.#randomUUID, (output) =>
+        this.#channel.emit(output),
+      ),
       usage: new GrokTurnUsage(this.#usage, this.#snapshot.turns.length === 0),
       agent: null,
       agentMessageId: null,
-      rawAgentText: "",
-      projectedAgentText: "",
+      agentMedia: null,
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -545,7 +580,12 @@ class GrokHarnessSession implements HarnessSession {
         text,
         (event) => this.#handleEvent(active, event),
         (request) => this.#requestPermission(active, request),
+        (request) =>
+          this.#active === active && this.#phase === "open" && !active.cancellationRequested
+            ? active.questions.ask(request)
+            : Promise.resolve({ outcome: "cancelled" }),
       )
+      .finally(() => active.questions.cancel())
       .then(
         (response) =>
           this.#settleFromHistory(
@@ -639,10 +679,12 @@ class GrokHarnessSession implements HarnessSession {
     });
     const active: ActiveTurn = {
       command: { type: "turn.start", turnId: command.turnId, input: [] },
+      questions: new GrokQuestions(command.turnId, this.#randomUUID, (output) =>
+        this.#channel.emit(output),
+      ),
       agent: null,
       agentMessageId: null,
-      rawAgentText: "",
-      projectedAgentText: "",
+      agentMedia: null,
       reasoning: null,
       reasoningMessageId: null,
       compactionItem: null,
@@ -806,7 +848,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#configuring = true;
     try {
       const contextWindow = this.#modelState.defaultContextWindowTokensByModel.get(model.id);
-      await this.#transport.setModel(model.id, thinkingOptionId, contextWindow);
+      await this.#transport.setModel(decodeGrokModelRef(model), thinkingOptionId, contextWindow);
       if (contextWindow !== undefined) {
         this.#modelState.contextWindowTokensByModel = new Map([
           ...this.#modelState.contextWindowTokensByModel,
@@ -880,6 +922,7 @@ class GrokHarnessSession implements HarnessSession {
     }
     if (active.cancellationRequested) return { ok: true, value: { cancellationRequested: true } };
     active.cancellationRequested = true;
+    active.questions.cancel();
     for (const approval of active.approvals.values()) {
       approval.resolve({ outcome: { outcome: "cancelled" } });
     }
@@ -895,9 +938,10 @@ class GrokHarnessSession implements HarnessSession {
     command: InteractionRespondCommand,
   ): Promise<HarnessResult<InteractionRespondAccepted>> {
     const active = this.#active;
+    if (active?.questions.has(command.interactionId)) return active.questions.respond(command);
     const pending = active?.approvals.get(command.interactionId);
     if (!active || !pending)
-      return { ok: false, error: invalidState("Grok Approval is not pending") };
+      return { ok: false, error: invalidState("Grok Interaction is not pending") };
     if (command.response.type !== "approval") {
       return {
         ok: false,
@@ -961,6 +1005,10 @@ class GrokHarnessSession implements HarnessSession {
 
   #handleEvent(active: ActiveTurn, event: GrokTransportEvent): void {
     if (this.#active !== active || this.#phase !== "open") return;
+    if (event.type === "interaction.resolved") {
+      active.questions.withdraw(event.toolCallId);
+      return;
+    }
     const requestUsage = active.usage?.observe(event);
     if (requestUsage) {
       this.#publishUsage(requestUsage, active.command.turnId, true);
@@ -1075,20 +1123,16 @@ class GrokHarnessSession implements HarnessSession {
         itemId: hostItemIdSchema.parse(this.#randomUUID()),
         text: "",
       };
-      active.rawAgentText = "";
-      active.projectedAgentText = "";
+      active.agentMedia = new LocalMediaMarkdownStream(this.#mediaRoots);
       this.#event({ type: "item.started", turnId: active.command.turnId, item: active.agent });
     }
-    active.rawAgentText += text;
-    const projected = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots, {
-      holdIncomplete: true,
-    });
-    const delta = projected.startsWith(active.projectedAgentText)
-      ? projected.slice(active.projectedAgentText.length)
-      : text;
-    if (delta.length === 0) return;
-    active.projectedAgentText += delta;
-    active.agent = { ...active.agent, text: active.projectedAgentText };
+    const delta = active.agentMedia?.append(text) ?? "";
+    this.#publishAgent(active, delta);
+  }
+
+  #publishAgent(active: ActiveTurn, delta: string): void {
+    if (!active.agent || !active.agentMedia || !delta) return;
+    active.agent = { ...active.agent, text: active.agentMedia.text };
     this.#event({
       type: "item.updated",
       turnId: active.command.turnId,
@@ -1143,6 +1187,7 @@ class GrokHarnessSession implements HarnessSession {
         ...(prompt ? { prompt } : {}),
         ...(role ? { role } : {}),
         ...(model ? { model } : {}),
+        ...subagentConfiguration(event.rawInput),
         background: grokSubagentBackground(event.rawInput),
         ...(nativeSubagentId ? { nativeSubagentId } : {}),
       });
@@ -1198,6 +1243,8 @@ class GrokHarnessSession implements HarnessSession {
       const role = grokSubagentRole(event.rawInput);
       const nativeSubagentId = grokNativeSubagentId(event.rawInput, event.rawOutput, event.content);
       active.subagents.update(active.command.turnId, event.callId, {
+        ...subagentConfiguration(event.rawInput),
+        ...subagentConfiguration(event.rawOutput),
         ...(event.title
           ? { description: grokSubagentDescription(event.rawInput, event.title) }
           : {}),
@@ -1356,25 +1403,11 @@ class GrokHarnessSession implements HarnessSession {
 
   #completeAgent(active: ActiveTurn, outcome: HostItemOutcome): void {
     const item = active.agent;
-    if (item && active.rawAgentText.length > 0) {
-      const flushed = rewriteLocalMediaMarkdown(active.rawAgentText, this.#mediaRoots);
-      const delta = flushed.startsWith(item.text) ? flushed.slice(item.text.length) : "";
-      if (delta.length > 0) {
-        active.projectedAgentText = flushed;
-        active.agent = { ...item, text: flushed };
-        this.#event({
-          type: "item.updated",
-          turnId: active.command.turnId,
-          itemId: item.itemId,
-          update: { type: "text.append", text: delta },
-        });
-      }
-    }
+    if (item && active.agentMedia) this.#publishAgent(active, active.agentMedia.flush());
     const completed = active.agent ?? item;
     active.agent = null;
     active.agentMessageId = null;
-    active.rawAgentText = "";
-    active.projectedAgentText = "";
+    active.agentMedia = null;
     if (completed) this.#completeItem(active, completed, outcome);
   }
 
@@ -1450,6 +1483,7 @@ class GrokHarnessSession implements HarnessSession {
     nativeTurnRef?: NativeTurnRef,
   ): void {
     if (this.#active !== active) return;
+    active.questions.cancel();
     const itemOutcome: HostItemOutcome = outcome;
     this.#completeReasoning(active, itemOutcome);
     this.#completeAgent(active, itemOutcome);
@@ -1509,6 +1543,7 @@ class GrokHarnessSession implements HarnessSession {
     const active = this.#active;
     if (active) {
       active.cancellationRequested = true;
+      active.questions.cancel();
       for (const approval of active.approvals.values())
         approval.resolve({ outcome: { outcome: "cancelled" } });
       await this.#transport.cancel().catch(() => undefined);
@@ -1539,6 +1574,7 @@ class GrokHarnessSession implements HarnessSession {
   }
 
   #event(event: HostEvent): void {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 }
@@ -1600,7 +1636,10 @@ export class GrokAdapter implements HarnessAdapter {
   readonly #fetchCredits: (input: {
     environment?: NodeJS.ProcessEnv;
   }) => Promise<GrokCreditsSnapshot | null>;
-  readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
+  readonly #inspectionCache = new Map<
+    string,
+    { inspection: Extract<HarnessInspection, { status: "ready" }>; expiresAt: number }
+  >();
   readonly #sessions = new Set<GrokHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -1680,7 +1719,7 @@ export class GrokAdapter implements HarnessAdapter {
     const cwd = path.resolve(input.cwd ?? process.cwd());
     if (!input.refresh) {
       const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
+      if (cached && Date.now() < cached.expiresAt) return cached.inspection;
     }
     let transport: GrokAcpTransportLike | null = null;
     const startedAt = Date.now();
@@ -1700,7 +1739,10 @@ export class GrokAdapter implements HarnessAdapter {
         permissionModes: GROK_PERMISSION_MODE_CATALOG,
         capabilities: capabilitiesForModels(modelState),
       };
-      this.#inspectionCache.set(cwd, ready);
+      this.#inspectionCache.set(cwd, {
+        inspection: ready,
+        expiresAt: Date.now() + INSPECTION_CACHE_TTL_MS,
+      });
       this.#scheduleCreditsRefresh();
       return ready;
     } catch (error) {
@@ -1858,7 +1900,9 @@ export class GrokAdapter implements HarnessAdapter {
             : {
                 kind: "create",
                 permissionModeId: requestedPermissionModeId,
-                ...(input.kind === "create" && input.model ? { modelId: input.model.id } : {}),
+                ...(input.kind === "create" && input.model
+                  ? { modelId: decodeGrokModelRef(input.model) }
+                  : {}),
               },
         );
       }
@@ -1876,9 +1920,8 @@ export class GrokAdapter implements HarnessAdapter {
           },
         };
       }
-      const modelState =
-        modelStateFromSessionResponse(opened.session) ??
-        modelStateFromInitialize(opened.initialize);
+      const sessionModelState = modelStateFromSessionResponse(opened.session);
+      const modelState = sessionModelState ?? modelStateFromInitialize(opened.initialize);
       if (!modelState)
         throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
       const nativeModelId = modelState.currentModel.id;
@@ -1944,17 +1987,29 @@ export class GrokAdapter implements HarnessAdapter {
           else delete modelState.currentThinkingOptionId;
         }
       }
+      const savedModel =
+        input.kind === "resume" && !sessionModelState && input.model
+          ? modelState.catalog.models.find(({ ref }) => ref.id === input.model?.id)
+          : undefined;
+      if (savedModel) {
+        modelState.currentModel = savedModel.ref;
+        const thinking = modelState.currentThinkingOptionId;
+        if (thinking && !savedModel.supportedThinkingOptionIds?.includes(thinking)) {
+          delete modelState.currentThinkingOptionId;
+        }
+      }
       const contextWindow = modelState.defaultContextWindowTokensByModel.get(
         modelState.currentModel.id,
       );
       if (
+        savedModel ||
         modelState.currentModel.id !== nativeModelId ||
         modelState.currentThinkingOptionId !== nativeThinkingOptionId ||
         (contextWindow !== undefined &&
           modelState.contextWindowTokensByModel.get(modelState.currentModel.id) !== contextWindow)
       ) {
         await transport.setModel(
-          modelState.currentModel.id,
+          decodeGrokModelRef(modelState.currentModel),
           modelState.currentThinkingOptionId,
           contextWindow,
         );

@@ -1,0 +1,25 @@
+---
+title: Automate Agents via CLI, MCP & HTTP
+description: Turn CodexHost into your local multi-Agent dispatch hub—drive any Agent from shell scripts, Claude Desktop, Cursor, or custom bots.
+---
+
+CodexHost isn't just a chat window—it also acts as a **programmable local multi-Agent dispatch hub** on your machine.
+
+Whenever CodexHost is running locally (via Codex Desktop or `codexhost web`), **shell scripts, local workflows, Claude Desktop, Cursor, or always-on Slack / Telegram / Discord bots** can spin up Agent sessions, isolate Git branches, send follow-ups, and collect results automatically.
+
+## Why It Beats Running Raw Headless Scripts
+
+- **Zero black boxes—every task shows up in your UI**: Every session started from a script, MCP tool, or bot appears live in your **Codex Desktop** and **Web** sidebars. You can click in anytime to inspect diffs, approve a command, or take over by hand.
+- **Built-in Git Worktree isolation**: Pass `worktree` when starting a task to give each parallel Agent its own clean branch and checkout directory—no file collisions.
+- **Mid-flight steering & interrupts**: Nudge a running Agent in a new direction (`steer`), or cancel the active turn and replace its instructions (`interrupt`).
+- **Durable completion events**: Register a `watch` and consume completion notices from a 7-day local event log—even if your bot restarts mid-task, you won't miss the finish signal.
+
+---
+
+## Which Interface Should I Use?
+
+| What You're Building                                                     | Best Fit              | Auth Setup                                             | Guide                                                        |
+| :----------------------------------------------------------------------- | :-------------------- | :----------------------------------------------------- | :----------------------------------------------------------- |
+| **Shell / Python scripts** or local automation under your own OS user    | **Local CLI**         | **Zero config** (auto-reads private local credentials) | **[Local CLI Guide](/en/docs/platform/cli)**                 |
+| Calling CodexHost Agents from **Claude Desktop, Claude Code, or Cursor** | **MCP Server**        | One-command client token                               | **[MCP Integration](/en/docs/platform/mcp)**                 |
+| **Always-on chat bots**, webhooks, or custom backend services            | **HTTP API + Events** | One-command client token                               | **[HTTP API & Event Stream](/en/docs/platform/http-events)** |

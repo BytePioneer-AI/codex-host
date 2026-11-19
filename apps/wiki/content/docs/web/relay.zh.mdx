@@ -1,0 +1,52 @@
+---
+title: 自建加密中转（Relay）
+description: 手里有域名和云服务器？5 步用 Docker Compose 搭一个自己的手机远程访问中转站，全程端到端加密。
+---
+
+## 我需要先搭这个吗？
+
+大多数情况下**不需要**：
+
+- 如果你只是出门想用手机连家里的电脑，直接在 Web 的「连接设备」页点开 **「官方加密中转」**，或者在手机和电脑装个 **Tailscale** 就够用了。
+- 只有当你**手里已经有自己的域名和公网 Linux 服务器**，想用自己的专属域名（比如 `https://my-mac.example.com`）并完全掌控流量转发时，才需要按下面几步自建。
+
+### 为什么经过公网服务器也很安全？
+
+中转服务器只做一件事：**原封不动转发加密后的字节流**。HTTPS 证书由你家里的电脑自己向 Let's Encrypt 申请，并在你自己的电脑上才解密——**哪怕是在公网中转服务器上抓包，也看不到你的任何聊天内容或代码明文。**
+
+---
+
+## 开始前准备两样东西
+
+1. **一台公网 Linux 服务器**：装好 Git 和 Docker（带 Docker Compose），并且在云厂商安全组与系统防火墙里放行 **TCP 443 端口**（不需要开 80 端口，但 443 不能被 nginx 等其他程序占着）。
+   > 注意：如果服务器在中国大陆境内，域名必须先完成 ICP 备案，否则手机访问 443 端口会被直接阻断。
+2. **一个你自己的域名**：去域名的 DNS 解析后台加一条记录：
+   - **记录类型**：`A`
+   - **主机记录（名称）**：填 `*`（通配解析，它不会影响你原有的 `www` 或根域名记录）
+   - **记录值**：填这台服务器的公网 IPv4 地址（如果用的是 Cloudflare，记得关掉橙色小云朵，选 **「仅 DNS」**）
+
+---
+
+## 3 分钟部署与连接
+
+### 第 1 步：在云服务器上启动 Relay
+
+SSH 登录到你的服务器，把下面命令里的 `example.com` 换成你自己的域名并执行：
+
+```bash
+git clone https://github.com/BytePioneer-AI/codex-host.git /opt/codexhost
+cd /opt/codexhost/packages/remote-relay/deploy
+echo "RELAY_DOMAIN=example.com" > .env
+docker compose up -d --build
+```
+
+Docker 会自动从源码构建并跑起来（服务器上不需要装 Node.js，也会自动帮控制地址申请和续期证书）。
+
+### 第 2 步：在你的电脑上启用连接
+
+1. 打开电脑上的 CodexHost Web（`codexhost web`），进入 **「设置 → 连接设备」**；
+2. 选中 **「自建加密中转」** 卡片；
+3. **中转域名**填你的根域名（例如 `example.com`，不要带 `https://` 或 `relay.`），**设备名称**起一个好记的名字（例如 `my-mac`）；
+4. 点击 **「启用中转」**，等大约半分钟自动办好证书后，扫页面上的二维码，就能在手机浏览器通过 `https://my-mac.example.com` 安全访问了！
+
+> 如需配置带宽限速、连接数上限或排查证书签发问题，可查看仓库中的 [自建中转完整说明](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/product/self-hosted-relay.md)。

@@ -1,0 +1,71 @@
+---
+title: 安装、更新与启停
+description: 3 种方式快速装好 CodexHost，搞懂日常启动、升级、彻底关闭以及桌面端与网页端同步的原理。
+---
+
+## 安装前准备
+
+- **想用桌面端界面**：请先在电脑上安装好官方 **Codex Desktop**。
+- **只想用浏览器 / 手机网页端**：不需要安装 Codex Desktop，直接装 CodexHost 就能用。
+- **想用哪个外部 Agent**（如 Claude Code、Pi、Grok 等）：照常在本机安装好对应工具并完成登录即可，也可以装好 CodexHost 后在「设置 → 连接」页面里一键检测和安装。
+
+---
+
+## 选择一种方式安装
+
+### 方式一：安装包（推荐 macOS / Windows 桌面用户）
+
+直接去 [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载对应系统的安装包（macOS 为 `.dmg` / `.pkg`，Windows 为安装程序）。
+
+- 安装完成后，直接打开 **`codexhost`** 应用即可启动增强版 Codex Desktop。
+- 想在电脑浏览器里用网页端时，直接打开 `http://127.0.0.1:4400`。
+
+### 方式二：npm 命令行（macOS / Windows / Linux 通用）
+
+需要本机已安装 **Node.js 22.19+** 或 **Node.js 24**（注意不支持 23.x）：
+
+```bash
+npm install -g @codexhost/cli
+```
+
+装好后常用命令就这几条：
+
+```bash
+codexhost          # 启动桌面端（如果电脑没装 Codex Desktop，会自动在浏览器打开网页端）
+codexhost web      # 在后台启动网页端，并自动打开浏览器（默认地址 127.0.0.1:4400）
+codexhost status   # 看看后台服务当前有没有在跑、运行的是什么版本
+codexhost stop     # 把 CodexHost 相关的后台服务全部停掉
+```
+
+### 方式三：WinGet（Windows x64 / ARM64）
+
+Windows 用户也可以在 PowerShell 里用一条命令完成安装（以后升级也是同一条命令）：
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
+---
+
+## 日常升级、停止与开机自启
+
+- **升级到最新版**：运行 `codexhost update`（也可以在本地控制台或设置页里点更新）。如果你打算用 `npm install -g` 重新覆盖安装，**请先运行一次 `codexhost stop`** 再装。
+- **彻底停止后台服务**：运行 `codexhost stop`。这会把 CodexHost 托管的桌面端、网页端、后台 Host 和控制台一起关掉，正在运行的 Agent 任务会被中断，但**你的所有聊天记录、项目文件和配置都会完好保留，不会删任何数据**。
+- **设置开机登录自启**：需要电脑一登录就自动在后台跑起来（比如方便出门随时用手机连），运行：
+  ```bash
+  codexhost autostart on      # 开启登录自启
+  codexhost autostart off     # 关闭登录自启
+  codexhost autostart status  # 查看当前自启状态
+  ```
+
+---
+
+## 桌面端和网页端是什么关系？
+
+很多第一次用的朋友会问：“我在网页端聊的内容，回到桌面端看得到吗？”
+
+答案是：**完全同步，看到的就是同一个对话。**
+
+- 不管你打开的是 **Codex Desktop** 还是浏览器里的 **Web 网页端（`127.0.0.1:4400`）**，它们连的都是电脑后台同一个 CodexHost 服务。
+- 你可以早上在电脑桌面端让 Agent 开始重构代码，然后直接把桌面窗口关掉（甚至关掉浏览器标签页），后台任务依然会继续跑。
+- 路上掏出手机打开网页端，就能实时看到它改到哪一步了、顺手点个工具审批；回到工位再打开桌面端，刚才在手机上聊的内容也已经在那儿了。

@@ -7,9 +7,10 @@ usage() {
   cat <<'EOF'
 usage: scripts/install-local.sh [--no-build]
 
-Build and globally install the current macOS codexhost npm package, stop the
-running Codex Desktop and its previous codexhost runtime, then start Codex
-Desktop through the newly installed codexhost command.
+Build and globally install the current macOS codexhost npm package, refresh an
+existing SSH remote installation to the installed package, stop the running
+Codex Desktop and its previous codexhost runtime, then start Codex Desktop
+through the newly installed codexhost command.
 
 options:
   --no-build  reuse the existing TypeScript, Renderer, and Rust release artifacts
@@ -104,6 +105,17 @@ INSTALLED_VERSION="$("$CODEXHOST_BIN" --version)"
 if [[ "$INSTALLED_VERSION" != "$VERSION" ]]; then
   echo "error: installed codexhost version is $INSTALLED_VERSION; expected $VERSION" >&2
   exit 1
+fi
+
+# Installing both tarballs moves the platform package to the top level and removes the
+# copy nested under the meta package, which an SSH remote installation still records.
+if [[ -f "$HOME/.codexhost/remote/manifest.json" ]]; then
+  echo "codexhost local install: refreshing the SSH remote installation"
+  if "$CODEXHOST_BIN" remote install >/dev/null; then
+    echo "codexhost local install: a connected SSH listener keeps the previous version until it restarts"
+  else
+    echo "warning: SSH remote installation was not refreshed; run: codexhost remote install" >&2
+  fi
 fi
 
 SYSTEM_DESKTOP_PATTERN='^/Applications/(ChatGPT|Codex)\.app/Contents/'

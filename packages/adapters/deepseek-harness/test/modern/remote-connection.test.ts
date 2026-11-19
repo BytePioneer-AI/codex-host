@@ -547,6 +547,9 @@ describe("DeepSeek Harness Modern Web Remote connection", () => {
     });
     const setup = harness(fetch, {
       readiness: `dsh web: http://${authority}/?token=${TOKEN}`,
+      // This case uses real loopback HTTP, not the fixture's in-memory fetch.
+      // Give a loaded CI worker time to return the redirect being asserted.
+      connectionOptions: { unaryTimeoutMs: 5000 },
     });
 
     try {

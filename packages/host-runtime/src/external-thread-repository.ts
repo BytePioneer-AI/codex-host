@@ -1,3 +1,4 @@
+import type { UsageMeasurementsSnapshot } from "@codexhost/shared-contracts";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -10,12 +11,14 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type InjectedTurnPrefix,
   type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
   type StoredThreadRecordV1,
+  type StoredThreadSummaryV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
@@ -29,15 +32,18 @@ import {
   type NativeSessionRef,
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
+import { firstUserMessagePreview } from "./external-thread-preview.js";
 import {
   materializeExternalSubagent,
   projectExternalSnapshot,
 } from "./external-subagent-threads.js";
+import { ownTurns } from "./external-thread-side-chat.js";
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   listThreads(): Promise<StoredThreadRecordV1[]>;
+  listThreadSummaries(): Promise<StoredThreadSummaryV1[]>;
   getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
   getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
   getDelegationByChild(childHostThreadId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
@@ -59,6 +65,11 @@ export interface ExternalThreadStore {
   replaceReadySessionAfterLastTurn(
     input: ReplaceReadySessionAfterLastTurnInput,
   ): Promise<StoredThreadRecordV1>;
+  saveUsageMeasurements?(
+    hostThreadId: HostThreadId,
+    expectedNativeSessionRef: NativeSessionRef,
+    values: UsageMeasurementsSnapshot,
+  ): Promise<StoredThreadRecordV1>;
   upsertTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
@@ -73,6 +84,15 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1>;
+  consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    through: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1>;
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
@@ -137,6 +157,11 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  /** Catalog reads; Turn mappings are omitted. */
+  listSummaries(): Promise<StoredThreadSummaryV1[]> {
+    return this.store.listThreadSummaries();
   }
 
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
@@ -208,11 +233,37 @@ export class ExternalThreadRepository {
     return this.store.setTitle(hostThreadId, title);
   }
 
+  /** A presentation hint, never a title. Call with the known beginning of history. */
+  async updatePreview(
+    record: StoredThreadRecordV1,
+    turns: readonly JsonObject[],
+    clearMissing = false,
+  ): Promise<StoredThreadRecordV1> {
+    const preview = firstUserMessagePreview(turns);
+    if (preview === record.preview || (preview === undefined && !clearMissing)) return record;
+    return this.store.updateMetadata(record.hostThreadId, { preview: preview ?? null });
+  }
+
   setTransportModelId(
     hostThreadId: HostThreadId,
     transportModelId: string,
   ): Promise<StoredThreadRecordV1> {
     return this.store.setTransportModelId(hostThreadId, transportModelId);
+  }
+
+  appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.appendPendingInjectedText(hostThreadId, texts);
+  }
+
+  consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    through: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.consumePendingInjectedText(hostThreadId, through, prefix);
   }
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
@@ -233,6 +284,14 @@ export class ExternalThreadRepository {
 
   removeThread(hostThreadId: HostThreadId): Promise<void> {
     return this.store.removeThread(hostThreadId);
+  }
+
+  async saveUsageMeasurements(
+    record: StoredThreadRecordV1,
+    values: UsageMeasurementsSnapshot,
+  ): Promise<StoredThreadRecordV1> {
+    if (!record.nativeSessionRef || !this.store.saveUsageMeasurements) return record;
+    return this.store.saveUsageMeasurements(record.hostThreadId, record.nativeSessionRef, values);
   }
 
   async persistTurn(
@@ -285,15 +344,8 @@ export class ExternalThreadRepository {
         ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
       };
     });
-    const nextRecord = await this.store.commitReady({
-      hostThreadId: record.hostThreadId,
-      nativeSessionRef,
-      turnMappings: mappings,
-    });
-    return {
-      record: nextRecord,
-      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
-    };
+    const nextRecord = await this.commitNative(record.hostThreadId, nativeSessionRef, mappings);
+    return this.#projectSnapshot(nextRecord, snapshot);
   }
 
   async commitForkRollback(
@@ -366,10 +418,7 @@ export class ExternalThreadRepository {
         hostTurnId: selectedSource.hostTurnId,
       },
     });
-    return {
-      record: nextRecord,
-      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, derived),
-    };
+    return this.#projectSnapshot(nextRecord, snapshot, derived);
   }
 
   async commitLastTurnRollback(
@@ -410,10 +459,7 @@ export class ExternalThreadRepository {
       nativeSessionRef,
       turnMappings: mappings,
     });
-    return {
-      record: nextRecord,
-      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot, current),
-    };
+    return this.#projectSnapshot(nextRecord, snapshot, current);
   }
 
   async sessionTreeId(record: StoredThreadRecordV1): Promise<string> {
@@ -491,9 +537,18 @@ export class ExternalThreadRepository {
     const nextRecord = mappingsChanged
       ? await this.store.reconcileTurnMappings(record.hostThreadId, orderedMappings)
       : record;
+    return this.#projectSnapshot(nextRecord, snapshot);
+  }
+
+  async #projectSnapshot(
+    record: StoredThreadRecordV1,
+    snapshot: HostThreadSnapshot,
+    previous?: StoredThreadRecordV1,
+  ): Promise<AlignedExternalSnapshot> {
+    const turns = await projectExternalSnapshot(this.store, record, snapshot, previous);
     return {
-      record: nextRecord,
-      turns: await projectExternalSnapshot(this.store, nextRecord, snapshot),
+      record: await this.updatePreview(record, ownTurns(record, turns), previous !== undefined),
+      turns,
     };
   }
 }
@@ -507,7 +562,11 @@ export function createExternalThreadRecordInput(input: {
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  projectlessWorkspace?: CreateProvisionalThreadInput["projectlessWorkspace"];
   forkSource?: CreateProvisionalThreadInput["forkSource"];
+  attachedToThreadId?: CreateProvisionalThreadInput["attachedToThreadId"];
+  inheritedTurnCount?: CreateProvisionalThreadInput["inheritedTurnCount"];
+  importSourceRef?: CreateProvisionalThreadInput["importSourceRef"];
   subagent?: CreateProvisionalThreadInput["subagent"];
 }): CreateProvisionalThreadInput {
   return {
@@ -519,7 +578,13 @@ export function createExternalThreadRecordInput(input: {
     transportModelId: input.transportModelId,
     ephemeral: input.ephemeral,
     historyMode: input.historyMode,
+    ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+    ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+    ...(input.inheritedTurnCount !== undefined
+      ? { inheritedTurnCount: input.inheritedTurnCount }
+      : {}),
+    ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
     ...(input.subagent ? { subagent: input.subagent } : {}),
   };
 }
@@ -538,7 +603,7 @@ export function threadSectionFields(placement?: StoredSectionPlacementV1): {
 }
 
 export function externalThreadValue(input: {
-  record: StoredThreadRecordV1;
+  record: StoredThreadSummaryV1;
   turns: JsonObject[];
   sessionId: string;
   running?: boolean;
@@ -548,31 +613,12 @@ export function externalThreadValue(input: {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
   const updatedAt = Math.floor(Date.parse(record.updatedAt) / 1_000);
-  const preview = input.turns
-    .flatMap((turn) => (Array.isArray(turn.items) ? turn.items : []))
-    .find(
-      (item) =>
-        typeof item === "object" &&
-        item !== null &&
-        !Array.isArray(item) &&
-        item.type === "userMessage",
-    );
-  const previewContent =
-    typeof preview === "object" && preview !== null && !Array.isArray(preview)
-      ? preview.content
-      : null;
-  const previewText = Array.isArray(previewContent)
-    ? previewContent
-        .filter(
-          (part): part is JsonObject =>
-            typeof part === "object" &&
-            part !== null &&
-            !Array.isArray(part) &&
-            part.type === "text",
-        )
-        .map((part) => (typeof part.text === "string" ? part.text : ""))
-        .join("\n")
-    : "";
+  // A Side Chat's preview comes from its own Turns only, and the record keeps it. Turns passed
+  // here may still include the history it inherited.
+  const previewText =
+    record.preview ??
+    (record.attachedToThreadId ? undefined : firstUserMessagePreview(input.turns)) ??
+    "";
   return {
     id: record.hostThreadId,
     sessionId: input.sessionId,
@@ -613,13 +659,31 @@ export function externalThreadValue(input: {
           sha: record.gitInfo.sha ?? null,
         }
       : null,
-    forkedFromId: record.forkSource?.hostThreadId ?? null,
+    // A Side Chat forked before its source completed a Turn has no fork boundary Turn.
+    forkedFromId: record.forkSource?.hostThreadId ?? record.attachedToThreadId ?? null,
+    ...(record.attachedToThreadId ? { attachedToThreadId: record.attachedToThreadId } : {}),
+    ...(record.importSourceRef &&
+    record.nativeSessionRef &&
+    record.importSourceRef.nativeSessionId !== record.nativeSessionRef.nativeSessionId
+      ? {
+          codexhostImportSource: {
+            harnessId: record.importSourceRef.harnessId,
+            nativeSessionId: record.importSourceRef.nativeSessionId,
+          },
+        }
+      : {}),
     parentThreadId: record.subagent?.parentHostThreadId ?? null,
     ephemeral: record.ephemeral,
     canAcceptDirectInput: record.subagent ? false : input.loaded === false ? null : true,
     historyMode: record.historyMode,
     isPinned: false,
     projectId: record.projectId ?? null,
+    ...(record.projectlessWorkspace && !record.projectId
+      ? {
+          workspaceKind: "projectless",
+          projectlessOutputDirectory: record.projectlessWorkspace.outputDirectory,
+        }
+      : {}),
     daybreakEnabled: record.daybreakEnabled ?? null,
     ...threadSectionFields(input.placement),
     agentNickname: record.subagent ? record.title || null : null,

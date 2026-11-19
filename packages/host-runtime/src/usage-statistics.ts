@@ -32,7 +32,7 @@ import {
 } from "./model-prices.js";
 
 /** Bump when a reader's output changes meaning, so cached parses are read again. */
-const CACHE_VERSION = 7;
+const CACHE_VERSION = 8;
 const STALE_AFTER_MS = 10_000;
 const WARM_DELAY_MS = 3_000;
 /** At most one rewrite of a Harness's cache file per interval while its sessions keep growing. */
@@ -159,6 +159,8 @@ function emptyTotals(): UsageStatisticsTotals {
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,
     cacheKnownInputTokens: 0,
+    cacheHitCachedInputTokens: 0,
+    cacheHitInputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
     costUsd: 0,
@@ -177,6 +179,10 @@ function addEntry(totals: UsageStatisticsTotals, entry: HarnessUsageEntry, cost:
   totals.inputTokens += entry.inputTokens;
   totals.outputTokens += entry.outputTokens;
   totals.reasoningOutputTokens += entry.reasoningOutputTokens ?? 0;
+  if (entry.cachedInputTokens !== undefined) {
+    totals.cacheHitCachedInputTokens += entry.cachedInputTokens;
+    totals.cacheHitInputTokens += entry.inputTokens;
+  }
   if (entry.cachedInputTokens !== undefined && entry.cacheWriteInputTokens !== undefined) {
     totals.cachedInputTokens += entry.cachedInputTokens;
     totals.cacheWriteInputTokens += entry.cacheWriteInputTokens;

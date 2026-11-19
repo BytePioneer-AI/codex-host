@@ -4,10 +4,12 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { parseUpdateStatus, type BackgroundUpdateStatus } from "./status.js";
@@ -24,6 +26,7 @@ export interface DiscoveredUpdateStatus {
 export interface UpdateOperationLock {
   readonly path: string;
   setStatusPath(statusPath: string): Promise<void>;
+  transferTo(ownerPid: number): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -91,6 +94,20 @@ export async function discoverLatestUpdateStatus(
   return candidates[0] ?? null;
 }
 
+/** Restore the latest completed operation for 24 hours, including failures before service stop. */
+export async function discoverRecentCompletedUpdateStatus(
+  stateDirectory: string,
+): Promise<DiscoveredUpdateStatus | null> {
+  const latest = await discoverLatestUpdateStatus(stateDirectory);
+  if (
+    !latest ||
+    !TERMINAL_PHASES.has(latest.status.phase) ||
+    latest.status.updatedAt < Math.floor(Date.now() / 1000) - 24 * 60 * 60
+  )
+    return null;
+  return latest;
+}
+
 export async function cleanupTerminalUpdateState(
   stateDirectory: string,
   options: { now?: number; retentionSeconds?: number } = {},
@@ -140,6 +157,7 @@ export async function acquireUpdateOperationLock(
   await handle.sync();
   await handle.close();
   let released = false;
+  let operationStatusPath: string | null = null;
   return {
     path: lockPath,
     async setStatusPath(statusPath: string) {
@@ -150,6 +168,27 @@ export async function acquireUpdateOperationLock(
         `${JSON.stringify({ ownerPid: process.pid, statusPath: path.normalize(statusPath) })}\n`,
         { encoding: "utf8", mode: 0o600 },
       );
+      operationStatusPath = path.normalize(statusPath);
+    },
+    async transferTo(ownerPid: number) {
+      if (released || !operationStatusPath) throw new Error("Update operation is not prepared");
+      if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0)
+        throw new Error("Invalid update owner PID");
+      const temporary = `${lockPath}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(
+          temporary,
+          `${JSON.stringify({ ownerPid, statusPath: operationStatusPath })}\n`,
+          {
+            encoding: "utf8",
+            mode: 0o600,
+            flag: "wx",
+          },
+        );
+        await rename(temporary, lockPath);
+      } finally {
+        await rm(temporary, { force: true });
+      }
     },
     async release() {
       if (released) return;

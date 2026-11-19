@@ -44,6 +44,7 @@ export type {
   HarnessSessionCapabilities,
   HarnessSessionImportCandidate,
   HarnessSessionImportCapability,
+  HarnessSessionImportPrepared,
   HarnessSessionImportSource,
   HarnessSubagentCapability,
   HarnessWebUiAction,
@@ -81,11 +82,14 @@ export type {
   HostTextInput,
   HostTextQuestion,
   HostToolExecutionItem,
+  HostMcpToolCallItem,
+  HostWebSearchItem,
   HostToolOutput,
   HostTurnSnapshot,
   InteractionClosedEvent,
   InteractionRespondAccepted,
   InteractionRespondCommand,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
   ItemDetachedEvent,
   ItemStartedEvent,
@@ -132,3 +136,11 @@ export {
   type LiveCommandExclusions,
   type LiveHarnessCommand,
 } from "./live-command-catalog.js";
+
+export {
+  subagentConfiguration,
+  inheritSubagentConfiguration,
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "./subagent-configuration.js";

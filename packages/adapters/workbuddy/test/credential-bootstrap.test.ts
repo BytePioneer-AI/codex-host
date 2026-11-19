@@ -39,7 +39,10 @@ async function fixture(
   await writeFile(preload, `process._linkedBinding = (name) => { ${provider} };`);
   const environment: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !name.startsWith("CODEBUDDY_SIDECAR_") && name !== "WORKBUDDY_AT_REST_ENCRYPTION",
+      ([name]) =>
+        !name.startsWith("CODEXHOST_") &&
+        !name.startsWith("CODEBUDDY_SIDECAR_") &&
+        name !== "WORKBUDDY_AT_REST_ENCRYPTION",
     ),
   );
   Object.assign(environment, extraEnvironment);

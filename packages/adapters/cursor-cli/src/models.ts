@@ -67,14 +67,18 @@ export function cursorCatalog(info: CursorSessionInfo): HarnessModelCatalog {
     { id: ReturnType<typeof cursorThinking>[number]["id"]; label: string }
   >();
   const models = native.models.map((model) => {
-    const config =
-      model.value === native.current
-        ? info.configOptions
-        : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
+    const live = model.value === native.current;
+    const config = live
+      ? info.configOptions
+      : info.nativeModels?.find((entry) => entry.value === model.value)?.configOptions;
     const options = cursorThinking(config);
     for (const { id, label } of options) thinking.set(id, { id, label });
     return {
-      ref: cursorConfiguredModelRef(model.value, config),
+      // Only the live model's parameters reflect the user's Cursor settings. The parameterized
+      // catalog reports Cursor's built-in defaults for every other model (for example
+      // `fast=true`), so pinning them would override the user's remembered per-model parameters.
+      // A bare Ref selects only the model and lets Cursor apply those parameters itself.
+      ref: live ? cursorConfiguredModelRef(model.value, config) : cursorModelRef(model.value),
       label: model.name,
       supportedThinkingOptionIds: options.map(({ id }) => id),
     };

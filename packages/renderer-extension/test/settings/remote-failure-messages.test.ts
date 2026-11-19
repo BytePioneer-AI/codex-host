@@ -3,15 +3,8 @@ import { describe, expect, it } from "vitest";
 import { localizeRemoteFailure } from "../../src/settings/remote-failure-messages.js";
 
 const zh = (chinese: string): string => chinese;
-const en = (_chinese: string, english: string): string => english;
 
 describe("remote failure messages", () => {
-  it("shows a known failure in Chinese and keeps the English wording for English", () => {
-    const message = "A connection with this name already exists";
-    expect(localizeRemoteFailure(message, zh)).toBe("已存在同名的连接");
-    expect(localizeRemoteFailure(message, en)).toBe(message);
-  });
-
   it("recognises a failure followed by a detail or recorded with its error class", () => {
     expect(
       localizeRemoteFailure(

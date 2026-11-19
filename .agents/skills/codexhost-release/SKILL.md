@@ -5,7 +5,7 @@ description: 发布 codexhost 正式版、预览版，编写或确认 Release No
 
 # codexhost 版本发布
 
-目标：通过仓库既有 GitHub Actions 发布，不在本地执行 `npm publish`，不手动创建 GitHub Release，不绕过 CI。
+目标：通过仓库既有 GitHub Actions 发布，不在本地执行 `npm publish`，不手动创建 GitHub Release。是否等待 CI 由用户每次选择（见“确认 CI 策略”），跳过 CI 时其他发布校验不变。
 
 ## 必须先读
 
@@ -38,14 +38,23 @@ description: 发布 codexhost 正式版、预览版，编写或确认 Release No
 
 用户意图不清楚时，先问清两个渠道的目标。最终执行前明确报告版本、npm dist-tag、GitHub 状态与是否提示更新。
 
+### 确认 CI 策略
+
+开始前请用户二选一，后续每一步沿用；请求里已经说明时直接沿用，不重复询问。
+
+| 路径 | 做法 | 代价 |
+| --- | --- | --- |
+| 等待 CI | 推送版本提交，等确切 SHA 的 `main push` CI 成功后推 Tag，自动发布 | 多等一轮 CI（工作流最多等 30 分钟） |
+| 不等 CI | 手动运行 `Release packages` 并设 `skip_ci=true`（见第 4 节“可选 CI 门禁”）；新 Tag 需先获临时禁用发布工作流的授权 | CI 能发现的问题可能随版本发布 |
+
 ## 2. 检查现场与验证
 
 1. 检查工作区、当前分支、远端与已有标签；快进同步 `main`，不覆盖无关修改。
 2. 检查目标版本是否已存在于 npm 或 GitHub，是否有正在运行的发布。已推送标签不等于已发布；取消发布也不保证 npm 从未接受某个平台包。
 3. 新版本用 `npm run release:prepare -- <version>` 同步四个版本文件，检查 diff。
-4. 执行 `npm run check`。已有无关问题阻断时，报告具体文件、步骤和未执行检查，不顺手修复；不得声称全部通过。
+4. 选择等待 CI 时，仅核对四个版本文件的 diff，不在本地跑全套 `npm run check`；选择不等 CI 时，才在本地执行 `npm run check` 兜底（已有无关问题阻断时，报告具体文件、步骤和未执行检查，不顺手修复；不得声称全部通过）。
 5. 只提交四个版本文件，使用 `chore: prepare v<version>`，推送 `main`。
-6. 确认**标签目标 SHA 对应的 `main push` CI**成功，包含四个基线 job。不能用另一提交的 CI、本地检查或 PR CI 代替。
+6. 选择等待 CI 时，确认**标签目标 SHA 对应的 `main push` CI**成功，包含四个基线 job。不能用另一提交的 CI、本地检查、PR CI 或手动单平台 CI 代替。选择不等 CI 时，使用下述手动发布选项；不得将跳过报告为通过。
 
 CI 失败时查看失败 step 和原始诊断。不自动重试测试或放宽超时；只有核实为可重试的临时故障并获授权后才重跑失败 jobs。重跑完成前不得报告 CI 通过。
 
@@ -64,7 +73,7 @@ CI 失败时查看失败 step 和原始诊断。不自动重试测试或放宽�
 
 ### 正式发布 / SemVer 预发布 / npm 测试发行
 
-远端确切提交 CI 成功、文案确认后，在版本提交上创建 annotated Tag：
+默认在远端确切提交 CI 成功、文案确认后，在版本提交上创建 annotated Tag：
 
 ```bash
 git tag -a v<version> <release-sha> --cleanup=verbatim -F .git/release-notes-v<version>.md
@@ -89,9 +98,17 @@ github_prerelease=true
 skip_npm=false
 ```
 
-手动流程固定标签提交，并保留版本及确切提交 CI 校验。工作流的禁用、启用、dispatch 均可通过 `gh workflow` 或 GitHub Actions REST API 操作，先确认权限和原状态。
+手动流程固定标签提交，并保留版本及确切提交 CI 校验（用户明确选择 `skip_ci=true` 时仅跳过 CI）。工作流的禁用、启用、dispatch 均可通过 `gh workflow` 或 GitHub Actions REST API 操作，先确认权限和原状态。
 
 若权限不足、无法安全恢复工作流或有并行发布，停下并说明阻碍，不退回有竞态的“推送后取消”方案，也不假定用 Git refs API 创建标签一定不会触发工作流。未来若源码增加安全的 tag push 预览路由，优先使用经过验证的新入口并同步本指南。
+
+### 可选 CI 门禁（仅手动发布）
+
+默认 `skip_ci=false`：等待确切提交的 `main push` CI，最多 30 分钟，四项基线 job 必须成功，发布前再次校验同一 run / attempt。
+
+用户明确要求不等待且不校验 CI 时，从 `main` 手动运行 `Release packages`，指定正确的既有 annotated tag 和 `skip_ci=true`；同时保留目标渠道所需的 `github_prerelease`、`skip_npm` 输入。此模式不查询 CI，缺失、失败或未完成的 CI 均不阻止发布，但保留 Tag、版本、Release Notes、提交仍在 `main`、构建和产物校验。Actions Summary 和 `release-evidence.json` 明确记录 CI 已跳过。
+
+不要将 `skip_ci` 与 `skip_npm` 混淆；重启发布时须保持用户确认的 CI 策略。Tag push 始终使用默认 CI 门禁；新 Tag 若只走手动发布，仍须先取得临时禁用工作流的授权，再禁用、推送 Tag、恢复并手动运行，沿用静默预览发行的竞态保护。此模式只例外处理远端 CI，不自动免除本地验证或文案确认。
 
 ## 5. 跟踪、暂停与恢复
 
@@ -106,7 +123,7 @@ skip_npm=false
 
 分别核实并报告：
 
-1. 确切发布 SHA 的 CI 结果。
+1. 确切发布 SHA 的 CI 结果，或用户明确授权的 `skip_ci` 及实际跳过记录。
 2. npm 元包及全部目标平台包的版本、目标 dist-tag。
 3. GitHub Release 的 prerelease 标记、正式 latest 是否符合预期及四个安装包。
 4. 静默预览发行没有成为 GitHub latest；不能只凭 `prerelease` 输入推断成功。

@@ -4,10 +4,36 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeOfficialCodexModelRef,
   decodeOfficialCodexModelRef,
+  decodeOfficialCodexModelSelection,
   encodeOfficialCodexModelRef,
 } from "../src/official-codex-model-ref.js";
 
 describe("official Codex Model refs", () => {
+  it.each([
+    ["priority", "codex-fast-model-v1.cHJvdmlkZXIvbW9kZWw"],
+    ["ultrafast", "codex-ultra-v1.cHJvdmlkZXIvbW9kZWw"],
+  ])("round-trips %s as a selection of the same native Model", (serviceTier, id) => {
+    const ref = encodeOfficialCodexModelRef("provider/model", serviceTier);
+    expect(ref).toEqual({ id });
+    expect(decodeOfficialCodexModelRef(ref)).toBe("provider/model");
+    expect(decodeOfficialCodexModelSelection(ref)).toEqual({
+      model: "provider/model",
+      serviceTier,
+    });
+    expect(canonicalizeOfficialCodexModelRef(ref)).toEqual(ref);
+    expect(() =>
+      decodeOfficialCodexModelSelection(harnessModelRefSchema.parse({ id: `${ref.id}.` })),
+    ).toThrow("canonical");
+  });
+
+  it("keeps the base ref for an ordinary selection and unrecognized tiers", () => {
+    const ref = encodeOfficialCodexModelRef("provider/model");
+    expect(decodeOfficialCodexModelSelection(ref)).toEqual({
+      model: "provider/model",
+      serviceTier: null,
+    });
+    expect(encodeOfficialCodexModelRef("provider/model", "flex")).toEqual(ref);
+  });
   it.each([
     ["gpt-5.6-luna", "codex-model-v1.Z3B0LTUuNi1sdW5h"],
     ["xai/grok-4.6", "codex-model-v1.eGFpL2dyb2stNC42"],

@@ -1,3 +1,4 @@
+import { subagentConfiguration, type SubagentConfiguration } from "@codexhost/harness-adapter";
 import { createHash } from "node:crypto";
 
 import type {
@@ -13,6 +14,8 @@ import {
   type HostItemId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
+
+import { GotgenesSubagents, type GotgenesRecord } from "./pi-gotgenes-subagents.js";
 
 import { piWorkflowSummary, projectPiWorkflow } from "./pi-subagent-workflow.js";
 
@@ -36,7 +39,7 @@ function token(value: unknown): value is string {
   );
 }
 
-export interface PiSubagentNode {
+export interface PiSubagentNode extends SubagentConfiguration {
   id: string;
   kind: "subagent" | "workflow" | "step" | "host-step";
   label: string;
@@ -82,6 +85,7 @@ function node(value: unknown, depth: number, budget: { count: number }): PiSubag
     kind: value.kind as PiSubagentNode["kind"],
     label: value.label,
     state: value.state,
+    ...subagentConfiguration(value),
     ...(children.length ? { children } : {}),
   };
 }
@@ -170,6 +174,7 @@ function states(run: PiSubagentNode): HostSubagentState[] {
           subagentId: id,
           nativeSubagentId: id,
           description: entry.label,
+          ...subagentConfiguration(entry),
           background: true,
           status: statuses[entry.state] ?? "running",
         });
@@ -203,7 +208,16 @@ export class PiSubagents {
   readonly #active = new Map<string, { turnId: HostTurnId; item: HostSubagentDelegationItem }>();
   readonly #waiting = new Map<string, { turnId: HostTurnId; itemId: HostItemId }>();
 
-  constructor(private readonly emit: (event: HostEvent) => void) {}
+  readonly gotgenes: GotgenesSubagents;
+  constructor(private readonly emit: (event: HostEvent) => void) {
+    this.gotgenes = new GotgenesSubagents(emit);
+  }
+  observeGotgenes(
+    records: GotgenesRecord[],
+    activeTurn?: { turnId: HostTurnId; nextItemId: () => HostItemId },
+  ): void {
+    this.gotgenes.observe(records, true, activeTurn, true);
+  }
 
   observe(runs: PiSubagentNode[]): void {
     this.#apply(runs, true);
@@ -218,7 +232,8 @@ export class PiSubagents {
     for (const run of runs) {
       const observed = states(run);
       const retained = this.#children.get(run.id) ?? new Map<string, HostSubagentState>();
-      for (const child of observed) retained.set(child.subagentId, child);
+      for (const child of observed)
+        retained.set(child.subagentId, { ...retained.get(child.subagentId), ...child });
       this.#children.set(run.id, retained);
       const children = [...retained.values()];
       if (!publish) continue;
@@ -266,6 +281,8 @@ export class PiSubagents {
     itemId: HostItemId,
     callId?: string,
   ): HostSubagentDelegationItem | null {
+    const gotgenes = this.gotgenes.project(toolName, result, itemId);
+    if (gotgenes) return gotgenes;
     const workflow = toolName === "subagent" ? piWorkflowSummary(result) : null;
     if (workflow && (!callId || workflow.parentToolCallId === callId))
       return projectPiWorkflow(workflow, itemId);
@@ -284,6 +301,7 @@ export class PiSubagents {
     itemId: HostItemId,
     callId?: string,
   ): void {
+    if (this.gotgenes.start(turnId, toolName, result, itemId)) return;
     const workflow = toolName === "subagent" ? piWorkflowSummary(result) : null;
     if (workflow && (!callId || workflow.parentToolCallId === callId)) {
       const key = `workflow:${workflow.workflowRunId}`;
@@ -329,6 +347,7 @@ export class PiSubagents {
   }
 
   finish(turnId: HostTurnId): void {
+    this.gotgenes.finish(turnId);
     for (const [runId, waiting] of this.#waiting) {
       if (waiting.turnId === turnId) this.#waiting.delete(runId);
     }

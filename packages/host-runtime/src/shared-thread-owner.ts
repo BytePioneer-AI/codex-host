@@ -4,7 +4,7 @@ import {
   jsonRpcRequestSchema,
   parseJsonFrame,
   readLfFrames,
-  writeJsonFrame,
+  encodeJsonFrame,
   type JsonObject,
   type JsonRpcId,
 } from "@codexhost/protocol-core";
@@ -18,7 +18,8 @@ export class SharedThreadOwner {
   readonly #peer = new StreamThreadPeer(this.output, this.input, () => this.input.end());
   readonly #prefix = `shared-interaction:${randomUUID()}:`;
   readonly #interactions = new Map<string, { nativeId: JsonRpcId; message: JsonObject }>();
-  readonly #listeners = new Set<(message: JsonObject) => void>();
+  readonly #clients = new Map<(message: JsonObject) => void, () => void>();
+  #closed = false;
   readonly #receipts = new Map<string, { fingerprint: string; result: Promise<JsonObject> }>();
 
   constructor() {
@@ -33,8 +34,11 @@ export class SharedThreadOwner {
         this.#interactions.delete(id);
         event = { ...message, params: { ...message.params, requestId: id } };
       }
-      for (const listener of this.#listeners) listener(event);
+      for (const listener of this.#clients.keys()) listener(event);
     });
+    // Only the owner subscribes to this long-lived promise. Viewer close callbacks
+    // live in the removable client registry, not in accumulating Promise reactions.
+    void this.#peer.closed.then(() => this.close());
   }
 
   #request(method: string, params: JsonObject): Promise<JsonObject> {
@@ -80,7 +84,6 @@ export class SharedThreadOwner {
         }
       }
     };
-    this.#listeners.add(publish);
     const peer: SharedThreadPeer = {
       closed: ended.promise,
       request: (method, params) =>
@@ -103,12 +106,13 @@ export class SharedThreadOwner {
       close: () => {
         if (closed) return;
         closed = true;
-        this.#listeners.delete(publish);
+        this.#clients.delete(publish);
         listeners.clear();
         ended.resolve(undefined);
       },
     };
-    void this.#peer.closed.then(() => peer.close());
+    this.#clients.set(publish, peer.close);
+    if (this.#closed) peer.close();
     return peer;
   }
 
@@ -118,13 +122,18 @@ export class SharedThreadOwner {
     let detached = false;
     const send = (message: JsonObject): void => {
       if (detached || streams.output.destroyed) return;
-      // Detach if the session's output stream stops draining.
-      if (streams.output.writableLength > 8 * 1024 * 1024) {
+      // The viewer transport bounds its queue independently of an in-flight frame.
+      const failed = () => {
         peer.close();
         streams.input.destroy();
-        return;
+      };
+      try {
+        streams.output.write(encodeJsonFrame(message), (error) => {
+          if (error) failed();
+        });
+      } catch {
+        failed();
       }
-      void writeJsonFrame(streams.output, message).catch(() => peer.close());
     };
     const unsubscribe = peer.subscribe(send);
     return {
@@ -172,7 +181,10 @@ export class SharedThreadOwner {
   }
 
   close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
     this.#peer.close();
+    for (const close of this.#clients.values()) close();
     this.#receipts.clear();
     this.#interactions.clear();
   }

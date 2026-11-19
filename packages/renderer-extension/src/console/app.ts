@@ -5,6 +5,7 @@ import { getSharedAgentGroupPreferenceStore } from "../agent-group-preference.js
 import { createConsoleConnectionDiagnostics } from "./connection-diagnostics.js";
 import consoleCss from "./console.css";
 import consoleComponentsCss from "./components.css";
+import connectDevicesCss from "./pages/connect-devices.css";
 import usageCss from "./usage/usage.css";
 import { h } from "./dom.js";
 import { consoleMessages, type ConsoleMessages } from "./messages.js";
@@ -14,13 +15,15 @@ import { createOverviewPage } from "./pages/overview.js";
 import { ConsoleState } from "./state.js";
 import { createConsoleRemoteConnections } from "./remote-connections.js";
 import { createRendererModelClient } from "../renderer-model-client.js";
-import { createRendererSessionImportClient } from "../renderer-session-import-client.js";
+import { createConnectDevicesPage } from "./pages/connect-devices.js";
 import accountsCss from "../settings/accounts.css";
 import {
   RendererSettingsPageScope,
   type RendererSettingsPageDefinition,
 } from "../settings/core.js";
-import { createRendererSettingsBrandIcon, createRendererSettingsIcon } from "../settings/icons.js";
+import { createRendererSettingsIcon } from "../settings/icons.js";
+import { createRendererColoredBrandMark } from "../renderer-brand-mark.js";
+import coloredBrandCss from "../renderer-brand-mark.css";
 import {
   resolveRendererSettingsLocale,
   rendererSettingsMessages,
@@ -124,12 +127,12 @@ export function startConsoleApp(document: Document): void {
     { migrateLegacy: false },
   );
   window.addEventListener("pagehide", (event) => {
-    if (!event.persisted) stopGroupSync();
+    if (!event.persisted) {
+      stopGroupSync();
+      state.stop();
+    }
   });
   const diagnostics = createConsoleConnectionDiagnostics(modelClient);
-  const sessionImportClient = createRendererSessionImportClient((method, params) =>
-    manager.sendRequest(method, params),
-  );
   const updateClient = consoleUpdateClient();
   const remoteConnections = createConsoleRemoteConnections(manager);
   const settingsPages = createDefaultRendererSettingsPages(
@@ -137,7 +140,7 @@ export function startConsoleApp(document: Document): void {
     () => updateClient,
     () => diagnostics,
     () => modelClient,
-    () => sessionImportClient,
+    () => null,
     null,
     () => null,
     () => remoteConnections,
@@ -166,7 +169,7 @@ export function startConsoleApp(document: Document): void {
         ),
         hostPage(required(settingsPages, "remote-connections"), messages, state),
         hostPage(required(settingsPages, "accounts"), messages, state),
-        hostPage(required(settingsPages, "session-import"), messages, state),
+        createConnectDevicesPage(locale),
         hostPage(required(settingsPages, "usage-statistics"), messages, state),
         required(settingsPages, "updates"),
       ],
@@ -184,7 +187,7 @@ export function startConsoleApp(document: Document): void {
   // Constructable sheets: the page CSP forbids inline style elements.
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${consoleCss}`,
+    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${consoleCss}\n${coloredBrandCss}\n${connectDevicesCss}`,
   );
   shadow.adoptedStyleSheets = [sheet];
 
@@ -231,7 +234,7 @@ export function startConsoleApp(document: Document): void {
     document,
     "div",
     { className: "console-brand" },
-    createRendererSettingsBrandIcon(28),
+    createRendererColoredBrandMark(document, 28),
     h(
       document,
       "div",
@@ -275,12 +278,34 @@ export function startConsoleApp(document: Document): void {
   void mountConsoleAnnouncement(announcement);
   state.subscribe(() => {
     offlineBanner.hidden = !state.offline;
+    if (state.stopped) {
+      stopGroupSync();
+      scope?.dispose();
+      cleanup?.();
+      shadow.replaceChildren(
+        h(
+          document,
+          "main",
+          { className: "settings-page", role: "status" },
+          h(document, "h1", {}, locale === "zh-CN" ? "codexhost 已停止" : "codexhost stopped"),
+          h(
+            document,
+            "p",
+            {},
+            locale === "zh-CN"
+              ? "控制台也已关闭。会话数据保留；下次使用时重新启动 codexhost。"
+              : "The console is also closed. Session data is kept. Start codexhost again when needed.",
+          ),
+        ),
+      );
+    }
   });
 
   let scope: RendererSettingsPageScope | null = null;
   let cleanup: (() => void) | null = null;
   let activeId: string | null = null;
   const activate = (): void => {
+    if (state.stopped) return;
     const requested = window.location.hash.slice(1);
     const pageId = pages.has(requested) ? requested : "overview";
     if (pageId === activeId) return;

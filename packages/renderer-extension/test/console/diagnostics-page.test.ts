@@ -65,12 +65,14 @@ describe("overview startup diagnostics", () => {
       return () => undefined;
     });
     const context = {
-      content: { ownerDocument: {}, replaceChildren },
+      content: { ownerDocument: {}, replaceChildren, querySelector: () => null },
     } as unknown as RendererSettingsPageMountContext;
     createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
     const initial = JSON.stringify(replaceChildren.mock.calls.at(-1));
     expect(initial).toContain("codexhost 正在启动");
-    expect(initial).not.toContain('"tag":"button"');
+    expect(initial).not.toContain('"label":[null,"启动 codexhost"]');
+    expect(initial).toContain("打开 Web");
+    expect(initial).toContain('"label":"停止"');
     expect(initial).not.toContain("启动成功");
     expect(initial).not.toContain("codexhost 未运行");
 
@@ -86,7 +88,8 @@ describe("overview startup diagnostics", () => {
     refresh?.();
     const ready = JSON.stringify(replaceChildren.mock.calls.at(-1));
     expect(ready).toContain("codexhost 正在运行");
-    expect(ready).not.toContain('"tag":"button"');
+    expect(ready).not.toContain('"label":[null,"启动 codexhost"]');
+    expect(ready).toContain("打开 Web");
   });
 
   it("does not present an abandoned starting record as a successful startup", () => {

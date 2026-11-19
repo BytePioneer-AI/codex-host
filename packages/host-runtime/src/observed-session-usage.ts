@@ -1,7 +1,8 @@
 import { jsonObjectSchema, type JsonObject } from "@codexhost/shared-contracts";
 import { parseHostUsage, type HostUsage } from "@codexhost/harness-adapter";
 import type { HarnessSessionUsageCapability } from "@codexhost/harness-adapter/plugin";
-import { UsageMeter } from "./usage-metering.js";
+import type { UsageMeasurementsStore } from "./usage-measurements-store.js";
+import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 import type { ModelPriceCatalog } from "./model-prices.js";
 
 interface State {
@@ -23,6 +24,7 @@ export class ObservedSessionUsage {
     private readonly providers: () => readonly HarnessSessionUsageCapability[],
     private readonly prices: ModelPriceCatalog,
     private readonly diagnose: (error: unknown) => void,
+    private readonly measurements?: UsageMeasurementsStore,
   ) {}
 
   initialized(params: JsonObject): void {
@@ -90,14 +92,47 @@ export class ObservedSessionUsage {
           state.activeTurnId = turn.id;
         }
         const timing = observation.requestTiming;
-        if (timing) state.meter.recordOutputTiming(timing, timing.turnId);
+        const measured = timing && state.meter.recordOutputTiming(timing, timing.turnId);
+        if (measured) state.revision++;
+        if (
+          measured &&
+          timing &&
+          provider.measurementScope &&
+          state.meter.outputTimingTurnId === timing.turnId
+        ) {
+          const outputTokensPerSecond = state.meter.measurements().outputTokensPerSecond;
+          if (outputTokensPerSecond !== undefined)
+            this.measurements?.record(
+              provider.measurementScope,
+              observation.sessionId,
+              timing.turnId,
+              now,
+              {
+                outputTokensPerSecond,
+                outputTimings: state.meter.measurementSnapshot().outputTimings,
+              },
+            );
+        }
         if (observation.timingUnavailable)
           state.meter.invalidateOutputTiming(observation.timingUnavailable.turnId);
         if (turn?.phase === "completed") {
           state.meter.turnCompleted(turn.id);
           if (state.activeTurnId === turn.id) state.activeTurnId = null;
+          if (provider.measurementScope)
+            void this.measurements?.flush(provider.measurementScope, observation.sessionId);
         }
         const firstOutput = turn?.phase === "output" && state.meter.outputObserved(turn.id, now);
+        if (firstOutput && turn && provider.measurementScope) {
+          const timeToFirstOutputMs = state.meter.measurements().timeToFirstOutputMs;
+          if (timeToFirstOutputMs !== undefined)
+            this.measurements?.record(
+              provider.measurementScope,
+              observation.sessionId,
+              turn.id,
+              now,
+              { timeToFirstOutputMs },
+            );
+        }
         if (
           observation.usage ||
           firstOutput ||
@@ -147,6 +182,32 @@ export class ObservedSessionUsage {
           history.requests,
           history.complete && state.revision === revision,
         );
+        if (history.retainedTurnIds) {
+          const retained = new Set(history.retainedTurnIds);
+          if (state.activeTurnId) retained.add(state.activeTurnId);
+          if (history.complete && state.revision === revision)
+            state.meter.retainMeasurements(retained);
+          if (provider.measurementScope && this.measurements) {
+            const saved = await this.measurements.read(
+              provider.measurementScope,
+              sessionId,
+              retained,
+            );
+            if (this.#abort.signal.aborted) return;
+            state.meter.restoreOutputTimings(saved.outputTimings ?? []);
+            for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
+              const value = saved[field];
+              if (value)
+                state.meter.restoreMeasurements({ [field]: value.value }, value.turnId, value.at);
+            }
+          }
+        }
+        if (history.lastTurnTiming)
+          state.meter.restoreMeasurements(
+            { timeToFirstOutputMs: history.lastTurnTiming.timeToFirstOutputMs },
+            history.lastTurnTiming.turnId,
+            history.lastTurnTiming.at,
+          );
         return;
       } catch (error) {
         existing?.meter.recordHistory(false);
@@ -171,8 +232,9 @@ export class ObservedSessionUsage {
     return state;
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.#abort.abort();
     this.#states.clear();
+    await this.measurements?.close();
   }
 }

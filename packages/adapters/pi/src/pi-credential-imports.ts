@@ -26,7 +26,7 @@ import {
   type CredentialImportRecord,
   type CredentialOtherLogin,
 } from "@codexhost/shared-contracts";
-import { resolvePiExecutable } from "./command.js";
+import { findPiCliEntry, findPiPackageDirectory, resolvePiExecutable } from "./command.js";
 
 type LockBackend = {
   withLock<T>(fn: (current: string | undefined) => { result: T; next?: string }): T;
@@ -118,18 +118,10 @@ async function installation(
   const executable = await realpath(
     resolvePiExecutable({ ...(command ? { command } : {}), environment }),
   );
-  let directory = path.dirname(executable);
-  while (true) {
-    const manifest = path.join(directory, "package.json");
-    if (existsSync(manifest)) {
-      const pkg = JSON.parse(readFileSync(manifest, "utf8"));
-      if (pkg.name === "@earendil-works/pi-coding-agent") break;
-    }
-    const parent = path.dirname(directory);
-    if (parent === directory)
-      throw new Error("Pi credential import requires a supported npm Pi installation");
-    directory = parent;
-  }
+  const directory = findPiPackageDirectory(executable);
+  const cliEntry = directory ? findPiCliEntry(directory) : undefined;
+  if (!directory || !cliEntry)
+    throw new Error("Pi credential import requires a supported npm Pi installation");
   // Native lock implementation coordinates with Pi's own auth.json writers.
   const storage = await import(
     pathToFileURL(path.join(directory, "dist/core/auth-storage.js")).href
@@ -158,7 +150,7 @@ async function installation(
       // This creates no Turn and passes no credential material on the command line.
       const { stdout } = await promisify(execFile)(
         process.execPath,
-        [executable, "--offline", "--no-approve", "--list-models"],
+        [cliEntry, "--offline", "--no-approve", "--list-models"],
         {
           cwd: existsSync(path.dirname(authPath)) ? path.dirname(authPath) : os.homedir(),
           env: { ...environment, PI_CODING_AGENT_DIR: path.dirname(authPath), PI_OFFLINE: "1" },

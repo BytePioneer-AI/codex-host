@@ -6,6 +6,7 @@ import { z } from "zod";
 import { readCredentials } from "./credentials.js";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
+import { ProjectToken, readProjectCredential, type ProjectCredential } from "./project-token.js";
 
 const familySchema = z.enum(["zai", "bigmodel"]);
 type Family = z.infer<typeof familySchema>;
@@ -17,6 +18,7 @@ interface AccountContext {
   identity: string;
   apiKey: string;
   current: boolean;
+  project?: ProjectCredential;
 }
 interface AccountState {
   availability: "available" | "unavailable" | "unknown";
@@ -104,7 +106,7 @@ async function queryEntitlement(
       `${personalCodingPlanOrigin(family, environment)}/api/biz/subscription/list`,
       {
         method: "GET",
-        // The subscription endpoint accepts the model API Key, not the OAuth token or Start JWT.
+        // Legacy Desktop uses a personal API Key; project-token Desktop uses its OAuth login.
         headers: { Authorization: apiKey.trim() },
         redirect: "error",
         signal: AbortSignal.timeout(15_000),
@@ -137,6 +139,8 @@ async function queryEntitlement(
 /** Per-transport account scope. Keys stay in local reads and are never part of the CLI overlay. */
 export class PersonalCodingPlanAccount {
   #authorized = new Map<string, { family: Family; identity: string }>();
+  #projectToken = new ProjectToken();
+  issue: string | undefined;
   constructor(
     private readonly installation: ZcodeInstallation,
     private readonly environment: NodeJS.ProcessEnv,
@@ -161,6 +165,13 @@ export class PersonalCodingPlanAccount {
         ? profile.user_id.trim()
         : "";
     if (!identity || identity === "unknown") return undefined;
+    const project = readProjectCredential(
+      credential,
+      family,
+      identity,
+      personalCodingPlanOrigin(family, this.environment),
+    );
+    if (project) return { identity, current, apiKey: project.loginToken, project };
     const key = `account-provider:coding-plan:${providerId}:account:${encodeURIComponent(identity)}:api-key`;
     return { identity, current, apiKey: credential(key).trim() };
   }
@@ -168,6 +179,7 @@ export class PersonalCodingPlanAccount {
   async inspect(providerId: string, accountType: string): Promise<AccountState> {
     const family = familySchema.parse(accountType);
     this.#authorized.delete(providerId);
+    this.issue = undefined;
     let current = false;
     try {
       const context = await this.#context(providerId, family);
@@ -183,13 +195,17 @@ export class PersonalCodingPlanAccount {
         .update(JSON.stringify([family, context.identity, "individual-coding-plan"]))
         .digest("hex");
       const base = { current, connectionKey };
-      if (!context.apiKey)
+      if (!context.apiKey) {
+        if (current)
+          this.issue =
+            "ZCode is signed in, but its Personal Coding Plan credentials are not initialized. Open the personal plan in ZCode Desktop, then re-detect ZCode. This does not mean the subscription is inactive.";
         return {
           ...base,
           availability: "unavailable",
           entitled: false,
           unavailableReason: "credential-failed",
         };
+      }
       const entitlement = await queryEntitlement(family, context.apiKey, this.environment);
       // A query may cross a Desktop account/selection/key change. Never publish mixed identities.
       const after = await this.#context(providerId, family);
@@ -197,13 +213,19 @@ export class PersonalCodingPlanAccount {
         !after ||
         after.identity !== context.identity ||
         after.current !== current ||
-        after.apiKey !== context.apiKey
+        after.apiKey !== context.apiKey ||
+        JSON.stringify(after.project) !== JSON.stringify(context.project)
       )
         return { availability: "unknown", entitled: false, current: false };
       if (entitlement === "available") {
         if (current) this.#authorized.set(providerId, { family, identity: context.identity });
         return { ...base, availability: "available", entitled: true };
       }
+      if (current)
+        this.issue =
+          entitlement === "unavailable"
+            ? "ZCode Personal Coding Plan subscription check found no active subscription. Check the selected account in ZCode Desktop, then re-detect ZCode."
+            : "ZCode Personal Coding Plan credentials or subscription could not be verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
       return {
         ...base,
         availability: entitlement === "unknown" ? "unknown" : "unavailable",
@@ -218,6 +240,11 @@ export class PersonalCodingPlanAccount {
             }),
       };
     } catch {
+      // Credential/profile reads can fail before #context returns its selection snapshot.
+      current = await readSelection(this.environment, family).catch(() => false);
+      if (current)
+        this.issue =
+          "ZCode Personal Coding Plan credentials could not be read or verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
       // An unreadable personal key/profile/settings must not break Start or personal Providers.
       return { availability: "unknown", entitled: false, current };
     }
@@ -233,6 +260,8 @@ export class PersonalCodingPlanAccount {
           mode: z.literal("individual-coding-plan"),
           accountType: familySchema,
         }),
+        expectedAccountScope: z.string().optional(),
+        rejectedProjectTokenFingerprint: z.string().optional(),
       })
       .safeParse(request);
     if (!parsed.success) throw new ZcodeError("authenticationRequired", CONNECT);
@@ -248,6 +277,39 @@ export class PersonalCodingPlanAccount {
     const context = await this.#context(providerId, authorized.family);
     signal.throwIfAborted();
     if (!context?.current || context.identity !== authorized.identity || !context.apiKey)
+      throw new ZcodeError("authenticationRequired", CONNECT);
+    if (context.project) {
+      const { expectedAccountScope, rejectedProjectTokenFingerprint } = parsed.data;
+      if (
+        (expectedAccountScope !== undefined &&
+          expectedAccountScope !== context.project.accountScope) ||
+        (rejectedProjectTokenFingerprint && !expectedAccountScope)
+      )
+        throw new ZcodeError("authenticationRequired", CONNECT);
+      const apiKey = await this.#projectToken.resolve(
+        context.project,
+        this.installation.version,
+        signal,
+        rejectedProjectTokenFingerprint,
+      );
+      const after = await this.#context(providerId, authorized.family);
+      signal.throwIfAborted();
+      if (
+        !after?.current ||
+        after.identity !== context.identity ||
+        JSON.stringify(after.project) !== JSON.stringify(context.project)
+      )
+        throw new ZcodeError("authenticationRequired", CONNECT);
+      return {
+        apiKey,
+        apiKeyId: context.project.location.apiKeyId,
+        accountScope: context.project.accountScope,
+      };
+    }
+    if (
+      parsed.data.expectedAccountScope !== undefined ||
+      parsed.data.rejectedProjectTokenFingerprint
+    )
       throw new ZcodeError("authenticationRequired", CONNECT);
     return { apiKey: context.apiKey };
   }

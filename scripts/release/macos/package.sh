@@ -30,6 +30,14 @@ for relative in \
   app/console-web.js \
   app/desktop-controller.mjs \
   app/host-runtime.mjs \
+  app/web-server.mjs \
+  app/web/index.html \
+  app/web/plugins.json \
+  app/web-modules/server.mjs \
+  app/web-modules/subprocess-runner.mjs \
+  app/web-modules/office-engines.json \
+  app/web-modules/node_modules/node-pty/package.json \
+  app/web-modules/node_modules/koffi/package.json \
   app/renderer-extension.js \
   licenses/Node.js-LICENSE.txt \
   licenses/Anthropic-SDK-LICENSE.txt \

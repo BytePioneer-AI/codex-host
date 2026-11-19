@@ -186,14 +186,17 @@ fn home_directory() -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
-/// `<data directory>/diagnostics`, matching the Host Runtime's data directory
+/// Matches the Host Runtime's data directory
 /// rule: `CODEXHOST_DATA_DIR` when set, otherwise `~/.codexhost`.
-pub fn diagnostics_directory() -> Option<PathBuf> {
-    let data_directory = env::var_os(DATA_DIRECTORY_ENV)
+pub fn data_directory() -> Option<PathBuf> {
+    env::var_os(DATA_DIRECTORY_ENV)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .or_else(|| home_directory().map(|home| home.join(".codexhost")))?;
-    Some(data_directory.join("diagnostics"))
+        .or_else(|| home_directory().map(|home| home.join(".codexhost")))
+}
+
+pub fn diagnostics_directory() -> Option<PathBuf> {
+    data_directory().map(|directory| directory.join("diagnostics"))
 }
 
 pub fn default_record_path() -> Option<PathBuf> {

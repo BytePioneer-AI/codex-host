@@ -49,7 +49,7 @@ export async function readNativeHistory(
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(nativeConversationDbPath(sessionId, home), { readOnly: true });
   const events: AntigravityAcpEvent[] = [];
-  const pendingCalls = new Set<string>();
+  const calls = new Map<string, "pending" | "settled">();
   let turnCount = 0;
   const append = (type: "agent.text" | "agent.thought", text: string) => {
     if (text) events.push({ type, text: events.at(-1)?.type === type ? `\n\n${text}` : text });
@@ -83,7 +83,7 @@ export async function readNativeHistory(
             field.number === 3 && field.wire === 2 ? [textField(message(field.value), 1)] : [],
           );
           const text = items.join("") || textField(body, 2) || textField(body, 1);
-          pendingCalls.clear();
+          calls.clear();
           if (text) events.push({ type: "user.text", text });
           break;
         }
@@ -96,7 +96,7 @@ export async function readNativeHistory(
             const toolCallId = textField(call, 1);
             const name = textField(call, 2);
             if (!toolCallId || !name) continue;
-            pendingCalls.add(toolCallId);
+            calls.set(toolCallId, "pending");
             events.push({
               type: "tool.call",
               toolCallId,
@@ -112,8 +112,22 @@ export async function readNativeHistory(
           break;
         }
         case GENERIC_TOOL: {
-          const toolCallId = textField(nested(nested(step, 5), 4), 1);
-          if (!pendingCalls.delete(toolCallId)) break;
+          const call = nested(nested(step, 5), 4);
+          const toolCallId = textField(call, 1);
+          const state = calls.get(toolCallId);
+          if (!toolCallId || state === "settled") break;
+          if (state === undefined) {
+            // Some commands are persisted as completed tool steps without a planner call.
+            const name = textField(call, 2);
+            if (row.status !== DONE || !name) break;
+            events.push({
+              type: "tool.call",
+              toolCallId,
+              name,
+              args: argsValue(textField(call, 3)),
+            });
+          }
+          calls.set(toolCallId, "settled");
           const error = nested(step, 31);
           const output =
             textField(nested(body, 2), 1) ||

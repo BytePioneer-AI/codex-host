@@ -18,11 +18,9 @@ const nativeRef = nativeSessionRefSchema.parse({
   nativeSessionId: "history",
   formatVersion: 1,
 });
-const call = (id: string, name: string, args: object) =>
-  bytes(
-    7,
-    Buffer.concat([textField(1, id), textField(2, name), textField(3, JSON.stringify(args))]),
-  );
+const callFields = (id: string, name: string, args: object) =>
+  Buffer.concat([textField(1, id), textField(2, name), textField(3, JSON.stringify(args))]);
+const call = (id: string, name: string, args: object) => bytes(7, callFields(id, name, args));
 const callMetadata = (id: string) => bytes(5, bytes(4, textField(1, id)));
 const result = (id: string, output: string) =>
   Buffer.concat([callMetadata(id), bytes(140, bytes(2, textField(1, output)))]);
@@ -58,7 +56,7 @@ describe("native session history", () => {
     const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
     try {
       const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?)");
-      answerStep(db, 14, "Second reply");
+      answerStep(db, 15, "Second reply");
       userStep(db, 0, "First ");
       insert.run(1, 14, 3, bytes(19, textField(2, "question")));
       insert.run(
@@ -88,10 +86,25 @@ describe("native session history", () => {
       );
       insert.run(6, 132, 3, result("read", "x".repeat(128)));
       insert.run(7, 132, 2, result("pending", "Not settled yet"));
-      answerStep(db, 8, "First paragraph.");
-      answerStep(db, 10, "Second paragraph.");
-      insert.run(11, 17, 3, bytes(24, bytes(3, textField(2, "Retry suggested"))));
-      userStep(db, 13, "Next question");
+      const unplannedCommand = Buffer.concat([
+        bytes(5, bytes(4, callFields("command", "run_command", { CommandLine: "pwd" }))),
+        bytes(140, bytes(2, textField(1, "/example"))),
+      ]);
+      insert.run(8, 132, 3, unplannedCommand);
+      insert.run(9, 132, 3, unplannedCommand);
+      insert.run(
+        10,
+        132,
+        5,
+        Buffer.concat([
+          bytes(5, bytes(4, callFields("skipped", "run_command", {}))),
+          bytes(140, Buffer.alloc(0)),
+        ]),
+      );
+      answerStep(db, 11, "First paragraph.");
+      answerStep(db, 12, "Second paragraph.");
+      insert.run(13, 17, 3, bytes(24, bytes(3, textField(2, "Retry suggested"))));
+      userStep(db, 14, "Next question");
 
       const snapshot = await opened.value.readSnapshot();
       assert(snapshot.ok);
@@ -126,6 +139,10 @@ describe("native session history", () => {
         {
           item: { type: "toolExecution", arguments: { path: "waiting" } },
           outcome: { status: "cancelled" },
+        },
+        {
+          item: { type: "commandExecution", command: "pwd", output: "/example", exitCode: 0 },
+          outcome: { status: "succeeded" },
         },
         {
           item: {

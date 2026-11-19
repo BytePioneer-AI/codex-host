@@ -941,8 +941,17 @@ export class AppServerHost {
             this.#diagnose("Codex Account identity or notification could not be updated"),
         })
       : undefined;
-    this.#unsubscribeAccountState = this.#officialRuntimeScope.gate.subscribe(() => {
-      if (this.#options.externalOnly) return;
+    const { gate, owner } = this.#officialRuntimeScope;
+    let readyGeneration = gate.phase === "ready" ? owner.generation : undefined;
+    this.#unsubscribeAccountState = gate.subscribe(() => {
+      if (this.#options.externalOnly) {
+        // Only the shared channel owner publishes catalog invalidations for the scope.
+        if (gate.phase !== "ready") return;
+        const replaced = readyGeneration !== undefined && readyGeneration !== owner.generation;
+        readyGeneration = owner.generation;
+        if (replaced) this.clientEvents.harnessInspectionChanged("codex");
+        return;
+      }
       const snapshot = this.#accountControl.snapshot();
       void this.#writer
         .json({ method: "codexhost/account/changed", params: jsonValueSchema.parse(snapshot) })

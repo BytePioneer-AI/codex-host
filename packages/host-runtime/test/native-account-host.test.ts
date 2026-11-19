@@ -145,6 +145,85 @@ describe("local Codex read-only identity startup", () => {
     return { executable, tool };
   }
 
+  it.each([true, false])(
+    "replaces an idle backend after a same-path update (deferStart=%s)",
+    async (deferStart) => {
+      const { executable } = await runtimeFiles("idle-update");
+      const first = nativeFixture();
+      const local = await startLocal(deferStart, undefined, new PassThrough(), executable);
+      const scope = local.officialRuntimeScope;
+      const client = new OfficialRuntimeClient({ scope, output: async () => {} });
+      await client.initialize();
+      await client.initializeProtocol({ clientInfo: { name: "fixture", version: "1" } });
+
+      await writeFile(executable, "updated backend fixture");
+      const replacement = nativeFixture();
+      for (let i = 0; i < 2; i++) {
+        await expect(client.request("thread/start", {})).resolves.toMatchObject({
+          result: { thread: { id: "voice-thread" } },
+        });
+        expect(scope.owner.generation).toBe(2);
+      }
+      expect(first.stop).toHaveBeenCalledOnce();
+      expect(replacement.requests.filter(({ method }) => method === "thread/start")).toHaveLength(
+        2,
+      );
+      await client.close();
+    },
+  );
+
+  it.each([false, true])(
+    "detects a same-path update on Desktop attachment (active Turn=%s)",
+    async (active) => {
+      const { executable } = await runtimeFiles("desktop-update");
+      const first = nativeFixture();
+      const local = await startLocal(true, undefined, new PassThrough(), executable);
+      const scope = local.officialRuntimeScope;
+      const client = new OfficialRuntimeClient({ scope, output: async () => {} });
+      await client.initialize();
+      await client.initializeProtocol({ clientInfo: { name: "fixture", version: "1" } });
+      const started = {
+        threadId: "active-thread",
+        turn: { id: "active-turn", status: "inProgress" },
+      };
+      if (active) {
+        first.notify({ method: "turn/started", params: started });
+        await vi.waitFor(() => expect(scope.owner.hasActiveWork).toBe(true));
+      }
+
+      await writeFile(executable, "updated backend fixture");
+      nativeFixture();
+      await local.configureStartup({
+        stockCodexPath: executable,
+        arguments: ["-c", "features.code_mode_host=true", "app-server"],
+        environment: {},
+      });
+      if (active) {
+        await expect(client.request("thread/start", {})).resolves.toMatchObject({
+          result: { thread: { id: "voice-thread" } },
+        });
+        expect(scope.owner.generation).toBe(1);
+        expect(first.stop).not.toHaveBeenCalled();
+        first.notify({
+          method: "turn/completed",
+          params: { ...started, turn: { ...started.turn, status: "completed" } },
+        });
+        await vi.waitFor(() => expect(scope.owner.hasActiveWork).toBe(false));
+        expect(scope.owner.generation).toBe(1);
+      } else {
+        expect(first.stop).toHaveBeenCalledOnce();
+        expect(scope.gate.phase).toBe("unavailable");
+        await client.initialize();
+      }
+      await expect(client.request("thread/start", {})).resolves.toMatchObject({
+        result: { thread: { id: "voice-thread" } },
+      });
+      expect(first.stop).toHaveBeenCalledOnce();
+      expect(scope.owner.generation).toBe(2);
+      await client.close();
+    },
+  );
+
   it("rejects a retained generation whose executable was removed without stopping active work", async () => {
     const files = await runtimeFiles("active");
     const first = nativeFixture();

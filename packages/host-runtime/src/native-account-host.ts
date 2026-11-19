@@ -20,6 +20,8 @@ import {
 import {
   captureCodexRuntimeFiles,
   assertCodexRuntimeFilesPresent,
+  codexRuntimeFilesChanged,
+  type CodexRuntimeFile,
 } from "./codex-runtime/backend-files.js";
 
 export interface PreparedLocalCodex {
@@ -99,12 +101,13 @@ export async function prepareLocalCodex(input: {
   // A preserved active Turn keeps `running` while `startup` already holds the newer request.
   let running: typeof startup | undefined;
   let startupConfigured = false;
-  let backendFiles: string[] = [];
+  let backendFiles: CodexRuntimeFile[] = [];
   const scope = new OfficialRuntimeScope({
     permanentHome: home,
     diagnosticOutput: input.diagnosticOutput,
     // Local Desktop connections outlive a failed official backend generation.
     recovery: {},
+    shouldReplaceIdleBackend: () => running !== undefined && codexRuntimeFilesChanged(backendFiles),
     createBackend: () => {
       try {
         if (!startup.stockCodexPath) throw new Error("Official Codex is unavailable");
@@ -208,7 +211,8 @@ export async function prepareLocalCodex(input: {
           next.environment[DESKTOP_APP_TOOLS_PIPE_ENV] ||
         DESKTOP_BROWSER_CONTEXT_ENV.some(
           (key) => current.environment[key] !== next.environment[key],
-        );
+        ) ||
+        (scope.owner.running && codexRuntimeFilesChanged(backendFiles));
       // Whatever happens to the running generation, the next one starts from this request.
       startup = next;
       // The running generation, not the next requested invocation, owns these files.

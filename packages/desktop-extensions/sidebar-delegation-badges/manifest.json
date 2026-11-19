@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sidebar-delegation-badges",
+  "name": "Sidebar Delegation Badges",
+  "version": "0.1.0",
+  "description": {
+    "en": "Shows delegated Thread counts and live status beside the sidebar Agent icon.",
+    "zh-CN": "在侧栏 Agent 图标旁显示委派子 Thread 数量与实时状态。"
+  },
+  "desktopApi": 1,
+  "desktop": { "script": "desktop.js", "style": "desktop.css" },
+  "slots": ["sidebar.thread-badge"]
+}

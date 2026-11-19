@@ -1,0 +1,70 @@
+.cx-delegation-badge {
+  display: inline-flex;
+  flex: none;
+  margin-inline: 3px;
+}
+
+.cx-delegation-badge button {
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.cx-delegation-badge > button {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 2px;
+  border: 1px solid currentColor;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.cx-delegation-badge [data-state="running"] {
+  color: light-dark(#075cae, #7bbaff);
+}
+
+.cx-delegation-badge [data-state="waiting"] {
+  color: light-dark(#8b4900, #f6ae57);
+}
+
+.cx-delegation-badge [data-state="unknown"] {
+  border-style: dashed;
+}
+
+.cx-delegation-panel {
+  position: fixed;
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline;
+  max-width: min(310px, 90vw);
+  max-height: min(320px, 80vh);
+  padding: 4px;
+  overflow: auto;
+  color: CanvasText;
+  background: Canvas;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 8px;
+}
+
+.cx-delegation-panel button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 7px;
+  border: 0;
+  background: transparent;
+  text-align: start;
+}
+
+.cx-delegation-panel button:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.cx-delegation-panel img {
+  width: 13px;
+  height: 13px;
+  object-fit: contain;
+}

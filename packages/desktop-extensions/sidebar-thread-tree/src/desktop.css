@@ -1,0 +1,75 @@
+/* Native elements only respond to host-managed markers. */
+[data-cx-sidebar-thread-tree-hidden],
+[data-cx-sidebar-thread-tree-replaced] {
+  display: none !important;
+}
+
+.cx-sidebar-tree {
+  margin-inline: 10px 4px;
+  padding-block: 2px 4px;
+  font-size: 12px;
+}
+
+.cx-sidebar-tree button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.cx-sidebar-tree button:hover {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.cx-sidebar-tree .cx-tree-toggle {
+  color: color-mix(in srgb, currentColor 75%, transparent);
+  font-size: 11px;
+}
+
+.cx-tree-thread img {
+  width: 13px;
+  height: 13px;
+  object-fit: contain;
+}
+
+.cx-tree-thread span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cx-tree-thread::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.65;
+}
+
+.cx-tree-thread[data-state="running"]::before {
+  background: light-dark(#075cae, #7bbaff);
+}
+
+.cx-tree-thread[data-state="waiting"]::before {
+  background: light-dark(#8b4900, #f6ae57);
+}
+
+.cx-tree-thread[data-state="unknown"]::before {
+  border-style: dashed;
+}
+
+.cx-tree-indent {
+  margin-inline-start: 7px;
+  padding-inline-start: 9px;
+  border-inline-start: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+}

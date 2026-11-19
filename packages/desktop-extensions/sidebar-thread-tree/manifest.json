@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sidebar-thread-tree",
+  "name": "Sidebar Thread Tree",
+  "version": "0.1.0",
+  "description": {
+    "en": "Groups delegated Threads below their parent and shows live activity.",
+    "zh-CN": "在侧栏将委派的 Thread 归到父 Thread 下，并显示实时状态。"
+  },
+  "desktopApi": 1,
+  "desktop": { "script": "desktop.js", "style": "desktop.css" },
+  "slots": ["sidebar.thread-badge", "sidebar.thread-layout"]
+}

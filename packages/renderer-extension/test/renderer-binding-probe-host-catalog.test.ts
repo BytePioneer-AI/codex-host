@@ -30,7 +30,7 @@ const testState = vi.hoisted(() => ({
   sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
   sidebarRefresh: vi.fn(),
   documentListeners: new Map<string, EventListener>(),
-  modelTarget: ["conversation", "thread-a"] as readonly unknown[],
+  modelTarget: ["conversation", "thread-a"] as readonly unknown[] | null,
   prewarmClears: 0,
   notifyMutations: null as null | ((records: MutationRecord[]) => void),
   animationFrames: [] as FrameRequestCallback[],
@@ -44,7 +44,6 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     composerForElement: () => testState.composer,
     editorForElement: (element: Element) =>
       element === testState.editor || element === testState.composer ? testState.editor : null,
-    eventElement: () => testState.composer,
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
@@ -197,19 +196,21 @@ function installFakeBrowser(): void {
   const composer = Object.assign(new FakeElement(), {
     isConnected: true,
     matches: (selector: string) => selector === "[data-codex-composer-root]",
+    contains: (element: Element) => element === testState.sendButton,
     querySelectorAll: (selector: string) => (selector === "button" ? [testState.sendButton] : []),
     querySelector: (selector: string) => (selector.includes("textarea") ? testState.editor : null),
   }) as unknown as Element;
   const editor = Object.assign(new FakeElement(), {
     closest: () => composer,
   }) as unknown as Element;
-  const sendButton = {
-    closest: () => null,
+  const sendButton = Object.assign(new FakeElement(), {
+    isConnected: true,
+    closest: (selector: string): Element | null => (selector === "button" ? sendButton : null),
     type: "submit",
     disabled: false,
     parentElement: null,
     getAttribute: () => null,
-  } as unknown as HTMLButtonElement;
+  }) as unknown as HTMLButtonElement;
   testState.composer = composer;
   testState.editor = editor;
   testState.sendButton = sendButton;
@@ -274,11 +275,11 @@ function installFakeBrowser(): void {
   vi.stubGlobal(
     "CustomEvent",
     class extends Event {
-      constructor(
-        type: string,
-        readonly init?: CustomEventInit,
-      ) {
-        super(type);
+      readonly detail: unknown;
+
+      constructor(type: string, init?: CustomEventInit) {
+        super(type, init);
+        this.detail = init?.detail;
       }
     },
   );
@@ -293,6 +294,59 @@ afterEach(() => {
   api?.dispose();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+});
+
+describe("Renderer binding native draft routing", () => {
+  it("allows editing without a private Model binding but waits for routing before Send", async () => {
+    installFakeBrowser();
+    testState.modelTarget = null;
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    const [selection] = probe.status().selections;
+    assert(selection);
+    expect(selection).toMatchObject({ agent: "codex", phase: "draft" });
+
+    const submissions: unknown[] = [];
+    window.addEventListener("codexhost:renderer-submission", (event) => {
+      submissions.push((event as CustomEvent<unknown>).detail);
+    });
+    const dispatch = (event: Event, target: Element): boolean => {
+      const listener = testState.documentListeners.get(event.type);
+      assert(listener);
+      Object.defineProperty(event, "target", { value: target });
+      listener(event);
+      return event.defaultPrevented;
+    };
+    const send = () => dispatch(new Event("click", { cancelable: true }), testState.sendButton);
+    const backspace = Object.assign(new Event("keydown", { cancelable: true }), {
+      key: "Backspace",
+    });
+    const beforeInput = Object.assign(new Event("beforeinput", { cancelable: true }), {
+      inputType: "deleteContentBackward",
+    });
+    expect(dispatch(backspace, testState.editor)).toBe(false);
+    expect(dispatch(beforeInput, testState.editor)).toBe(false);
+    expect(send()).toBe(true);
+    expect(submissions).toEqual([]);
+
+    const applyAgent = vi.fn(() => true);
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
+      undefined,
+      applyAgent,
+    );
+    expect(send()).toBe(false);
+    expect(applyAgent).toHaveBeenCalledWith(
+      "codex",
+      undefined,
+      undefined,
+      undefined,
+      testState.composer,
+    );
+    expect(submissions).toEqual([
+      { composerId: selection.composerId, agent: "codex", trigger: "click" },
+    ]);
+  });
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {

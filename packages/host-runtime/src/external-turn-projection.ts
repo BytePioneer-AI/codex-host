@@ -231,10 +231,7 @@ export class ExternalTurnProjection {
         const existing = thread.turns[index];
         if (existing) thread.turns[index] = projection.projector.snapshotTurn(existing);
       }
-      if (
-        event.turnId !== thread.projectedTerminalTurnId ||
-        event.snapshot.item.type === "commandExecution"
-      )
+      if (event.turnId !== thread.projectedTerminalTurnId)
         thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#host.writeJson(message);

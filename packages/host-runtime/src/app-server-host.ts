@@ -536,6 +536,7 @@ function alignBackgroundTextRun(
   liveText: string,
   consumedEnd: number,
   foregroundItems: readonly JsonObject[],
+  allowPartialTail: boolean,
 ): number | null {
   const run = backgroundTextCandidates(items, historicalCount, type);
   if (!run) return null;
@@ -545,6 +546,26 @@ function alignBackgroundTextRun(
   const searchStart = Math.max(consumedEnd, foregroundText.length);
   const exactStart = run.text.indexOf(liveText, searchStart);
   if (exactStart >= 0) return exactStart + liveText.length;
+
+  // A short prefix is unambiguous only at the next unread position in the
+  // final replay Item, with no earlier live Item left unmatched.
+  const tail = run.items.at(-1);
+  if (allowPartialTail && tail && searchStart >= tail.start) {
+    const lastIndex = items.findLastIndex(
+      (item) => item.type !== "commandExecution" || item.command !== REASONING_TRANSCRIPT_COMMAND,
+    );
+    const prefix = run.text.slice(searchStart);
+    const historical = items[lastIndex];
+    if (tail.index === lastIndex && historical && prefix && liveText.startsWith(prefix)) {
+      const suffix = liveText.slice(prefix.length);
+      items[lastIndex] = withBackgroundItemText(historical, suffix);
+      const transcript = items[lastIndex + 1];
+      if (type === "reasoning" && transcript?.command === REASONING_TRANSCRIPT_COMMAND) {
+        items[lastIndex + 1] = { ...transcript, aggregatedOutput: tail.text + suffix };
+      }
+      return searchStart + liveText.length;
+    }
+  }
 
   for (const item of run.items) {
     if (item.start < searchStart) continue;
@@ -5172,9 +5193,11 @@ export class AppServerHost {
       });
       const historicalCount = items.length;
       const consumedEnd = new Map<string, number>();
-      for (const live of background?.values() ?? []) {
+      const liveItems = [...(background?.values() ?? [])].filter(
+        (item) => backgroundItemText(item) !== "",
+      );
+      for (const [index, live] of liveItems.entries()) {
         const liveText = backgroundItemText(live);
-        if (liveText === "") continue;
         if (liveText === null) {
           items.push(live);
           continue;
@@ -5190,6 +5213,7 @@ export class AppServerHost {
           liveText,
           consumedEnd.get(live.type) ?? 0,
           [...(foreground?.values() ?? [])],
+          index === liveItems.length - 1 && items.length === historicalCount,
         );
         if (aligned === null) {
           items.push(live);

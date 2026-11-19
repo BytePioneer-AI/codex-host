@@ -213,7 +213,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
   });
 
   it.each([false, true])(
-    "releases a settled detached command with successor=%s",
+    "keeps the settled detached command's Turn eligible for background output only without a successor (%s)",
     async (successor) => {
       const fixture = createFixture();
       try {
@@ -236,14 +236,24 @@ describe("Host runtime idle background output on a completed Turn", () => {
           },
         });
         await fixture.collector.waitFor((message) => itemCompleted(message, itemId));
+        const lateId = hostItemIdSchema.parse("old-late");
         session.emitEvent({
           type: "item.background.started",
           turnId,
-          item: { type: "agentMessage", itemId: hostItemIdSchema.parse("old-late"), text: "late" },
+          item: { type: "agentMessage", itemId: lateId, text: "late" },
         });
-        await vi.waitFor(() => {
-          expect(fixture.diagnosticOutput.read()?.toString() ?? "").toContain("unknown Host Turn");
-        });
+        if (successor) {
+          await vi.waitFor(() => {
+            expect(fixture.diagnosticOutput.read()?.toString() ?? "").toContain(
+              "unknown Host Turn",
+            );
+          });
+        } else {
+          const started = await fixture.collector.waitFor((message) =>
+            itemStarted(message, lateId),
+          );
+          expect(started.params).toMatchObject({ turnId });
+        }
       } finally {
         await stopFixture(fixture);
       }
@@ -256,6 +266,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
     ["agentMessage", "no overlap", "native tail", "different", null],
     ["reasoning", "complete native tail", "native tail", "native tail", "native tail"],
     ["reasoning", "partial native tail", "native ta", "tail plus", "native tail plus"],
+    ["reasoning", "one-character prefix", "T", "T1", "T1"],
     ["reasoning", "no overlap", "native tail", "different", null],
   ] as const)(
     "aligns %s %s with background text",
@@ -304,6 +315,11 @@ describe("Host runtime idle background output on a completed Turn", () => {
               ? { summary: [merged ?? historical] }
               : { text: merged ?? historical },
           );
+          if (type === "reasoning" && historical === "T") {
+            expect(items.find((entry) => entry.id === "native-tail")).toMatchObject({
+              aggregatedOutput: merged,
+            });
+          }
           expect(items.filter((entry) => entry.id === wireId)).toHaveLength(
             merged === null ? 1 : 0,
           );
@@ -314,7 +330,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
     },
   );
 
-  it("aligns split live episodes with one continuous replayed text run", async () => {
+  it.each(["after restart", "a"])("aligns replayed text ending in %j", async (tail) => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
@@ -332,7 +348,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
             item: {
               type: "agentMessage" as const,
               itemId: hostItemIdSchema.parse("turn-0-item-0"),
-              text: "answer before restartafter restart",
+              text: `answer before restart${tail}`,
             },
             outcome: { status: "succeeded" as const },
           },

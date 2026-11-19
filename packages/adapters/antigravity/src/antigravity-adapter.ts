@@ -297,7 +297,7 @@ interface PendingInteraction {
 /**
  * One idle-output episode on the most recently completed user Turn: the text
  * Item streams as a background (detached) Item and settles at the next
- * provable boundary — successor prompt, close or fault. No timers involved.
+ * provable boundary — successor prompt, Skip restart, close or fault. No timers involved.
  */
 interface BackgroundEpisode {
   turnId: HostTurnId;
@@ -968,6 +968,9 @@ export class AntigravitySession implements HarnessSession {
       this.#usage?.beginTurn();
       turn.promptPhase = "submitted";
       const result = await transport.prompt(promptParts(command), {
+        onResponse: () => {
+          turn.promptPhase = "returned";
+        },
         onEvent: (event) => {
           if (!this.#isCurrent(turn) || turn.cancelled) return;
           if (event.type === "agent.text" || event.type === "agent.thought") {

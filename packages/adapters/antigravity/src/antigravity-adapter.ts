@@ -274,7 +274,7 @@ interface ActiveTurn {
   turnId: HostTurnId;
   cancelled: boolean;
   ended: boolean;
-  promptSubmitted?: boolean;
+  promptPhase: "notSubmitted" | "submitted" | "returned";
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
   tracker?: AntigravityToolTracker;
@@ -662,7 +662,7 @@ export class AntigravitySession implements HarnessSession {
       case "usage.context": {
         const usage = this.#usage?.recordContextWindow(event.used, event.size);
         if (usage) this.#emit({ type: "session.usage.changed", usage });
-        if (this.#active?.promptSubmitted) void this.refreshUsage();
+        if (this.#active?.promptPhase === "submitted") void this.refreshUsage();
         break;
       }
     }
@@ -793,7 +793,12 @@ export class AntigravitySession implements HarnessSession {
           )
             return err("invalidRequest", "Prompt and Turn ID must not be empty");
           this.#postPromptBackground.length = 0;
-          const turn: ActiveTurn = { turnId: command.turnId, cancelled: false, ended: false };
+          const turn: ActiveTurn = {
+            turnId: command.turnId,
+            cancelled: false,
+            ended: false,
+            promptPhase: "notSubmitted",
+          };
           this.#active = turn;
           // A successor prompt ends the idle-output window of the previous Turn
           // before the new Turn announces itself.
@@ -810,7 +815,7 @@ export class AntigravitySession implements HarnessSession {
             turn.cancelled = true;
             this.#closeInteractions("cancelled");
             try {
-              if (turn.promptSubmitted) await this.#transport?.cancel();
+              if (turn.promptPhase === "submitted") await this.#transport?.cancel();
             } catch (error) {
               this.handleTransportFault(
                 new AntigravityTransportError(
@@ -960,7 +965,7 @@ export class AntigravitySession implements HarnessSession {
       if (!transport || !ref)
         throw new AntigravityTransportError("unavailable", "Native Session is not connected");
       this.#usage?.beginTurn();
-      turn.promptSubmitted = true;
+      turn.promptPhase = "submitted";
       const result = await transport.prompt(promptParts(command), {
         onEvent: (event) => {
           if (!this.#isCurrent(turn) || turn.cancelled) return;
@@ -987,7 +992,7 @@ export class AntigravitySession implements HarnessSession {
           return this.#question(turn, request);
         },
       });
-      turn.promptSubmitted = false;
+      turn.promptPhase = "returned";
       const completedAtMs = Date.now();
       if (!this.#isCurrent(turn)) return;
       outcome =
@@ -1102,17 +1107,18 @@ export class AntigravitySession implements HarnessSession {
   #appendBackgroundText(type: "agentMessage" | "reasoning", text: string): void {
     if (!text) return;
     if (this.#active) {
-      // prompt() has returned but the Turn still awaits its usage observation.
-      if (
-        !this.#active.promptSubmitted &&
-        !this.#active.ended &&
-        !this.#active.cancelled &&
-        !this.#opening &&
-        !this.#configuring &&
-        !this.#historyOperation
-      )
-        this.#postPromptBackground.push({ type, text });
-      return;
+      if (this.#active.promptPhase === "returned") {
+        if (
+          !this.#active.ended &&
+          !this.#active.cancelled &&
+          !this.#opening &&
+          !this.#configuring &&
+          !this.#historyOperation
+        )
+          this.#postPromptBackground.push({ type, text });
+        return;
+      }
+      if (this.#active.promptPhase === "submitted") return;
     }
     if (this.#opening || this.#configuring || this.#historyOperation) return;
     const turnId = this.#lastCompletedTurnId;

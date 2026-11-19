@@ -1271,6 +1271,68 @@ describe("inspection and errors", () => {
 });
 
 describe("Antigravity idle background output episodes", () => {
+  it("keeps pre-submit idle output on the preceding native Turn", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-background-pre-submit-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
+    const transport = await start(session, transports);
+    const db = await createNativeHistoryDatabase(home, required(transport.sessionId));
+    userStep(db, 0, "hello");
+    answerStep(db, 1, "wake");
+    db.close();
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t1");
+
+    const usageGate =
+      deferred<
+        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+      >();
+    const collect = vi
+      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+      .mockReturnValueOnce(usageGate.promise);
+    const refresh = session.refreshUsage?.();
+    await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+    transport.result = deferred();
+    expect(
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("t2"),
+        input: [{ type: "text", text: "next" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "t2" } });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual({ type: "turn.started", turnId: "t2" }),
+    );
+    transport.eventHandler?.({ type: "agent.text", text: "wake" });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({ type: "item.background.started", turnId: "t1" }),
+      ),
+    );
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started", turnId: "t2" }),
+    );
+
+    usageGate.resolve({ requests: [], complete: true, usage: null });
+    await refresh;
+    await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t2");
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            input: [{ text: "hello" }],
+            items: [{ item: { type: "agentMessage", text: "wake" } }],
+          },
+        ],
+      },
+    });
+  });
+
   it("attributes idle agent output to the most recently completed Turn and settles it on the next prompt", async () => {
     const { adapter, transports } = fixture();
     const { session, outputs } = await sessionOf(

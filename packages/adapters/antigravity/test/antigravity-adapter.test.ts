@@ -1352,6 +1352,9 @@ describe("Antigravity idle background output episodes", () => {
     await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
     transport.result.resolve({ stopReason: "end_turn" });
     await completed(outputs, "t2");
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started" }),
+    );
     const snapshot = await session.readSnapshot();
     expect(snapshot).toMatchObject({
       ok: true,

@@ -861,9 +861,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
       );
       const items = await readHistoryItems(fixture, threadId, 7);
       const background = items.find((item) => (item as { id?: string }).id === itemId);
-      expect((background as { status?: string } | undefined)?.status ?? null).not.toBe(
-        "inProgress",
-      );
+      expect(background).toMatchObject({ id: itemId, text: "pending" });
     } finally {
       await stopFixture(fixture);
     }

@@ -6,13 +6,23 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(import.meta.dirname, "../..");
 
 describe("platform packagers", () => {
-  it("creates a standard ad-hoc signed macOS DMG", async () => {
-    const source = await readFile(path.join(root, "scripts/release/macos/package.sh"), "utf8");
+  it("creates a Developer ID signed macOS DMG when signing credentials are configured", async () => {
+    const [source, workflow] = await Promise.all([
+      readFile(path.join(root, "scripts/release/macos/package.sh"), "utf8"),
+      readFile(path.join(root, ".github/workflows/release-packages.yml"), "utf8"),
+    ]);
     expect(source).toContain('CONTENTS="$APP_PATH/Contents"');
     expect(source).toContain('RESOURCES="$CONTENTS/Resources"');
     expect(source).toContain("codesign --verify --deep --strict");
     expect(source).toContain('runtime/node" -e');
     expect(source).not.toContain("--options runtime");
+    expect(source).toContain("MACOS_CODESIGN_IDENTITY");
+    expect(source).toContain("MACOS_CODESIGN_TEAM_ID");
+    expect(source).toContain("SIGN_ARGS+=(--timestamp)");
+    expect(source).toContain("TeamIdentifier mismatch");
+    expect(workflow).toContain("Require macOS Developer ID signing credentials");
+    expect(workflow).toContain("Apple-Actions/import-codesign-certs@");
+    expect(workflow).toContain("secrets.MACOS_CERTIFICATE");
     expect(source).toContain('"$ASSETS_DIR/codexhost-icon.png"');
     expect(source).not.toContain("sips -s format png");
     expect(source).toContain("iconutil -c icns");

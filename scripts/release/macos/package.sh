@@ -126,12 +126,33 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 PLIST
 
 /usr/bin/plutil -lint "$CONTENTS/Info.plist" >/dev/null
-/usr/bin/codesign --force --sign - "$RESOURCES/runtime/node"
-/usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shim"
-/usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-updater"
-/usr/bin/codesign --force --sign - "$CONTENTS/MacOS/codexhost"
-/usr/bin/codesign --force --sign - "$APP_PATH"
+
+SIGNING_IDENTITY="${MACOS_CODESIGN_IDENTITY:--}"
+EXPECTED_TEAM_ID="${MACOS_CODESIGN_TEAM_ID:-}"
+if [[ "$SIGNING_IDENTITY" != "-" && -z "$EXPECTED_TEAM_ID" ]]; then
+  echo "MACOS_CODESIGN_TEAM_ID is required with MACOS_CODESIGN_IDENTITY" >&2
+  exit 1
+fi
+
+SIGN_ARGS=(--force --sign "$SIGNING_IDENTITY")
+if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+  SIGN_ARGS+=(--timestamp)
+fi
+
+/usr/bin/codesign "${SIGN_ARGS[@]}" "$RESOURCES/runtime/node"
+/usr/bin/codesign "${SIGN_ARGS[@]}" "$RESOURCES/libexec/codexhost-shim"
+/usr/bin/codesign "${SIGN_ARGS[@]}" "$RESOURCES/libexec/codexhost-updater"
+/usr/bin/codesign "${SIGN_ARGS[@]}" "$CONTENTS/MacOS/codexhost"
+/usr/bin/codesign "${SIGN_ARGS[@]}" "$APP_PATH"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+if [[ -n "$EXPECTED_TEAM_ID" ]]; then
+  ACTUAL_TEAM_ID="$(/usr/bin/codesign -dv --verbose=4 "$APP_PATH" 2>&1 | /usr/bin/awk -F= '/^TeamIdentifier=/{ print $2 }')"
+  if [[ "$ACTUAL_TEAM_ID" != "$EXPECTED_TEAM_ID" ]]; then
+    echo "codexhost.app TeamIdentifier mismatch: expected $EXPECTED_TEAM_ID, got ${ACTUAL_TEAM_ID:-none}" >&2
+    exit 1
+  fi
+fi
 "$RESOURCES/runtime/node" -e 'if (process.version !== "v24.13.1") process.exit(1)'
 
 mkdir -p "$DMG_STAGE"

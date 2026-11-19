@@ -120,6 +120,8 @@ jobs:
       # Skip rust-toolchain.toml component installs (rustfmt/clippy); they conflict with the
       # runner-provided toolchain on Linux ARM64 and the release build does not need them.
       RUSTUP_TOOLCHAIN: 1.97.1
+      MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+      MACOS_CODESIGN_TEAM_ID: ${{ secrets.MACOS_CODESIGN_TEAM_ID }}
     strategy:
       fail-fast: false
       matrix:
@@ -173,6 +175,24 @@ jobs:
       - name: Install create-dmg
         if: runner.os == 'macOS'
         run: brew install create-dmg
+      - name: Require macOS Developer ID signing credentials
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          test -n "$MACOS_CERTIFICATE"
+          test -n "$MACOS_CERTIFICATE_PASSWORD"
+          test -n "$MACOS_CODESIGN_IDENTITY"
+          test -n "$MACOS_CODESIGN_TEAM_ID"
+
+      - name: Import macOS Developer ID certificate
+        if: runner.os == 'macOS'
+        uses: Apple-Actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
 
       - name: Install dependencies
         run: npm ci

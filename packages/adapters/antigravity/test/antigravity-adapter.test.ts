@@ -1378,7 +1378,7 @@ describe("Antigravity idle background output episodes", () => {
         ],
       },
     });
-    const nativeRef = session.nativeRef;
+    const nativeRef = session.initialState.nativeRef;
     if (!nativeRef) throw new Error("First Turn has no Native Session");
     await session.close();
     const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });

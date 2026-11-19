@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import {
+  DeepSeekBalanceCache,
   DEEPSEEK_BALANCE_ENDPOINT,
   fetchDeepSeekBalances,
   projectDeepSeekBalances,
@@ -210,6 +211,8 @@ it("reports the balance as an Adapter account and stops after close", async () =
   const adapter = new DeepSeekHarnessAdapter({ environment: { DSH_HOME: home } });
   expect(await adapter.inspectAccounts()).toEqual([]);
   expect(await adapter.inspectAccount()).toBeNull();
+  expect(adapter.balance()).toBeNull();
+  expect(await adapter.refreshBalance()).toBeNull();
 
   // The key DSH stores under DSH_HOME reaches the balance request.
   await writeFile(path.join(home, ".credentials.yaml"), CREDENTIALS);
@@ -228,8 +231,11 @@ it("reports the balance as an Adapter account and stops after close", async () =
     expect(url).toBe(DEEPSEEK_BALANCE_ENDPOINT);
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-from-file");
 
+    expect(adapter.balance()).toEqual(expect.objectContaining({ amount: 8.8, currency: "CNY" }));
+
     await adapter.close();
     expect(await adapter.inspectAccounts()).toEqual([]);
+    expect(adapter.balance()).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   } finally {
     vi.unstubAllGlobals();
@@ -262,4 +268,42 @@ it("aborts a balance request in flight at close and drops its late result", asyn
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it("caches the Composer balance, dedupes requests and throttles refreshes", async () => {
+  let now = 0;
+  let calls = 0;
+  let amount = 5;
+  const cache = new DeepSeekBalanceCache(
+    async () => {
+      calls += 1;
+      return amount < 0 ? [] : [{ label: "DeepSeek API", balance: { amount, currency: "CNY" } }];
+    },
+    () => now,
+    30_000,
+  );
+  expect(cache.read()).toBeNull();
+  await Promise.all([cache.refresh(), cache.refresh()]);
+  expect(calls).toBe(1);
+  expect(cache.read()).toEqual({ amount: 5, currency: "CNY" });
+
+  amount = 4;
+  now = 10_000;
+  await cache.refresh();
+  expect(calls).toBe(1);
+  expect(cache.read()?.amount).toBe(5);
+  now = 31_000;
+  await cache.refresh();
+  expect(calls).toBe(2);
+  expect(cache.read()?.amount).toBe(4);
+
+  amount = -1;
+  await cache.inspect();
+  expect(cache.read()).toBeNull();
+
+  amount = 3;
+  await cache.inspect();
+  cache.close();
+  expect(cache.read()).toBeNull();
+  expect(await cache.inspect()).toEqual([]);
 });

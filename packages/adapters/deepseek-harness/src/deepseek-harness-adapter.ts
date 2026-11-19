@@ -1,4 +1,4 @@
-import { fetchDeepSeekBalances } from "./account-balance.js";
+import { DeepSeekBalanceCache, fetchDeepSeekBalances } from "./account-balance.js";
 import { createDshUsageStatistics } from "./modern/usage-statistics.js";
 import { deepSeekHarnessCommandCatalog } from "./harness-commands.js";
 
@@ -18,6 +18,7 @@ import {
   harnessIdSchema,
   nativeSessionRefSchema,
   type DeepSeekModernSessionCandidate,
+  type AccountBalanceSnapshot,
   type HarnessAccountSnapshot,
   type HarnessId,
 } from "@codexhost/shared-contracts";
@@ -121,6 +122,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     open: () => this.#openWebUi(),
   });
   readonly #options: DeepSeekHarnessAdapterOptions;
+  readonly #balance: DeepSeekBalanceCache;
   readonly #probeExecutable: (
     options: ProbeDeepSeekGenerationOptions,
   ) => Promise<DeepSeekExecutableGeneration>;
@@ -143,6 +145,12 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     dependencies: DeepSeekHarnessAdapterDependencies = {},
   ) {
     this.#options = options;
+    this.#balance = new DeepSeekBalanceCache(() =>
+      fetchDeepSeekBalances({
+        environment: options.environment ?? process.env,
+        signal: this.#accountInspection.signal,
+      }),
+    );
     // Read-only over dsh's session files; no dsh process is started.
     this.usageStatistics = createDshUsageStatistics(options.environment ?? process.env);
     this.#probeExecutable =
@@ -184,11 +192,16 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   /** Report the official DeepSeek API key's prepaid balance, not the DSH sign-in account. */
   async inspectAccounts(): Promise<readonly HarnessAccountSnapshot[]> {
     if (this.#closed) return [];
-    const accounts = await fetchDeepSeekBalances({
-      environment: this.#options.environment ?? process.env,
-      signal: this.#accountInspection.signal,
-    });
-    return this.#closed ? [] : accounts;
+    return this.#balance.inspect();
+  }
+
+  /** Cached balance for the Composer; refreshed by {@link refreshBalance}. */
+  balance(): AccountBalanceSnapshot | null {
+    return this.#balance.read();
+  }
+
+  refreshBalance(): Promise<AccountBalanceSnapshot | null> {
+    return this.#balance.refresh();
   }
 
   async inspectAccount(): Promise<HarnessAccountSnapshot | null> {
@@ -363,6 +376,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   async #performClose(): Promise<void> {
     this.#closed = true;
     this.#accountInspection.abort(new Error("DeepSeek Harness account inspection closed"));
+    this.#balance.close();
     let cleanupFailed = false;
     const selection = this.#selection;
     selection?.abort.abort(new Error("DeepSeek Harness generation selection closed"));

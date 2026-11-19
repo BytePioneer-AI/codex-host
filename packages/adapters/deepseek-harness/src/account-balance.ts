@@ -5,6 +5,7 @@ import { parseEnv } from "node:util";
 
 import {
   harnessAccountSnapshotSchema,
+  type AccountBalanceSnapshot,
   type HarnessAccountSnapshot,
 } from "@codexhost/shared-contracts";
 
@@ -180,5 +181,59 @@ export async function fetchDeepSeekBalances(
     return projectDeepSeekBalances(payload);
   } catch {
     return [];
+  }
+}
+
+const BALANCE_REFRESH_INTERVAL_MS = 30_000;
+
+/**
+ * Composer-facing cache over {@link fetchDeepSeekBalances}: synchronous reads, one request in
+ * flight, and at most one refresh per interval. A failed read clears the value so an
+ * invalidated or removed key never keeps showing an old balance.
+ */
+export class DeepSeekBalanceCache {
+  #value: AccountBalanceSnapshot | null = null;
+  #fetchedAt = Number.NEGATIVE_INFINITY;
+  #flight: Promise<readonly HarnessAccountSnapshot[]> | undefined;
+  #closed = false;
+
+  constructor(
+    private readonly fetchBalances: () => Promise<readonly HarnessAccountSnapshot[]>,
+    private readonly now: () => number = Date.now,
+    private readonly intervalMs = BALANCE_REFRESH_INTERVAL_MS,
+  ) {}
+
+  read(): AccountBalanceSnapshot | null {
+    return this.#closed ? null : this.#value;
+  }
+
+  /** Fresh rows for the settings page; also updates the composer value. */
+  inspect(): Promise<readonly HarnessAccountSnapshot[]> {
+    if (this.#closed) return Promise.resolve([]);
+    this.#flight ??= this.fetchBalances()
+      .catch(() => [] as readonly HarnessAccountSnapshot[])
+      .then((accounts) => {
+        // A result that arrives after close belongs to no one.
+        if (this.#closed) return [];
+        this.#value = accounts[0]?.balance ?? null;
+        this.#fetchedAt = this.now();
+        return accounts;
+      })
+      .finally(() => {
+        this.#flight = undefined;
+      });
+    return this.#flight;
+  }
+
+  async refresh(): Promise<AccountBalanceSnapshot | null> {
+    if (this.#closed) return null;
+    if (!this.#flight && this.now() - this.#fetchedAt < this.intervalMs) return this.#value;
+    await this.inspect();
+    return this.read();
+  }
+
+  close(): void {
+    this.#closed = true;
+    this.#value = null;
   }
 }

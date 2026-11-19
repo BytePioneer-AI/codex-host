@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
-import { CodexTurnProjector, type JsonObject } from "@codexhost/protocol-core";
-import { ExternalThreadRepository } from "../src/external-thread-repository.js";
+import type { JsonObject } from "@codexhost/protocol-core";
 
 import {
   completePiTurn,
@@ -609,23 +608,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
     }
   });
 
-  it.each([
-    ["part-1part-2", ["part-1", "part-2"]],
-    ["part-1part-2part-3", ["part-1", "part-2part-3"]],
-  ])("preserves reasoning summary segments for %s", async (live, expected) => {
-    const alignSnapshot = ExternalThreadRepository.prototype.alignSnapshot;
-    const spy = vi
-      .spyOn(ExternalThreadRepository.prototype, "alignSnapshot")
-      .mockImplementation(async function (this: ExternalThreadRepository, ...args) {
-        const aligned = await alignSnapshot.apply(this, args);
-        for (const turn of aligned.turns) {
-          const item = (turn.items as JsonObject[]).find(
-            (entry) => entry.id === "native-tail-summary",
-          );
-          if (item) item.summary = ["part-1", "part-2"];
-        }
-        return aligned;
-      });
+  it("preserves multiple replayed reasoning Items without duplicating them", async () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
@@ -643,34 +626,34 @@ describe("Host runtime idle background output on a completed Turn", () => {
             turns: snapshot.value.turns.map((turn) => ({
               ...turn,
               items: [
-                ...turn.items,
-                {
+                ...["part-1", "part-2"].map((text, index) => ({
                   item: {
                     type: "reasoning" as const,
-                    itemId: hostItemIdSchema.parse("native-tail"),
-                    text: "part-1part-2",
+                    itemId: hostItemIdSchema.parse(`native-tail-${index}`),
+                    text,
                   },
                   outcome: { status: "succeeded" as const },
-                },
+                })),
               ],
             })),
           },
         };
       };
-      const itemId = hostItemIdSchema.parse("live-reasoning");
-      session.emitEvent({
-        type: "item.background.started",
-        turnId,
-        item: { type: "reasoning", itemId, text: live },
-      });
-      await fixture.collector.waitFor((message) => itemStarted(message, itemId));
+      for (const [index, text] of ["part-1", "part-2"].entries()) {
+        const itemId = hostItemIdSchema.parse(`live-reasoning-${index}`);
+        session.emitEvent({
+          type: "item.background.started",
+          turnId,
+          item: { type: "reasoning", itemId, text },
+        });
+        await fixture.collector.waitFor((message) => itemStarted(message, itemId));
+      }
       const items = await readHistoryItems(fixture, threadId, 5);
-      expect(items.find((item) => item.id === "native-tail-summary")).toMatchObject({
-        summary: expected,
-      });
-      expect(items.some((item) => item.id === "live-reasoning-summary")).toBe(false);
+      expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
+        [["part-1"], ["part-2"]],
+      );
+      expect(items.some((item) => String(item.id).startsWith("live-reasoning"))).toBe(false);
     } finally {
-      spy.mockRestore();
       await stopFixture(fixture);
     }
   });
@@ -735,15 +718,6 @@ describe("Host runtime idle background output on a completed Turn", () => {
   it("omits an empty background item until its first text arrives", async () => {
     const fixture = createFixture();
     const itemId = hostItemIdSchema.parse("empty-live");
-    const backgroundWireItems = CodexTurnProjector.prototype.backgroundWireItems;
-    let injectEmpty = true;
-    const spy = vi
-      .spyOn(CodexTurnProjector.prototype, "backgroundWireItems")
-      .mockImplementation(function (this: CodexTurnProjector) {
-        const items = new Map(backgroundWireItems.call(this));
-        if (injectEmpty) items.set(itemId, { id: itemId, type: "agentMessage", text: "" });
-        return items;
-      });
     try {
       const threadId = await startPiThread(fixture);
       const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
@@ -764,7 +738,6 @@ describe("Host runtime idle background output on a completed Turn", () => {
       expect(
         (await readHistoryItems(fixture, threadId, 5)).some((item) => item.id === itemId),
       ).toBe(false);
-      injectEmpty = false;
       session.emitEvent({
         type: "item.updated",
         turnId,
@@ -776,7 +749,6 @@ describe("Host runtime idle background output on a completed Turn", () => {
         expect.objectContaining({ id: itemId, text: "first" }),
       );
     } finally {
-      spy.mockRestore();
       await stopFixture(fixture);
     }
   });

@@ -39,7 +39,7 @@ import { decodeOpenCodeModelRef, decodeOpenCodeVariant } from "../model-catalog.
 import { openCodeCommandCatalog } from "../opencode-adapter.js";
 import type { V2Connection } from "./connection.js";
 import { contentId, readHistory, readMessages, terminalItemOutcome } from "./history.js";
-import { v2UsageRequest } from "./usage.js";
+import { v2UsageRequest, type V2OutputTiming } from "./usage.js";
 import { errorResult, failure, harnessId, v2Permissions, v2State, v2Usage } from "./state.js";
 import {
   formInteraction,
@@ -55,6 +55,7 @@ interface ActiveTurn {
   baseline: Set<string>;
   live: Map<string, HostItem>;
   assistants: Set<string>;
+  outputTiming: Map<string, V2OutputTiming>;
   transient: Map<string, Extract<HostItem, { type: "agentMessage" | "reasoning" }>>;
   interactions: Map<string, V2Interaction>;
   replying: Set<string>;
@@ -104,8 +105,6 @@ export class V2Session implements HarnessSession {
   #cacheHitRatePercent: number | undefined;
   /** Assistant messages already published as usage requests. */
   readonly #meteredMessages = new Set<string>();
-  /** Adapter receive time of each assistant message's first reasoning, text or tool input. */
-  readonly #firstOutputAt = new Map<string, number>();
 
   constructor(
     readonly client: OpenCodeClient,
@@ -308,6 +307,7 @@ export class V2Session implements HarnessSession {
       baseline: new Set(),
       live: new Map(),
       assistants: new Set(),
+      outputTiming: new Map(),
       transient: new Map(),
       interactions: new Map(),
       replying: new Set(),
@@ -369,9 +369,18 @@ export class V2Session implements HarnessSession {
       FIRST_OUTPUT_EVENTS.has(event.type) &&
       "assistantMessageID" in event.data &&
       typeof event.data.assistantMessageID === "string" &&
-      !this.#firstOutputAt.has(event.data.assistantMessageID)
-    )
-      this.#firstOutputAt.set(event.data.assistantMessageID, Date.now());
+      !this.#meteredMessages.has(event.data.assistantMessageID) &&
+      (!event.type.endsWith(".delta") || ("delta" in event.data && event.data.delta.length > 0))
+    ) {
+      const id = event.data.assistantMessageID;
+      const timing = active.outputTiming.get(id) ?? {
+        firstOutputAtMs: Date.now(),
+        reasoningObserved: false,
+      };
+      if (event.type === "session.reasoning.started" || event.type === "session.reasoning.delta")
+        timing.reasoningObserved = true;
+      active.outputTiming.set(id, timing);
+    }
     if (event.type === "session.step.started") active.assistants.add(event.data.assistantMessageID);
     if (
       (event.type === "session.text.delta" || event.type === "session.reasoning.delta") &&
@@ -401,8 +410,9 @@ export class V2Session implements HarnessSession {
     for (const message of messages) {
       let request;
       try {
-        request = v2UsageRequest(message, historical, this.#firstOutputAt.get(message.id));
+        request = v2UsageRequest(message, historical, this.#active?.outputTiming.get(message.id));
       } catch {
+        this.#active?.outputTiming.delete(message.id);
         this.#cacheHitRatePercent = undefined;
         if (this.#meteredMessages.has(message.id)) continue;
         this.#meteredMessages.add(message.id);
@@ -418,7 +428,7 @@ export class V2Session implements HarnessSession {
           : undefined;
       if (this.#meteredMessages.has(message.id)) continue;
       this.#meteredMessages.add(message.id);
-      this.#firstOutputAt.delete(message.id);
+      this.#active?.outputTiming.delete(message.id);
       this.#emit({ type: "usage.request", request });
     }
     if (this.#cacheHitRatePercent !== previousCacheHitRate)

@@ -1,0 +1,79 @@
+---
+title: 本机命令行 CLI 实战
+description: 零配置、不用配任何环境变量——直接在终端里敲 codexhost 命令查 Agent、派任务、拉独立分支、读结果。
+---
+
+## 为什么在终端里直接就能用？
+
+只要你这台电脑上的 CodexHost 正在运行（打开了桌面端，或者跑过 `codexhost web`），后台就会自动在你个人目录里生成一份只有你当前系统账号能读的临时凭据（`~/.codexhost/cli-credentials.json`）。
+
+所以你写本地脚本或在终端里敲命令时，**不需要注册客户端，也不需要配任何 Token 环境变量，直接敲 `codexhost` 就能用。**
+
+> 提醒一句：命令行工具自己不会帮你拉起后台，敲命令前请确认桌面端或 `codexhost web` 已经在跑了。
+
+---
+
+## 最常用的 4 组命令（直接抄走就能用）
+
+### 1. 先看看这台电脑上有哪些 Agent 和项目能用
+
+```bash
+codexhost harness list --format text
+codexhost project list --format text
+```
+
+> 小技巧：`--format` 支持三种输出格式：
+>
+> - `text`：排版清爽，最适合**人眼直接看**或者**直接喂给大模型阅读**；
+> - `compact`：精简版 JSON，适合轻量脚本读取；
+> - `json`（默认）：最完整的结构化 JSON。
+
+### 2. 给某个 Agent 派一个任务
+
+比如让 Claude Code 在一个**全新的独立 Git Worktree 分支目录**里帮你审查代码，不弄乱你当前正在改的目录：
+
+```bash
+codexhost delegate start \
+  --harness claude-code \
+  --task-name "审查权限边界" \
+  --worktree review/auth \
+  --watch true \
+  --format text \
+  --task "检查 packages/host-runtime 的权限边界，列出潜在问题并给出修改建议。"
+```
+
+几个超实用的参数：
+
+- `--worktree review/auth`：自动基于当前仓库新建 `review/auth` 分支和独立的 `.worktrees/` 目录，让 Agent 在里面安心折腾；
+- `--watch true`：任务做完后自动发一条完成记录（方便上层会话或脚本监听）；
+- `--task-file -`：如果你的提示词特别长、带很多引号和换行，用管道或 `<<'EOF'` 通过标准输入传进去最省心。
+
+执行后会立刻返回新会话的 `<thread-id>`，同时这个会话也会出现在你的桌面端/网页端侧边栏里。
+
+### 3. 等待跑完并读取回复内容
+
+```bash
+# 等它跑完（默认最多等 30 秒，没跑完也会返回当前进度，不会弄停任务）
+codexhost thread wait <thread-id> --format text
+
+# 按轮次干干净净地读取“我问了什么 + Agent 最终回了什么”
+codexhost thread read <thread-id> --view messages --format text
+```
+
+如果对话轮次很多，`--view messages` 还支持用 `--from 1 --to 10` 按轮次分页读取。
+
+### 4. 继续追问、半路改主意，或者直接叫停
+
+```bash
+# 1. 它已经跑完了，接着让它干下一件事
+codexhost thread send <thread-id> --message "顺便把对应的单元测试也补上"
+
+# 2. 它正在跑，半路递句话微调一下方向（不用重头来过）
+codexhost thread send <thread-id> --steer true --message "先只看 host-runtime 包，别的目录不用动"
+
+# 3. 发现方向彻底跑偏了：先停掉当前这一轮，确认停稳后立刻发新指令
+codexhost thread send <thread-id> --interrupt --message "先停一下，改为帮我梳理启动流程"
+
+# 4. 单纯叫停当前正在跑的这一轮（保留已有聊天记录）
+codexhost thread cancel <thread-id>
+```

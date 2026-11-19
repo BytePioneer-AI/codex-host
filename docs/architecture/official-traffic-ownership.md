@@ -13,6 +13,12 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 
 只有确认归属后才做严格校验并返回 `-32602` 等错误。带 codexhost 前缀但格式非法的标记或游标直接报错，不回落官方。
 
+## macOS 原生 Browser MCP 的进程归属
+
+Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树中。本地 macOS 前端识别 Desktop 下发的第一方 Browser `node_repl` MCP 配置，把这些工具服务启动在 Desktop 子进程中，并将其配置转换为经过能力令牌认证的本机 Streamable HTTP MCP。识别限定到所选运行时的真实 `node_repl` 可执行文件及带 Browser 服务的配置。未知配置和远程执行环境仍交给原生处理。
+
+前端通过原生 CLI 的 `mcp list --json` 读取实际启用的本地及插件工具定义。仅为识别出的第一方服务生成临时 stdio 命令覆盖，经认证的 Desktop 上下文传给共享后端，启动记录保留原始参数。`thread/start`、`thread/resume`、`thread/fork` 的显式 MCP 覆盖沿用同一转换。保留请求其余字段、工具审批设置、超时和工具选择。MCP 消息及原生请求元数据按标准传输转发。配置转换在 Desktop 前端发生，共享 Host 继续持有任务执行。
+
 ## 原生 Codex Fork 的模型继承
 
 Desktop 可能在 `thread/fork` 中省略 Model，原生 app-server 因此使用全局默认配置，而不是来源 Thread 的配置。共享原生通道对 Desktop 与 Web 一致补齐省略的 Model、Provider、Thinking 和 Fast：来源只取当前原生进程通过 `thread/start`、`thread/resume`、`thread/fork` 响应或 `thread/settings/updated` 确认的设置，不读取 Host 的最后一次草稿选择，也不复制权限、指令或其他配置。
@@ -37,7 +43,7 @@ RPC 布局下的 Windows Remote Control 复用已加载模块中的原生 Manage
 
 主进程消费的原生审批、提问及 MCP elicitation 不会作为普通窗口请求广播。适配器订阅这些原生交互事件，按事件中的 Thread 从原生会话读取待处理请求，并通过原生 Manager 展示和回应；安装或重连时读取一次未完成工作的快照以恢复已有交互，不轮询。请求按 Thread 与原生 request ID 去重，读取期间发生的新交互或解决事件会触发一次新快照，旧快照不能重新显示已解决的审批。交互订阅成功后才发布新路由；订阅失败时释放候选 Manager，保留官方服务。
 
-该版本的官方模型目录可能过滤草稿中的外部 transport Model。RPC 路由依据已登记的 `clientThreadId`，在本次 `startConversation` 发出时把官方回退模型替换为外部 carrier（创建参数没有 Model 时同样写入 carrier），保留输入、工作区、Thinking、原生回调及传输参数；不修改原始模式对象。不属于已登记草稿的创建、无法识别的参数和明确指定另一个外部 carrier 的创建保持原样。可识别的外部预热请求一律带上预热标记：请求本身指定了外部 carrier 时保留其 Harness 与 Model，否则使用当前已选择的 carrier；Host 据此把它登记为可丢弃的预热，而不是发布新 Thread。没有外部选择的官方预热及无法识别的 carrier 保持原样。
+该版本的官方模型目录可能过滤草稿中的外部 transport Model。RPC 路由依据已登记的 `clientThreadId`，在本次 `startConversation` 发出时把官方回退模型替换为外部 carrier（创建参数没有 Model 时同样写入 carrier）；明确指定另一个外部 carrier 时沿用该 carrier。可识别的创建 `config` 同时补齐 `model`，使外部创建不消费按工作区匹配的原生预热，即使选择后又发生了预热；调用方已有配置优先，无法识别的配置形状保留原值。输入、工作区、Thinking、原生校验、回调及传输参数保持不变，不修改原始模式对象。不属于已登记草稿的创建和无法识别的创建参数保持原样，官方预热路径不变。可识别的外部预热请求一律带上预热标记：请求本身指定了外部 carrier 时保留其 Harness 与 Model，否则使用当前已选择的 carrier；Host 据此把它登记为可丢弃的预热，而不是发布新 Thread。没有外部选择的官方预热及无法识别的 carrier 保持原样。
 
 普通草稿的 transport Model 同时按本地 Host 连接和 `client-new-thread` 身份登记。原生 `startConversation` 进入时读取本次创建的 `clientThreadId`，在异步准备前捕获对应的路由，只替换这次创建的 Model，保留权限、工作区、输入、Thinking 和原生回调。后台发送派生新客户端身份时，通过同一草稿的原生 collaboration-mode 对象关联来源；该关联使用不进入 JSON 协议的 Symbol，并随原生浅复制保留。Codex 的备用额度模式不能改变外部 Thread 的 Harness。官方创建、其他草稿与显式定时任务没有该草稿关联时，保持传入配置；切回 Codex、Adapter 卸载和连接释放会清理路由。
 

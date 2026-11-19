@@ -11,12 +11,14 @@ import {
   type CreateProvisionalThreadInput,
   type DelegationStatus,
   type FindRecentDelegationInput,
+  type InjectedTurnPrefix,
   type RebindSubagentSessionInput,
   type ReplaceReadySessionAfterLastTurnInput,
   type ReplaceReadySessionInput,
   type StoredDelegationRecordV1,
   type StoredSectionPlacementV1,
   type StoredThreadRecordV1,
+  type StoredThreadSummaryV1,
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
@@ -35,11 +37,13 @@ import {
   materializeExternalSubagent,
   projectExternalSnapshot,
 } from "./external-subagent-threads.js";
+import { ownTurns } from "./external-thread-side-chat.js";
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
   getThread(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1 | null>;
   listThreads(): Promise<StoredThreadRecordV1[]>;
+  listThreadSummaries(): Promise<StoredThreadSummaryV1[]>;
   getThreadByCreateRequest(createRequestId: string): Promise<StoredThreadRecordV1 | null>;
   getDelegation(delegationId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
   getDelegationByChild(childHostThreadId: HostThreadId): Promise<StoredDelegationRecordV1 | null>;
@@ -80,6 +84,15 @@ export interface ExternalThreadStore {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1>;
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1>;
+  appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1>;
+  consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    through: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1>;
   updateMetadata(
     hostThreadId: HostThreadId,
     patch: ThreadMetadataPatch,
@@ -144,6 +157,11 @@ export class ExternalThreadRepository {
 
   list(): Promise<StoredThreadRecordV1[]> {
     return this.store.listThreads();
+  }
+
+  /** Catalog reads; Turn mappings are omitted. */
+  listSummaries(): Promise<StoredThreadSummaryV1[]> {
+    return this.store.listThreadSummaries();
   }
 
   listSectionPlacements(): Promise<StoredSectionPlacementV1[]> {
@@ -231,6 +249,21 @@ export class ExternalThreadRepository {
     transportModelId: string,
   ): Promise<StoredThreadRecordV1> {
     return this.store.setTransportModelId(hostThreadId, transportModelId);
+  }
+
+  appendPendingInjectedText(
+    hostThreadId: HostThreadId,
+    texts: readonly string[],
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.appendPendingInjectedText(hostThreadId, texts);
+  }
+
+  consumePendingInjectedText(
+    hostThreadId: HostThreadId,
+    through: number,
+    prefix: InjectedTurnPrefix,
+  ): Promise<StoredThreadRecordV1> {
+    return this.store.consumePendingInjectedText(hostThreadId, through, prefix);
   }
 
   setArchived(hostThreadId: HostThreadId, archived: boolean): Promise<StoredThreadRecordV1> {
@@ -514,7 +547,7 @@ export class ExternalThreadRepository {
   ): Promise<AlignedExternalSnapshot> {
     const turns = await projectExternalSnapshot(this.store, record, snapshot, previous);
     return {
-      record: await this.updatePreview(record, turns, previous !== undefined),
+      record: await this.updatePreview(record, ownTurns(record, turns), previous !== undefined),
       turns,
     };
   }
@@ -531,6 +564,8 @@ export function createExternalThreadRecordInput(input: {
   historyMode: "legacy" | "paginated";
   projectlessWorkspace?: CreateProvisionalThreadInput["projectlessWorkspace"];
   forkSource?: CreateProvisionalThreadInput["forkSource"];
+  attachedToThreadId?: CreateProvisionalThreadInput["attachedToThreadId"];
+  inheritedTurnCount?: CreateProvisionalThreadInput["inheritedTurnCount"];
   importSourceRef?: CreateProvisionalThreadInput["importSourceRef"];
   subagent?: CreateProvisionalThreadInput["subagent"];
 }): CreateProvisionalThreadInput {
@@ -545,6 +580,10 @@ export function createExternalThreadRecordInput(input: {
     historyMode: input.historyMode,
     ...(input.projectlessWorkspace ? { projectlessWorkspace: input.projectlessWorkspace } : {}),
     ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+    ...(input.attachedToThreadId ? { attachedToThreadId: input.attachedToThreadId } : {}),
+    ...(input.inheritedTurnCount !== undefined
+      ? { inheritedTurnCount: input.inheritedTurnCount }
+      : {}),
     ...(input.importSourceRef ? { importSourceRef: input.importSourceRef } : {}),
     ...(input.subagent ? { subagent: input.subagent } : {}),
   };
@@ -564,7 +603,7 @@ export function threadSectionFields(placement?: StoredSectionPlacementV1): {
 }
 
 export function externalThreadValue(input: {
-  record: StoredThreadRecordV1;
+  record: StoredThreadSummaryV1;
   turns: JsonObject[];
   sessionId: string;
   running?: boolean;
@@ -574,7 +613,12 @@ export function externalThreadValue(input: {
   const { record } = input;
   const createdAt = Math.floor(Date.parse(record.createdAt) / 1_000);
   const updatedAt = Math.floor(Date.parse(record.updatedAt) / 1_000);
-  const previewText = record.preview ?? firstUserMessagePreview(input.turns) ?? "";
+  // A Side Chat's preview comes from its own Turns only, and the record keeps it. Turns passed
+  // here may still include the history it inherited.
+  const previewText =
+    record.preview ??
+    (record.attachedToThreadId ? undefined : firstUserMessagePreview(input.turns)) ??
+    "";
   return {
     id: record.hostThreadId,
     sessionId: input.sessionId,
@@ -615,7 +659,9 @@ export function externalThreadValue(input: {
           sha: record.gitInfo.sha ?? null,
         }
       : null,
-    forkedFromId: record.forkSource?.hostThreadId ?? null,
+    // A Side Chat forked before its source completed a Turn has no fork boundary Turn.
+    forkedFromId: record.forkSource?.hostThreadId ?? record.attachedToThreadId ?? null,
+    ...(record.attachedToThreadId ? { attachedToThreadId: record.attachedToThreadId } : {}),
     ...(record.importSourceRef &&
     record.nativeSessionRef &&
     record.importSourceRef.nativeSessionId !== record.nativeSessionRef.nativeSessionId

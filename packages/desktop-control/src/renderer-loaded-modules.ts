@@ -162,7 +162,10 @@ export async function installRendererLoadedModules(
   };
   try {
     await renderer.command("Runtime.enable");
-    await renderer.command("Debugger.enable");
+    // The catalog only needs Debugger.scriptParsed URLs. Without a bound, the V8 inspector
+    // retains the source of every collected script forever, including each Runtime.evaluate
+    // issued by this Controller, which grows native Renderer memory without limit.
+    await renderer.command("Debugger.enable", { maxScriptsCacheSize: 0 });
     ready = true;
     await flush();
     return dispose;

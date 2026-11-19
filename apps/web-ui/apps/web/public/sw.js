@@ -145,6 +145,46 @@ function offlineResponse() {
   );
 }
 
+async function pushRequest(method, args) {
+  const response = await fetch(new URL(`api/${method}`, self.registration.scope).href, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      type: "client-request",
+      rpcId: crypto.randomUUID(),
+      method,
+      payload: { args },
+    }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const envelope = await response.json();
+  if (!envelope.result.ok) throw new Error(envelope.result.error.message);
+  return envelope.result.value;
+}
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(
+    (async () => {
+      let applicationServerKey = event.oldSubscription?.options?.applicationServerKey;
+      if (!applicationServerKey) {
+        const { publicKey } = await pushRequest("codexhost/pushConfig", {});
+        const padding = "=".repeat((4 - (publicKey.length % 4)) % 4);
+        const raw = atob((publicKey + padding).replace(/-/gu, "+").replace(/_/gu, "/"));
+        applicationServerKey = Uint8Array.from(raw, (character) => character.charCodeAt(0));
+      }
+      const subscription = await self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey,
+      });
+      await pushRequest("codexhost/pushSubscribe", {
+        subscription: subscription.toJSON(),
+        userAgent: navigator.userAgent,
+      });
+    })(),
+  );
+});
+
 self.addEventListener("push", (event) => {
   let message = {};
   try {

@@ -1,0 +1,50 @@
+---
+title: SSH Remote Server (macOS / Linux)
+description: Keep your local Codex Desktop UI while running Agents, tools, and code directly on a remote Linux or macOS machine—with one-click UI setup.
+---
+
+When your codebase, build toolchain, and signed-in Agents (like Claude Code or Pi) live on a **remote Linux or macOS machine**, SSH mode lets **Agents run on the remote host while you chat, review diffs, and approve commands inside your local Codex Desktop**.
+
+## Quick Checklist Before You Connect
+
+1. **Your local computer** (macOS, Windows, or Linux): Launch Codex Desktop via `codexhost`.
+2. **The remote machine**: Must run **Linux or macOS** (Windows is not supported as an SSH target), with **Node.js 22.19+ or 24**, npm, Codex CLI, and your target Agent CLIs already installed and signed in.
+3. **Key-based SSH login works**: Run `ssh user@host` once in your local terminal to verify key authentication and accept the host fingerprint (the UI uses your SSH keys / config aliases and won't prompt for passwords).
+
+---
+
+## Recommended: One-Click Install & Connect from Settings
+
+You don't have to copy-paste install commands onto the server manually:
+
+1. In your local Codex Desktop, open **codexhost Settings → Remote Connections** and click **Add Connection** (if you already added the host under official **Settings → Connections → SSH**, it appears here automatically).
+2. Enter a friendly name (e.g. `Work Devbox`) and the SSH target (`user@host` or your SSH config alias), then click **Save**.
+3. Click **Install & Connect**—CodexHost automatically installs the matching remote service version over SSH and connects.
+4. Once it shows **Connected**, open a project folder on that remote host in Codex Desktop and pick any remote Agent from the bottom-right selector!
+
+> Whenever you update CodexHost locally later, just revisit **Remote Connections** and click **Update to Local Version**.
+
+---
+
+## Alternative: Manual CLI Setup on the Remote Machine
+
+If you prefer setting up the remote host from a terminal (make sure both machines use the same CodexHost version):
+
+```bash
+npm install -g @codexhost/cli
+codexhost remote install
+codexhost remote start
+codexhost remote status
+```
+
+### Remote macOS Tip: Accessing Login Keychain Credentials
+
+Standard SSH sessions on macOS sometimes can't read credentials stored in the macOS login keychain (for example, `gh` CLI tokens). As long as the same user stays logged in on the remote Mac's desktop, switch the remote service to desktop session mode:
+
+```bash
+codexhost remote stop
+codexhost remote install --session desktop
+codexhost remote start
+```
+
+For advanced maintenance and troubleshooting, see the [full SSH Remote Host guide](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/platforms/remote/remote-ssh-host.md) in the repository.

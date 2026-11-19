@@ -1,5 +1,6 @@
 import path from "node:path";
 import { homedir } from "node:os";
+import type { Duplex } from "node:stream";
 import {
   ensureHostService,
   discoverHostClientChannel,
@@ -7,6 +8,12 @@ import {
 } from "@codexhost/desktop-control";
 import { WebSocket, createWebSocketStream } from "ws";
 import { StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
+import { isDesktopContextVariable } from "./desktop-context-environment.js";
+import { createDesktopMcpBridge } from "./desktop-mcp-bridge.js";
+import {
+  CODEX_RUNTIME_REMOVED_MESSAGE,
+  CodexRuntimeFilesRemovedError,
+} from "./codex-runtime/backend-files.js";
 
 /** Matches both npm payloads and the signed macOS app's Resources/MacOS split. */
 export function sharedHostLauncherPath(
@@ -56,7 +63,7 @@ async function connectStream(
           arguments: desktop.arguments,
           environment: Object.fromEntries(
             Object.entries(desktop.environment).filter(
-              ([key, value]) => key.startsWith("CODEXHOST_") && value !== undefined,
+              ([key, value]) => isDesktopContextVariable(key) && value !== undefined,
             ),
           ),
         }),
@@ -81,6 +88,15 @@ async function connectStream(
     });
   });
   const stream = createWebSocketStream(socket);
+  socket.once("close", (code, reason) => {
+    if (code === 1000 || code === 1005) return;
+    // Only this fixed authenticated recovery reason is exposed to the Desktop.
+    const error =
+      code === 1011 && reason.toString() === CODEX_RUNTIME_REMOVED_MESSAGE
+        ? new CodexRuntimeFilesRemovedError()
+        : new Error("Independent Host connection closed unexpectedly");
+    stream.destroy(error);
+  });
   socket.on("error", () => stream.destroy());
   return stream;
 }
@@ -103,8 +119,7 @@ export async function connectLocalSharedExternalHost(
   return peer;
 }
 
-/** Desktop's Shim remains a byte-transparent frontend. It owns no Adapter,
- * MappingStore or native Codex backend; closing stdin detaches only this viewer. */
+/** Desktop owns its browser MCP children while the shared Host owns task execution. */
 export async function runLocalDesktopBridge(
   environment: NodeJS.ProcessEnv,
   runtime: string,
@@ -114,29 +129,52 @@ export async function runLocalDesktopBridge(
   const launcher = environment.CODEXHOST_LAUNCHER_EXECUTABLE;
   if (!launcher || !path.isAbsolute(launcher))
     throw new Error("Independent Host requires the native Launcher");
-  const stream = await connectStream(
-    {
-      launcher,
-      runtime,
-      stockCodex,
-      dataDirectory: path.resolve(
-        environment.CODEXHOST_DATA_DIR ?? path.join(homedir(), ".codexhost"),
-      ),
-      ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
-    },
-    { environment, arguments: arguments_ },
-  );
+  const mcp =
+    process.platform === "darwin"
+      ? await createDesktopMcpBridge({
+          runtimePath: runtime,
+          native: { executable: stockCodex, arguments: arguments_ },
+          nodeReplPath: path.join(path.dirname(process.execPath), "node_repl"),
+          environment,
+        })
+      : undefined;
+  let stream: Duplex | undefined;
   try {
+    stream = await connectStream(
+      {
+        launcher,
+        runtime,
+        stockCodex,
+        dataDirectory: path.resolve(
+          environment.CODEXHOST_DATA_DIR ?? path.join(homedir(), ".codexhost"),
+        ),
+        ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
+      },
+      { environment: { ...environment, ...mcp?.environment }, arguments: arguments_ },
+    );
+    const connection = stream;
     const closed = new Promise<number>((resolve) => {
-      stream.once("error", () => resolve(1));
-      stream.once("close", () => resolve(0));
+      connection.once("error", (error) => {
+        if (error instanceof CodexRuntimeFilesRemovedError)
+          process.stderr.write(`${error.message}\n`);
+        resolve(1);
+      });
+      connection.once("close", () => resolve(0));
     });
-    process.stdin.pipe(stream);
+    if (mcp) {
+      mcp.input.on("error", (error) => stream?.destroy(error));
+      process.stdin.pipe(mcp.input).pipe(stream);
+    } else {
+      process.stdin.pipe(stream);
+    }
     stream.pipe(process.stdout, { end: false });
     return await closed;
   } finally {
-    process.stdin.unpipe(stream);
-    stream.unpipe(process.stdout);
-    stream.destroy();
+    process.stdin.unpipe(mcp?.input ?? stream);
+    process.stdin.pause();
+    mcp?.input.destroy();
+    stream?.unpipe(process.stdout);
+    stream?.destroy();
+    await mcp?.close();
   }
 }

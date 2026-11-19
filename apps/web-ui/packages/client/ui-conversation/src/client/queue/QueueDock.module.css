@@ -21,6 +21,12 @@
   padding: 0 var(--dsh-composer-dock-inset);
 }
 
+.pendingAttachment {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .panel {
   position: relative;
   isolation: isolate;

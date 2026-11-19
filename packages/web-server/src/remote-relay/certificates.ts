@@ -3,6 +3,8 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createSecureContext, type SecureContext } from "node:tls";
 import type { DataDir } from "../store.ts";
 import type { WebRelayCertificate } from "@codexhost/shared-contracts";
+import type { CertificateAuthority, RegistrationResponse } from "@codexhost/remote-relay/protocol";
+import type { CertificateRelay } from "./certificate-transport.ts";
 import {
   AcmeFailure,
   AcmeRound,
@@ -78,7 +80,10 @@ export function retryDelay(failures: number, random: number): number {
 export class Certificates {
   private hostname: string | undefined;
   private endpoint = "";
-  private readonly directory = acmeDirectory();
+  private directory = acmeDirectory();
+  private relay: CertificateRelay | undefined;
+  private host = "";
+  private token: string | undefined;
   private reset: "restart" | "enable" | undefined = "restart";
   private record: CertificateRecord | undefined;
   private certificate: UsableCertificate | undefined;
@@ -113,11 +118,31 @@ export class Certificates {
     this.reset = "enable";
   }
 
-  start(hostname: string, host: string): void {
+  start(hostname: string, host: string, registration?: RegistrationResponse): void {
     this.stop();
     this.endpoint = `remote-relay/endpoints/${encodeURIComponent(host)}`;
     this.hostname = hostname;
+    this.host = host;
+    this.token = registration?.token;
+    this.setAuthority(registration?.certificateAuthority);
     this.check();
+  }
+
+  certificateAuthority(authority: CertificateAuthority): void {
+    const directory = acmeDirectory(authority.directory);
+    if (directory === this.directory) return;
+    this.round?.stop();
+    this.round = undefined;
+    this.setAuthority(authority);
+    this.check();
+  }
+
+  private setAuthority(authority?: CertificateAuthority): void {
+    this.directory = acmeDirectory(authority?.directory);
+    this.relay =
+      process.env.CODEXHOST_RELAY_ACME_DIRECTORY === undefined && authority && this.token
+        ? { host: this.host, token: this.token }
+        : undefined;
   }
 
   stop(): void {
@@ -187,7 +212,7 @@ export class Certificates {
     }
     const action = nextAction(this.now(), this.certificate, this.record);
     if (!this.round && action !== undefined && action <= this.now()) {
-      const round = new AcmeRound(this.tls);
+      const round = new AcmeRound(this.tls, this.relay);
       this.round = round;
       void this.issue(round, this.hostname).finally(() => {
         if (this.round === round) {
@@ -233,6 +258,7 @@ export class Certificates {
         detail: undefined,
       });
       const cert = await issueCertificate(round, this.data, hostname, this.directory, () => {
+        round.assertActive();
         this.save({ ...(this.record as CertificateRecord), validationFailures: 0 });
       });
       round.assertActive();

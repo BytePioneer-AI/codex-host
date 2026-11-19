@@ -1,5 +1,6 @@
 import type {
   SessionAssistantSettlementEntry,
+  SessionEventLike,
   SessionEventLikeEntry,
   SessionTransientEventEntry,
 } from "@deepseek-ai/dsh-api-session-controller/client";
@@ -26,6 +27,7 @@ import type {
   ConversationGroupDefinition,
   ConversationGroupedView,
 } from "../contract/groups.ts";
+import { compareEvents, eventKey } from "./event-order.ts";
 import { ConversationGroupStore } from "./group-store.ts";
 import type { ConversationEventRegistry } from "./event-registry.ts";
 import {
@@ -45,7 +47,6 @@ interface InternalContext {
   readonly kind: string;
   readonly id: string;
   readonly definition: ConversationNodeDefinition;
-  startSeq: number | undefined;
   start: ConversationStartMatch | undefined;
   matches: ConversationMatch[];
   state: unknown;
@@ -98,17 +99,19 @@ function maximumPublication(
   return PUBLICATION_RANK[left] >= PUBLICATION_RANK[right] ? left : right;
 }
 
-function startSeq(context: InternalContext): number | undefined {
-  return context.startSeq;
+function compareStarts(left: InternalContext, right: InternalContext): number {
+  if (left.start === undefined) return right.start === undefined ? 0 : 1;
+  if (right.start === undefined) return -1;
+  return compareEvents(left.start.event, right.start.event);
 }
 
-function insertionIndex(contexts: readonly InternalContext[], seq: number): number {
+function insertionIndex(contexts: readonly InternalContext[], event: SessionEventLike): number {
   let low = 0;
   let high = contexts.length;
   while (low < high) {
     const middle = low + Math.floor((high - low) / 2);
-    const candidate = contexts[middle];
-    if (candidate !== undefined && (candidate.startSeq as number) < seq) low = middle + 1;
+    const start = contexts[middle]?.start;
+    if (start !== undefined && compareEvents(start.event, event) < 0) low = middle + 1;
     else high = middle;
   }
   return low;
@@ -137,14 +140,16 @@ function mergeMatches(
   while (added < additions.length || current < existing.length) {
     const left = additions[added];
     const right = existing[current];
-    if (left !== undefined && right !== undefined && left.event.seq === right.event.seq) {
-      throw new Error(`conversation Context ${key} received duplicate Match ${left.event.seq}`);
+    const order =
+      left === undefined ? 1 : right === undefined ? -1 : compareEvents(left.event, right.event);
+    if (order === 0) {
+      throw new Error(`conversation Context ${key} received duplicate Match ${left?.event.seq}`);
     }
-    if (right === undefined || (left !== undefined && left.event.seq < right.event.seq)) {
+    if (order < 0) {
       merged.push(left as ConversationMatch);
       added++;
     } else {
-      merged.push(right);
+      merged.push(right as ConversationMatch);
       current++;
     }
   }
@@ -192,7 +197,7 @@ const NO_GROUPS: ConversationGroupDefinitions = { entries: () => [], forTarget: 
 export class ConversationNodeAssembler implements ConversationViewSnapshotStore {
   private readonly contexts = new Map<string, InternalContext>();
   private readonly contextsByKind = new Map<string, InternalContext[]>();
-  private readonly contextsBySeq = new Map<number, InternalContext[]>();
+  private readonly contextsByEventKey = new Map<number, InternalContext[]>();
   private readonly contextsByTarget = new Map<string, Set<InternalContext>>();
   private readonly inputs = new Map<number, SessionEventLikeEntry>();
   private readonly locationIndex = new ConversationLocationIndex();
@@ -244,7 +249,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
   ): ConversationPublication {
     this.contexts.clear();
     this.contextsByKind.clear();
-    this.contextsBySeq.clear();
+    this.contextsByEventKey.clear();
     this.contextsByTarget.clear();
     this.inputs.clear();
     this.dirty.clear();
@@ -252,8 +257,8 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     this.revised.clear();
     this.dependents.clear();
     this.hasMore = hasMore;
-    const sorted = [...entries].sort((left, right) => left.event.seq - right.event.seq);
-    for (const entry of sorted) this.inputs.set(entry.event.seq, entry);
+    const sorted = [...entries].sort((left, right) => compareEvents(left.event, right.event));
+    for (const entry of sorted) this.inputs.set(eventKey(entry.event), entry);
     this.locationIndex.rebuild(sorted);
     this.timelineDirty = true;
     for (const entry of sorted) this.matchInput(entry);
@@ -271,9 +276,10 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
    */
   append(record: SessionEventLikeEntry): ConversationPublication {
     const event = record.event;
-    if (this.inputs.has(event.seq)) return "none";
+    const key = eventKey(event);
+    if (this.inputs.has(key)) return "none";
     if (this.revised.size > 0) this.revised.clear();
-    this.inputs.set(event.seq, record);
+    this.inputs.set(key, record);
     let publication: ConversationPublication = "none";
     if (event.type !== "assistant/live-chunk" && isLocationBoundary(event.type)) {
       const previousTimeline = this.locationIndex.snapshot();
@@ -310,15 +316,15 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
       (candidate): candidate is SessionTransientEventEntry =>
         candidate.type === "transient" && candidate.event.data.attemptId === attemptId,
     );
-    const retiredSeqs = new Set(retired.map((candidate) => candidate.event.seq));
+    const retiredKeys = new Set(retired.map((candidate) => eventKey(candidate.event)));
     const affected = new Set<InternalContext>();
-    for (const seq of retiredSeqs) {
-      this.inputs.delete(seq);
-      for (const context of this.contextsBySeq.get(seq) ?? []) affected.add(context);
-      this.contextsBySeq.delete(seq);
+    for (const key of retiredKeys) {
+      this.inputs.delete(key);
+      for (const context of this.contextsByEventKey.get(key) ?? []) affected.add(context);
+      this.contextsByEventKey.delete(key);
     }
     for (const context of affected) {
-      context.matches = context.matches.filter((match) => !retiredSeqs.has(match.event.seq));
+      context.matches = context.matches.filter((match) => !retiredKeys.has(eventKey(match.event)));
     }
     this.locationIndex.removeAssistantTransients(retired.map((candidate) => candidate.event));
 
@@ -347,9 +353,9 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     let publication: ConversationPublication = "none";
     const previousHasMore = this.hasMore;
     const fresh = entries
-      .filter((entry) => !this.inputs.has(entry.event.seq))
-      .sort((left, right) => left.event.seq - right.event.seq);
-    for (const entry of fresh) this.inputs.set(entry.event.seq, entry);
+      .filter((entry) => !this.inputs.has(eventKey(entry.event)))
+      .sort((left, right) => compareEvents(left.event, right.event));
+    for (const entry of fresh) this.inputs.set(eventKey(entry.event), entry);
     this.hasMore = hasMore;
     const previousTimeline = this.locationIndex.snapshot();
     const changedLocations = this.locationIndex.rebuild(this.sortedInputs());
@@ -480,7 +486,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
   }
 
   private sortedInputs(): SessionEventLikeEntry[] {
-    return [...this.inputs.values()].sort((left, right) => left.event.seq - right.event.seq);
+    return [...this.inputs.values()].sort((left, right) => compareEvents(left.event, right.event));
   }
 
   private matchInput(input: SessionEventLikeEntry): ConversationPublication {
@@ -595,7 +601,6 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
       kind: definition.kind,
       id,
       definition,
-      startSeq: undefined,
       start: undefined,
       matches: [],
       state: undefined,
@@ -620,7 +625,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     context ??= this.createContext(definition, id, key);
     const starting = match.role === "start" && context.start === undefined;
     const previous = context.matches.at(-1);
-    if (previous !== undefined && previous.event.seq >= match.event.seq) {
+    if (previous !== undefined && compareEvents(previous.event, match.event) >= 0) {
       throw new Error(`conversation Context ${key} received non-appended Match ${match.event.seq}`);
     }
     if (starting && context.matches.length > 0) {
@@ -628,16 +633,10 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     }
     context.matches.push(match);
     if (starting) {
-      context.startSeq = match.event.seq;
       context.start = match;
       this.indexStartedContext(context);
     }
-    let owners = this.contextsBySeq.get(match.event.seq);
-    if (owners === undefined) {
-      owners = [];
-      this.contextsBySeq.set(match.event.seq, owners);
-    }
-    owners.push(context);
+    this.indexMatch(context, match);
 
     if (starting) {
       this.replayContext(context);
@@ -651,6 +650,16 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     }
     this.markDirty(context);
     return definition.publication?.(match) ?? "immediate";
+  }
+
+  private indexMatch(context: InternalContext, match: ConversationMatch): void {
+    const key = eventKey(match.event);
+    let owners = this.contextsByEventKey.get(key);
+    if (owners === undefined) {
+      owners = [];
+      this.contextsByEventKey.set(key, owners);
+    }
+    owners.push(context);
   }
 
   private applyPendingMatches(
@@ -669,15 +678,10 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
               `conversation Context ${key} received inconsistent Definition identity`,
             );
           }
-          let owners = this.contextsBySeq.get(entry.match.event.seq);
-          if (owners === undefined) {
-            owners = [];
-            this.contextsBySeq.set(entry.match.event.seq, owners);
-          }
-          owners.push(context);
+          this.indexMatch(context, entry.match);
           return entry.match;
         })
-        .sort((left, right) => left.event.seq - right.event.seq);
+        .sort((left, right) => compareEvents(left.event, right.event));
       context.matches = mergeMatches(context.key, additions, context.matches);
       affected.add(context);
       this.markDirty(context);
@@ -686,10 +690,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
 
   private replayContexts(contexts: ReadonlySet<InternalContext>): void {
     this.refreshStarts(contexts);
-    const ordered = [...contexts].sort(
-      (left, right) =>
-        (left.startSeq ?? Number.POSITIVE_INFINITY) - (right.startSeq ?? Number.POSITIVE_INFINITY),
-    );
+    const ordered = [...contexts].sort(compareStarts);
     for (const context of ordered) {
       if (context.start === undefined) {
         context.state = undefined;
@@ -710,7 +711,6 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
       const start = context.matches.find((match) => match.role === "start");
       if (start === context.start) continue;
       context.start = start;
-      context.startSeq = start?.event.seq;
       changed.add(context);
       const starts = startsByKind.get(context.kind) ?? [];
       if (start !== undefined) starts.push(context);
@@ -738,7 +738,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
       );
     }
     const dependencies = new Map<string, Dependency>();
-    const reader = this.readerFor(start.event.seq, dependencies);
+    const reader = this.readerFor(start.event, dependencies);
     context.state = undefined;
     context.state = requireState(
       context.definition,
@@ -821,12 +821,12 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
   }
 
   private readerFor(
-    beforeSeq: number,
+    before: SessionEventLike,
     dependencies: Map<string, Dependency>,
   ): ConversationContextReader {
     return {
       previous: <State>(kind: string): ConversationPreviousContext<State> | undefined => {
-        const predecessor = this.previousContext(kind, beforeSeq);
+        const predecessor = this.previousContext(kind, before);
         dependencies.set(kind, {
           kind,
           key: predecessor?.key,
@@ -834,7 +834,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
           windowGap: predecessor === undefined && this.hasMore,
         });
         if (predecessor?.state === undefined) return undefined;
-        const seq = startSeq(predecessor);
+        const seq = predecessor.start?.event.seq;
         if (seq === undefined) return undefined;
         return {
           key: predecessor.key,
@@ -848,9 +848,9 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     };
   }
 
-  private previousContext(kind: string, beforeSeq: number): InternalContext | undefined {
+  private previousContext(kind: string, before: SessionEventLike): InternalContext | undefined {
     const candidates = this.contextsByKind.get(kind) ?? [];
-    const indexBefore = insertionIndex(candidates, beforeSeq);
+    const indexBefore = insertionIndex(candidates, before);
     for (let index = indexBefore - 1; index >= 0; index--) {
       const candidate = candidates[index];
       if (candidate?.state !== undefined) return candidate;
@@ -860,20 +860,18 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
 
   /** Insert one newly discovered start into its Definition's ordered predecessor index. */
   private indexStartedContext(context: InternalContext): void {
-    const seq = context.startSeq;
-    if (seq === undefined) return;
+    const start = context.start;
+    if (start === undefined) return;
     const candidates = this.contextsByKind.get(context.kind) ?? [];
     const previous = candidates.at(-1);
-    if (previous === undefined || (previous.startSeq as number) < seq) candidates.push(context);
-    else candidates.splice(insertionIndex(candidates, seq), 0, context);
+    if (previous === undefined || compareStarts(previous, context) < 0) candidates.push(context);
+    else candidates.splice(insertionIndex(candidates, start.event), 0, context);
     this.contextsByKind.set(context.kind, candidates);
   }
 
   private indexStartedContexts(kind: string, additions: readonly InternalContext[]): void {
     if (additions.length === 0) return;
-    const sorted = [...additions].sort(
-      (left, right) => (left.startSeq as number) - (right.startSeq as number),
-    );
+    const sorted = [...additions].sort(compareStarts);
     const existing = this.contextsByKind.get(kind) ?? [];
     const merged: InternalContext[] = [];
     let before = 0;
@@ -881,10 +879,7 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     while (before < existing.length || added < sorted.length) {
       const left = existing[before];
       const right = sorted[added];
-      if (
-        right === undefined ||
-        (left !== undefined && (left.startSeq as number) < (right.startSeq as number))
-      ) {
+      if (right === undefined || (left !== undefined && compareStarts(left, right) < 0)) {
         merged.push(left as InternalContext);
         before++;
       } else {
@@ -898,11 +893,11 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
   private replayDependencies(): boolean {
     let replayed = false;
     const ordered = [...this.contexts.values()]
-      .filter((context) => startSeq(context) !== undefined)
-      .sort((left, right) => (startSeq(left) as number) - (startSeq(right) as number));
+      .filter((context) => context.start !== undefined)
+      .sort(compareStarts);
     for (const context of ordered) {
       if (context.state === undefined || context.dependencies.size === 0) continue;
-      const before = startSeq(context);
+      const before = context.start?.event;
       if (before === undefined) continue;
       let changed = false;
       for (const dependency of context.dependencies.values()) {
@@ -925,16 +920,16 @@ export class ConversationNodeAssembler implements ConversationViewSnapshotStore 
     return replayed;
   }
 
-  private refreshMatchLocations(changedSeqs: ReadonlySet<number>): Set<InternalContext> {
+  private refreshMatchLocations(changedKeys: ReadonlySet<number>): Set<InternalContext> {
     const affected = new Set<InternalContext>();
-    if (changedSeqs.size === 0) return affected;
-    for (const seq of changedSeqs) {
-      for (const context of this.contextsBySeq.get(seq) ?? []) affected.add(context);
+    if (changedKeys.size === 0) return affected;
+    for (const key of changedKeys) {
+      for (const context of this.contextsByEventKey.get(key) ?? []) affected.add(context);
     }
     for (const context of affected) {
       let start = context.start;
       const matches = context.matches.map((match): ConversationMatch => {
-        if (!changedSeqs.has(match.event.seq)) return match;
+        if (!changedKeys.has(eventKey(match.event))) return match;
         if (match.role === "start") {
           const refreshed: ConversationStartMatch = {
             ...match,

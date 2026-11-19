@@ -61,6 +61,8 @@ Grok/DSH 的额外目录仍由各自 Adapter 处理，优先于共享层：
 
 Desktop 发送带图片的消息时，请求里既有 `localImage` 条目，也在文字的附件清单中写下每张图片的绝对路径，并标注 `Image attachment: true`。公共 Harness 输入只有文字，Host 转发时只保留文字，Harness 按路径读取图片；Native Session 历史同样只有文字。
 
+Claude Code Adapter 在开始 Turn 和插入运行中 Turn 时，用同一规则读出附件清单里的图片，把原文字放在第一个 text 块，其后按出现顺序（同一路径只发一次）附上 base64 image 块，与 Claude Code 自身粘贴图片的顺序相同。先查文件大小、只读文件头识别格式，只为不超过 20 MiB 的 PNG、JPEG、GIF、WebP 附 image 块，确定附块时才读整个文件；HEIC、SVG 等其他格式、超过 20 MiB 的文件、不存在或读不到（如 ENOENT、EPERM）的文件都不附块，只保留文字中的路径，与此前行为一致，不拒绝该输入。Claude Code 只缩放作为 Turn 开始的输入中的图片，插入运行中 Turn 的图片原样发给模型，因此 steer 只在 base64 不超过 5 MB 且按文件头读出的宽高都不超过 2000 px 时附块，否则只保留路径，由模型按路径读取、Claude Code 缩放。原生历史中的 image 块不参与显示，用户消息仍按文字及附件清单还原。其他 Harness 仍只收到文字路径。
+
 `protocol-core` 投影用户消息时，从文字中 `## My request:` 之前的附件清单读出这些路径，补回 `localImage` 条目，放在文字之后。开始 Turn、运行中插入和历史回放三处投影一致，因此新旧会话都显示缩略图，`imageCount` 也与 Desktop 的乐观消息一致。解析规则在 `@codexhost/shared-contracts` 的 `desktopImageAttachmentPaths`，Renderer 的远程附件补存使用同一规则。
 
 边界：

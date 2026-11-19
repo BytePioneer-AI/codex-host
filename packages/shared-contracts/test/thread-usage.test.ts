@@ -7,6 +7,21 @@ import {
 } from "@codexhost/shared-contracts";
 
 describe("Thread Usage contracts", () => {
+  it("keeps session average output speed independent of Turn and API speed", () => {
+    const usage = {
+      sessionOutputTokensPerSecond: 40,
+      outputTokensPerSecond: 25.1,
+      apiOutputTokensPerSecond: 10,
+    };
+    expect(threadUsageSnapshotSchema.parse(usage)).toEqual(usage);
+    expect(threadUsageSnapshotSchema.parse({ sessionOutputTokensPerSecond: 0 })).toEqual({
+      sessionOutputTokensPerSecond: 0,
+    });
+    for (const value of [-1, Infinity, NaN, "40"])
+      expect(
+        threadUsageSnapshotSchema.safeParse({ sessionOutputTokensPerSecond: value }).success,
+      ).toBe(false);
+  });
   it("accepts only bounded, localized countdown indicators", () => {
     const indicator = {
       kind: "countdown",

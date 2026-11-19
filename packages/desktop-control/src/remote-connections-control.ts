@@ -15,7 +15,7 @@ const MAX_REPLY_BYTES = 1024 * 1024;
 export function remoteConnectionsExpression(input: RemoteConnectionsRequest): string {
   const request = remoteConnectionsRequestSchema.parse(input);
   if (request.action === "session")
-    return `(async () => { try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)})}; } catch(error) {return {error:{code:-32090,message:String(error?.message ?? error)}};} })()`;
+    return `(async () => { try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)})}; } catch(error) {return {error:{code:typeof error?.code === "number" ? error.code : -32603,message:String(error?.message ?? error)}};} })()`;
   return `(async () => {
     try {
       const api = window.__codexhostRendererBindingProbeV1;
@@ -105,8 +105,19 @@ export async function requestDesktopRemoteConnections(
       const end = chunk.indexOf("\n");
       chunks.push(end < 0 ? chunk : chunk.slice(0, end));
       if (end < 0) return;
+      const body = chunks.join("");
+      if (body === "rejected") {
+        finish({
+          error: {
+            code: -32096,
+            message:
+              "Desktop Controller rejected the request. Check the connection configuration, update codexhost, and reopen CodexHost Desktop.",
+          },
+        });
+        return;
+      }
       try {
-        finish(remoteConnectionsReplySchema.parse(JSON.parse(chunks.join(""))));
+        finish(remoteConnectionsReplySchema.parse(JSON.parse(body)));
       } catch {
         fail();
       }

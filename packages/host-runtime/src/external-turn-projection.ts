@@ -113,6 +113,7 @@ export class ExternalTurnProjection {
         promise: Promise.resolve(),
         resolve: () => undefined,
       });
+      if (thread.clientCommand) thread.clientCommand.subsequentTurnId ??= event.turnId;
       // Real native work is no longer a disposable draft, even when it was
       // initiated by the Harness rather than a Desktop submission.
       if (thread.unsubmittedPrewarm && (await this.#host.submitPrewarm(thread))) {
@@ -160,6 +161,8 @@ export class ExternalTurnProjection {
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (event.type === "turn.started") {
+      if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
+        thread.clientCommand.subsequentTurnId ??= event.turnId;
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {

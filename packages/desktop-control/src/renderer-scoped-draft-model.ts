@@ -63,28 +63,31 @@ export function findScopedDraftModelBinding(
   // The 26.1021 Model hook pairs its current settings mode with this exact
   // draft setter. A stored draft's mode can belong to an earlier Account.
   for (const row of rows) {
+    // Desktop 26.1106 adds one memo slot before the draft/model context.
+    // Accept only the two reviewed layouts and retain their identity checks.
+    const offset = row.length === 25 ? 1 : 0;
     if (
-      row.length !== 24 ||
-      row[7] !== null ||
-      row[10] !== true ||
-      !updates.has(row[13] as UpdateDraft)
+      (row.length !== 24 && row.length !== 25) ||
+      row[7 + offset] !== null ||
+      row[10 + offset] !== true ||
+      !updates.has(row[13 + offset] as UpdateDraft)
     )
       continue;
-    const context = row[12] as Draft | null;
-    const result = row[23] as Draft | null;
+    const context = row[12 + offset] as Draft | null;
+    const result = row[23 + offset] as Draft | null;
     if (
       context &&
-      context === row[21] &&
+      context === row[21 + offset] &&
       typeof context.usesAccountPreferences === "boolean" &&
       result?.usesAccountPreferences === context.usesAccountPreferences &&
-      typeof row[14] === "function" &&
-      row[14] === row[20] &&
-      result.setModelAndReasoningEffort === row[14]
+      typeof row[14 + offset] === "function" &&
+      row[14 + offset] === row[20 + offset] &&
+      result.setModelAndReasoningEffort === row[14 + offset]
     ) {
       // Each native hook can create its own setter for the same draft atom.
       // Bind through its reviewed draft identity and Model context, not through
       // function identity shared by every hook in the Composer.
-      update ??= row[13] as UpdateDraft;
+      update ??= row[13 + offset] as UpdateDraft;
       modes.add(context.usesAccountPreferences);
       // Background creation receives a new client Thread id. The reviewed
       // collaboration-mode memo retains the originating draft's Model hook.

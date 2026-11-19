@@ -91,11 +91,10 @@ export function defaultProjections(): Record<string, unknown> {
     // publishes its supported intake; standalone still submits text only.
     attachmentInput: { enabled: false },
     imageLimits: {
-      maxImageBytes: 20971520,
+      maxImageBytes: 50 * 1024 * 1024,
       maxImagesPerMessage: 20,
-      maxMessageImageBytes: 209715200,
+      maxMessageImageBytes: 50 * 1024 * 1024,
       maxImagePixels: 64000000,
-      maxImageDimension: 8192,
       mediaTypes: ["image/png", "image/jpeg", "image/webp", "image/gif"],
     },
   };
@@ -338,7 +337,9 @@ export class SessionLog {
       epoch: this.epoch,
       ...(canResume ? { resumedAfter: resume.cursor } : {}),
       header: this.header,
-      cursor: this.lastSeq,
+      // The wire's empty-journal cursor is -1 whatever this journal's rendering origin is;
+      // the first entry then arrives as a gap that the client repairs with a page read.
+      cursor: this.events.length === 0 ? -1 : this.lastSeq,
       records: this.events
         .slice(window.start, this.events.length)
         .map((event) => ({ type: "event", event })),

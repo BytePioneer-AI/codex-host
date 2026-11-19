@@ -1,0 +1,75 @@
+---
+title: Local Console & Troubleshooting
+description: Desktop won't open or Agents aren't showing up? Use the standalone Local Console on port 4399 to inspect errors, install CLIs, and export logs.
+---
+
+## Start Here: Open the Local Console
+
+If **Codex Desktop fails to open**, or **opens without CodexHost's Agent selector**, run:
+
+```bash
+codexhost console
+```
+
+> On Windows, you can also launch **`codexhost console`** from the Start Menu. If Desktop is already open, you can reach it via **codexhost Settings → About → Open Console**.
+
+This opens `http://127.0.0.1:4399/` (accessible only from your own machine, no login required). **The Local Console works even when Codex Desktop cannot start at all**, giving you a reliable recovery dashboard:
+
+1. **Pinpoint what went wrong**: The **Overview** tab shows your CodexHost version, Codex Desktop version, and the exact step and error message if startup or UI injection failed.
+2. **Export a diagnostic bundle**: Click **Export Diagnostic Bundle (with logs)** to grab a zip of Host logs with your home directory path automatically redacted to `~`—handy when filing a GitHub issue.
+3. **Check & install Agent CLIs**: Open **Settings → Connections** to see which Agents are detected on your machine and install or update missing Agent CLIs right from the page.
+4. **Update & manage connections**: Update CodexHost while Codex Desktop is closed, configure mobile Web access, or manage SSH hosts.
+
+> Tip: Port `4399` is the **diagnostics and settings console**, not the chat UI. To chat with Agents in your browser, run `codexhost web` (port `4400`).
+
+---
+
+## Common Issues & Fixes
+
+### 1. macOS says `"codexhost.app" can't be opened / can't be verified` on first launch
+
+macOS Gatekeeper flags unsigned downloads by default. Clear the quarantine attribute in Terminal, then open the app again:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/codexhost.app
+```
+
+### 2. Codex Desktop opens, but a specific Agent isn't in the selector
+
+Open **codexhost Settings → Connections** (or check Connections in `codexhost console`):
+
+- CodexHost connects to the Agent CLIs installed on your machine (`claude`, `pi`, `agy`, etc.) rather than bundling third-party binaries.
+- The Connections page shows whether each CLI is found, signed in, and ready—and gives you one-click install instructions if it's missing.
+
+### 3. Windows: Using an extracted / portable copy of Codex Desktop
+
+If Codex Desktop lives in a custom folder instead of the standard install path, point `CODEXHOST_INSTALL_ROOT` to that folder:
+
+1. Run in PowerShell (replace `D:\CodexPortable` with your actual folder):
+   ```powershell
+   [Environment]::SetEnvironmentVariable("CODEXHOST_INSTALL_ROOT", "D:\CodexPortable", "User")
+   ```
+2. **Quit Codex Desktop completely**, open a fresh terminal window, and run `codexhost`.
+
+### 4. Check what's currently running in the background
+
+```bash
+codexhost status
+```
+
+This is a read-only check—it won't start or restart anything, and prints the live status of your Host, Web service, versions, and autostart setting.
+
+### 5. Clean uninstall steps
+
+- **Windows installer**: Use the standard Windows uninstaller—it automatically stops background services and turns off login autostart.
+- **macOS app or npm package**: Before trashing the app or running `npm uninstall -g @codexhost/cli`, stop the background services and disable autostart first:
+  ```bash
+  codexhost stop
+  codexhost autostart off
+  ```
+
+---
+
+## Where Is My Data Stored?
+
+Local metadata, logs, and settings live under `~/.codexhost` by default; CodexHost never uploads your source code or chat transcripts to its own servers. For full details on local files, credential boundaries, and how to delete all local data, see [PRIVACY.md](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/PRIVACY.md).

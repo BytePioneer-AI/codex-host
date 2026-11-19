@@ -370,6 +370,29 @@ export interface HostToolExecutionItem {
   durationMs?: number;
 }
 
+/** A call to a tool served by an MCP server; Codex shows it as an MCP tool call. */
+export interface HostMcpToolCallItem {
+  type: "mcpToolCall";
+  itemId: HostItemId;
+  /** The MCP server name as the Harness configured it. */
+  server: string;
+  /** The tool name on that server, without any Harness prefix. */
+  tool: string;
+  arguments: JsonValue;
+  /** The tool result; a failed outcome presents its text as the call error. */
+  output?: HostToolOutput;
+  durationMs?: number;
+}
+
+/** A native web search; Codex shows its query. */
+export interface HostWebSearchItem {
+  type: "webSearch";
+  itemId: HostItemId;
+  query: string;
+  /** The native result; Codex's web search Item has no status, so only an unsuccessful search shows it. */
+  output?: HostToolOutput;
+}
+
 export interface HostFileChange {
   path: string;
   kind: "add" | "update" | "delete";
@@ -393,9 +416,9 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
-  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
+  /** Native child Model ID, or the parent selection when the CLI does not report one. */
   model?: string;
-  /** Native child reasoning effort, when known; do not infer from parent settings. */
+  /** Native child reasoning effort; falls back to the parent selection when unreported. */
   reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
@@ -417,6 +440,8 @@ export type HostItem =
   | HostContextCompactionItem
   | HostCommandExecutionItem
   | HostToolExecutionItem
+  | HostMcpToolCallItem
+  | HostWebSearchItem
   | HostFileChangeItem
   | HostSubagentDelegationItem;
 

@@ -1,5 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { PendingSubmissionAttachment } from "@deepseek-ai/dsh-api-session-controller/client";
 import type { FileAttachmentRef, ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
@@ -133,6 +134,26 @@ function QueueThumb({
     <span className={css.thumb} aria-hidden />
   ) : (
     <img className={css.thumb} src={url} alt={label} />
+  );
+}
+
+function QueueUploadProgress({
+  upload,
+  t,
+}: {
+  upload: NonNullable<PendingSubmissionAttachment["upload"]>;
+  t: QueueDockProps["t"];
+}) {
+  const state = useSyncExternalStore(upload.subscribe, upload.getSnapshot);
+  if (state?.status !== "uploading") return null;
+  return (
+    <span className={css.status} role="status" data-upload-progress>
+      {state.total === undefined || state.total === 0
+        ? t("file.uploading")
+        : t("file.uploadingPercent", {
+            percent: Math.round(Math.min(1, (state.loaded ?? 0) / state.total) * 100),
+          })}
+    </span>
   );
 }
 
@@ -383,22 +404,25 @@ export function QueueDock({
                   )}
                   {submission.attachments.length > 0 && (
                     <span className={css.attachments}>
-                      {submission.attachments.map((attachment, index) =>
-                        attachment.type === "image" ? (
-                          <img
-                            key={`${attachment.value.previewUrl}:${index}`}
-                            className={css.thumb}
-                            src={attachment.value.previewUrl}
-                            alt={t("queue.image")}
-                          />
-                        ) : (
-                          <QueueFile
-                            key={`${attachment.value.attachmentId}:${attachment.value.name}:${index}`}
-                            attachment={attachment.value}
-                            label={t("queue.file", { name: attachment.value.name })}
-                          />
-                        ),
-                      )}
+                      {submission.attachments.map((attachment, index) => (
+                        <span key={index} className={css.pendingAttachment}>
+                          {attachment.type === "image" ? (
+                            <img
+                              className={css.thumb}
+                              src={attachment.value.previewUrl}
+                              alt={t("queue.image")}
+                            />
+                          ) : (
+                            <QueueFile
+                              attachment={attachment.value}
+                              label={t("queue.file", { name: attachment.value.name })}
+                            />
+                          )}
+                          {attachment.upload && (
+                            <QueueUploadProgress upload={attachment.upload} t={t} />
+                          )}
+                        </span>
+                      ))}
                     </span>
                   )}
                   <span className={css.preview}>{projectUserText(submission.text, [])}</span>

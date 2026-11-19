@@ -1,7 +1,9 @@
+import { parseThreadWatchNotice } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DelegationControlError,
+  type DelegationPendingQuestion,
   type DelegationThreadSnapshot,
   type DelegationThreadStatus,
   type ThreadSendInput,
@@ -11,7 +13,10 @@ import { DelegationWatchService } from "../src/delegation-watch.js";
 const POLL_MS = 1_000;
 
 /** A fake Runtime whose Threads are driven by the test. */
-function runtime(threads: Record<string, { status: DelegationThreadStatus; turnId?: string }>) {
+function runtime(
+  threads: Record<string, { status: DelegationThreadStatus; turnId?: string; title?: string }>,
+  pending: Record<string, DelegationPendingQuestion[]> = {},
+) {
   const sent: ThreadSendInput[] = [];
   const sendFailures: DelegationControlError[] = [];
   const readFailure: { current?: DelegationControlError } = {};
@@ -24,10 +29,11 @@ function runtime(threads: Record<string, { status: DelegationThreadStatus; turnI
       threadId,
       harnessId: "pi",
       status: thread.status,
+      ...(thread.title ? { title: thread.title } : {}),
       turn: { turnId, status: thread.status },
       progress: [],
       result: { availability: "pending" },
-      nextCursor: null,
+      ...(pending[threadId] ? { pendingQuestions: pending[threadId] } : {}),
     } as DelegationThreadSnapshot;
   });
   const send = vi.fn(async (input: ThreadSendInput) => {
@@ -42,8 +48,10 @@ function runtime(threads: Record<string, { status: DelegationThreadStatus; turnI
       next: { read: "read", wait: "wait" },
     };
   });
-  const update = (threadId: string, patch: { status?: DelegationThreadStatus; turnId?: string }) =>
-    Object.assign(threads[threadId] ?? {}, patch);
+  const update = (
+    threadId: string,
+    patch: { status?: DelegationThreadStatus; turnId?: string; title?: string },
+  ) => Object.assign(threads[threadId] ?? {}, patch);
   return { threads, sent, sendFailures, readFailure, read, send, update };
 }
 
@@ -73,10 +81,10 @@ describe("DelegationWatchService", () => {
       await vi.advanceTimersByTimeAsync(POLL_MS);
       expect(fake.sent).toHaveLength(1);
       expect(fake.sent[0]?.threadId).toBe("parent");
-      expect(fake.sent[0]?.message).toContain(
-        `codex://threads/child: ${status} (Turn turn-child).`,
-      );
-      expect(fake.sent[0]?.message).toContain("execution state only");
+      expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+        { threadId: "child", label: "child", outcome: status },
+      ]);
+      expect(fake.sent[0]?.message).toContain("Read each Thread's result, then continue your task");
 
       // The terminal state stays readable, but the one-shot watch is gone.
       await vi.advanceTimersByTimeAsync(POLL_MS * 10);
@@ -85,6 +93,40 @@ describe("DelegationWatchService", () => {
       expect(vi.getTimerCount()).toBe(0);
     },
   );
+
+  it.each(["审查最近PR · 委派", undefined])(
+    "uses the observed title as the link label, falling back to the Thread id (%s)",
+    async (title) => {
+      const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
+      const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+      await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+      fake.update("child", { status: "completed", ...(title ? { title } : {}) });
+
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+        { threadId: "child", label: title ?? "child", outcome: "completed" },
+      ]);
+      expect(fake.sent[0]?.message).toContain(`- [${title ?? "child"}](thread://child): completed`);
+    },
+  );
+
+  it("shortens a historical title only in the notification, without changing the Thread", async () => {
+    const title = "summary-row · " + "父会话首条消息".repeat(10);
+    const fake = runtime({ child: { status: "running", title }, parent: { status: "completed" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    fake.update("child", { status: "completed" });
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "summary-row · " + "父会话首条消息".repeat(3).slice(0, 20) + "…",
+        outcome: "completed",
+      },
+    ]);
+    expect(fake.threads.child?.title).toBe(title);
+  });
 
   it("keeps a notification pending while the subscriber is busy", async () => {
     const fake = runtime({ child: { status: "running" }, parent: { status: "running" } });
@@ -115,6 +157,79 @@ describe("DelegationWatchService", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("reports an existing Question immediately instead of registering a watch", async () => {
+    const question: DelegationPendingQuestion = {
+      kind: "requestUserInput",
+      interactionId: "interaction-1",
+      turnId: "turn-child",
+      request: {
+        questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+      },
+    };
+    const fake = runtime(
+      { child: { status: "running" }, parent: { status: "running" } },
+      {
+        child: [question],
+      },
+    );
+    const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+    await expect(
+      service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 }),
+    ).resolves.toMatchObject({
+      state: "alreadyNeedsInput",
+      status: "running",
+      pendingQuestions: [question],
+    });
+    await vi.advanceTimersByTimeAsync(POLL_MS * 5);
+    expect(fake.send).not.toHaveBeenCalled();
+    await expect(service.watches()).resolves.toEqual({ watches: [] });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["requestUserInput", "requestUserInputAsync"] as const)(
+    "notifies %s once with the request and Turn identity",
+    async (kind) => {
+      const pending: Record<string, DelegationPendingQuestion[]> = { child: [] };
+      const fake = runtime(
+        { child: { status: "running" }, parent: { status: "running" } },
+        pending,
+      );
+      const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
+      await expect(
+        service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 }),
+      ).resolves.toMatchObject({ state: "watching" });
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(fake.sent).toEqual([]);
+
+      // The Question arrives while the watch is already registered.
+      pending.child = [
+        {
+          kind,
+          interactionId: "interaction-1",
+          turnId: "turn-child",
+          request:
+            kind === "requestUserInputAsync"
+              ? { title: "Continue?", options: ["Continue"] }
+              : {
+                  questions: [
+                    { id: "decision", question: "Continue?", options: [{ label: "Continue" }] },
+                  ],
+                },
+        },
+      ];
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(fake.sent).toHaveLength(1);
+      expect(fake.sent[0]?.message).toContain("request interaction-1, Turn turn-child");
+      expect(fake.sent[0]?.message).toContain("codexhost thread answer");
+      await expect(service.watches()).resolves.toEqual({ watches: [] });
+
+      // One-shot: the same Question does not notify twice.
+      await vi.advanceTimersByTimeAsync(POLL_MS * 5);
+      expect(fake.sent).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it("reports timedOut when the Thread never reaches a terminal state", async () => {
     const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
     const service = new DelegationWatchService(fake, { pollIntervalMs: POLL_MS });
@@ -124,7 +239,14 @@ describe("DelegationWatchService", () => {
     expect(fake.sent).toEqual([]);
     await vi.advanceTimersByTimeAsync(60_000 + POLL_MS);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("has not reached a terminal state after 29 min");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "timedOut",
+        note: "Not stopped after 29 min; run 'codexhost thread watch' again to keep waiting.",
+      },
+    ]);
   });
 
   it("states a timeout shorter than a minute in seconds", async () => {
@@ -133,7 +255,14 @@ describe("DelegationWatchService", () => {
     await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 15_000 });
 
     await vi.advanceTimersByTimeAsync(15_000 + POLL_MS);
-    expect(fake.sent[0]?.message).toContain("has not reached a terminal state after 15 s");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "timedOut",
+        note: "Not stopped after 15 s; run 'codexhost thread watch' again to keep waiting.",
+      },
+    ]);
   });
 
   it("waits out a replacement Turn and notifies once when the Thread stops", async () => {
@@ -150,7 +279,9 @@ describe("DelegationWatchService", () => {
     fake.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed (Turn turn-2).");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      { threadId: "child", label: "child", outcome: "completed" },
+    ]);
   });
 
   it("notifies once when the same pair is registered again for a new Turn", async () => {
@@ -173,7 +304,9 @@ describe("DelegationWatchService", () => {
     fake.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed (Turn turn-2).");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      { threadId: "child", label: "child", outcome: "completed" },
+    ]);
   });
 
   it("merges notifications due together for one subscriber into one Turn", async () => {
@@ -189,8 +322,10 @@ describe("DelegationWatchService", () => {
     fake.update("b", { status: "failed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("codex://threads/a: completed (Turn turn-a).");
-    expect(fake.sent[0]?.message).toContain("codex://threads/b: failed (Turn turn-b).");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      { threadId: "a", label: "a", outcome: "completed" },
+      { threadId: "b", label: "b", outcome: "failed" },
+    ]);
   });
 
   it("treats a repeated registration as the same watch", async () => {
@@ -217,7 +352,7 @@ describe("DelegationWatchService", () => {
     fake.sendFailures.push(busy());
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await expect(service.watches()).resolves.toMatchObject({
-      watches: [{ state: "pendingDelivery", outcome: "failed", turnId: "turn-1" }],
+      watches: [{ state: "pendingDelivery", outcome: "failed" }],
     });
 
     // A new run starts while the first notification still waits for the busy subscriber.
@@ -228,18 +363,17 @@ describe("DelegationWatchService", () => {
     ).resolves.toMatchObject({ state: "watching" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     await expect(service.watches()).resolves.toMatchObject({
-      watches: [
-        { state: "pendingDelivery", outcome: "failed", turnId: "turn-1" },
-        { state: "watching" },
-      ],
+      watches: [{ state: "pendingDelivery", outcome: "failed" }, { state: "watching" }],
     });
 
     fake.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     // Both stops arrive in one message and name their Turns; neither replaces the other.
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("codex://threads/child: failed (Turn turn-1).");
-    expect(fake.sent[0]?.message).toContain("codex://threads/child: completed (Turn turn-2).");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      { threadId: "child", label: "child", outcome: "failed" },
+      { threadId: "child", label: "child", outcome: "completed" },
+    ]);
     await expect(service.watches()).resolves.toEqual({ watches: [] });
   });
 
@@ -290,7 +424,14 @@ describe("DelegationWatchService", () => {
     await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
     delete fake.threads.child;
     await vi.advanceTimersByTimeAsync(POLL_MS);
-    expect(fake.sent[0]?.message).toContain("codex://threads/child no longer exists.");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "notFound",
+        note: "The Thread no longer exists.",
+      },
+    ]);
   });
 
   it("reports unreadable only after reads keep failing", async () => {
@@ -310,8 +451,14 @@ describe("DelegationWatchService", () => {
     expect(fake.sent).toEqual([]);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(fake.sent).toHaveLength(1);
-    expect(fake.sent[0]?.message).toContain("could not be read for 60 s");
-    expect(fake.sent[0]?.message).toContain("Harness is gone");
+    expect(parseThreadWatchNotice(fake.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "unreadable",
+        note: "Could not be read for 60 s, so its state is unknown (Harness is gone).",
+      },
+    ]);
   });
 
   it("retries a send the Host rejected before starting a Turn", async () => {

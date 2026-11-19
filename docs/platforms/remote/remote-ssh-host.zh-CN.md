@@ -1,6 +1,6 @@
 # 通过 SSH 使用远程电脑上的 AI 编程工具
 
-Web 控制台的「远程连接」（`#remote-connections`）也提供同一套连接管理、安装、更新、修复和卸载功能；需要本机已通过 codexhost 启动 Codex Desktop。参见[控制台说明](../../operations/codexhost-console.md#远程连接)。
+Web 控制台的「其他电脑（SSH）」（`#remote-connections`）也提供同一套连接管理、安装、更新、修复和卸载功能；需要本机已通过 codexhost 启动 Codex Desktop。参见[控制台说明](../../operations/codexhost-console.md#其他电脑ssh)。
 
 你可以在本机的 Codex Desktop 中，使用另一台电脑上已安装并登录的 Claude Code、Pi 等 Harness（AI 编程工具）。项目和工具都在远程电脑上运行，你在本机查看回复、发送消息和操作会话。
 

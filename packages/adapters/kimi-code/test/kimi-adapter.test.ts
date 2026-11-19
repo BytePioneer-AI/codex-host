@@ -236,6 +236,9 @@ default_model = "relay"
 [models.relay]
 model = "claude-sonnet-5"
 provider = "bedrock"
+capabilities = ["thinking"]
+support_efforts = ["low", "medium", "high"]
+default_effort = "high"
 
 [thinking]
 enabled = true
@@ -256,8 +259,19 @@ effort = "medium"
       expect(inspection.status).toBe("ready");
       if (inspection.status === "ready") {
         expect(inspection.catalog.models).toHaveLength(1);
-        expect(inspection.catalog.defaultThinkingOptionId).toBeUndefined();
-        expect(inspection.catalog.thinkingOptions).toEqual([]);
+        expect(inspection.catalog.defaultThinkingOptionId).toBe("medium");
+        expect(inspection.catalog.thinkingOptions.map(({ id }) => id)).toEqual([
+          "off",
+          "low",
+          "medium",
+          "high",
+        ]);
+        expect(inspection.catalog.models[0]?.supportedThinkingOptionIds).toEqual([
+          "off",
+          "low",
+          "medium",
+          "high",
+        ]);
         expect(fakeTransport.openSession).not.toHaveBeenCalled();
         expect(inspection.capabilities.configuration.selectModel).toBe(true);
         expect(inspection.permissionModes?.defaultModeId).toBe("default");

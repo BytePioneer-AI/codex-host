@@ -2,97 +2,42 @@
 
 ## Native Evidence
 
-Validated with agy 1.1.27 on Windows:
+Validated with `agy 1.5.9` (`agy acp`):
 
-- `invoke_subagent` produces `step_type: "subagent"` with
-  `subagent_info.subagents`. Each child includes `conversation_id`, `type_name`,
-  `role`, `initial_prompt`, and `log_uri`.
-- Both ACTIVE and DONE can include this metadata. DONE completes the spawn
-  operation, not the background child.
-- The local Language Server's `GetCascadeTrajectory` returns a separate
-  `CASCADE_RUN_STATUS_RUNNING` / `CASCADE_RUN_STATUS_IDLE` status and
-  `trajectory.metadata.parentConversationId`.
-- The native `transcript.jsonl` contains indexed user input, model responses,
-  tool calls, and tool results.
+- `invoke_subagent` and `send_message` arrive over ACP as `tool_call` / `tool_call_update` events carrying child conversation UUIDs in tool input or output (`subagent_id`, `agent_id`, `session_id`, `cascade_id`, or UUID text).
+- Completing the `invoke_subagent` tool call finishes the spawn call, while background children may continue running independently.
+- `~/.gemini/antigravity-cli/conversation_summaries.db` records each child conversation's `status` (`CASCADE_RUN_STATUS_RUNNING` / `CASCADE_RUN_STATUS_IDLE`) and `parent_conversation_id`.
+- `~/.gemini/antigravity-cli/brain/<child-id>/.system_generated/logs/transcript.jsonl` records indexed user inputs, model responses, tool calls, and tool results for the child conversation.
 
 ## Projection
 
-The Antigravity Adapter emits the existing `subagentDelegation`,
-`subagent.state.changed`, and `subagent.transcript.changed` contracts.
-The common Host creates a read-only child Thread and the common projector emits
-`collabAgentToolCall`. No Antigravity-specific Renderer or Host RPC is added.
+The Antigravity Adapter emits the standard `subagentDelegation`, `subagent.state.changed`, and `subagent.transcript.changed` contracts. The Host creates a read-only child Thread and projects `collabAgentToolCall` without Antigravity-specific Renderer or Host RPC extensions.
 
-The creation Item completes when the native spawn call completes. Its child
-remains running until the separate native status confirms otherwise. During an
-active parent Turn, existing children are also observed, including children
-contacted again after resume. A transient RPC failure never means completion.
+When `AntigravityToolTracker` observes `invoke_subagent` or `send_message` with a valid child UUID, `AntigravitySubagents` tracks the child against the parent's `nativeSessionId` and polls native storage read-only:
 
-Child progress is refreshed from completed native log entries. Only explicit
-user input, visible responses, and tool output are projected; internal thinking
-and injected system metadata are not exposed as conversation messages.
-Item and Turn IDs include the native child identity and remain stable across
-reads and Host restarts. Parent history retains the latest observed child state.
-
-Transcript lookup validates the child ID and its recorded relationship to the
-parent. It reads only the child's fixed native log location, rejects redirected
-paths and oversized logs, and retries an incomplete trailing JSON line on a
-later read. The event's `log_uri` is never used as an arbitrary file read target.
-
-Cancellation requests stop the parent generator and owned running children via
-the native cancellation RPC before CLI shutdown. If native cancellation cannot
-be confirmed, the result explicitly reports interrupted observation instead of
-claiming successful native cancellation.
-
-After the parent Turn completes, each running child has a 30-second window to
-return a valid native status. A valid running status renews that window, so a
-healthy background child can continue working. Expiry is checked on that child's
-failed or invalid status observation (or when the parent ID or Language Server
-port is unavailable), not at the end of the entire polling pass. Slow transcript
-reads or polling other children cannot invalidate a valid running observation.
-If status remains unavailable for the window, the child is marked `interrupted`
-with an unconfirmed-completion explanation. This releases the observer and CLI
-after the remaining children settle; it does not claim the native child completed
-or was cancelled.
+- Child run status is read from `conversation_summaries.db` after verifying `parent_conversation_id === parentId`. Rows owned by another conversation transition immediately to `interrupted` without reading `transcript.jsonl` or publishing `resultSummary`. Missing rows, transient SQLite read failures, or `CASCADE_RUN_STATUS_IDLE` with an unreadable transcript preserve `running` briefly and settle to `interrupted` after a 30-second observation timeout so polling stops cleanly, while confirmed `CASCADE_RUN_STATUS_RUNNING` stays active even if the transcript is missing or exceeds 8 MiB.
+- Child progress and `subagents.readSnapshot` read only `~/.gemini/antigravity-cli/brain/<child-id>/.system_generated/logs/transcript.jsonl` (never arbitrary `log_uri` paths), rejecting symlinked directories and logs exceeding 8 MiB, and retrying incomplete trailing JSONL lines on subsequent reads.
+- Only explicit user input, visible model responses, and tool calls/results are projected; internal thinking and injected system metadata are omitted from child conversation messages. Item and Turn IDs incorporate the native child identity so they remain stable across refreshes and Host restarts.
 
 ## Boundaries
 
-- Child Threads are read-only. Further instructions go through the parent.
-- This does not enable Autonomous Turns or child-specific Questions.
-  Antigravity runs with native Skip permissions; codexhost does not approve or
-  restrict parent or child tool actions. The Question bridge remains scoped to
-  the parent Turn.
-- If a parent result arrives while children are still running, the observer and
-  CLI stay alive while native status remains observable. They are released when
-  the children settle, their status becomes unobservable for 30 seconds, or the
-  Session closes. New parent input is rejected as busy during that interval.
-- Native Language Server methods and log shapes are compatibility-sensitive.
-  Missing or invalid child history returns a typed error, never fabricated
-  successful history. Logs above 8 MiB are explicitly unsupported.
-- Native CLI/Host protocol verification is not a visual Desktop acceptance test.
+- Child Threads are read-only; follow-up instructions go through the parent Session.
+- `agy acp` is request-driven (`session/prompt`) and does not initiate unsolicited Autonomous Turns while idle; background child updates flow through `subagent.*` events, and `Session.hasBackgroundWork()` reports running children while they remain active. Note: the `codexhost_background` (`wait_for_background_task`) in-turn MCP server and `systemPrompt.append` wait guidance were removed so Turns can stop/finish and accept follow-up user input without blocking on background tasks.
+- Permission modes, `session/request_permission` approvals, and `elicitation/create` questions operate on the parent ACP Session.
+- Missing, mismatched (`parent_conversation_id !== parentId`), or oversized (> 8 MiB) child logs return typed errors rather than empty fabricated transcripts.
 
 ## Validation
 
-On 2026-09-05, the user confirmed Desktop rendering with a screenshot showing
-the creation step, completed child status, and child entry in the side panel.
-This confirms those visual surfaces, not a manual test of every child interaction.
+Focused unit tests cover `invoke_subagent` / `send_message` projection, read-only `conversation_summaries.db` status transitions, parent ownership checks, and `transcript.jsonl` parsing:
 
-Focused parser/lifecycle checks:
-
-```text
-node node_modules/vitest/vitest.mjs run --config tests/vitest.config.js packages/adapters/antigravity/test/subagents.test.ts
+```bash
+npx vitest run -c tests/vitest.config.js packages/adapters/antigravity/test/subagents.test.ts packages/adapters/antigravity/test/acp-projection.test.ts
 ```
 
-Opt-in real CLI/Host integration (uses the locally configured Antigravity account):
+Opt-in real CLI/Host integration (`CODEXHOST_RUN_ANTIGRAVITY_SUBAGENTS_REAL=1`) exercises live child delegation, `thread/turns/list`, stable IDs, restart/resume, and cancellation against a local `agy` installation:
 
-```powershell
-$env:CODEXHOST_RUN_ANTIGRAVITY_SUBAGENTS_REAL = "1"
-node node_modules/vitest/vitest.mjs run --config tests/vitest.config.js packages/host-runtime/test/antigravity-subagents.real.test.ts
+```bash
+CODEXHOST_RUN_ANTIGRAVITY_SUBAGENTS_REAL=1 npx vitest run -c tests/vitest.config.js packages/host-runtime/test/antigravity-subagents.real.test.ts
 ```
 
-The real test uses a private workspace and Mapping Store. It checks native card
-projection, live child progress, `thread/turns/list`, stable IDs, restart/resume,
-follow-up contact, and cancellation. Optional evidence output is controlled by
-`CODEXHOST_ANTIGRAVITY_SUBAGENTS_EVIDENCE_DIR`; do not commit those runtime logs.
-
-Official background: `https://antigravity.google/docs/cli/headless/` and
-`https://antigravity.google/docs/cli/subagents/`.
+Official background: `https://antigravity.google/docs/cli/headless/` and `https://antigravity.google/docs/cli/subagents/`.

@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 
+import { formatThreadWatchNotice } from "@codexhost/shared-contracts";
+
 import {
   DEFAULT_WATCH_TIMEOUT_MS,
   DelegationControlError,
   type DelegationControlApi,
   type DelegationThreadSnapshot,
+  type ThreadCancelResult,
   type ThreadWatchInput,
   type ThreadWatchListResult,
   type ThreadWatchOutcome,
   type ThreadWatchResult,
 } from "./delegation-types.js";
 import type { DelegationWatchStore, PersistedWatch } from "./delegation-watch-store.js";
+import { threadWatchLabel } from "./delegation-title.js";
 import type { NewClientEvent } from "./external-client-events.js";
 import { originClientName } from "./external-client-origin.js";
 import { isValidClientName } from "./external-clients.js";
@@ -31,6 +35,8 @@ const UNREADABLE_GRACE_MS = 60_000;
 const DEFAULT_RESTORE_GRACE_MS = 5 * 60_000;
 
 interface Watch extends PersistedWatch {
+  /** Invalidates reads that overlapped an internal stop-and-resend operation. */
+  observationGeneration?: number;
   unreadableSince?: number;
   lastReadError?: string;
   /** Restored watch: read failures mean the owning session is not back yet. */
@@ -49,6 +55,7 @@ function persisted(watch: Watch): PersistedWatch {
     state,
     outcome,
     turnId,
+    interactionId,
     reason,
     registeredAt,
     timeoutMs,
@@ -56,6 +63,7 @@ function persisted(watch: Watch): PersistedWatch {
     deliveryDeadline,
     delivering,
     restartNote,
+    title,
     harnessId,
     refs,
   } = watch;
@@ -69,10 +77,12 @@ function persisted(watch: Watch): PersistedWatch {
     deadline,
     ...(outcome ? { outcome } : {}),
     ...(turnId ? { turnId } : {}),
+    ...(interactionId ? { interactionId } : {}),
     ...(reason ? { reason } : {}),
     ...(deliveryDeadline !== undefined ? { deliveryDeadline } : {}),
     ...(delivering ? { delivering } : {}),
     ...(restartNote ? { restartNote } : {}),
+    ...(title ? { title } : {}),
     ...(harnessId ? { harnessId } : {}),
     ...(refs?.length ? { refs } : {}),
   };
@@ -112,30 +122,41 @@ function duration(milliseconds: number): string {
     : `${Math.round(milliseconds / 60_000)} min`;
 }
 
-function describe(watch: Watch): string {
-  const link = threadLink(watch.threadId);
-  if (watch.outcome === "interrupted" && watch.restartNote)
-    return `${link}: interrupted${watch.turnId ? ` (Turn ${watch.turnId})` : ""}. ${watch.restartNote}`;
+function noticeNote(watch: Watch): string | undefined {
   switch (watch.outcome) {
+    case "needsInput": {
+      // The request ID lets the receiver answer without guessing which Question fired.
+      const request = watch.interactionId
+        ? `, request ${watch.interactionId}${watch.turnId ? `, Turn ${watch.turnId}` : ""}`
+        : "";
+      return `Waiting for an answer${request}. Read the current Question with 'codexhost thread read ${watch.threadId}' and answer it with 'codexhost thread answer <thread> --interaction <id> --answers-file <file>'.`;
+    }
     case "timedOut":
-      return `${link} has not reached a terminal state after ${duration(watch.timeoutMs)}; this watch expired. Run 'codexhost thread watch' again to keep waiting.`;
+      return `Not stopped after ${duration(watch.timeoutMs)}; run 'codexhost thread watch' again to keep waiting.`;
     case "unreadable":
-      return `${link} could not be read for ${Math.round(UNREADABLE_GRACE_MS / 1_000)} s, so its state is unknown (${watch.lastReadError ?? "unknown error"}).`;
+      return `Could not be read for ${Math.round(UNREADABLE_GRACE_MS / 1_000)} s, so its state is unknown (${watch.lastReadError ?? "unknown error"}).`;
     case "notFound":
-      return `${link} no longer exists.`;
+      return "The Thread no longer exists.";
+    case "interrupted":
+      return watch.restartNote;
     default:
-      // The Turn tells a re-registered watch's notifications apart.
-      return watch.turnId
-        ? `${link}: ${watch.outcome} (Turn ${watch.turnId}).`
-        : `${link}: ${watch.outcome}.`;
+      return undefined;
   }
 }
 
 function notification(watches: readonly Watch[]): string {
-  return [
-    "[codexhost thread watch] Watched Threads stopped or the watch expired. This reports execution state only, not that the work is correct or accepted. Inspect each Thread with 'codexhost thread read <thread>' before relying on it.",
-    ...watches.map((watch) => `- ${describe(watch)}`),
-  ].join("\n");
+  return formatThreadWatchNotice(
+    watches.map((watch) => {
+      const note = noticeNote(watch);
+      return {
+        threadId: watch.threadId,
+        label: threadWatchLabel(watch.title, watch.threadId),
+        // Only pending deliveries, whose outcome has been observed, are notified.
+        outcome: watch.outcome as ThreadWatchOutcome,
+        ...(note ? { note } : {}),
+      };
+    }),
+  );
 }
 
 /**
@@ -154,6 +175,7 @@ export class DelegationWatchService {
   readonly #restoreGraceMs: number;
   readonly #ready: Promise<void>;
   readonly #watches: Watch[] = [];
+  readonly #cancelling = new Map<string, number>();
   #writes: Promise<void> = Promise.resolve();
   #timer: ReturnType<typeof setTimeout> | undefined;
   #closed = false;
@@ -209,6 +231,24 @@ export class DelegationWatchService {
       timeoutMs: input.timeoutMs,
     };
     if (terminal(target.status)) return { ...result, state: "alreadyTerminal" };
+    // A Question already waiting needs no watch: report it once, immediately,
+    // instead of registering a notification the caller would get anyway.
+    if (target.pendingQuestions?.length) {
+      for (const watch of [...this.#watches]) {
+        if (
+          watch.state === "watching" &&
+          watch.threadId === input.threadId &&
+          watch.notifyThreadId === input.notifyThreadId
+        )
+          this.#remove(watch);
+      }
+      await this.#writes;
+      return {
+        ...result,
+        state: "alreadyNeedsInput",
+        pendingQuestions: target.pendingQuestions,
+      };
+    }
     const existing = this.#watches.find(
       (watch) =>
         watch.state === "watching" &&
@@ -225,6 +265,7 @@ export class DelegationWatchService {
       registeredAt: new Date().toISOString(),
       timeoutMs: input.timeoutMs,
       deadline: Date.now() + input.timeoutMs,
+      ...(target.title ? { title: target.title } : {}),
     };
     this.#watches.push(watch);
     try {
@@ -243,19 +284,89 @@ export class DelegationWatchService {
 
   async watches(): Promise<ThreadWatchListResult> {
     await this.#ready;
+    const watches = [...this.#watches];
+    const snapshots = new Map<string, DelegationThreadSnapshot | undefined>();
+    await Promise.all(
+      [...new Set(watches.map(({ threadId }) => threadId))].map(async (threadId) => {
+        try {
+          snapshots.set(threadId, await this.#api.read({ threadId, view: "result" }));
+        } catch {
+          // A missing or temporarily unreadable Thread must not hide its watch.
+        }
+      }),
+    );
+    const now = Date.now();
     return {
-      watches: this.#watches.map(
-        ({ threadId, notifyThreadId, state, outcome, turnId, reason, registeredAt }) => ({
-          threadId,
-          notifyThreadId,
-          state,
-          ...(outcome ? { outcome } : {}),
-          ...(turnId ? { turnId } : {}),
-          ...(reason ? { reason } : {}),
-          registeredAt,
-        }),
-      ),
+      watches: watches
+        .filter((watch) => this.#watches.includes(watch))
+        .map(
+          ({
+            threadId,
+            notifyThreadId,
+            state,
+            outcome,
+            turnId,
+            interactionId,
+            reason,
+            registeredAt,
+            title,
+          }) => {
+            const snapshot = snapshots.get(threadId);
+            const taskName = snapshot?.title || title;
+            const registeredMs = Date.parse(registeredAt);
+            return {
+              threadId,
+              notifyThreadId,
+              state,
+              ...(outcome ? { outcome } : {}),
+              ...(turnId ? { turnId } : {}),
+              ...(interactionId ? { interactionId } : {}),
+              ...(reason ? { reason } : {}),
+              registeredAt,
+              ...(taskName ? { taskName } : {}),
+              ...(snapshot ? { threadStatus: snapshot.status } : {}),
+              ...(Number.isFinite(registeredMs)
+                ? { watchedForMs: Math.max(0, now - registeredMs) }
+                : {}),
+            };
+          },
+        ),
     };
+  }
+
+  /** Hold notifications until cancellation is decided; only an accepted cancel drops watches. */
+  async cancel(
+    threadId: string,
+    operation: () => Promise<ThreadCancelResult>,
+  ): Promise<ThreadCancelResult> {
+    return this.holdNotifications(threadId, async () => {
+      const result = await operation();
+      if (result.cancelled) {
+        for (const watch of [...this.#watches]) {
+          if (watch.threadId === threadId) this.#remove(watch);
+        }
+        // Flush ordered removals before acknowledging, using the normal diagnostic-only I/O errors.
+        await this.#writes;
+      }
+      return result;
+    });
+  }
+
+  /** Internal stop-and-resend is not a stop: keep watches and suppress transient outcomes. */
+  async holdNotifications<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+    this.#cancelling.set(threadId, (this.#cancelling.get(threadId) ?? 0) + 1);
+    try {
+      await this.#ready;
+      for (const watch of this.#watches) {
+        if (watch.threadId === threadId)
+          watch.observationGeneration = (watch.observationGeneration ?? 0) + 1;
+      }
+      return await operation();
+    } finally {
+      const remaining = (this.#cancelling.get(threadId) ?? 1) - 1;
+      if (remaining > 0) this.#cancelling.set(threadId, remaining);
+      else this.#cancelling.delete(threadId);
+    }
   }
 
   /** Stops work in this process. Stored watches stay on disk for the next Runtime. */
@@ -316,14 +427,22 @@ export class DelegationWatchService {
   async #tick(): Promise<void> {
     for (const watch of [...this.#watches]) {
       if (this.#closed) return;
-      if (watch.state !== "watching") continue;
+      if (watch.state !== "watching" || this.#cancelling.has(watch.threadId)) continue;
+      const generation = watch.observationGeneration;
       const observed = await this.#observe(watch);
-      if (!observed) continue;
-      const { outcome, turnId, restartNote } = observed;
+      if (
+        !observed ||
+        !this.#watches.includes(watch) ||
+        this.#cancelling.has(watch.threadId) ||
+        generation !== watch.observationGeneration
+      )
+        continue;
+      const { outcome, turnId, restartNote, interactionId } = observed;
       if (restartNote) watch.restartNote = restartNote;
       watch.state = "pendingDelivery";
       watch.outcome = outcome;
       if (turnId) watch.turnId = turnId;
+      if (interactionId) watch.interactionId = interactionId;
       watch.deliveryDeadline = Date.now() + DELIVERY_WINDOW_MS;
       await this.#persist(watch);
     }
@@ -340,13 +459,17 @@ export class DelegationWatchService {
 
   async #observe(
     watch: Watch,
-  ): Promise<{ outcome: ThreadWatchOutcome; turnId?: string; restartNote?: string } | undefined> {
+  ): Promise<
+    | { outcome: ThreadWatchOutcome; turnId?: string; restartNote?: string; interactionId?: string }
+    | undefined
+  > {
     try {
       const snapshot = await this.#api.read({ threadId: watch.threadId, view: "result" });
       delete watch.observeGraceUntil;
       const turnId = snapshot.turn?.turnId;
       const crossedRestart = watch.crossedRestart === true;
       delete watch.crossedRestart;
+      if (snapshot.title) watch.title = snapshot.title;
       watch.harnessId = snapshot.harnessId;
       if (snapshot.refs?.length) watch.refs = snapshot.refs;
       if (terminal(snapshot.status)) {
@@ -362,6 +485,16 @@ export class DelegationWatchService {
         return {
           outcome: snapshot.status as ThreadWatchOutcome,
           ...(turnId ? { turnId } : {}),
+        };
+      }
+      const pending = snapshot.pendingQuestions?.[0];
+      if (pending) {
+        // A Question outranks the deadline even when its native Turn can keep
+        // working; the request names the Turn that can receive the answer.
+        return {
+          outcome: "needsInput",
+          interactionId: pending.interactionId,
+          turnId: pending.turnId,
         };
       }
       delete watch.unreadableSince;
@@ -391,18 +524,23 @@ export class DelegationWatchService {
 
   /** All notifications pending for one subscriber start a single Turn. */
   async #deliver(notifyThreadId: string): Promise<void> {
-    const pending = this.#watches.filter(
-      (watch) => watch.state === "pendingDelivery" && watch.notifyThreadId === notifyThreadId,
+    let pending = this.#watches.filter(
+      (watch) => this.#deliverable(watch) && watch.notifyThreadId === notifyThreadId,
     );
+    if (pending.length === 0) return;
     const client = originClientName(notifyThreadId);
     if (client !== undefined) {
       await this.#deliverToClient(client, pending);
       return;
     }
     if (!(await this.#subscriberReady(notifyThreadId, pending))) return;
+    pending = pending.filter((watch) => this.#deliverable(watch));
+    if (pending.length === 0) return;
     for (const watch of pending) watch.delivering = true;
     // Recorded before sending, so a restart during the send delivers again instead of losing it.
     await Promise.all(pending.map((watch) => this.#persist(watch)));
+    pending = pending.filter((watch) => this.#deliverable(watch));
+    if (pending.length === 0) return;
     try {
       await this.#api.send({ threadId: notifyThreadId, message: notification(pending) });
       for (const watch of pending) this.#remove(watch);
@@ -441,6 +579,9 @@ export class DelegationWatchService {
           outcome: watch.outcome ?? "notFound",
           deepLink: threadLink(watch.threadId),
           ...(watch.turnId ? { turnId: watch.turnId } : {}),
+          ...(watch.outcome === "needsInput" && watch.interactionId
+            ? { interactionId: watch.interactionId }
+            : {}),
           ...(watch.harnessId ? { harnessId: watch.harnessId } : {}),
           ...(watch.refs?.length ? { refs: watch.refs } : {}),
           ...(watch.restartNote ? { note: watch.restartNote } : {}),
@@ -474,7 +615,18 @@ export class DelegationWatchService {
     return true;
   }
 
+  #deliverable(watch: Watch): boolean {
+    return (
+      !this.#closed &&
+      this.#watches.includes(watch) &&
+      watch.state === "pendingDelivery" &&
+      !this.#cancelling.has(watch.threadId)
+    );
+  }
+
   #persist(watch: Watch, required = false): Promise<void> {
+    // An asynchronous observation or delivery may still hold a removed watch.
+    if (!this.#watches.includes(watch)) return Promise.resolve();
     const record = persisted(watch);
     return this.#write((store) => store.save(record), required);
   }

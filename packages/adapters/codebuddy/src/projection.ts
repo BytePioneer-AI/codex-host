@@ -105,9 +105,14 @@ export class CodeBuddyTurnOutput {
     });
   }
 
+  hasItem(itemId: string): boolean {
+    return this.#items.has(itemId);
+  }
+
   replayCommandResult(items: HostItemSnapshot[]) {
     if (this.#items.size) return;
     for (const snapshot of items) {
+      if (this.hasItem(snapshot.item.itemId)) continue;
       const item = structuredClone(snapshot.item);
       this.#start(item);
       this.#finish(item, snapshot.outcome);

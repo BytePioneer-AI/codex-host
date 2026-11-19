@@ -21,6 +21,7 @@ import {
   stopFixture,
   writeRequest,
   requiredMessageId,
+  readJsonLine,
 } from "./app-server-host-fixture.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -57,6 +58,85 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
+  it("broadcasts completed explicit inspection refreshes, including normalized failures", async () => {
+    const { fixture, a, events } = await setup();
+    const inspect = vi.spyOn(fixture.adapter, "inspect");
+    const changes = () => events.filter((event) => event.type === "harness-inspection-changed");
+    await a.request("codexhost/harness/inspect", { harnessId: "pi" });
+    expect(changes()).toHaveLength(0);
+    const ready = await fixture.adapter.inspect();
+    const pending = Promise.withResolvers<typeof ready>();
+    inspect.mockReturnValueOnce(pending.promise);
+    const refreshed = a.request("codexhost/harness/inspect", {
+      harnessId: "pi",
+      refresh: true,
+      purpose: "availability",
+    });
+    await vi.waitFor(() =>
+      expect(inspect).toHaveBeenCalledWith({ refresh: true, purpose: "availability" }),
+    );
+    expect(changes()).toHaveLength(0);
+    pending.resolve(ready);
+    await refreshed;
+    await vi.waitFor(() => expect(changes()).toHaveLength(1));
+    inspect.mockResolvedValueOnce({
+      status: "unavailable",
+      error: { code: "authenticationRequired", message: "Please log in", retryable: true },
+    });
+    await fixture.host.handleConsoleRequest("codexhost/harness/inspect", {
+      harnessId: "pi",
+      refresh: true,
+    });
+    await vi.waitFor(() => expect(changes()).toHaveLength(2));
+    expect(changes()).toEqual([
+      expect.objectContaining({
+        harnessId: "pi",
+        cursor: expect.objectContaining({ epoch: expect.any(String) }),
+      }),
+      expect.objectContaining({ harnessId: "pi" }),
+    ]);
+    expect(fixture.adapter.sessions).toHaveLength(0);
+  });
+
+  it.each([false, true])(
+    "broadcasts a Codex refresh after its failure=%s result",
+    async (fails) => {
+      const { fixture, a, events } = await setup();
+      const response = a.request("codexhost/harness/inspect", {
+        harnessId: "codex",
+        refresh: true,
+      });
+      let request = await readJsonLine(fixture.official.stdin);
+      if (request.method === "initialize") {
+        fixture.official.stdout.write(
+          `${JSON.stringify({ id: request.id, result: { userAgent: "fixture" } })}\n`,
+        );
+        request = await readJsonLine(fixture.official.stdin);
+        if (request.method === "initialized") request = await readJsonLine(fixture.official.stdin);
+      }
+      expect(request.method).toBe("model/list");
+      fixture.official.stdout.write(
+        `${JSON.stringify({
+          id: request.id,
+          ...(fails ? { error: { code: -1, message: "unavailable" } } : { result: { data: [] } }),
+        })}\n`,
+      );
+      if (!fails) {
+        const permission = await readJsonLine(fixture.official.stdin);
+        expect(permission.method).toBe("permissionProfile/list");
+        fixture.official.stdout.write(
+          `${JSON.stringify({ id: permission.id, result: { data: [] } })}\n`,
+        );
+      }
+      expect(await response).toMatchObject({ status: fails ? "error" : "ready" });
+      await vi.waitFor(() =>
+        expect(events.filter((event) => event.type === "harness-inspection-changed")).toEqual([
+          expect.objectContaining({ harnessId: "codex" }),
+        ]),
+      );
+    },
+  );
+
   it("forwards the GUI's paginated Revert with canonical identities and notifies both clients", async () => {
     const adapter = rollbackCapableAdapter();
     const { fixture, a, b, events } = await setup({ externalAdapters: new Map([["pi", adapter]]) });

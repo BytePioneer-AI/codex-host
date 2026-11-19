@@ -227,6 +227,29 @@
   word-break: break-word;
 }
 
+.console-web {
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+  padding: 20px;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
+  border-radius: 14px;
+}
+
+.console-web__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.console-web__open,
+.console-web__remote {
+  min-height: 44px;
+  padding-inline: 24px;
+  font-size: 15px;
+}
+
 .console-versions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));

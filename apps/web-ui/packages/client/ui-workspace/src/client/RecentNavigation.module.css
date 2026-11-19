@@ -55,6 +55,30 @@
   -webkit-app-region: no-drag;
 }
 
+.clear {
+  flex: none;
+  align-self: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.clear:active {
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+}
+
+.clear:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: -2px;
+}
+
 .shortcuts::-webkit-scrollbar {
   display: none;
   width: 0;

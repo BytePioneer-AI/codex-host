@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -159,6 +159,36 @@ it("selects only the SSH proxy for a shared parent with multiple attached client
     registry.start({ harnessId: "pi", parentThreadId: sharedParent, task: "never fall back" }),
   ).rejects.toThrow(/closed|disconnected/);
   expect(await ssh.mappingStore.listThreads()).toHaveLength(2);
+});
+
+it("exports a shared Thread through its same-Host owner instead of the legacy coordinator", async () => {
+  const { registry, sharedApi, sharedParent } = await setup();
+  const child = await sharedApi.start({
+    harnessId: "pi",
+    parentThreadId: sharedParent,
+    task: "same-Host shared child",
+  });
+  const result = await registry.exportThread({ threadId: child.threadId });
+  expect(result).toMatchObject({
+    threadId: child.threadId,
+    harnessId: "pi",
+    complete: false,
+    turns: 1,
+  });
+  expect(JSON.parse(readFileSync(result.path, "utf8")).turns[0].items).toContainEqual(
+    expect.objectContaining({
+      type: "userMessage",
+      content: expect.arrayContaining([
+        expect.objectContaining({ type: "text", text: "same-Host shared child" }),
+      ]),
+    }),
+  );
+  await expect(
+    registry.exportThread({ threadId: child.threadId, hostId: "ssh:other" }),
+  ).rejects.toMatchObject({
+    code: "INVALID_ARGUMENT",
+    message: "Remote Hosts support thread read only",
+  });
 });
 
 it("continues a shared child list through the Registry and rejects other cursor sources", async () => {

@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import path from "node:path";
 import { fetchCursorAccount } from "./account-usage.js";
 import { CursorSessionImport } from "./session-import.js";
@@ -554,7 +559,25 @@ export class CursorSession implements HarnessSession {
     this.#unattendedApproval = true;
     return this.transport.cancel();
   }
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.initialState;
+    const model = state.effectiveModel ? cursorModels(this.info).current : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return rejected("invalidState", "Cursor session is closed");
     if (this.#active || this.#configuring) return rejected("sessionBusy", "Cursor session is busy");
     this.#configuring = true;
@@ -732,7 +755,11 @@ export class CursorSession implements HarnessSession {
     let fault: HarnessError | undefined;
     const output = new CursorTurnOutput(
       command.turnId,
-      (event) => this.#channel.emit({ kind: "event", event }),
+      (event) =>
+        this.#channel.emit({
+          kind: "event",
+          event: configureSubagentEvent(event, this.#subagentConfiguration()),
+        }),
       before.length,
     );
     this.#subagentOutput = output.subagents;

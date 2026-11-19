@@ -1,4 +1,8 @@
-import type { UsageMeasurementsSnapshot } from "@codexhost/shared-contracts";
+import {
+  mergeUsageOutputTimings,
+  type UsageMeasurementsSnapshot,
+  type UsageOutputTiming,
+} from "@codexhost/shared-contracts";
 import {
   hostDerivedUsageFields,
   parseHostUsage,
@@ -54,6 +58,7 @@ export class UsageMeter {
   #lastOutputLive = false;
   #lastLatencyLive = false;
   readonly #timedRequests = new Set<string>();
+  readonly #outputTimings = new Map<string, UsageOutputTiming>();
 
   get metered(): boolean {
     return this.#metered;
@@ -109,7 +114,7 @@ export class UsageMeter {
       this.recordOutputTiming(
         {
           requestId: request.requestId,
-          outputTokens: request.outputTokens,
+          outputTokens: request.timedOutputTokens ?? request.outputTokens,
           startedAtMs: request.startedAtMs ?? 0,
           completedAtMs: request.completedAtMs ?? 0,
         },
@@ -146,6 +151,16 @@ export class UsageMeter {
       return false;
     }
     this.#timedRequests.add(request.requestId);
+    this.restoreOutputTimings([
+      {
+        version: 4,
+        requestId: request.requestId,
+        turnId,
+        outputTokens: request.outputTokens,
+        startedAtMs: request.startedAtMs,
+        completedAtMs: request.completedAtMs,
+      },
+    ]);
     this.#turnOutputTokens += request.outputTokens;
     this.#turnOutputMs += request.completedAtMs - request.startedAtMs;
     this.#outputTokensPerSecond = this.#turnOutputTokens / (this.#turnOutputMs / 1000);
@@ -206,11 +221,20 @@ export class UsageMeter {
     }
   }
 
+  /** Restore completed request facts without starting a clock or changing the latest Turn TPS. */
+  restoreOutputTimings(values: readonly UsageOutputTiming[]): void {
+    for (const value of mergeUsageOutputTimings([...this.#outputTimings.values()], values))
+      this.#outputTimings.set(value.requestId, value);
+  }
+
   get outputTimingTurnId(): string | undefined {
     return this.#lastOutputTurnId;
   }
 
   retainMeasurements(turnIds: ReadonlySet<string>): void {
+    for (const [id, timing] of this.#outputTimings)
+      if (timing.turnId !== this.#turnId && !turnIds.has(timing.turnId))
+        this.#outputTimings.delete(id);
     if (
       !this.#lastOutputLive &&
       this.#lastOutputTurnId &&
@@ -233,8 +257,10 @@ export class UsageMeter {
 
   measurementSnapshot(native: HostUsage | null = null, turnId?: string): UsageMeasurementsSnapshot {
     const snapshot: UsageMeasurementsSnapshot = {};
+    if (this.#outputTimings.size) snapshot.outputTimings = [...this.#outputTimings.values()];
     if (this.#outputTokensPerSecond !== undefined && this.#lastOutputTurnId)
       snapshot.outputTokensPerSecond = {
+        version: 4,
         value: this.#outputTokensPerSecond,
         turnId: this.#lastOutputTurnId,
         at: this.#lastOutputAtMs,
@@ -261,6 +287,7 @@ export class UsageMeter {
         this.#lastOutputAtMs = Date.now();
         this.#lastOutputLive = true;
         snapshot.outputTokensPerSecond = {
+          version: 4,
           value: native.outputTokensPerSecond,
           turnId,
           at: this.#lastOutputAtMs,
@@ -370,6 +397,8 @@ export class UsageMeter {
     if (this.#timeToFirstOutputMs !== undefined) {
       usage.timeToFirstOutputMs = this.#timeToFirstOutputMs;
     }
+    const average = this.#sessionOutputTokensPerSecond();
+    if (average !== undefined) usage.sessionOutputTokensPerSecond = average;
     if (Object.keys(usage).length === 0) return null;
     try {
       return parseHostUsage(usage);
@@ -415,6 +444,34 @@ export class UsageMeter {
     }
     if (priced === 0 && unpriced.size > 0) return null;
     return { total, unpricedModels: [...unpriced].sort() };
+  }
+
+  #sessionOutputTokensPerSecond(): number | undefined {
+    const requests = new Map<
+      string,
+      {
+        outputTokens: number;
+        timedOutputTokens?: number;
+        startedAtMs?: number;
+        completedAtMs?: number;
+      }
+    >(this.#requests);
+    for (const [id, timing] of this.#outputTimings) requests.set(id, timing);
+    let tokens = 0;
+    let milliseconds = 0;
+    for (const request of requests.values()) {
+      if (
+        request.startedAtMs === undefined ||
+        request.completedAtMs === undefined ||
+        request.completedAtMs <= request.startedAtMs
+      )
+        continue;
+      tokens += request.timedOutputTokens ?? request.outputTokens;
+      milliseconds += request.completedAtMs - request.startedAtMs;
+    }
+    return milliseconds > 0 && Number.isSafeInteger(tokens) && Number.isSafeInteger(milliseconds)
+      ? tokens / (milliseconds / 1000)
+      : undefined;
   }
 
   #sessionCacheHitRatePercent(): number | null {

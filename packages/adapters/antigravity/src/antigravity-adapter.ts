@@ -1171,8 +1171,8 @@ export class AntigravitySession implements HarnessSession {
     turn.tracker?.finishPending(outcome);
     turn.ended = true;
     this.#active = undefined;
-    // Idle output after this Turn attributes to it until a successor starts.
-    this.#lastCompletedTurnId = turn.turnId;
+    // Only a Turn present in native history can own later idle output.
+    if (nativeTurnRef) this.#lastCompletedTurnId = turn.turnId;
     this.#settleBackground({ status: "succeeded" });
     this.#emit({
       type: "turn.completed",

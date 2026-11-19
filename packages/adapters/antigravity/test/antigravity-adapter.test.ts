@@ -1271,6 +1271,49 @@ describe("inspection and errors", () => {
 });
 
 describe("Antigravity idle background output episodes", () => {
+  it("does not make a pre-submit cancelled Turn the idle output target", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const first = await start(session, transports, "t1");
+    first.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t1");
+    const usageGate =
+      deferred<
+        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+      >();
+    const collect = vi
+      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+      .mockReturnValueOnce(usageGate.promise);
+    const refresh = session.refreshUsage?.();
+    await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+    await session.execute({
+      type: "turn.start",
+      turnId: turnId("cancel-before-submit"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    await vi.waitFor(() => expect(transports.at(-1)?.eventHandler).toBeDefined());
+    expect(
+      await session.execute({
+        type: "turn.cancel",
+        turnId: turnId("cancel-before-submit"),
+      }),
+    ).toEqual({ ok: true, value: { cancellationRequested: true } });
+    usageGate.resolve({ requests: [], complete: true, usage: null });
+    await refresh;
+    await completed(outputs, "cancel-before-submit");
+    transports.at(-1)?.eventHandler?.({ type: "agent.text", text: "orphan" });
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started", turnId: "cancel-before-submit" }),
+    );
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({ type: "item.background.started", turnId: "t1" }),
+      ),
+    );
+  });
+
   it("keeps pre-submit idle output on the preceding native Turn", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-background-pre-submit-"));
     directories.push(home);

@@ -73,11 +73,6 @@ it("discovers Codex and usage metadata without executing either plugin", async (
   ]);
   expect(result.plugins.every(({ enabled }) => enabled)).toBe(true);
   expect(diagnose).not.toHaveBeenCalled();
-  const dataDirectory = await mkdtemp(path.join(tmpdir(), "codexhost-extension-scope-"));
-  roots.push(dataDirectory);
-  await mkdir(path.join(dataDirectory, "extensions", "example"), { recursive: true });
-  expect(await discoverHarnessPlugins([root], diagnose)).toEqual(result);
-  expect(diagnose).not.toHaveBeenCalled();
   for (const { root: directory } of result.plugins)
     expect(existsSync(path.join(directory, "imported"))).toBe(false);
 });

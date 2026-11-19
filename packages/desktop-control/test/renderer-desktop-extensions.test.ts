@@ -74,6 +74,7 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
     for (const script of pages.values()) runInNewContext(script, context);
   };
   return {
+    failBindingRead: false,
     pages,
     events,
     evaluations,
@@ -89,17 +90,20 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
       return () => undefined;
     },
     close() {
+      events.push("close");
       pages.clear();
     },
     async evaluate<T>(expression: string): Promise<T> {
       evaluations.push(expression);
       events.push(expression.includes(".status()") ? "status" : "live");
-      if (expression.includes("RendererBindingProbe"))
+      if (expression.includes("RendererBindingProbe")) {
+        if (this.failBindingRead) throw new Error("Binding unavailable");
         return {
           version: 2,
           enabledAgents: ["codex"],
           adapter: { state: "ready", reason: "ready" },
         } as T;
+      }
       return runInNewContext(expression, context) as T;
     },
     async command(method: string, params?: Record<string, unknown>): Promise<unknown> {
@@ -166,44 +170,73 @@ it("replaces the one future snapshot before live apply and avoids resending unch
   expect(renderer.state).toEqual({});
 });
 
-it("restores current state on CDP target replacement without installing on the stale target again", async () => {
-  await install("tree", "define({activate(){}})");
-  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["tree"] }));
-  const c = controller();
-  const old = fakeRenderer();
-  const next = fakeRenderer();
-  let target = "old";
-  const session = await createRendererCdpControlSession({
-    rendererSource: "core",
-    rendererCdpEndpoint: "unused",
-    timeoutMs: 100,
-    desktopExtensions: c,
-    operations: {
-      listTargets: async () => [
-        {
-          id: target,
-          type: "page",
-          title: "Codex",
-          url: "app://-/index.html",
-          webSocketDebuggerUrl: target,
+it.each(["same", "new"])(
+  "replaces a CDP session on the %s target before retiring its snapshot",
+  async (kind) => {
+    await install("tree", "define({activate(){}})");
+    await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["tree"] }));
+    const c = controller();
+    const old = fakeRenderer();
+    const next = fakeRenderer();
+    let target = "old";
+    const session = await createRendererCdpControlSession({
+      rendererSource: "core",
+      rendererCdpEndpoint: "unused",
+      timeoutMs: 100,
+      desktopExtensions: c,
+      operations: {
+        listTargets: async () => [
+          {
+            id: target,
+            type: "page",
+            title: "Codex",
+            url: "app://-/index.html",
+            webSocketDebuggerUrl: target,
+          },
+        ],
+        connect: async () => (old.state.tree ? next : old),
+        installDraftPrewarmPolicy: async (renderer) => {
+          if (renderer === next) expect(old.pages.size).toBe(1);
+          return { state: "ready", reason: "owned-request-bridge" };
         },
-      ],
-      connect: async (id) => (id === "old" ? old : next),
-      installDraftPrewarmPolicy: async () => ({ state: "ready", reason: "owned-request-bridge" }),
-    },
-  });
-  try {
-    await c.refresh();
-    expect(old.state).toHaveProperty("tree");
-    target = "new";
-    await session.ensureInstalled();
-    await c.refresh();
-    expect(old.pages.size).toBe(0);
-    expect(next.pages.size).toBe(1);
-    expect(next.state).toHaveProperty("tree");
-  } finally {
-    session.close();
-  }
+      },
+    });
+    try {
+      await c.refresh();
+      expect(old.state).toHaveProperty("tree");
+      if (kind === "same") old.failBindingRead = true;
+      else target = "new";
+      await session.ensureInstalled();
+      await c.refresh();
+      expect(old.events.slice(-2)).toEqual(["remove", "close"]);
+      expect(old.pages.size).toBe(0);
+      expect(next.pages.size).toBe(1);
+      expect(next.state).toHaveProperty("tree");
+    } finally {
+      session.close();
+    }
+  },
+);
+
+it("consumes a stale recovery token without reloading and resends a failed script", async () => {
+  const script = "/* badge body */ define({activate(){}})";
+  await install("badge", script);
+  const reloadToken = "e3472f62-d37b-46e4-9a56-b421680b920c";
+  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["badge"], reloadToken }));
+  const c = controller();
+  const renderer = fakeRenderer();
+  c.attach("target", renderer);
+  await c.refresh();
+  expect(renderer.reloads).toBe(0);
+  expect(renderer.state.badge?.state).toBe("running");
+  renderer.state.badge!.state = "failed";
+  renderer.evaluations.length = 0;
+  await c.refresh();
+  expect(renderer.evaluations.some((expression) => expression.includes(script))).toBe(true);
+  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: [], reloadToken }));
+  await c.refresh();
+  expect(renderer.reloads).toBe(0);
+  expect(renderer.state).toEqual({});
 });
 
 it("leaves offline reloads extension-free and reconnects from the latest selection", async () => {

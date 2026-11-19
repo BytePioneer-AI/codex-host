@@ -145,7 +145,7 @@ interface DesktopSidebarRow {
 - `parents` 直接复用 `ThreadTree.read()` 的语义（`thread-tree.ts`），与 Web 一致。
 - 实现放在新模块 `host-runtime/src/thread-tree-watch.ts`。`app-server-host.ts` 已有 7000 多行，只在其中加路由。连接关闭时释放该连接的全部订阅。
 - **owner 合并**：前端 Host 有订阅者时，经 `SharedThreadBridge` 向 owner 订阅**同一个** `thread/tree/watch`，用一条 owner 订阅服务这个前端 Host 的所有本地订阅者。对 owner 拥有的 Thread（依据 `ownership` 或已知集合），采用 owner 快照中的状态，其余 Thread 用本地状态。owner 断开或不支持该方法时，owner 拥有的节点报告 `unknown`，诊断只记录一次。`SharedThreadBridge` 必须**截获** owner 发来的 `thread/tree/snapshot`，不能像其他 owner 通知那样转发给 Desktop。
-- **状态来源**：`waiting` 覆盖审批、提问（包括 Desktop 的多选提问，这正是 #926 评审中指出的 `#pendingDelegationQuestions` 漏项，在共享来源中一并修正）和计划审阅。官方 Codex Thread 的状态来自前端 Host 观察到的官方 Turn 通知和待处理请求。
+- **状态来源**：`waiting` 覆盖审批、提问（直接检查 Desktop 待处理多选提问，不改变 Delegation 提问契约）和计划审阅。官方 Codex Thread 的状态来自前端 Host 观察到的官方 Turn 通知和待处理请求。
 - **初始状态**（Turn 事件之前没有观察记录时）：订阅建立时，以及有官方 Thread 新进入树关系时，对这些 Thread 各执行一次只读的官方 `thread/read`，不 resume，不加载 Thread，并限制并发数和单次数量。返回值按以下规则映射：
   - `active`：活动标记表明在等待审批或用户输入时为 `waiting`，否则为 `running`；
   - `idle`：为 `idle`；

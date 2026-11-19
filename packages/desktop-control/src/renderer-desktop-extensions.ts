@@ -112,7 +112,7 @@ export class RendererDesktopExtensions {
     this.#poll.unref();
   }
 
-  attach(id: string, renderer: ExtensionRenderer): () => void {
+  attach(id: string, renderer: ExtensionRenderer): () => Promise<void> {
     const target: Target = { id, renderer, enabled: false, extensions: {} };
     this.#target = target;
     // A new CDP session has no previous new-document registrations. Its
@@ -120,6 +120,10 @@ export class RendererDesktopExtensions {
     void this.#enqueue(() => this.#reconcile(target));
     return () => {
       if (this.#target === target) this.#target = undefined;
+      // Wait out any in-flight registration before removing its identifier.
+      // Detach still has to remove the script after close() stops reconciliation.
+      this.#queue = this.#queue.then(() => this.#replaceSnapshot(target, [])).catch(this.diagnose);
+      return this.#queue;
     };
   }
 
@@ -259,7 +263,7 @@ export class RendererDesktopExtensions {
     if (this.#target !== target || this.#closed) return;
     target.enabled = configuration.enabled.length > 0;
     const token = configuration.reloadToken;
-    if (token && token !== this.#handled) {
+    if (token && token !== this.#handled && configuration.enabled.length === 0) {
       await this.#replaceSnapshot(target, []);
       if (token !== this.#attempted) {
         await target.renderer.evaluate(reconciliation([]), 1_000).catch(() => undefined);
@@ -320,7 +324,7 @@ export class RendererDesktopExtensions {
       before &&
       Object.hasOwn(before, item.id) &&
       before[item.id]?.hash === item.hash &&
-      before[item.id]?.state !== "disabled";
+      (before[item.id]?.state === "running" || before[item.id]?.state === "waiting");
     const activeIds = new Set(desired.map(({ id }) => id));
     const old = Object.entries(before ?? {}).some(
       ([id, state]) => !activeIds.has(id) && state.state !== "disabled",
@@ -344,7 +348,16 @@ export class RendererDesktopExtensions {
       if (!statuses.has(id) && status.state === "disabled" && status.error)
         statuses.set(id, status);
     target.extensions = Object.fromEntries(statuses);
-    await this.#publish(target);
+    // An enable can arrive before the controller observes the recovery token.
+    // Consume that token without reloading a window with a newer selection.
+    const previousToken = this.#handled;
+    if (token) this.#handled = token;
+    try {
+      await this.#publish(target);
+    } catch (error) {
+      this.#handled = previousToken;
+      throw error;
+    }
   }
 
   #pollStatus(): void {

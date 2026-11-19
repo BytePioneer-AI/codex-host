@@ -1098,6 +1098,7 @@ export class AppServerHost {
       },
       waiting: (id) =>
         [...this.#pendingDesktopApprovals.values()].some(({ thread }) => thread.id === id) ||
+        [...this.#pendingDesktopQuestions.values()].some(({ thread }) => thread.id === id) ||
         this.#pendingDelegationQuestions(id).length > 0,
       readOfficial: (threadId) =>
         this.#requestOfficial("thread/read", { threadId, includeTurns: false }),
@@ -2947,16 +2948,7 @@ export class AppServerHost {
               },
             ],
       );
-    const multi = [...this.#pendingDesktopQuestions.values()]
-      .filter(({ thread }) => thread.id === threadId)
-      .map(({ interaction }): DelegationPendingQuestion => ({
-        interactionId: interaction.interactionId,
-        turnId: interaction.turnId,
-        kind: "requestUserInput",
-        ...(interaction.expiresAt ? { expiresAt: interaction.expiresAt } : {}),
-        request: jsonValueSchema.parse(sharedQuestion(interaction)) as JsonObject,
-      }));
-    return [...this.#questions.read(threadId), ...native, ...asynchronous, ...multi];
+    return [...this.#questions.read(threadId), ...native, ...asynchronous];
   }
 
   async #answerDelegationQuestion(input: ThreadAnswerInput): Promise<ThreadAnswerResult> {
@@ -2976,32 +2968,6 @@ export class AppServerHost {
         interactionId: input.interactionId,
         turnId: native.turnId,
         harnessId: "codex",
-        status: "running",
-        next: {
-          read: `codexhost thread read ${input.threadId}`,
-          wait: `codexhost thread wait ${input.threadId} --timeout-ms 30000`,
-        },
-      };
-    }
-    const multi = [...this.#pendingDesktopQuestions.values()].find(
-      ({ thread, interaction }) =>
-        thread.id === input.threadId && interaction.interactionId === input.interactionId,
-    );
-    if (multi) {
-      const answers = isRecord(input.result) ? input.result.answers : undefined;
-      const reply = await this.#handleControlRequest(THREAD_QUESTION_RESPOND_METHOD, {
-        threadId: input.threadId,
-        turnId: multi.interaction.turnId,
-        interactionId: input.interactionId,
-        ...(answers === undefined ? {} : { answers: jsonValueSchema.parse(answers) }),
-      });
-      if ("error" in reply)
-        throw new DelegationControlError("INVALID_ARGUMENT", reply.error.message);
-      return {
-        threadId: input.threadId,
-        turnId: multi.interaction.turnId,
-        interactionId: input.interactionId,
-        harnessId: multi.thread.harnessId,
         status: "running",
         next: {
           read: `codexhost thread read ${input.threadId}`,

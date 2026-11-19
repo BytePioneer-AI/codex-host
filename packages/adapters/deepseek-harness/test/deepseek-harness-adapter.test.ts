@@ -790,4 +790,101 @@ describe("DeepSeek public generation selector", () => {
     await adapter.close();
     expect(candidate.closeCalls).toBe(1);
   });
+
+  it("retires a faulted delegate after cleanup completes and starts a fresh delegate on demand", async () => {
+    const firstClose = deferred<undefined>();
+    const first = new FakeAdapter(undefined, () => firstClose.promise);
+    const second = new FakeAdapter();
+    let firstOnFault: (() => void) | undefined;
+    const createModernAdapter = vi.fn((options) => {
+      if (createModernAdapter.mock.calls.length === 1) {
+        firstOnFault = () =>
+          options.onFault?.({
+            code: "unavailable",
+            message: "DeepSeek Harness Remote stream closed unexpectedly",
+            retryable: true,
+          });
+        return first;
+      }
+      return second;
+    });
+    const probeExecutable = vi.fn(() => Promise.resolve(modernExecutable));
+    const adapter = new DeepSeekHarnessAdapter(
+      {},
+      {
+        probeExecutable,
+        createModernAdapter,
+      },
+    );
+
+    await expect(adapter.inspect()).resolves.toBe(readyInspection);
+    expect(createModernAdapter).toHaveBeenCalledTimes(1);
+
+    firstOnFault?.();
+    const reopened = adapter.open({ kind: "create", cwd: "fixture" });
+    const reinspected = adapter.inspect();
+    await waitImmediate();
+    // Do not start a second managed dsh web before the faulted one confirms exit.
+    expect(first.closeCalls).toBe(1);
+    expect(createModernAdapter).toHaveBeenCalledTimes(1);
+
+    firstClose.resolve(undefined);
+    await expect(reopened).resolves.toMatchObject({ ok: true });
+    await expect(reinspected).resolves.toBe(readyInspection);
+    expect(probeExecutable).toHaveBeenCalledTimes(2);
+    expect(createModernAdapter).toHaveBeenCalledTimes(2);
+    expect(second.openCalls).toBe(1);
+    await adapter.close();
+    expect(second.closeCalls).toBe(1);
+  });
+
+  it("blocks replacement and reports cleanup failure when a faulted delegate cannot stop", async () => {
+    const first = new FakeAdapter(undefined, () =>
+      Promise.reject(new Error("process tree survived")),
+    );
+    let firstOnFault: (() => void) | undefined;
+    const createModernAdapter = vi.fn((options) => {
+      firstOnFault = () =>
+        options.onFault?.({
+          code: "unavailable",
+          message: "DeepSeek Harness Remote stream closed unexpectedly",
+          retryable: true,
+        });
+      return first;
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const adapter = new DeepSeekHarnessAdapter(
+        {},
+        {
+          probeExecutable: () => Promise.resolve(modernExecutable),
+          createModernAdapter,
+        },
+      );
+      await expect(adapter.inspect()).resolves.toBe(readyInspection);
+
+      firstOnFault?.();
+      await expect(adapter.open({ kind: "create", cwd: "fixture" })).resolves.toMatchObject({
+        ok: false,
+        error: { code: "internalError", retryable: false, stage: "cleanup" },
+      });
+      await expect(adapter.inspect({ refresh: true })).resolves.toMatchObject({
+        status: "unavailable",
+        error: { code: "internalError", retryable: false, stage: "cleanup" },
+      });
+      expect(createModernAdapter).toHaveBeenCalledOnce();
+      expect(first.closeCalls).toBe(1);
+      await expect(adapter.close()).rejects.toThrow(
+        "DeepSeek Harness Adapter cleanup did not complete",
+      );
+      await waitImmediate();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
 });

@@ -25,7 +25,7 @@ describe("CodeBuddy native slash commands", () => {
     expect(clientFactory).not.toHaveBeenCalled();
   });
 
-  it("retains native names and arguments while excluding Session switches and malformed entries", () => {
+  it("retains native commands and arguments while excluding skills, Session switches and malformed entries", () => {
     const catalog = commandCatalog([
       { name: "compact", description: "Summary" },
       { name: "compact" },
@@ -40,8 +40,11 @@ describe("CodeBuddy native slash commands", () => {
     expect(catalog.commands.map((c) => [c.id, c.argumentMode])).toEqual([
       ["codebuddy.compact", "text"],
       ["codebuddy.review", "text"],
-      ["codebuddy.skill", "text"],
     ]);
+    expect(catalog.commands.every((command) => command.kind === undefined)).toBe(true);
+    expect(commandPrompt({ turnId, commandId: "codebuddy.skill" }, catalog)).toMatchObject({
+      error: { code: "unsupported" },
+    });
     expect(
       commandPrompt(
         { turnId, commandId: "codebuddy.compact", arguments: { text: " retain decisions " } },

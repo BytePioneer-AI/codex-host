@@ -37,7 +37,7 @@ const record = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 const extensions = {
-  usageMeasurements: { values: { inputTokens: 123 }, futureDetail: [null, "opaque"] },
+  futureMeasurements: { values: { inputTokens: 123 }, futureDetail: [null, "opaque"] },
   futureFlag: false,
 };
 
@@ -124,7 +124,7 @@ describe("Mapping Store forward compatibility", () => {
     try {
       await first.initialize();
       await expect(first.getThread(threadId)).resolves.toMatchObject({ projectId: "project-a" });
-      await expect(first.getThread(threadId)).resolves.not.toHaveProperty("usageMeasurements");
+      await expect(first.getThread(threadId)).resolves.not.toHaveProperty("futureMeasurements");
       await first.updateMetadata(threadId, { projectId: "project-b" });
       expect(await readJson(metadataFile)).toMatchObject({ ...extensions, projectId: "project-b" });
       await first.updateMetadata(threadId, { projectId: null });
@@ -135,7 +135,7 @@ describe("Mapping Store forward compatibility", () => {
       });
       expect(
         await readJson(path.join(directory, "threads", `${threadId}.json`)),
-      ).not.toHaveProperty("usageMeasurements");
+      ).not.toHaveProperty("futureMeasurements");
       await expect(readdir(path.join(directory, "quarantine"))).resolves.toEqual([]);
     } finally {
       await first.close();

@@ -98,7 +98,7 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 | Cancel | 使用原生取消；取消后的连接恢复沿用 ACP Session 的进程重建与状态恢复约束，不能把仅收到取消回执当作新 Turn 已可用。 |
 | Model、Thinking、Permission Mode | macOS 使用 ACP 原生 Model List；Windows 将 resolved snapshot 的 CLI Model 目录与 ACP 配置目录合并去重，并允许选择补充项，选择后等待 ACP `currentValue` 确认。Thinking 和 Permission Mode 仍只使用 ACP 原生选项。 |
 | Question | 使用原生 interruption/question 流程映射到 Host Question；只调用公开会话支持的扩展。 |
-| Usage | 读取原生模型请求用量。未实现账号总额度，也不把 credits 推断为美元。 |
+| Usage | 读取原生模型请求用量，上下文窗口沿用 ACP 当前会话预算，不替换为模型最大支持值。确认模型改变时旧上下文失效，累计用量保留；重复确认同一模型不清除其新用量。未实现账号总额度，也不把 credits 推断为美元。 |
 | Native history | 从隔离的 WorkBuddy 原生历史读取当前父链，保留持久化用户消息 ID；缺失、歧义、损坏或不完整状态不会伪装成成功。 |
 | Native subagents | 投影原生 Agent 子任务状态，并从同一 WorkBuddy 数据根读取受约束的只读子 Thread；派生 Session 会固定并复制已保留 Agent 结果引用的子 Transcript 前缀。这不等于获得 Desktop 私有任务或连接器。 |
 | Slash commands | 暴露固定且可安全映射的 `/compact` 与 `/init`。命令目录在 Adapter 与 Session 之间保持一致；会切换 Session、脱离当前 Thread 或依赖原生 UI 的命令不通过 Host 暴露。 |
@@ -109,6 +109,14 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 | Images | 当前公共 Turn 输入仍为文本；CLI 声明图像能力不等于 Host 已提供图片输入。 |
 
 上述“已实现”表示 Adapter 的协议和公共契约路径已接线，不表示本轮完成了认证后的付费在线验收。尤其是 Model 目录、权限名称、历史格式和子 Agent 事件仍须在已登录的目标账号与实际 WorkBuddy 版本上复核；运行时以原生响应为准，不把 2.137.1 的观察结果硬编码为永久产品能力。
+
+### 原生历史续行
+
+共享历史投影在普通消息路径中将 `startsNewUserRequest: false` 视为当前 Turn 的续行，而非新的用户请求。`isMeta: true` 的内部行，以及正文完全由 `<system-reminder data-role="user-context">…</system-reminder>` 包装块和空白组成的行不进入用户输入；包装内引用 `<user_query>` 不改变这一判断。其他续行文本（包括原生 steer 的真实用户追加）保留在当前 Turn 的 input 中，不改变原生 Turn ID、checkpoint 或待完成工具的关联。`startsNewUserRequest: true` 仍创建新 Turn，即使同时带有 `isMeta: true`；正文中的 `<user_query>` 不覆盖续行元数据。本地命令与压缩记录继续使用各自的专用投影。这一历史读取行为不表示 Host 已支持发送 `turn.steer`。
+
+取消生成可能留下参数尚未闭合的 `function_call`。同时标记 `status: incomplete`、`providerData.isPartialAborted: true` 和 `providerData.discard: true` 的调用仅作为原生父链节点保留，不解析参数，也不投影为已启动的工具；后续 Turn 仍可读取。缺少上述丢弃证据的无效参数仍按协议错误处理，不将损坏历史伪装为成功。
+
+Fork 的子 Transcript 收集沿用上述丢弃判定，不将已丢弃的 Agent 调用视为待完成委派；保留前缀与父链节点不变。没有完整丢弃证据的未完成 Agent 委派仍拒绝 Fork，不跳过真实子任务的身份和范围验证。
 
 ### 流式消息身份与显示边界
 

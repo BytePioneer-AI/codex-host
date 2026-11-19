@@ -30,7 +30,7 @@ const COMPACT_COMPOSER_WIDTH = 420;
 export const TRIGGER_CHIP_SQUEEZE_MIN_WIDTH = "48px";
 
 export function rendererModelTriggerMaxWidth(): string {
-  return "min(200px, 26vw)";
+  return "min(280px, 36vw)";
 }
 
 export function rendererPermissionModeTriggerMaxWidth(): string {

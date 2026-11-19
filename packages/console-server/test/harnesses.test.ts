@@ -84,4 +84,30 @@ describe("console Harnesses", () => {
       status: 400,
     });
   });
+
+  it("reports unreadable launch settings and replaces them on reset", async () => {
+    const pluginsRoot = path.join(root, "plugins");
+    await plugin(pluginsRoot, "pi", true);
+    await writeFile(
+      path.join(pluginsRoot, "enabled.json"),
+      JSON.stringify({ version: 1, enabled: ["pi"] }),
+    );
+    const settings = path.join(root, "data", "harness-launch-settings", "pi.json");
+    await mkdir(path.dirname(settings), { recursive: true });
+    await writeFile(settings, "{not json\n");
+    const harnesses = createConsoleHarnesses([pluginsRoot], {
+      CODEXHOST_DATA_DIR: path.join(root, "data"),
+    });
+
+    const [listed] = await harnesses.list();
+    expect(listed).toMatchObject({ id: "pi", launchPath: null });
+    expect(listed?.launchPathError).toContain(settings);
+
+    await expect(harnesses.setLaunchPath("pi", null)).resolves.toMatchObject({
+      launchPath: null,
+      launchPathError: null,
+    });
+    await expect(readFile(settings, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await harnesses.list())[0]).toMatchObject({ launchPath: null, launchPathError: null });
+  });
 });

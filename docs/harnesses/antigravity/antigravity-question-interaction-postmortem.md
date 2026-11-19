@@ -5,7 +5,7 @@
 - **涉及组件**：`@codexhost/adapter-antigravity`, `packages/host-runtime`, `packages/protocol-core`
 - **关联原生会话**：`8f08ea60-ce53-4568-813c-ae739a5af63e`（线程 ID：`3c4601e6-f089-4f75-8aa7-38aa8b135a4f`）
 
-> **后续状态（2026-09-05）**：第 1–7 节保留原 stdout 映射失败时的历史复盘，其中“只能退回文字或使用 MCP”的判断已被后续实测修正。当前已实现前置 Hook 问答桥，实测依据、交互限制及验收边界见第 8 节；不应把桥接成功等同于原生 `ask_question` 工具正常成功返回。
+> **历史归档说明（现行实现见 [`antigravity-tool-approval.md`](antigravity-tool-approval.md)）**：本文档保留 `agy 1.1.x` PrintMode 阶段对 `ask_question` 交互失败与临时 Hook 问答桥的历史调研记录。自 `agy >= 1.5.8` 起，官方 `agy acp` 原生支持客户端 `elicitation/create`（表单模式），`@codexhost/adapter-antigravity` 已直接通过原生 ACP `elicitation` 承载单选、多选与自由文本提问，不再使用外部 Hook 桥。
 
 ---
 

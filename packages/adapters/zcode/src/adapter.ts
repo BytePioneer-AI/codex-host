@@ -110,20 +110,26 @@ export class ZcodeAdapter implements HarnessAdapter {
                   "ZCode has no available models. Sign in to ZCode Desktop with a Start Plan or Personal Coding Plan account, or add a personal provider, then re-detect ZCode. Team Coding Plan is not supported.",
                 retryable: true,
               }
-            : transport.startPlanChecked
+            : transport.codingPlanIssue
               ? {
                   code: "configurationRequired",
-                  message:
-                    "ZCode is signed in, but the account has no available models: no active Start Plan or event quota, no Personal Coding Plan, and no personal provider. Free trial and event quotas expire; subscribe to GLM Coding Plan or add a personal provider (API Key) in ZCode Desktop, then re-detect ZCode. Team Coding Plan is not supported.",
+                  message: transport.codingPlanIssue,
                   retryable: true,
                 }
-              : {
-                  // The balance request failed, so a valid Start Plan may just be unreadable now.
-                  code: "configurationRequired",
-                  message:
-                    "ZCode is signed in, but no models are available: the Start Plan balance could not be checked, and there is no Personal Coding Plan or personal provider. Re-detect ZCode in a moment; if this persists, check the network and the account in ZCode Desktop. Team Coding Plan is not supported.",
-                  retryable: true,
-                },
+              : transport.startPlanChecked
+                ? {
+                    code: "configurationRequired",
+                    message:
+                      "ZCode is signed in, but the account has no available models: no active Start Plan or event quota, no Personal Coding Plan, and no personal provider. Free trial and event quotas expire; subscribe to GLM Coding Plan or add a personal provider (API Key) in ZCode Desktop, then re-detect ZCode. Team Coding Plan is not supported.",
+                    retryable: true,
+                  }
+                : {
+                    // The balance request failed, so a valid Start Plan may just be unreadable now.
+                    code: "configurationRequired",
+                    message:
+                      "ZCode is signed in, but no models are available: the Start Plan balance could not be checked, and there is no Personal Coding Plan or personal provider. Re-detect ZCode in a moment; if this persists, check the network and the account in ZCode Desktop. Team Coding Plan is not supported.",
+                    retryable: true,
+                  },
         };
       return {
         status: "ready",

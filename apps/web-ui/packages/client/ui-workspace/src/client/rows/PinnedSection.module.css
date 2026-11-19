@@ -1,0 +1,7 @@
+.section {
+  margin-bottom: 8px;
+}
+
+.section > * + [data-thread-branch] {
+  margin-top: 2px;
+}

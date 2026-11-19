@@ -2,7 +2,7 @@
 
 ## About CodexHost
 
-CodexHost is an independent, unofficial open-source project. It is not affiliated with or endorsed by OpenAI. It integrates external Agent Harnesses into Codex Desktop and supports remote use through SSH and official Codex Desktop Remote Control.
+CodexHost is an independent, unofficial open-source project. It is not affiliated with or endorsed by OpenAI. It integrates external Agent Harnesses into Codex Desktop, provides a standalone Web interface, and supports remote use through Web access, SSH, and official Codex Desktop Remote Control.
 
 ## Local data and Harness integrations
 
@@ -12,7 +12,9 @@ CodexHost connects the Desktop interface to your selected Harness, forwarding pr
 
 To show which installed Harnesses are available, CodexHost checks them when Codex Desktop starts. Some checks start the Harness's native process, which runs that Harness's own startup behavior, such as loading extensions or connecting to its configured Providers. Where a Harness offers a lighter native command, CodexHost uses it instead; Oh My Pi is checked with `omp models --json`, which starts no session.
 
-If you use remote features, task content travels between your computers through SSH or official Codex Desktop Remote Control. The controlled host runs the tasks, while the authorized controller can submit instructions, view results, and respond to approvals. Official Remote Control manages pairing and relay transport; CodexHost does not operate a separate relay.
+For Desktop remote features, task content travels between your computers through SSH or official Codex Desktop Remote Control. The controlled host runs the tasks, while the authorized controller can submit instructions, view results, and respond to approvals. Official Remote Control manages its own pairing and relay transport.
+
+The Web interface can also be reached through a local network, Tailscale, a configured Relay, or a reverse proxy. A Relay normally forwards encrypted bytes, with user TLS terminating on your computer; its operator can see computer and phone IP addresses, hostnames, connection times, and traffic sizes. Control of DNS or the Relay's public TLS entry point can allow another certificate to be issued and used to intercept content. Certificate transparency logs can help detect issuance, not prevent it, and publicly expose Relay hostnames. A proxy that terminates TLS, such as Cloudflare Tunnel, can read content. Web access tokens grant control of the computer and must be protected like passwords. See [Web remote access](product/web-remote-access.md#谁能看到内容) for the trust boundaries.
 
 Account features may query the corresponding service for identity and usage information. Installation and updates use GitHub or your configured package registry. These services receive the connection and request information needed to provide those functions.
 
@@ -28,7 +30,7 @@ CodexHost stores settings, session mappings, diagnostic logs, and some Adapter-m
 
 Host Runtime logs are stored locally and are not automatically uploaded by the logger. They are rotated and cleaned up on a best-effort basis; other stored data has no universal expiration period.
 
-After stopping CodexHost, you can delete its applicable local data. Native Harness history and credentials are managed separately through the corresponding application; service-side data and authorization are managed through the service provider. Archiving or uninstalling does not necessarily erase stored data, and deleting CodexHost's local files does not delete those separately managed records. Remote access can be revoked through official Remote Control or your SSH configuration.
+After stopping CodexHost, you can delete its applicable local data. Native Harness history and credentials are managed separately through the corresponding application; service-side data and authorization are managed through the service provider. Archiving or uninstalling does not necessarily erase stored data, and deleting CodexHost's local files does not delete those separately managed records. Remote access can be revoked through official Remote Control or your SSH configuration. For Web access, regenerate the access token or disable the applicable network entry points.
 
 ## Contact
 

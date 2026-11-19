@@ -25,6 +25,7 @@ export const updateStatusSchema = z
     downloadedBytes: z.number().int().nonnegative().optional(),
     totalBytes: z.number().int().positive().optional(),
     error: z.string().min(1).max(UPDATE_ERROR_MAX_LENGTH).nullable(),
+    serviceStopOutput: z.string().optional(),
   })
   .superRefine((status, context) => {
     if (

@@ -36,6 +36,7 @@ export {
   cleanupTerminalUpdateState,
   discoverActiveUpdateStatus,
   discoverLatestUpdateStatus,
+  discoverRecentCompletedUpdateStatus,
   isUpdateOperationActive,
   recoverUpdateOperationLock,
   type DiscoveredUpdateStatus,

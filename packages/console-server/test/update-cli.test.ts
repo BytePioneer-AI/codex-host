@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runUpdateCommand, updateFromCommand } from "../src/update-cli.js";
 import type { ConsoleUpdates, ConsoleUpdateTarget } from "../src/updates.js";
+import { createHostUpdates } from "../src/host-client.js";
 
 const target: ConsoleUpdateTarget = {
   distribution: null,
@@ -34,6 +35,18 @@ function fixture() {
 }
 
 describe("update command", () => {
+  it("uses the running Host operation without starting a separate updater", async () => {
+    const updates = fixture();
+    const request = vi.fn(async (method: string) => ({
+      result: method.endsWith("check") ? await updates.check(target) : await updates.start(target),
+    }));
+    const host = createHostUpdates({ available: async () => true, request });
+    await runUpdateCommand(target, host, vi.fn());
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "codexhost/update/check",
+      "codexhost/update/start",
+    ]);
+  });
   it("checks and prepares an upgrade without claiming installation succeeded", async () => {
     const updates = fixture();
     const write = vi.fn();

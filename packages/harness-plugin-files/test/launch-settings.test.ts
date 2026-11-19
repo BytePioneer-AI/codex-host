@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -67,5 +67,42 @@ describe("Host-owned Harness launch settings", () => {
     }
     await expect(store.set("../escape", file)).rejects.toThrow();
     expect((await store.get(id)).path).toBe(file);
+  });
+
+  it.each([
+    ["invalid JSON", "{not json\n"],
+    ["a non-string value", "42\n"],
+    ["a relative path", `${JSON.stringify("relative/entry")}\n`],
+  ])("reports %s with the file path and lets set replace or reset it", async (_label, content) => {
+    const { store, root, environment, file } = await setup();
+    const settings = path.join(root, "harness-launch-settings", `${id}.json`);
+    await mkdir(path.dirname(settings), { recursive: true });
+    await writeFile(settings, content);
+
+    await expect(store.get(id)).rejects.toThrow(settings);
+    await expect(store.initialCommand(id)).rejects.toThrow(settings);
+    // The Adapter was not built from a readable setting, so any saved value needs a restart.
+    expect(await store.set(id, file)).toEqual({ path: file, restartRequired: true });
+    expect(JSON.parse(await readFile(settings, "utf8"))).toBe(file);
+    expect(await store.get(id)).toEqual({ path: file, restartRequired: true });
+
+    await writeFile(settings, content);
+    const reset = new HarnessLaunchSettingsStore(environment);
+    expect(await reset.set(id, null)).toEqual({ path: null, restartRequired: true });
+    await expect(readFile(settings, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await reset.get(id)).toEqual({ path: null, restartRequired: true });
+  });
+
+  it("reads an unreadable initial value again instead of caching the failure", async () => {
+    const { store, root, file } = await setup();
+    const settings = path.join(root, "harness-launch-settings", `${id}.json`);
+    await mkdir(path.dirname(settings), { recursive: true });
+    await writeFile(settings, "{not json\n");
+    await expect(store.initialCommand(id)).rejects.toThrow(
+      "Could not read Harness launch settings",
+    );
+    await writeFile(settings, `${JSON.stringify(file)}\n`);
+    expect(await store.initialCommand(id)).toBe(file);
+    expect(await store.get(id)).toEqual({ path: file, restartRequired: false });
   });
 });

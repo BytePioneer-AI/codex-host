@@ -33,11 +33,12 @@ function missingFile(error: unknown): boolean {
 
 /**
  * Reads installed plugin manifests without importing any plugin code. A root
- * without `enabled.json` contributes nothing, matching the loader's trust rule.
+ * without `enabled.json` contributes nothing unless the owning server supplies explicit enablement.
  */
 export async function discoverHarnessPlugins(
   configuredRoots: readonly string[],
   diagnose: (code: HarnessPluginDiscoveryDiagnosticCode) => void = () => undefined,
+  explicitlyEnabledIds?: ReadonlySet<string>,
 ): Promise<HarnessPluginDiscovery> {
   const plugins: InstalledHarnessPlugin[] = [];
   const enabledIds = new Set<string>();
@@ -58,7 +59,7 @@ export async function discoverHarnessPlugins(
     }
     let enabled: Set<string>;
     try {
-      enabled = new Set((await readPluginConfiguration(root)).enabled);
+      enabled = new Set(explicitlyEnabledIds ?? (await readPluginConfiguration(root)).enabled);
     } catch (error) {
       if (!missingFile(error)) diagnose("invalidConfiguration");
       continue;

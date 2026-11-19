@@ -154,6 +154,450 @@ const initialization = {
   capabilities: { experimentalApi: true },
 };
 
+it.each(["request", "send"] as const)(
+  "inherits confirmed source Model settings when a native Fork omits them through %s",
+  async (transport) => {
+    const f = fixture();
+    const { client, output } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse((request) => ({
+        id: request.id ?? null,
+        result: {
+          thread: { id: request.method === "thread/fork" ? "child" : "source" },
+          model: "source-model",
+          modelProvider: "source-provider",
+          reasoningEffort: "high",
+          serviceTier: "priority",
+          approvalPolicy: "never",
+          developerInstructions: "Source-only instructions",
+        },
+      }));
+      await client.request("thread/resume", { threadId: "source", excludeTurns: true });
+      const params = {
+        threadId: "source",
+        lastTurnId: "source-turn",
+        model: null,
+        cwd: "/new-worktree",
+        config: { futureSetting: true },
+        futureForkOption: { preserve: true },
+      };
+      const original = structuredClone(params);
+      if (transport === "request") await client.request("thread/fork", params);
+      else {
+        await client.send({ id: "fork", method: "thread/fork", params });
+        await vi.waitFor(() => expect(output.some(({ id }) => id === "fork")).toBe(true));
+      }
+      expect(f.connection().requests.at(-1)?.params).toEqual({
+        ...params,
+        model: "source-model",
+        modelProvider: "source-provider",
+        serviceTier: "priority",
+        config: { futureSetting: true, model_reasoning_effort: "high" },
+      });
+      expect(params).toEqual(original);
+    } finally {
+      await f.owner.stop();
+      client.close();
+    }
+  },
+);
+
+it.each<JsonObject>([
+  { model: "selected-model" },
+  { modelProvider: "selected-provider" },
+  { config: { model: "selected-model" } },
+  { config: { model_provider: "selected-provider" } },
+  { config: ["future-config-shape"] },
+  { path: "/different-source.jsonl" },
+  { history: [] },
+])(
+  "keeps explicit native Fork selections and alternate sources unchanged: %j",
+  async (overrides) => {
+    const f = fixture();
+    const { client } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse((request) => ({
+        id: request.id ?? null,
+        result: {
+          thread: { id: request.method === "thread/fork" ? "child" : "source" },
+          model: "source-model",
+          modelProvider: "source-provider",
+          reasoningEffort: "high",
+          serviceTier: "priority",
+        },
+      }));
+      await client.request("thread/resume", { threadId: "source" });
+      const params = { threadId: "source", beforeTurnId: "boundary", ...overrides };
+      await client.request("thread/fork", params);
+      expect(f.connection().requests.at(-1)?.params).toEqual(params);
+      expect(f.connection().requests).toHaveLength(4);
+    } finally {
+      await f.owner.stop();
+      client.close();
+    }
+  },
+);
+
+it.each([
+  { serviceTier: null, config: { model_reasoning_effort: null } },
+  { config: { model_reasoning_effort: "low", service_tier: null } },
+])("preserves explicit native Fork Thinking and Fast settings: %j", async (overrides) => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result: {
+        thread: { id: request.method === "thread/fork" ? "child" : "source" },
+        model: "source-model",
+        reasoningEffort: "high",
+        serviceTier: "priority",
+      },
+    }));
+    await client.request("thread/resume", { threadId: "source" });
+    const params = { threadId: "source", ...overrides };
+    await client.request("thread/fork", params);
+    expect(f.connection().requests.at(-1)?.params).toEqual({ ...params, model: "source-model" });
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
+it.each([
+  {
+    settings: { model: "latest-model", effort: "low", serviceTier: null },
+    expected: {
+      model: "latest-model",
+      serviceTier: null,
+      config: { model_reasoning_effort: "low" },
+    },
+  },
+  { settings: { model: "latest-model" }, expected: { model: "latest-model" } },
+])(
+  "uses native settings updates across clients when forking: %j",
+  async ({ settings, expected }) => {
+    const f = fixture();
+    const source = f.attach();
+    const other = f.attach();
+    try {
+      await f.owner.start();
+      await source.client.initialize(initialization);
+      await other.client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse((request) => ({
+        id: request.id ?? null,
+        result: {
+          thread: { id: "source" },
+          model: "initial-model",
+          modelProvider: "source-provider",
+          reasoningEffort: "high",
+          serviceTier: "priority",
+        },
+      }));
+      await source.client.request("thread/resume", { threadId: "source" });
+      const updated = {
+        method: "thread/settings/updated",
+        params: {
+          threadId: "source",
+          threadSettings: settings,
+        },
+      };
+      f.connection().emit(updated);
+      await vi.waitFor(() => expect(source.output).toContainEqual(updated));
+      await other.client.request("thread/fork", { threadId: "source" });
+      expect(f.connection(0, 1).requests.at(-1)?.params).toEqual({
+        threadId: "source",
+        modelProvider: "source-provider",
+        ...expected,
+      });
+    } finally {
+      await f.owner.stop();
+      source.client.close();
+      other.client.close();
+    }
+  },
+);
+
+it("does not replace source Model settings with an invalid Fork identity", async () => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result: {
+        thread: { id: "source" },
+        model: request.method === "thread/fork" ? "invalid-child-model" : "source-model",
+      },
+    }));
+    await client.request("thread/resume", { threadId: "source" });
+    await client.request("thread/fork", { threadId: "source" });
+    await client.request("thread/fork", { threadId: "source" });
+    expect(f.connection().requests.at(-1)?.params).toEqual({
+      threadId: "source",
+      model: "source-model",
+    });
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
+it("requires current native confirmation after restart before inheriting a Fork's Model", async () => {
+  const f = fixture();
+  const source = f.attach();
+  const other = f.attach();
+  try {
+    await f.owner.start();
+    await source.client.initialize(initialization);
+    await other.client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result: { thread: { id: "source" }, model: "retired-model", reasoningEffort: "high" },
+    }));
+    await source.client.request("thread/resume", { threadId: "source" });
+    await f.owner.stop();
+    await f.owner.start();
+    f.gate.initialized();
+    await other.client.request("thread/fork", { threadId: "source" });
+    expect(f.connection(1, 1).requests.at(-1)?.params).toEqual({ threadId: "source" });
+    f.connection(1).setResponse((request) => ({
+      id: request.id ?? null,
+      result: {
+        thread: { id: request.method === "thread/fork" ? "child" : "source" },
+        model: "current-model",
+        reasoningEffort: "low",
+      },
+    }));
+    await source.client.request("thread/fork", { threadId: "source", excludeTurns: true });
+    expect(
+      f
+        .connection(1)
+        .requests.slice(2)
+        .map(({ method }) => method),
+    ).toEqual(["thread/resume", "thread/fork"]);
+    expect(f.connection(1).requests.at(-1)?.params).toEqual({
+      threadId: "source",
+      excludeTurns: true,
+      model: "current-model",
+      config: { model_reasoning_effort: "low" },
+    });
+  } finally {
+    await f.owner.stop();
+    source.client.close();
+    other.client.close();
+  }
+});
+
+it.each(["request", "send"] as const)(
+  "keeps inherited settings out of a Fork child's recovery params through %s",
+  async (transport) => {
+    const f = fixture();
+    const { client, output } = f.attach();
+    try {
+      await f.owner.start();
+      await client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().setResponse((request) => ({
+        id: request.id ?? null,
+        result: {
+          thread: { id: request.method === "thread/fork" ? "child" : "source" },
+          model: "source-model",
+          reasoningEffort: "high",
+        },
+      }));
+      await client.request("thread/resume", { threadId: "source" });
+      const params = { threadId: "source", lastTurnId: "source-turn" };
+      if (transport === "request") await client.request("thread/fork", params);
+      else {
+        await client.send({ id: "fork", method: "thread/fork", params });
+        await vi.waitFor(() => expect(output.some(({ id }) => id === "fork")).toBe(true));
+      }
+
+      await f.owner.stop();
+      await f.owner.start();
+      f.gate.initialized();
+      f.connection(1).setResponse((request) => ({
+        id: request.id ?? null,
+        ...(request.method === "turn/start"
+          ? { result: { turn: { id: "turn", status: "inProgress" } } }
+          : {
+              result: {
+                thread: { id: String((request.params as JsonObject).threadId) },
+                model: "latest-child-model",
+              },
+            }),
+      }));
+      await client.request("turn/start", { threadId: "child", input: [] });
+      const resume = f.connection(1).requests.find((request) => request.method === "thread/resume");
+      expect(resume?.params).toEqual({ threadId: "child", excludeTurns: true });
+    } finally {
+      await f.owner.stop();
+      client.close();
+    }
+  },
+);
+
+it("falls back to the native Fork when source settings cannot be restored", async () => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result: { thread: { id: "source" }, model: "retired-model" },
+    }));
+    await client.request("thread/resume", { threadId: "source" });
+
+    await f.owner.stop();
+    await f.owner.start();
+    f.gate.initialized();
+    f.connection(1).setResponse((request) => ({
+      id: request.id ?? null,
+      ...(request.method === "thread/resume"
+        ? { error: { code: -32600, message: "Source is not available" } }
+        : { result: { thread: { id: "child" }, model: "native-default" } }),
+    }));
+    const params = { threadId: "source", lastTurnId: "source-turn" };
+    await expect(client.request("thread/fork", params)).resolves.toMatchObject({
+      result: { thread: { id: "child" } },
+    });
+    expect(
+      f
+        .connection(1)
+        .requests.filter(({ method }) => method === "thread/resume" || method === "thread/fork")
+        .map(({ method, params: requestParams }) => ({ method, params: requestParams })),
+    ).toEqual([
+      {
+        method: "thread/resume",
+        params: { threadId: "source", excludeTurns: true },
+      },
+      { method: "thread/fork", params },
+    ]);
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
+it("leaves explicit and alternate-source Forks alone after a native restart", async () => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    await client.request("thread/resume", { threadId: "source" });
+    await f.owner.stop();
+    await f.owner.start();
+    f.gate.initialized();
+    f.connection(1).setResponse((request) => ({
+      id: request.id ?? null,
+      ...(request.method === "thread/resume"
+        ? { error: { code: -32600, message: "Source is not available" } }
+        : { result: { thread: { id: "child" } } }),
+    }));
+    for (const overrides of [
+      { model: "explicit-model" },
+      { path: "/alternate-source.jsonl" },
+      { history: [] },
+    ]) {
+      const params = { threadId: "source", ...overrides };
+      await expect(client.request("thread/fork", params)).resolves.toMatchObject({
+        result: { thread: { id: "child" } },
+      });
+      expect(f.connection(1).requests.at(-1)?.params).toEqual(params);
+    }
+    expect(f.connection(1).requests.some(({ method }) => method === "thread/resume")).toBe(false);
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
+it("projects resolution IDs per client and retires another client's answered request", async () => {
+  const f = fixture();
+  const a = f.attach(),
+    b = f.attach();
+  try {
+    await f.owner.start();
+    await a.client.initialize(initialization);
+    await b.client.initialize(initialization);
+    f.gate.initialized();
+    const request = {
+      id: 17,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-one" },
+    };
+    f.connection(0, 0).emit(request);
+    f.connection(0, 1).emit(request);
+    await vi.waitFor(() =>
+      expect(b.output.some((message) => message.method === request.method)).toBe(true),
+    );
+    const aId = a.output.find((message) => message.method === request.method)?.id;
+    const bId = b.output.find((message) => message.method === request.method)?.id;
+    if (typeof aId !== "string" || typeof bId !== "string")
+      throw new Error("Missing projected request");
+    expect(aId).not.toBe(bId);
+    await a.client.send({ id: aId, result: { decision: "accept" } });
+    f.connection(0, 1).emit({ method: "serverRequest/resolved", params: { requestId: 17 } });
+    await vi.waitFor(() =>
+      expect(b.output).toContainEqual({
+        method: "serverRequest/resolved",
+        params: { requestId: bId },
+      }),
+    );
+    await expect(b.client.send({ id: bId, result: { decision: "accept" } })).rejects.toThrow(
+      "Retired",
+    );
+  } finally {
+    await f.owner.stop();
+    a.client.close();
+    b.client.close();
+  }
+});
+
+it("does not treat resumed historical inProgress Turns as active work on this backend", async () => {
+  const f = fixture();
+  const { client } = f.attach();
+  try {
+    await f.owner.start();
+    await client.initialize(initialization);
+    f.gate.initialized();
+    f.connection().setResponse((request) => ({
+      id: request.id ?? null,
+      result:
+        request.method === "thread/resume"
+          ? { thread: { id: "thread-one", turns: [{ id: "stale-turn", status: "inProgress" }] } }
+          : { turn: { id: "new-turn", status: "inProgress" } },
+    }));
+    await client.request("thread/resume", { threadId: "thread-one" });
+    expect(f.owner.hasActiveWork).toBe(false);
+    await client.request("turn/start", { threadId: "thread-one", input: [] });
+    expect(f.owner.hasActiveWork).toBe(true);
+    f.connection().emit({ method: "turn/completed", params: { threadId: "thread-one" } });
+    await vi.waitFor(() => expect(f.owner.hasActiveWork).toBe(false));
+  } finally {
+    await f.owner.stop();
+    client.close();
+  }
+});
+
 describe("owned loopback backend", () => {
   it("requires readiness, hashes capability authentication, and discards managed stderr", async () => {
     const child = Object.assign(new EventEmitter(), {
@@ -895,6 +1339,89 @@ describe("single official runtime owner", () => {
       f.gate.initialized();
       await b.client.request("model/list", {});
       expect(f.native(1).connections).toHaveLength(2);
+    } finally {
+      await f.owner.stop();
+    }
+  });
+
+  it("rewrites a native resolution notification to the client-visible request ID", async () => {
+    const f = fixture();
+    const a = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().emit({
+        id: 7,
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "thread-one",
+          turnId: "turn-one",
+          itemId: "item-one",
+          isBlocking: true,
+          questions: [],
+        },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(1));
+      const id = a.output[0]?.id;
+      if (typeof id !== "string") throw new Error("Missing projected server ID");
+
+      // The native notification names the native ID; the client only saw the projection.
+      f.connection().emit({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-one", requestId: 7 },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(2));
+      expect(a.output[1]).toEqual({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-one", requestId: id },
+      });
+
+      // A resolution of an unknown native request is dropped rather than
+      // forwarded with an ID this client never saw.
+      f.connection().emit({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-two", requestId: 99 },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(a.output).toHaveLength(2);
+    } finally {
+      await f.owner.stop();
+    }
+  });
+
+  it("drops a native resolution that follows an answered server request", async () => {
+    const f = fixture();
+    const a = f.attach();
+    try {
+      await f.owner.start();
+      await a.client.initialize(initialization);
+      f.gate.initialized();
+      f.connection().emit({
+        id: 7,
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "thread-one",
+          turnId: "turn-one",
+          itemId: "item-one",
+          isBlocking: true,
+          questions: [],
+        },
+      });
+      await vi.waitFor(() => expect(a.output).toHaveLength(1));
+      const id = a.output[0]?.id;
+      if (typeof id !== "string") throw new Error("Missing projected server ID");
+
+      // The answer consumes the reply route, so the native resolution that
+      // follows cannot be named by an ID the client saw and is dropped.
+      await a.client.send({ id, result: { answers: {} } });
+      expect(f.connection().requests.at(-1)).toEqual({ id: 7, result: { answers: {} } });
+      f.connection().emit({
+        method: "serverRequest/resolved",
+        params: { threadId: "thread-one", requestId: 7 },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(a.output).toHaveLength(1);
     } finally {
       await f.owner.stop();
     }

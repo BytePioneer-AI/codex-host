@@ -18,7 +18,10 @@ import {
 } from "@codexhost/shared-contracts";
 
 import type { ExternalThreadRepository } from "./external-thread-repository.js";
-import { HarnessSessionImporter } from "./harness-session-import.js";
+import {
+  HarnessSessionImporter,
+  type PreparedSessionImportOptions,
+} from "./harness-session-import.js";
 
 const SOURCES = "codexhost/harness/session-import/sources";
 const LIST = "codexhost/harness/session-import/list";
@@ -45,7 +48,7 @@ export class SessionImportRequests {
       descriptors: () => readonly HarnessPluginDescriptor[];
       repository: ExternalThreadRepository;
       diagnose: (error: unknown) => void;
-    },
+    } & PreparedSessionImportOptions,
   ) {}
 
   async handle(request: JsonRpcRequest): Promise<SessionImportResponse> {
@@ -90,6 +93,10 @@ export class SessionImportRequests {
         adapter: this.input.adapters.get(harnessId),
         repository: this.input.repository,
         diagnose: this.input.diagnose,
+        ...(this.input.environment ? { environment: this.input.environment } : {}),
+        ...(this.input.adoptPreparedSession
+          ? { adoptPreparedSession: this.input.adoptPreparedSession }
+          : {}),
       });
       // Unrecognized client IDs must not grow a permanent cache.
       if (this.input.adapters.has(harnessId)) this.#importers.set(harnessId, importer);

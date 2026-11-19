@@ -3,6 +3,7 @@ import type { Writable } from "node:stream";
 import { parseJsonFrame, type JsonObject } from "@codexhost/protocol-core";
 
 import type { OfficialAppServerConnection } from "../official-app-server-connection.js";
+import { NativeAsyncQuestions } from "../native-async-questions.js";
 import type { CodexRuntimeOutput } from "./codex-runtime.js";
 import {
   OfficialRuntimeOwner,
@@ -25,12 +26,14 @@ const DEFAULT_RECOVERY_STABLE_MS = 60_000;
 
 /** Process ownership shared by all AppServerHost clients in one Host deployment. */
 export class OfficialRuntimeScope {
+  readonly asyncQuestions = new NativeAsyncQuestions();
   readonly owner: OfficialRuntimeOwner;
   readonly gate: OfficialWorkGate;
   readonly permanentHome: string;
   readonly #diagnosticOutput: Writable;
   readonly #recovery: { delaysMs: readonly number[]; stableMs: number } | undefined;
   #starting: Promise<void> | undefined;
+  #stopping: Promise<void> | undefined;
   #started = false;
   #closed = false;
   #readyAt = 0;
@@ -72,6 +75,7 @@ export class OfficialRuntimeScope {
 
   start(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Official Codex is unavailable"));
+    if (this.#stopping) return this.#stopping.then(() => this.start());
     if (this.#starting) return this.#starting;
     if (this.#started && (!this.#recovery || this.owner.running)) return Promise.resolve();
     if (!this.#started && this.owner.running) {
@@ -82,7 +86,7 @@ export class OfficialRuntimeScope {
     // the remaining backoff; the attempt itself still proves the old exit first.
     this.#clearRecoveryTimer();
     const starting = (async () => {
-      if (this.#recovery) await this.owner.stop();
+      await this.#stopGeneration();
       await this.owner.start();
       if (this.#closed) throw new OfficialAdmissionError("unavailable");
       this.#started = true;
@@ -108,11 +112,34 @@ export class OfficialRuntimeScope {
     return this.owner.attach(output, onBackendStopped);
   }
 
+  /** Retire an idle generation without closing its clients or scheduling recovery. */
+  stop(): Promise<void> {
+    if (this.#stopping) return this.#stopping;
+    const stopping = (async () => {
+      if (this.#starting) await this.#starting.catch(() => undefined);
+      this.#started = false;
+      this.#clearRecoveryTimer();
+      await this.#stopGeneration();
+    })();
+    this.#stopping = stopping;
+    void stopping
+      .finally(() => {
+        if (this.#stopping === stopping) this.#stopping = undefined;
+      })
+      .catch(() => undefined);
+    return stopping;
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
     this.#clearRecoveryTimer();
     // A failed close still owns a possibly live backend; allow stop retries.
+    await this.#stopGeneration();
+  }
+
+  async #stopGeneration(): Promise<void> {
     await this.owner.stop();
+    this.asyncQuestions.clear();
   }
 
   /** One ready generation became unavailable. The Scope, not each client, owns the response. */
@@ -123,7 +150,7 @@ export class OfficialRuntimeScope {
     // before that stop becomes joinable.
     queueMicrotask(() => {
       if (!this.#closed && this.gate.phase === "unavailable")
-        void this.owner.stop().catch(() => undefined);
+        void this.#stopGeneration().catch(() => undefined);
     });
     if (!this.#recovery || this.#closed) return;
     if (Date.now() - this.#readyAt >= this.#recovery.stableMs) this.#recoveryAttempt = 0;

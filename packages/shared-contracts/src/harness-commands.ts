@@ -37,6 +37,8 @@ export type HarnessCommandDescriptor = z.infer<typeof harnessCommandDescriptorSc
 export const harnessCommandCatalogSchema = z
   .object({
     commands: z.array(harnessCommandDescriptorSchema),
+    /** Partial discovery failures; valid commands remain available. */
+    warnings: z.array(z.string().min(1)).optional(),
     /**
      * `live` when the catalog includes what a native Session reports for its
      * workspace (custom commands, skills); `static` for Adapter built-ins only.
@@ -93,7 +95,7 @@ export type ThreadCommandExecuteParams = z.infer<typeof threadCommandExecutePara
 export const threadCommandExecuteResultSchema = z
   .object({
     accepted: z.literal(true),
-    turnId: hostTurnIdSchema,
+    turnId: hostTurnIdSchema.optional(),
   })
   .strict();
 

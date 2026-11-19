@@ -3,7 +3,6 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import {
   encodeHarnessPluginRoute,
   harnessIdSchema,
-  hostItemIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import {
@@ -35,14 +34,8 @@ describe("Grok native usage and Host TTFT", () => {
         const session = adapter.sessions[0];
         if (!session) throw Error("No Grok fixture Session");
         clock.mockReturnValue(101250);
-        const itemId = hostItemIdSchema.parse("first-output");
-        session.emitEvent({ type: "item.started", turnId, item: { type, itemId, text: "" } });
-        session.emitEvent({
-          type: "item.updated",
-          turnId,
-          itemId,
-          update: { type: "text.append", text: "hello" },
-        });
+        if (type === "agentMessage") session.appendText("hello");
+        else session.startReasoning("hello");
         // Same public event shape as GrokAdapter. No usage.history: native cost stays authoritative.
         session.publishUsage({
           totalCostUsd: 0.09920104,
@@ -77,7 +70,7 @@ describe("Grok native usage and Host TTFT", () => {
           params: { threadId },
         });
         const response = await fixture.collector.waitFor((message) => requestId(message, 4));
-        expect(response).toMatchObject({
+        expect(response, fixture.diagnosticOutput.read()?.toString()).toMatchObject({
           result: {
             usage: {
               totalCostUsd: 0.09920104,

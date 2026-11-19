@@ -4,8 +4,6 @@ use std::env;
 use std::fs::File;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use std::io::Read;
-#[cfg(any(target_os = "windows", test))]
-use std::io::{Seek, SeekFrom};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
@@ -65,6 +63,11 @@ use super::{
     PROBE_APP_USER_MODEL_ID_ENV, PROBE_DESKTOP_VERSION_ENV, PROBE_INSTALL_ROOT_ENV,
     PROBE_PACKAGE_FAMILY_ENV, PROBE_PACKAGE_FULL_NAME_ENV, PROBE_PACKAGE_NAME_ENV,
 };
+
+#[cfg(any(target_os = "windows", test))]
+mod asar;
+#[cfg(any(target_os = "windows", test))]
+use asar::parse_asar_package_json_version;
 
 #[cfg(target_os = "windows")]
 const WINDOWS_CODEX_PACKAGE_NAME: &str = "OpenAI.Codex";
@@ -481,56 +484,21 @@ fn parse_package_json_version(content: &str) -> Option<String> {
     validate_desktop_version(raw)
 }
 
-/// Best-effort read of root `package.json` version from an Electron `app.asar` archive.
-///
-/// Electron ASAR headers contain a directory tree where root files reside strictly under
-/// `header["files"]`. Sub-dependencies in `node_modules` must not be matched.
 #[cfg(any(target_os = "windows", test))]
-fn parse_asar_package_json_version(asar_path: &Path) -> Option<String> {
-    let mut file = File::open(asar_path).ok()?;
-    let mut header_buf = [0_u8; 16];
-    file.read_exact(&mut header_buf).ok()?;
+const MAX_VERSION_METADATA_BYTES: u64 = 1024 * 1024;
 
-    let magic = u32::from_le_bytes(header_buf[0..4].try_into().ok()?);
-    if magic != 4 {
+#[cfg(any(target_os = "windows", test))]
+fn read_version_metadata(path: &Path) -> Option<String> {
+    if !path.is_file() {
         return None;
     }
-    let header_size = u32::from_le_bytes(header_buf[4..8].try_into().ok()?);
-    let json_len = u32::from_le_bytes(header_buf[12..16].try_into().ok()?);
-
-    if header_size < 8 || json_len == 0 || json_len > header_size {
-        return None;
-    }
-    if json_len > 16 * 1024 * 1024 {
-        return None;
-    }
-
-    let mut json_buf = vec![0_u8; json_len as usize];
-    file.read_exact(&mut json_buf).ok()?;
-    let header_json = std::str::from_utf8(&json_buf).ok()?;
-
-    let header: serde_json::Value = serde_json::from_str(header_json).ok()?;
-    let pkg_entry = header.get("files")?.get("package.json")?;
-    let size = pkg_entry.get("size")?.as_u64()?;
-    let offset = match pkg_entry.get("offset")? {
-        serde_json::Value::Number(num) => num.as_u64()?,
-        serde_json::Value::String(s) => s.parse::<u64>().ok()?,
-        _ => return None,
-    };
-
-    if size == 0 || size > 1024 * 1024 {
-        return None;
-    }
-
-    let content_start = 8_u64.checked_add(header_size as u64)?;
-    let file_offset = content_start.checked_add(offset)?;
-
-    file.seek(SeekFrom::Start(file_offset)).ok()?;
-    let mut pkg_buf = vec![0_u8; size as usize];
-    file.read_exact(&mut pkg_buf).ok()?;
-    let pkg_content = std::str::from_utf8(&pkg_buf).ok()?;
-
-    parse_package_json_version(pkg_content)
+    let file = File::open(path).ok()?;
+    let mut content = String::new();
+    let size = file
+        .take(MAX_VERSION_METADATA_BYTES + 1)
+        .read_to_string(&mut content)
+        .ok()?;
+    (size as u64 <= MAX_VERSION_METADATA_BYTES).then_some(content)
 }
 
 /// Reads the desktop version from a portable installation across candidate metadata sources:
@@ -545,7 +513,7 @@ fn portable_desktop_version(
 ) -> Option<String> {
     // 1. Try AppxManifest.xml from package_root or app_root
     for dir in [package_root, app_root] {
-        if let Ok(content) = std::fs::read_to_string(dir.join("AppxManifest.xml"))
+        if let Some(content) = read_version_metadata(&dir.join("AppxManifest.xml"))
             && let Some(version) = parse_manifest_version(&content)
         {
             return Some(version);
@@ -567,8 +535,7 @@ fn portable_desktop_version(
         app_root.join("resources/package.json"),
     ];
     for path in &candidates {
-        if path.is_file()
-            && let Ok(content) = std::fs::read_to_string(path)
+        if let Some(content) = read_version_metadata(path)
             && let Some(version) = parse_package_json_version(&content)
         {
             return Some(version);
@@ -1391,7 +1358,11 @@ mod portable_version_tests {
             r#"{{"files":{{"package.json":{{"size":{},"offset":"0"}}}}}}"#,
             pkg_bytes.len()
         );
-        let json_bytes = header_obj.as_bytes();
+        fake_asar_with_header(&header_obj, pkg_bytes)
+    }
+
+    fn fake_asar_with_header(header: &str, data: &[u8]) -> Vec<u8> {
+        let json_bytes = header.as_bytes();
         let json_len = json_bytes.len() as u32;
         let pad = (4 - (json_len % 4)) % 4;
         let header_size = 4 + 4 + json_len + pad;
@@ -1403,7 +1374,7 @@ mod portable_version_tests {
         asar.extend_from_slice(&json_len.to_le_bytes());
         asar.extend_from_slice(json_bytes);
         asar.extend(std::iter::repeat_n(0, pad as usize));
-        asar.extend_from_slice(pkg_bytes);
+        asar.extend_from_slice(data);
         asar
     }
 
@@ -1478,6 +1449,61 @@ mod portable_version_tests {
     }
 
     #[test]
+    fn rejects_invalid_asar_header_and_package_ranges() {
+        let root = temporary_directory("codexhost-asar-invalid");
+        let asar_path = root.join("app.asar");
+        let pkg = br#"{"version":"1.2.3"}"#;
+        let valid = create_fake_asar(std::str::from_utf8(pkg).unwrap());
+        let assert_rejected = |label, bytes: &[u8]| {
+            fs::write(&asar_path, bytes).expect("write invalid asar");
+            assert_eq!(parse_asar_package_json_version(&asar_path), None, "{label}");
+        };
+
+        let mut bad = valid.clone();
+        bad[8..12].copy_from_slice(&0_u32.to_le_bytes());
+        assert_rejected("inconsistent Pickle payload size", &bad);
+        bad = valid.clone();
+        bad[12..16].copy_from_slice(&(16_u32 * 1024 * 1024 + 1).to_le_bytes());
+        assert_rejected("oversized header JSON", &bad);
+        assert_rejected("truncated header JSON", &valid[..17]);
+        assert_rejected("entry extends beyond EOF", &valid[..valid.len() - 1]);
+
+        let size = pkg.len();
+        for (label, header) in [
+            (
+                "overflowing entry offset",
+                format!(
+                    r#"{{"files":{{"package.json":{{"size":{size},"offset":"{}"}}}}}}"#,
+                    u64::MAX
+                ),
+            ),
+            (
+                "entry offset beyond EOF",
+                format!(r#"{{"files":{{"package.json":{{"size":{size},"offset":1000}}}}}}"#),
+            ),
+            (
+                "oversized entry",
+                r#"{"files":{"package.json":{"size":1048577,"offset":"0"}}}"#.into(),
+            ),
+            (
+                "unpacked entry cannot identify in-archive bytes",
+                format!(
+                    r#"{{"files":{{"package.json":{{"size":{size},"offset":"0","unpacked":true}}}}}}"#
+                ),
+            ),
+            (
+                "files must be a named object",
+                format!(r#"{{"files":[{{"size":{size},"offset":"0"}}]}}"#),
+            ),
+            ("invalid JSON", "{".into()),
+        ] {
+            assert_rejected(label, &fake_asar_with_header(&header, pkg));
+        }
+
+        fs::remove_dir_all(root).expect("remove asar fixture");
+    }
+
+    #[test]
     fn parses_asar_root_package_json_and_ignores_nested_node_modules() {
         let root = temporary_directory("codexhost-asar-node-modules-test");
         let asar_path = root.join("app.asar");
@@ -1511,26 +1537,13 @@ mod portable_version_tests {
                         "hash": "rootpkgjsonhash"
                     },
                     "size": root_pkg.len(),
-                    "offset": format!("{}", dep_pkg.len())
+                    "offset": dep_pkg.len()
                 }
             }
         });
 
-        let json_str = serde_json::to_string(&header_obj).unwrap();
-        let json_bytes = json_str.as_bytes();
-        let json_len = json_bytes.len() as u32;
-        let pad = (4 - (json_len % 4)) % 4;
-        let header_size = 4 + 4 + json_len + pad;
-
-        let mut asar = Vec::new();
-        asar.extend_from_slice(&4_u32.to_le_bytes());
-        asar.extend_from_slice(&header_size.to_le_bytes());
-        asar.extend_from_slice(&(json_len + pad + 4).to_le_bytes());
-        asar.extend_from_slice(&json_len.to_le_bytes());
-        asar.extend_from_slice(json_bytes);
-        asar.extend(std::iter::repeat_n(0, pad as usize));
-        asar.extend_from_slice(dep_pkg.as_bytes());
-        asar.extend_from_slice(root_pkg.as_bytes());
+        let data = format!("{dep_pkg}{root_pkg}");
+        let asar = fake_asar_with_header(&header_obj.to_string(), data.as_bytes());
 
         fs::write(&asar_path, asar).expect("write asar with node_modules");
 
@@ -1583,8 +1596,10 @@ mod portable_version_tests {
             Some("1.0.0")
         );
 
-        // 4. When all metadata is missing or invalid, returns None (which maps to unknown)
-        fs::remove_file(&pkg_json_path).expect("remove pkg.json");
+        // 4. Oversized fallback metadata is ignored, so the version is unknown.
+        let mut oversized_json = b"{\"version\":\"1.0.0\"}".to_vec();
+        oversized_json.resize(super::MAX_VERSION_METADATA_BYTES as usize + 1, b' ');
+        fs::write(&pkg_json_path, oversized_json).expect("write oversized pkg.json");
         assert_eq!(
             portable_desktop_version(&package_root, &app_root, &asar_path),
             None

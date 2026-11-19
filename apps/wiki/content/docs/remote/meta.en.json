@@ -1,0 +1,5 @@
+{
+  "title": "Cross-Machine Remote",
+  "pages": ["cross-machine", "ssh", "remote-control"],
+  "defaultOpen": false
+}

@@ -16,6 +16,7 @@ import {
   type HarnessResult,
   type HarnessSession,
   type HarnessSessionCapabilities,
+  type HarnessSessionImportCapability,
   type HarnessSessionState,
   type HostCommand,
   type HostThreadSnapshot,
@@ -50,6 +51,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
+import { createBrokerSessionImportCapability } from "./session-import-client.js";
 import {
   defaultHarnessBrokerDescriptorPath,
   harnessBrokerLaunchAgentLabel,
@@ -57,6 +59,7 @@ import {
 } from "./paths.js";
 import {
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
+  HARNESS_BROKER_MAX_RESPONSE_BYTES,
   HARNESS_BROKER_RETIRING_ERROR_CODE,
   HARNESS_BROKER_PROTOCOL_VERSION,
   HARNESS_BROKER_REQUEST_TIMEOUT_MS,
@@ -283,6 +286,7 @@ class BrokerConnection {
       socket,
       (raw) => this.#frame(raw),
       (error) => this.#fail(error),
+      HARNESS_BROKER_MAX_RESPONSE_BYTES,
     );
     socket.once("close", () => this.#fail(new Error("Aqua Harness broker connection closed")));
     socket.once("error", (error) => this.#fail(error));
@@ -325,6 +329,7 @@ class BrokerConnection {
       sequence: 1,
       kind: "hello",
       token: descriptor.token,
+      maxResponseBytes: HARNESS_BROKER_MAX_RESPONSE_BYTES,
     });
     await hello;
     return connection;
@@ -719,6 +724,7 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
   readonly commandCatalog?: HarnessCommandCatalog;
   readonly liveCommandCatalog?: boolean;
   readonly harnessId: HarnessId;
+  readonly sessionImport?: HarnessSessionImportCapability;
   readonly credits?: () => AccountCreditsSnapshot | null;
   readonly refreshCredits?: () => Promise<AccountCreditsSnapshot | null>;
   readonly #descriptorPath: string;
@@ -750,6 +756,8 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
       harnessId?: string;
       /** Plugin-owned capability; defaults to true for existing Broker consumers. */
       accountCredits?: boolean;
+      /** Enable only when the plugin implements native Session import in its broker. */
+      sessionImport?: boolean;
       forwardDelegationEnvironment?: boolean;
       descriptorPath?: string;
       environment?: NodeJS.ProcessEnv;
@@ -766,6 +774,17 @@ export class BrokeredHarnessAdapter implements HarnessAdapter {
     } = {},
   ) {
     this.harnessId = harnessPluginIdSchema.parse(input.harnessId ?? "claude-code");
+    if (input.sessionImport) {
+      this.sessionImport = createBrokerSessionImportCapability({
+        harnessId: this.harnessId,
+        request: async (method, params) =>
+          parseHarnessResult(
+            await this.#request(method, params, method === "adapter.sessionImport.resolve"),
+          ),
+        isClosed: () => this.#closed,
+        error: (error) => this.#error(error),
+      });
+    }
     if (input.accountCredits !== false) {
       this.credits = () => this.#credits;
       this.refreshCredits = () => this.#refreshAccountCredits();

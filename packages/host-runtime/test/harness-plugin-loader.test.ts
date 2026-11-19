@@ -249,6 +249,42 @@ describe("Harness plugin discovery and loading", () => {
       await remote.close();
     }
   });
+  it("reports unreadable launch settings without falling back to discovery", async () => {
+    const directory = await root(["custom-agent"]);
+    const marker = path.join(directory, "created.txt");
+    await plugin(directory, "custom-agent", {
+      manifest: { launchCommand: true },
+      code: `
+        import { writeFileSync } from "node:fs";
+        import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+        export function createHarnessAdapter() {
+          writeFileSync(${JSON.stringify(marker)}, "created");
+          return new FakeHarnessAdapter("custom-agent");
+        }
+      `,
+    });
+    const diagnostics: HarnessPluginDiagnostic[] = [];
+    const registry = await loadHarnessPlugins({
+      roots: [directory],
+      context,
+      launchCommandForPlugin: async () => {
+        throw new Error("Could not read Harness launch settings at /settings/custom-agent.json");
+      },
+      diagnose: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    try {
+      expect(diagnostics).toEqual([{ id: "custom-agent", code: "launchSettingsUnreadable" }]);
+      expect(existsSync(marker)).toBe(false);
+      expect(registry.list().find(({ id }) => id === "custom-agent")?.launchCommand).toBe(true);
+      expect([...registry.adapters.keys()]).toEqual(["custom-agent"]);
+      await expect([...registry.adapters.values()][0]?.inspect()).resolves.toMatchObject({
+        status: "unavailable",
+        error: { message: expect.stringContaining("launchSettingsUnreadable") },
+      });
+    } finally {
+      await registry.close();
+    }
+  });
   it.each([
     ["codebuddy", "CodeBuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
     ["workbuddy", "WorkBuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
@@ -454,7 +490,7 @@ describe("Harness plugin discovery and loading", () => {
     expect(diagnose).toHaveBeenCalledExactlyOnceWith({ id: "duplicate", code: "duplicateId" });
   });
 
-  it("does not shadow a transitional built-in and rejects the official identity", async () => {
+  it("does not shadow a transitional built-in or register the official identity", async () => {
     const directory = await root(["sample-agent"]);
     await plugin(directory, "sample-agent");
     await plugin(directory, "codex");
@@ -466,10 +502,7 @@ describe("Harness plugin discovery and loading", () => {
       diagnose,
     });
     expect(registry.list()).toEqual([]);
-    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual([
-      "invalidManifest",
-      "duplicateId",
-    ]);
+    expect(diagnose.mock.calls.map(([entry]) => entry.code)).toEqual(["duplicateId"]);
   });
 
   it("keeps an incompatible plugin visible but never imports its entry", async () => {
@@ -641,6 +674,35 @@ describe("Harness plugin discovery and loading", () => {
       expect(inspections.every((inspection) => inspection.status === "ready")).toBe(true);
     } finally {
       await registry.close();
+    }
+  });
+
+  it("evaluates plugin modules one at a time so a load wave never stalls the Host", async () => {
+    const ids = ["one-agent", "two-agent", "three-agent", "four-agent", "five-agent"];
+    const directory = await root(ids);
+    for (const id of ids) {
+      await plugin(directory, id, {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      globalThis.__pluginEvaluation.push("start");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      globalThis.__pluginEvaluation.push("end");
+      export function createHarnessAdapter() { return new FakeHarnessAdapter(${JSON.stringify(id)}); }
+    `,
+      });
+    }
+    const evaluation: string[] = [];
+    Reflect.set(globalThis, "__pluginEvaluation", evaluation);
+    try {
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect(registry.list()).toHaveLength(ids.length);
+        expect(evaluation).toEqual(ids.flatMap(() => ["start", "end"]));
+      } finally {
+        await registry.close();
+      }
+    } finally {
+      Reflect.deleteProperty(globalThis, "__pluginEvaluation");
     }
   });
 

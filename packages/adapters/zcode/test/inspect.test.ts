@@ -27,10 +27,16 @@ function snapshot(available: unknown[]) {
     runtime: {},
   };
 }
-function adapterWith(signedIn: boolean, available: unknown[] = [], startPlanChecked = true) {
+function adapterWith(
+  signedIn: boolean,
+  available: unknown[] = [],
+  startPlanChecked = true,
+  codingPlanIssue?: string,
+) {
   const transport = {
     signedIn,
     startPlanChecked,
+    codingPlanIssue,
     startPlan: false,
     start: async () => undefined,
     close: async () => undefined,
@@ -41,6 +47,16 @@ function adapterWith(signedIn: boolean, available: unknown[] = [], startPlanChec
 }
 
 describe("ZCode connection check without available models", () => {
+  it("reports a personal credential failure without claiming the paid subscription is inactive", async () => {
+    const issue =
+      "Personal Coding Plan credentials could not be read; subscription status is unknown.";
+    const adapter = adapterWith(true, [], true, issue);
+    expect(await adapter.inspect({ cwd: tmpdir() })).toMatchObject({
+      status: "unavailable",
+      error: { code: "configurationRequired", message: issue },
+    });
+    await adapter.close();
+  });
   it("reports a signed-in account without an active plan as setup, not login", async () => {
     const adapter = adapterWith(true);
     const inspected = await adapter.inspect({ cwd: tmpdir() });

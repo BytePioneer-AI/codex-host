@@ -15,6 +15,14 @@
 2. 在控制端打开 **设置 → 连接 → 控制其他设备**，输入配对码并选择 Windows 环境。
 3. 打开该环境中的项目，在输入框的 Agent / Model 选择器中选择目标 Harness。
 
+## Desktop 兼容与重连
+
+支持 Renderer 管理会话和主进程 RPC 管理会话两种 Desktop 布局。对于 RPC 布局，codexhost 复用 Desktop 已加载的原生 Manager、RPC 和界面控制器契约，保留历史、通知、跟进队列和审批回调。契约缺失或有歧义时保留原生 Codex 路由，不启用未经验证的 Harness 路由。
+
+只有被控机器返回 Windows 格式的 Codex home 后才启用外部 Harness 桥接。连接 Linux、macOS 的原生 Remote Control 继续使用官方 Manager；这不代表支持被控 POSIX 机器的外部 Harness。
+
+物理连接断开时，即使 Desktop 复用原生 Manager 对象，也会释放旧桥接。重连后建立新的进程桥接，不重放已提交的 Turn。恢复原 Thread 可保留 Harness 归属和原生会话历史。隧道写入和清理独立使用原始 RPC 传输，不经过逻辑请求队列，避免模型、历史请求占满队列后阻塞自己的响应。
+
 ## 常见问题
 
 先确认原生 Codex 任务能通过 Remote Control 正常运行。配对失败、环境缺失、账号授权错误都属于官方 Remote Control，与 codexhost 无关。

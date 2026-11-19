@@ -63,8 +63,15 @@ export function parsePiSessionUsage(response: Record<string, unknown>): PiSessio
   if (tokens !== undefined && !isRecord(tokens)) {
     throw new Error("Pi RPC Session stats tokens are invalid");
   }
+  const input = isRecord(tokens) ? nonNegativeSafeInteger(tokens.input) : null;
+  const cacheRead = isRecord(tokens) ? nonNegativeSafeInteger(tokens.cacheRead) : null;
+  const cacheWrite = isRecord(tokens) ? nonNegativeSafeInteger(tokens.cacheWrite) : null;
   return parseHostUsage({
-    ...(isRecord(tokens) && tokens.input !== undefined ? { inputTokens: tokens.input } : {}),
+    ...(isRecord(tokens) && tokens.input !== undefined
+      ? {
+          inputTokens: input === null ? tokens.input : input + (cacheRead ?? 0) + (cacheWrite ?? 0),
+        }
+      : {}),
     ...(isRecord(tokens) && tokens.cacheRead !== undefined
       ? { cachedInputTokens: tokens.cacheRead }
       : {}),

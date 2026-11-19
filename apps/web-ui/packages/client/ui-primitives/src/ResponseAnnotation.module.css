@@ -1,0 +1,136 @@
+.triggerSeat {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.trigger {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.chipBody {
+  align-items: center;
+}
+
+.chip {
+  display: inline-flex;
+  max-width: 22rem;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 8px;
+  border: 0.5px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-interactive-bg-hover);
+  font: var(--dsw-font-xs-13);
+  line-height: 1.4;
+}
+
+.chipNumber {
+  flex: none;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.chipText {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chipRemove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.chipRemove:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.labelSeat {
+  vertical-align: baseline;
+}
+
+/* Desktop draws the reference as link text with a solid underline; hovering it
+   dashes the underline instead of changing either colour. */
+.label {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.trigger:hover .label {
+  text-decoration-style: dashed;
+}
+
+.popover {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--dsw-alias-bg-base);
+  box-shadow: var(--dsw-shadow-lv3);
+  font-size: 13px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cardSection {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cardHeading {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.cardText {
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary);
+  white-space: pre-wrap;
+}
+
+.cardPre {
+  max-height: 12rem;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-secondary);
+  font-family: var(--dsw-font-markdown-code-block);
+  font-size: 11px;
+  white-space: pre;
+}

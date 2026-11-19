@@ -83,21 +83,24 @@ def capture(db):
             boundaries[str(row['id'])] = {'count': end, 'digest': digest(active[:end])}
     return exported, {'rows': rows, 'derivable': derivable, 'boundaries': boundaries, 'physicalSessionId': sid}
 
+def ensure_session_row(db):
+    if db.get_session(sid) is None:
+        from hermes_constants import parse_reasoning_effort
+        initial = {}
+        if isinstance(p.get('provider'), str) and p['provider']: initial['provider'] = p['provider']
+        if isinstance(p.get('model'), str) and p['model']: initial['model'] = p['model']
+        if isinstance(p.get('reasoningEffort'), str):
+            reasoning = parse_reasoning_effort(p['reasoningEffort'])
+            if reasoning is not None: initial['reasoning_config'] = reasoning
+        if isinstance(p.get('yolo'), bool): initial['yolo_mode'] = p['yolo']
+        db.create_session(session_id=sid, source='cli', cwd=p['cwd'], model=p.get('model'), model_config=initial)
+    return {'created': True}
+
 try:
     if p['operation'] == 'ensure':
         db = SessionDB()
         try:
-            if db.get_session(sid) is None:
-                from hermes_constants import parse_reasoning_effort
-                initial = {}
-                if isinstance(p.get('provider'), str) and p['provider']: initial['provider'] = p['provider']
-                if isinstance(p.get('model'), str) and p['model']: initial['model'] = p['model']
-                if isinstance(p.get('reasoningEffort'), str):
-                    reasoning = parse_reasoning_effort(p['reasoningEffort'])
-                    if reasoning is not None: initial['reasoning_config'] = reasoning
-                if isinstance(p.get('yolo'), bool): initial['yolo_mode'] = p['yolo']
-                db.create_session(session_id=sid, source='cli', cwd=p['cwd'], model=p.get('model'), model_config=initial)
-            result = {'created': True}
+            result = ensure_session_row(db)
         finally: db.close()
     elif p['operation'] == 'discard':
         child = p['derivedSessionId']

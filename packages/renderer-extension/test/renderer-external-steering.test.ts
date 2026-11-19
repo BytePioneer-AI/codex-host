@@ -136,6 +136,25 @@ describe("external direction changes use normal Desktop start presentation", () 
     f.dispose();
   });
 
+  it("preserves native admission and current-request callbacks in replacement start context", async () => {
+    const f = fixture();
+    const beforeSendRequest = vi.fn();
+    const assertRequestCurrent = vi.fn();
+    f.args.push(beforeSendRequest, assertRequestCurrent);
+    try {
+      await f.manager.steerTurn(...f.args);
+      expect(f.manager.startTurn).toHaveBeenCalledWith(
+        "thread",
+        expect.objectContaining({
+          context: expect.objectContaining({ beforeSendRequest, assertRequestCurrent }),
+        }),
+        f.args[8],
+      );
+    } finally {
+      f.dispose();
+    }
+  });
+
   it("keeps Desktop's own steer for an external Thread that steers natively", async () => {
     const f = fixture("activeTurn");
     await expect(f.manager.steerTurn(...f.args)).resolves.toEqual({ turnId: "official" });
@@ -235,17 +254,13 @@ describe("external direction changes use normal Desktop start presentation", () 
   it.each([
     { input: [] },
     { input: [{ type: "text", text: " " }] },
-    { input: [{ type: "image", url: "image" }] },
-    {
-      input: [
-        { type: "text", text: "new input" },
-        { type: "localImage", path: "/image.png" },
-      ],
-    },
+    { input: [{ type: "image", url: "" }] },
+    { input: [{ type: "localImage", path: "" }] },
+    { input: [{ type: "toolResponse", text: "not a prompt" }] },
   ])("rejects unsupported input before cancel or creating a placeholder: %j", async ({ input }) => {
     const f = fixture();
     f.args[1] = input;
-    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("text input");
+    await expect(f.manager.steerTurn(...f.args)).rejects.toThrow("text or image input");
     expect(f.manager.startTurn).not.toHaveBeenCalled();
     expect(f.events).toEqual([]);
     f.dispose();

@@ -17,6 +17,9 @@ const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
 const PROCESS_TERMINATE: u32 = 0x0000_0001;
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+// Explicit native service launches request CREATE_BREAKAWAY_FROM_JOB. Ordinary
+// children (including Node's detached subprocesses) remain supervised by default.
+const JOB_OBJECT_LIMIT_BREAKAWAY_OK: u32 = 0x0000_0800;
 const MOVE_FILE_REPLACE_EXISTING: u32 = 0x0000_0001;
 const MOVE_FILE_WRITE_THROUGH: u32 = 0x0000_0008;
 const ATOMIC_REPLACE_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -347,7 +350,8 @@ pub fn guard_child(child: &Child) -> io::Result<ChildJob> {
             return Err(io::Error::last_os_error());
         }
         let mut information: ExtendedLimitInformation = zeroed();
-        information.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        information.basic_limit_information.limit_flags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         let configured = SetInformationJobObject(
             job,
             JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,

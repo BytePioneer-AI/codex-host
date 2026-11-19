@@ -25,4 +25,24 @@
 
 - [x] 5.1 在 `tools/check-boundaries.mjs` 中增加规则：`packages/desktop-extensions/**/src` 只能导入相对路径和 `@codexhost/shared-contracts`。新增 `tools/build-desktop-extension.mjs`（esbuild 打包单文件并写出 manifest）。新增样板 `packages/desktop-extensions/sidebar-delegation-badges`（移植 #926，声明 `sidebar.thread-badge`）和 `sidebar-thread-tree`（移植 #947，声明两个槽位，用 `dom.mark` 加 CSS 隐藏原生子行）。验证：在 `tools/check-boundaries.test.mjs` 的现有用例表中加入合法与违规导入；构建两个样板时生成的 manifest 能通过 1.1 的 schema；只为 #947 由快照计算树的逻辑补聚焦测试。
 - [x] 5.2 新增 `docs/architecture/desktop-ui-extensions.md`，写现状行为、目录与 manifest、API v1、槽位、回收承诺与边界、作者指南、兜底流程和 v2 预留；更新 `docs/index.md`，并在 CLAUDE.md 的代码布局中加入 `packages/desktop-extensions/`，同时更新 `harness-plugin-files` 的描述。验证：文档中的链接可达，描述与已实现的行为一致。
-- [ ] 5.3 按 `codexhost-isolated-testing` 在独立数据目录的 Desktop 中验收以下流程：启用委派树样板后无需刷新即可生效 → 启用角标样板时被拒绝并提示冲突 → 禁用委派树后原生侧栏恢复 → 启用角标样板，Web 发起的子 Thread 显示为运行中 → 修改样板文件后完成热更新且只有一个实例 → 重载窗口后仍只有一个实例 → 让样板抛出异常，确认显示为失败且其他功能正常 → 执行"禁用全部并重载"。记录实际验证范围和跳过项；未实际运行的步骤不得标记为完成，也不用 `npm start` 代替验证。
+- [ ] 5.3 按 `codexhost-isolated-testing` 在独立数据目录的 Desktop 中验收以下流程：启用委派树样板后无需刷新即可生效 → 启用角标样板时被拒绝并提示冲突 → 禁用委派树后原生侧栏恢复 → 启用角标样板，Web 发起的子 Thread 显示为运行中 → 修改样板文件后完成热更新且只有一个实例 → 重载窗口后仍只有一个实例 → Controller 重启保留原实例，离线重载不运行扩展、重连后按最新选择恢复（方案 A）→ 让样板抛出异常，确认显示为失败且其他功能正常 → 执行"禁用全部并重载"。记录实际验证范围和跳过项；未实际运行的步骤不得标记为完成，也不用 `npm start` 代替验证。
+
+### 5.3 验收记录
+
+未运行原生 Codex Desktop：机器已有用户服务，源码 Desktop 启动入口会先清理现有 Desktop 进程，未使用该入口。以下是隔离替代验证，不覆盖真实 Desktop 的私有 DOM／React 绑定、Launcher 和原生导航，也不把 5.3 标为完成。
+
+实跑的是独立 Chromium profile、真实 CDP、当前 worktree 构建的 Console 和扩展宿主、两个实际打包产物。测试页面以本地和远程侧栏行模拟 Desktop，由替代桥提供行、导航和快照；CDP 目标与注入 URL 守卫仅在临时驱动中映射到这个页面。Console 不依赖 Host 即可验证扩展管理；其他 Host 相关页面未测试。
+
+| 步骤                      | 隔离验证结果                                                                                                                                                                                                                                               |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 启用委派树                | Console 启用后无需刷新。原生样式测试行隐藏，远程行可见，展开后子行可点击并调用桥的导航；文档标识和输入草稿不变。                                                                                                                                           |
+| 启用冲突角标              | Console 显示 409 冲突的提示，指出占用者 `sidebar-thread-tree`，保存选择不变。                                                                                                                                                                              |
+| 禁用委派树                | 树移除、原生测试行恢复可见、宿主标记消失，原生行没有新增 `class` 或 `style`。                                                                                                                                                                              |
+| 共享子 Thread 的运行状态  | 浏览器端以注入的 `running` 快照验证角标与弹层。另实跑 `local-shared-host.test.ts` 的共享所有者用例：Web 协议客户端用模拟 Harness 发起 Turn，Desktop 订阅收到 `running` → `idle` → 断开为 `unknown`。**未实跑真实 Web 操作到原生 Desktop 角标的整条链路。** |
+| 修改样板文件              | 原子替换样板 CSS 触发热更新；新规则生效，文档未刷新，只剩一个角标节点和一份样式表。                                                                                                                                                                        |
+| 在线重载                  | 文档更换后只有一个角标节点和一份样式表。                                                                                                                                                                                                                   |
+| Controller 重启／离线重载 | 强制退出再连接同一文档，核心和角标实例保留。离线重载不注入，离线禁用角标后重连只恢复仍启用的无槽位扩展，符合方案 A。                                                                                                                                       |
+| 扩展异常                  | 激活抛错在 Console 显示 `failed` 和错误信息；出错前挂载的节点及标记被回收，角标和无槽位扩展仍运行。                                                                                                                                                        |
+| 禁用全部并重载            | 从 Console 确认操作后，启用列表为空，文档重载，无扩展节点或样式表，原生测试行可见。                                                                                                                                                                        |
+
+隔离运行继承 `HOME`，使用独立 `CODEXHOST_DATA_DIR` 和临时 loopback 端口（最终一轮：Console `51653`、测试页面 `51652`、CDP `51657`）。退出并确认测试进程及监听均已结束，删除了隔离 `/tmp` 数据。未运行 `npm start` / `npm stop`，未触碰 `~/.codexhost` 或干扰 `:4400` / `:4398`。

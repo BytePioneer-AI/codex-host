@@ -124,6 +124,7 @@ import {
 import { loadCodexNativeServices } from "./codex-native-services.js";
 import {
   loadSidebarCatalog,
+  sidebarCatalogForWindow,
   reconcileRemoteSidebarThread,
   observeRemoteSidebarClosures,
 } from "./remote-sidebar-history.js";
@@ -833,23 +834,19 @@ export function installRendererBindingProbe(
     return null;
   };
   const sidebarThreadState = installRendererSidebarThreadState();
-  let sidebarCatalog: ReturnType<typeof loadSidebarCatalog> | undefined;
+  const catalogForWindow = sidebarCatalogForWindow(() => loadSidebarCatalog(window));
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     checkRemotePlaceholder(hostId, threadId, cwd) {
       const current = () => window.__codexhostHostRoutingV1?.forHost(hostId)?.manager;
       const manager = current();
       if (!manager || !("kind" in manager) || manager.kind !== "main-process-rpc") return;
-      void reconcileRemoteSidebarThread(
+      return reconcileRemoteSidebarThread(
         manager,
         { hostId, threadId },
         cwd,
-        () =>
-          (sidebarCatalog ??= loadSidebarCatalog(window).catch(() => {
-            sidebarCatalog = undefined;
-            return null;
-          })),
+        catalogForWindow,
         () => !disposed && current() === manager,
-      ).catch(() => {});
+      );
     },
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {

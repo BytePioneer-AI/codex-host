@@ -11,6 +11,20 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+export function sidebarCatalogForWindow(load: () => Promise<ThreadCatalog | null>) {
+  let cached: Promise<ThreadCatalog> | undefined;
+  return () =>
+    (cached ??= load()
+      .then((catalog) => {
+        if (!catalog) throw new Error("Desktop thread catalog is not available");
+        return catalog;
+      })
+      .catch((error: unknown) => {
+        cached = undefined;
+        throw error;
+      }));
+}
+
 export async function loadSidebarCatalog(view: Window): Promise<ThreadCatalog | null> {
   const services = await loadCodexNativeServices(
     view,
@@ -87,12 +101,8 @@ export async function reconcileRemoteSidebarThread(
     await manager.sendRequest("thread/read", { threadId: key.threadId, includeTurns: false });
     return;
   } catch (error) {
-    if (
-      !record(error) ||
-      (error.jsonRpcCode ?? error.code) !== -32600 ||
-      error.message !== `thread not loaded: ${key.threadId}`
-    )
-      return;
+    if (!record(error) || (error.jsonRpcCode ?? error.code) !== -32600) throw error;
+    if (error.message !== `thread not loaded: ${key.threadId}`) return;
   }
   if (!isCurrent()) return;
   const catalog = await catalogForWindow();

@@ -203,6 +203,45 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
+  it("checks a late path on settled ownership and bounds retries after a failed check", async () => {
+    vi.useFakeTimers();
+    const host = "remote-ssh-discovered:test";
+    const row = new FakeRow(crypto.randomUUID(), null, host);
+    const dom = new FakeDom([row]);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => ({ threadId, owner: "codex" })),
+    }));
+    const checkRemotePlaceholder = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(undefined);
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      await vi.runAllTimersAsync();
+      const ownershipRequests = vi.mocked(client.listThreadOwnership).mock.calls.length;
+      row.path = "/workspace";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      checkRemotePlaceholder.mockRejectedValue(new Error("still offline"));
+      row.path = "/another";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(4);
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(ownershipRequests);
+    } finally {
+      icons.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("resolves the draft key separately from the Fiber conversation identity", () => {
     const attributes = {
       "data-app-action-sidebar-thread-row": "",

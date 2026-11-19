@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { reconcileRemoteSidebarThread } from "../src/remote-sidebar-history.js";
+import {
+  reconcileRemoteSidebarThread,
+  sidebarCatalogForWindow,
+} from "../src/remote-sidebar-history.js";
 
 const key = { hostId: "remote-ssh-discovered:test", threadId: "placeholder" };
 const cwd = "/workspace";
@@ -31,6 +34,27 @@ function fixture() {
   return { catalog, manager, run, entry, state, current };
 }
 describe("remote sidebar history", () => {
+  it("shares discovery and rediscovers a catalog that initially resolves to null", async () => {
+    const { catalog } = fixture();
+    const discover = vi.fn().mockResolvedValueOnce(null).mockResolvedValue(catalog);
+    const load = sidebarCatalogForWindow(discover);
+    const initial = load();
+    expect(load()).toBe(initial);
+    await expect(initial).rejects.toThrow(/catalog/i);
+    expect(await load()).toBe(catalog);
+    expect(await load()).toBe(catalog);
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
+  it("finishes catalog eviction on retry without discarding the recent cache twice", async () => {
+    const f = fixture();
+    f.manager.getConversation.mockResolvedValueOnce(f.state).mockResolvedValue(null);
+    f.catalog.notifyThread.mockRejectedValueOnce(new Error("temporarily unavailable"));
+    await expect(f.run()).rejects.toThrow("temporarily unavailable");
+    await f.run();
+    expect(f.manager.discardConversationFromCache).toHaveBeenCalledTimes(1);
+    expect(f.catalog.notifyThread).toHaveBeenCalledTimes(2);
+    expect(f.catalog.notifyThread).toHaveBeenLastCalledWith(key, "remove");
+  });
   it("evicts the confirmed empty thread from the catalog and recent cache", async () => {
     const f = fixture();
     await f.run();
@@ -54,9 +78,16 @@ describe("remote sidebar history", () => {
     await f.run();
     expect(f.catalog.readEntries).not.toHaveBeenCalled();
   });
+  it.each([new Error("Disconnected"), { ...absent, jsonRpcCode: -32000 }])(
+    "reports an unavailable Host for bounded retry",
+    async (error) => {
+      const f = fixture();
+      f.manager.sendRequest.mockRejectedValue(error);
+      await expect(f.run()).rejects.toBe(error);
+      expect(f.catalog.readEntries).not.toHaveBeenCalled();
+    },
+  );
   it.each([
-    new Error("Disconnected"),
-    { ...absent, jsonRpcCode: -32000 },
     { ...absent, message: "thread not loaded: another" },
     { ...absent, message: "External Native Session is unavailable" },
   ])("keeps the catalog on an inconclusive read", async (error) => {

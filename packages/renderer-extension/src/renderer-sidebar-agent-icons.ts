@@ -321,7 +321,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
 
 export function installRendererSidebarAgentIcons(options: {
   getClient(hostId: string): RendererModelClient | null;
-  checkRemotePlaceholder?(hostId: string, threadId: string, cwd: string): void;
+  checkRemotePlaceholder?(hostId: string, threadId: string, cwd: string): void | Promise<void>;
   getPlugins?(hostId: string): readonly HarnessPluginDescriptor[] | undefined;
   getLocalAgent?(input: {
     hostId: string;
@@ -331,7 +331,10 @@ export function installRendererSidebarAgentIcons(options: {
   dom?: SidebarAgentIconDom;
 }): RendererSidebarAgentIcons {
   const dom = options.dom ?? new BrowserSidebarAgentIconDom(document);
-  const ownershipByThread = new Map<string, { agent: RendererAgent; stale: boolean }>();
+  const ownershipByThread = new Map<
+    string,
+    { agent: RendererAgent; stale: boolean; client?: RendererModelClient }
+  >();
   const pending = new Set<string>();
   const failed = new Set<string>();
   const provisionalCodex = new Set<string>();
@@ -340,8 +343,9 @@ export function installRendererSidebarAgentIcons(options: {
   const dirtyRows = new Set<SidebarAgentIconRow>();
   const checked = new WeakMap<
     SidebarAgentIconRow,
-    { key: string; client: RendererModelClient; cwd: string }
+    { key: string; client: RendererModelClient; cwd: string; retry: boolean; waiting: boolean }
   >();
+  const placeholderRetryTimers = new Set<ReturnType<typeof setTimeout>>();
   // Index mounted row identities so replies/retries update only the affected
   // Thread, including duplicate rows, without retaining stale recycled identities.
   const rowsByThread = new Map<string, Set<SidebarAgentIconRow>>();
@@ -423,34 +427,15 @@ export function installRendererSidebarAgentIcons(options: {
       .then(() => client.listThreadOwnership({ threadIds }))
       .then(({ threads }) => {
         if (disposed) return;
-        let currentClient: RendererModelClient | null | undefined;
         for (const ownership of threads) {
           const key = ownershipKey(hostId, ownership.threadId);
           ownershipByThread.set(key, {
+            client,
             agent: rendererAgentForThreadOwnership(ownership),
             stale: false,
           });
           failed.delete(key);
           if (ownership.owner === "codex") {
-            if (options.checkRemotePlaceholder && hostId.startsWith("remote-ssh")) {
-              for (const row of rowsByThread.get(key) ?? []) {
-                const cwd = row.placeholderPath?.();
-                const previous = checked.get(row);
-                if (
-                  !cwd ||
-                  !row.isConnected() ||
-                  row.threadId() !== ownership.threadId ||
-                  row.hostId() !== hostId ||
-                  (previous?.key === key && previous.client === client && previous.cwd === cwd)
-                )
-                  continue;
-                currentClient ??= options.getClient(hostId);
-                if (currentClient !== client) break;
-                checked.set(row, { key, client, cwd });
-                options.checkRemotePlaceholder(hostId, ownership.threadId, cwd);
-                break;
-              }
-            }
             provisionalCodex.add(key);
             scheduleOwnershipRetry(hostId, ownership.threadId);
           } else {
@@ -475,6 +460,55 @@ export function installRendererSidebarAgentIcons(options: {
         }
       });
   };
+
+  function checkPlaceholder(
+    row: SidebarAgentIconRow,
+    hostId: string,
+    threadId: string,
+    client: RendererModelClient,
+  ) {
+    const check = options.checkRemotePlaceholder;
+    if (!check || !hostId.startsWith("remote-ssh")) return;
+    const cwd = row.placeholderPath?.();
+    if (!cwd) {
+      checked.delete(row);
+      return;
+    }
+    const key = ownershipKey(hostId, threadId);
+    let state = checked.get(row);
+    if (!state || state.key !== key || state.cwd !== cwd || state.client !== client) {
+      state = { key, cwd, client, retry: false, waiting: false };
+      checked.set(row, state);
+    }
+    if (state.waiting) return;
+    const attempt = state;
+    attempt.waiting = true;
+    void Promise.resolve()
+      .then(() => {
+        if (
+          !disposed &&
+          checked.get(row) === attempt &&
+          row.isConnected() &&
+          row.hostId() === hostId &&
+          row.threadId() === threadId &&
+          row.placeholderPath?.() === cwd &&
+          options.getClient(hostId) === client
+        )
+          return check(hostId, threadId, cwd);
+        if (checked.get(row) === attempt) checked.delete(row);
+      })
+      .catch(() => {
+        if (disposed || checked.get(row) !== attempt || attempt.retry) return;
+        attempt.retry = true;
+        const timer = setTimeout(() => {
+          placeholderRetryTimers.delete(timer);
+          if (checked.get(row) !== attempt) return;
+          attempt.waiting = false;
+          scheduleScan([row]);
+        }, 300);
+        placeholderRetryTimers.add(timer);
+      });
+  }
 
   const scan = (): void => {
     scanScheduled = false;
@@ -527,7 +561,11 @@ export function installRendererSidebarAgentIcons(options: {
       if (cached) {
         // Revalidation must not remove a known icon while its reply is pending.
         row.render(cached.agent, getPlugin(hostId, cached.agent));
-        if (!cached.stale) continue;
+        if (!cached.stale) {
+          if (cached.agent === "codex" && cached.client)
+            checkPlaceholder(row, hostId, threadId.data, cached.client);
+          continue;
+        }
       } else row.clear();
       if (!pending.has(key) && !failed.has(key)) {
         let unresolved = unresolvedByHost.get(hostId);
@@ -591,6 +629,8 @@ export function installRendererSidebarAgentIcons(options: {
       if (disposed) return;
       disposed = true;
       stopObserving();
+      for (const timer of placeholderRetryTimers) clearTimeout(timer);
+      placeholderRetryTimers.clear();
       for (const row of dirtyRows) row.clear();
       dirtyRows.clear();
       rowsByThread.clear();

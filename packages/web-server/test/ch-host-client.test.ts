@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -34,6 +34,33 @@ async function fixture(t: TestContext) {
   assert.equal((await rpc.dispatch("session/list", { args: {} })).ok, true);
   return { host, client, rpc };
 }
+
+it("uses only the running Host's projects even when Web has a different CODEX_HOME", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-host-workspace-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const webProject = { id: "web-only", name: "Web only", rootPaths: [root] };
+  writeFileSync(
+    join(root, ".codex-global-state.json"),
+    JSON.stringify({
+      "local-projects": { "web-only": webProject },
+      "app-server-project-id-by-legacy-project-id-by-host": {
+        [`local:${root}`]: { "web-only": "native-web-only" },
+      },
+    }),
+  );
+  const host = new FakeChChannel();
+  host.add("imported", join(root, "host-project"));
+  const dataDirectory = join(root, "host-data");
+  const directory = join(dataDirectory, "client-hosts");
+  const control = await startFakeChChannel(host, directory, "service");
+  t.after(() => control.close());
+  const client = await createChHostClient({
+    directory,
+    launch: { launcher: "/unused", runtime: "/unused", dataDirectory, codexHome: root },
+  });
+  t.after(() => client.close());
+  assert.deepEqual(await client.projects(["imported"]), { ...host.projectSnapshot, pinned: [] });
+});
 
 it("preserves a busy Host snapshot error in Web history and allows an explicit retry", async (t) => {
   const { host, rpc } = await fixture(t);

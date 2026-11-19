@@ -25,7 +25,6 @@ import {
   type ClientSnapshotOptions,
 } from "@codexhost/shared-contracts";
 import { RpcError } from "./transport.ts";
-import { completeDesktopProjects } from "./ch-desktop-projects.ts";
 
 export interface ChHostClient {
   request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
@@ -309,17 +308,9 @@ export async function createChHostClient(
       respond: (input) => hostOperation(channel.respond(input)),
     },
     request,
-    projects: async (ids) =>
+    projects: (ids) =>
       endpoint?.owner === "service"
-        ? completeDesktopProjects(
-            await channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", {
-              threadIds: ids,
-            }),
-            options.launch?.codexHome ??
-              options.launch?.environment?.CODEX_HOME ??
-              process.env.CODEX_HOME ??
-              join(homedir(), ".codex"),
-          )
+        ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
         : desktop.projects(ids),
     pins: (change) => requestPins((method, params) => channel.request(method, params), change),
     close() {

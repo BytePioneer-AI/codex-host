@@ -426,6 +426,7 @@ describe("Renderer fixed Model request client", () => {
       "getHarnessDisplaySettings",
       "getHarnessLaunchSettings",
       "getHarnessPreferences",
+      "hasDesktopThread",
       "importHarnessSession",
       "inspectCodexAccountUsage",
       "inspectHarness",
@@ -466,6 +467,7 @@ describe("Renderer fixed Model request client", () => {
       "subscribeSkillsChanged",
       "subscribeThreadUsage",
       "updateRemote",
+      "watchThreadTree",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(

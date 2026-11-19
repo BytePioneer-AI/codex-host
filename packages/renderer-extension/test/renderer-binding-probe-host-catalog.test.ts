@@ -114,7 +114,8 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
+vi.mock("../src/renderer-sidebar-agent-icons.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/renderer-sidebar-agent-icons.js")>()),
   SIDEBAR_THREAD_ROW_SELECTOR: "[data-app-action-sidebar-thread-row]",
   installRendererSidebarAgentIcons: (
     options: Parameters<typeof installRendererSidebarAgentIcons>[0],

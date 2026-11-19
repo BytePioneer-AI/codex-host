@@ -102,6 +102,7 @@ import {
 } from "./renderer-new-thread-preference.js";
 import {
   installRendererSidebarAgentIcons,
+  BrowserSidebarAgentIconDom,
   SIDEBAR_THREAD_ROW_SELECTOR,
 } from "./renderer-sidebar-agent-icons.js";
 import {
@@ -123,7 +124,9 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
-import { openCodexSchedules } from "./codex-schedule-navigation.js";
+import { openCodexSchedules, openCodexThread } from "./codex-schedule-navigation.js";
+import { createDesktopTreeRelay, openLocalExtensionThread } from "./desktop-extension-api.js";
+import { installDesktopExtensionHost } from "./desktop-extension-host.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
   RendererConnectionDiagnostics,
@@ -845,7 +848,9 @@ export function installRendererBindingProbe(
     return null;
   };
   const sidebarThreadState = installRendererSidebarThreadState();
+  const sidebarDom = new BrowserSidebarAgentIconDom(document);
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
+    dom: sidebarDom,
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {
       if (hostId === "durable") return undefined;
@@ -3530,6 +3535,32 @@ export function installRendererBindingProbe(
       : null;
   });
 
+  const treeRelay = createDesktopTreeRelay(
+    (callback) => modelClientForHost("local")?.watchThreadTree?.(callback) ?? (() => undefined),
+  );
+  const unbindDesktopExtensions = installDesktopExtensionHost().bind({
+    ready: () =>
+      !disposed && window.__codexhostRendererBindingProbeV1?.status().adapter.state === "ready",
+    sidebar: sidebarDom,
+    watchTree: treeRelay.subscribe,
+    describe: (id) => {
+      const plugin = pluginForHost("local", id);
+      return plugin
+        ? { name: plugin.name, ...(plugin.icon ? { icon: plugin.icon } : {}) }
+        : id === "codex"
+          ? { name: "Codex" }
+          : undefined;
+    },
+    openThread: (id, signal) =>
+      openLocalExtensionThread(
+        id,
+        signal,
+        sidebarDom.rows(),
+        async (threadId) =>
+          (await modelClientForHost("local")?.hasDesktopThread?.(threadId)) === true,
+        openCodexThread,
+      ),
+  });
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
@@ -3596,6 +3627,7 @@ export function installRendererBindingProbe(
       applyAdapterAgent = applyAgent ?? null;
       modelControl = nextModelControl ?? null;
       adapterStatus = status;
+      treeRelay.reconnect();
       publishConnectionStatus();
       const installedModelControl = modelControl;
       queueMicrotask(() => {
@@ -3648,6 +3680,7 @@ export function installRendererBindingProbe(
     dispose() {
       if (disposed) return;
       disposed = true;
+      unbindDesktopExtensions();
       pendingDefaultPreferences.clear();
       window.removeEventListener(HARNESS_PREFERENCES_UPDATED_EVENT, onPreferencesChanged);
       questions.dispose();

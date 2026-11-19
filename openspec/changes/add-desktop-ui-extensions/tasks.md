@@ -18,8 +18,8 @@
 
 ## 4. Desktop 注入与宿主 API（renderer-extension、desktop-control）
 
-- [ ] 4.1 新增 `desktop-extension-host.ts` 和 `desktop-extension-api.ts`：内部注册表（`??=` 安装，由 probe 的 dispose 调用 `disposeAll`）、串行对账、等宿主桥就绪后再激活、`define`/`activate` 约定与超时、v1 原语（封装 `SidebarAgentIconDom`；把 #947 的 `openCodexThread` 并入 `codex-schedule-navigation.ts`；本机 Harness 目录；页面内共享一份 tree watch）、清理超时后的强制回收、卸载后丢弃迟到的投递、错误预算、防御性槽位检查。验证：renderer-extension 聚焦测试覆盖 hash 相同不重复激活、更新时先卸载后激活、未提供清理的扩展被禁用后挂载节点被移除且被标记的原生行恢复显示、清理超时仍完成回收、迟到的 tree 快照不交给已卸载扩展、回调连续出错进入 `failed` 而其他扩展不受影响、`openThread` 拒绝非本机请求。
-- [ ] 4.2 在 desktop-control 中新增 `renderer-desktop-extensions.ts`，接入 `installTarget`、`ensureInstalled` 和 production-controller 的启动与关闭。实现内容：`fs.watch` 只作提示，配合防抖、`executionContextCreated` 与 30 s 兜底扫描；只保留一个快照脚本标识，先移除旧标识再注册新标识；先更新快照脚本再做实时对账；Controller 重启时先读 `status()`；`reloadToken` 只处理一次并记录在案；写 `diagnostics/desktop-extensions-v1.json`。验证：用现有注入 CDP operations 的方式写聚焦测试（文件系统使用真实临时目录），覆盖集合变化时标识被替换且任何时刻只有一个、hash 未变时不重新发送脚本、目标被替换后重新挂接、Controller 重启后不重复注入、令牌只触发一次 `Page.reload`、配置损坏时对账为空集合。
+- [x] 4.1 新增 `desktop-extension-host.ts` 和 `desktop-extension-api.ts`：内部注册表（`??=` 安装，由 probe 的 dispose 调用 `disposeAll`）、串行对账、等宿主桥就绪后再激活、`define`/`activate` 约定与超时、v1 原语（封装 `SidebarAgentIconDom`；把 #947 的 `openCodexThread` 并入 `codex-schedule-navigation.ts`；本机 Harness 目录；页面内共享一份 tree watch）、清理超时后的强制回收、卸载后丢弃迟到的投递、错误预算、防御性槽位检查。验证：renderer-extension 聚焦测试覆盖 hash 相同不重复激活、更新时先卸载后激活、未提供清理的扩展被禁用后挂载节点被移除且被标记的原生行恢复显示、清理超时仍完成回收、迟到的 tree 快照不交给已卸载扩展、回调连续出错进入 `failed` 而其他扩展不受影响、`openThread` 拒绝非本机请求。
+- [x] 4.2 在 desktop-control 中新增 `renderer-desktop-extensions.ts`，接入 `installTarget`、`ensureInstalled` 和 production-controller 的启动与关闭。实现内容：`fs.watch` 只作提示，配合防抖、`executionContextCreated` 与 30 s 兜底扫描；只保留一个快照脚本标识，先移除旧标识再注册新标识；先更新快照脚本再做实时对账；Controller 重启时先读 `status()`；`reloadToken` 只处理一次并记录在案；写 `diagnostics/desktop-extensions-v1.json`。验证：用现有注入 CDP operations 的方式写聚焦测试（文件系统使用真实临时目录），覆盖集合变化时标识被替换且任何时刻只有一个、hash 未变时不重新发送脚本、目标被替换后重新挂接、Controller 重启后不重复注入、令牌只触发一次 `Page.reload`、配置损坏时对账为空集合。
 
 ## 5. 样板、边界与验收
 

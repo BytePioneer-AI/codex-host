@@ -59,7 +59,10 @@ export async function extensionsRoute(
           : undefined;
       const conflictWith = conflicts.get(item.id);
       const observed: DesktopExtensionStatus = !enabled
-        ? { state: "disabled" }
+        ? {
+            state: "disabled",
+            ...(active?.state === "disabled" && active.error ? { error: active.error } : {}),
+          }
         : conflictWith
           ? { state: "conflict", conflictWith }
           : active?.hash === item.hash

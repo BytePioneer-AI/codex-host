@@ -193,6 +193,14 @@ export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
 
+import {
+  THREAD_TREE_SNAPSHOT_METHOD,
+  THREAD_TREE_UNWATCH_METHOD,
+  THREAD_TREE_WATCH_METHOD,
+  threadTreeWatchResultSchema,
+  type ThreadTreeSnapshot,
+} from "@codexhost/shared-contracts";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -226,6 +234,8 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  watchThreadTree?(receive: (snapshot: ThreadTreeSnapshot) => void): () => void;
+  hasDesktopThread?(id: string): Promise<boolean>;
   getHarnessPreferences?(scope?: string): Promise<HarnessPreferenceSnapshot>;
   patchHarnessPreferences?(input: HarnessPreferencePatch): Promise<HarnessPreferenceSnapshot>;
   subscribeHarnessPreferences?(listener: () => void): () => void;
@@ -351,6 +361,53 @@ export function createRendererModelClient(
     ),
   };
 
+  const watchThreadTree = (receive: (snapshot: ThreadTreeSnapshot) => void) => {
+    let closed = false;
+    let subscriptionId: string | undefined;
+    let revision = -1;
+    const unwatch = (id: string) =>
+      void manager
+        .sendRequest(THREAD_TREE_UNWATCH_METHOD, { subscriptionId: id })
+        .catch(() => undefined);
+    const remove = notificationTarget(source)?.addNotificationCallback?.(
+      THREAD_TREE_SNAPSHOT_METHOD,
+      (message) => {
+        const result = threadTreeWatchResultSchema.safeParse(
+          isRecord(message) ? message.params : undefined,
+        );
+        if (
+          !closed &&
+          result.success &&
+          subscriptionId === result.data.subscriptionId &&
+          result.data.snapshot.revision > revision
+        ) {
+          revision = result.data.snapshot.revision;
+          receive(result.data.snapshot);
+        }
+      },
+    );
+    if (remove)
+      void manager
+        .sendRequest(THREAD_TREE_WATCH_METHOD, {})
+        .then((value) => {
+          const result = threadTreeWatchResultSchema.parse(value);
+          if (closed) {
+            unwatch(result.subscriptionId);
+            return;
+          }
+          subscriptionId = result.subscriptionId;
+          revision = result.snapshot.revision;
+          receive(result.snapshot);
+        })
+        .catch(() => remove());
+    return () => {
+      if (closed) return;
+      closed = true;
+      remove?.();
+      if (subscriptionId) unwatch(subscriptionId);
+    };
+  };
+
   const inspectHarness = async (
     input: HarnessInspectParams,
     options?: RendererRequestOptions,
@@ -434,6 +491,11 @@ export function createRendererModelClient(
           harnessPreferencePatchSchema.parse(input),
         ),
       );
+    },
+    watchThreadTree,
+    async hasDesktopThread(threadId: string) {
+      const result = await manager.sendRequest("thread/read", { threadId, includeTurns: false });
+      return isRecord(result) && isRecord(result.thread) && result.thread.id === threadId;
     },
     subscribeHarnessPreferences(listener: () => void) {
       return (

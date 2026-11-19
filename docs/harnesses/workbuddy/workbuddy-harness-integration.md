@@ -42,9 +42,16 @@ WorkBuddy AI 5.8.4 的 macOS 安装包仅包含 `dist/codebuddy-lite-wb.mjs`，�
 
 直接运行内置 CLI 时，其内部默认值可能回退到 `~/.codebuddy`。插件不会沿用这一跨产品默认值：它只把 `WORKBUDDY_CONFIG_DIR` 视为用户选择；没有该值时使用 `~/.workbuddy-ai`，随后强制传给子进程的 `WORKBUDDY_CONFIG_DIR` 与 `CODEBUDDY_CONFIG_DIR` 指向同一 WorkBuddy 根。这样即使普通 CodeBuddy 配置了自己的 `CODEBUDDY_CONFIG_DIR`，WorkBuddy 的历史、认证和设置也不会泄漏到该目录。WorkBuddy CLI 负责认证、原生设置、工具和 MCP 配置；codexhost 不保存、复制或推断其凭据。
 
-新版内置 CLI 的独立 ACP 启动不会自行初始化加密凭据读取能力。对于应用内置入口，插件先在同一个 WorkBuddy Electron 进程中调用其 `electron_browser_workbuddy_storage` 原生绑定，再通过内置 CLI 的 credential bootstrap 接收器初始化字段加密。密钥按原生 `normalizeAtRestKeyPayload` 规则规范化，只在该进程内存与本次随机管道中传递；不写入参数、环境变量或文件，也不由 Host 解密、复制登录 Token。CLI 随后按自己的认证逻辑读取已有登录文件。完整的受管 bootstrap 环境保持原样；已有 socket、Token 或 Session ID 配置时，要求加密策略与四项通信配置均非空，否则在加载 CLI 前明确报错。仅设置 `WORKBUDDY_AT_REST_ENCRYPTION=fields` 或空策略时仍执行字段加密引导，其他显式策略交给原生 CLI 处理；旧应用没有该原生绑定时继续原有启动流程。
+新版内置 CLI 的独立 ACP 启动不会自行初始化加密凭据读取能力。对于应用内置入口，插件先在同一个 WorkBuddy Electron 进程中调用其 `electron_browser_workbuddy_storage` 原生绑定，再通过内置 CLI 的 credential bootstrap 接收器初始化字段加密。密钥按原生 `normalizeAtRestKeyPayload` 规则规范化，只在该进程内存与本次随机管道中传递；不写入参数、环境变量或文件，也不由 Host 解密、复制登录 Token。CLI 随后按自己的认证逻辑读取已有登录文件。完整的受管 bootstrap 环境保持原样；已有 socket、Token 或 Session ID 配置时，要求加密策略与四项通信配置均非空，否则在加载 CLI 前明确报错。`disabled` 策略交给原生 CLI；`fields`、`required` 或空策略执行字段加密引导；旧应用没有该原生绑定时继续原有启动流程。
 
-此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0 及 macOS WorkBuddy AI 5.8.4 / CLI 2.161.0 的字段加密策略下验证，升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，包含 TUI 的发行可在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
+内置 CLI 的接收器存在两种线格式，插件读取 CLI 自身 `package.json` 的发布版本选择：真实版本在 `publishConfig.customPackage.version`，顶层 `version` 固定为 `0.0.0`。不能在同一次启动中试错重发，接收器只接受一次连接：
+
+| CLI 版本 | 引导键 | 确认帧 |
+| --- | --- | --- |
+| `< 2.156` | `bootstrap.mode: "required"` | `{ok,mode}` + 空格，无换行 |
+| `>= 2.156` | `bootstrap.policy: "fields"` | `{ok,policy}` + 换行 |
+
+此接入使用 WorkBuddy 自带的实现接口，不属于 ACP 标准：字段加密策略已在 Windows WorkBuddy AI 5.7.6 / CLI 2.156.0、macOS WorkBuddy AI 5.8.4 / CLI 2.161.0 与 Windows WorkBuddy 5.5.6 / CLI 2.137.1（旧版 `mode` 协议）上验证；2.138–2.155 未逐版验证，2.156 阈值由 2.137.1 与 2.156.0/2.161.0 的实测界定。升级后须复核原生绑定、密钥格式和接收器。失败时停止启动，不关闭加密或写回明文凭据。POSIX 临时 socket 使用独立的 `0700` 目录，Windows 使用随机命名管道；收到原生确认后清理引导资源。若独立 CLI 仍要求认证，包含 TUI 的发行可在 Host 外启动相同产品配置和数据根的内置 TUI，然后执行官方 [`/login`](https://cloud.tencent.com/document/product/1831/137046)：
 
 ```sh
 CODEBUDDY_CONFIG_DIR="$HOME/.workbuddy-ai" \
@@ -98,7 +105,7 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 | Cancel | 使用原生取消；取消后的连接恢复沿用 ACP Session 的进程重建与状态恢复约束，不能把仅收到取消回执当作新 Turn 已可用。 |
 | Model、Thinking、Permission Mode | macOS 使用 ACP 原生 Model List；Windows 将 resolved snapshot 的 CLI Model 目录与 ACP 配置目录合并去重，并允许选择补充项，选择后等待 ACP `currentValue` 确认。Thinking 和 Permission Mode 仍只使用 ACP 原生选项。 |
 | Question | 使用原生 interruption/question 流程映射到 Host Question；只调用公开会话支持的扩展。 |
-| Usage | 读取原生模型请求用量。未实现账号总额度，也不把 credits 推断为美元。 |
+| Usage | 读取原生模型请求用量，上下文窗口沿用 ACP 当前会话预算，不替换为模型最大支持值。确认模型改变时旧上下文失效，累计用量保留；重复确认同一模型不清除其新用量。未实现账号总额度，也不把 credits 推断为美元。 |
 | Native history | 从隔离的 WorkBuddy 原生历史读取当前父链，保留持久化用户消息 ID；缺失、歧义、损坏或不完整状态不会伪装成成功。 |
 | Native subagents | 投影原生 Agent 子任务状态，并从同一 WorkBuddy 数据根读取受约束的只读子 Thread；派生 Session 会固定并复制已保留 Agent 结果引用的子 Transcript 前缀。这不等于获得 Desktop 私有任务或连接器。 |
 | Slash commands | 暴露固定且可安全映射的 `/compact` 与 `/init`。命令目录在 Adapter 与 Session 之间保持一致；会切换 Session、脱离当前 Thread 或依赖原生 UI 的命令不通过 Host 暴露。 |
@@ -109,6 +116,14 @@ WorkBuddy 插件复用经过验证的 CodeBuddy ACP Session 语义，但保持�
 | Images | 当前公共 Turn 输入仍为文本；CLI 声明图像能力不等于 Host 已提供图片输入。 |
 
 上述“已实现”表示 Adapter 的协议和公共契约路径已接线，不表示本轮完成了认证后的付费在线验收。尤其是 Model 目录、权限名称、历史格式和子 Agent 事件仍须在已登录的目标账号与实际 WorkBuddy 版本上复核；运行时以原生响应为准，不把 2.137.1 的观察结果硬编码为永久产品能力。
+
+### 原生历史续行
+
+共享历史投影在普通消息路径中将 `startsNewUserRequest: false` 视为当前 Turn 的续行，而非新的用户请求。`isMeta: true` 的内部行，以及正文完全由 `<system-reminder data-role="user-context">…</system-reminder>` 包装块和空白组成的行不进入用户输入；包装内引用 `<user_query>` 不改变这一判断。其他续行文本（包括原生 steer 的真实用户追加）保留在当前 Turn 的 input 中，不改变原生 Turn ID、checkpoint 或待完成工具的关联。`startsNewUserRequest: true` 仍创建新 Turn，即使同时带有 `isMeta: true`；正文中的 `<user_query>` 不覆盖续行元数据。本地命令与压缩记录继续使用各自的专用投影。这一历史读取行为不表示 Host 已支持发送 `turn.steer`。
+
+取消生成可能留下参数尚未闭合的 `function_call`。同时标记 `status: incomplete`、`providerData.isPartialAborted: true` 和 `providerData.discard: true` 的调用仅作为原生父链节点保留，不解析参数，也不投影为已启动的工具；后续 Turn 仍可读取。缺少上述丢弃证据的无效参数仍按协议错误处理，不将损坏历史伪装为成功。
+
+Fork 的子 Transcript 收集沿用上述丢弃判定，不将已丢弃的 Agent 调用视为待完成委派；保留前缀与父链节点不变。没有完整丢弃证据的未完成 Agent 委派仍拒绝 Fork，不跳过真实子任务的身份和范围验证。
 
 ### 流式消息身份与显示边界
 
@@ -170,6 +185,8 @@ codexhost broker status --harness workbuddy
 - 确认本机独立 ACP `session/new` 返回认证要求，集成不依赖 Desktop 私有登录态；
 - 确认标准 ACP `session/fork` 不存在，并核对公开 CLI Fork、原生 `/fork` 与 rollback 扩展；
 - 核对公开 ACP 能力与私有 owner runtime/admission 的边界。
+
+2026-10-22 在 Windows WorkBuddy 5.5.6 / CLI 2.137.1 上验证了旧版 `bootstrap.mode` 引导：独立 ACP 启动后 CLI 日志出现 `stage=afterRestore hasSession=true hasAccessToken=true`，未执行手动 `/login`。
 
 2026-09-18 在本机 macOS 的 WorkBuddy App 内置 CLI 上，以现有原生认证和 Auto 模型完成了真实 create → 空历史读取 → 首条 Turn → close → 同 Session resume → 第二条 Turn → 两轮历史读取。执行目录包含大小写、点号、中文和空格；两个 Turn 都成功，没有请求工具或文件修改。另验证了真实跨目录 Fork 到第一轮：派生会话恰好保留一轮，源会话仍保留两轮，派生会话关闭后可在目标 cwd 恢复。此前失败任务的原生空历史也已通过修正后的只读目录校验。
 

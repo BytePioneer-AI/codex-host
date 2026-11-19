@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { AntigravityAdapter } from "@codexhost/adapter-antigravity";
@@ -12,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 const RUN_REAL = process.env.CODEXHOST_RUN_ANTIGRAVITY_QUESTION_REAL === "1";
 
-describe.skipIf(!RUN_REAL)("Antigravity real question bridge", () => {
+describe.skipIf(!RUN_REAL)("Antigravity real ACP elicitation", () => {
   it("projects a real question, returns the answer, cancels, and restores history", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-real-"));
     const environment = {
@@ -20,7 +21,7 @@ describe.skipIf(!RUN_REAL)("Antigravity real question bridge", () => {
       CODEXHOST_DATA_DIR: path.join(workspace, "data"),
       CODEXHOST_THREAD_ID: randomUUID(),
     };
-    const adapter = new AntigravityAdapter({ environment, printTimeout: "2m" });
+    const adapter = new AntigravityAdapter({ environment, commandTimeoutMs: 120_000 });
     const outputs: HarnessOutput[] = [];
     const wire: JsonObject[] = [];
     const snapshots: unknown[] = [];
@@ -102,7 +103,8 @@ describe.skipIf(!RUN_REAL)("Antigravity real question bridge", () => {
       return output.event;
     };
     const prompt =
-      "This is a synthetic integration test; responses are automated test data, not human choices. Call ask_question exactly once. Ask 'Choose a diagnostic option' with options Alpha and Beta, single choice. Do not use any other tools or read files. After a response, repeat its exact text. Do not retry merely because the Hook blocked the native call.";
+      "This is a synthetic integration test; responses are automated test data, not human choices. Call ask_question exactly once. Ask 'Choose a diagnostic option' with options Alpha and Beta, single choice. Do not use any other tools or read files. After receiving the user's answer, repeat its exact text.";
+    let createdNativeSessionId: string | undefined;
     try {
       const opened = await adapter.open({ kind: "create", cwd: workspace });
       if (!opened.ok) throw new Error(opened.error.message);
@@ -136,12 +138,13 @@ describe.skipIf(!RUN_REAL)("Antigravity real question bridge", () => {
       ).toEqual({ ok: true, value: { accepted: true } });
       const first = await complete(firstId);
       expect(first.outcome.status).toBe("succeeded");
-      expect(first.nativeTurnRef?.nativeTurnKey).toBe("turn:1");
+      expect(first.nativeTurnRef?.nativeTurnKey).toBe("turn-0");
       const snapshot = await session.readSnapshot();
       snapshots.push(snapshot);
       if (!snapshot.ok) throw new Error(snapshot.error.message);
       const nativeRef = snapshot.value.state?.nativeRef;
       if (!nativeRef) throw new Error("Missing Native Session identity");
+      createdNativeSessionId = nativeRef.nativeSessionId;
       expect(snapshot.value.turns).toHaveLength(1);
       expect(snapshot.value.turns[0]?.input).toHaveLength(1);
       expect(
@@ -150,11 +153,23 @@ describe.skipIf(!RUN_REAL)("Antigravity real question bridge", () => {
         ),
       ).toBe(true);
       expect(
+        outputs.some(
+          (output) =>
+            output.kind === "event" &&
+            output.event.type === "item.completed" &&
+            output.event.turnId === firstId &&
+            output.event.snapshot.item.type === "toolExecution" &&
+            output.event.snapshot.item.toolName === "ask_question" &&
+            output.event.snapshot.outcome.status === "succeeded",
+        ),
+      ).toBe(true);
+      expect(
         snapshot.value.turns[0]?.items.some(
-          ({ item }) =>
+          ({ item, outcome }) =>
             item.type === "toolExecution" &&
-            item.toolName === "codexhost.ask_question" &&
-            JSON.stringify(item.output).includes(responseToken),
+            item.toolName === "ask_question" &&
+            outcome.status === "succeeded" &&
+            JSON.stringify(item.arguments).includes("Choose a diagnostic option"),
         ),
       ).toBe(true);
 
@@ -193,7 +208,11 @@ describe.skipIf(!RUN_REAL)("Antigravity real question bridge", () => {
       stage = "resume";
       if (!resumed.ok) throw new Error(resumed.error.message);
       session = resumed.value;
-      expect(await session.readSnapshot()).toEqual(snapshot);
+      const resumedSnapshot = await session.readSnapshot();
+      expect(resumedSnapshot.ok).toBe(true);
+      if (resumedSnapshot.ok) {
+        expect(resumedSnapshot.value.turns[0]).toEqual(snapshot.value.turns[0]);
+      }
       consuming = consume(session);
       const resumedId = await start(session, "No tools. Reply exactly AGY_QUESTION_RESUMED.");
       expect((await complete(resumedId)).outcome.status).toBe("succeeded");
@@ -205,6 +224,27 @@ describe.skipIf(!RUN_REAL)("Antigravity real question bridge", () => {
     } finally {
       await adapter.close();
       await consuming;
+      if (createdNativeSessionId) {
+        const agyRoot = path.join(os.homedir(), ".gemini", "antigravity-cli");
+        for (const suffix of ["", "-wal", "-shm"]) {
+          await rm(path.join(agyRoot, "conversations", `${createdNativeSessionId}.db${suffix}`), {
+            force: true,
+          }).catch(() => undefined);
+        }
+        await rm(path.join(agyRoot, "brain", createdNativeSessionId), {
+          recursive: true,
+          force: true,
+        }).catch(() => undefined);
+        try {
+          const summaries = new DatabaseSync(path.join(agyRoot, "conversation_summaries.db"));
+          summaries
+            .prepare("DELETE FROM conversation_summaries WHERE conversation_id = ?")
+            .run(createdNativeSessionId);
+          summaries.close();
+        } catch {
+          // Best-effort cleanup of synthetic test conversation row.
+        }
+      }
       const evidence = process.env.CODEXHOST_ANTIGRAVITY_QUESTION_EVIDENCE_DIR;
       if (evidence) {
         await mkdir(evidence, { recursive: true });

@@ -21,6 +21,23 @@ function textSink(): { output: Writable; text(): string } {
 }
 
 describe("remote SSH Host CLI", () => {
+  it.each([
+    ["install", "--session", "invalid"],
+    ["start", "--session", "desktop"],
+  ])("rejects invalid or misplaced execution-session options: %s", async (...arguments_) => {
+    const stdout = textSink();
+    const stderr = textSink();
+    expect(
+      await runRemoteHostCli({
+        arguments: arguments_,
+        output: stdout.output,
+        diagnosticOutput: stderr.output,
+      }),
+    ).toBe(1);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toContain("remote install --session ssh|desktop");
+  });
+
   it("prints a bounded command summary", async () => {
     const stdout = textSink();
     const stderr = textSink();
@@ -32,11 +49,30 @@ describe("remote SSH Host CLI", () => {
         diagnosticOutput: stderr.output,
       }),
     ).resolves.toBe(0);
-    expect(stdout.text()).toContain("codexhost remote install");
+    expect(stdout.text()).toContain(
+      "codexhost remote install [--stock-codex PATH] [--shared-data DIRECTORY] [--session ssh|desktop]",
+    );
     expect(stdout.text()).toContain("codexhost remote start");
     expect(stdout.text()).toContain("codexhost remote stop");
     expect(stdout.text()).toContain("codexhost remote uninstall");
     expect(stdout.text()).not.toContain("--claude-command");
+    expect(stderr.text()).toBe("");
+  });
+
+  it("prints usage for a help command followed by the npm wrapper's resources", async () => {
+    const help = textSink();
+    await runRemoteHostCli({ arguments: ["--help"], output: help.output });
+    const stdout = textSink();
+    const stderr = textSink();
+
+    await expect(
+      runRemoteHostCli({
+        arguments: ["help", "--node", "/node", "--shim", "/shim", "--host-runtime", "/host.mjs"],
+        output: stdout.output,
+        diagnosticOutput: stderr.output,
+      }),
+    ).resolves.toBe(0);
+    expect(stdout.text()).toBe(help.text());
     expect(stderr.text()).toBe("");
   });
 

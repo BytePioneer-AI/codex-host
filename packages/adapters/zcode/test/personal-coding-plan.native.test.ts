@@ -64,12 +64,26 @@ function observe(session: HarnessSession) {
 
 // Runs the installed CLI, but never reads the user's credentials or contacts model/plan services.
 describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () => {
-  it.each(["zai", "bigmodel"] as const)(
-    "discovers, authenticates, switches and resumes %s independently of Start Plan",
-    async (family) => {
+  it.each(
+    (["zai", "bigmodel"] as const).flatMap((family) =>
+      ["legacy", "project"].map((credentialKind) => ({ family, credentialKind })),
+    ),
+  )(
+    "discovers, authenticates, switches and resumes $family/$credentialKind independently of Start Plan",
+    async ({ family, credentialKind }) => {
       if (!app) throw new Error("CODEXHOST_TEST_ZCODE_APP is required");
       const root = await realpath(await mkdtemp(path.join(tmpdir(), "zcode-coding-native-")));
-      const apiKey = `synthetic-${family}-personal-key`;
+      const apiKey =
+        credentialKind === "project"
+          ? [
+              { alg: "HS256", typ: "JWT", sign_type: "SIGN" },
+              { token_use: "project_access", api_key: "fixture-key" },
+            ]
+              .map((part) => Buffer.from(JSON.stringify(part)).toString("base64url"))
+              .join(".") + ".fixture-signature"
+          : `synthetic-${family}.fixture-secret`;
+      const loginToken = `synthetic-${family}-oauth`;
+      const tokenRequests: IncomingHttpHeaders[] = [];
       const labelPrefix = family === "bigmodel" ? "BigModel /" : "Z.AI /";
       const providerId = `account:${family}-individual-coding-plan`;
       const requests: Array<{ url: string; headers: IncomingHttpHeaders; model: string }> = [];
@@ -78,6 +92,31 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
         throw new Error("Personal Coding Plan must not open CAPTCHA");
       });
       const handler: RequestListener = async (request, response) => {
+        // The local fixture has no signing service. Exercise the CLI's native unavailable-service
+        // path; real signing is covered by live account validation, not this synthetic server.
+        if (request.url === "/api/paas/c1f3a7e2/v2/client") {
+          response.writeHead(503).end();
+          return;
+        }
+        if (
+          request.url ===
+          "/api/biz/v1/organization/fixture-org/projects/fixture-project/api_keys/fixture-key/access_tokens"
+        ) {
+          tokenRequests.push(request.headers);
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({
+              code: 200,
+              data: {
+                accessToken: apiKey,
+                tokenType: "Bearer",
+                expiresIn: 3600,
+                expiresAt: Date.now() / 1000 + 3600,
+              },
+            }),
+          );
+          return;
+        }
         if (request.url === "/api/biz/subscription/list") {
           subscriptions.push(request.headers);
           response.setHeader("content-type", "application/json");
@@ -201,7 +240,7 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
         environment.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = builtinFile;
         const directory = path.join(root, ".zcode/v2");
         await mkdir(directory, { recursive: true });
-        const credentials = {
+        const credentials: Record<string, string> = {
           "oauth:active_provider": family,
           [`oauth:${family}:user_info`]: JSON.stringify(
             family === "zai"
@@ -210,6 +249,20 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
           ),
           [`account-provider:coding-plan:${providerId}:account:fixture:api-key`]: apiKey,
         };
+        if (credentialKind === "project") {
+          Reflect.deleteProperty(
+            credentials,
+            `account-provider:coding-plan:${providerId}:account:fixture:api-key`,
+          );
+          credentials[`oauth:${family}:access_token`] = loginToken;
+          credentials[
+            `project-key-location:v1:${encodeURIComponent(JSON.stringify([origin, family, "fixture", null, 1, "non-team"]))}`
+          ] = JSON.stringify({
+            organizationId: "fixture-org",
+            projectId: "fixture-project",
+            apiKeyId: "fixture-key",
+          });
+        }
         const credentialFile = path.join(directory, "credentials.json");
         await writeFile(
           credentialFile,
@@ -291,7 +344,13 @@ describe.skipIf(!app)("Personal Coding Plan with the installed ZCode CLI", () =>
           expect(request.headers["x-aliyun-captcha-verify-param"]).toBeUndefined();
         }
         expect(subscriptions.length).toBeGreaterThan(0);
-        for (const headers of subscriptions) expect(headers.authorization).toBe(apiKey);
+        for (const headers of subscriptions)
+          expect(headers.authorization).toBe(credentialKind === "project" ? loginToken : apiKey);
+        if (credentialKind === "project") {
+          expect(tokenRequests.length).toBeGreaterThan(0);
+          for (const headers of tokenRequests)
+            expect(headers.authorization).toBe(`Bearer ${loginToken}`);
+        } else expect(tokenRequests).toHaveLength(0);
         expect(createVerifier).not.toHaveBeenCalled();
         expect(await readFile(credentialFile, "utf8")).toBe(savedCredentials);
       } finally {

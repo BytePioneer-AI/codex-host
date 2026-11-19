@@ -395,3 +395,73 @@ describe("Cursor advertised slash commands", () => {
     expect(await f.session.commands.list()).toMatchObject({ error: { code: "invalidState" } });
   });
 });
+
+describe("Cursor catalog parameter defaults", () => {
+  // Shape reported by cursor-agent 2026.10.22: `session/new` reflects the user's remembered
+  // parameters for the live model, while `cursor/list_available_models` reports Cursor's built-in
+  // defaults for every model (Grok defaults to Fast).
+  const fast = (value: string) => select("fast", value, ["false", "true"], "model_config");
+  const grokContext = select("context", "256k", ["256k", "500k"], "model_config");
+  const liveModel = select("model", "alpha", ["alpha", "grok"], "model");
+  const liveInfo: CursorSessionInfo = {
+    sessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    configOptions: [liveModel, effort, context, fast("false")],
+    nativeModels: [
+      { value: "alpha", name: "Alpha", configOptions: [effort, context, fast("true")] },
+      { value: "grok", name: "Grok", configOptions: [effort, grokContext, fast("true")] },
+    ],
+  };
+
+  it("pins parameters only for the live model and offers other models bare", () => {
+    const catalog = cursorCatalog(liveInfo);
+    expect(catalog.defaultModel).toEqual(cursorModelRef("alpha[context=200k,fast=false]"));
+    expect(catalog.models.map(({ ref }) => ref)).toEqual([
+      cursorModelRef("alpha[context=200k,fast=false]"),
+      cursorModelRef("grok"),
+    ]);
+    expect(catalog.models[1]?.supportedThinkingOptionIds).toHaveLength(2);
+    expect(cursorModelSelection(liveInfo, cursorModelRef("grok").id)).toEqual([["model", "grok"]]);
+  });
+
+  it("keeps the user's remembered parameters when switching to another catalog model", async () => {
+    const transport = new CursorTransport({ cwd: process.cwd(), environment: {} });
+    transport.sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const remembered = [
+      select("model", "grok", ["alpha", "grok"], "model"),
+      effort,
+      grokContext,
+      fast("false"),
+    ];
+    const configure = vi.spyOn(transport, "configure").mockImplementation(async (id, value) => {
+      if (id !== "model" || value !== "grok") throw new Error(`unexpected ${id}=${value}`);
+      return { configOptions: structuredClone(remembered) };
+    });
+    vi.spyOn(transport, "close").mockResolvedValue();
+    const session = new CursorSession(transport, structuredClone(liveInfo), () => {});
+    const done = (async () => {
+      for await (const output of session.outputs) void output;
+    })();
+    try {
+      const grok = required(
+        cursorCatalog(liveInfo).models.find(({ label }) => label === "grok"),
+      ).ref;
+      expect(await session.execute({ type: "model.select", model: grok })).toEqual({
+        ok: true,
+        value: { completed: true },
+      });
+      expect(configure).toHaveBeenCalledTimes(1);
+      expect(configure).not.toHaveBeenCalledWith("fast", expect.anything());
+      expect(session.initialState.effectiveModel).toEqual(
+        cursorModelRef("grok[context=256k,fast=false]"),
+      );
+      expect(
+        cursorCatalog(session.info).models.some(
+          ({ ref }) => ref.id === session.initialState.effectiveModel?.id,
+        ),
+      ).toBe(true);
+    } finally {
+      await session.close();
+      await done;
+    }
+  });
+});

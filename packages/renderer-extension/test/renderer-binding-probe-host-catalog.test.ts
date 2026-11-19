@@ -3,10 +3,16 @@ import {
   harnessPluginDescriptorSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
+  type AccountCreditsSnapshot,
 } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
+import {
+  createRendererModelClient,
+  THREAD_USAGE_INSPECT_METHOD,
+  THREAD_USAGE_UPDATED_METHOD,
+} from "../src/renderer-model-client.js";
 import {
   isRendererModelPickerDisabled,
   rendererModelSelectionFailed,
@@ -23,14 +29,15 @@ const testState = vi.hoisted(() => ({
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
+  renderedCredits: null as AccountCreditsSnapshot | null,
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
-  getSessionImportClient: null as null | (() => RendererSessionImportClient | null),
+  getSessionImportClient: null as null | ((hostId?: string) => RendererSessionImportClient | null),
   sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
   sidebarRefresh: vi.fn(),
   documentListeners: new Map<string, EventListener>(),
-  modelTarget: ["conversation", "thread-a"] as readonly unknown[],
+  modelTarget: ["conversation", "thread-a"] as readonly unknown[] | null,
   prewarmClears: 0,
   notifyMutations: null as null | ((records: MutationRecord[]) => void),
   animationFrames: [] as FrameRequestCallback[],
@@ -44,7 +51,6 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     composerForElement: () => testState.composer,
     editorForElement: (element: Element) =>
       element === testState.editor || element === testState.composer ? testState.editor : null,
-    eventElement: () => testState.composer,
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
@@ -82,8 +88,12 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       _switching: unknown,
       _availability: unknown,
       modelView: RendererModelControlView,
+      _permissionModeView: unknown,
+      _usage: unknown,
+      credits: AccountCreditsSnapshot | null,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
+      testState.renderedCredits = credits;
     },
     reconcileComposerNativeControls: vi.fn(),
     disposeComposerAgentControl: vi.fn(),
@@ -119,7 +129,7 @@ vi.mock("../src/renderer-settings-lifecycle.js", () => ({
     _window: unknown,
     options: {
       getConnectionDiagnostics(): RendererConnectionDiagnostics | null;
-      getSessionImportClient(): RendererSessionImportClient | null;
+      getSessionImportClient(hostId?: string): RendererSessionImportClient | null;
     },
   ) => {
     testState.getConnectionDiagnostics = options.getConnectionDiagnostics;
@@ -135,7 +145,7 @@ vi.mock("../src/renderer-settings-lifecycle.js", () => ({
 async function listHarnessPlugins() {
   return {
     plugins: ["pi", "claude-code", "deepseek-harness"].map((id) => ({
-      id,
+      id: harnessIdSchema.parse(id),
       name: id,
       version: "1",
     })),
@@ -183,6 +193,10 @@ function installFakeBrowser(): void {
   const listeners = new EventTarget();
   class FakeElement {
     readonly nodeType = 1;
+    // This catalog-only fixture has no layout; visible question cards have browser coverage.
+    getClientRects(): DOMRect[] {
+      return [];
+    }
     closest(): Element | null {
       return null;
     }
@@ -193,22 +207,26 @@ function installFakeBrowser(): void {
   const composer = Object.assign(new FakeElement(), {
     isConnected: true,
     matches: (selector: string) => selector === "[data-codex-composer-root]",
+    contains: (element: Element) => element === testState.sendButton,
     querySelectorAll: (selector: string) => (selector === "button" ? [testState.sendButton] : []),
     querySelector: (selector: string) => (selector.includes("textarea") ? testState.editor : null),
   }) as unknown as Element;
   const editor = Object.assign(new FakeElement(), {
     closest: () => composer,
   }) as unknown as Element;
-  const sendButton = {
+  const sendButton = Object.assign(new FakeElement(), {
+    isConnected: true,
+    closest: (selector: string): Element | null => (selector === "button" ? sendButton : null),
     type: "submit",
     disabled: false,
     parentElement: null,
     getAttribute: () => null,
-  } as unknown as HTMLButtonElement;
+  }) as unknown as HTMLButtonElement;
   testState.composer = composer;
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.renderedCredits = null;
   testState.selectModel = null;
   testState.selectThinking = null;
   testState.getConnectionDiagnostics = null;
@@ -222,13 +240,24 @@ function installFakeBrowser(): void {
     addEventListener: listeners.addEventListener.bind(listeners),
     removeEventListener: listeners.removeEventListener.bind(listeners),
     dispatchEvent: listeners.dispatchEvent.bind(listeners),
+    requestAnimationFrame: (callback: FrameRequestCallback) =>
+      testState.animationFrames.push(callback),
+    cancelAnimationFrame: vi.fn(),
     setTimeout,
     clearTimeout,
+    setInterval: vi.fn(() => 0),
+    clearInterval: vi.fn(),
     open: vi.fn(),
   };
   const document_ = {
     documentElement: {},
+    head: { append: vi.fn() },
     body: {},
+    createElement: vi.fn(() => ({
+      setAttribute: vi.fn(),
+      textContent: "",
+      remove: vi.fn(),
+    })),
     activeElement: null,
     querySelectorAll: (selector: string) => (selector.includes("textarea") ? [editor] : []),
     querySelector: () => null,
@@ -241,9 +270,7 @@ function installFakeBrowser(): void {
   vi.stubGlobal("document", document_);
   vi.stubGlobal("Node", { ELEMENT_NODE: 1 });
   vi.stubGlobal("Element", FakeElement);
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
-    testState.animationFrames.push(callback),
-  );
+  vi.stubGlobal("requestAnimationFrame", window_.requestAnimationFrame);
   vi.stubGlobal(
     "MutationObserver",
     class {
@@ -260,11 +287,11 @@ function installFakeBrowser(): void {
   vi.stubGlobal(
     "CustomEvent",
     class extends Event {
-      constructor(
-        type: string,
-        readonly init?: CustomEventInit,
-      ) {
-        super(type);
+      readonly detail: unknown;
+
+      constructor(type: string, init?: CustomEventInit) {
+        super(type, init);
+        this.detail = init?.detail;
       }
     },
   );
@@ -279,6 +306,59 @@ afterEach(() => {
   api?.dispose();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+});
+
+describe("Renderer binding native draft routing", () => {
+  it("allows editing without a private Model binding but waits for routing before Send", async () => {
+    installFakeBrowser();
+    testState.modelTarget = null;
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    const [selection] = probe.status().selections;
+    assert(selection);
+    expect(selection).toMatchObject({ agent: "codex", phase: "draft" });
+
+    const submissions: unknown[] = [];
+    window.addEventListener("codexhost:renderer-submission", (event) => {
+      submissions.push((event as CustomEvent<unknown>).detail);
+    });
+    const dispatch = (event: Event, target: Element): boolean => {
+      const listener = testState.documentListeners.get(event.type);
+      assert(listener);
+      Object.defineProperty(event, "target", { value: target });
+      listener(event);
+      return event.defaultPrevented;
+    };
+    const send = () => dispatch(new Event("click", { cancelable: true }), testState.sendButton);
+    const backspace = Object.assign(new Event("keydown", { cancelable: true }), {
+      key: "Backspace",
+    });
+    const beforeInput = Object.assign(new Event("beforeinput", { cancelable: true }), {
+      inputType: "deleteContentBackward",
+    });
+    expect(dispatch(backspace, testState.editor)).toBe(false);
+    expect(dispatch(beforeInput, testState.editor)).toBe(false);
+    expect(send()).toBe(true);
+    expect(submissions).toEqual([]);
+
+    const applyAgent = vi.fn(() => true);
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
+      undefined,
+      applyAgent,
+    );
+    expect(send()).toBe(false);
+    expect(applyAgent).toHaveBeenCalledWith(
+      "codex",
+      undefined,
+      undefined,
+      undefined,
+      testState.composer,
+    );
+    expect(submissions).toEqual([
+      { composerId: selection.composerId, agent: "codex", trigger: "click" },
+    ]);
+  });
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {
@@ -611,6 +691,33 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     ).toMatchObject({ availability: "ready", error: null });
   });
 
+  it("excludes the reserved durable Host from connection diagnostics even when active or listed", async () => {
+    installFakeBrowser();
+    const local = { listHarnessPlugins, inspectHarness: vi.fn(async () => readyInspection()) };
+    const durable = { listHarnessPlugins: vi.fn(), inspectHarness: vi.fn() };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "pi"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      undefined,
+      {
+        currentHostId: () => "durable",
+        knownHostIds: () => ["local", "durable"],
+        clientForHost: (hostId: string) => (hostId === "durable" ? durable : local),
+      } as never,
+    );
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    await diagnostics?.refresh();
+    expect(diagnostics?.snapshot().hosts.map(({ hostId }) => hostId)).toEqual(["local"]);
+    expect(durable.listHarnessPlugins).not.toHaveBeenCalled();
+    expect(durable.inspectHarness).not.toHaveBeenCalled();
+    probe.dispose();
+  });
+
   it("reports a disconnected Host and ignores its late availability reply without affecting local", async () => {
     installFakeBrowser();
     const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
@@ -813,6 +920,78 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     }
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(host.subscribeThreadUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders a restarted Claude Thread's quota push after Composer polling has stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      installFakeBrowser();
+      const usage = { totalTokens: 120 };
+      const quota: AccountCreditsSnapshot = { usedPercent: 10, periodType: "five_hour" };
+      let accountCredits: AccountCreditsSnapshot | undefined;
+      let notifyUsage: ((notification: unknown) => void) | undefined;
+      const sendRequest = vi.fn(async (method: string) => {
+        if (method !== THREAD_USAGE_INSPECT_METHOD) throw new Error(`Unexpected method ${method}`);
+        return { threadId: "thread-a", usage, accountCreditsSupported: true, accountCredits };
+      });
+      const client = createRendererModelClient([
+        {
+          sendRequest,
+          addNotificationCallback: (methods, callback) => {
+            if (methods.includes(THREAD_USAGE_UPDATED_METHOD)) notifyUsage = callback;
+            return () => undefined;
+          },
+        },
+      ]);
+      assert(client);
+      const inspection = readyInspection();
+      const host = {
+        ...client,
+        listHarnessPlugins,
+        inspectHarness: async () => inspection,
+        inspectThread: async () => ({
+          owner: "external" as const,
+          harnessId: harnessIdSchema.parse("claude-code"),
+          transportModelId:
+            "codexhost/claude-code-native@claude-model-v1.b3B1cw@bypassPermissions@auto",
+          effectiveModel: inspection.catalog.defaultModel,
+          history: inspection.capabilities.history,
+          locked: true as const,
+          usage,
+        }),
+        inspectThreadCommands: async () => ({ commands: [] }),
+      };
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({ enabledAgents: ["codex", "claude-code"] });
+      try {
+        probe.setAdapter(
+          { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+          undefined,
+          undefined,
+          { ...host, currentHostId: () => "local", clientForHost: () => host },
+        );
+        const usageReads = () =>
+          sendRequest.mock.calls.filter(([method]) => method === THREAD_USAGE_INSPECT_METHOD)
+            .length;
+        await vi.advanceTimersByTimeAsync(24_000);
+        expect(usageReads()).toBe(7); // Initial read and one pass of the six backoff delays.
+        await vi.advanceTimersByTimeAsync(16_000);
+        expect(usageReads()).toBe(7);
+        expect(testState.renderedCredits).toBeNull();
+
+        // The slow account inspection completed without a Turn or native token update.
+        accountCredits = quota;
+        assert(notifyUsage);
+        notifyUsage({ method: THREAD_USAGE_UPDATED_METHOD, params: { threadId: "thread-a" } });
+        await vi.advanceTimersByTimeAsync(16_000);
+        expect(testState.renderedCredits).toEqual(quota);
+        expect(usageReads()).toBe(8); // Notification-triggered read, not renewed polling.
+      } finally {
+        probe.dispose();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not rediscover the request route for unrelated sidebar rows", async () => {
@@ -1086,7 +1265,7 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(second.selectionErrorId).toBeGreaterThan(first.selectionErrorId ?? Infinity);
   });
 
-  it("routes Session import to local while the current Composer Host is remote", async () => {
+  it("routes Session import to the current remote Composer Host", async () => {
     installFakeBrowser();
     const local = {
       listHarnessPlugins,
@@ -1110,9 +1289,10 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       listHarnessSessions: vi.fn(),
       importHarnessSession: vi.fn(),
     };
+    let currentHostId: string | null = "remote-1";
     const modelControl = {
       ...remote,
-      currentHostId: () => "remote-1",
+      currentHostId: () => currentHostId,
       clientForHost: vi.fn((hostId: string) => (hostId === "local" ? local : remote)),
       inspectThread: vi.fn(),
       inspectThreadCommands: vi.fn(async () => ({ commands: [] })),
@@ -1132,7 +1312,8 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     );
 
     const client = testState.getSessionImportClient?.();
-    if (!client) throw new Error("Local Session import client was not installed");
+    if (!client) throw new Error("Remote Session import client was not installed");
+    expect(client.hostId).toBe("remote-1");
     await client.listSessionImportSources();
     await client.listHarnessSessions({ harnessId: harnessIdSchema.parse("pi") });
     await client.importHarnessSession({
@@ -1140,15 +1321,25 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
       nativeSessionId: "native-session",
     });
 
-    expect(modelControl.clientForHost).toHaveBeenCalledWith("local");
-    expect(local.listSessionImportSources).toHaveBeenCalledOnce();
-    expect(local.listHarnessSessions).toHaveBeenCalledWith({ harnessId: "pi" });
-    expect(local.importHarnessSession).toHaveBeenCalledWith({
+    expect(modelControl.clientForHost).toHaveBeenCalledWith("remote-1");
+    expect(remote.listSessionImportSources).toHaveBeenCalledOnce();
+    expect(remote.listHarnessSessions).toHaveBeenCalledWith({ harnessId: "pi" });
+    expect(remote.importHarnessSession).toHaveBeenCalledWith({
       harnessId: "pi",
       nativeSessionId: "native-session",
     });
-    expect(remote.listHarnessSessions).not.toHaveBeenCalled();
-    expect(remote.importHarnessSession).not.toHaveBeenCalled();
+    expect(local.listSessionImportSources).not.toHaveBeenCalled();
+    expect(local.listHarnessSessions).not.toHaveBeenCalled();
+    expect(local.importHarnessSession).not.toHaveBeenCalled();
+    currentHostId = null;
+    expect(testState.getSessionImportClient?.()).toBeNull();
+    const selected = testState.getSessionImportClient?.("remote-1");
+    expect(selected?.hostId).toBe("remote-1");
+    await selected?.listSessionImportSources();
+    expect(remote.listSessionImportSources).toHaveBeenCalledTimes(2);
+    expect(local.listSessionImportSources).not.toHaveBeenCalled();
+    modelControl.clientForHost.mockReturnValueOnce(null as never);
+    expect(testState.getSessionImportClient?.("remote-1")).toBeNull();
   });
 
   it("invalidates and refreshes a stale managed Web capability after open fails", async () => {

@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import type { HarnessSessionState } from "@codexhost/harness-adapter";
+import type {
+  HarnessSessionState,
+  HarnessResult,
+  TurnStartAccepted,
+  TurnStartCommand,
+} from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
   JsonLineCollector,
@@ -11,6 +16,8 @@ import {
   method,
   requestId,
   startPiThread,
+  startPiTurn,
+  turnEvent,
   stopFixture,
   writeRequest,
 } from "./app-server-host-fixture.js";
@@ -123,6 +130,118 @@ describe("External Thread metadata updates", () => {
       projectId: "project-a",
     });
     await expect(listIds(fixture, 19, { projectId: "project-a" })).resolves.toEqual([threadId]);
+    await stopFixture(fixture);
+  });
+
+  it.each([
+    ["thread/read", true],
+    ["thread/turns/list", true],
+    ["thread/read", false],
+    ["thread/turns/list", false],
+  ] as const)(
+    "%s preserves failed local history only while native identity is deferred: %s",
+    async (firstRead, deferred) => {
+      const adapter = deferred
+        ? new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"))
+        : new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        vi.spyOn(session, "readSnapshot").mockResolvedValue({ ok: true, value: { turns: [] } });
+        const turnSession: {
+          execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+        } = session;
+        vi.spyOn(turnSession, "execute").mockImplementationOnce(async ({ turnId }) => ({
+          ok: true,
+          value: { turnId },
+        }));
+        const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
+        session.emitEvent({ type: "turn.started", turnId });
+        session.emitEvent({
+          type: "turn.completed",
+          turnId,
+          outcome: {
+            status: "failed",
+            error: { code: "nativeFailure", message: "Native startup failed", retryable: false },
+          },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId)),
+        ).resolves.toMatchObject({
+          params: {
+            turn: { id: turnId, status: "failed", error: { message: "Native startup failed" } },
+          },
+        });
+        const expectedTurns = deferred
+          ? [{ id: turnId, status: "failed", error: { message: "Native startup failed" } }]
+          : [];
+        const reads =
+          firstRead === "thread/read"
+            ? ["thread/read", "thread/turns/list"]
+            : ["thread/turns/list", "thread/read"];
+        for (const [index, read] of reads.entries()) {
+          writeRequest(fixture.desktopInput, {
+            id: 30 + index,
+            method: read,
+            params: { threadId, ...(read === "thread/read" ? { includeTurns: true } : {}) },
+          });
+          await expect(
+            fixture.collector.waitFor((message) => requestId(message, 30 + index)),
+          ).resolves.toMatchObject({
+            result:
+              read === "thread/read"
+                ? { thread: { turns: expectedTurns } }
+                : { data: expectedTurns },
+          });
+        }
+        await expect(
+          fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+        ).resolves.toMatchObject({
+          state: deferred ? "creating" : "ready",
+          turnMappings: [],
+        });
+        expect(session.readSnapshot).toHaveBeenCalledTimes(2);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("archives a loaded Thread whose deferred native Session never arrived", async () => {
+    const adapter = new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"));
+    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+    answerOfficial(fixture, new Set());
+    const threadId = await startPiThread(fixture);
+    const hostThreadId = hostThreadIdSchema.parse(threadId);
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      state: "creating",
+    });
+
+    writeRequest(fixture.desktopInput, { id: 20, method: "thread/archive", params: { threadId } });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 20)),
+    ).resolves.toMatchObject({ result: {} });
+    await expect(
+      fixture.collector.waitFor((message) => method(message, "thread/archived")),
+    ).resolves.toEqual({ method: "thread/archived", params: { threadId } });
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      state: "creating",
+      archived: true,
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 21,
+      method: "thread/unarchive",
+      params: { threadId },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 21)),
+    ).resolves.toMatchObject({ result: { thread: { id: threadId } } });
+    await expect(fixture.mappingStore.getThread(hostThreadId)).resolves.toMatchObject({
+      archived: false,
+    });
     await stopFixture(fixture);
   });
 

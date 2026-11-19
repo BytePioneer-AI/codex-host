@@ -10,6 +10,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
   if (context.platform === "darwin" && context.managedRemoteHost) {
     const environment = { ...context.environment };
     return new BrokeredHarnessAdapter({
+      sessionImport: true,
       accountCredits: false,
       harnessId: "codebuddy",
       forwardDelegationEnvironment: true,

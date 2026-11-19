@@ -46,6 +46,19 @@ function catalogValue(overrides: Readonly<Record<string, unknown>> = {}): Record
   };
 }
 
+/** Attach one badge to every listed Model, as DSH 0.2.2 forwards it from a model listing. */
+function catalogWithBadge(badge: unknown): Record<string, unknown> {
+  const value = catalogValue();
+  const groups = value.groups as { models: Record<string, unknown>[] }[];
+  return {
+    ...value,
+    groups: groups.map((group) => ({
+      ...group,
+      models: group.models.map((model) => ({ ...model, badge })),
+    })),
+  };
+}
+
 class FakeRemote implements ModernModelCatalogRemote {
   readonly calls: Array<{
     readonly endpoint: string;
@@ -101,6 +114,33 @@ describe("DeepSeek Harness Modern Model catalog", () => {
 
     expect(snapshot.catalog.models).toHaveLength(2);
     expect(JSON.stringify(snapshot)).not.toContain(canary);
+  });
+
+  it.each([
+    ["a literal", { text: "New", tone: "info" }],
+    ["translations", { text: { en: "New", zh: "新" }, tone: "success" }],
+  ])("validates then discards a DSH 0.2.2 listed Model badge with %s", (_label, badge) => {
+    const plain = parseModernModelCatalog(catalogValue());
+
+    const snapshot = parseModernModelCatalog(catalogWithBadge(badge));
+
+    expect(snapshot.catalog).toEqual(plain.catalog);
+    expect(snapshot.groups[1]?.models[0]).not.toHaveProperty("badge");
+  });
+
+  it.each([
+    ["a missing tone", { text: "New" }],
+    ["an unknown tone", { text: "New", tone: "loud" }],
+    ["an extra field", { text: "New", tone: "info", icon: "star" }],
+    ["blank text", { text: " ", tone: "info" }],
+    ["translations without English", { text: { zh: "新" }, tone: "info" }],
+    ["a non-string translation", { text: { en: "New", zh: 1 }, tone: "info" }],
+    ["a string", "New"],
+    ["null", null],
+  ])("rejects a Model badge with %s", (_label, badge) => {
+    expect(() => parseModernModelCatalog(catalogWithBadge(badge))).toThrowError(
+      ModernModelCatalogError,
+    );
   });
 
   it("does not invent a Harness default when the Modern default is not routable", () => {

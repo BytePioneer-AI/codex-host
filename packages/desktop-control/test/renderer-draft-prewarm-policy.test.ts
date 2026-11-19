@@ -7,11 +7,67 @@ import {
   requestManagerFromHookState,
 } from "../src/renderer-draft-prewarm-policy.js";
 import {
+  createDraftPrewarmPolicyBridge,
   type DraftPrewarmPolicyTarget,
   type RendererHostRequestBridge,
   type RendererHostRequestManager,
 } from "../src/renderer-draft-prewarm-runtime.js";
 import { installDraftPrewarmPolicyBridge } from "./renderer-draft-prewarm-fixture.js";
+
+it("keeps RPC tunnel control frames outside the native logical request queue", async () => {
+  const manager = requestManagerFixture();
+  const { bridge, directSend } = remoteRequestBridgeFixture();
+  directSend.mockImplementation((method?: string) => {
+    if (method?.startsWith("process/"))
+      return Promise.reject(new Error("logical request queue is occupied"));
+    return Promise.resolve({ native: true });
+  });
+  const control = vi.fn(async (method: string, params: Record<string, unknown>) => {
+    const handle = String(params.processHandle);
+    if (method === "process/spawn") {
+      queueMicrotask(() =>
+        emitBridgeOutput(manager, handle, {
+          method: "codexhost/remote-control-bridge/ready",
+          params: { protocolVersion: 1 },
+        }),
+      );
+    } else if (method === "process/writeStdin") {
+      const frame = JSON.parse(Buffer.from(String(params.deltaBase64), "base64").toString());
+      if (frame.id !== undefined)
+        queueMicrotask(() =>
+          emitBridgeOutput(manager, handle, { id: frame.id, result: { ok: true } }),
+        );
+    }
+    return {};
+  });
+  const policy = Reflect.apply(createDraftPrewarmPolicyBridge, undefined, [
+    manager,
+    bridge,
+    "remote-control:fixture-host",
+    {},
+    { discardAllPrewarmedThreads: vi.fn() },
+    undefined,
+    undefined,
+    undefined,
+    control,
+  ]);
+  try {
+    await expect(bridge.sendRequest("codexhost/harness/inspect", {})).resolves.toEqual({
+      ok: true,
+    });
+    await expect(bridge.sendRequest("model/list", {})).resolves.toEqual({ native: true });
+    expect(directSend).toHaveBeenCalledExactlyOnceWith("model/list", {});
+  } finally {
+    policy.dispose();
+  }
+  expect(control.mock.calls.map(([method]) => method)).toEqual([
+    "process/spawn",
+    "process/writeStdin",
+    "process/writeStdin",
+    "process/writeStdin",
+    "process/kill",
+  ]);
+});
 
 function requestManagerFixture(): RendererHostRequestManager {
   return {
@@ -279,7 +335,7 @@ describe("Renderer draft prewarm policy", () => {
     expect(target.dispatchEvent).toHaveBeenCalledOnce();
   });
 
-  it("keeps the selected route when the same Host bridge is reconciled", () => {
+  it("keeps selection without overriding an unrelated create after Host reconciliation", () => {
     const sendRequest = vi.fn();
     const prewarmThreadStart = vi.fn();
     const manager = requestManagerFixture();
@@ -311,11 +367,11 @@ describe("Renderer draft prewarm policy", () => {
     expect(first.hostId).toBe("remote-ssh-discovered:mac");
     void bridge.sendRequest("thread/start", { model: "gpt-5" });
     expect(sendRequest).toHaveBeenCalledWith("thread/start", {
-      model: "codexhost/claude-code-native",
+      model: "gpt-5",
     });
   });
 
-  it("routes the current request client's direct and prewarm Thread starts", async () => {
+  it("leaves official creates untouched after selecting Pi and preserves explicit creates", async () => {
     const sendRequest = vi.fn<(method: string, parameters: unknown) => Promise<void>>(
       async () => undefined,
     );
@@ -332,12 +388,12 @@ describe("Renderer draft prewarm policy", () => {
 
     policy.select("codexhost/pi-native");
     await bridge.sendRequest("thread/start", { cwd: "/tmp/project", model: "gpt-5" });
-    await bridge.prewarmThreadStart?.({ cwd: "/tmp/project", model: "gpt-5" });
+    await bridge.prewarmThreadStart?.({ cwd: "/tmp/project", model: "codexhost/pi-native" });
     await bridge.prewarmThreadStart?.({ ephemeral: true, model: "gpt-5" });
 
     expect(sendRequest).toHaveBeenCalledWith("thread/start", {
       cwd: "/tmp/project",
-      model: "codexhost/pi-native",
+      model: "gpt-5",
     });
     expect(prewarmThreadStart).toHaveBeenNthCalledWith(1, {
       cwd: "/tmp/project",
@@ -396,7 +452,9 @@ describe("Renderer draft prewarm policy", () => {
     };
 
     policy.select("codexhost/pi-native");
-    const pendingPi = bridge.prewarmThreadStart({ model: "native-model" }) as Promise<unknown>;
+    const pendingPi = bridge.prewarmThreadStart({
+      model: "codexhost/pi-native",
+    }) as Promise<unknown>;
     policy.select("codexhost/claude-code-native");
     await policy.clear();
     stalePrewarm.resolve({ thread: { id: "stale-pi" } });
@@ -407,7 +465,9 @@ describe("Renderer draft prewarm policy", () => {
     expect(sendRequest).toHaveBeenCalledWith("codexhost/thread/prewarm/discard", {
       threadId: "stale-pi",
     });
-    await expect(bridge.prewarmThreadStart({ model: "native-model" })).resolves.toEqual({
+    await expect(
+      bridge.prewarmThreadStart({ model: "codexhost/claude-code-native" }),
+    ).resolves.toEqual({
       model: "codexhost/claude-code-native",
       codexhostPrewarm: true,
     });
@@ -692,15 +752,20 @@ describe("Renderer draft prewarm policy", () => {
     },
   );
 
-  it("does not fall back after an unrelated Remote Control bridge failure", async () => {
+  it("inspects a recovered native Remote Control Thread without the Windows bridge", async () => {
     const manager = requestManagerFixture();
     const { bridge, directSend } = remoteRequestBridgeFixture();
-    const unrelatedError = Object.assign(
-      new Error("transport: AbsolutePathBuf deserialized without a base path"),
-      { code: -1 },
+    const threadId = "native-posix-thread";
+    const posixError = Object.assign(
+      new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+      { code: -32600 },
     );
     directSend.mockImplementation((method: string) =>
-      method === "process/spawn" ? Promise.reject(unrelatedError) : Promise.resolve({}),
+      method === "process/spawn"
+        ? Promise.reject(posixError)
+        : Promise.resolve({
+            thread: { id: threadId, modelProvider: "openai", cliVersion: "0.162.1" },
+          }),
     );
     installDraftPrewarmPolicyBridge(
       manager,
@@ -712,11 +777,117 @@ describe("Renderer draft prewarm policy", () => {
       },
     );
 
-    await expect(bridge.sendRequest("thread/read", { threadId: "unknown-thread" })).rejects.toThrow(
-      "transport: AbsolutePathBuf deserialized without a base path",
-    );
-    expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
+    await expect(bridge.sendRequest("thread/read", { threadId })).resolves.toMatchObject({
+      thread: { id: threadId },
+    });
+    await expect(bridge.sendRequest("codexhost/thread/inspect", { threadId })).resolves.toEqual({
+      owner: "codex",
+      locked: true,
+    });
+    expect(directSend).toHaveBeenCalledWith("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    expect(writtenBridgeFrames(directSend)).toHaveLength(0);
   });
+
+  it("verifies a native Remote Control Thread when inspection precedes history loading", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const threadId = "native-posix-thread";
+    directSend.mockImplementation((method: string) =>
+      method === "process/spawn"
+        ? Promise.reject(
+            Object.assign(
+              new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+              { code: -32600 },
+            ),
+          )
+        : Promise.resolve({
+            thread: { id: threadId, modelProvider: "openai", cliVersion: "0.162.1" },
+          }),
+    );
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      {},
+      {
+        discardAllPrewarmedThreads: vi.fn(),
+      },
+    );
+
+    await expect(bridge.sendRequest("codexhost/thread/inspect", { threadId })).resolves.toEqual({
+      owner: "codex",
+      locked: true,
+    });
+    expect(directSend).toHaveBeenCalledWith("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    expect(writtenBridgeFrames(directSend)).toHaveLength(0);
+  });
+
+  it("does not identify an external projection as native after Remote Control recovery", async () => {
+    const manager = requestManagerFixture();
+    const { bridge, directSend } = remoteRequestBridgeFixture();
+    const threadId = "native-posix-thread";
+    directSend.mockImplementation((method: string) =>
+      method === "process/spawn"
+        ? Promise.reject(
+            Object.assign(
+              new Error("Invalid request: AbsolutePathBuf deserialized without a base path"),
+              { code: -32600 },
+            ),
+          )
+        : Promise.resolve({
+            thread: { id: threadId, modelProvider: "codexhost", cliVersion: "codexhost" },
+          }),
+    );
+    installDraftPrewarmPolicyBridge(
+      manager,
+      bridge,
+      "remote-control:fixture-host",
+      {},
+      {
+        discardAllPrewarmedThreads: vi.fn(),
+      },
+    );
+
+    await bridge.sendRequest("thread/read", { threadId });
+    await expect(bridge.sendRequest("codexhost/thread/inspect", { threadId })).rejects.toThrow(
+      "Native Thread response cannot establish Codex ownership",
+    );
+  });
+
+  it.each(["thread/read", "codexhost/thread/inspect"] as const)(
+    "does not fall back after an unrelated Remote Control bridge failure: %s",
+    async (method) => {
+      const manager = requestManagerFixture();
+      const { bridge, directSend } = remoteRequestBridgeFixture();
+      const unrelatedError = Object.assign(
+        new Error("transport: AbsolutePathBuf deserialized without a base path"),
+        { code: -1 },
+      );
+      directSend.mockImplementation((method: string) =>
+        method === "process/spawn" ? Promise.reject(unrelatedError) : Promise.resolve({}),
+      );
+      installDraftPrewarmPolicyBridge(
+        manager,
+        bridge,
+        "remote-control:fixture-host",
+        {},
+        {
+          discardAllPrewarmedThreads: vi.fn(),
+        },
+      );
+
+      await expect(bridge.sendRequest(method, { threadId: "unknown-thread" })).rejects.toThrow(
+        "transport: AbsolutePathBuf deserialized without a base path",
+      );
+      expect(directSend).not.toHaveBeenCalledWith("thread/read", { threadId: "unknown-thread" });
+    },
+  );
 
   it("leaves stock Remote Control requests direct and terminates its bridge on dispose", async () => {
     const manager = requestManagerFixture();

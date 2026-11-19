@@ -1,9 +1,58 @@
-import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { harnessModelCatalogSchema } from "@codexhost/shared-contracts";
 import { modelRef } from "@codexhost/adapter-codebuddy";
-import { mergeWorkBuddyProductModels, parseWorkBuddyProductModels } from "../src/product-models.js";
+import * as command from "../src/command.js";
+import {
+  loadWorkBuddyProductModels,
+  mergeWorkBuddyProductModels,
+  parseWorkBuddyProductModels,
+} from "../src/product-models.js";
 
 describe("WorkBuddy product Model metadata", () => {
+  it("loads bundled product models with credential preload arguments", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "wb-product-models-"));
+    try {
+      const app = path.join(root, "WorkBuddy AI.app");
+      const platform = process.platform === "win32" ? "win32" : "darwin";
+      const resources = platform === "win32" ? ["resources"] : ["Contents", "Resources"];
+      const pkg = path.join(app, ...resources, "app.asar.unpacked", "cli");
+      const cli = path.join(pkg, "bin", "codebuddy");
+      await mkdir(path.dirname(cli), { recursive: true });
+      await writeFile(cli, "");
+      await writeFile(
+        path.join(pkg, "product.json"),
+        JSON.stringify({
+          dataFolderName: ".workbuddy-ai",
+          agents: [{ name: "cli", models: ["glm-5.2"] }],
+          models: [{ id: "glm-5.2", name: "GLM-5.2" }],
+        }),
+      );
+      const environment = { HOME: root, CODEXHOST_WORKBUDDY_COMMAND: app };
+      const invocation = command.workBuddyInvocation(environment, true, {
+        platform,
+        isExecutable: () => true,
+      });
+      expect(invocation.arguments).toEqual([
+        "--eval",
+        expect.any(String),
+        cli,
+        "--acp",
+        "--no-session-persistence",
+      ]);
+      expect(invocation.environment.ACC_PRODUCT_CONFIG_PATH).toBeUndefined();
+      vi.spyOn(command, "workBuddyInvocation").mockReturnValue(invocation);
+      expect(await loadWorkBuddyProductModels(environment)).toEqual([
+        { id: "glm-5.2", name: "GLM-5.2" },
+      ]);
+    } finally {
+      vi.restoreAllMocks();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reads only bounded public Model metadata and deduplicates native IDs", () => {
     expect(
       parseWorkBuddyProductModels({

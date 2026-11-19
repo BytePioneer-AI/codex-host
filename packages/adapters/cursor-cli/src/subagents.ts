@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type {
   HostEvent,
   HostItemOutcome,
@@ -56,7 +57,7 @@ export function cursorDelegation(nativeId: string, input: unknown): HostSubagent
         nativeSubagentId: nativeId,
         description: str(args.description) || "Cursor Subagent",
         ...(name ? { role: name } : {}),
-        ...(str(args.model) ? { model: str(args.model) } : {}),
+        ...subagentConfiguration(args),
         background: false,
         status: "running",
       },
@@ -139,7 +140,7 @@ export class CursorSubagents {
       return { outcome: { outcome: "rejected", reason: "Native Task has not completed" } };
     const child = task.item.subagents[0];
     if (child && !task.done) {
-      if (str(params.model)) child.model = str(params.model);
+      Object.assign(child, subagentConfiguration(params));
       this.#complete(task);
     }
     return {

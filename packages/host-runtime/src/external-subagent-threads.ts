@@ -5,6 +5,7 @@ import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
 import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-contracts";
 
+import { withoutInjectedText } from "./external-thread-side-chat.js";
 import type { ExternalThreadStore } from "./external-thread-repository.js";
 
 function childCreateRequest(
@@ -185,12 +186,15 @@ export async function projectExternalSnapshot(
         return { ...entry, item: { ...entry.item, subagents } };
       }),
     );
+    const injected = record.injectedTurnPrefixes?.find(
+      ({ hostTurnId }) => hostTurnId === mapping.hostTurnId,
+    );
     turns.push(
       projectHistoricalTurn({
         threadId: record.hostThreadId,
         turnId: mapping.hostTurnId,
         cwd: record.cwd,
-        snapshot: { ...turn, items },
+        snapshot: { ...turn, input: withoutInjectedText(turn.input, injected), items },
       }),
     );
   }

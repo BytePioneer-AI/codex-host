@@ -38,7 +38,6 @@ export class NativeAccountObserver {
     this.#initialized = true;
     this.#lastGeneration = nativeGeneration ?? -1;
     this.#scheduleAccountUpdate();
-    if (nativeGeneration !== undefined) this.observe({ method: "account/updated" });
   }
 
   /** Called after forwarding the native frame. Identity read failure cannot alter its outcome. */

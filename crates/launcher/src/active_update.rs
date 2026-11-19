@@ -1,21 +1,15 @@
 use std::fs;
-#[cfg(target_os = "macos")]
 use std::fs::OpenOptions;
 use std::io;
-#[cfg(target_os = "macos")]
 use std::io::Write;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
 use std::process::{Child, Command, Stdio};
 
-#[cfg(target_os = "macos")]
 use codexhost_platform::atomic_replace_file;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
 use std::thread;
-#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
 use crate::runtime_instance::default_descriptor_path;
@@ -23,11 +17,12 @@ use crate::runtime_instance::default_descriptor_path;
 const ACTIVE_UPDATE_LOCK_FILE: &str = "active-update-v1.lock";
 const STATUS_FILE: &str = "status-v1.json";
 const REQUEST_FILE: &str = "request-v1.json";
+#[cfg(not(target_os = "windows"))]
 const UPDATER_FILE: &str = "codexhost-updater";
+#[cfg(target_os = "windows")]
+const UPDATER_FILE: &str = "codexhost-updater.exe";
 const MAX_STATE_FILE_BYTES: u64 = 4 * 1024;
-#[cfg(target_os = "macos")]
 const UPDATER_READY_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(target_os = "macos")]
 const UPDATER_READY_POLL: Duration = Duration::from_millis(20);
 
 #[derive(Deserialize, Serialize)]
@@ -141,13 +136,15 @@ fn pending_update_at(
     let request = serde_json::from_slice::<UpdateRequestProbe>(&request_bytes)
         .map_err(|error| invalid(format!("invalid active update request: {error}")))?;
     if request.schema_version != 1
-        || request.wait_pid != launcher_pid
+        || request.wait_pid == 0
         || request.status_path.canonicalize()? != canonical_status
+    {
+        return Err(invalid("active update request identity is invalid"));
+    }
+    if request.wait_pid != launcher_pid
         || request.wait_executable.canonicalize()? != launcher_executable.canonicalize()?
     {
-        return Err(invalid(
-            "active update request does not target this Launcher",
-        ));
+        return Ok(None);
     }
 
     let helper_path = operation_directory.join(UPDATER_FILE);
@@ -166,7 +163,6 @@ fn pending_update_at(
     )))
 }
 
-#[cfg(target_os = "macos")]
 fn pending_startable_update_at(
     state_directory: &Path,
     launcher_pid: u32,
@@ -189,7 +185,7 @@ fn waiting_for_launcher_exit_at(
     ))
 }
 
-fn update_state_directory() -> io::Result<PathBuf> {
+pub(super) fn update_state_directory() -> io::Result<PathBuf> {
     let descriptor = default_descriptor_path()?;
     descriptor
         .parent()
@@ -205,7 +201,6 @@ pub(crate) fn update_waiting_for_launcher_exit() -> io::Result<bool> {
     )
 }
 
-#[cfg(target_os = "macos")]
 fn read_update_phase(status_path: &Path) -> io::Result<Option<String>> {
     let Some(status_bytes) = read_bounded_regular_file(status_path)? else {
         return Ok(None);
@@ -218,12 +213,12 @@ fn read_update_phase(status_path: &Path) -> io::Result<Option<String>> {
     Ok(Some(status.phase))
 }
 
-#[cfg(target_os = "macos")]
-fn wait_for_updater_ready(child: &mut Child, status_path: &Path) -> io::Result<()> {
+fn wait_for_updater_ready(child: &mut Child, status_path: &Path, service: bool) -> io::Result<()> {
     let started = Instant::now();
     loop {
         match read_update_phase(status_path)?.as_deref() {
             Some("waiting-for-exit") => return Ok(()),
+            Some("installing" | "restarting" | "succeeded") if service => return Ok(()),
             Some("prepared") | None => {}
             Some("failed") => {
                 return Err(invalid(
@@ -250,7 +245,6 @@ fn wait_for_updater_ready(child: &mut Child, status_path: &Path) -> io::Result<(
     }
 }
 
-#[cfg(target_os = "macos")]
 fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Result<()> {
     let parent = pending
         .lock_path
@@ -283,9 +277,40 @@ fn transfer_lock_to_updater(pending: &PendingUpdate, updater_pid: u32) -> io::Re
     result
 }
 
-#[cfg(target_os = "macos")]
+/// The Updater must outlive this Launcher, its terminal, and the Desktop process
+/// tree it stops. The Launcher itself is outside the Shim's kill-on-close Job, so
+/// starting the Updater here (not from the Host Runtime) keeps it out of that Job.
+#[cfg(unix)]
+fn detach_updater(command: &mut Command) {
+    command.process_group(0);
+}
+
+#[cfg(target_os = "windows")]
+fn detach_updater(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn start_pending_update(started_request: &mut Option<PathBuf>) -> io::Result<()> {
-    if started_request.is_some() {
+    start_pending_update_for(started_request, None)
+}
+
+pub(crate) fn start_pending_service_update(
+    started_request: &mut Option<PathBuf>,
+    data: &Path,
+) -> io::Result<()> {
+    start_pending_update_for(started_request, Some(data))
+}
+
+fn start_pending_update_for(
+    started_request: &mut Option<PathBuf>,
+    service_data: Option<&Path>,
+) -> io::Result<()> {
+    if started_request.is_some() && service_data.is_none() {
         return Ok(());
     }
     let Some(pending) = pending_startable_update_at(
@@ -296,28 +321,51 @@ pub(crate) fn start_pending_update(started_request: &mut Option<PathBuf>) -> io:
     else {
         return Ok(());
     };
-    let mut child = Command::new(&pending.helper_path)
-        .arg("apply")
-        .arg("--request")
-        .arg(&pending.request_path)
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    if let Err(error) = transfer_lock_to_updater(&pending, child.id()) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
+    if started_request.as_ref() == Some(&pending.request_path) {
+        return Ok(());
     }
-    // Keep the old Launcher alive until the Updater has taken its wait position.
-    if let Err(error) = wait_for_updater_ready(&mut child, &pending.status_path) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
+    let start = || -> io::Result<()> {
+        if let Some(data) = service_data {
+            crate::service_update::prepare_request(&pending.request_path, data)?;
+        }
+        let mut command = Command::new(&pending.helper_path);
+        command
+            .arg("apply")
+            .arg("--request")
+            .arg(&pending.request_path)
+            // npm downloads the update package and needs the same proxy as the Host.
+            .envs(codexhost_platform::proxy_environment());
+        detach_updater(&mut command);
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        if let Err(error) = transfer_lock_to_updater(&pending, child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        // Keep the old Launcher alive until the Updater has taken its wait position.
+        if let Err(error) =
+            wait_for_updater_ready(&mut child, &pending.status_path, service_data.is_some())
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        Ok(())
+    };
+    match start() {
+        Ok(()) => {
+            *started_request = Some(pending.request_path);
+            Ok(())
+        }
+        Err(error) => {
+            crate::service_update::record_failure(&pending.status_path, &error)?;
+            Err(error)
+        }
     }
-    *started_request = Some(pending.request_path);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -328,14 +376,10 @@ mod tests {
 
     use serde_json::json;
 
-    #[cfg(target_os = "macos")]
-    use super::STATUS_FILE;
     use super::{ACTIVE_UPDATE_LOCK_FILE, PendingUpdate, waiting_for_launcher_exit_at};
     #[cfg(target_os = "macos")]
-    use super::{
-        atomic_replace_file, pending_startable_update_at, pending_update_at,
-        transfer_lock_to_updater, wait_for_updater_ready,
-    };
+    use super::{STATUS_FILE, atomic_replace_file, wait_for_updater_ready};
+    use super::{pending_startable_update_at, pending_update_at, transfer_lock_to_updater};
 
     fn fixture_directory(label: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -351,7 +395,7 @@ mod tests {
     fn write_pending_update(root: &Path, launcher: &Path, launcher_pid: u32) -> PendingUpdate {
         let operation = root.join("update-1.2.3-fixture");
         fs::create_dir_all(&operation).expect("create update operation fixture");
-        let helper_path = operation.join("codexhost-updater");
+        let helper_path = operation.join(super::UPDATER_FILE);
         fs::write(&helper_path, b"helper").expect("write Helper fixture");
         let status_path = operation.join("status-v1.json");
         fs::write(
@@ -403,7 +447,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn resolves_only_a_request_for_the_current_launcher() {
         let fixture = fixture_directory("pending-update");
@@ -417,7 +460,7 @@ mod tests {
             pending_startable_update_at(&root, 42, &launcher).expect("resolve pending update"),
             Some(expected)
         );
-        assert!(pending_update_at(&root, 43, &launcher).is_err());
+        assert!(pending_update_at(&root, 43, &launcher).unwrap().is_none());
         fs::remove_dir_all(fixture).expect("remove pending update fixture");
     }
 
@@ -470,7 +513,8 @@ mod tests {
                 .expect("publish waiting status fixture");
         });
         let started = std::time::Instant::now();
-        wait_for_updater_ready(&mut child, &status_path).expect("wait for updater readiness");
+        wait_for_updater_ready(&mut child, &status_path, false)
+            .expect("wait for updater readiness");
         assert!(started.elapsed() >= std::time::Duration::from_millis(40));
         writer.join().expect("join status writer");
         child.kill().expect("stop updater fixture");
@@ -478,7 +522,6 @@ mod tests {
         fs::remove_dir_all(fixture).expect("remove updater ready fixture");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn transfers_the_active_lock_to_the_updater_process() {
         let fixture = fixture_directory("update-owner");
@@ -498,7 +541,6 @@ mod tests {
         fs::remove_dir_all(fixture).expect("remove transferred lock fixture");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn waits_until_the_final_request_exists() {
         let fixture = fixture_directory("incomplete-update");
@@ -539,13 +581,12 @@ mod tests {
         )
         .expect("write waiting status fixture");
 
-        #[cfg(target_os = "macos")]
         assert_eq!(
             pending_startable_update_at(&root, 42, &launcher).expect("do not restart Helper"),
             None
         );
         assert!(waiting_for_launcher_exit_at(&root, 42, &launcher).expect("detect waiting update"));
-        assert!(waiting_for_launcher_exit_at(&root, 43, &launcher).is_err());
+        assert!(!waiting_for_launcher_exit_at(&root, 43, &launcher).unwrap());
         fs::remove_dir_all(fixture).expect("remove waiting update fixture");
     }
 }

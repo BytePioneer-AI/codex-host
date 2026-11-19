@@ -51,10 +51,12 @@ import {
 import type { RendererSettingsLocale } from "./settings/localization.js";
 import type { RendererAdapterStatus } from "./versioned-renderer-adapter.js";
 import { isOrbitComposer } from "./renderer-composer-kind.js";
+import { hasNativeComposerRequest, isNativeComposerRequest } from "./renderer-composer-request.js";
 import {
   mountRendererHarnessCommandControl,
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
+import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -104,6 +106,7 @@ export interface ComposerAgentControl {
   harnessCommands: RendererHarnessCommandControl;
   sendButton: HTMLButtonElement;
   sendDisabledBeforeSwitch: boolean | null;
+  stopCompactLayout?: () => void;
 }
 
 export function eventElement(target: EventTarget | null): Element | null {
@@ -171,12 +174,14 @@ function isTrailingActionNode(element: Element): boolean {
   return buttons.length > 0 && buttons.every((button) => isComposerTrailingActionButton(button));
 }
 
-export function sendButtonWithin(root: Element): HTMLButtonElement | null {
-  return (
-    [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
-      isComposerSubmitButton(button),
-    ) ?? null
+export function composerButtonsWithin(root: Element): HTMLButtonElement[] {
+  return [...root.querySelectorAll<HTMLButtonElement>("button")].filter(
+    (button) => !isNativeComposerRequest(button),
   );
+}
+
+export function sendButtonWithin(root: Element): HTMLButtonElement | null {
+  return composerButtonsWithin(root).find(isComposerSubmitButton) ?? null;
 }
 
 function leftmostTrailingSibling(container: Element, before: Element): HTMLElement | null {
@@ -226,7 +231,9 @@ export function composerForEditor(editor: Element): Element | null {
 
 export function composerForElement(element: Element): Element | null {
   const composer = element.closest(CODEX_COMPOSER_SELECTOR);
-  return composer && !isOrbitComposer(composer) ? composer : null;
+  return composer && !hasNativeComposerRequest(composer) && !isOrbitComposer(composer)
+    ? composer
+    : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -261,9 +268,12 @@ export function isNativeModelControlCandidate(element: Element): boolean {
     if (
       isRecord(props) &&
       typeof props.onSelectModel === "function" &&
-      typeof props.onSelectReasoningEffort === "function" &&
       "reasoningEffort" in props &&
-      isRecord(props.fallbackPowerSelection)
+      ((typeof props.onSelectReasoningEffort === "function" &&
+        isRecord(props.fallbackPowerSelection)) ||
+        (element.getAttribute("data-composer-navigation-target") === "reasoning" &&
+          typeof props.onCommitPower === "function" &&
+          Array.isArray(props.powerSelections)))
     ) {
       return true;
     }
@@ -393,11 +403,12 @@ export function inspectRendererComposerContract(
     trailingActionOwnerCount: 0,
   };
   for (const composer of composers) {
+    if (hasNativeComposerRequest(composer)) continue;
     if (contractElementVisible(composer)) result.visibleComposerCount += 1;
     const editors = [...composer.querySelectorAll<HTMLElement>(EDITOR_SELECTOR)].filter(
       contractElementVisible,
     );
-    const allButtons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+    const allButtons = composerButtonsWithin(composer);
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
     if (editors.length === 1 && sendButton !== null) result.activeComposerCount += 1;
     if (sendButton) {
@@ -503,7 +514,7 @@ export function creditsPlacementAnchor(control: ComposerAgentControl): HTMLEleme
  * the Composer also contains our own controls, so skip their buttons.
  */
 function lastNativeButtonWithin(composer: Element): HTMLButtonElement | null {
-  const buttons = [...composer.querySelectorAll<HTMLButtonElement>("button")];
+  const buttons = composerButtonsWithin(composer);
   for (let index = buttons.length - 1; index >= 0; index -= 1) {
     const button = buttons[index];
     if (button && !isInsideOwnedRendererControl(button, composer)) return button;
@@ -526,6 +537,7 @@ function isInsideOwnedRendererControl(element: Element, composer: Element): bool
  * next scan would dispose and remount the whole control (closing open menus).
  */
 export function refreshSendButton(control: ComposerAgentControl): HTMLButtonElement | null {
+  if (hasNativeComposerRequest(control.composer)) return null;
   const current = control.sendButton;
   if (current?.isConnected && control.composer.contains(current)) return current;
   // Only a Composer that was mounted through the unlabelled fallback keeps
@@ -720,7 +732,7 @@ export function mountComposerAgentControl(
   }
 
   if (!toolbar) composer.append(modelPicker.root, picker.root);
-  const control = {
+  const control: ComposerAgentControl = {
     composer,
     composerId,
     root: picker.root,
@@ -766,10 +778,11 @@ export function mountComposerAgentControl(
     harnessCommands,
     sendButton,
     sendDisabledBeforeSwitch: null,
-  } satisfies ComposerAgentControl;
+  };
   refreshTrailingClusterPlacement(control);
   refreshUsagePlacement(control);
   refreshCreditsPlacement(control);
+  control.stopCompactLayout = observeRendererCompactComposer(composer);
   return control;
 }
 
@@ -824,7 +837,12 @@ export function renderComposerAgentControl(
   // native ownership verification still guards picker visibility and placement.
   const permissionModeBlocked =
     state.agent !== "codex" && !isPermissionModeControlReady(permissionModeView);
-  const submissionBlocked = switching || ownershipError || modelBlocked || permissionModeBlocked;
+  const submissionBlocked =
+    switching ||
+    ownershipError ||
+    (state.agent !== "codex" && adapterState !== "ready") ||
+    modelBlocked ||
+    permissionModeBlocked;
   if (submissionBlocked && control.sendDisabledBeforeSwitch === null) {
     control.sendDisabledBeforeSwitch = control.sendButton.disabled;
     control.sendButton.disabled = true;
@@ -885,6 +903,7 @@ export function renderComposerAgentControl(
 }
 
 export function disposeComposerAgentControl(control: ComposerAgentControl): void {
+  control.stopCompactLayout?.();
   if (control.sendDisabledBeforeSwitch !== null) {
     control.sendButton.disabled = nativeSendDisabled(
       control.sendButton,

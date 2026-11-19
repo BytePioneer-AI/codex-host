@@ -489,6 +489,8 @@ function exactJournalSnapshot(input: {
   readonly cwd: string;
   readonly events: readonly Record<string, unknown>[];
   readonly parentSession?: string;
+  /** DSH 0.2.2 seeds ordinary Fork children without recording their source. */
+  readonly isSeeded?: boolean;
   readonly headerAgentPreset?: string;
   readonly agentPreset?: string | null;
 }): Record<string, unknown> {
@@ -500,7 +502,7 @@ function exactJournalSnapshot(input: {
       id: input.sessionId,
       createdAt: 1,
       cwd: input.cwd,
-      isSeeded: input.parentSession !== undefined,
+      isSeeded: input.isSeeded ?? input.parentSession !== undefined,
       delegationDepth: 0,
       ...(input.parentSession ? { parentSession: input.parentSession } : {}),
       ...(input.headerAgentPreset === undefined ? {} : { agentPreset: input.headerAgentPreset }),
@@ -641,6 +643,7 @@ describe("DSH V4 session operations", () => {
         request: {
           address: { kind: "session", sessionId: "session-v4" },
           maxMessages: 200,
+          activate: true,
           assistantStream: true,
         },
       },
@@ -1863,6 +1866,39 @@ describe("Modern DeepSeek Harness Adapter", () => {
       });
       await opened.value.close();
     }
+    await adapter.close();
+  });
+
+  it("verifies a DSH 0.2.2 independent Fork child that omits its source", async () => {
+    const { adapter, connection } = setup();
+    const cwd = path.resolve("fixture-independent-fork");
+    const sourceSessionId = "session-source";
+    const sourceEvents = forkSourceEvents();
+    connection.journalSnapshots.set(
+      sourceSessionId,
+      exactJournalSnapshot({ sessionId: sourceSessionId, cwd, events: sourceEvents }),
+    );
+    connection.journalSnapshots.set(
+      "session-forked",
+      exactJournalSnapshot({
+        sessionId: "session-forked",
+        cwd,
+        isSeeded: true,
+        events: [
+          ...sourceEvents.slice(0, 3),
+          exactJournalEvent(3, "session/end-seed", { inherited: true }),
+          exactJournalEvent(4, "sandbox/mode", { mode: "workspace-write" }),
+        ],
+      }),
+    );
+
+    const opened = await adapter.open({ kind: "fork", ...forkRefs(sourceSessionId, 2), cwd });
+
+    expect(opened).toMatchObject({
+      ok: true,
+      value: { initialState: { nativeRef: { nativeSessionId: "session-forked" } } },
+    });
+    if (opened.ok) await opened.value.close();
     await adapter.close();
   });
 

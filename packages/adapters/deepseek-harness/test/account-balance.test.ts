@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -67,6 +67,44 @@ it("follows DSH precedence: credentials file, then environment, then .env", asyn
   expect(await readDeepSeekApiKey(environment)).toBe("sk-from-file");
 });
 
+it("does not send the standard key when DSH uses a non-public API origin", async () => {
+  await writeFile(
+    path.join(home, ".env"),
+    "export DEEPSEEK_BASE_URL='https://proxy.example/api'\n",
+  );
+  const environment = { DSH_HOME: home, DEEPSEEK_API_KEY: "sk-proxy" };
+  const fetchMock = vi.fn<typeof fetch>();
+  const inspect = (baseUrl?: string) =>
+    fetchDeepSeekBalances({
+      environment: { ...environment, ...(baseUrl ? { DEEPSEEK_BASE_URL: baseUrl } : {}) },
+      fetch: fetchMock,
+    });
+  expect(await inspect()).toEqual([]);
+  expect(await inspect("https://api.deepseek.com.proxy.example/")).toEqual([]);
+  expect(fetchMock).not.toHaveBeenCalled();
+
+  fetchMock.mockResolvedValueOnce(Response.json({ balance_infos: [] }));
+  await inspect("https://api.deepseek.com/anthropic");
+  expect(fetchMock).toHaveBeenCalledWith(DEEPSEEK_BALANCE_ENDPOINT, expect.anything());
+});
+
+it.each(["", "profiles/web"])("does not query through a custom DSH profile (%s)", async (dir) => {
+  const profile = path.join(home, dir);
+  await mkdir(profile, { recursive: true });
+  await writeFile(
+    path.join(profile, "cordis.patch.yml"),
+    "- id: llm-deepseek\n  config:\n    baseURL: https://proxy.example/api\n",
+  );
+  const fetchMock = vi.fn<typeof fetch>();
+  expect(
+    await fetchDeepSeekBalances({
+      environment: { DSH_HOME: home, DEEPSEEK_API_KEY: "sk-proxy" },
+      fetch: fetchMock,
+    }),
+  ).toEqual([]);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it("projects funded currencies and keeps an exhausted key visible as zero", () => {
   expect(
     projectDeepSeekBalances({
@@ -113,6 +151,7 @@ it("sends the key only to DeepSeek's balance endpoint and hides failures", async
   expect(fetchMock).toHaveBeenCalledTimes(1);
   const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
   expect(url).toBe(DEEPSEEK_BALANCE_ENDPOINT);
+  expect(init.redirect).toBe("error");
   expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
 
   const unauthorized = vi.fn(async () => new Response("{}", { status: 401 }));
@@ -132,7 +171,43 @@ it("sends the key only to DeepSeek's balance endpoint and hides failures", async
   expect(neverCalled).not.toHaveBeenCalled();
 });
 
-it("exposes the balance as Adapter account telemetry and stops after close", async () => {
+it("does not start a request after cancellation during credential lookup", async () => {
+  const controller = new AbortController();
+  const fetchMock = vi.fn<typeof fetch>();
+  const accounts = await fetchDeepSeekBalances({
+    signal: controller.signal,
+    readApiKey: async () => {
+      controller.abort();
+      return "sk-test";
+    },
+    fetch: fetchMock,
+  });
+  expect(accounts).toEqual([]);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("drops a balance returned after the timeout", async () => {
+  const timeout = new AbortController();
+  const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+  try {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => {
+      timeout.abort(new DOMException("Timed out", "TimeoutError"));
+      return Response.json({ balance_infos: [{ currency: "CNY", total_balance: "5.00" }] });
+    });
+    expect(
+      await fetchDeepSeekBalances({ readApiKey: async () => "sk-test", fetch: fetchMock }),
+    ).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      DEEPSEEK_BALANCE_ENDPOINT,
+      expect.objectContaining({ signal: timeout.signal }),
+    );
+    expect(timeoutMock).toHaveBeenCalledWith(10_000);
+  } finally {
+    timeoutMock.mockRestore();
+  }
+});
+
+it("reports the balance as an Adapter account and stops after close", async () => {
   const adapter = new DeepSeekHarnessAdapter({ environment: { DSH_HOME: home } });
   expect(await adapter.inspectAccounts()).toEqual([]);
   expect(await adapter.inspectAccount()).toBeNull();

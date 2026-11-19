@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +15,7 @@ import {
   readClaudeUserModelPicker,
   resolveClaudeConfigDirectory,
 } from "../src/model-catalog.js";
+import { fitClaudeThinkingOptionId } from "../src/thinking-options.js";
 
 function snapshot(models: unknown) {
   return { models, canSelectModel: true, canSelectPermissionMode: true };
@@ -30,60 +32,65 @@ describe("Claude Code runtime Model catalog", () => {
     expect(() => decodeClaudeModelRef({ id: `${alias.id}=` } as never)).toThrow();
   });
 
-  it("preserves default, aliases, and custom rows that resolve to one actual Model", () => {
-    const normalized = normalizeClaudeModelCatalog(
-      snapshot([
-        {
-          value: "default",
-          displayName: "Default",
-          description: "ignored",
-          resolvedModel: "runtime-custom",
-        },
-        {
-          value: "sonnet",
-          displayName: "Family",
-          description: "ignored",
-          resolvedModel: "runtime-custom",
-          supportsEffort: true,
-          supportedEffortLevels: ["low", "adaptive-v2", "high", "adaptive-v2"],
-        },
-        {
-          value: "custom-model",
-          displayName: "Family",
-          description: "ignored",
-          resolvedModel: "runtime-custom",
-          provider: { baseUrl: "https://private.invalid", apiKey: "secret" },
-          price: 42,
-        },
-      ]),
-    );
+  it.each([undefined, "", " \t ", "ignored"])(
+    "preserves default, aliases, and custom rows with description %j",
+    (description) => {
+      const normalized = normalizeClaudeModelCatalog(
+        snapshot([
+          {
+            value: "default",
+            displayName: "Default",
+            description: "ignored",
+            resolvedModel: "runtime-custom",
+          },
+          {
+            value: "sonnet",
+            displayName: "Family",
+            description: "ignored",
+            resolvedModel: "runtime-custom",
+            supportsEffort: true,
+            supportedEffortLevels: ["low", "adaptive-v2", "high", "adaptive-v2"],
+          },
+          {
+            value: "custom-model",
+            displayName: "Family",
+            description,
+            resolvedModel: "runtime-custom",
+            provider: { baseUrl: "https://private.invalid", apiKey: "secret" },
+            price: 42,
+          },
+        ]),
+      );
 
-    expect(normalized.catalog.models).toHaveLength(3);
-    expect(new Set(normalized.catalog.models.map(({ ref }) => ref.id)).size).toBe(3);
-    expect(new Set(normalized.catalog.models.map(({ label }) => label)).size).toBe(3);
-    expect(
-      normalized.catalog.models.filter(
-        ({ resolvedModelLabel }) => resolvedModelLabel === "runtime-custom",
-      ),
-    ).toHaveLength(3);
-    expect(normalized.catalog.defaultModel).toEqual(CLAUDE_DEFAULT_MODEL_REF);
-    expect(normalized.catalog.thinkingOptions).toEqual([
-      { id: "off", label: "Off" },
-      { id: "auto", label: "Auto" },
-      { id: "low", label: "Low" },
-      { id: "medium", label: "Medium" },
-      { id: "high", label: "High" },
-      { id: "xhigh", label: "Extra High" },
-      { id: "max", label: "Max" },
-      { id: "ultracode", label: "Ultracode" },
-    ]);
-    expect(normalized.catalog.defaultThinkingOptionId).toBe("auto");
-    expect(
-      normalized.catalog.models.find(({ label }) => label.startsWith("Family (sonnet"))
-        ?.supportedThinkingOptionIds,
-    ).toEqual(["off", "auto", "low", "medium", "high", "xhigh", "max", "ultracode"]);
-    expect(JSON.stringify(normalized.catalog)).not.toMatch(/private|apiKey|price|supportsEffort/u);
-  });
+      expect(normalized.catalog.models).toHaveLength(3);
+      expect(new Set(normalized.catalog.models.map(({ ref }) => ref.id)).size).toBe(3);
+      expect(new Set(normalized.catalog.models.map(({ label }) => label)).size).toBe(3);
+      expect(
+        normalized.catalog.models.filter(
+          ({ resolvedModelLabel }) => resolvedModelLabel === "runtime-custom",
+        ),
+      ).toHaveLength(3);
+      expect(normalized.catalog.defaultModel).toEqual(CLAUDE_DEFAULT_MODEL_REF);
+      expect(normalized.catalog.thinkingOptions).toEqual([
+        { id: "off", label: "Off" },
+        { id: "auto", label: "Auto" },
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium" },
+        { id: "high", label: "High" },
+        { id: "xhigh", label: "Extra High" },
+        { id: "max", label: "Max" },
+        { id: "ultracode", label: "Ultracode" },
+      ]);
+      expect(normalized.catalog.defaultThinkingOptionId).toBe("auto");
+      expect(
+        normalized.catalog.models.find(({ label }) => label.startsWith("Family (sonnet"))
+          ?.supportedThinkingOptionIds,
+      ).toEqual(["off", "auto", "low", "high"]);
+      expect(JSON.stringify(normalized.catalog)).not.toMatch(
+        /private|apiKey|price|supportsEffort/u,
+      );
+    },
+  );
 
   it("uses deterministic bounded labels for long duplicate display names", () => {
     const displayName = "D".repeat(250);
@@ -124,6 +131,107 @@ describe("Claude Code runtime Model catalog", () => {
     expect(normalized.catalog.models[1]).not.toHaveProperty("resolvedModelLabel");
   });
 
+  it("offers each Model only the Thinking options its native capabilities report", () => {
+    const normalized = normalizeClaudeModelCatalog(
+      snapshot([
+        {
+          value: "opus",
+          displayName: "Opus",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          supportsAdaptiveThinking: true,
+          supportsThinkingOff: true,
+        },
+        {
+          value: "antigravity/gemini-4-argon",
+          displayName: "Gemini Argon",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high"],
+          supportsThinkingOff: false,
+        },
+        {
+          value: "antigravity/gemini-4-carbon",
+          displayName: "Gemini Carbon",
+          supportsEffort: true,
+          supportedEffortLevels: ["low", "medium", "high", "xhigh"],
+          supportsThinkingOff: true,
+        },
+        { value: "haiku", displayName: "Haiku", supportsThinkingOff: true },
+        {
+          value: "no-effort",
+          displayName: "No effort",
+          supportsEffort: false,
+          supportedEffortLevels: ["high"],
+        },
+        { value: "legacy", displayName: "Legacy", supportsFastMode: true },
+      ]),
+    );
+    const options = (value: string) =>
+      normalized.catalog.models.find(({ ref }) => decodeClaudeModelRef(ref) === value)
+        ?.supportedThinkingOptionIds;
+    const all = ["off", "auto", "low", "medium", "high", "xhigh", "max", "ultracode"];
+
+    expect(options("opus")).toEqual(all);
+    expect(options("antigravity/gemini-4-argon")).toEqual(["auto", "low", "medium", "high"]);
+    expect(options("antigravity/gemini-4-carbon")).toEqual([
+      "off",
+      "auto",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "ultracode",
+    ]);
+    expect(options("haiku")).toEqual(["off", "auto"]);
+    expect(options("no-effort")).toEqual(["off", "auto"]);
+    // Neither the synthesized default row nor an older CLI's row reports capabilities.
+    expect(normalized.catalog.models[0]?.supportedThinkingOptionIds).toEqual(all);
+    expect(options("legacy")).toEqual(all);
+  });
+
+  it("clamps a Thinking choice to the Model's highest effort not above it", () => {
+    const ids = (...values: string[]) =>
+      values.map((value) => harnessThinkingOptionIdSchema.parse(value));
+    const fit = (requested: string, supported: string[] | undefined) =>
+      fitClaudeThinkingOptionId(
+        harnessThinkingOptionIdSchema.parse(requested),
+        supported && ids(...supported),
+      );
+    const gemini = ["auto", "low", "medium", "high"];
+    expect(fit("high", gemini)).toBe("high");
+    expect(fit("xhigh", gemini)).toBe("high");
+    expect(fit("max", gemini)).toBe("high");
+    expect(fit("ultracode", gemini)).toBe("high");
+    expect(fit("max", ["auto", "low", "medium", "high", "xhigh"])).toBe("xhigh");
+    expect(fit("medium", ["auto", "low", "high"])).toBe("low");
+    expect(fit("low", ["auto", "medium", "high"])).toBe("auto");
+    expect(fit("off", ["auto", "low"])).toBe("auto");
+    expect(fit("xhigh", ["off", "auto"])).toBe("auto");
+    expect(fit("xhigh", undefined)).toBe("xhigh");
+    // The supported levels are a set: the highest one at or below the requested
+    // effort wins whatever order the caller lists them in.
+    expect(fit("max", ["auto", "high", "low"])).toBe("high");
+    expect(fit("max", ["low", "auto", "high"])).toBe("high");
+    expect(fit("xhigh", ["xhigh", "auto", "medium"])).toBe("xhigh");
+  });
+
+  it("merges duplicate Model rows whose effort levels differ only in order", () => {
+    const normalized = normalizeClaudeModelCatalog(
+      snapshot([
+        { value: "sonnet", displayName: "Sonnet", supportedEffortLevels: ["low", "high"] },
+        {
+          value: "sonnet",
+          displayName: "Sonnet",
+          supportedEffortLevels: ["high", "low", "low"],
+        },
+      ]),
+    );
+    expect(
+      normalized.catalog.models.find(({ ref }) => decodeClaudeModelRef(ref) === "sonnet")
+        ?.supportedThinkingOptionIds,
+    ).toEqual(["off", "auto", "low", "high"]);
+  });
+
   it("rejects unavailable, empty, malformed, conflicting, and unbounded observations", () => {
     for (const value of [
       {
@@ -138,6 +246,9 @@ describe("Claude Code runtime Model catalog", () => {
       },
       snapshot([{ value: "", displayName: "Bad" }]),
       snapshot([{ value: "valid", displayName: "" }]),
+      ...[null, 1, {}, [], "x".repeat(257)].map((description) =>
+        snapshot([{ value: "valid", displayName: "Valid", description }]),
+      ),
       snapshot([
         { value: "same", displayName: "First" },
         { value: "same", displayName: "Second" },

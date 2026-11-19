@@ -7,6 +7,63 @@ const nonNegativeSafeIntegerSchema = z.number().int().safe().nonnegative();
 const finiteNonNegativeNumberSchema = z.number().finite().nonnegative();
 const cacheHitRatePercentSchema = z.number().finite().min(0).max(100);
 
+const usageOutputTimingSchema = z
+  .object({
+    version: z.union([z.literal(3), z.literal(4)]).optional(),
+    requestId: z.string().min(1),
+    turnId: z.string().min(1).max(1024),
+    outputTokens: nonNegativeSafeIntegerSchema,
+    startedAtMs: nonNegativeSafeIntegerSchema,
+    completedAtMs: nonNegativeSafeIntegerSchema,
+  })
+  .strict()
+  .refine((value) => value.completedAtMs > value.startedAtMs);
+export type UsageOutputTiming = z.infer<typeof usageOutputTimingSchema>;
+
+/** Request IDs are session-scoped; concurrent observers must not count one request twice. */
+export function mergeUsageOutputTimings(
+  left: readonly UsageOutputTiming[] = [],
+  right: readonly UsageOutputTiming[] = [],
+): UsageOutputTiming[] {
+  const requests = new Map<string, UsageOutputTiming>();
+  for (const value of [...left, ...right]) {
+    const previous = requests.get(value.requestId);
+    if (!previous || value.completedAtMs < previous.completedAtMs)
+      requests.set(value.requestId, value);
+  }
+  return [...requests.values()].sort((a, b) =>
+    a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0,
+  );
+}
+
+/** Reliable display measurements and completed output intervals, never execution/billing state. */
+const usageMeasurementSchema = z
+  .object({
+    version: z.union([z.literal(2), z.literal(3), z.literal(4)]).optional(),
+    value: finiteNonNegativeNumberSchema,
+    turnId: z.string().min(1).max(1024),
+    at: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+export const usageMeasurementsSchema = z
+  .object({
+    // Older intervals can omit hidden thinking time; do not restore them into averages.
+    outputTimings: z
+      .array(usageOutputTimingSchema)
+      .transform((values) => values.filter((value) => value.version === 4))
+      .optional(),
+    // Retain independent TTFT facts when dropping incompatible speed measurements.
+    outputTokensPerSecond: usageMeasurementSchema
+      .refine((value) => value.version === 4)
+      .optional()
+      .catch(undefined),
+    timeToFirstOutputMs: usageMeasurementSchema
+      .extend({ value: nonNegativeSafeIntegerSchema })
+      .optional(),
+  })
+  .strict();
+export type UsageMeasurementsSnapshot = z.infer<typeof usageMeasurementsSchema>;
+
 const indicatorTextSchema = (maximum: number) =>
   harnessLocalizedTextSchema.refine((entries) =>
     Object.values(entries).every((text) => text.length <= maximum),
@@ -37,6 +94,7 @@ export const threadUsageSnapshotSchema = z
     cacheWriteInputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
+    sessionOutputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
     apiOutputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
     reasoningOutputTokens: nonNegativeSafeIntegerSchema.optional(),
     totalTokens: nonNegativeSafeIntegerSchema.optional(),

@@ -51,7 +51,7 @@ pub(crate) fn unix_process_snapshot(process_id: u32) -> Result<ProcessSnapshot, 
 }
 
 #[cfg(target_os = "linux")]
-fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> {
+pub(super) fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> {
     let path = format!("/proc/{process_id}/stat");
     let text = std::fs::read_to_string(&path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => {
@@ -70,6 +70,11 @@ fn linux_stat_fields(process_id: u32) -> Result<(u32, u32, u64), PlatformError> 
     if fields.len() < 20 {
         return Err(PlatformError::Invalid(format!(
             "PID {process_id} stat has too few fields"
+        )));
+    }
+    if fields[0] == "Z" {
+        return Err(PlatformError::NotFound(format!(
+            "PID {process_id} has exited"
         )));
     }
     let parse = |index: usize, name: &str| {
@@ -341,7 +346,14 @@ impl ObservedProcessTree {
         )?;
         #[cfg(target_os = "linux")]
         let snapshots = process_snapshots()?;
-        self.observe_snapshots(&snapshots)
+        let mut owned = self.observe_snapshots(&snapshots)?;
+        // A native service explicitly transfers to its own supervisor before
+        // starting children. Closing its former Desktop parent must not kill it.
+        let transferred = super::independent_service::transferred_processes(&self.root, &owned);
+        owned.retain(|process| !transferred.contains(&process.id));
+        self.known
+            .retain(|process| !transferred.contains(&process.id));
+        Ok(owned)
     }
 
     fn observe_snapshots(
@@ -489,78 +501,8 @@ impl ObservedProcessTree {
         processes: &[ProcessSnapshot],
         signal: nix::sys::signal::Signal,
     ) -> Result<(), PlatformError> {
-        #[cfg(target_os = "macos")]
-        use nix::errno::Errno;
-        #[cfg(target_os = "macos")]
-        use nix::sys::signal::kill;
-        #[cfg(target_os = "macos")]
-        use nix::unistd::Pid;
-
         for expected in processes {
-            #[cfg(target_os = "linux")]
-            {
-                use rustix::process::{Pid, PidfdFlags, Signal, pidfd_open, pidfd_send_signal};
-
-                let process_id = Pid::from_raw(expected.id as i32).ok_or_else(|| {
-                    PlatformError::Invalid(format!("PID {} is invalid", expected.id))
-                })?;
-                let descriptor = match pidfd_open(process_id, PidfdFlags::empty()) {
-                    Ok(descriptor) => descriptor,
-                    Err(error) if error == rustix::io::Errno::SRCH => continue,
-                    Err(error) => return Err(PlatformError::Io(error.into())),
-                };
-                let current = match unix_process_snapshot(expected.id) {
-                    Ok(current) => current,
-                    Err(PlatformError::NotFound(_)) => continue,
-                    Err(error) => return Err(error),
-                };
-                // An observed descendant may legitimately exec after it is
-                // attributed to this launch. PID plus start time is the
-                // process-instance identity; its executable is not. The
-                // Desktop root is checked separately in `observe()`.
-                if !same_process_instance(expected, &current) {
-                    return Err(PlatformError::Invalid(format!(
-                        "PID {} was reused before signal delivery",
-                        expected.id
-                    )));
-                }
-                let signal = Signal::from_named_raw(signal as i32).ok_or_else(|| {
-                    PlatformError::Invalid(format!("unsupported Unix signal {signal}"))
-                })?;
-                if let Err(error) = pidfd_send_signal(descriptor, signal)
-                    && error != rustix::io::Errno::SRCH
-                {
-                    return Err(PlatformError::Io(error.into()));
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let current = match unix_process_snapshot(expected.id) {
-                    Ok(current) => current,
-                    Err(PlatformError::NotFound(_)) => continue,
-                    Err(error) => return Err(error),
-                };
-                // An observed descendant may legitimately exec after it is
-                // attributed to this launch. PID plus start time is the
-                // process-instance identity; its executable is not. The
-                // Desktop root is checked separately in `observe()`.
-                if !same_process_instance(expected, &current) {
-                    return Err(PlatformError::Invalid(format!(
-                        "PID {} was reused before signal delivery",
-                        expected.id
-                    )));
-                }
-                let process_id = i32::try_from(expected.id).map_err(|_| {
-                    PlatformError::Invalid(format!("PID {} exceeds i32::MAX", expected.id))
-                })?;
-                if let Err(error) = kill(Pid::from_raw(process_id), signal)
-                    && error != Errno::ESRCH
-                {
-                    return Err(PlatformError::Io(std::io::Error::from_raw_os_error(
-                        error as i32,
-                    )));
-                }
-            }
+            super::process_termination::signal_process_identity(&expected.into(), signal)?;
         }
         Ok(())
     }
@@ -711,58 +653,11 @@ pub fn desktop_root_process_ids_for_installation(
 }
 
 #[cfg(target_os = "windows")]
-fn windows_executable_key(path: &Path) -> String {
+pub(crate) fn windows_executable_key(path: &Path) -> String {
     node_entrypoint_path(path)
         .to_string_lossy()
         .replace('/', "\\")
         .to_lowercase()
-}
-
-#[cfg(target_os = "windows")]
-pub fn descendant_executable_exists(
-    root_process_id: u32,
-    executable: &Path,
-) -> Result<bool, PlatformError> {
-    let entries = windows_process::process_entries()?;
-    let mut owned = vec![root_process_id];
-    loop {
-        let mut changed = false;
-        for process in &entries {
-            if !owned.contains(&process.id) && owned.contains(&process.parent_id) {
-                owned.push(process.id);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let expected = windows_executable_key(executable);
-    Ok(owned.into_iter().skip(1).any(|process_id| {
-        windows_process::process_image_path(process_id)
-            .is_ok_and(|path| windows_executable_key(&path) == expected)
-    }))
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-pub fn descendant_executable_exists(
-    root_process_id: u32,
-    executable: &Path,
-) -> Result<bool, PlatformError> {
-    let snapshots = process_snapshots()?;
-    Ok(descendant_snapshots(&[root_process_id], &snapshots)
-        .iter()
-        .any(|process| process.executable == executable))
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-pub fn descendant_executable_exists(
-    _root_process_id: u32,
-    _executable: &Path,
-) -> Result<bool, PlatformError> {
-    Err(PlatformError::Unsupported(
-        "descendant process discovery currently supports Windows, macOS, and Linux only",
-    ))
 }
 
 #[cfg(target_os = "windows")]

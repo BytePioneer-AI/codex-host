@@ -1,3 +1,4 @@
+import { usageMeasurementsSchema } from "@codexhost/shared-contracts";
 import {
   harnessIdSchema,
   hostThreadIdSchema,
@@ -41,6 +42,9 @@ const storedGitInfoV1Schema = z
   })
   .strict();
 
+/** At most this many `thread/inject_items` texts wait for the next Turn. */
+export const MAX_PENDING_INJECTED_TEXTS = 64;
+
 /** Fields owned by the Thread record file; Desktop metadata is stored separately. */
 const storedThreadCoreV1Shape = {
   formatVersion: z.literal(1),
@@ -50,6 +54,8 @@ const storedThreadCoreV1Shape = {
   harnessId: harnessIdSchema,
   state: z.enum(["creating", "ready"]),
   nativeSessionRef: nativeSessionRefSchema.optional(),
+  /** Original import identity, retained when preparation derives a different Native Session. */
+  importSourceRef: nativeSessionRefSchema.optional(),
   cwd: nonBlankTextSchema.max(16_384),
   title: z.string().max(4_096),
   archived: z.boolean(),
@@ -71,21 +77,67 @@ const storedThreadCoreV1Shape = {
     })
     .strict()
     .optional(),
+  // Side Chat fields fall back to absent rather than quarantining the Thread.
+  /** Desktop Side Chat source; attached Threads are listed only under it. */
+  attachedToThreadId: hostThreadIdSchema.optional().catch(undefined),
+  /** Leading Turns an attached Side Chat inherited from its source; they are not listed. */
+  inheritedTurnCount: z.number().int().nonnegative().optional().catch(undefined),
+  /** `thread/inject_items` text not yet delivered; the next Turn carries it. */
+  pendingInjectedText: z
+    .array(z.string())
+    .max(MAX_PENDING_INJECTED_TEXTS)
+    .optional()
+    .catch(undefined),
+  /** How many held texts were released. A Turn releases by position, never by content. */
+  releasedInjectedTexts: z.number().int().nonnegative().optional().catch(undefined),
+  /**
+   * Turns whose native input begins with delivered injected text, hidden when replayed. One
+   * entry per such Turn, never trimmed, so every replayed Turn stays clean.
+   */
+  injectedTurnPrefixes: z
+    .array(
+      z.object({
+        hostTurnId: hostTurnIdSchema,
+        length: z.number().int().positive(),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+      }),
+    )
+    .optional()
+    .catch(undefined),
   turnMappings: z.array(storedTurnMappingV1Schema),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
 };
 
-/**
- * Desktop organization metadata, stored separately from the Thread's identity and mappings.
- */
+/** Thread presentation/organization metadata, stored separately from its identity and mappings. */
 const storedThreadMetadataFieldsShape = {
+  usageMeasurements: z
+    .object({ nativeSessionRef: nativeSessionRefSchema, values: usageMeasurementsSchema })
+    .strict()
+    .optional()
+    .catch(undefined),
+  /** Bounded first user message, independent of the official title. Empty means textless. */
+  preview: z.string().max(4_096).optional(),
   projectId: nonBlankTextSchema.max(1_024).optional(),
+  projectlessWorkspace: z
+    .object({
+      workspaceRoot: nonBlankTextSchema.max(16_384),
+      outputDirectory: nonBlankTextSchema.max(16_384),
+    })
+    .strict()
+    .optional(),
   daybreakEnabled: z.boolean().optional(),
   gitInfo: storedGitInfoV1Schema.optional(),
 };
 
-export const THREAD_METADATA_FIELDS = ["projectId", "daybreakEnabled", "gitInfo"] as const;
+export const THREAD_METADATA_FIELDS = [
+  "usageMeasurements",
+  "preview",
+  "projectId",
+  "projectlessWorkspace",
+  "daybreakEnabled",
+  "gitInfo",
+] as const;
 
 export const storedThreadMetadataV1Schema = z
   .object({
@@ -113,6 +165,30 @@ function refineThreadRecord(
       code: "custom",
       path: ["nativeSessionRef", "harnessId"],
       message: "Native Session Harness must match the Thread Harness",
+    });
+  }
+  if (record.importSourceRef && record.importSourceRef.harnessId !== record.harnessId) {
+    context.addIssue({
+      code: "custom",
+      path: ["importSourceRef", "harnessId"],
+      message: "Import source Harness must match the Thread Harness",
+    });
+  }
+  if (record.importSourceRef && record.subagent) {
+    context.addIssue({
+      code: "custom",
+      path: ["importSourceRef"],
+      message: "Subagent Threads cannot have an import source",
+    });
+  }
+  if (
+    record.attachedToThreadId &&
+    (record.attachedToThreadId === record.hostThreadId || record.subagent)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["attachedToThreadId"],
+      message: "Only a non-Subagent Thread can attach to another Thread",
     });
   }
   const hostTurnIds = new Set<string>();
@@ -178,6 +254,12 @@ export const storedThreadRecordV1Schema = z
 
 export type StoredThreadRecordV1 = z.infer<typeof storedThreadRecordV1Schema>;
 
+/** A Thread record without its Turn mappings, for catalogs that list Threads. */
+// Key remapping keeps the declared fields; `Omit` would collapse them into the passthrough index.
+export type StoredThreadSummaryV1 = {
+  [Key in keyof StoredThreadRecordV1 as Exclude<Key, "turnMappings">]: StoredThreadRecordV1[Key];
+};
+
 export const delegationStatusSchema = z.enum([
   "creating",
   "running",
@@ -234,7 +316,9 @@ export interface FindRecentDelegationInput {
  * unchanged; `null` clears the stored value.
  */
 export interface ThreadMetadataPatch {
+  preview?: string | null;
   projectId?: string | null;
+  projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"] | null;
   daybreakEnabled?: boolean;
   gitInfo?: {
     branch?: string | null;
@@ -247,18 +331,25 @@ export interface CreateProvisionalThreadInput {
   hostThreadId: HostThreadId;
   createRequestId: string;
   harnessId: HarnessId;
+  importSourceRef?: NativeSessionRef;
   cwd: string;
   title?: string;
   transportModelId: string;
   ephemeral: boolean;
   historyMode: "legacy" | "paginated";
+  projectlessWorkspace?: StoredThreadRecordV1["projectlessWorkspace"];
   forkSource?: { hostThreadId: HostThreadId; hostTurnId: HostTurnId };
+  attachedToThreadId?: HostThreadId;
+  inheritedTurnCount?: number;
   subagent?: {
     parentHostThreadId: HostThreadId;
     nativeSubagentId: string;
     role?: string;
   };
 }
+
+/** Delivered injected text at the start of a Turn's native input. */
+export type InjectedTurnPrefix = NonNullable<StoredThreadRecordV1["injectedTurnPrefixes"]>[number];
 
 export interface CommitReadyThreadInput {
   hostThreadId: HostThreadId;

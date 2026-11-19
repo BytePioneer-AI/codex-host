@@ -40,8 +40,7 @@ gh pr list --state open --limit 100 \
 
 ```sh
 gh pr view <n> --json title,body,author,labels,files,commits,reviews,comments,closingIssuesReferences,statusCheckRollup,mergeable,reviewDecision
-gh pr diff <n> --name-only
-# 作者历史：该作者在本仓库已合并的 PR 数
+# 作者历史：按去重后的作者查询在本仓库已合并的 PR 数（同一作者只查一次）
 gh pr list --author <login> --state merged --limit 200 --json number
 # CodeRabbit 与评审线程：是否已处理、作者在评审后有没有新提交
 gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){commits(last:1){nodes{commit{committedDate}}} reviews(first:20){nodes{author{login} submittedAt}} reviewThreads(first:50){nodes{isResolved isOutdated comments(first:1){nodes{author{login} body path}}}}}}}' -f o=<owner> -f r=<repo> -F n=<n>

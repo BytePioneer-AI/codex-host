@@ -1,0 +1,69 @@
+.root {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.anchor {
+  position: relative;
+  border-radius: 16px;
+  corner-shape: round;
+}
+
+.anchor:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-tertiary);
+  outline-offset: 2px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: inherit;
+  corner-shape: round;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: calc(var(--dsh-content-font-size-secondary, 13px) + 2px);
+  line-height: 20px;
+  white-space: nowrap;
+  --dsh-change-stat-font-size: calc(var(--dsh-content-font-size-secondary, 13px) + 1px);
+  --dsw-alias-state-success-primary: var(--dsw-alias-file-diff-added-marker);
+  --dsw-alias-state-error-primary: var(--dsw-alias-file-diff-deleted-marker);
+}
+
+.list {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  display: none;
+  margin: 0;
+  padding: 4px 12px;
+  border-radius: 12px;
+  corner-shape: round;
+  background: var(--dsw-alias-button-floating-fill);
+  box-shadow: var(--dsw-elevation-panel);
+  color: var(--dsw-alias-label-primary);
+  font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px);
+  list-style: none;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.anchor:is(:hover, :focus-visible) .list {
+  display: block;
+}
+
+.file {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 360px;
+  padding: 3px 0;
+}
+
+.path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

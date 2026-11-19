@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type {
   HarnessError,
   HostEvent,
@@ -52,6 +53,7 @@ export class ClaudeSubagentLifecycle {
       subagentId: event.nativeSubagentId ?? event.callId,
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       description: event.description,
+      ...subagentConfiguration(event),
       ...(event.role ? { role: event.role } : {}),
       background: event.background,
       status: "running",
@@ -74,6 +76,7 @@ export class ClaudeSubagentLifecycle {
     if (!current) throw new Error("Claude Code Subagent delegation has no Agent state");
     const subagent: HostSubagentState = {
       ...current,
+      ...subagentConfiguration(event),
       status: event.status,
       ...(event.nativeSubagentId ? { nativeSubagentId: event.nativeSubagentId } : {}),
       ...(event.description ? { description: event.description } : {}),
@@ -93,7 +96,7 @@ export class ClaudeSubagentLifecycle {
     turnId: HostTurnId,
     event: Extract<ClaudeTurnEvent, { type: "subagent.completed" }>,
     cancellationRequested: boolean,
-  ): HostSubagentState {
+  ): { operation: HostSubagentDelegationItem["operation"]; subagent: HostSubagentState } {
     const active = this.#delegations.get(event.callId);
     if (!active)
       throw new Error("Claude Code Subagent completion references an unknown delegation");
@@ -126,7 +129,7 @@ export class ClaudeSubagentLifecycle {
         ? { status: "failed", error: subagentFailure() }
         : { status: "succeeded" };
     this.#emit({ type: "item.completed", turnId, snapshot: { item, outcome } });
-    return subagent;
+    return { operation: active.item.operation, subagent };
   }
 
   finalize(turnId: HostTurnId, outcome: HostItemOutcome): void {

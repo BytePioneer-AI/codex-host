@@ -41,8 +41,19 @@ fn run_console() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "windows")]
+fn run_autostart() -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
+    Ok(launcher_command()?.args(["web", "--background"]).status()?)
+}
+
+#[cfg(target_os = "windows")]
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some(CONSOLE_ARGUMENT) {
+    let argument = std::env::args().nth(1);
+    if argument.as_deref() == Some("--autostart") {
+        // Login startup has no UI, including on failure. The Launcher records
+        // background startup failures for `codexhost status`.
+        std::process::exit(run_autostart().map_or(1, |status| status.code().unwrap_or(1)));
+    }
+    if argument.as_deref() == Some(CONSOLE_ARGUMENT) {
         if let Err(error) = run_console() {
             codexhost_platform::show_error_dialog(&format!(
                 "codexhost console could not open: {error}"

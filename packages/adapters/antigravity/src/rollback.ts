@@ -1,160 +1,73 @@
-import { randomUUID } from "node:crypto";
-
 import type {
   HarnessResult,
   HarnessSession,
   RollbackLastTurnSessionInput,
 } from "@codexhost/harness-adapter";
 import {
-  nativeSessionRefSchema,
-  type HarnessId,
-  type HarnessModelRef,
-  type HarnessThinkingOptionId,
-  type NativeSessionRef,
-} from "@codexhost/shared-contracts";
+  nativeConversationDbPath,
+  openDerivedAntigravitySession,
+  validNativeSessionRef,
+  type NativeDerivationOptions,
+} from "./fork.js";
+import { nativeHistoryError, readNativeTurnCount } from "./native-turn-boundaries.js";
+import { antigravityHome } from "./usage-statistics.js";
 
-import { copyNativeBrainDirIfExists, copyNativeConversationDbIfExists } from "./fork.js";
-import { AntigravityHistory, type AntigravityTurn } from "./history.js";
-import type { AntigravityPermissionMode } from "./permission-modes.js";
-
-export interface RollbackAntigravityLastTurnOptions {
-  harnessId: HarnessId;
+export interface RollbackAntigravityLastTurnOptions extends NativeDerivationOptions {
   input: RollbackLastTurnSessionInput;
-  adapterEnvironment: NodeJS.ProcessEnv;
-  sourceSession?:
-    | {
-        history: AntigravityHistory;
-        model?: HarnessModelRef | undefined;
-        thinkingOptionId?: HarnessThinkingOptionId | undefined;
-        permissionMode: AntigravityPermissionMode;
-        isActive: boolean;
-      }
-    | undefined;
-  createSession: (params: {
-    history: AntigravityHistory;
-    nativeRef: NativeSessionRef;
-    model?: HarnessModelRef | undefined;
-    thinkingOptionId?: HarnessThinkingOptionId | undefined;
-    permissionMode: AntigravityPermissionMode;
-    cwd: string;
-    environment: NodeJS.ProcessEnv;
-  }) => HarnessSession;
 }
-
 export async function rollbackAntigravityLastTurn(
   options: RollbackAntigravityLastTurnOptions,
 ): Promise<HarnessResult<HarnessSession>> {
-  const { harnessId, input, adapterEnvironment, sourceSession, createSession } = options;
-
-  const sourceRefParsed = nativeSessionRefSchema.safeParse(input.sourceRef);
-  if (!sourceRefParsed.success || sourceRefParsed.data.harnessId !== harnessId) {
+  const { input, harnessId } = options;
+  if (!validNativeSessionRef(input.sourceRef, harnessId))
     return {
       ok: false,
       error: {
         code: "invalidRequest",
-        message: "Antigravity cannot roll back another Harness Session",
+        message: "Invalid Antigravity source Native Session",
         retryable: false,
       },
     };
-  }
-  const sourceRef = sourceRefParsed.data;
-
-  if (sourceSession?.isActive) {
+  if (options.sourceSession?.isActive)
     return {
       ok: false,
       error: {
         code: "sessionBusy",
-        message: "Antigravity Session cannot roll back while a Turn is active",
+        message: "Source Session is busy",
         retryable: true,
       },
     };
-  }
-
-  const sessionEnvironment = { ...adapterEnvironment, ...(input.environment ?? {}) };
-  let sourceHistory: AntigravityHistory | null = sourceSession?.history ?? null;
-  if (!sourceHistory) {
-    sourceHistory = await AntigravityHistory.findByNativeSessionId(
-      sessionEnvironment,
-      sourceRef.nativeSessionId,
+  try {
+    const count = await readNativeTurnCount(
+      nativeConversationDbPath(
+        input.sourceRef.nativeSessionId,
+        antigravityHome({ ...options.adapterEnvironment, ...input.environment }),
+      ),
     );
-  }
-  if (!sourceHistory) {
-    return {
-      ok: false,
-      error: {
-        code: "sessionNotFound",
-        message: "Antigravity source session history not found",
-        retryable: false,
+    if (count === 0)
+      return {
+        ok: false,
+        error: {
+          code: "invalidState",
+          message: "Antigravity Native Session has no Turn to roll back",
+          retryable: false,
+        },
+      };
+    return openDerivedAntigravitySession(
+      options,
+      {
+        kind: "resume",
+        nativeRef: input.sourceRef,
+        cwd: input.cwd,
+        ...(input.environment ? { environment: input.environment } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+        ...(input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
       },
-    };
+      input.sourceRef,
+      count - 1,
+    );
+  } catch (error) {
+    return { ok: false, error: nativeHistoryError(error) };
   }
-
-  const sourceTurns = sourceHistory.snapshot();
-  if (sourceTurns.length === 0) {
-    return {
-      ok: false,
-      error: {
-        code: "invalidState",
-        message: "Antigravity Native Session has no Turn to roll back",
-        retryable: false,
-      },
-    };
-  }
-
-  const truncatedTurns = sourceTurns.slice(0, -1);
-  const derivedNativeSessionId = randomUUID();
-  const mappedTurns: AntigravityTurn[] = truncatedTurns.map((turn) => ({
-    ...turn,
-    nativeTurnRef: {
-      ...turn.nativeTurnRef,
-      nativeSessionId: derivedNativeSessionId,
-    },
-    ...(turn.checkpoint
-      ? {
-          checkpoint: {
-            ...turn.checkpoint,
-            nativeSessionId: derivedNativeSessionId,
-          },
-        }
-      : {}),
-  }));
-
-  const model = sourceSession?.model ?? sourceHistory.model;
-  const thinkingOptionId = sourceSession?.thinkingOptionId ?? sourceHistory.thinkingOptionId;
-  const permissionMode = sourceSession?.permissionMode ?? "dangerously-skip-permissions";
-
-  const rolledBackHistory = await AntigravityHistory.createDerived({
-    environment: sessionEnvironment,
-    nativeSessionId: derivedNativeSessionId,
-    turns: mappedTurns,
-    ...(model ? { model } : {}),
-    ...(thinkingOptionId ? { thinkingOptionId } : {}),
-  });
-
-  await Promise.all([
-    copyNativeConversationDbIfExists(
-      sourceRef.nativeSessionId,
-      derivedNativeSessionId,
-      mappedTurns.length,
-    ),
-    copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedNativeSessionId),
-  ]);
-
-  const derivedNativeRef: NativeSessionRef = {
-    harnessId,
-    nativeSessionId: derivedNativeSessionId,
-    formatVersion: 1,
-  };
-
-  const session = createSession({
-    history: rolledBackHistory,
-    nativeRef: derivedNativeRef,
-    ...(model ? { model } : {}),
-    ...(thinkingOptionId ? { thinkingOptionId } : {}),
-    permissionMode,
-    cwd: input.cwd,
-    environment: sessionEnvironment,
-  });
-
-  return { ok: true, value: session };
 }

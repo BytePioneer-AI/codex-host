@@ -1,0 +1,15 @@
+.stat {
+  display: inline-flex;
+  gap: 6px;
+  font-size: var(--dsh-change-stat-font-size, inherit);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.added {
+  color: var(--dsw-alias-state-success-primary);
+}
+
+.removed {
+  color: var(--dsw-alias-state-error-primary);
+}

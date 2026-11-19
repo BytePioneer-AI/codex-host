@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   axisValue,
+  cacheHitRate,
   count,
   emptyTotals,
   formatMeasure,
@@ -35,6 +36,27 @@ describe("usage token accounting", () => {
     expect(tokensWithoutCache(totals)).toBe(130);
     // Changing the overview does not change the trend and ranking measure.
     expect(measured(totals, "tokens")).toBe(130);
+  });
+
+  it("calculates cache hits from requests whose read count is known", () => {
+    expect(
+      cacheHitRate({
+        ...emptyTotals(),
+        requests: 2,
+        inputTokens: 1_500,
+        cacheHitCachedInputTokens: 900,
+        cacheHitInputTokens: 1_500,
+      }),
+    ).toBe("60%");
+    expect(
+      cacheHitRate({
+        ...emptyTotals(),
+        requests: 1,
+        inputTokens: 500,
+        cacheHitInputTokens: 500,
+      }),
+    ).toBe("0%");
+    expect(cacheHitRate({ ...emptyTotals(), requests: 1, inputTokens: 500 })).toBe("—");
   });
 
   it("retains input with unknown cache breakdown without inventing cache tokens", () => {

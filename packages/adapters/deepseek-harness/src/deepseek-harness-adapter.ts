@@ -189,7 +189,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     return this.#closePromise;
   }
 
-  /** DSH holds no Account; this reports the configured DeepSeek API key's prepaid balance. */
+  /** Report the official DeepSeek API key's prepaid balance, not the DSH sign-in account. */
   async inspectAccounts(): Promise<readonly HarnessAccountSnapshot[]> {
     if (this.#closed) return [];
     return this.#balance.inspect();

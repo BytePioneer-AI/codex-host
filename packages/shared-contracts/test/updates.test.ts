@@ -40,6 +40,14 @@ describe("update runtime contracts", () => {
     expect(updateStatusResultSchema.parse({ status: null })).toEqual({ status: null });
   });
 
+  it("preserves optional service stop output without interpreting tasks", () => {
+    const serviceStopOutput = "Host stopped; interrupted 7 running task(s)\n";
+    expect(updateStatusSchema.parse({ ...status, serviceStopOutput }).serviceStopOutput).toBe(
+      serviceStopOutput,
+    );
+    expect(updateStatusSchema.safeParse({ ...status, serviceStopOutput: 7 }).success).toBe(false);
+  });
+
   it("accepts bounded download progress and rejects impossible byte counts", () => {
     expect(
       updateStatusSchema.parse({

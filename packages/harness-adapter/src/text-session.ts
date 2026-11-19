@@ -371,6 +371,29 @@ export interface HostToolExecutionItem {
   durationMs?: number;
 }
 
+/** A call to a tool served by an MCP server; Codex shows it as an MCP tool call. */
+export interface HostMcpToolCallItem {
+  type: "mcpToolCall";
+  itemId: HostItemId;
+  /** The MCP server name as the Harness configured it. */
+  server: string;
+  /** The tool name on that server, without any Harness prefix. */
+  tool: string;
+  arguments: JsonValue;
+  /** The tool result; a failed outcome presents its text as the call error. */
+  output?: HostToolOutput;
+  durationMs?: number;
+}
+
+/** A native web search; Codex shows its query. */
+export interface HostWebSearchItem {
+  type: "webSearch";
+  itemId: HostItemId;
+  query: string;
+  /** The native result; Codex's web search Item has no status, so only an unsuccessful search shows it. */
+  output?: HostToolOutput;
+}
+
 export interface HostFileChange {
   path: string;
   kind: "add" | "update" | "delete";
@@ -394,9 +417,9 @@ export interface HostSubagentState {
   nativeSubagentId?: string;
   description: string;
   role?: string;
-  /** Native child Model ID, when explicitly supplied or reported; not a display label. */
+  /** Native child Model ID, or the parent selection when the CLI does not report one. */
   model?: string;
-  /** Native child reasoning effort, when known; do not infer from parent settings. */
+  /** Native child reasoning effort; falls back to the parent selection when unreported. */
   reasoningEffort?: string;
   background: boolean;
   status: HostSubagentStatus;
@@ -418,6 +441,8 @@ export type HostItem =
   | HostContextCompactionItem
   | HostCommandExecutionItem
   | HostToolExecutionItem
+  | HostMcpToolCallItem
+  | HostWebSearchItem
   | HostFileChangeItem
   | HostSubagentDelegationItem;
 
@@ -545,6 +570,19 @@ export interface ItemDetachedEvent {
   itemId: HostItemId;
 }
 
+/**
+ * The Harness produced new output after its Turn completed (idle-time
+ * background work). The Item starts and stays detached on the completed
+ * Turn; it settles later with `item.updated` / `item.completed` on the
+ * same Turn, exactly like an `item.detached` Item. Adapters must emit it
+ * only while no successor Turn has started, and only for text Items.
+ */
+export interface ItemBackgroundStartedEvent {
+  type: "item.background.started";
+  turnId: HostTurnId;
+  item: HostItem;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
@@ -579,6 +617,7 @@ export type HostEvent =
   | ItemUpdatedEvent
   | ItemCompletedEvent
   | ItemDetachedEvent
+  | ItemBackgroundStartedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
@@ -643,11 +682,26 @@ export interface HarnessSessionImportSource {
   nativeRef: NativeSessionRef;
 }
 
+/** Confirmed import destination, with its live Session when initialization succeeded. */
+export interface HarnessSessionImportPrepared {
+  nativeRef: NativeSessionRef;
+  session?: HarnessSession;
+}
+
 /** Optional discovery of existing Native Sessions that codexhost can map and resume. */
 export interface HarnessSessionImportCapability {
   listCandidates(): Promise<HarnessResult<readonly HarnessSessionImportCandidate[]>>;
   /** Read-only revalidation. Omission keeps older discovery-only plugins valid, not importable. */
   resolveCandidate?(nativeSessionId: string): Promise<HarnessResult<HarnessSessionImportSource>>;
+  /** Prepare an import, optionally deriving a different Native Session. A failure result confirms
+   * that no derived Session was created; reject when the outcome is unconfirmed. Any known new
+   * nativeRef must be returned successfully, even without a usable Session. The Host owns a
+   * returned Session and persists the destination before reading its snapshot.
+   */
+  prepareImport?(input: {
+    source: HarnessSessionImportSource;
+    environment?: Record<string, string | undefined>;
+  }): Promise<HarnessResult<HarnessSessionImportPrepared>>;
 }
 
 export interface HarnessAdapter {

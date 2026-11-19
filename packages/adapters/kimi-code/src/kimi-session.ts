@@ -96,6 +96,7 @@ import {
   stripAnsi,
   KIMI_DEFAULT_COMMANDS,
 } from "./slash-commands.js";
+import { projectKimiPlanApprovalRequest } from "./plan-approval.js";
 
 const kimiHarnessId: HarnessId = harnessIdSchema.parse("kimi-code");
 const defaultNativeTurnFlushTimeoutMs = 6_000;
@@ -761,6 +762,19 @@ export class KimiSession implements HarnessSession {
         completeReasoning();
         if (currentAgentMessage) {
           completeAgentMessage("commentary");
+        }
+        const plan = projectKimiPlanApprovalRequest(turnId, request);
+        if (plan) {
+          return new Promise<RequestPermissionResponse>((resolve) => {
+            this.#activeInteractions.set(plan.interaction.interactionId, {
+              id: plan.interaction.interactionId,
+              type: "question",
+              interaction: plan.interaction,
+              metadata: plan.schemaProperties,
+              resolve: (value) => resolve(plan.parseResponse(value as CreateElicitationResponse)),
+            });
+            this.#channel.emit({ kind: "interaction", interaction: plan.interaction });
+          });
         }
         const projected = projectKimiApprovalRequest(turnId, request);
         return new Promise<RequestPermissionResponse>((resolve) => {

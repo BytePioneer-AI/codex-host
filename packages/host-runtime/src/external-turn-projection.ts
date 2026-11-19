@@ -163,6 +163,8 @@ export class ExternalTurnProjection {
     if (event.type === "turn.started") {
       if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
         thread.clientCommand.subsequentTurnId ??= event.turnId;
+      // A successor Turn ends the attribution window of every earlier Turn.
+      this.#dropSettledTurnProjections(thread, event.turnId);
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
@@ -183,8 +185,10 @@ export class ExternalTurnProjection {
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
-      // Detached Items (native background commands) settle on this Turn later.
-      if (!projection.projector.hasOpenDetachedItems) thread.projectedTurns.delete(event.turnId);
+      // Detached Items (native background commands) and idle background output
+      // settle on the completed Turn later; keep its projector so late events
+      // still project instead of failing on a missing Turn.
+      this.#dropSettledTurnProjections(thread, event.turnId);
       thread.responseGates.delete(event.turnId);
       thread.pendingSteerProjections.clear();
       this.#host.signalActiveWorkChanged();
@@ -219,7 +223,16 @@ export class ExternalTurnProjection {
       projection.projector.completed &&
       !projection.projector.hasOpenDetachedItems
     ) {
-      thread.projectedTurns.delete(event.turnId);
+      // Fold the settled Item into the stored Turn snapshot for served history.
+      const index = thread.turns.findIndex(
+        (turn) => (turn as { id?: unknown }).id === event.turnId,
+      );
+      if (index >= 0) {
+        const existing = thread.turns[index];
+        if (existing) thread.turns[index] = projection.projector.snapshotTurn(existing);
+      }
+      if (event.turnId !== thread.projectedTerminalTurnId)
+        thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#host.writeJson(message);
     if (event.type === "turn.completed") {
@@ -240,6 +253,15 @@ export class ExternalTurnProjection {
             await this.#host.publishExternalQueue(thread.id);
         }
       }
+    }
+  }
+
+  /** Keep only Turn projections that can still receive output: the active one,
+   * plus completed Turns whose detached or background Items have not settled. */
+  #dropSettledTurnProjections(thread: ExternalThread, keep: HostTurnId): void {
+    for (const [id, { projector }] of thread.projectedTurns) {
+      if (id !== keep && projector.completed && !projector.hasOpenDetachedItems)
+        thread.projectedTurns.delete(id);
     }
   }
 }

@@ -33,6 +33,7 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
+import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
@@ -1267,4 +1268,366 @@ describe("inspection and errors", () => {
       await adapter.close();
     },
   );
+});
+
+describe("Antigravity idle background output episodes", () => {
+  it("closes the idle output window when a pre-submit successor starts", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-background-cancel-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
+    const first = await start(session, transports, "t1");
+    const db = await createNativeHistoryDatabase(home, required(first.sessionId));
+    userStep(db, 0, "hello");
+    db.close();
+    first.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t1");
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        turnId: "t1",
+        nativeTurnRef: expect.anything(),
+      }),
+    );
+    const usageGate =
+      deferred<
+        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+      >();
+    const collect = vi
+      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+      .mockReturnValueOnce(usageGate.promise);
+    const refresh = session.refreshUsage?.();
+    await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+    await session.execute({
+      type: "turn.start",
+      turnId: turnId("cancel-before-submit"),
+      input: [{ type: "text", text: "hello" }],
+    });
+    await vi.waitFor(() => expect(transports.at(-1)?.eventHandler).toBeDefined());
+    expect(
+      await session.execute({
+        type: "turn.cancel",
+        turnId: turnId("cancel-before-submit"),
+      }),
+    ).toEqual({ ok: true, value: { cancellationRequested: true } });
+    usageGate.resolve({ requests: [], complete: true, usage: null });
+    await refresh;
+    await completed(outputs, "cancel-before-submit");
+    transports.at(-1)?.eventHandler?.({ type: "agent.text", text: "orphan" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started" }),
+    );
+  });
+
+  it("keeps pre-submit idle output on the preceding native Turn", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-background-pre-submit-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
+    const transport = await start(session, transports);
+    const db = await createNativeHistoryDatabase(home, required(transport.sessionId));
+    userStep(db, 0, "hello");
+    answerStep(db, 1, "wake");
+    db.close();
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t1");
+
+    const usageGate =
+      deferred<
+        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+      >();
+    const collect = vi
+      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+      .mockReturnValueOnce(usageGate.promise);
+    const refresh = session.refreshUsage?.();
+    await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+    transport.result = deferred();
+    expect(
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("t2"),
+        input: [{ type: "text", text: "next" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "t2" } });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual({ type: "turn.started", turnId: "t2" }),
+    );
+    transport.eventHandler?.({ type: "agent.text", text: "wake" });
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started" }),
+    );
+
+    usageGate.resolve({ requests: [], complete: true, usage: null });
+    await refresh;
+    await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs, "t2");
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started" }),
+    );
+    const snapshot = await session.readSnapshot();
+    expect(snapshot).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            input: [{ text: "hello" }],
+            items: [{ item: { type: "agentMessage", text: "wake" } }],
+          },
+        ],
+      },
+    });
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("First Turn has no Native Session");
+    await session.close();
+    const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });
+    if (!reopened.ok) throw new Error(reopened.error.message);
+    const coldSnapshot = await reopened.value.readSnapshot();
+    expect(coldSnapshot).toMatchObject({ ok: true });
+    const coldWake = (coldSnapshot.ok ? coldSnapshot.value.turns : []).flatMap((turn) =>
+      turn.items.filter((item) => item.item.type === "agentMessage" && item.item.text === "wake"),
+    );
+    expect(coldWake).toHaveLength(1);
+  });
+
+  it("attributes idle agent output to the most recently completed Turn and settles it on the next prompt", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+
+    transport.eventHandler?.({ type: "agent.text", text: "awake: " });
+    transport.eventHandler?.({ type: "agent.text", text: "done\n" });
+
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.background.started",
+          turnId: "t1",
+          item: expect.objectContaining({ type: "agentMessage" }),
+        }),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter((event) => event.type === "item.updated" && event.turnId === "t1"),
+      ).toHaveLength(2),
+    );
+
+    // The successor prompt settles the episode before the new Turn completes.
+    expect(
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("t2"),
+        input: [{ type: "text", text: "next" }],
+      }),
+    ).toEqual({ ok: true, value: { turnId: "t2" } });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === "t2"),
+      ).toHaveLength(1),
+    );
+    const all = events(outputs);
+    const settleIndex = all.findIndex(
+      (event) => event.type === "item.completed" && event.turnId === "t1",
+    );
+    const nextTurnIndex = all.findIndex(
+      (event) => event.type === "turn.started" && event.turnId === "t2",
+    );
+    expect(settleIndex).toBeGreaterThanOrEqual(0);
+    expect(nextTurnIndex).toBeGreaterThan(settleIndex);
+    expect(all[settleIndex]).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "agentMessage", text: "awake: done\n" },
+        outcome: { status: "succeeded" },
+      },
+    });
+    await session.close();
+  });
+
+  it("drops idle output when no user Turn has completed", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.eventHandler?.({ type: "agent.text", text: "orphan" });
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.background.started" }),
+    );
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    await session.close();
+  });
+
+  it("settles a pending episode as succeeded when the Session faults", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.thought", text: "thinking in the dark" });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.background.started",
+          item: expect.objectContaining({ type: "reasoning" }),
+        }),
+      ),
+    );
+    transport.options.onFault?.(
+      new AntigravityTransportError("processExited", "Antigravity ACP exited (code 8)"),
+    );
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).find((event) => event.type === "item.completed" && event.turnId === "t1"),
+      ).toMatchObject({ snapshot: { outcome: { status: "succeeded" } } }),
+    );
+    expect(events(outputs)).toContainEqual(expect.objectContaining({ type: "session.faulted" }));
+  });
+
+  it("settles a pending episode as succeeded on close", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.text", text: "tail" });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({ type: "item.background.started" }),
+      ),
+    );
+    await session.close();
+    expect(events(outputs).find((event) => event.type === "item.completed")).toMatchObject({
+      snapshot: { item: { text: "tail" }, outcome: { status: "succeeded" } },
+    });
+  });
+
+  it("merges consecutive same-type idle chunks into one Item and switches Items on type change", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.text", text: "one" });
+    transport.eventHandler?.({ type: "agent.text", text: " two" });
+    transport.eventHandler?.({ type: "agent.thought", text: " pondering" });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter((event) => event.type === "item.background.started"),
+      ).toHaveLength(2),
+    );
+    await session.close();
+    await vi.waitFor(() => {
+      const settledTexts = events(outputs)
+        .filter((event) => event.type === "item.completed" && event.turnId === "t1")
+        .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
+      expect(settledTexts).toEqual(["one two", " pondering"]);
+    });
+  });
+
+  it("settles the open idle Item and keeps its Turn across a Skip permissions restart", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    transport.eventHandler?.({ type: "agent.text", text: "before restart" });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.background.started",
+          turnId: "t1",
+          item: expect.objectContaining({ type: "agentMessage" }),
+        }),
+      ),
+    );
+
+    expect(
+      (
+        await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: mode("dangerously-skip-permissions"),
+        })
+      ).ok,
+    ).toBe(true);
+    expect(transports).toHaveLength(2);
+    expect(events(outputs).find((event) => event.type === "item.completed")).toMatchObject({
+      turnId: "t1",
+      snapshot: {
+        item: { type: "agentMessage", text: "before restart" },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transports[1]?.eventHandler?.({ type: "agent.text", text: "after restart" });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).filter(
+          (event) => event.type === "item.background.started" && event.turnId === "t1",
+        ),
+      ).toHaveLength(2),
+    );
+    await session.close();
+    const settledTexts = events(outputs)
+      .filter((event) => event.type === "item.completed" && event.turnId === "t1")
+      .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
+    expect(settledTexts).toEqual(["before restart", "after restart"]);
+  });
+
+  it("buffers output that arrives after prompt() returns but before usage observation finishes", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    const gate = deferred<number>();
+    const readCount = vi
+      .spyOn(nativeBoundaries, "readNativeTurnCount")
+      .mockReturnValue(gate.promise);
+
+    transport.result.resolve({ stopReason: "end_turn" });
+    await vi.waitFor(() => expect(readCount).toHaveBeenCalledOnce());
+    transport.eventHandler?.({ type: "agent.text", text: "late text" });
+    transport.eventHandler?.({ type: "agent.thought", text: "late thought" });
+    expect(events(outputs).some((event) => event.type === "item.background.started")).toBe(false);
+
+    gate.resolve(1);
+    await completed(outputs);
+    const all = events(outputs);
+    const completedIndex = all.findIndex(
+      (event) => event.type === "turn.completed" && event.turnId === "t1",
+    );
+    const firstBackgroundIndex = all.findIndex(
+      (event) => event.type === "item.background.started" && event.turnId === "t1",
+    );
+    expect(completedIndex).toBeGreaterThanOrEqual(0);
+    expect(firstBackgroundIndex).toBeGreaterThan(completedIndex);
+    expect(
+      all.filter((event) => event.type === "item.updated" && event.turnId === "t1"),
+    ).toMatchObject([
+      { update: { type: "text.append", text: "late text" } },
+      { update: { type: "text.append", text: "late thought" } },
+    ]);
+
+    await session.close();
+    const settledTexts = events(outputs)
+      .filter((event) => event.type === "item.completed" && event.turnId === "t1")
+      .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
+    expect(settledTexts).toEqual(["late text", "late thought"]);
+  });
 });

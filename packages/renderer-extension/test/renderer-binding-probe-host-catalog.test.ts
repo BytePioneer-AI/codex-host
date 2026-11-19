@@ -23,6 +23,8 @@ const testState = vi.hoisted(() => ({
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
+  selectAgent: null as null | Parameters<typeof RendererComposerDom.mountComposerAgentControl>[4],
+  refreshModels: null as null | (() => void),
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
@@ -48,6 +50,8 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
+      testState.selectAgent = args[4];
+      testState.refreshModels = args[11] ?? null;
       testState.selectModel = args[7];
       testState.selectThinking = args[8];
       return {
@@ -214,6 +218,8 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.selectAgent = null;
+  testState.refreshModels = null;
   testState.selectModel = null;
   testState.selectThinking = null;
   testState.getConnectionDiagnostics = null;
@@ -1626,6 +1632,104 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(applyAgent.mock.calls.length).toBeGreaterThan(applicationsBeforeSwitch);
     expect(applyAgent.mock.calls.at(-1)?.[0]).toBe("claude-code");
     expect(testState.prewarmClears).toBeGreaterThan(clearsBeforeSwitch);
+  });
+
+  it("refreshes only the selected Harness without replacing its ready view in flight", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async ({ refresh }: { refresh?: boolean }) =>
+        refresh ? pending.promise : readyInspection(),
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    const original = readyInspection();
+    const refresh = testState.refreshModels;
+    assert(refresh);
+    refresh();
+    refresh();
+    expect(latest()).toMatchObject({
+      status: "ready",
+      refreshing: true,
+      catalog: original.catalog,
+    });
+    expect(client.inspectHarness.mock.calls.flat().filter(({ refresh }) => refresh)).toEqual([
+      { harnessId: "claude-code", refresh: true },
+    ]);
+    pending.resolve({
+      ...original,
+      catalog: {
+        ...original.catalog,
+        models: [...original.catalog.models, ...readyInspection("new-model").catalog.models],
+      },
+    });
+    await vi.waitFor(() => expect(latest()?.catalog?.models.at(-1)?.ref.id).toBe("new-model"));
+    expect(latest()).toMatchObject({ status: "ready", selected: original.catalog.defaultModel });
+    expect(latest()?.refreshing).not.toBe(true);
+
+    client.inspectHarness.mockRejectedValueOnce(new Error("Refresh failed"));
+    refresh();
+    expect(latest()?.refreshing).toBe(true);
+    await vi.waitFor(() => expect(latest()?.refreshing).not.toBe(true));
+    expect(latest()?.status).toBe("ready");
+    expect(latest()?.catalog?.models.at(-1)?.ref.id).toBe("new-model");
+  });
+
+  it("discards a model refresh that finishes after switching Harnesses", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ harnessId, refresh }: { harnessId: string; refresh?: boolean }) =>
+          refresh ? pending.promise : readyInspection(harnessId === "pi" ? "pi-model" : undefined),
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code", "pi"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    testState.refreshModels?.();
+    expect(latest()?.refreshing).toBe(true);
+    testState.selectAgent?.("pi");
+    await vi.waitFor(() => expect(latest()?.selected?.id).toBe("pi-model"));
+    pending.resolve(readyInspection("stale-claude-model"));
+    await pending.promise;
+    await Promise.resolve();
+    expect(latest()).toMatchObject({
+      status: "ready",
+      catalog: readyInspection("pi-model").catalog,
+    });
+    expect(latest()?.refreshing).not.toBe(true);
+    expect(
+      testState.renderedModelViews.some((view) =>
+        view.catalog?.models.some(({ ref }) => ref.id === "stale-claude-model"),
+      ),
+    ).toBe(false);
   });
 
   it("reloads a same-Host empty Claude catalog on explicit refresh", async () => {

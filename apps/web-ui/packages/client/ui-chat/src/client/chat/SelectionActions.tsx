@@ -178,8 +178,8 @@ function serializeParagraph(node: Element, parent: Element): string {
  * right edge 8px above the selection's top and draws the box upward, keeping
  * the box inside the viewport with a CSS clamp rather than assuming its width;
  * a touch platform draws it below the selection instead, so the system callout
- * above stays reachable. A box taller than a button also moves to the other
- * side when its preferred side has no room for it and the other side does.
+ * above stays reachable. The comment card can flip sides or move away from
+ * the selection to stay within the visible viewport.
  * @param rect - the selection's last line in viewport coordinates.
  * @param height - the box's height; omit for the one-line action.
  * @returns fixed-position anchor and the transform that bounds the box.
@@ -207,9 +207,12 @@ function placeSelection(
   // The clamp bounds the drawn box: its own width decides how far left it may
   // pull itself, and its right edge never leaves the viewport margin.
   const room = width - VIEWPORT_MARGIN - right;
+  const top = below ? rect.bottom + POPOVER_GAP : rect.top - POPOVER_GAP;
+  const minTop = topEdge + VIEWPORT_MARGIN + (below ? 0 : height);
+  const maxTop = bottomEdge - VIEWPORT_MARGIN - (below ? height : 0);
   return {
-    left: right,
-    top: below ? rect.bottom + POPOVER_GAP : rect.top - POPOVER_GAP,
+    left: rect.right,
+    top: height === 0 ? top : Math.max(minTop, Math.min(top, maxTop)),
     maxWidth: width - VIEWPORT_MARGIN * 2,
     transform:
       `translateX(clamp(${String(VIEWPORT_MARGIN - right)}px, -100%, calc(${String(room)}px - 100%)))` +
@@ -257,7 +260,10 @@ export function SelectionActions({
   const [selection, setSelection] = useState<AnswerSelection | null>(null);
   // The passage a note is being written for. Held apart from `selection`: the
   // field takes focus, which collapses the page selection `selection` mirrors.
-  const [composing, setComposing] = useState<AnswerSelection | null>(null);
+  const [composing, setComposing] = useState<
+    (AnswerSelection & { placement: ReturnType<typeof placeSelection> }) | null
+  >(null);
+  const commentFieldRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const frameRef = useRef<number | null>(null);
   const suppressRef = useRef(false);
@@ -314,6 +320,10 @@ export function SelectionActions({
       // the transcript moving away from the passage.
       const target = event.target;
       if (target instanceof Element && target.closest("[data-selection-actions]") !== null) return;
+      // Opening the keyboard can also scroll the transcript. Keep the card
+      // mounted while editing or when closing it would discard a draft.
+      const field = commentFieldRef.current;
+      if (field !== null && (field === document.activeElement || field.value !== "")) return;
       setSelection(null);
       closeComposing();
     };
@@ -334,16 +344,38 @@ export function SelectionActions({
     };
   }, [schedule, closeComposing]);
 
+  const composingRect = composing?.rect;
+  useEffect(() => {
+    if (composingRect === undefined) return;
+    const viewport = window.visualViewport;
+    const reposition = (): void => {
+      const placement = placeSelection(composingRect, COMMENT_CARD_HEIGHT);
+      setComposing((current) =>
+        current?.rect === composingRect ? { ...current, placement } : current,
+      );
+    };
+    window.addEventListener("resize", reposition);
+    viewport?.addEventListener("resize", reposition);
+    viewport?.addEventListener("scroll", reposition, { passive: true });
+    reposition();
+    return () => {
+      window.removeEventListener("resize", reposition);
+      viewport?.removeEventListener("resize", reposition);
+      viewport?.removeEventListener("scroll", reposition);
+    };
+  }, [composingRect]);
+
   /** Whether the answer a passage came from is still on the page. */
   const owned = (passage: AnswerSelection): boolean =>
     passage.host.isConnected && container()?.contains(passage.host) === true;
 
   if (composing !== null) {
-    const placed = placeSelection(composing.rect, COMMENT_CARD_HEIGHT);
+    const placed = composing.placement;
     return createPortal(
       <SelectionCommentCard
         excerpt={composing.text}
         labels={labels}
+        fieldRef={commentFieldRef}
         below={placed.below}
         style={{
           left: placed.left,
@@ -419,7 +451,10 @@ export function SelectionActions({
           if (!owned(selection)) return;
           // Set before the state so a selection frame already queued sees it.
           composingRef.current = true;
-          setComposing(selection);
+          setComposing({
+            ...selection,
+            placement: placeSelection(selection.rect, COMMENT_CARD_HEIGHT),
+          });
           setSelection(null);
         }}
       >

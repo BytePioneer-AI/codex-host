@@ -6,8 +6,8 @@
  * The card only collects text. Where it sits, whether the selection is still
  * valid, and how the note joins the draft belong to {@link SelectionActions}.
  */
-import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useState } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
 import css from "./SelectionCommentCard.module.css";
 
 /** The card's drawn height in px (excerpt, two-row field, button), used to place it before it is measured. */
@@ -25,6 +25,7 @@ export interface SelectionCommentLabels {
  * Collect one note for a selected passage.
  * @param props.excerpt - the selected text, shown folded to one line.
  * @param props.labels - localized copy.
+ * @param props.fieldRef - lets the owner preserve the draft on background scroll.
  * @param props.style - fixed-position anchor resolved by the caller.
  * @param props.below - whether the card is drawn below the selection.
  * @param props.onSubmit - attaches the passage with the trimmed note; false keeps the card open.
@@ -34,6 +35,7 @@ export interface SelectionCommentLabels {
 export function SelectionCommentCard({
   excerpt,
   labels,
+  fieldRef,
   style,
   below,
   onSubmit,
@@ -41,20 +43,20 @@ export function SelectionCommentCard({
 }: {
   excerpt: string;
   labels: SelectionCommentLabels;
+  fieldRef: RefObject<HTMLTextAreaElement>;
   style: CSSProperties;
   below: boolean;
   onSubmit: (comment: string) => boolean;
   onCancel: () => void;
 }): ReactNode {
   const [value, setValue] = useState("");
-  const fieldRef = useRef<HTMLTextAreaElement>(null);
   const comment = value.trim();
 
   useEffect(() => {
     // The card is placed from the selection's rect; letting focus scroll the
     // page would move the passage away from it.
     fieldRef.current?.focus({ preventScroll: true });
-  }, []);
+  }, [fieldRef]);
 
   const submit = (): void => {
     if (comment !== "") onSubmit(comment);

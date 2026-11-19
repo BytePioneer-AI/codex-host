@@ -6145,7 +6145,12 @@ export class AppServerHost {
           (output) => this.#projectHarnessOutput(thread, output),
           (failure) => this.#diagnose(failure),
         );
-        if (!thread.activeTurnId && thread.projectedTurns.size === 0) {
+        if (
+          !thread.activeTurnId &&
+          [...thread.projectedTurns.values()].every(
+            ({ projector }) => projector.completed && !projector.hasOpenDetachedItems,
+          )
+        ) {
           // The failure projection can re-register running Subagents from the
           // Item ledger while settling; retire them again so no stale entry
           // outlives the dead parent stream.

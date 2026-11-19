@@ -55,7 +55,7 @@ function renderOverview(value: ConsoleOverview): string {
   state.overview = value;
   const replaceChildren = vi.fn();
   const context = {
-    content: { ownerDocument: {}, replaceChildren },
+    content: { ownerDocument: {}, replaceChildren, querySelector: () => null },
   } as unknown as RendererSettingsPageMountContext;
   createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
   return JSON.stringify(replaceChildren.mock.calls.at(-1));
@@ -174,7 +174,7 @@ describe("overview startup diagnostics", () => {
     };
     const replaceChildren = vi.fn();
     const context = {
-      content: { ownerDocument: {}, replaceChildren },
+      content: { ownerDocument: {}, replaceChildren, querySelector: () => null },
     } as unknown as RendererSettingsPageMountContext;
     createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
     const rendered = JSON.stringify(replaceChildren.mock.calls.at(-1));
@@ -207,7 +207,7 @@ describe("overview startup diagnostics", () => {
     };
     const replaceChildren = vi.fn();
     const context = {
-      content: { ownerDocument: {}, replaceChildren },
+      content: { ownerDocument: {}, replaceChildren, querySelector: () => null },
     } as unknown as RendererSettingsPageMountContext;
     createOverviewPage(consoleMessages("zh-CN"), state, vi.fn(), "zh-CN").mount(context);
     const rendered = JSON.stringify(replaceChildren.mock.calls.at(-1));

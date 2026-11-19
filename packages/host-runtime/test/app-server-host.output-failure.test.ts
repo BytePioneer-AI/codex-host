@@ -408,7 +408,11 @@ describe("AppServerHost output failure", () => {
 
       await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
       // The Subagent must be retired even though its own output stream never ends.
-      await fixture.collector.waitFor((message) => threadStatus(message, childId, "idle"));
+      const childStatuses = fixture.collector.messages.filter(
+        (message) =>
+          method(message, "thread/status/changed") && messageParams(message).threadId === childId,
+      );
+      expect(threadStatus(childStatuses.at(-1) ?? {}, childId, "idle")).toBe(true);
 
       // Exactly one pause publication: the settled failure's "failed" pause from
       // the Turn projection, without a second inconsistent "outcome-unknown" one.

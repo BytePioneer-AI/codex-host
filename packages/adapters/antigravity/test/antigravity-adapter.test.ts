@@ -1348,13 +1348,8 @@ describe("Antigravity idle background output episodes", () => {
       expect(events(outputs)).toContainEqual({ type: "turn.started", turnId: "t2" }),
     );
     transport.eventHandler?.({ type: "agent.text", text: "wake" });
-    await vi.waitFor(() =>
-      expect(events(outputs)).toContainEqual(
-        expect.objectContaining({ type: "item.background.started", turnId: "t1" }),
-      ),
-    );
     expect(events(outputs)).not.toContainEqual(
-      expect.objectContaining({ type: "item.background.started", turnId: "t2" }),
+      expect.objectContaining({ type: "item.background.started" }),
     );
 
     usageGate.resolve({ requests: [], complete: true, usage: null });

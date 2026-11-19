@@ -1118,7 +1118,7 @@ export class AntigravitySession implements HarnessSession {
           this.#postPromptBackground.push({ type, text });
         return;
       }
-      if (this.#active.promptPhase === "submitted") return;
+      return;
     }
     if (this.#opening || this.#configuring || this.#historyOperation) return;
     const turnId = this.#lastCompletedTurnId;

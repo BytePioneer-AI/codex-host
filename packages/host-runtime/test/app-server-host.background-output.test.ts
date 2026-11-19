@@ -33,6 +33,16 @@ async function readHistoryItems(
   threadId: string,
   id: number,
 ): Promise<JsonObject[]> {
+  return (await readHistoryTurns(fixture, threadId, id)).flatMap(
+    (turn) => (turn.items ?? []) as JsonObject[],
+  );
+}
+
+async function readHistoryTurns(
+  fixture: ReturnType<typeof createFixture>,
+  threadId: string,
+  id: number,
+): Promise<JsonObject[]> {
   writeRequest(fixture.desktopInput, {
     id,
     method: "thread/read",
@@ -41,12 +51,68 @@ async function readHistoryItems(
   const response = await fixture.collector.waitFor((message) => requestId(message, id));
   const thread = ((response.result ?? {}) as JsonObject).thread as JsonObject;
   if (!thread) throw new Error(JSON.stringify(response));
-  return ((thread.turns ?? []) as JsonObject[]).flatMap(
-    (turn) => (turn.items ?? []) as JsonObject[],
-  );
+  return (thread.turns ?? []) as JsonObject[];
 }
 
 describe("Host runtime idle background output on a completed Turn", () => {
+  it("restores pre-submit background text from history after a successor starts", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      await completePiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const readSnapshot = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        return {
+          ...snapshot,
+          value: {
+            ...snapshot.value,
+            turns: snapshot.value.turns.map((turn, index) =>
+              index === 0
+                ? {
+                    ...turn,
+                    items: [
+                      ...turn.items,
+                      {
+                        item: {
+                          type: "agentMessage" as const,
+                          itemId: hostItemIdSchema.parse("native-pre-submit-wake"),
+                          text: "wake from native history",
+                        },
+                        outcome: { status: "succeeded" as const },
+                      },
+                    ],
+                  }
+                : turn,
+            ),
+          },
+        };
+      };
+
+      const successorTurnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId, 3));
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/started", successorTurnId),
+      );
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", successorTurnId),
+      );
+      const turns = await readHistoryTurns(fixture, threadId, 4);
+      const wakeItems = turns
+        .flatMap((turn) => (turn.items ?? []) as JsonObject[])
+        .filter((item) => item.type === "agentMessage" && item.text === "wake from native history");
+      expect(wakeItems).toHaveLength(1);
+      expect(turns[0]?.items).toContainEqual(
+        expect.objectContaining({ text: "wake from native history" }),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("streams a background Item on a completed Turn and overlays it onto served history", async () => {
     const fixture = await createFixture();
     try {

@@ -35,12 +35,12 @@ interface NativeProject {
   rootPaths: string[];
 }
 
-/** One native project root folder, with the project and root position its title comes from. */
+/** One native project root folder and every project that lists it. */
 interface ProjectRoot {
   path: string;
   title: string;
-  project: NativeProject;
-  index: number;
+  /** Each project listing the folder, with the folder's position among its roots. */
+  listings: { project: NativeProject; index: number }[];
 }
 
 /** The distinct root folders of the native projects, in project order then root order.
@@ -52,24 +52,27 @@ interface ProjectRoot {
  * folder name that any other title repeats, falls back to the full path so the Web sidebar
  * keeps the folders apart. */
 function projectRoots(projects: readonly NativeProject[]): ProjectRoot[] {
-  const named = new Map<string, { project: NativeProject; index: number }>();
+  const named = new Map<string, NativeProject>();
   for (const project of projects) {
     const first = project.rootPaths[0];
-    if (first !== undefined && !named.has(resolve(first)))
-      named.set(resolve(first), { project, index: 0 });
+    if (first !== undefined && !named.has(resolve(first))) named.set(resolve(first), project);
   }
   const roots = new Map<string, ProjectRoot & { named: boolean }>();
   for (const project of projects)
     for (const [index, root] of project.rootPaths.entries()) {
       const path = resolve(root);
-      if (roots.has(path)) continue;
+      const listed = roots.get(path);
+      if (listed) {
+        listed.listings.push({ project, index });
+        continue;
+      }
       const owner = named.get(path);
-      roots.set(
+      roots.set(path, {
         path,
-        owner
-          ? { path, title: owner.project.name, ...owner, named: true }
-          : { path, title: basename(path) || path, project, index, named: false },
-      );
+        title: owner ? owner.name : basename(path) || path,
+        listings: [{ project, index }],
+        named: owner !== undefined,
+      });
     }
   const counts = new Map<string, number>();
   const nameCounts = new Map<string, number>();
@@ -93,6 +96,26 @@ export function projectRootTitles(projects: readonly NativeProject[]): Map<strin
 /** Title the pre-deduplication logic assigned to a project root. */
 function legacyProjectRootTitle(project: { name: string }, index: number, path: string): string {
   return index === 0 ? project.name : basename(path);
+}
+
+/**
+ * Whether a Web workspace title is a default an older build gave this folder, not a custom one.
+ * Older builds used the project name for every root, then folder names, then the full path for
+ * a folder shared by several projects; a shared folder could get its default from any project
+ * listing it.
+ */
+function isLegacyDefaultTitle(
+  title: string,
+  path: string,
+  listings: ProjectRoot["listings"],
+): boolean {
+  return (
+    title === path ||
+    listings.some(
+      ({ project, index }) =>
+        title === project.name || title === legacyProjectRootTitle(project, index, path),
+    )
+  );
 }
 
 export class Workspaces {
@@ -371,7 +394,7 @@ export class Workspaces {
     const now = new Date().toISOString();
     const roots = projectRoots(projects);
     const rootPaths = new Set(roots.map((root) => root.path));
-    for (const { path, title, project, index } of roots) {
+    for (const { path, title, listings } of roots) {
       let workspace = byPath.get(path);
       if (!workspace) {
         workspace = {
@@ -386,15 +409,7 @@ export class Workspaces {
         items.push(workspace);
         byPath.set(path, workspace);
       } else if (workspace.origin !== "web") workspace.title = title;
-      else if (
-        workspace.title === project.name ||
-        workspace.title === legacyProjectRootTitle(project, index, path) ||
-        workspace.title === path
-      )
-        // Older builds used the project name for every root, then folder names, then the
-        // full path for a folder shared by several projects. Migrate those defaults, not
-        // custom titles.
-        workspace.title = title;
+      else if (isLegacyDefaultTitle(workspace.title, path, listings)) workspace.title = title;
     }
     for (const { sessionId, cwd, title } of sessions) {
       let workspace = byPath.get(resolve(cwd));

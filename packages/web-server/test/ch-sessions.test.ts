@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
@@ -650,6 +650,27 @@ it("workspace mirror: migrates legacy project names on Web roots and preserves c
   const writes = t.mock.method(data, "writeJson");
   workspaces.syncReferencedSessions([], new Map(), new Set(), [project]);
   assert.equal(writes.mock.callCount(), 0, "the migration is idempotent");
+});
+
+it("workspace mirror: migrates the default title a shared folder got from any project", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-shared-title-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const notes = join(root, "shared", "notes");
+  const kept = join(root, "shared", "kept");
+  mkdirSync(notes, { recursive: true });
+  mkdirSync(kept, { recursive: true });
+  // Created in Web with their folder names, the default an older build gave non-first roots.
+  assert.equal(workspaces.create(notes).workspace.title, "notes");
+  const custom = workspaces.create(kept).workspace;
+  custom.title = "Reading list";
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    { name: "one", rootPaths: [join(root, "one"), notes, kept] },
+    { name: "Notebook", rootPaths: [notes] },
+    { name: "Archive", rootPaths: [kept] },
+  ]);
+  assert.equal(workspaces.byPath(notes)?.title, "Notebook");
+  assert.equal(workspaces.byPath(kept)?.title, "Reading list");
 });
 
 it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {

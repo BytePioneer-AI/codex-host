@@ -320,6 +320,7 @@ export class AntigravitySession implements HarnessSession {
   #faulted = false;
   #closing: Promise<void> | undefined;
   #configuring = false;
+  #configurationQueue: Promise<void> = Promise.resolve();
   #historyOperation = false;
 
   constructor(options: SessionOptions) {
@@ -392,15 +393,15 @@ export class AntigravitySession implements HarnessSession {
       this.#options.adapter.createTransport?.(options) ?? new AntigravityAcpTransport(options);
     return transport;
   }
-  async initialize(): Promise<void> {
+  async initialize(publish = true): Promise<void> {
     if (this.#transport && !this.#opening) return;
     if (this.#opening) return this.#opening;
-    this.#opening = this.#open().finally(() => {
+    this.#opening = this.#open(publish).finally(() => {
       this.#opening = undefined;
     });
     return this.#opening;
   }
-  async #open(): Promise<void> {
+  async #open(publish = true): Promise<void> {
     const skip = this.#options.unattended || this.#requested.permissionModeId === SKIP;
     const transport = this.#newTransport(skip);
     this.#transport = transport;
@@ -449,26 +450,28 @@ export class AntigravitySession implements HarnessSession {
         const applied = await this.#setModelConfig(
           this.#requested.model.id,
           this.#requested.thinkingOptionId,
+          false,
         );
         if (!applied.bakedInThinking) {
-          if (this.#requested.thinkingOptionId) {
-            await this.#setConfig("thinking", this.#requested.thinkingOptionId);
-          } else if (
-            applied.impliedThinking &&
-            this.#hasConfigChoice("thinking", applied.impliedThinking)
-          ) {
-            await this.#setConfig("thinking", applied.impliedThinking);
+          const desiredThinking = this.#resolveThinkingChoice(
+            this.#requested.thinkingOptionId ?? applied.impliedThinking,
+          );
+          if (desiredThinking) {
+            await this.#setConfig("thinking", desiredThinking, false);
           }
         }
-      } else if (this.#requested.thinkingOptionId) {
-        await this.#setConfig("thinking", this.#requested.thinkingOptionId);
+      } else if (
+        this.#requested.thinkingOptionId &&
+        this.#hasConfigChoice("thinking", this.#requested.thinkingOptionId)
+      ) {
+        await this.#setConfig("thinking", this.#requested.thinkingOptionId, false);
       }
       if (!skip && this.#requested.permissionModeId) {
         await transport.setMode(this.#requested.permissionModeId);
         this.#state.effectivePermissionModeId = this.#requested.permissionModeId;
         this.#setLocatorPermissionMode(this.#requested.permissionModeId);
       }
-      this.#publishState();
+      if (publish) this.#publishState();
     } catch (error) {
       await transport.close().catch(() => undefined);
       if (this.#transport === transport) this.#transport = undefined;
@@ -527,7 +530,7 @@ export class AntigravitySession implements HarnessSession {
       ),
     };
   }
-  #applyConfig(config: AntigravityAcpConfigOption[]): void {
+  #applyConfig(config: AntigravityAcpConfigOption[], publish = true): void {
     this.#configOptions = config;
     if (this.#availableModels.length || config.some((entry) => entry.id === "model")) {
       try {
@@ -542,7 +545,7 @@ export class AntigravitySession implements HarnessSession {
       ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
       ...readAcpEffectiveModelState(config, this.#catalog),
     };
-    this.#publishState();
+    if (publish) this.#publishState();
   }
   #findConfigOption(category: "model" | "thinking"): AntigravityAcpConfigOption | undefined {
     return this.#configOptions.find(
@@ -556,9 +559,17 @@ export class AntigravitySession implements HarnessSession {
     const option = this.#findConfigOption(category);
     return !!option?.options.some((choice) => choice.value === value);
   }
+  #resolveThinkingChoice(preferred?: string): string | undefined {
+    if (preferred && this.#hasConfigChoice("thinking", preferred)) return preferred;
+    if (!this.#state.effectiveThinkingOptionId) {
+      return this.#findConfigOption("thinking")?.options.at(-1)?.value;
+    }
+    return undefined;
+  }
   async #setModelConfig(
     requestedModelId: string,
     requestedThinking?: HarnessThinkingOptionId,
+    publish = true,
   ): Promise<{ impliedThinking?: HarnessThinkingOptionId; bakedInThinking: boolean }> {
     const option = this.#findConfigOption("model");
     if (!option) {
@@ -593,13 +604,13 @@ export class AntigravitySession implements HarnessSession {
         }
       }
     }
-    await this.#setConfig("model", targetValue);
+    await this.#setConfig("model", targetValue, publish);
     return {
       ...(impliedThinking ? { impliedThinking } : {}),
       bakedInThinking,
     };
   }
-  async #setConfig(category: "model" | "thinking", value: string): Promise<void> {
+  async #setConfig(category: "model" | "thinking", value: string, publish = true): Promise<void> {
     const option = this.#findConfigOption(category);
     if (!option || !option.options.some((choice) => choice.value === value))
       throw new AntigravityTransportError(
@@ -615,7 +626,7 @@ export class AntigravitySession implements HarnessSession {
         "protocolError",
         `Antigravity did not confirm ${category} selection`,
       );
-    this.#applyConfig(confirmed);
+    this.#applyConfig(confirmed, publish);
   }
   #sessionEvent(event: AntigravityAcpEvent): void {
     switch (event.type) {
@@ -804,10 +815,29 @@ export class AntigravitySession implements HarnessSession {
       return { ok: false, error: normalizeAntigravityError(error) };
     }
   }
+  async #enqueueConfiguration<T>(run: () => Promise<T>): Promise<T> {
+    const previous = this.#configurationQueue;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const nextQueue = previous.then(() => current);
+    this.#configurationQueue = nextQueue;
+    this.#configuring = true;
+    try {
+      await previous;
+      return await run();
+    } finally {
+      release();
+      if (this.#configurationQueue === nextQueue) {
+        this.#configuring = false;
+      }
+    }
+  }
   async #select(
     command: ModelSelectCommand | ThinkingSelectCommand | PermissionModeSelectCommand,
   ): Promise<HarnessResult<ModelSelectCompleted>> {
-    if (this.#configuring || this.#historyOperation)
+    if (this.#historyOperation)
       return err("sessionBusy", "Configuration or history is changing", true);
     if (command.type === "permissionMode.select") {
       try {
@@ -818,17 +848,46 @@ export class AntigravitySession implements HarnessSession {
       if (this.#options.unattended && command.permissionModeId !== SKIP)
         return err("invalidRequest", "Unattended execution requires Skip permissions");
     }
-    this.#configuring = true;
-    try {
+    return this.#enqueueConfiguration(async () => {
+      if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+      if (this.#historyOperation)
+        return err("sessionBusy", "Configuration or history is changing", true);
+      if (this.#opening) {
+        try {
+          await this.#opening;
+        } catch (error) {
+          if (!(
+            command.type === "model.select" &&
+            error instanceof AntigravityTransportError &&
+            error.kind === "unsupported"
+          ))
+            throw error;
+        }
+        if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+      }
       const openingFromCold = !this.#transport;
+      const previousModel = this.#requested.model;
+      const previousThinkingOptionId = this.#requested.thinkingOptionId;
       const previousPermissionMode = this.#requested.permissionModeId;
-      if (openingFromCold && command.type === "permissionMode.select") {
+      if (openingFromCold && command.type === "model.select") {
+        this.#requested.model = command.model;
+        if (command.model.id !== previousModel?.id) {
+          this.#requested.thinkingOptionId = undefined;
+        }
+      } else if (openingFromCold && command.type === "thinking.select") {
+        this.#requested.thinkingOptionId = undefined;
+      } else if (openingFromCold && command.type === "permissionMode.select") {
         this.#requested.permissionModeId = command.permissionModeId;
       }
       try {
-        await this.initialize();
+        await this.initialize(!(openingFromCold && command.type === "thinking.select"));
       } catch (error) {
-        if (openingFromCold && command.type === "permissionMode.select") {
+        if (openingFromCold && command.type === "model.select") {
+          this.#requested.model = previousModel;
+          this.#requested.thinkingOptionId = previousThinkingOptionId;
+        } else if (openingFromCold && command.type === "thinking.select") {
+          this.#requested.thinkingOptionId = previousThinkingOptionId;
+        } else if (openingFromCold && command.type === "permissionMode.select") {
           this.#requested.permissionModeId = previousPermissionMode;
         }
         throw error;
@@ -836,23 +895,38 @@ export class AntigravitySession implements HarnessSession {
       const transport = this.#transport;
       if (!transport || this.#closed || this.#faulted)
         return err("invalidState", "Native Session is not connected");
-      if (openingFromCold && command.type === "permissionMode.select") {
+      if (
+        openingFromCold &&
+        (command.type === "model.select" || command.type === "permissionMode.select")
+      ) {
+        if (command.type === "model.select") {
+          this.#requested.model = this.#state.effectiveModel;
+          this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
+        }
         return ok({ completed: true });
       }
       if (command.type === "model.select") {
-        const applied = await this.#setModelConfig(command.model.id);
-        if (
-          !applied.bakedInThinking &&
-          applied.impliedThinking &&
-          this.#hasConfigChoice("thinking", applied.impliedThinking)
-        ) {
-          await this.#setConfig("thinking", applied.impliedThinking);
+        const applied = await this.#setModelConfig(command.model.id, undefined, false);
+        try {
+          if (!applied.bakedInThinking) {
+            const desiredThinking = this.#resolveThinkingChoice(applied.impliedThinking);
+            if (desiredThinking) {
+              await this.#setConfig("thinking", desiredThinking, false);
+            }
+          }
+        } finally {
+          this.#requested.model = this.#state.effectiveModel;
+          this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
+          this.#publishState();
         }
-        this.#requested.model = this.#state.effectiveModel;
-        this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
       } else if (command.type === "thinking.select") {
-        await this.#setConfig("thinking", command.thinkingOptionId);
-        this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
+        try {
+          await this.#setConfig("thinking", command.thinkingOptionId);
+          this.#requested.thinkingOptionId = this.#state.effectiveThinkingOptionId;
+        } catch (error) {
+          if (openingFromCold) this.#publishState();
+          throw error;
+        }
       } else {
         const nextSkip = command.permissionModeId === SKIP;
         if (nextSkip !== transport.skipPermissions) {
@@ -893,9 +967,7 @@ export class AntigravitySession implements HarnessSession {
         }
       }
       return ok({ completed: true });
-    } finally {
-      this.#configuring = false;
-    }
+    });
   }
   async #runTurn(turn: ActiveTurn, command: TurnStartCommand): Promise<void> {
     let outcome: TurnOutcome;

@@ -14,6 +14,7 @@ description: 审查 codexhost 的 Pull Request 或本地 diff 的正确性与边
 1. 确认基线与 head：`git fetch` 后用 `git diff <base>...<head> --stat`；PR 用 `gh pr view` / `gh pr diff`。基线变化后重新确认。
 2. 按改动路径归属到包或 crate，读其公共导出、契约和测试，再读 diff。归属见 [AGENTS.md](../../../AGENTS.md) 的 Code Layout。
 3. 以 [AGENTS.md](../../../AGENTS.md)、[领域术语表](../../../docs/project/领域术语表.md)、`tools/check-boundaries.mjs`、[docs/index.md](../../../docs/index.md) 中对应功能文档为事实来源。
+4. 审查以静态阅读真实 diff、周边调用链与既有验证记录为主：远端 CI 或受委派子 Thread 已在同一 HEAD 提交上通过的构建、测试、lint 与格式检查，不在本地重复执行；仅在需要复现可疑缺陷或补验未覆盖缺口时，运行最小聚焦检查。
 
 ## 阻断项
 
@@ -29,7 +30,7 @@ description: 审查 codexhost 的 Pull Request 或本地 diff 的正确性与边
 - **生命周期与并发**：异步初始化、回调、子进程、会话、CDP 连接的发布前竞态、await 期间取消、重复输入、过期结果、重连与恢复、完整清理。
 - **能力与消费者匹配**：通用接口里只服务单一调用方的新增方法，应改为在构造时交给该调用方的私有闭包；调用方私有行为不应泄漏进公共接口。
 - **范围与必要性**：每个新增抽象、状态、选项、兼容路径，是否对应当前契约和生产使用者；与 [AGENTS.md](../../../AGENTS.md) 的 Implementation Principles 对照。
-- **Renderer 绑定**：对 Codex Desktop 私有 DOM / React 状态的依赖是否版本化、能在版本不匹配时安全降级；新绑定是否有 `tests/e2e` 或探测覆盖。
+- **Renderer 绑定**：对 Codex Desktop 私有 DOM / React 状态的依赖是否版本化、能在版本不匹配时安全降级；新绑定是否纳入 `tools/renderer-binding` 探测。
 - **强制执行路径**：沿每条拒绝或校验路径追到真正执行的操作，检查有无绕过的替代入口。
 - **持久化与兼容**：触及 `mapping-store`、插件清单、配置格式时，旧数据如何读取。
 - **测试强度**：断言是否会在目标回归出现时失败，是否验证外部状态、事件或释放，而不是复述实现；是否走了真实入口（真实 Loader、插件加载、worker、子进程），而不是手工拼装。

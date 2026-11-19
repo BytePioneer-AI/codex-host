@@ -1,0 +1,223 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { expect, it, vi } from "vitest";
+import { encodeHarnessPluginRoute, harnessPluginRouteSchema } from "@codexhost/shared-contracts";
+import {
+  AntigravityAdapter,
+  type AntigravityAcpTransportLike,
+} from "@codexhost/adapter-antigravity";
+import { createExternalThreadRecordInput } from "../src/external-thread-repository.js";
+import { createFixture, stopFixture } from "./app-server-host-fixture.js";
+
+function protoField(field: number, value: string | Buffer): Buffer {
+  const body = typeof value === "string" ? Buffer.from(value) : value;
+  const tag = field * 8 + 2;
+  const tagBytes = tag < 128 ? [tag] : [(tag & 0x7f) | 0x80, tag >> 7];
+  return Buffer.concat([Buffer.from([...tagBytes, body.length]), body]);
+}
+
+function seedHistory(file: string, label: string): void {
+  const db = new DatabaseSync(file);
+  try {
+    db.exec(`
+      PRAGMA user_version = 1;
+      CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB);
+    `);
+    const insert = db.prepare("INSERT INTO steps VALUES (?, ?, 3, ?)");
+    for (let i = 0; i < 12; i++) {
+      insert.run(i * 2, 14, protoField(19, protoField(2, `${label} question ${i}`)));
+      insert.run(i * 2 + 1, 15, protoField(20, protoField(1, `${label} answer ${i}`)));
+    }
+  } finally {
+    db.close();
+  }
+}
+
+it("reads cold agy history from SQLite and connects ACP only for the first write", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-history-"));
+  const nativeSessionId = "11111111-1111-4111-8111-111111111111";
+  const secondNativeSessionId = "22222222-2222-4222-8222-222222222222";
+  const conversations = path.join(home, ".gemini", "antigravity-cli", "conversations");
+  const dbPath = (sessionId: string) => path.join(conversations, `${sessionId}.db`);
+  const opens: Parameters<AntigravityAcpTransportLike["openSession"]>[0][] = [];
+  const prompt = vi.fn<AntigravityAcpTransportLike["prompt"]>(async (parts) => {
+    const input = parts[0];
+    if (input?.type !== "text") throw new Error("Expected a text prompt");
+    const db = new DatabaseSync(dbPath(nativeSessionId));
+    try {
+      db.prepare("INSERT INTO steps VALUES (24, 14, 3, ?)").run(
+        protoField(19, protoField(2, input.text)),
+      );
+    } finally {
+      db.close();
+    }
+    return { stopReason: "end_turn" };
+  });
+  const close = vi.fn(async () => {});
+  const createTransport = vi.fn((): AntigravityAcpTransportLike => {
+    let currentSessionId: string | null = null;
+    let config = [
+      {
+        id: "model",
+        category: "model",
+        name: "Model",
+        currentValue: "native",
+        options: [{ value: "native", name: "Native" }],
+      },
+      {
+        id: "thought_level",
+        category: "thought_level",
+        name: "Thinking",
+        currentValue: "low",
+        options: [
+          { value: "low", name: "Low" },
+          { value: "high", name: "High" },
+        ],
+      },
+    ];
+    return {
+      get sessionId() {
+        return currentSessionId;
+      },
+      isClosed: false,
+      skipPermissions: false,
+      initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+      openSession: async (input) => {
+        opens.push(input);
+        const sessionId = input.sessionId ?? nativeSessionId;
+        currentSessionId = sessionId;
+        return {
+          opened: {
+            sessionId,
+            configOptions: config,
+            modes: { currentModeId: "default", availableModes: [] },
+          },
+        };
+      },
+      setSessionEventHandler: () => {},
+      setMode: async () => {},
+      setConfigOption: async (id, value) => {
+        config = config.map((entry) =>
+          entry.id === id ? { ...entry, currentValue: value } : entry,
+        );
+        return config;
+      },
+      prompt,
+      cancel: async () => {},
+      closeSession: async () => {
+        currentSessionId = null;
+      },
+      close,
+    };
+  });
+  const environment = { HOME: home, USERPROFILE: home };
+  const adapter = new AntigravityAdapter({ createTransport, environment });
+  const fixture = createFixture({
+    mappingStoreDirectory: home,
+    environment,
+    additionalAdapters: new Map([["antigravity", adapter]]),
+  });
+  try {
+    await fixture.ready;
+    mkdirSync(conversations, { recursive: true });
+    seedHistory(dbPath(nativeSessionId), "old");
+    seedHistory(dbPath(secondNativeSessionId), "second");
+    const transportModelId = encodeHarnessPluginRoute(
+      harnessPluginRouteSchema.parse({
+        harnessId: "antigravity",
+        model: { id: "native" },
+        thinkingOptionId: "high",
+        permissionModeId: "plan",
+      }),
+    );
+    const record = await fixture.mappingStore.createProvisional(
+      createExternalThreadRecordInput({
+        harnessId: adapter.harnessId,
+        cwd: fixture.mappingStoreDirectory,
+        title: "Historical Session",
+        transportModelId,
+        ephemeral: false,
+        historyMode: "paginated",
+      }),
+    );
+    await fixture.mappingStore.commitReady({
+      hostThreadId: record.hostThreadId,
+      nativeSessionRef: { harnessId: adapter.harnessId, nativeSessionId, formatVersion: 1 },
+    });
+    const snapshot = await fixture.host.clientSnapshot(record.hostThreadId);
+    expect(snapshot.turnsPage.data).toHaveLength(5);
+    expect(snapshot.turnsPage.nextCursor).toEqual(expect.any(String));
+    expect(snapshot.turnsPage.data[0]?.items).toMatchObject([
+      { type: "userMessage", content: [{ type: "text", text: "old question 11" }] },
+      { type: "agentMessage", text: "old answer 11" },
+    ]);
+    expect(await fixture.mappingStore.getThread(record.hostThreadId)).toMatchObject({
+      transportModelId,
+    });
+    expect(snapshot.configuration).toMatchObject({
+      effectiveModel: { id: "native" },
+      effectiveThinkingOptionId: "high",
+      effectivePermissionModeId: "plan",
+    });
+    const repeated = await fixture.host.clientSnapshot(record.hostThreadId);
+    expect(repeated.turnsPage.data.map(({ id }) => id)).toEqual(
+      snapshot.turnsPage.data.map(({ id }) => id),
+    );
+
+    const secondRecord = await fixture.mappingStore.createProvisional(
+      createExternalThreadRecordInput({
+        harnessId: adapter.harnessId,
+        cwd: fixture.mappingStoreDirectory,
+        title: "Second Historical Session",
+        transportModelId,
+        ephemeral: false,
+        historyMode: "paginated",
+      }),
+    );
+    await fixture.mappingStore.commitReady({
+      hostThreadId: secondRecord.hostThreadId,
+      nativeSessionRef: {
+        harnessId: adapter.harnessId,
+        nativeSessionId: secondNativeSessionId,
+        formatVersion: 1,
+      },
+    });
+    const secondSnapshot = await fixture.host.clientSnapshot(secondRecord.hostThreadId);
+    expect(secondSnapshot.turnsPage.data).toHaveLength(5);
+    expect(secondSnapshot.turnsPage.data.flatMap(({ items }) => items)).toContainEqual(
+      expect.objectContaining({ type: "agentMessage", text: "second answer 11" }),
+    );
+    expect(createTransport).not.toHaveBeenCalled();
+    expect(opens).toEqual([]);
+    expect(prompt).not.toHaveBeenCalled();
+
+    const started = await fixture.host.handleClientRequest("turn/start", {
+      threadId: record.hostThreadId,
+      input: [{ type: "text", text: "continue the conversation" }],
+    });
+    expect(started).toHaveProperty("result");
+    await fixture.collector.waitFor((message) => message.method === "turn/completed");
+    expect(createTransport).toHaveBeenCalledOnce();
+    expect(opens).toEqual([
+      expect.objectContaining({ kind: "resume", sessionId: nativeSessionId }),
+    ]);
+    expect(prompt).toHaveBeenCalledExactlyOnceWith(
+      [{ type: "text", text: "continue the conversation" }],
+      expect.any(Object),
+    );
+    expect(close).not.toHaveBeenCalled();
+    expect(await fixture.mappingStore.getThread(record.hostThreadId)).toMatchObject({
+      nativeSessionRef: { nativeSessionId },
+      turnMappings: expect.arrayContaining([
+        expect.objectContaining({
+          nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-12" }),
+        }),
+      ]),
+    });
+  } finally {
+    await stopFixture(fixture);
+  }
+  expect(close).toHaveBeenCalledOnce();
+});

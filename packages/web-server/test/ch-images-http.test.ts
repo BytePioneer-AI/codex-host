@@ -78,7 +78,7 @@ it("image RPCs retain auth/origin checks and bound request bodies before saving 
   const status = await new Promise<number>((resolveStatus, reject) => {
     const request = httpRequest(
       endpoint,
-      { method: "POST", headers: { ...headers, "content-length": 49 * 1024 * 1024 } },
+      { method: "POST", headers: { ...headers, "content-length": 73 * 1024 * 1024 } },
       (response) => {
         response.resume();
         response.on("end", () => {

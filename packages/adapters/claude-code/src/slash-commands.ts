@@ -53,7 +53,7 @@ export function parseClaudeSlashCommands(value: unknown): ClaudeSlashCommand[] {
   });
 }
 
-/** Built-ins plus the live commands and skills of the started native Session. */
+/** Built-ins plus the live commands of the started native Session. */
 export function claudeLiveCommandCatalog(
   builtIns: HarnessCommandCatalog,
   snapshot: ClaudeSlashCommandSnapshot | null,
@@ -61,11 +61,12 @@ export function claudeLiveCommandCatalog(
   return mergeLiveHarnessCommands(
     builtIns,
     DYNAMIC_ID_PREFIX,
-    snapshot?.commands.map((command) => ({
-      name: command.name,
-      description: command.description,
-      kind: snapshot.skillNames.has(command.name) ? ("skill" as const) : ("command" as const),
-    })) ?? null,
+    snapshot?.commands
+      .filter((command) => !snapshot.skillNames.has(command.name))
+      .map((command) => ({
+        name: command.name,
+        description: command.description,
+      })) ?? null,
     { names: CLAUDE_EXCLUDED_COMMANDS },
   );
 }

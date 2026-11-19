@@ -1,11 +1,14 @@
+import { configureSubagentEvent } from "@codexhost/harness-adapter";
 import { describe, expect, it } from "vitest";
 import type {
   HostCommandExecutionItem,
   HostFileChangeItem,
+  HostMcpToolCallItem,
   HostQuestionInteraction,
   HostSubagentDelegationItem,
   HostThreadSnapshot,
   HostToolExecutionItem,
+  HostWebSearchItem,
 } from "@codexhost/harness-adapter";
 import {
   hostInteractionIdSchema,
@@ -1239,6 +1242,268 @@ describe("Codex UI projector", () => {
     expect(JSON.stringify(completed)).not.toContain("mcpToolCall");
   });
 
+  it("projects MCP tool calls and successful web searches onto Codex's native Items, live and historical", () => {
+    const value = projector();
+    const mcpId = itemId("mcp-1");
+    const failedMcpId = itemId("mcp-2");
+    const searchId = itemId("search-1");
+    const failedSearchId = itemId("search-2");
+    const mcp: HostMcpToolCallItem = {
+      type: "mcpToolCall",
+      itemId: mcpId,
+      server: "docs",
+      tool: "lookup",
+      arguments: { id: 7 },
+    };
+    const search: HostWebSearchItem = { type: "webSearch", itemId: searchId, query: "codex" };
+    value.project({ type: "turn.started", turnId });
+    expect(value.project({ type: "item.started", turnId, item: mcp }).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            id: mcpId,
+            type: "mcpToolCall",
+            server: "docs",
+            tool: "lookup",
+            status: "inProgress",
+            arguments: { id: 7 },
+            result: null,
+            error: null,
+          },
+        },
+      },
+    ]);
+    const completedMcp = {
+      ...mcp,
+      output: { content: [{ type: "text" as const, text: "found" }] },
+      durationMs: 5,
+    };
+    const mcpCompleted = {
+      id: mcpId,
+      type: "mcpToolCall",
+      server: "docs",
+      tool: "lookup",
+      status: "completed",
+      arguments: { id: 7 },
+      appContext: null,
+      mcpAppUi: null,
+      pluginId: null,
+      readOnlyHint: null,
+      result: { content: [{ type: "text", text: "found" }], structuredContent: null, _meta: null },
+      error: null,
+      durationMs: 5,
+    };
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: completedMcp, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toMatchObject([{ method: "item/completed", params: { item: mcpCompleted } }]);
+
+    const failedMcp: HostMcpToolCallItem = { ...mcp, itemId: failedMcpId };
+    const failure = {
+      status: "failed" as const,
+      error: { code: "nativeFailure" as const, message: "lookup failed", retryable: false },
+    };
+    value.project({ type: "item.started", turnId, item: failedMcp });
+    const failedMcpCompleted = {
+      status: "failed",
+      result: null,
+      error: { message: "server unavailable" },
+    };
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: {
+            ...failedMcp,
+            output: { content: [{ type: "text", text: "server unavailable" }] },
+          },
+          outcome: failure,
+        },
+      }).messages,
+    ).toMatchObject([{ params: { item: failedMcpCompleted } }]);
+
+    const searchItem = {
+      id: searchId,
+      type: "webSearch",
+      query: "codex",
+      action: { type: "search", query: "codex", queries: null },
+      results: null,
+    };
+    // A web search has no status, so its wire type waits for the outcome.
+    expect(value.project({ type: "item.started", turnId, item: search }).messages).toEqual([]);
+    expect(
+      value.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: search, outcome: { status: "succeeded" } },
+      }).messages,
+    ).toEqual([
+      expect.objectContaining({
+        method: "item/started",
+        params: expect.objectContaining({ item: searchItem }),
+      }),
+      expect.objectContaining({
+        method: "item/completed",
+        params: expect.objectContaining({ item: searchItem }),
+      }),
+    ]);
+    const failedSearch: HostWebSearchItem = {
+      type: "webSearch",
+      itemId: failedSearchId,
+      query: "codex",
+      output: { content: [{ type: "text", text: "rate limited" }] },
+    };
+    const failedSearchItem = {
+      id: failedSearchId,
+      type: "dynamicToolCall",
+      tool: "web_search",
+      arguments: { query: "codex" },
+      status: "failed",
+      contentItems: [{ type: "inputText", text: "rate limited" }],
+      success: false,
+    };
+    value.project({ type: "item.started", turnId, item: failedSearch }, 2_000);
+    expect(
+      value.project(
+        {
+          type: "item.completed",
+          turnId,
+          snapshot: { item: failedSearch, outcome: failure },
+        },
+        2_125,
+      ).messages,
+    ).toMatchObject([
+      {
+        method: "item/started",
+        params: { item: { ...failedSearchItem, status: "inProgress", success: null } },
+      },
+      { method: "item/completed", params: { item: { ...failedSearchItem, durationMs: 125 } } },
+    ]);
+
+    const snapshot: HostThreadSnapshot["turns"][number] = {
+      nativeTurnRef: nativeTurnRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "session-1",
+        nativeTurnKey: "turn-1",
+        formatVersion: 1,
+      }),
+      input: [],
+      items: [
+        { item: completedMcp, outcome: { status: "succeeded" } },
+        {
+          item: {
+            ...failedMcp,
+            output: { content: [{ type: "text", text: "server unavailable" }] },
+          },
+          outcome: failure,
+        },
+        { item: search, outcome: { status: "succeeded" } },
+        { item: failedSearch, outcome: failure },
+      ],
+      outcome: { status: "succeeded" },
+    };
+    expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot }).items).toEqual([
+      expect.objectContaining({ type: "userMessage" }),
+      mcpCompleted,
+      expect.objectContaining({ id: failedMcpId, ...failedMcpCompleted }),
+      searchItem,
+      expect.objectContaining({ ...failedSearchItem, durationMs: null }),
+    ]);
+  });
+
+  it("keeps the failure reason on a web search that produced no output", () => {
+    const value = projector();
+    const failedId = itemId("search-failed-no-output");
+    const cancelledId = itemId("search-cancelled-no-output");
+    const failed: HostWebSearchItem = { type: "webSearch", itemId: failedId, query: "codex" };
+    const cancelled: HostWebSearchItem = { type: "webSearch", itemId: cancelledId, query: "codex" };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: failed });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: {
+        item: failed,
+        outcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "upstream timed out", retryable: false },
+        },
+      },
+    });
+    value.project({ type: "item.started", turnId, item: cancelled });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: cancelled, outcome: { status: "cancelled", reason: "Cancelled by user" } },
+    });
+    const { completedTurn } = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: {
+        status: "failed",
+        error: { code: "nativeFailure", message: "turn failed", retryable: false },
+      },
+    });
+    // The generic tool card has no outcome field, so the reason travels as its output.
+    expect(value.snapshotTurn(completedTurn).items).toMatchObject([
+      {
+        id: failedId,
+        type: "dynamicToolCall",
+        tool: "web_search",
+        status: "failed",
+        contentItems: [{ type: "inputText", text: "upstream timed out" }],
+      },
+      {
+        id: cancelledId,
+        type: "dynamicToolCall",
+        tool: "web_search",
+        status: "failed",
+        contentItems: [{ type: "inputText", text: "Cancelled by user" }],
+      },
+    ]);
+  });
+
+  it("keeps a live web search in start order and in its presented form for snapshots", () => {
+    const value = projector();
+    const searchId = itemId("search-order");
+    const mcpId = itemId("mcp-order");
+    const search: HostWebSearchItem = { type: "webSearch", itemId: searchId, query: "codex" };
+    const mcp: HostMcpToolCallItem = {
+      type: "mcpToolCall",
+      itemId: mcpId,
+      server: "docs",
+      tool: "lookup",
+      arguments: {},
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: search });
+    value.project({ type: "item.started", turnId, item: mcp });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: mcp, outcome: { status: "succeeded" } },
+    });
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: search, outcome: { status: "cancelled", reason: "Cancelled by user" } },
+    });
+    const { completedTurn } = value.project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "cancelled" },
+    });
+    expect(value.snapshotTurn(completedTurn).items).toMatchObject([
+      { id: searchId, type: "dynamicToolCall", tool: "web_search", status: "failed" },
+      { id: mcpId, type: "mcpToolCall", status: "completed" },
+    ]);
+  });
+
   it("lifts Read/Glob/Grep Generic Tools into Command Execution cards with paths", () => {
     const value = projector();
     const readId = itemId("read-1");
@@ -1918,3 +2183,61 @@ describe("Codex UI projector", () => {
     ).toThrow("follows the Turn terminal");
   });
 });
+
+it.each([false, true])(
+  "keeps native Codex cards and the heterogeneous sibling guard after inheritance (mixed=%s)",
+  (mixed) => {
+    const value = projector();
+    const event = configureSubagentEvent(
+      {
+        type: "item.started",
+        turnId,
+        item: {
+          type: "subagentDelegation",
+          itemId: itemId("inherited-card"),
+          operation: "spawn",
+          prompt: "Inspect the repository",
+          subagents: [
+            {
+              subagentId: "child-1",
+              description: "Explorer",
+              role: "explorer",
+              background: true,
+              status: "running",
+            },
+            {
+              subagentId: "child-2",
+              description: "Reviewer",
+              role: "reviewer",
+              background: true,
+              status: "pending",
+              ...(mixed ? { model: "native-override", reasoningEffort: "low" } : {}),
+            },
+          ],
+        },
+      },
+      { model: "parent-model", reasoningEffort: "high" },
+    );
+    if (event.type !== "item.started") throw new Error("Expected delegation start");
+    value.project({ type: "turn.started", turnId });
+    expect(value.project(event).messages).toMatchObject([
+      {
+        method: "item/started",
+        params: {
+          item: {
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            prompt: "Inspect the repository",
+            receiverThreadIds: ["child-1", "child-2"],
+            model: mixed ? null : "parent-model",
+            reasoningEffort: mixed ? null : "high",
+            agentsStates: {
+              "child-1": { status: "running" },
+              "child-2": { status: "pendingInit" },
+            },
+          },
+        },
+      },
+    ]);
+  },
+);

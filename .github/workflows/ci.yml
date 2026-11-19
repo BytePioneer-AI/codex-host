@@ -35,6 +35,91 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  static:
+    name: Static checks
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global --prefer-offline npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      # Rust formatting belongs to the native lane, which installs Rust.
+      - name: Check formatting
+        run: npx prettier --check .
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  vitest:
+    name: Vitest
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global --prefer-offline npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build TypeScript
+        run: npm run build:typescript
+
+      - name: Test Vitest (full suite)
+        run: npx vitest run --config tests/vitest.config.js
+
+  web:
+    name: Web Host tests
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'ubuntu-22.04'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Setup npm
+        run: npm install --global --prefer-offline npm@11.8.0
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build TypeScript
+        run: npm run build:typescript
+
+      # test:web's pretest builds the Web UI assets used by these suites.
+      - name: Test Web Host (full suite)
+        run: npm run test:web
+
+  # Release and repository maintenance require these existing Check job names.
+  # Linux x64 owns native checks here; secondary OS lanes also test OS-sensitive TS.
   check:
     name: Check ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -70,35 +155,25 @@ jobs:
         id: dependencies
         run: npm ci --prefer-offline
 
-      - name: Check formatting
+      - name: Check Rust formatting
         if: runner.os == 'Linux'
-        run: npm run format:check
-
-      - name: Lint
-        if: runner.os == 'Linux'
-        run: npm run lint
-
-      - name: Typecheck
-        if: runner.os == 'Linux'
-        run: npm run typecheck
-
-      - name: Test TypeScript (full suite)
-        if: runner.os == 'Linux'
-        run: npm run test:typescript
+        run: cargo fmt --all --check
 
       # Linux x64 covers governance, browser/contracts, and the nested Gate runner test.
-      # Secondary OS lanes run only platform-sensitive files (see tests/vitest.config.js);
+      # Secondary OS lanes filter both Vitest and Web Host files (tests/platform-tests.mjs);
       # Linux x64 covers platform-independent logic.
       - name: Test TypeScript (cross-platform)
         if: runner.os != 'Linux'
         env:
           CODEXHOST_TEST_SCOPE: platform
         run: >
-          npm run test:typescript --
+          npm run build:typescript &&
+          npx vitest run --config tests/vitest.config.js
           --exclude 'packages/repository-automation/test/**'
           --exclude 'packages/shared-contracts/test/**'
           --exclude 'packages/renderer-extension/test/**'
           --exclude 'tools/gate-claude-code/run.test.mjs'
+          && npm run test:web
 
       # Real Launcher + Node service, with isolated HOME/data and fake Harnesses.
       - name: Test independent Host lifecycle

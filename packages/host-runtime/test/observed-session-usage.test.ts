@@ -278,6 +278,40 @@ it("works without a plugin", async () => {
   bridge.close();
 });
 
+it("keeps newly observed session timing when an older history read finishes later", async () => {
+  const { bridge, read, observe } = setup();
+  let finish: ((value: HarnessSessionUsageHistory) => void) | undefined;
+  read.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  try {
+    const pending = bridge.read("s");
+    observe({ sessionId: "s", turn: { id: "t", phase: "started" } }, 1000);
+    observe(
+      {
+        sessionId: "s",
+        requestTiming: {
+          turnId: "t",
+          requestId: "timed",
+          outputTokens: 100,
+          startedAtMs: 1100,
+          completedAtMs: 2100,
+        },
+      },
+      2100,
+    );
+    observe({ sessionId: "s", turn: { id: "t", phase: "completed" } }, 2200);
+    if (!finish) throw new Error("Missing pending history read");
+    finish({ ...history(), retainedTurnIds: [] });
+    expect(await pending).toMatchObject({ sessionOutputTokensPerSecond: 100 });
+  } finally {
+    await bridge.close();
+  }
+});
+
 it("restores measured speed and latency after restart without reviving in-flight timing", async () => {
   const first = setup("home-a");
   first.read.mockResolvedValue({ ...history(), retainedTurnIds: ["t"] });
@@ -303,6 +337,7 @@ it("restores measured speed and latency after restart without reviving in-flight
     restored.read.mockResolvedValue({ ...history(), retainedTurnIds: ["t"] });
     isolated.read.mockResolvedValue({ ...history(), retainedTurnIds: ["t"] });
     expect(await restored.bridge.read("s")).toMatchObject({
+      sessionOutputTokensPerSecond: 100,
       outputTokensPerSecond: 100,
       timeToFirstOutputMs: 100,
     });
@@ -328,6 +363,7 @@ it("restores measured speed and latency after restart without reviving in-flight
       lastTurnTiming: { turnId: "next", timeToFirstOutputMs: 999, at: 9000 },
     });
     expect(await restored.bridge.read("s")).toMatchObject({
+      sessionOutputTokensPerSecond: 50,
       outputTokensPerSecond: 25,
       timeToFirstOutputMs: 150,
     });

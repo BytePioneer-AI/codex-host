@@ -2,8 +2,8 @@
  * Harness/model selection plugin, browser half — composer controls and /model over ONE per-session
  * directory owned by ModelDirectoryResolver (`ctx.modelDirectories`). The /model popupSelect
  * contribution and the composer's named `conversation.input.model` seat share
- * one Host-generation `session/modelCatalog` catalog, combine it with the Session's
- * durable model-selection projection, and submit through `session.selectModel`.
+ * the shared local Host catalog or the remote Session's catalog, combine it with
+ * the Session's durable model-selection projection, and submit through `session.selectModel`.
  * A switch made in either entry is what the other shows next. Failures
  * ride each entry's own retry surface (popup shell error/retry; seat menu
  * inline error) without forking the state. Addressed subagent sessions expose

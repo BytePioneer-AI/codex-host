@@ -1,19 +1,34 @@
 import { useEffect, useState } from "react";
 
-const RECOVERY_NOTICE_DELAY_MS = 1000;
+const RECOVERY_NOTICE_DELAY_MS = 5000;
 
 /**
- * Keep a recovery that finishes quickly out of the interface.
+ * Keep brief recovery out of the interface, with a fresh grace period on foreground return.
  * @param recovering - whether the connection is currently being restored.
- * @returns true once the same recovery has lasted long enough to tell the user.
+ * @returns true after recovery persists for five uninterrupted visible seconds.
  */
 export function useSustainedRecovery(recovering: boolean): boolean {
   const [sustained, setSustained] = useState(false);
   useEffect(() => {
     if (!recovering) return;
-    const timer = setTimeout(() => setSustained(true), RECOVERY_NOTICE_DELAY_MS);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let visible = document.visibilityState !== "hidden";
+    const schedule = () => {
+      timer = setTimeout(() => setSustained(true), RECOVERY_NOTICE_DELAY_MS);
+    };
+    const visibilityChanged = () => {
+      const next = document.visibilityState !== "hidden";
+      if (next === visible) return;
+      visible = next;
+      clearTimeout(timer);
+      setSustained(false);
+      if (visible) schedule();
+    };
+    if (visible) schedule();
+    document.addEventListener("visibilitychange", visibilityChanged);
     return () => {
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visibilityChanged);
       setSustained(false);
     };
   }, [recovering]);

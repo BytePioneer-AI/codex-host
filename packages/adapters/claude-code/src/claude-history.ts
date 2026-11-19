@@ -11,6 +11,7 @@ import {
   nativeCheckpointRefSchema,
   nativeTurnRefSchema,
   type HarnessId,
+  type HostItemId,
 } from "@codexhost/shared-contracts";
 
 import {
@@ -19,8 +20,10 @@ import {
   claudeSendMessageFailed,
 } from "./native-message.js";
 import { ClaudeBackgroundOccupancy } from "./background-occupancy.js";
+import { claudeToolItem, type ClaudeToolItem } from "./claude-tool-item.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { readClaudeQueuedCommand } from "./claude-queued-command.js";
+import { isClaudeNarrationSignature } from "./thinking-signature.js";
 
 interface ClaudeHistoryRecord {
   uuid: string;
@@ -41,6 +44,31 @@ type ClaudeHistoryMessage = ClaudeHistoryRecord &
   );
 
 const claudeCodeHarnessId: HarnessId = harnessIdSchema.parse("claude-code");
+// Claude Code 2.1.x streams multi-block messages with block-index UUID suffixes
+// (`<prefix>-00000000000N`) while persisting the original message UUID to `.jsonl`.
+const CLAUDE_BLOCK_SPLIT_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-0{8}[0-9a-f]{4}$/iu;
+
+export function matchesClaudeCheckpointId(persistedId: string, expectedId: string): boolean {
+  if (persistedId === expectedId) return true;
+  if (!CLAUDE_BLOCK_SPLIT_UUID_PATTERN.test(expectedId)) return false;
+  return (
+    persistedId.length === 36 &&
+    persistedId.slice(0, 24).toLowerCase() === expectedId.slice(0, 24).toLowerCase()
+  );
+}
+
+export function isPersistedClaudeMessageId(
+  expectedId: string,
+  persistedIds: ReadonlySet<string>,
+): boolean {
+  if (persistedIds.has(expectedId)) return true;
+  if (!CLAUDE_BLOCK_SPLIT_UUID_PATTERN.test(expectedId)) return false;
+  for (const id of persistedIds) {
+    if (matchesClaudeCheckpointId(id, expectedId)) return true;
+  }
+  return false;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -51,15 +79,6 @@ function textParts(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((part) =>
     isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : [],
-  );
-}
-
-function thinkingParts(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((part) =>
-    isRecord(part) && part.type === "thinking" && typeof part.thinking === "string"
-      ? [part.thinking]
-      : [],
   );
 }
 
@@ -130,6 +149,13 @@ function visibleUserTextParts(message: ClaudeHistoryMessage): string[] {
   const parts = textParts(message.message.content);
   if (parts.some(isControlCommandEnvelope)) return [];
   return parts.filter((part) => !isLocalCommandRecord(part) && !isTaskNotificationRecord(part));
+}
+
+function hasRootToolResult(message: ClaudeHistoryMessage): boolean {
+  if (message.type !== "user" || message.nested || !Array.isArray(message.message.content)) {
+    return false;
+  }
+  return message.message.content.some((block) => isRecord(block) && block.type === "tool_result");
 }
 
 function isInterruptionRecord(value: Record<string, unknown>, promptId: string | null): boolean {
@@ -215,6 +241,8 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
         (interrupted ||
           value.isSynthetic === true ||
           value.isMeta === true ||
+          value.isCompactSummary === true ||
+          value.isVisibleInTranscriptOnly === true ||
           isTaskNotificationOrigin(value) ||
           (value.toolUseResult !== undefined && value.toolUseResult !== null)),
     };
@@ -346,9 +374,35 @@ function itemOutcome(outcome: HistoricalTurnOutcome): HostItemOutcome {
   return { status: "succeeded" };
 }
 
-export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThreadSnapshot {
+function isCheckpointCandidate(message: ClaudeHistoryMessage): boolean {
+  return (
+    !message.nested &&
+    (message.type === "assistant" || message.interrupted || hasRootToolResult(message))
+  );
+}
+
+export function mapClaudeSnapshot(
+  values: unknown[],
+  sessionId: string,
+  mcpServers?: readonly string[],
+): HostThreadSnapshot {
+  return mapClaudeSnapshotWithCheckpointIds(values, sessionId, mcpServers).snapshot;
+}
+
+/**
+ * Maps native history and also lists, per Turn, every root record UUID that a live
+ * `message.completed` could have published as that Turn's checkpoint. The persisted Turn
+ * checkpoint is the last of them, so callers holding an earlier live checkpoint can still
+ * locate the Turn it belongs to.
+ */
+export function mapClaudeSnapshotWithCheckpointIds(
+  values: unknown[],
+  sessionId: string,
+  mcpServers?: readonly string[],
+): { snapshot: HostThreadSnapshot; turnCheckpointIds: string[][] } {
   const messages = conversationMessages(values, sessionId);
   const turns: HostThreadSnapshot["turns"] = [];
+  const turnCheckpointIds: string[][] = [];
   for (let index = 0; index < messages.length;) {
     const user = messages[index];
     if (!user || !user.startsTurn) {
@@ -362,9 +416,7 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     const turnMessages = messages.slice(index, end);
     const outcome = turnOutcome(turnMessages);
     const results = toolResultBlocks(turnMessages);
-    const checkpointIndex = turnMessages.findLastIndex(
-      ({ type, interrupted, nested }) => !nested && (type === "assistant" || interrupted),
-    );
+    const checkpointIndex = turnMessages.findLastIndex(isCheckpointCandidate);
     const lastSteering = turnMessages.findLastIndex(({ type }) => type === "steering");
     // A checkpoint before the latest delivered input cannot retain the displayed prefix.
     const checkpointMessage =
@@ -374,6 +426,9 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     // Tool Items count only what live reaches the Tool lifecycle: root, non-Subagent
     // blocks. Every such block consumes an ordinal so identities stay aligned.
     let toolOrdinal = 0;
+    turnCheckpointIds.push(
+      turnMessages.filter(isCheckpointCandidate).map((message) => message.uuid),
+    );
     turns.push({
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: claudeCodeHarnessId,
@@ -439,7 +494,6 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             : itemOutcome(outcome);
         const content = message.message.content;
         const text = textParts(content).join("");
-        const reasoning = thinkingParts(content).join("");
         if (!Array.isArray(content)) {
           return text.length > 0
             ? [
@@ -459,20 +513,38 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             : [];
         }
         const items: HostThreadSnapshot["turns"][number]["items"] = [];
-        let projectedReasoning = false;
         let projectedText = false;
         for (const [blockIndex, block] of content.entries()) {
           if (!isRecord(block)) continue;
-          if (block.type === "thinking" && !projectedReasoning && reasoning.length > 0) {
-            items.push({
-              item: {
-                type: "reasoning" as const,
-                itemId: claudeTranscriptItemId(user.uuid, "reasoning", (reasoningOrdinal += 1)),
-                text: reasoning,
-              },
-              outcome: assistantOutcome,
-            });
-            projectedReasoning = true;
+          if (block.type === "thinking" && typeof block.thinking === "string") {
+            if (block.thinking.length === 0) continue;
+            // Narration occupies a live thinking ordinal even though history maps it
+            // only to commentary. Reserve that slot for stable later Reasoning IDs.
+            reasoningOrdinal += 1;
+            if (isClaudeNarrationSignature(block.signature)) {
+              items.push({
+                item: {
+                  type: "agentMessage",
+                  itemId: claudeTranscriptItemId(
+                    user.uuid,
+                    "agentMessage",
+                    (agentMessageOrdinal += 1),
+                  ),
+                  text: block.thinking,
+                  phase: "commentary",
+                },
+                outcome: assistantOutcome,
+              });
+            } else {
+              items.push({
+                item: {
+                  type: "reasoning" as const,
+                  itemId: claudeTranscriptItemId(user.uuid, "reasoning", reasoningOrdinal),
+                  text: block.thinking,
+                },
+                outcome: assistantOutcome,
+              });
+            }
             continue;
           }
           if (block.type === "text" && !projectedText && text.length > 0) {
@@ -536,15 +608,8 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
             });
             continue;
           }
-          const argumentsResult = jsonValueSchema.safeParse(block.input);
           items.push({
-            item: {
-              type: "toolExecution",
-              itemId,
-              toolName: block.name,
-              arguments: argumentsResult.success ? argumentsResult.data : null,
-              ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-            },
+            item: historyToolItem(itemId, block.name, block.input, output, mcpServers),
             outcome: toolOutcome,
           });
         }
@@ -554,7 +619,24 @@ export function mapClaudeSnapshot(values: unknown[], sessionId: string): HostThr
     });
     index = end;
   }
-  return { turns };
+  return { snapshot: { turns }, turnCheckpointIds };
+}
+
+function historyToolItem(
+  itemId: HostItemId,
+  toolName: string,
+  input: unknown,
+  output: string | undefined,
+  mcpServers?: readonly string[],
+): ClaudeToolItem {
+  const argumentsResult = jsonValueSchema.safeParse(input);
+  const item = claudeToolItem(
+    itemId,
+    toolName,
+    argumentsResult.success ? argumentsResult.data : null,
+    mcpServers,
+  );
+  return output ? { ...item, output: { content: [{ type: "text", text: output }] } } : item;
 }
 
 function toolResultBlocks(messages: ClaudeHistoryMessage[]): Map<string, Record<string, unknown>> {
@@ -667,7 +749,9 @@ export function mapClaudeSubagentSnapshot(
         if (block.type === "thinking" && typeof block.thinking === "string") {
           if (block.thinking.length > 0) {
             items.push({
-              item: { type: "reasoning", itemId, text: block.thinking },
+              item: isClaudeNarrationSignature(block.signature)
+                ? { type: "agentMessage", itemId, text: block.thinking, phase: "commentary" }
+                : { type: "reasoning", itemId, text: block.thinking },
               outcome: itemOutcome(outcome),
             });
           }
@@ -720,15 +804,8 @@ export function mapClaudeSubagentSnapshot(
           });
           continue;
         }
-        const argumentsResult = jsonValueSchema.safeParse(block.input);
         items.push({
-          item: {
-            type: "toolExecution",
-            itemId,
-            toolName: block.name,
-            arguments: argumentsResult.success ? argumentsResult.data : null,
-            ...(output ? { output: { content: [{ type: "text" as const, text: output }] } } : {}),
-          },
+          item: historyToolItem(itemId, block.name, block.input, output),
           outcome: toolOutcome,
         });
       }

@@ -129,6 +129,13 @@
   white-space: nowrap;
 }
 
+/* Names without metadata can use all space left by the icon and drill controls. */
+.item:not(:has(.itemAlias, .itemDescription)) .itemName {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: none;
+}
+
 /* The command name beside a localized title, in the description's ink so
    the row reads title first. */
 .itemAlias {

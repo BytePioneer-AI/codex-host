@@ -262,6 +262,10 @@ export class RemoteStreamMuxClient {
 
   private connect(): Promise<WebSocket> {
     const socket = new WebSocket(remoteStreamUrl());
+    const started = Date.now();
+    const revision = this.revision;
+    const visibility = () =>
+      typeof document === "undefined" ? "unknown" : document.visibilityState;
     const connecting = new Promise<WebSocket>((resolve, reject) => {
       let settled = false;
       const rejectCandidate = (error: Error): void => {
@@ -278,6 +282,11 @@ export class RemoteStreamMuxClient {
         settled = true;
         this.cancelCandidate = undefined;
         this.socket = socket;
+        console.info("[connection] socket open", {
+          revision,
+          handshakeMs: Date.now() - started,
+          visibility: visibility(),
+        });
         this.heartbeat = new StreamHeartbeat(
           (id) => this.send(socket, { type: "ping", streamId: id }),
           () => {
@@ -290,6 +299,12 @@ export class RemoteStreamMuxClient {
         resolve(socket);
       };
       const failed = (): void => {
+        console.info("[connection] socket error", {
+          revision,
+          phase: settled ? "connected" : "opening",
+          elapsedMs: Date.now() - started,
+          visibility: visibility(),
+        });
         if (!settled) {
           rejectCandidate(
             new RemoteStreamCarrierError("api gateway: Remote stream WebSocket failed to open"),
@@ -300,7 +315,26 @@ export class RemoteStreamMuxClient {
         this.lost(socket, error);
         socket.close();
       };
-      const closed = (): void => {
+      const closed = (event: CloseEvent): void => {
+        // Peer-provided close reasons are arbitrary text; log only known protocol reasons.
+        const reason = [
+          "heartbeat timed out",
+          "connection unavailable",
+          "invalid Remote stream frame",
+          "disposed",
+        ].includes(event.reason)
+          ? event.reason
+          : event.reason
+            ? "unclassified"
+            : "none";
+        console.info("[connection] socket close", {
+          revision,
+          code: event.code,
+          reason,
+          clean: event.wasClean,
+          elapsedMs: Date.now() - started,
+          visibility: visibility(),
+        });
         if (!settled) {
           rejectCandidate(
             new RemoteStreamCarrierError(

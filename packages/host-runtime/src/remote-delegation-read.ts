@@ -19,19 +19,26 @@ const snapshot = z.object({
     text: z.string().optional(),
     message: z.string().optional(),
   }),
-  messages: z
+  totalTurns: z.number().int().nonnegative().optional(),
+  from: z.number().int().positive().nullable().optional(),
+  to: z.number().int().positive().nullable().optional(),
+  turns: z
     .array(
       z.object({
-        id: z.string(),
-        turnId: z.string(),
-        role: z.enum(["user", "agent"]),
-        text: z.string(),
-        phase: z.enum(["commentary", "final"]).optional(),
+        turnId: z.string().nullable(),
+        turnNumber: z.number().int().positive(),
+        status,
+        messages: z.array(
+          z.object({
+            id: z.string(),
+            role: z.enum(["user", "agent"]),
+            text: z.string(),
+            phase: z.literal("final").optional(),
+          }),
+        ),
       }),
     )
     .optional(),
-  hasMore: z.boolean().optional(),
-  nextCursor: z.string().nullable(),
 });
 
 /** Uses the existing authenticated Desktop connection, never an arbitrary endpoint or shell. */
@@ -50,7 +57,11 @@ export async function readRemoteDelegationThread(
       reply.error.code === -32094 ? "RESPONSE_TOO_LARGE" : "RUNTIME_UNREACHABLE",
       reply.error.message,
     );
-  const parsed = snapshot.safeParse(reply.result);
+  const schema =
+    input.view === "messages"
+      ? snapshot.required({ totalTurns: true, from: true, to: true, turns: true })
+      : snapshot;
+  const parsed = schema.safeParse(reply.result);
   if (!parsed.success || parsed.data.threadId !== input.threadId)
     throw new DelegationControlError(
       "INTERNAL_ERROR",

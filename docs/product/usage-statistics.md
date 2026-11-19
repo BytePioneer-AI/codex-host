@@ -86,10 +86,10 @@
 
 - 适配器在既有 `createHarnessAdapter` 之外实现可选 `usageStatistics` 能力；Host 不包含 Antigravity 专用分支。
 - 只读用户主目录下 `.gemini/antigravity-cli/brain/<原生会话 ID>/.system_generated/logs/transcript.jsonl`（Windows 取 `USERPROFILE`，其他平台取 `HOME`），每个原生会话一个来源，包括未经 CodexHost 创建的会话。同目录的 `transcript_full.jsonl` 与 `chunks/` 重复相同步骤，不读取；不启动 agy，也不调用其 Language Server。
-- agy 为每次模型请求写一条 `PLANNER_RESPONSE` 步骤，带 `input_tokens`、`cache_read_tokens`、`output_tokens` 与 UTC 时间 `created_at`。已用本机 Antigravity CLI 1.4.6 的转录核对：`input_tokens` 不含缓存读取（下一次请求的 `cache_read_tokens` 约等于上一次请求的完整提示词），因此输入按统一口径加上缓存读取；缺 `cache_read_tokens` 时缓存保持未知。同一步骤重复写入时取最后一条。
+- agy 为每次模型请求写一条 `PLANNER_RESPONSE` 步骤，带 `input_tokens`、`cache_read_tokens`、`output_tokens`、`thinking_tokens`（部分模型）、`model`（`agy >= 1.5.x` 写入如 `google/gemini-3.8-flash`、`anthropic/claude-sonnet-5-5`）与 UTC 时间 `created_at`。`input_tokens` 不含缓存读取，输入按统一口径加上缓存读取；`output_tokens` 已含思考，不重复叠加 `thinking_tokens`；同一步骤重复写入时取最后一条。
 - 读取后核对列举时的文件指纹：Turn 运行期间转录被追加，或已列举的转录在读取前被删除，都会报告来源变化，由 Host 重新列举后重试。会话没有日志目录时跳过；`.system_generated` 或 `logs` 是链接时同样不读取，以免读到 agy 存储之外；权限等其他访问错误不当作没有会话，而是报告读取失败。
-- 转录不记录模型、缓存写入、思考 Token 与工作目录：请求照常计入 Token，模型显示为未知且不计价，项目归入“未知项目”；会话只取目录名作为原生会话 ID。
-- 条目 ID 由 `created_at`、步骤序号与 Token 组成，不含会话 ID，派生会话（分叉、回滚）复制的历史请求因此按 ID 去重。本机现有转录未出现跨会话复制的记录，原生分叉是否复制历史步骤尚未实测。
+- 模型与缓存写入边界：带 `provider/model` 前缀的 `model` 归一为公开价格表模型 ID；旧版缺少 `model` 的转录保留 Token 并标为未知模型（不计价）。Google Gemini 与 GPT 系列采用隐式缓存且无独立缓存写入计费桶，已知 `cache_read_tokens` 时将 `cacheWriteInputTokens` 记为 `0` 以参与公开单价折算；Anthropic Claude 存在独立缓存写入计费而离线 `transcript.jsonl` 未记录缓存写入 Token，其 `cacheWriteInputTokens` 保持未知（仅统计 Token，不猜测缓存写入费用）。转录不记录工作目录，项目归入“未知项目”；会话只取目录名作为原生会话 ID。
+- 条目 ID 由 `created_at`、步骤序号与 Token 组成，不含会话 ID；已通过 SQLite 会话分叉与回滚实测验证复制的历史步骤按条目 ID 去重，不重复计入全局统计。
 
 ## 暂未接入的三个 Harness
 
@@ -104,5 +104,5 @@
 ## 已知限制
 
 - 增量按文件粒度：活跃会话文件每次变化都整文件重读，尚未从上次位置续读。
-- 读取器语义变化时需提升缓存版本号（`CACHE_VERSION`，当前为 7：v2 加入会话归属，v3 加入 Harness 记录的费用，v4 加入原生 credits，v5 加入“Token 未记录”标记，v6 已有缓存列扩展，v7 加入原生会话名），否则未变化的文件沿用旧解析结果。升级后首次启动会整体重读一次（本机约 13 秒，后台进行）；之后按筛选聚合一次约 70 毫秒。
+- 读取器语义变化时需提升缓存版本号（`CACHE_VERSION`，当前为 8：v2 加入会话归属，v3 加入 Harness 记录的费用，v4 加入原生 credits，v5 加入“Token 未记录”标记，v6 已有缓存列扩展，v7 加入原生会话名，v8 更新 Antigravity 模型归一与隐式缓存写入口径），否则未变化的文件沿用旧解析结果。升级后首次启动会整体重读一次（本机约 13 秒，后台进行）；之后按筛选聚合一次约 70 毫秒。
 - 单会话计量（`UsageMeter`）与全局统计各自实现了同一计价公式（`usageEntryCostUsd`），修改公式时两处需同步。

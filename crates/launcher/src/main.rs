@@ -15,7 +15,6 @@ mod secure_storage;
 mod service_update;
 mod services;
 mod startup_record;
-#[cfg(target_os = "macos")]
 mod system_proxy_environment;
 mod web_service;
 
@@ -145,9 +144,12 @@ const USAGE: &str = "usage:
   codexhost desktop-screenshot
   codexhost broker install|status|stop|uninstall
   codexhost delegate --help
+  codexhost host info ...
+  codexhost project list ...
   codexhost harness list|inspect ...
   codexhost delegate start ...
-  codexhost thread send|cancel|read|wait|watch|watches|list ...
+  codexhost thread send|cancel|read|wait|watch|watches|list|file ...
+  codexhost thread export <thread> (rarely needed)
   codexhost client status|on|off|create|list|revoke ...
   codexhost events pull|ack ...";
 
@@ -231,7 +233,7 @@ fn delegation_node(bundled: &Path, host_node: Option<OsString>) -> Result<PathBu
     }
 }
 
-fn startup_trace(stage: &str) {
+pub(crate) fn startup_trace(stage: &str) {
     startup_record::stage(stage);
     if env::var_os(STARTUP_TRACE_ENV).as_deref() != Some(std::ffi::OsStr::new("1")) {
         return;
@@ -1316,10 +1318,19 @@ fn launch_gui(
             {
                 continue;
             }
-            result => return result,
+            Ok(()) => {
+                console::stop_for_launch();
+                return Ok(());
+            }
+            Err(error) => return Err(error),
         }
         #[cfg(target_os = "macos")]
-        return result;
+        {
+            if result.is_ok() {
+                console::stop_for_launch();
+            }
+            return result;
+        }
     }
 }
 
@@ -1404,14 +1415,18 @@ fn launch_gui(
             env::var_os(REMOTE_SSH_MANAGED_ENV),
         ),
     );
-    supervise_desktop(
+    let result = supervise_desktop(
         &installation,
         &options,
         &control.renderer_cdp_arguments,
         &environment,
         &control,
         &descriptor_path,
-    )
+    );
+    if result.is_ok() {
+        console::stop_for_launch();
+    }
+    result
 }
 
 fn start_launch_console(options: &LaunchOptions) {
@@ -1517,6 +1532,27 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
         Some("update") => Err("update accepts no arguments".into()),
         Some("console") => Err("console accepts no arguments".into()),
         Some("launch") => launch(parse_launch_options(&arguments[1..])?, false),
+        Some("open-file") if arguments.len() == 2 => {
+            let path = PathBuf::from(&arguments[1]).canonicalize()?;
+            if !path.is_file() {
+                return Err("native file opener requires a regular file".into());
+            }
+            let path = path.to_str().ok_or("file path must be valid UTF-8")?;
+            codexhost_platform::open_external_url(path).map_err(Into::into)
+        }
+        Some("open-file") => Err("open-file requires one file path".into()),
+        Some("reveal-file") if arguments.len() == 2 => {
+            let path = Path::new(&arguments[1]);
+            if !path.is_absolute() {
+                return Err("reveal-file requires an absolute path".into());
+            }
+            let info = path.metadata()?;
+            if !info.is_file() && !info.is_dir() {
+                return Err("reveal-file requires a regular file or directory".into());
+            }
+            codexhost_platform::reveal_file(path).map_err(Into::into)
+        }
+        Some("reveal-file") => Err("reveal-file requires one path".into()),
         Some("open-loopback-url") if arguments.len() == 1 => {
             let url = read_bounded_loopback_url(std::io::stdin().lock())?;
             validate_loopback_root_url(&url)?;
@@ -1529,12 +1565,18 @@ fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         Some("desktop-screenshot") => Err("desktop-screenshot accepts no arguments".into()),
-        Some("host") => host_service::run(&arguments[1..]),
-        Some("web-service") => web_service::run(&arguments[1..]),
-        Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
-        Some("harness") | Some("delegate") | Some("thread") | Some("client") | Some("events") => {
+        Some("host") if arguments.get(1).is_some_and(|arg| arg == "info") => {
             run_delegation_cli(arguments)
         }
+        Some("host") => host_service::run(&arguments[1..]),
+        Some("web-service") => web_service::run(&arguments[1..]),
+        Some("proxy-environment") if arguments.len() == 1 => {
+            system_proxy_environment::print_proxy_environment()
+        }
+        Some("proxy-environment") => Err("proxy-environment accepts no arguments".into()),
+        Some("broker") => run_native_harness_broker_cli(&arguments[1..]),
+        Some("project") | Some("harness") | Some("delegate") | Some("thread") | Some("client")
+        | Some("events") => run_delegation_cli(arguments),
         _ => {
             usage();
             Err("invalid launcher arguments".into())

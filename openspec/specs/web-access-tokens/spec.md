@@ -2,15 +2,15 @@
 
 ## Purpose
 
-Web 的访问认证能力：其他设备用同一个访问 token 从任意入口登录；token 只在本机访问时显示和重新生成；并提供可信代理和基础访问保护。
+Web 的访问认证能力：其他设备用同一个访问 token 从任意入口登录；已认证的本机和远程会话均可查看和重新生成 token，同时保持本机 token 边界、可信代理和基础访问保护。
 
 ## Requirements
 
 ### Requirement: 访问 token
-Web SHALL 只有一个供其他设备登录的访问 token，它 MUST 由系统生成，并在只有当前用户可读的文件中保存明文；本机访问时 SHALL 可查看和复制。token 不绑定设备或浏览器，也不过期。
+Web SHALL 只有一个供其他设备登录的访问 token，它 MUST 由系统生成，并在只有当前用户可读的文件中保存明文；已认证访问时 SHALL 可查看和复制。token 不绑定设备或浏览器，也不过期。
 
 #### Scenario: 首次查看
-- **WHEN** 用户第一次以本机访问打开连接设备页
+- **WHEN** 已认证用户第一次打开连接设备页
 - **THEN** 系统生成 token 并持久化，之后刷新页面或重启 Web 服务都显示同一个 token
 
 #### Scenario: 多设备使用同一 token
@@ -64,7 +64,7 @@ Web SHALL 维护一个本机 token，保存在只有当前用户可读的文件�
 - **THEN** 按无效 token 处理，提示用链接或手动输入登录
 
 ### Requirement: 重新生成 token 立即生效
-重新生成 token 后 SHALL 立即拒绝使用旧 token 的所有请求，主动断开它建立的 WebSocket、事件流和进行中的 HTTP 请求，并删除它的推送订阅。重新生成 MUST 不停止 Host 上运行中的任务，也 MUST 不影响本机 token 的连接。
+重新生成 token 后 SHALL 立即拒绝使用旧 token 的所有请求，主动断开它建立的 WebSocket、事件流和进行中的 HTTP 请求，并删除它的推送订阅。当已认证的远程浏览器通过登录 Cookie 发起重新生成时，该次 HTTP 响应 SHALL 下发新的登录 Cookie 以保持当前浏览器继续处于已登录状态，使用旧 token 的其他设备与会话仍立即断开。重新生成 MUST 不停止 Host 上运行中的任务，也 MUST 不影响本机 token 的连接。
 
 #### Scenario: 正在对话时 token 被重新生成
 - **WHEN** 一台设备正通过流式连接查看运行中的任务，token 被重新生成
@@ -84,7 +84,7 @@ Web SHALL 维护一个本机 token，保存在只有当前用户可读的文件�
 - **THEN** 使用本机 token 的连接保持不变
 
 ### Requirement: 退出登录
-非本机访问的页面 SHALL 提供退出登录，确认时 MUST 说明重新登录需要在电脑上查看 token。退出 SHALL 清除这个浏览器的 Cookie 并取消它的推送订阅，MUST 不影响 token 和其他设备。
+非本机访问的页面 SHALL 提供退出登录，确认时 MUST 说明重新登录需要在电脑或其他已登录设备上查看 token。退出 SHALL 清除这个浏览器的 Cookie 并取消它的推送订阅，MUST 不影响 token 和其他设备。
 
 #### Scenario: 在借用的设备上退出
 - **WHEN** 用户在非本机页面确认退出登录
@@ -95,15 +95,19 @@ Web SHALL 维护一个本机 token，保存在只有当前用户可读的文件�
 - **THEN** 接口拒绝，不清除 Cookie
 
 ### Requirement: 连接设备页
-Web 设置 SHALL 在所有访问方式下显示“连接设备”入口。本机访问时 SHALL 显示所选地址的登录二维码和链接、最近使用时间，并可复制链接和 token、重新生成 token。非本机访问时 MUST 不显示 token，并提示只有在这台电脑上通过 `http://127.0.0.1:<端口>` 访问才能查看；接口 MUST 拒绝并返回明确的错误。
+Web 设置 SHALL 在所有访问方式下显示“连接设备”入口。已认证访问（包含本机与远程）时 SHALL 显示所选地址的登录二维码和链接、最近使用时间，并可复制链接和 token、重新生成 token；非本机页面额外显示退出登录；`--no-auth` 时查看与管理接口 SHALL 返回 `auth/disabled`。
 
 #### Scenario: 手机打开连接设备页
-- **WHEN** 手机通过局域网或代理打开连接设备页
-- **THEN** 显示本机访问提示和退出登录，不显示 token
+- **WHEN** 已认证手机通过局域网或代理打开连接设备页
+- **THEN** 显示所选地址的二维码和链接，并可复制链接和 token、重新生成 token 以及退出登录
 
-#### Scenario: 非本机直接调用接口
-- **WHEN** 非本机访问调用查看或重新生成接口
-- **THEN** 接口拒绝，不返回任何 token 信息，也不修改数据
+#### Scenario: 远程通过 Cookie 重新生成 token
+- **WHEN** 已登录的远程浏览器确认重新生成 token
+- **THEN** 接口返回新 token 并通过 `Set-Cookie` 更新当前浏览器会话，使用旧 token 的其他远程设备立即退出登录
+
+#### Scenario: 使用 Bearer 令牌远程调用重新生成接口
+- **WHEN** 远程客户端使用 `Authorization: Bearer` 调用重新生成接口
+- **THEN** 返回新 token 而不写入 `Set-Cookie`，旧 token 随后立即失效
 
 #### Scenario: 选择连接地址
 - **WHEN** 这台电脑有多个可用地址
@@ -142,8 +146,8 @@ Web SHALL 默认忽略 `x-forwarded-*`。只有直连地址命中可信代理时
 - **THEN** 这些头被忽略，登录 Cookie 不带 Secure
 
 #### Scenario: 经 Serve 的请求不算本机
-- **WHEN** 经 Serve 转发的请求查看 token
-- **THEN** 接口拒绝，返回本机访问提示
+- **WHEN** 经 Serve 转发的请求查看 `/api/auth/status` 或携带本机 token
+- **THEN** `/api/auth/status` 报告 `local: false` 且拒绝本机 token；使用访问 token 的已认证请求可以查看连接设备页
 
 ### Requirement: 登录失败限速
 携带无效 token 的请求 SHALL 按客户端地址计数；同一地址一分钟内失败 10 次后，该地址接下来一分钟内的登录和无效 token 请求 SHALL 返回 429。携带有效 Cookie 或 Bearer 的请求 MUST 不受限速影响。

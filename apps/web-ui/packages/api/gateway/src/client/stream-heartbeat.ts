@@ -11,6 +11,7 @@ export interface StreamHeartbeatOptions {
 export class StreamHeartbeat {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pending: string | undefined;
+  private restoreStartedAt: number | undefined;
   private sequence = 0;
   private lastActivity = Date.now();
   private stopped = false;
@@ -22,6 +23,7 @@ export class StreamHeartbeat {
     // A frozen deadline must not run before the deferred foreground probe.
     clearTimeout(this.timer);
     this.pending = undefined;
+    this.restoreStartedAt = undefined;
   };
 
   constructor(
@@ -42,6 +44,7 @@ export class StreamHeartbeat {
     if (this.stopped) return;
     this.lastActivity = Date.now();
     if (this.pending !== undefined && pongId === this.pending) {
+      this.reportRestore("pong");
       this.pending = undefined;
       this.schedule(this.interval);
     }
@@ -49,7 +52,9 @@ export class StreamHeartbeat {
 
   /** Check the socket now. A reply to any earlier probe no longer counts. */
   probe(): void {
-    if (!this.stopped) this.sendProbe(this.restoreTimeout);
+    if (this.stopped) return;
+    this.restoreStartedAt = Date.now();
+    this.sendProbe(this.restoreTimeout);
   }
 
   stop(): void {
@@ -58,6 +63,16 @@ export class StreamHeartbeat {
       document.removeEventListener("visibilitychange", this.visibilityChanged);
     clearTimeout(this.timer);
     this.pending = undefined;
+    this.restoreStartedAt = undefined;
+  }
+
+  private reportRestore(result: "pong" | "timeout" | "send-failed"): void {
+    if (this.restoreStartedAt === undefined) return;
+    console.info("[connection] foreground probe", {
+      result,
+      elapsedMs: Date.now() - this.restoreStartedAt,
+    });
+    this.restoreStartedAt = undefined;
   }
 
   private schedule(delay: number): void {
@@ -70,11 +85,13 @@ export class StreamHeartbeat {
     // Background timers may be frozen. Foreground restoration requests its own probe.
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
       this.pending = undefined;
+      this.restoreStartedAt = undefined;
       this.lastActivity = Date.now();
       this.schedule(this.interval);
       return;
     }
     if (this.pending !== undefined) {
+      this.reportRestore("timeout");
       this.stop();
       this.failed();
       return;
@@ -93,6 +110,7 @@ export class StreamHeartbeat {
     try {
       this.send(this.pending);
     } catch {
+      this.reportRestore("send-failed");
       this.stop();
       this.failed();
     }

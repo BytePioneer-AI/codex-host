@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codexhost_platform::{
-    configure_background_command, configure_detached_service_command, node_entrypoint_path,
-    spawn_supervised,
+    PlatformError, configure_background_command, configure_detached_service_command,
+    node_entrypoint_path, process_identity, spawn_supervised, terminate_process_identity,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -25,13 +25,11 @@ struct ReadyOwner {
     #[serde(default)]
     version: Option<String>,
 }
-fn owner_snapshot(data: &Path) -> Option<codexhost_platform::ProcessSnapshot> {
+fn owner_snapshot(data: &Path) -> Option<codexhost_platform::ProcessIdentity> {
     let record = fs::read(data.join("shared-host-ready.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<ReadyOwner>(&bytes).ok())?;
-    let live = codexhost_platform::process_snapshot(record.pid).ok()?;
-    (live.started_at_micros == record.started_at_micros && live.executable == record.executable)
-        .then_some(live)
+    codexhost_platform::process_instance(record.pid, record.started_at_micros)
 }
 fn owner_ready(data: &Path) -> bool {
     owner_snapshot(data).is_some()
@@ -68,18 +66,14 @@ fn publish_ready(data: &Path, pid: u32, runtime: &Path) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-// A supervisor that failed before publishing, or whose record a newer service
-// replaced, must not erase the identity of a live Host. PID reuse is excluded
-// by the started_at_micros comparison.
-fn remove_ready_record_if_owned(data: &Path, child: &codexhost_platform::ProcessSnapshot) {
-    let owned = fs::read(data.join("shared-host-ready.json"))
+fn remove_ready(data: &Path, pid: u32) {
+    let file = data.join("shared-host-ready.json");
+    if fs::read(&file)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<ReadyOwner>(&bytes).ok())
-        .is_some_and(|record| {
-            record.pid == child.id && record.started_at_micros == child.started_at_micros
-        });
-    if owned {
-        let _ = fs::remove_file(data.join("shared-host-ready.json"));
+        .is_some_and(|record| record.pid == pid)
+    {
+        let _ = fs::remove_file(file);
     }
 }
 
@@ -135,7 +129,10 @@ pub(super) fn clean(command: &mut Command) {
         {
             continue;
         }
-        if upper == "CODEXHOST_WEB_SERVICE" || upper == "CODEXHOST_TRACE_SESSION_LIST" {
+        if upper == "CODEXHOST_WEB_SERVICE"
+            || upper == "CODEXHOST_TRACE_SESSION_LIST"
+            || upper == "CODEXHOST_EXTERNAL_CLIENT_PORT"
+        {
             continue;
         }
         if upper.starts_with("CODEXHOST_") || upper == "NODE_OPTIONS" || upper == "NODE_PATH" {
@@ -274,9 +271,6 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         .envs(codexhost_platform::proxy_environment());
     configure_background_command(&mut command);
     let mut child = spawn_supervised(&mut command)?;
-    // Capture the child identity before it can exit: the ready record can only
-    // be cleared while its owner is still identifiable.
-    let child_identity = codexhost_platform::process_snapshot(child.id()).ok();
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut published = false;
         let mut started_update = None;
@@ -318,17 +312,15 @@ fn serve(mut options: Options) -> Result<(), Box<dyn Error>> {
         let _ = child.force_terminate();
         thread::sleep(Duration::from_millis(100));
     }
-    if let Some(identity) = &child_identity {
-        remove_ready_record_if_owned(&options.data, identity);
-    }
+    remove_ready(&options.data, child.id());
     result
 }
 
 // The supervisor exits after cleaning its managed children. This wait is only
 // for normal shutdown; it is not a startup lock or a crash-recovery proof.
 pub(super) fn wait_for_shutdown(
-    owner: Option<&codexhost_platform::ProcessSnapshot>,
-    supervisor: Option<&codexhost_platform::ProcessSnapshot>,
+    owner: Option<&codexhost_platform::ProcessIdentity>,
+    supervisor: Option<&codexhost_platform::ProcessIdentity>,
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
     let Some(target) = supervisor.or(owner) else {
@@ -337,12 +329,10 @@ pub(super) fn wait_for_shutdown(
     let started = Instant::now();
     let mut escalated = false;
     loop {
-        let live = codexhost_platform::process_snapshot(target.id).ok();
-        if !live.is_some_and(|live| {
-            live.started_at_micros == target.started_at_micros
-                && live.executable == target.executable
-        }) {
-            return Ok(());
+        match process_identity(target.id) {
+            Ok(current) if current.started_at_micros == target.started_at_micros => {}
+            Ok(_) | Err(PlatformError::NotFound(_)) => return Ok(()),
+            Err(error) => return Err(error.into()),
         }
         if started.elapsed() >= timeout {
             return Err("Service shutdown timed out".into());
@@ -351,7 +341,21 @@ pub(super) fn wait_for_shutdown(
         // cleanup after terminating the owner captured before the stop request.
         if !escalated && started.elapsed() >= Duration::from_secs(2) {
             if let Some(owner) = owner {
-                codexhost_platform::terminate_process_instance(owner, true)?;
+                match terminate_process_identity(owner, true) {
+                    Ok(()) => {}
+                    Err(error @ PlatformError::Invalid(_)) => {
+                        // Recheck after rejection: the captured owner may have exited or its PID
+                        // changed identity before signal delivery. Neither ends the supervisor wait.
+                        match process_identity(owner.id) {
+                            Ok(current) if current.started_at_micros != owner.started_at_micros => {
+                            }
+                            Err(PlatformError::NotFound(_)) => {}
+                            Ok(_) => return Err(error.into()),
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    Err(error) => return Err(error.into()),
+                }
             }
             escalated = true;
         }
@@ -364,7 +368,7 @@ fn stop(options: &Options) -> Result<(), Box<dyn Error>> {
     let supervisor = owner
         .as_ref()
         .filter(|owner| owner.parent_id > 1)
-        .and_then(|owner| codexhost_platform::process_snapshot(owner.parent_id).ok());
+        .and_then(|owner| codexhost_platform::process_identity(owner.parent_id).ok());
     let mut command = Command::new(&options.node);
     clean(&mut command);
     let status = command

@@ -15,9 +15,16 @@ import {
   type HostInteractionId,
 } from "@codexhost/shared-contracts";
 
-import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
+import type {
+  HarnessOutput,
+  HarnessSession,
+  HarnessSessionState,
+} from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
-import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
+import {
+  planLimitFromAccountCredits,
+  projectClaudePlanLimitToCredits,
+} from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
@@ -39,6 +46,7 @@ import {
   type ClaudeTransportTurnResult,
   type ClaudeTurnEvent,
   type ClaudeTurnTransport,
+  type ClaudeUserContent,
 } from "../src/transport.js";
 import { FakeQuery } from "./fake-sdk-query.js";
 import { queuedCommand } from "./fixtures/claude-queued-command.js";
@@ -119,8 +127,8 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     [];
   readonly initCalls: string[] = [];
   readonly recapCalls: string[] = [];
-  readonly turns: Array<{ text: string; userMessageId: string }> = [];
-  readonly steers: Array<{ text: string; messageId: string; priority: "next" }> = [];
+  readonly turns: Array<{ text: ClaudeUserContent; userMessageId: string }> = [];
+  readonly steers: Array<{ text: ClaudeUserContent; messageId: string; priority: "next" }> = [];
   /** Whether the fake CLI reported `msg_lifecycle_v1` in its init capabilities. */
   nativeSteer = true;
   /** Whether the fake requested Turn currently runs a root tool call. */
@@ -195,7 +203,7 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
   }
 
   runTurn(
-    text: string,
+    text: ClaudeUserContent,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
@@ -216,7 +224,11 @@ class FakeClaudeTransport implements ClaudeTurnTransport {
     return this.idleLive && this.idleHandler !== null;
   }
 
-  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void> {
+  steer(
+    text: ClaudeUserContent,
+    messageId: string,
+    onTakeover?: (started: boolean) => void,
+  ): Promise<void> {
     if (!this.canSteerActiveTurn()) return Promise.reject(new ClaudeSteerMissedTurnError());
     this.steers.push({ text, messageId, priority: "next" });
     if (onTakeover) this.#steerTakeovers.set(messageId, onTakeover);
@@ -789,6 +801,52 @@ describe("Claude Code usage metering", () => {
   });
 });
 
+describe("planLimitFromAccountCredits", () => {
+  it("round-trips a five-hour window with a seven-day sidecar", () => {
+    const credits = projectClaudePlanLimitToCredits({
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    });
+    expect(planLimitFromAccountCredits(credits)).toEqual({
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    });
+  });
+
+  it("returns null when there is no snapshot", () => {
+    expect(planLimitFromAccountCredits(null)).toBeNull();
+    expect(planLimitFromAccountCredits(undefined)).toBeNull();
+  });
+
+  it("ignores model-scoped seven-day product windows when seeding the account cache", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 10,
+        periodType: "five_hour",
+        productUsage: [
+          {
+            product: "Sonnet · 7-day",
+            periodType: "seven_day",
+            scope: { id: "Sonnet", label: "Sonnet" },
+            usagePercent: 91,
+          },
+        ],
+      }),
+    ).toEqual({ fiveHour: { utilizationPercent: 10 } });
+  });
+
+  it("does not treat a scoped primary seven-day window as the account weekly limit", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 91,
+        periodType: "seven_day",
+        scope: { id: "Sonnet", label: "Sonnet" },
+        label: "Sonnet · 7-day",
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("projectClaudePlanLimitToCredits", () => {
   it("returns null when nothing has been observed", () => {
     expect(projectClaudePlanLimitToCredits(null)).toBeNull();
@@ -1197,6 +1255,70 @@ describe("Claude Code HarnessAdapter", () => {
     if (configured.ok) await configured.value.close();
     expect(dependencies.createTransport).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it("sends Desktop image attachments as image blocks, and steers only images that fit", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "claude-adapter-image-"));
+    try {
+      const png = (width: number, height: number) => {
+        const data = Buffer.alloc(33);
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(data);
+        data.writeUInt32BE(13, 8);
+        data.write("IHDR", 12, "latin1");
+        data.writeUInt32BE(width, 16);
+        data.writeUInt32BE(height, 20);
+        return data;
+      };
+      const small = png(1, 1);
+      const wide = png(3000, 10);
+      const shot = path.join(directory, "shot.png");
+      const panorama = path.join(directory, "panorama.png");
+      const missing = path.join(directory, "gone.png");
+      await writeFile(shot, small);
+      await writeFile(panorama, wide);
+      const prompt = (files: string[], request: string) =>
+        "# Files mentioned by the user:\n\n" +
+        files
+          .map((file) => `## ${path.basename(file)}: ${file}\nImage attachment: true\n\n`)
+          .join("") +
+        `## My request:\n${request}`;
+      const block = (data: Buffer) => ({
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: data.toString("base64") },
+      });
+      const { adapter, transports } = fixture();
+      const session = await openSession(adapter);
+
+      // A Turn Claude starts is shrunk natively; an unreadable file stays path text.
+      const started = prompt([missing, panorama], "describe");
+      await expect(
+        session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-1"),
+          input: [{ type: "text", text: started }],
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      expect(transport.turns[0]?.text).toEqual([{ type: "text", text: started }, block(wide)]);
+
+      // A steer joining the running Turn is sent unchanged, so an oversized image stays a path.
+      const steered = prompt([shot, panorama], "and this");
+      const steering = session.execute({
+        type: "turn.steer",
+        turnId: hostTurnIdSchema.parse("turn-1"),
+        input: [{ type: "text", text: steered }],
+      });
+      await vi.waitFor(() => expect(transport.steers).toHaveLength(1));
+      expect(transport.steers[0]?.text).toEqual([{ type: "text", text: steered }, block(small)]);
+      transport.recordSteer(transport.steers[0]?.messageId ?? "");
+      await expect(steering).resolves.toEqual({ ok: true, value: { accepted: true } });
+      transport.finish({ status: "succeeded" });
+      await session.close();
+      await adapter.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("declares and accepts native steering only when the CLI confirms steers", async () => {
@@ -2386,6 +2508,119 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it.each([false, true])(
+    "adds signed narration as commentary before the answer (complete-only: %s)",
+    async (completeOnly) => {
+      const { adapter, history, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+
+      await session.execute(textTurn("narration-commentary"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const liveStarted = await nextEvent(iterator);
+      if (liveStarted.type !== "item.started" || liveStarted.item.type !== "agentMessage") {
+        throw new Error("Claude live Agent Message did not start");
+      }
+      const transport = transports[0];
+      const nativeTurnKey = transport?.turns[0]?.userMessageId;
+      if (!transport || !nativeTurnKey) throw new Error("Fake Claude Turn did not start");
+
+      const narrationId = "native-message:thinking:0";
+      if (!completeOnly) {
+        transport.reasoning(narrationId, "Checking the files");
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.started",
+          item: { type: "reasoning" },
+        });
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.updated",
+          update: { type: "text.append", text: "Checking the files" },
+        });
+        transport.completeReasoning(narrationId);
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.completed",
+          snapshot: { item: { type: "reasoning", text: "Checking the files" } },
+        });
+      }
+      transport.event({
+        type: "narration.completed",
+        messageId: narrationId,
+        text: "Checking the files first.",
+        ...(completeOnly ? { completeOnly: true } : {}),
+      });
+      await nextEvent(iterator);
+      const narration = await nextEvent(iterator);
+      expect(narration).toMatchObject({
+        type: "item.completed",
+        snapshot: {
+          item: {
+            type: "agentMessage",
+            itemId: liveStarted.item.itemId,
+            text: "Checking the files first.",
+            phase: "commentary",
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+
+      const reasoningId = "native-message:thinking:1";
+      transport.reasoning(reasoningId, "One more thought");
+      const answer = await nextEvent(iterator);
+      if (answer.type !== "item.started" || answer.item.type !== "agentMessage") {
+        throw new Error("Claude live answer did not start");
+      }
+      expect(answer.item.itemId).not.toBe(liveStarted.item.itemId);
+      expect(answer.item).not.toHaveProperty("phase");
+      const reasoning = await nextEvent(iterator);
+      if (reasoning.type !== "item.started" || reasoning.item.type !== "reasoning") {
+        throw new Error("Claude ordinary Reasoning did not start");
+      }
+      transport.completeReasoning(reasoningId);
+      transport.delta("The answer.", "native-message");
+      transport.finish({ status: "succeeded" });
+      while ((await nextEvent(iterator)).type !== "turn.completed") {
+        // Wait for the live Turn to settle before reading history.
+      }
+
+      history.push(
+        {
+          type: "user",
+          uuid: nativeTurnKey,
+          session_id: transport.sessionId,
+          message: { role: "user", content: "narration-commentary" },
+        },
+        {
+          type: "assistant",
+          uuid: "native-assistant",
+          session_id: transport.sessionId,
+          message: {
+            id: "native-message",
+            role: "assistant",
+            content: [
+              {
+                type: "thinking",
+                thinking: "Checking the files first.",
+                signature: "Eg0KC0IJbmFycmF0aW9u",
+              },
+              { type: "thinking", thinking: "One more thought" },
+              { type: "text", text: "The answer." },
+            ],
+            stop_reason: "end_turn",
+          },
+        },
+      );
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toEqual([
+        { ...liveStarted.item, phase: "commentary", text: "Checking the files first." },
+        { ...reasoning.item, text: "One more thought" },
+        { ...answer.item, text: "The answer." },
+      ]);
+      await session.close();
+    },
+  );
+
   it("uses one Item identity for a live response and its native history snapshot", async () => {
     const { adapter, history, transports } = fixture();
     const session = await openSession(adapter);
@@ -2774,6 +3009,103 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
+  it("confirms persisted queued input by its source identity", async () => {
+    const { adapter, transports, history } = fixture();
+    const session = await openSession(adapter);
+    try {
+      await session.execute(textTurn("queued-history"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      const sent = transport.turns[0];
+      if (!sent) throw new Error("Fake Claude Turn was not submitted");
+      transport.event({ type: "message.completed", messageId: "answer", checkpointId: "answer" });
+      transport.finish({ status: "succeeded" });
+      await Promise.resolve();
+      history.push(
+        {
+          type: "user",
+          uuid: "root-input",
+          session_id: transport.sessionId,
+          message: { role: "user", content: "original request" },
+        },
+        queuedCommand(
+          "queued-attachment",
+          sent.userMessageId,
+          "queued-history",
+          transport.sessionId,
+        ),
+        {
+          type: "assistant",
+          uuid: "answer",
+          session_id: transport.sessionId,
+          message: { role: "assistant", content: "done" },
+        },
+      );
+      await expect(session.readSnapshot()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              items: expect.arrayContaining([
+                {
+                  item: {
+                    type: "userMessage",
+                    itemId: "queued-attachment",
+                    input: [{ type: "text", text: "queued-history" }],
+                  },
+                  outcome: { status: "succeeded" },
+                },
+              ]),
+            },
+          ],
+        },
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it("separates history read failures from malformed queued input", async () => {
+    const { adapter, dependencies, transports, history } = fixture();
+    const session = await openSession(adapter);
+    try {
+      await session.execute(textTurn("malformed-queued-history"));
+      const transport = transports[0];
+      if (!transport) throw new Error("Fake Claude transport was not created");
+      transport.event({ type: "message.completed", messageId: "answer", checkpointId: "answer" });
+      transport.finish({ status: "succeeded" });
+      await Promise.resolve();
+      vi.mocked(dependencies.readSessionMessages).mockRejectedValueOnce(
+        new Error("synthetic read failure"),
+      );
+      await expect(session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "nativeFailure", retryable: true },
+      });
+      history.push(
+        {
+          type: "user",
+          uuid: "root-input",
+          session_id: transport.sessionId,
+          message: { role: "user", content: "original request" },
+        },
+        queuedCommand("queued-attachment", "", "queued-history", transport.sessionId),
+        {
+          type: "assistant",
+          uuid: "answer",
+          session_id: transport.sessionId,
+          message: { role: "assistant", content: "done" },
+        },
+      );
+      await expect(session.readSnapshot()).resolves.toMatchObject({
+        ok: false,
+        error: { code: "protocolError", retryable: false },
+      });
+    } finally {
+      await adapter.close();
+    }
+  });
+
   it("projects automatic Compaction and defers Usage refresh until Turn completion", async () => {
     const { adapter, transports } = fixture();
     const session = await openSession(adapter);
@@ -3046,6 +3378,134 @@ describe("Claude Code HarnessAdapter", () => {
       type: "turn.completed",
       outcome: { status: "succeeded" },
     });
+    await session.close();
+  });
+
+  it("projects Claude MCP tools and WebSearch as MCP and web search Items", async () => {
+    const { adapter, transports } = fixture();
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+
+    await session.execute(textTurn("tools"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.event({
+      type: "tool.started",
+      callId: "mcp-1",
+      toolName: "mcp__docs__search__v2",
+      arguments: { q: "codex" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: {
+        type: "mcpToolCall",
+        server: "docs",
+        tool: "search__v2",
+        arguments: { q: "codex" },
+      },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "mcp-1",
+      toolName: "mcp__docs__search__v2",
+      outputText: "server unavailable",
+      isError: true,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "mcpToolCall",
+          output: { content: [{ type: "text", text: "server unavailable" }] },
+          durationMs: expect.any(Number),
+        },
+        outcome: { status: "failed", error: { code: "nativeFailure" } },
+      },
+    });
+
+    // A reported server whose Tool-name segment contains `__` decides the split.
+    transport.event({ type: "segment.started", mcpServers: ["team..docs"] });
+    transport.event({
+      type: "tool.started",
+      callId: "mcp-2",
+      toolName: "mcp__team__docs__search",
+      arguments: {},
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "mcpToolCall", server: "team__docs", tool: "search" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "mcp-2",
+      toolName: "mcp__team__docs__search",
+      outputText: "found",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: { item: { type: "mcpToolCall", server: "team__docs", tool: "search" } },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "search-1",
+      toolName: "WebSearch",
+      arguments: { query: "codex app server" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "webSearch", query: "codex app server" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "search-1",
+      toolName: "WebSearch",
+      outputText: "Web search results",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: {
+          type: "webSearch",
+          query: "codex app server",
+          output: { content: [{ type: "text", text: "Web search results" }] },
+        },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transport.event({
+      type: "tool.started",
+      callId: "monitor-1",
+      toolName: "Monitor",
+      arguments: { command: "tail -f log", description: "log events" },
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.started",
+      item: { type: "toolExecution", toolName: "Monitor" },
+    });
+    transport.event({
+      type: "tool.completed",
+      callId: "monitor-1",
+      toolName: "Monitor",
+      outputText: "Monitor started",
+      isError: false,
+    });
+    expect(await nextEvent(iterator)).toMatchObject({
+      type: "item.completed",
+      snapshot: {
+        item: { type: "toolExecution", toolName: "Monitor" },
+        outcome: { status: "succeeded" },
+      },
+    });
+
+    transport.finish({ status: "succeeded" });
     await session.close();
   });
 
@@ -5741,7 +6201,7 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(aliasState).not.toHaveProperty("state.resolvedModelLabel");
     await expect(selectingAlias).resolves.toEqual({ ok: true, value: { completed: true } });
-    expect(transport.setModel).toHaveBeenLastCalledWith("sonnet");
+    expect(transport.setModel).toHaveBeenLastCalledWith("sonnet", "auto");
 
     const resetting = session.execute({ type: "model.select", model: CLAUDE_DEFAULT_MODEL_REF });
     const defaultState = await nextEvent(iterator);
@@ -5751,9 +6211,172 @@ describe("Claude Code HarnessAdapter", () => {
     });
     expect(defaultState).not.toHaveProperty("state.resolvedModelLabel");
     await expect(resetting).resolves.toEqual({ ok: true, value: { completed: true } });
-    expect(transport.setModel).toHaveBeenLastCalledWith(undefined);
+    expect(transport.setModel).toHaveBeenLastCalledWith(undefined, "auto");
     expect(transport.getContextUsage).toHaveBeenCalledTimes(contextReadsBeforeSelection);
     await session.close();
+  });
+
+  it("fits Thinking to the selected Model's catalog options", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    await adapter.inspect({ cwd: "/synthetic" });
+    const sonnet = encodeClaudeModelRef("sonnet");
+    const xhigh = harnessThinkingOptionIdSchema.parse("xhigh");
+
+    // A requested effort the Model does not list never reaches Claude Code.
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: sonnet,
+      thinkingOptionId: xhigh,
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: xhigh }),
+    ).resolves.toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await session.execute(textTurn("fitted"));
+    expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: "sonnet", thinkingOptionId: "high" }),
+    );
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+    transport.finish({ status: "succeeded" });
+
+    await expect(
+      session.execute({ type: "model.select", model: CLAUDE_DEFAULT_MODEL_REF }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      session.execute({ type: "thinking.select", thinkingOptionId: xhigh }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setThinkingOption).toHaveBeenLastCalledWith("xhigh");
+
+    await expect(session.execute({ type: "model.select", model: sonnet })).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(transport.setModel).toHaveBeenLastCalledWith("sonnet", "high");
+    const nextState = async (matches: (state: HarnessSessionState) => boolean) => {
+      for (;;) {
+        const event = await nextEvent(iterator);
+        if (event.type === "session.state.changed" && matches(event.state)) return event.state;
+      }
+    };
+    await nextState(({ effectiveThinkingOptionId }) => effectiveThinkingOptionId === "xhigh");
+    await expect(
+      nextState(({ effectiveModel }) => effectiveModel?.id === sonnet.id),
+    ).resolves.toMatchObject({
+      effectiveThinkingOptionId: "high",
+      availableThinkingOptions: [{ id: "off" }, { id: "auto" }, { id: "low" }, { id: "high" }],
+    });
+    await session.close();
+  });
+
+  it("fits Thinking to the catalog of the Session's own folder", async () => {
+    const { adapter, dependencies } = fixture();
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => {
+      const inspector = createInspector(input);
+      if (input.cwd !== path.resolve("/other")) return inspector;
+      return {
+        ...inspector,
+        inspect: async () => ({
+          ...(await inspector.inspect()),
+          models: [{ value: "sonnet", displayName: "Sonnet", supportedEffortLevels: ["xhigh"] }],
+        }),
+      };
+    };
+    const sonnet = encodeClaudeModelRef("sonnet");
+    const xhigh = harnessThinkingOptionIdSchema.parse("xhigh");
+    const openIn = async (cwd: string) => {
+      const opened = await adapter.open({
+        kind: "create",
+        cwd,
+        model: sonnet,
+        thinkingOptionId: xhigh,
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      return opened.value;
+    };
+
+    await adapter.inspect({ cwd: "/synthetic" });
+    await adapter.inspect({ cwd: "/other" });
+    await adapter.inspect();
+    const synthetic = await openIn("/synthetic");
+    const other = await openIn("/other");
+    await synthetic.execute(textTurn("synthetic"));
+    await other.execute(textTurn("other"));
+    expect(vi.mocked(dependencies.createTransport).mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({ cwd: path.resolve("/synthetic"), thinkingOptionId: "high" }),
+      expect.objectContaining({ cwd: path.resolve("/other"), thinkingOptionId: "xhigh" }),
+    ]);
+    await synthetic.close();
+    await other.close();
+  });
+
+  it("refits Thinking when the catalog arrives after the Session opened", async () => {
+    const { adapter, dependencies } = fixture();
+    const opened = await adapter.open({
+      kind: "create",
+      cwd: "/synthetic",
+      model: encodeClaudeModelRef("sonnet"),
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("xhigh"),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+
+    await adapter.inspect({ cwd: "/synthetic" });
+    // The stored choice now matches what is shown, so a later Model switch starts from it.
+    await expect(
+      session.execute({ type: "model.select", model: CLAUDE_DEFAULT_MODEL_REF }),
+    ).resolves.toMatchObject({ ok: true });
+    await session.execute(textTurn("refitted"));
+    expect(dependencies.createTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ thinkingOptionId: "high" }),
+    );
+    await session.close();
+  });
+
+  it("publishes catalog Thinking options even when the selected option stays valid", async () => {
+    const { adapter, dependencies } = fixture();
+    dependencies.createInspector = () => ({
+      close: async () => undefined,
+      inspect: async () => ({
+        canSelectModel: true,
+        canSelectPermissionMode: true,
+        models: [
+          {
+            value: "default",
+            displayName: "Default",
+            supportsThinkingOff: false,
+            supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+          },
+        ],
+      }),
+    });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute({
+      type: "thinking.select",
+      thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    });
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: expect.arrayContaining([expect.objectContaining({ id: "off" })]),
+      },
+    });
+
+    await adapter.inspect({ cwd: "/synthetic" });
+    await session.close(); // A missing update fails immediately instead of waiting for a timeout.
+    const optionIds = ["auto", "low", "medium", "high", "xhigh", "max", "ultracode"];
+    await expect(nextEvent(iterator)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: {
+        effectiveThinkingOptionId: "high",
+        availableThinkingOptions: optionIds.map((id) => ({ id })),
+      },
+    });
   });
 
   it("dynamically switches Thinking on an Idle Query", async () => {
@@ -6103,7 +6726,7 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(session.execute({ type: "model.select", model: alias })).resolves.toMatchObject({
       ok: true,
     });
-    expect(transport.setModel).toHaveBeenCalledWith("sonnet");
+    expect(transport.setModel).toHaveBeenCalledWith("sonnet", "auto");
     expect(await nextEvent(iterator)).toMatchObject({
       type: "session.state.changed",
       state: { effectiveModel: alias },
@@ -6793,6 +7416,88 @@ describe("Claude Code HarnessAdapter", () => {
   it("has no plan usage on the Adapter before any rate-limit event is observed", () => {
     const { adapter } = fixture();
     expect(adapter.credits()).toBeNull();
+  });
+
+  it("seeds the credits cache from an account inspection so a restarted chat can show quota without a new message", async () => {
+    const { adapter } = fixture({}, { accountCreditsSupported: true });
+    expect(adapter.credits()).toBeNull();
+    await expect(adapter.inspectAccount()).resolves.toEqual({
+      credits: { usedPercent: 10, periodType: "five_hour" },
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("refreshCredits inspects the account and returns the seeded snapshot", async () => {
+    const { adapter } = fixture({}, { accountCreditsSupported: true });
+    await expect(adapter.refreshCredits()).resolves.toEqual({
+      usedPercent: 10,
+      periodType: "five_hour",
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("keeps a previously observed weekly window when inspection only returns the five-hour window", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("inspect-partial-windows"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 44 },
+      sevenDay: { utilizationPercent: 18 },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 44, planSevenDayUsedPercent: 18 },
+    });
+    await adapter.inspectAccount();
+    expect(adapter.credits()).toEqual({
+      usedPercent: 10,
+      periodType: "five_hour",
+      productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 18 }],
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 10, planSevenDayUsedPercent: 18 },
+    });
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("does not let a slower account inspection overwrite a native plan-limit push", async () => {
+    const { adapter, dependencies, transports } = fixture({}, { accountCreditsSupported: true });
+    const accountResult = deferred<{ credits: { usedPercent: number; periodType: "five_hour" } }>();
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => ({
+      ...createInspector(input),
+      inspectAccount: () => accountResult.promise,
+    });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("inspect-race"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    const inspection = adapter.inspectAccount();
+    transport.planLimit({ fiveHour: { utilizationPercent: 44 } });
+    await nextEvent(iterator);
+    accountResult.resolve({ credits: { usedPercent: 10, periodType: "five_hour" } });
+    await expect(inspection).resolves.toEqual({
+      credits: { usedPercent: 10, periodType: "five_hour" },
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 44, periodType: "five_hour" });
+    transport.finish({ status: "succeeded" });
+    await session.close();
   });
 
   it("projects the five-hour window as the primary credits pill, with the seven-day window riding along", async () => {

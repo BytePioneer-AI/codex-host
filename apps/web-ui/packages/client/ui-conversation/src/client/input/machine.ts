@@ -88,7 +88,7 @@ export class SubmitMachine {
       case "claim":
         return this.onClaim(ev.claim);
       case "enter":
-        return this.onEnter(ev.mode, ev.draft, ev.submission);
+        return this.onEnter(ev.mode, ev.draft, ev.annotated, ev.submission);
       case "adjudicated":
         return this.onAdjudicated(ev.attempt, ev.outcome);
       case "adjudication-failed":
@@ -185,6 +185,7 @@ export class SubmitMachine {
   private onEnter(
     mode: InputSubmitMode,
     draft: string,
+    annotated: boolean,
     submission?: MessageSubmission,
   ): readonly InputEffect[] {
     if (this.phase === "adjudicating" || this.phase === "submitting") return [];
@@ -201,7 +202,8 @@ export class SubmitMachine {
       ];
     }
     const trimmed = draft.trim();
-    if (trimmed === "") return [];
+    // Annotations alone address the turn: the message text carries their block.
+    if (trimmed === "" && !annotated) return [];
     if (trimmed.startsWith("/")) {
       const attempt = this.beginAttempt(mode, draft, submission);
       this.phase = "adjudicating";

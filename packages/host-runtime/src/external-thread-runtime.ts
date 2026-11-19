@@ -81,7 +81,7 @@ export interface ExternalThread {
   pendingSteerProjections: Set<Promise<void>>;
   ephemeralTurnIds: Set<HostTurnId>;
   /** Latest explicit command, retained only for client lifecycle presentation. */
-  clientCommand?: { name: string; turn: JsonObject };
+  clientCommand?: { name: string; turn: JsonObject; subsequentTurnId?: HostTurnId };
   persistenceError: Error | null;
   ignoredInteractionIds: Set<HostInteractionId>;
   /** Native Session faulted or closed; idle Threads should restore instead of reuse. */
@@ -227,12 +227,14 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
+  readonly #onWorkspace: ((cwd: string) => void) | undefined;
 
   constructor(input: {
     adapters: Map<ExternalHarnessId, HarnessAdapter>;
     environment?: NodeJS.ProcessEnv;
     repository: ExternalThreadRepository;
     consumeOutputs(thread: ExternalThread): Promise<void>;
+    onWorkspace?(cwd: string): void;
     diagnose(error: unknown): void;
     subagentRunning?(threadId: string): boolean;
     hasRunningDescendants?(threadId: string): boolean;
@@ -246,6 +248,7 @@ export class ExternalThreadRuntime {
     this.#environment = input.environment ?? process.env;
     this.#repository = input.repository;
     this.#consumeOutputs = input.consumeOutputs;
+    this.#onWorkspace = input.onWorkspace;
     this.#diagnose = input.diagnose;
     this.#subagentRunning = input.subagentRunning ?? (() => false);
     this.#hasRunningDescendants = input.hasRunningDescendants ?? (() => false);
@@ -449,6 +452,7 @@ export class ExternalThreadRuntime {
     this.idleRelease.touch(externalThread);
     externalThread.outputTask = this.#consumeOutputs(externalThread);
     this.#threads.set(externalThread.id, externalThread);
+    this.#onWorkspace?.(externalThread.cwd);
     return externalThread;
   }
 
@@ -795,10 +799,14 @@ export class ExternalThreadRuntime {
 
   /** Persist first accepted input before replying, never on the output/token path. */
   async capturePreview(thread: ExternalThread, turn: JsonObject): Promise<void> {
+    // A Side Chat's first own Turn follows the history it inherited.
+    const inherited = thread.record.attachedToThreadId
+      ? (thread.record.inheritedTurnCount ?? 0)
+      : 0;
     if (
       thread.record.preview !== undefined ||
-      thread.record.turnMappings.length !== 0 ||
-      thread.turns.length !== 0
+      thread.record.turnMappings.length !== inherited ||
+      thread.turns.length !== inherited
     )
       return;
     try {
@@ -820,6 +828,9 @@ export class ExternalThreadRuntime {
       return;
     const retained = new Set<string>(
       thread.record.turnMappings.map((mapping) => mapping.hostTurnId),
+    );
+    thread.usageMeter.restoreOutputTimings(
+      saved.values.outputTimings?.filter((value) => retained.has(value.turnId)) ?? [],
     );
     for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
       const value = saved.values[field];

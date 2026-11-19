@@ -350,7 +350,8 @@
 
 /* Translucent sidebars must not end in an opaque fill gradient. */
 :global([data-platform="darwin"]) .fade,
-:global([data-phone-drawer]) .fade {
+:global([data-phone-drawer]) .fade,
+:global(body[data-codexhost-wallpaper]) .fade {
   display: none;
 }
 

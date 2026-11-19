@@ -1,10 +1,10 @@
-/** Local connection-page controls for the supervised Web process. */
+/** Connection-page controls for the supervised Web process. */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { WebBackgroundState } from "@codexhost/shared-contracts";
 import type { AccessTokenStore } from "./access-tokens.ts";
-import { localAccessTokens } from "./access-token-rpc.ts";
+import { managedAccessTokens } from "./access-token-rpc.ts";
 import { saveServiceOptions, SETTINGS_CHANGED_EXIT_CODE } from "./background-service.ts";
 import type { DataDir } from "./store.ts";
 import { RpcError, type RpcRegistry } from "./transport.ts";
@@ -53,7 +53,6 @@ export function registerBackgroundControls(
   tokens: AccessTokenStore | undefined,
   options: {
     background: boolean;
-    port(): number;
     data: DataDir;
     launcher: string;
     npmEntrypoint: NodeJS.ProcessEnv;
@@ -66,7 +65,7 @@ export function registerBackgroundControls(
       throw new RpcError("web/background-required", "Web is not running in background mode", {});
   };
   rpc.register("codexhost/lanSet", (args, context) => {
-    localAccessTokens(tokens, context.auth, options.port());
+    managedAccessTokens(tokens);
     requireBackground();
     const input = enabled.parse(args);
     const changed = saveServiceOptions(options.data, {
@@ -78,8 +77,8 @@ export function registerBackgroundControls(
       });
     return { changed };
   });
-  rpc.register("codexhost/autostartSet", async (args, context) => {
-    localAccessTokens(tokens, context.auth, options.port());
+  rpc.register("codexhost/autostartSet", async (args) => {
+    managedAccessTokens(tokens);
     requireBackground();
     const input = enabled.parse(args);
     await autostart(options.launcher, input.enabled ? "on" : "off", options.npmEntrypoint);

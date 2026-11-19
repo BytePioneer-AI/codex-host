@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { it, type TestContext } from "node:test";
 import { WebSocket, WebSocketServer } from "ws";
-import { StreamRegistry, type StreamHandler } from "../src/transport.ts";
+import { RpcError, StreamRegistry, type StreamHandler } from "../src/transport.ts";
 
 async function connect(t: TestContext, handler: StreamHandler) {
   const registry = new StreamRegistry();
@@ -54,6 +54,23 @@ it("answers application heartbeats without opening a logical stream or invoking 
   h.send({ type: "ping", streamId: "probe-2" });
   await h.wait(() => h.frames.length === 2);
   assert.deepEqual(h.frames[1], { type: "pong", streamId: "probe-2" });
+});
+
+it("preserves a history failure code on the browser stream", async (t) => {
+  const h = await connect(t, () => {
+    throw new RpcError("remote/history-too-large", "Open the oversized Turn in Codex Desktop");
+  });
+  h.open("history");
+  await h.wait(() => h.frames.length === 1);
+  assert.deepEqual(h.frames[0], {
+    type: "error",
+    streamId: "history",
+    error: {
+      code: "remote/history-too-large",
+      message: "Open the oversized Turn in Codex Desktop",
+      details: {},
+    },
+  });
 });
 
 it("buffers ordered input while a consumer is paused and half-closes without dropping output", async (t) => {

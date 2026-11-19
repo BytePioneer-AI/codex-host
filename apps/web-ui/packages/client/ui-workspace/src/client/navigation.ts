@@ -277,22 +277,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     );
   }
 
-  /** Close only a browser tab; an active tab selects its neighbor or returns to the empty conversation. */
+  /** Remove only the tab entry; keep the current conversation and navigation unchanged. */
   closeSessionTab(sessionId: SessionId): void {
-    const tabs = this.recentVisits.entries.getSnapshot();
-    const index = tabs.findIndex((entry) => entry.sessionId === sessionId);
-    if (index === -1) return;
-    if (this.mainReference?.sessionId === sessionId) {
-      const neighbor = tabs[index + 1] ?? tabs[index - 1];
-      if (neighbor === undefined) {
-        this.recentVisits.close(sessionId);
-        this.clearMain();
-        return;
-      }
-      this.openSession(neighbor.target);
-      if (this.mainReference?.sessionId !== neighbor.sessionId) return;
-    }
     this.recentVisits.close(sessionId);
+  }
+
+  /** Remove all tab entries without changing the current conversation or navigation. */
+  closeAllSessionTabs(): void {
+    this.recentVisits.closeAll();
   }
 
   retryOpening(): void {

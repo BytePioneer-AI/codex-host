@@ -11,6 +11,7 @@ import { createRemoteOfficialAppServerListener } from "../src/remote-official-ap
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -106,10 +107,19 @@ describe.skipIf(process.platform === "win32")("official Unix socket links", () =
   it("removes a dangling link after startup times out and the backend stops", async () => {
     const f = await fixture();
     await symlink(f.target, f.socketPath);
-    await expect(f.listener.listen()).rejects.toThrow("socket was not ready after 10000ms");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const timeout = vi.spyOn(globalThis, "setTimeout");
+    const failure = expect(f.listener.listen()).rejects.toThrow(
+      "socket was not ready after 10000ms",
+    );
+    // Let the real filesystem inspection record ownership before expiring the deadline.
+    await vi.waitFor(() => expect(timeout).toHaveBeenCalledWith(expect.any(Function), 25));
+    expect(f.child.kill).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.now() + 10_000);
+    await failure;
     await expect(f.listener.closed).resolves.toMatchObject({ signal: "SIGTERM" });
     await expect(lstat(f.socketPath)).rejects.toMatchObject({ code: "ENOENT" });
-  }, 15_000);
+  });
 
   it("preserves a dangling link owned by another user", async () => {
     const f = await fixture();

@@ -324,6 +324,28 @@ pub fn open_external_url(_url: &str) -> Result<(), PlatformError> {
     ))
 }
 
+/// Open the containing folder on the serving desktop.
+#[cfg(target_os = "macos")]
+pub fn reveal_file(path: &Path) -> Result<(), PlatformError> {
+    let mut command = Command::new("/usr/bin/open");
+    command.arg("-R").arg(path);
+    configure_external_command(&mut command);
+    if !command.status()?.success() {
+        return Err(PlatformError::Invalid(
+            "Finder could not reveal the file".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reveal_file(path: &Path) -> Result<(), PlatformError> {
+    let folder = path.parent().and_then(Path::to_str).ok_or_else(|| {
+        PlatformError::Invalid("revealing a file requires a valid parent folder".into())
+    })?;
+    open_external_url(folder)
+}
+
 pub fn open_latest_codexhost_release() -> Result<(), PlatformError> {
     open_external_url(CODEXHOST_RELEASES_LATEST_URL)
 }

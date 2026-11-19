@@ -95,8 +95,10 @@ export class InputHub implements SessionInputResolver {
     const sessions = this.sessions();
     const shell = this.shells.get(binding);
     if (sessions.binding(binding.sessionId) !== binding || shell === undefined) return;
+    const conversation = this.rootCtx.get("conversation");
+    if (conversation === undefined) return;
     const span = shell.actions.captureInsertion();
-    const blocks = this.rootCtx.conversation.blocks.storeFor(binding.sessionId);
+    const blocks = conversation.blocks.storeFor(binding.sessionId);
     const status = this.rootCtx.uiSession.sessionStatus;
     let used = false;
     const available = (): boolean => {

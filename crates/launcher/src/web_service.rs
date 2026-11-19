@@ -42,7 +42,7 @@ pub(super) struct ReadyOwner {
 
 impl ReadyOwner {
     pub fn web_running(&self) -> bool {
-        codexhost_platform::process_snapshot(self.web_pid)
+        codexhost_platform::process_identity(self.web_pid)
             .is_ok_and(|process| process.parent_id == self.pid)
     }
 }
@@ -62,12 +62,7 @@ pub(super) fn owner(data: &Path) -> Result<Option<ReadyOwner>, Box<dyn Error>> {
         Err(error) => return Err(error.into()),
     };
     let record: ReadyOwner = serde_json::from_slice(&bytes)?;
-    Ok(codexhost_platform::process_snapshot(record.pid)
-        .is_ok_and(|live| {
-            live.started_at_micros == record.started_at_micros
-                && live.executable == record.executable
-        })
-        .then_some(record))
+    Ok(codexhost_platform::process_instance(record.pid, record.started_at_micros).map(|_| record))
 }
 
 pub(super) struct Options {
@@ -297,8 +292,8 @@ fn serve(options: &Options) -> Result<(), Box<dyn Error>> {
         }
     }
     remove_ready_record_if_owned(&options.data, &supervisor);
-    remove_file(&options.data.join(node_ready))?;
-    remove_file(&options.data.join(stop))?;
+    remove_file(&node_ready)?;
+    remove_file(&stop)?;
     outcome
 }
 
@@ -323,9 +318,7 @@ pub(super) fn stop(options: &Options) -> Result<bool, Box<dyn Error>> {
     };
     publish_status(&options.data.join(STOP), "stop\n")?;
     let started = Instant::now();
-    while codexhost_platform::process_snapshot(record.pid).is_ok_and(|live| {
-        live.started_at_micros == record.started_at_micros && live.executable == record.executable
-    }) {
+    while codexhost_platform::process_instance(record.pid, record.started_at_micros).is_some() {
         if started.elapsed() > Duration::from_secs(10) {
             return Err("Web shutdown timed out".into());
         }
@@ -382,49 +375,5 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn ready_record_removal_requires_record_ownership() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let data = std::env::temp_dir().join(format!(
-            "codexhost-web-ready-owner-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&data).unwrap();
-        let record = data.join(READY);
-        let supervisor = codexhost_platform::process_snapshot(std::process::id()).unwrap();
-        let published = serde_json::json!({
-            "pid": supervisor.id,
-            "started_at_micros": supervisor.started_at_micros,
-            "executable": supervisor.executable,
-            "web_pid": 1,
-            "version": "test",
-            "runtime": "/test/web-server.mjs",
-            "address": "http://127.0.0.1:4400/",
-            "loginUrl": "http://127.0.0.1:4400/?token=test"
-        });
-        fs::write(&record, serde_json::to_vec(&published).unwrap()).unwrap();
-
-        // A foreign supervisor (failed startup, or a newer service that took
-        // over the record) must not clear the identity of the live service.
-        let foreign = codexhost_platform::ProcessSnapshot {
-            started_at_micros: 0,
-            ..supervisor.clone()
-        };
-        remove_ready_record_if_owned(&data, &foreign);
-        assert!(record.is_file());
-
-        // The supervisor that published the record clears it, and a missing
-        // record stays a no-op.
-        remove_ready_record_if_owned(&data, &supervisor);
-        assert!(!record.exists());
-        remove_ready_record_if_owned(&data, &supervisor);
-        fs::remove_dir_all(data).unwrap();
-    }
-}
+#[path = "web_service_tests.rs"]
+mod tests;

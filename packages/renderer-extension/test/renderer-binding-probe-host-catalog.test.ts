@@ -238,7 +238,13 @@ function installFakeBrowser(): void {
   };
   const document_ = {
     documentElement: {},
+    head: { append: vi.fn() },
     body: {},
+    createElement: vi.fn(() => ({
+      setAttribute: vi.fn(),
+      textContent: "",
+      remove: vi.fn(),
+    })),
     activeElement: null,
     querySelectorAll: (selector: string) => (selector.includes("textarea") ? [editor] : []),
     querySelector: () => null,

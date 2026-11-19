@@ -28,6 +28,7 @@ import { ClientEventLog, eventRetentionDays } from "./external-client-events.js"
 import { cliCredentialsPath } from "./cli-credentials.js";
 import { externalClientMcp } from "./external-client-mcp.js";
 import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
+import { HostInventory } from "./host-inventory.js";
 import { FileThreadRefsStore } from "./thread-refs.js";
 import {
   externalClientDescriptorPath,
@@ -220,8 +221,19 @@ export async function prepareDelegationRuntime(input: {
     clientEvents: events,
   });
   const token = randomBytes(32).toString("hex");
-  const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
-  const externalServer = await startExternalClients(input.environment, registry, events).then(
+  const inventory = new HostInventory(input.environment);
+  const server = await startDelegationControlServer({
+    token,
+    api: registry,
+    watchApi: registry,
+    inventory,
+  });
+  const externalServer = await startExternalClients(
+    input.environment,
+    registry,
+    events,
+    inventory,
+  ).then(
     (started) => {
       if (started)
         process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
@@ -264,12 +276,18 @@ async function startExternalClients(
   environment: NodeJS.ProcessEnv,
   registry: DelegationControlRegistry,
   events: ClientEventLog,
+  inventory: HostInventory,
 ): Promise<ExternalClientServer | undefined> {
   const port = externalClientPort(environment);
   if (port === undefined) return undefined;
   const cliToken = `chc_${randomBytes(32).toString("base64url")}`;
   const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment), cliToken);
-  const route = externalClientRouter({ api: registry, watchApi: registry, events });
+  const route = externalClientRouter({
+    api: registry,
+    watchApi: registry,
+    events,
+    inventory,
+  });
   return startExternalClientServer({
     port,
     clients,

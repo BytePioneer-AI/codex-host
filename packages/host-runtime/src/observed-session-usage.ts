@@ -93,6 +93,7 @@ export class ObservedSessionUsage {
         }
         const timing = observation.requestTiming;
         const measured = timing && state.meter.recordOutputTiming(timing, timing.turnId);
+        if (measured) state.revision++;
         if (
           measured &&
           timing &&
@@ -106,7 +107,10 @@ export class ObservedSessionUsage {
               observation.sessionId,
               timing.turnId,
               now,
-              { outputTokensPerSecond },
+              {
+                outputTokensPerSecond,
+                outputTimings: state.meter.measurementSnapshot().outputTimings,
+              },
             );
         }
         if (observation.timingUnavailable)
@@ -190,6 +194,7 @@ export class ObservedSessionUsage {
               retained,
             );
             if (this.#abort.signal.aborted) return;
+            state.meter.restoreOutputTimings(saved.outputTimings ?? []);
             for (const field of ["outputTokensPerSecond", "timeToFirstOutputMs"] as const) {
               const value = saved[field];
               if (value)

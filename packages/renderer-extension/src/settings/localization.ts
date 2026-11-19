@@ -481,7 +481,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1, 0.2.1-rc.2, 0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5 and 0.2.2-rc.1. Versions newer than 0.2.2-rc.1 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
+    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1, 0.2.1-rc.2, 0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5, 0.2.2-rc.1 and 0.2.2-rc.2. Versions newer than 0.2.2-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
   connectionInstallRunning:
@@ -592,7 +592,8 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Connections",
-    "remote-connections": "Remote connections",
+    "mobile-web": "Phone & browser",
+    "remote-connections": "Other computers (SSH)",
     appearance: "General",
     accounts: "Accounts",
     "session-import": "Session Import",
@@ -785,7 +786,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1、0.2.1-rc.2、0.2.1-rc.3、0.2.1-rc.4、0.2.1-rc.5 和 0.2.2-rc.1。高于 0.2.2-rc.1 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
+    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1、0.2.1-rc.2、0.2.1-rc.3、0.2.1-rc.4、0.2.1-rc.5、0.2.2-rc.1 和 0.2.2-rc.2。高于 0.2.2-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
@@ -888,7 +889,8 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "连接",
-    "remote-connections": "远程连接",
+    "mobile-web": "手机与浏览器",
+    "remote-connections": "其他电脑（SSH）",
     appearance: "通用",
     accounts: "账号",
     "session-import": "会话导入",

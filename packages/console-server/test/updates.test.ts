@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -190,7 +191,16 @@ describe("console updates", () => {
     await rm(environment.CODEXHOST_NPM_CLI_PATH);
     const onHandedOff = vi.fn();
     const spawnUpdater = vi.fn<(executable: string, requestPath: string) => never>(
-      () => Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never,
+      (_executable, requestPath) => {
+        const request = JSON.parse(readFileSync(requestPath, "utf8"));
+        const status = JSON.parse(readFileSync(request.status_path, "utf8"));
+        // Complete fixture publication before the manager starts readiness polling.
+        writeFileSync(
+          request.status_path,
+          JSON.stringify({ ...status, phase: "waiting-for-exit" }),
+        );
+        return Object.assign(new EventEmitter(), { pid: 4321, kill: vi.fn() }) as never;
+      },
     );
     const updates = createConsoleUpdates({
       onHandedOff,
@@ -208,17 +218,10 @@ describe("console updates", () => {
     expect(onHandedOff).not.toHaveBeenCalled();
     await expect(updates.status()).resolves.toMatchObject({ status: { phase: "failed" } });
     await writeFile(environment.CODEXHOST_NPM_CLI_PATH, "");
-    const retry = updates.start(target);
-    await vi.waitFor(() => expect(spawnUpdater).toHaveBeenCalledOnce());
-    const call = spawnUpdater.mock.calls[0];
-    if (!call) throw new Error("Updater was not spawned");
-    const request = JSON.parse(await readFile(call[1], "utf8"));
-    const status = JSON.parse(await readFile(request.status_path, "utf8"));
-    // Match the real updater's atomic publication while readiness polling is active.
-    const readyStatus = `${request.status_path}.fixture-ready.tmp`;
-    await writeFile(readyStatus, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
-    await rename(readyStatus, request.status_path);
-    await expect(retry).resolves.toMatchObject({ status: { phase: "waiting-for-exit" } });
+    await expect(updates.start(target)).resolves.toMatchObject({
+      status: { phase: "waiting-for-exit" },
+    });
+    expect(spawnUpdater).toHaveBeenCalledOnce();
     await expect(updates.status()).resolves.toMatchObject({
       status: { phase: "waiting-for-exit", error: null },
     });

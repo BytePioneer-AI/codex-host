@@ -8,6 +8,7 @@ import {
   LOADED_SESSIONS_METHOD,
   IDLE_RELEASE_SETTINGS_METHOD,
   USAGE_STATISTICS_METHOD,
+  SKILLS_LIST_METHOD,
 } from "@codexhost/shared-contracts";
 import {
   storedSectionPlacementV1Schema,
@@ -46,6 +47,8 @@ export async function connectSharedThreads(
   return new StreamThreadPeer(connection.stdout, connection.stdin, () => connection.close());
 }
 
+const SHARED_LIST_REUSE_MS = 5_000;
+
 /** A GUI keeps its native Codex connection and forwards only shared external Threads. */
 export class SharedThreadBridge {
   readonly #known = new Set<string>();
@@ -61,14 +64,27 @@ export class SharedThreadBridge {
   #closed = false;
   #timer: NodeJS.Timeout | undefined;
   #publish: (message: JsonObject) => void = () => undefined;
+  // A client pages its own catalog while each of its pages needs every shared row. One shared
+  // walk per query serves those pages; a Thread notification or a new peer starts a fresh walk.
+  readonly #lists = new Map<
+    string,
+    { generation: number; startedAtMs: number; rows: Promise<JsonObject[] | null> }
+  >();
+  #listGeneration = 0;
 
   constructor(
     readonly options: {
       connect(): Promise<SharedThreadPeer | null>;
       delegateCreates: boolean;
       diagnose(error: unknown): void;
+      now?: () => number;
     },
   ) {}
+
+  #invalidateLists(): void {
+    this.#listGeneration += 1;
+    this.#lists.clear();
+  }
 
   start(publish: (message: JsonObject) => void): void {
     this.#publish = publish;
@@ -94,6 +110,9 @@ export class SharedThreadBridge {
         }
         this.#peer = peer;
         peer.subscribe((message) => {
+          if (typeof message.method === "string" && message.method.startsWith("thread/")) {
+            this.#invalidateLists();
+          }
           const params = object(message.params) ? message.params : {};
           if (
             object(params.thread) &&
@@ -106,11 +125,10 @@ export class SharedThreadBridge {
         });
         void peer.closed.then(() => {
           if (this.#peer === peer) this.#peer = null;
+          this.#invalidateLists();
         });
-        // Announce existing Threads when a GUI starts or the SSH service is discovered later.
-        for (const thread of await this.#rows(peer, {})) {
-          this.#publish({ method: "thread/started", params: { thread }, emittedAtMs: Date.now() });
-        }
+        // History is read through thread/list. Replaying it as thread/started makes each
+        // downstream viewer rebuild its catalog once per historical Thread.
         return peer;
       })
       .catch((error: unknown) => {
@@ -157,9 +175,12 @@ export class SharedThreadBridge {
   handlesControl(method: string): boolean {
     return (
       this.options.delegateCreates &&
-      [LOADED_SESSIONS_METHOD, IDLE_RELEASE_SETTINGS_METHOD, USAGE_STATISTICS_METHOD].some(
-        (value) => value === method,
-      )
+      [
+        LOADED_SESSIONS_METHOD,
+        IDLE_RELEASE_SETTINGS_METHOD,
+        USAGE_STATISTICS_METHOD,
+        SKILLS_LIST_METHOD,
+      ].some((value) => value === method)
     );
   }
 
@@ -212,15 +233,37 @@ export class SharedThreadBridge {
     return rows;
   }
 
-  async list(params: JsonObject): Promise<JsonObject[]> {
+  /** Every shared row of one query; the caller's own cursor and page size do not apply. */
+  async list(params: JsonObject): Promise<readonly JsonObject[]> {
+    const query: JsonObject = { ...params };
+    delete query.cursor;
+    delete query.limit;
+    if (query.sortKey === "section_position") query.sortKey = "updated_at";
+    const key = JSON.stringify(query);
+    const now = this.options.now ?? Date.now;
     try {
-      const peer = await this.#connect();
-      return peer
-        ? await this.#rows(
-            peer,
-            params.sortKey === "section_position" ? { ...params, sortKey: "updated_at" } : params,
-          )
-        : [];
+      const cached = this.#lists.get(key);
+      if (
+        cached &&
+        cached.generation === this.#listGeneration &&
+        now() - cached.startedAtMs < SHARED_LIST_REUSE_MS
+      ) {
+        return (await cached.rows) ?? [];
+      }
+      // Registered before any await so concurrent pages join this walk.
+      const entry = {
+        generation: this.#listGeneration,
+        startedAtMs: now(),
+        rows: this.#connect().then((peer) => (peer ? this.#rows(peer, query) : null)),
+      };
+      this.#lists.set(key, entry);
+      const forget = (): void => {
+        if (this.#lists.get(key) === entry) this.#lists.delete(key);
+      };
+      entry.rows.then((rows) => {
+        if (rows === null) forget();
+      }, forget);
+      return (await entry.rows) ?? [];
     } catch (error) {
       this.options.diagnose(error);
       return [];
@@ -254,6 +297,7 @@ export class SharedThreadBridge {
 
   close(): void {
     this.#closed = true;
+    this.#invalidateLists();
     clearInterval(this.#timer);
     this.#peer?.close();
     this.#peer = null;

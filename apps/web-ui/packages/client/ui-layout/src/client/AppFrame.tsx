@@ -426,11 +426,7 @@ export function AppFrame({
       data-dragging={dragging || undefined}
       data-animating={animating > 0 || undefined}
     >
-      <DocumentTitle
-        productTitle={productTitle}
-        useSessions={useSessions}
-        usePanelInfo={usePanelInfo}
-      />
+      <DocumentTitle productTitle={productTitle} />
       {phone ? (
         <>
           <div className={css.phoneSidebarTrack} />

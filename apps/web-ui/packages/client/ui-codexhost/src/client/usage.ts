@@ -1,11 +1,14 @@
 /** Browser-safe projection of the public CodexHost Thread Usage contract. */
 
+import type { AccountCreditsSnapshot } from "@codexhost/shared-contracts";
+
 export interface HostThreadUsage {
   readonly inputTokens?: number;
   readonly cachedInputTokens?: number;
   readonly cacheWriteInputTokens?: number;
   readonly outputTokens?: number;
   readonly outputTokensPerSecond?: number;
+  readonly sessionOutputTokensPerSecond?: number;
   readonly apiOutputTokensPerSecond?: number;
   readonly reasoningOutputTokens?: number;
   readonly totalTokens?: number;
@@ -25,33 +28,8 @@ export interface HostThreadUsage {
   readonly unpricedModels?: readonly string[];
 }
 
-export interface HostAccountProductUsage {
-  readonly product: string;
-  readonly periodType?: HostAccountCredits["periodType"];
-  readonly scope?: { readonly id: string; readonly label: string };
-  readonly used?: number;
-  readonly limit?: number;
-  readonly unit?: string;
-  readonly usagePercent: number;
-  readonly resetsAt?: string;
-}
-
-export interface HostAccountCredits {
-  readonly used?: number;
-  readonly limit?: number;
-  readonly unit?: string;
-  readonly label?: string;
-  readonly scope?: { readonly id: string; readonly label: string };
-  readonly usedPercent: number;
-  readonly resetsAt?: string;
-  readonly periodType: "weekly" | "monthly" | "five_hour" | "seven_day" | "unknown";
-  readonly productUsage?: readonly HostAccountProductUsage[];
-  readonly resetCredits?: {
-    readonly availableCount: number;
-    readonly nextExpiresAt?: string;
-    readonly expiresAt?: readonly string[];
-  };
-}
+export type HostAccountCredits = AccountCreditsSnapshot;
+export type HostAccountProductUsage = NonNullable<AccountCreditsSnapshot["productUsage"]>[number];
 
 export interface CodexHostUsageProjection {
   readonly usage: HostThreadUsage | null;

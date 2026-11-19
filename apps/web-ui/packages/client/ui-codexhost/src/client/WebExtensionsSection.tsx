@@ -1,4 +1,4 @@
-/** Web settings for installing and managing interface extensions on this computer. */
+/** Web settings for installing and managing interface extensions. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Button,
@@ -11,11 +11,10 @@ import {
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
-import {
-  webLocalAccessRequiredDetailsSchema,
-  type WebUiExtension,
-  type WebUiExtensionMeta,
-  type WebUiExtensionsState,
+import type {
+  WebUiExtension,
+  WebUiExtensionMeta,
+  WebUiExtensionsState,
 } from "@codexhost/shared-contracts";
 import { ApiError } from "./api.ts";
 import { uiExtensionsApi } from "./ui-extensions-api.ts";
@@ -28,7 +27,7 @@ import css from "./WebExtensionsSection.module.css";
 type View =
   | { kind: "loading" }
   | { kind: "ready"; data: WebUiExtensionsState }
-  | { kind: "non-local"; url: string }
+  | { kind: "disabled" }
   | { kind: "failed"; message: string };
 
 export interface WebExtensionsFace {
@@ -46,14 +45,11 @@ function extensionText(extension: WebUiExtension, resolveText: WebExtensionsFace
 }
 
 function errorView(error: unknown): Exclude<View, { kind: "loading" } | { kind: "ready" }> {
-  if (error instanceof ApiError && error.code === "auth/local-access-required") {
-    const details = webLocalAccessRequiredDetailsSchema.safeParse(error.details);
-    return { kind: "non-local", url: details.success ? details.data.url : "http://127.0.0.1" };
-  }
+  if (error instanceof ApiError && error.code === "auth/disabled") return { kind: "disabled" };
   return { kind: "failed", message: error instanceof Error ? error.message : String(error) };
 }
 
-/** Settings section; the server determines whether the current access may manage extensions. */
+/** Settings section; the server requires authentication before listing or modifying extensions. */
 export function WebExtensionsSection({
   t,
   resolveText,
@@ -94,7 +90,7 @@ export function WebExtensionsSection({
       return true;
     } catch (cause) {
       const failure = errorView(cause);
-      if (failure.kind === "non-local") setView(failure);
+      if (failure.kind === "disabled") setView(failure);
       else
         setError(
           t("extensions.actionFailed", { message: formatWebExtensionError(failure.message, t) }),
@@ -117,11 +113,14 @@ export function WebExtensionsSection({
   );
 
   if (view.kind === "loading") return <p className={css.hint}>{t("extensions.loading")}</p>;
-  if (view.kind === "non-local")
+  if (view.kind === "disabled")
     return (
-      <p className={css.notice} data-web-extensions-notice="non-local">
-        {t("extensions.localOnly", { url: view.url })}
-      </p>
+      <div className={css.page}>
+        <p className={css.notice} data-web-extensions-notice="disabled">
+          {t("extensions.authDisabled")}
+        </p>
+        {recovery}
+      </div>
     );
   if (view.kind === "failed")
     return (

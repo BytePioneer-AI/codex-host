@@ -107,7 +107,7 @@ export const webRelayNameSchema = z.string().regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,6
 export const webRelayKindSchema = z.enum(["official", "self-hosted"]);
 export type WebRelayKind = z.infer<typeof webRelayKindSchema>;
 
-/** What this computer's connection page shows; available only on this computer. */
+/** What the connection page shows. */
 export const webAccessStateSchema = z
   .object({
     /** The access token other devices sign in with. */
@@ -134,9 +134,6 @@ export const webAccessStateSchema = z
       .optional(),
   })
   .strict();
-
-/** Details of `auth/local-access-required`: where the user can find the token instead. */
-export const webLocalAccessRequiredDetailsSchema = z.object({ url: z.string() }).strict();
 
 export type WebNetworkAccessUrl = z.infer<typeof webNetworkAccessUrlSchema>;
 export type WebAccessState = z.infer<typeof webAccessStateSchema>;

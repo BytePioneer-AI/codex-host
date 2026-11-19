@@ -40,6 +40,7 @@ async function fixture(t: TestContext, legacy = false) {
     controlHost: "localhost",
     cert: certPath,
     key: keyPath,
+    ipConnectionLimit: 1_000,
     onConnection: (event) => events.push(event),
   });
   relay.server.listen(0, "::");
@@ -60,7 +61,7 @@ async function fixture(t: TestContext, legacy = false) {
     stopped(reason) {
       throw new Error(reason);
     },
-    registered,
+    registered: ({ hostname }) => registered(hostname),
     tcp: (stream, request) =>
       tls.accept(
         stream,

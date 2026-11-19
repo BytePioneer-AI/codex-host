@@ -26,6 +26,7 @@ export function messageImageLabels(t: TranslateNS<"conversation">): MessageImage
     openNamed: (label) => t("image.openOriginalLabel", { label }),
     loading: t("image.loading"),
     loadFailed: t("image.loadFailed"),
+    tooLarge: t("image.previewTooLarge"),
     lightbox: lightboxLabels(t),
   };
 }
@@ -60,6 +61,7 @@ export function fileCardLabels(t: TranslateNS<"conversation">, name: string): Fi
     label: t("file.pending"),
     remove: t("file.remove", { name }),
     uploading: t("file.uploading"),
+    uploadingPercent: (percent) => t("file.uploadingPercent", { percent }),
     failed: t("file.uploadFailed"),
     retry: t("file.retry", { name }),
   };

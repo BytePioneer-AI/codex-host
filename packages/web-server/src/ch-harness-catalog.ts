@@ -14,22 +14,41 @@ export interface ModelSelection {
   model: string;
   reasoningEffort?: string;
 }
-import { RpcError } from "./transport.ts";
+import { RpcError, type EventHub } from "./transport.ts";
 import { withHarnessDisplayOrder } from "./harness-display-order.ts";
 import type { WebHarnessPreferences } from "./harness-preferences.ts";
 
 export class ChHarnessCatalog {
   private plugins: Promise<HarnessPluginDescriptor[]> | undefined;
   private inspections = new Map<string, Promise<HarnessInspection>>();
+  private readonly stop: (() => void) | undefined;
   constructor(
     private readonly host: ChHostClient,
+    events: EventHub,
     readonly displayEntries: () => Promise<HarnessDisplayEntries> = async () => [],
     readonly preferences?: WebHarnessPreferences,
     /** Optional advanced subset override from `--harness`; absent means every Host plugin. */
     private readonly restrictTo?: ReadonlySet<string>,
-  ) {}
+  ) {
+    this.stop = host.realtime?.subscribe((event) => {
+      if (event.type === "harness-inspection-changed") {
+        for (const key of this.inspections.keys()) {
+          if (JSON.parse(key)[0] === event.harnessId) this.inspections.delete(key);
+        }
+        events.emit("codexhost/harness-inspection-changed");
+      } else if (event.type === "hello") {
+        this.inspections.clear();
+        this.plugins = undefined;
+        events.emit("codexhost/harness-inspection-changed");
+      }
+    });
+  }
+  close(): void {
+    this.stop?.();
+  }
   async list(): Promise<HarnessPluginDescriptor[]> {
-    this.plugins ??= this.host
+    if (this.plugins) return this.plugins;
+    const plugins = this.host
       .request("codexhost/harness/plugins/list", {})
       .then((value) =>
         harnessPluginListResultSchema
@@ -41,10 +60,11 @@ export class ChHarnessCatalog {
           ),
       )
       .catch((error: unknown) => {
-        this.plugins = undefined;
+        if (this.plugins === plugins) this.plugins = undefined;
         throw error;
       });
-    return this.plugins;
+    this.plugins = plugins;
+    return plugins;
   }
   async inspect(id: string, cwd?: string): Promise<HarnessInspection> {
     const key = JSON.stringify([id, cwd]);
@@ -57,11 +77,16 @@ export class ChHarnessCatalog {
         })
         .then((value) => {
           const result = harnessInspectionSchema.parse(value);
-          if (id === "codex" && result.status !== "ready") this.inspections.delete(key);
+          if (
+            id === "codex" &&
+            result.status !== "ready" &&
+            this.inspections.get(key) === inspection
+          )
+            this.inspections.delete(key);
           return result;
         })
         .catch((error: unknown) => {
-          this.inspections.delete(key);
+          if (this.inspections.get(key) === inspection) this.inspections.delete(key);
           throw error;
         });
       this.inspections.set(key, inspection);

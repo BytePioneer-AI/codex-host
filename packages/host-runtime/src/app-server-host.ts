@@ -5925,13 +5925,57 @@ export class AppServerHost {
         thread.id,
         new Error("External Harness output ended before replacement"),
       );
-      if (
-        !this.#closeRequested &&
-        (thread.running || thread.activeTurnId) &&
-        this.#externalQueue.pause(thread.id, "outcome-unknown")
-      ) {
-        this.#queuedTurnStarts.delete(thread.id);
-        await this.#publishExternalQueue(thread.id);
+      if (!this.#closeRequested && (thread.running || thread.activeTurnId)) {
+        // Readonly snapshot Subagent Sessions (for example Claude Code native
+        // subagents restored through ReadonlySnapshotSession) never end their
+        // output stream, so their Host-side "active" status is only retired
+        // when the parent's own output stream ends here. Retire them before
+        // the Turn settles so the settled status can go idle.
+        await this.#retireRunningSubagents(thread);
+        // A Session that died (for example a Harness subagent that was killed
+        // natively) can end its output stream without a terminal Turn event.
+        // Without settling here the Thread stays busy forever and every later
+        // submission fails with "External Thread already has an active Turn".
+        await settleExternalOutputFailure(
+          thread,
+          new Error("External Harness output ended before the active Turn settled"),
+          (output) => this.#projectHarnessOutput(thread, output),
+          (failure) => this.#diagnose(failure),
+        );
+        if (!thread.activeTurnId && thread.projectedTurns.size === 0) {
+          // The failure projection can re-register running Subagents from the
+          // Item ledger while settling; retire them again so no stale entry
+          // outlives the dead parent stream.
+          await this.#retireRunningSubagents(thread);
+          if (thread.record.subagent) {
+            await this.#setSubagentThreadStatus(thread.id, "idle");
+            // The parent Session may be gone too and will never emit a status
+            // event, so clear the parent's running-subagent entry here —
+            // otherwise #hasActiveWork() stays true and disconnect() waits
+            // forever on the stale child registration.
+            this.#trackRunningSubagent(
+              thread.record.subagent.parentHostThreadId,
+              thread.id,
+              "idle",
+            );
+          } else if (!thread.running && !this.#hasRunningSubagents(thread.id)) {
+            // The Turn projection may have seen a since-retired Subagent and
+            // kept this Thread active; settle the published status now.
+            await this.#setThreadStatus(thread, { type: "idle" });
+          }
+        }
+        this.#signalActiveWorkChanged();
+        // A settled Turn that ends as a failure already pauses the queue with
+        // "failed" and publishes once from the Turn projection; only pause with
+        // "outcome-unknown" when no pause was published, so the Desktop never
+        // receives two inconsistent pause notifications.
+        if (
+          !this.#externalQueue.isPaused(thread.id) &&
+          this.#externalQueue.pause(thread.id, "outcome-unknown")
+        ) {
+          this.#queuedTurnStarts.delete(thread.id);
+          await this.#publishExternalQueue(thread.id);
+        }
       }
     }
   }
@@ -6253,6 +6297,16 @@ export class AppServerHost {
 
   #hasRunningSubagents(parentThreadId: string): boolean {
     return (this.#runningSubagentsByParent.get(parentThreadId)?.size ?? 0) > 0;
+  }
+
+  /** Retire every running Subagent of a Thread whose Session died or was replaced. */
+  async #retireRunningSubagents(parent: ExternalThread): Promise<void> {
+    const running = this.#runningSubagentsByParent.get(parent.id);
+    if (!running) return;
+    for (const childThreadId of [...running]) {
+      this.#trackRunningSubagent(parent.id, childThreadId, "idle");
+      await this.#setSubagentThreadStatus(childThreadId, "idle");
+    }
   }
 
   async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {

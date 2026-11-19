@@ -65,7 +65,7 @@
 ## 受限与已知缺口
 
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
-- Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。
+- Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。裁剪时 `gen_metadata`、`executor_metadata`、`parent_references`、`battle_mode_infos` 按各自 protobuf 中的原生步骤索引保留前缀（它们的行号不是步骤号），派生摘要由保留前缀重算。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
 - 历史由原生 SQLite 读取，包含工具调用名称、参数与配对结果文本；读取不依赖 ACP 进程，耗时为毫秒级，由 Host 分页。连续的用户输入沿用既有分组规则合并为一轮，以保持已存 Turn 身份稳定。
 

@@ -14,6 +14,21 @@ import {
   nativeConversationDbPath,
 } from "../src/fork.js";
 import { readNativeTurnCount } from "../src/native-turn-boundaries.js";
+import { textField } from "./support/native-history-fixture.js";
+import { bytes, integer, varint } from "./support/native-timing-fixture.js";
+
+const metadataRows = {
+  gen_metadata: [[2], [5], [6, 8]].map((steps) => bytes(2, Buffer.concat(steps.map(varint)))),
+  executor_metadata: [2, 5, 8].map((step) => integer(3, step)),
+  parent_references: [2, 5, 8].map((step) =>
+    Buffer.concat([textField(1, `ancestor-${step}`), integer(2, step)]),
+  ),
+  battle_mode_infos: [
+    [0, 2],
+    [3, 5],
+    [5, 8],
+  ].map(([start, end]) => Buffer.concat([integer(3, start), integer(4, end), integer(9, 1)])),
+};
 const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
@@ -31,7 +46,7 @@ async function fixture() {
   await mkdir(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(
-    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER); CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB)",
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER); CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER NOT NULL DEFAULT 0); CREATE TABLE executor_metadata (idx INTEGER PRIMARY KEY, data BLOB); CREATE TABLE parent_references (idx INTEGER PRIMARY KEY, data BLOB); CREATE TABLE battle_mode_infos (idx INTEGER PRIMARY KEY, data BLOB)",
   );
   db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
     randomUUID(),
@@ -42,6 +57,11 @@ async function fixture() {
   );
   for (let turn = 0; turn < 3; turn++)
     db.prepare("INSERT INTO steps VALUES (?,14), (?,15)").run(turn * 3, turn * 3 + 2);
+  for (const [table, rows] of Object.entries(metadataRows)) {
+    const insert = db.prepare(`INSERT INTO ${table} (idx, data) VALUES (?, ?)`);
+    rows.forEach((data, idx) => insert.run(idx, data));
+  }
+  db.exec("UPDATE gen_metadata SET size = length(data)");
   db.close();
   const brain = nativeBrainDirPath(sourceRef.nativeSessionId, home);
   await mkdir(path.join(brain, ".system_generated"), { recursive: true });
@@ -85,7 +105,20 @@ describe("native SQLite Fork", () => {
         environment: { CODEXHOST_THREAD_ID: "derived" },
         nativeRef: { locator: { executionPolicy: "unattended-full-access" } },
       });
-      expect(await readNativeTurnCount(nativeConversationDbPath(id, f.home))).toBe(index + 1);
+      const derivedFile = nativeConversationDbPath(id, f.home);
+      expect(await readNativeTurnCount(derivedFile)).toBe(index + 1);
+      const derived = new DatabaseSync(derivedFile, { readOnly: true });
+      try {
+        for (const [table, rows] of Object.entries(metadataRows)) {
+          expect
+            .soft(derived.prepare(`SELECT idx, data FROM ${table} ORDER BY idx`).all(), table)
+            .toEqual(
+              rows.slice(0, index + 1).map((data, idx) => ({ idx, data: new Uint8Array(data) })),
+            );
+        }
+      } finally {
+        derived.close();
+      }
       expect(await readFile(f.file)).toEqual(before);
       expect(await readFile(path.join(nativeBrainDirPath(id, f.home), "artifact.md"), "utf8")).toBe(
         "artifact",

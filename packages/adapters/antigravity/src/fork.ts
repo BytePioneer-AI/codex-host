@@ -15,6 +15,8 @@ import {
   type HarnessId,
   type NativeSessionRef,
 } from "@codexhost/shared-contracts";
+import { readProtoFields } from "./native-protobuf.js";
+import { generatorStepIndices, nativeStepCreatedAtMs } from "./native-request-timing.js";
 import {
   minimalRawSummaryBlob,
   minimalTrajectoryMetadataBlob,
@@ -103,18 +105,56 @@ export async function cloneNativeConversationDb(
           .get(retained);
         const cutoff = retained === 0 ? 0 : Number(boundary?.idx);
         target.prepare("DELETE FROM steps WHERE idx >= ?").run(cutoff);
-        for (const table of [
-          "gen_metadata",
-          "executor_metadata",
-          "parent_references",
-          "battle_mode_infos",
-        ]) {
+        // agy stores these as separate repeated fields, with ordinal keys rather than step keys.
+        // The Branch implementation uses the protobuf's own step indices to bound each list.
+        for (const [table, stepFields] of Object.entries<number[]>({
+          gen_metadata: [], // CortexStepGeneratorMetadata.step_indices (repeated uint32)
+          executor_metadata: [3], // ExecutorMetadata.last_step_idx
+          parent_references: [2], // CortexTrajectoryReference.step_index in the inherited prefix
+          battle_mode_infos: [3, 4], // BattleModeInfo.start_step_index / end_step_index
+        })) {
           if (
-            target
+            !target
               .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
               .get(table)
           )
-            target.prepare(`DELETE FROM ${table} WHERE idx >= ?`).run(cutoff);
+            continue;
+          if (retained === 0) {
+            target.exec(`DELETE FROM ${table}`);
+            continue;
+          }
+          const rows = target.prepare(`SELECT idx, data FROM ${table} ORDER BY idx`);
+          if (table === "gen_metadata") {
+            let last = -1;
+            for (const { idx, data } of rows.iterate()) {
+              const fields = data instanceof Uint8Array && readProtoFields(data);
+              const indices = fields && generatorStepIndices(fields);
+              if (!indices) throw new Error("Invalid native generator metadata");
+              if (indices.some((step) => step >= cutoff)) break;
+              // Invocations without steps belong to the prefix only before a retained invocation.
+              if (indices.length > 0) last = Number(idx);
+            }
+            target.prepare("DELETE FROM gen_metadata WHERE idx > ?").run(last);
+            continue;
+          }
+          const remove = target.prepare(`DELETE FROM ${table} WHERE idx = ?`);
+          const move = target.prepare(`UPDATE ${table} SET idx = ? WHERE idx = ?`);
+          let next = 0;
+          for (const { idx, data } of rows.all()) {
+            const fields = data instanceof Uint8Array && readProtoFields(data);
+            if (!fields) throw new Error(`Invalid native ${table}`);
+            const outsidePrefix = fields.some(
+              (field) =>
+                stepFields.includes(field.number) &&
+                typeof field.value === "bigint" &&
+                BigInt.asIntN(32, field.value) >= BigInt(cutoff),
+            );
+            if (outsidePrefix) remove.run(Number(idx));
+            else {
+              if (idx !== next) move.run(next, Number(idx));
+              next++;
+            }
+          }
         }
       }
       target.exec("COMMIT");
@@ -159,15 +199,21 @@ async function registerDerivedSummary(
       const trajectoryId = derived
         .prepare("SELECT trajectory_id FROM trajectory_meta LIMIT 1")
         .get()?.trajectory_id;
+      const lastInput = derived
+        .prepare(
+          `SELECT idx${"last_user_input_time" in template ? ", metadata" : ""}
+                  FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1`,
+        )
+        .get();
+      const lastInputMs = nativeStepCreatedAtMs(lastInput?.metadata);
       row = {
         ...template,
         conversation_id: derivedId,
         status: "CASCADE_RUN_STATUS_IDLE",
         step_count: Number(derived.prepare("SELECT count(*) AS n FROM steps").get()?.n),
-        last_user_input_step_index: Number(
-          derived.prepare("SELECT max(idx) AS idx FROM steps WHERE step_type = 14").get()?.idx ??
-            -1,
-        ),
+        last_user_input_step_index: lastInput?.idx ?? -1,
+        last_user_input_time:
+          lastInputMs === undefined ? "0001-01-01T00:00:00Z" : new Date(lastInputMs).toISOString(),
         not_fully_idle: 0,
         killed: 0,
         last_modified_time: new Date().toISOString(),

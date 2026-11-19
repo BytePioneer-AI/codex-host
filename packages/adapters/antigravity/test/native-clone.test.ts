@@ -10,6 +10,7 @@ import {
   nativeConversationDbPath,
   nativeConversationSummariesDbPath,
 } from "../src/fork.js";
+import { bytes, nanoseconds } from "./support/native-timing-fixture.js";
 const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
@@ -23,15 +24,18 @@ async function fixture() {
   await mkdir(path.dirname(file), { recursive: true });
   const source = new DatabaseSync(file);
   source.exec(
-    "PRAGMA journal_mode=WAL; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER); CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE executor_metadata (idx INTEGER, data BLOB)",
+    "PRAGMA journal_mode=WAL; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB); CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT); CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB)",
   );
   source.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(randomUUID(), sourceId);
   source
     .prepare("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)")
     .run(minimalTrajectoryMetadataBlob(sourceId));
   source.exec(
-    "INSERT INTO steps VALUES (0,14),(1,15),(2,16),(3,14),(4,15),(5,14),(6,15); INSERT INTO executor_metadata VALUES (0,NULL),(3,NULL),(5,NULL)",
+    "INSERT INTO steps (idx, step_type) VALUES (0,14),(1,15),(2,16),(3,14),(4,15),(5,14),(6,15)",
   );
+  source
+    .prepare("UPDATE steps SET metadata = ? WHERE idx = 0")
+    .run(bytes(1, nanoseconds(1_700_000_000_123_000_000n)));
   return { home, sourceId, derivedId, file, source };
 }
 describe("SQLite clone fidelity", () => {
@@ -49,12 +53,6 @@ describe("SQLite clone fidelity", () => {
             .all()
             .map((row) => row.idx),
         ).toEqual([0, 1, 2, 3, 4]);
-        expect(
-          target
-            .prepare("SELECT idx FROM executor_metadata ORDER BY idx")
-            .all()
-            .map((row) => row.idx),
-        ).toEqual([0, 3]);
         expect(target.prepare("SELECT cascade_id FROM trajectory_meta").get()?.cascade_id).toBe(
           f.derivedId,
         );
@@ -127,39 +125,49 @@ describe("SQLite clone fidelity", () => {
       ]);
     },
   );
-  it("registers a derived summary without mutating the source summary", async () => {
-    const f = await fixture();
-    f.source.close();
-    const summaries = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
-    summaries.exec(
-      "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, status TEXT, step_count INTEGER, last_modified_time TEXT, raw_summary BLOB, last_user_input_step_index INTEGER DEFAULT 5)",
-    );
-    summaries
-      .prepare(
-        "INSERT INTO conversation_summaries (conversation_id, status, step_count, last_modified_time, raw_summary) VALUES (?, 'CASCADE_RUN_STATUS_IDLE', 7, 'original-time', ?)",
-      )
-      .run(f.sourceId, Buffer.from("original-summary"));
-    const before = summaries
-      .prepare("SELECT * FROM conversation_summaries WHERE conversation_id = ?")
-      .get(f.sourceId);
-    await cloneNativeConversationDb(f.sourceId, f.derivedId, 1, f.home);
-    expect(
-      summaries
-        .prepare("SELECT * FROM conversation_summaries WHERE conversation_id = ?")
-        .get(f.sourceId),
-    ).toEqual(before);
-    expect(
-      summaries
-        .prepare("SELECT step_count FROM conversation_summaries WHERE conversation_id = ?")
-        .get(f.derivedId)?.step_count,
-    ).toBe(3);
-    expect(
-      summaries
-        .prepare(
-          "SELECT last_user_input_step_index FROM conversation_summaries WHERE conversation_id = ?",
-        )
-        .get(f.derivedId)?.last_user_input_step_index,
-    ).toBe(0);
-    summaries.close();
-  });
+  it.each(["writable", "locked"])(
+    "registers prefix statistics or cleans up if the summaries DB is %s",
+    async (access) => {
+      const f = await fixture();
+      f.source.close();
+      const summaries = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+      try {
+        summaries.exec(
+          "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, status TEXT, step_count INTEGER, last_modified_time TEXT, raw_summary BLOB, last_user_input_step_index INTEGER, last_user_input_time TEXT NOT NULL, not_fully_idle INTEGER, killed INTEGER)",
+        );
+        summaries
+          .prepare(
+            "INSERT INTO conversation_summaries VALUES (?, 'CASCADE_RUN_STATUS_RUNNING', 2, 'original-time', ?, 5, '2023-11-15T00:00:00Z', 1, 1)",
+          )
+          .run(f.sourceId, Buffer.from("original-summary"));
+        const getSummary = summaries.prepare(
+          "SELECT * FROM conversation_summaries WHERE conversation_id = ?",
+        );
+        const before = getSummary.get(f.sourceId);
+        if (access === "locked") {
+          summaries.exec("BEGIN IMMEDIATE");
+          await expect(
+            cloneNativeConversationDb(f.sourceId, f.derivedId, 1, f.home),
+          ).rejects.toThrow("locked");
+          expect(
+            (await readdir(path.dirname(f.file))).some((name) => name.startsWith(f.derivedId)),
+          ).toBe(false);
+          expect(getSummary.get(f.derivedId)).toBeUndefined();
+        } else {
+          await cloneNativeConversationDb(f.sourceId, f.derivedId, 1, f.home);
+          expect(getSummary.get(f.derivedId)).toMatchObject({
+            status: "CASCADE_RUN_STATUS_IDLE",
+            step_count: 3,
+            last_user_input_step_index: 0,
+            last_user_input_time: "2023-11-14T22:13:20.123Z",
+            not_fully_idle: 0,
+            killed: 0,
+          });
+        }
+        expect(getSummary.get(f.sourceId)).toEqual(before);
+      } finally {
+        summaries.close();
+      }
+    },
+  );
 });

@@ -183,16 +183,20 @@ describe("Renderer Settings lifecycle", () => {
 
   it("passes the local statistics transport to settings pages", () => {
     const requestUsageStatistics = vi.fn(async () => ({}));
+    const usageStatisticsHosts = vi.fn(async () => []);
     const ownerWindow = {
       navigator: { languages: ["en"] },
       document: {},
       setTimeout,
       clearTimeout,
     } as unknown as Window;
-    const lifecycle = installRendererSettingsLifecycle(ownerWindow, { requestUsageStatistics });
-    expect(vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1)?.[8]).toBe(
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow, {
       requestUsageStatistics,
-    );
+      usageStatisticsHosts,
+    });
+    const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
+    expect(call?.[8]).toBe(requestUsageStatistics);
+    expect(call?.[9]).toBe(usageStatisticsHosts);
     lifecycle.dispose();
   });
 
@@ -227,10 +231,56 @@ describe("Renderer Settings lifecycle", () => {
     if (!getClient || !open) throw new Error("Session Import settings seams were not installed");
 
     expect(getClient()).toBe(client);
-    await open(hostThreadIdSchema.parse("imported-thread"), new AbortController().signal);
+    await open(
+      hostThreadIdSchema.parse("imported-thread"),
+      new AbortController().signal,
+      "remote-1",
+    );
 
-    expect(openImportedThread).toHaveBeenCalledWith("imported-thread", expect.any(AbortSignal));
+    expect(openImportedThread).toHaveBeenCalledWith(
+      "imported-thread",
+      expect.any(AbortSignal),
+      "remote-1",
+    );
     expect(events).toEqual(["opened", "closed"]);
+    lifecycle.dispose();
+  });
+
+  it("keeps Session import navigation independent from the schedules router", async () => {
+    const openImportedThread = vi.fn(async () => undefined);
+    const openSchedules = vi.fn(async (): Promise<void> => {
+      throw new Error("Native schedule navigation is unavailable");
+    });
+    const lifecycle = installRendererSettingsLifecycle(
+      {
+        navigator: { languages: ["en"] },
+        document: {},
+        setTimeout,
+        clearTimeout,
+      } as unknown as Window,
+      {
+        openImportedThread,
+        harnessSchedules: {
+          openSchedules,
+        },
+      },
+    );
+    const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
+    const importOpen = call?.[5];
+    const scheduleOpen = call?.[10]?.openSchedules;
+    if (!importOpen || !scheduleOpen) throw new Error("Settings navigation was not installed");
+    const signal = new AbortController().signal;
+    await expect(scheduleOpen(signal)).rejects.toThrow("Native schedule navigation is unavailable");
+    expect(shellClose).not.toHaveBeenCalled();
+    expect(openImportedThread).not.toHaveBeenCalled();
+    openSchedules.mockResolvedValueOnce(undefined);
+    await scheduleOpen(signal);
+    expect(shellClose).toHaveBeenCalledOnce();
+    await importOpen(hostThreadIdSchema.parse("imported-thread"), signal);
+    expect(openImportedThread).toHaveBeenCalledOnce();
+    expect(openImportedThread.mock.calls[0]?.slice(0, 2)).toEqual(["imported-thread", signal]);
+    expect(openSchedules).toHaveBeenCalledTimes(2);
+    expect(shellClose).toHaveBeenCalledTimes(2);
     lifecycle.dispose();
   });
 });

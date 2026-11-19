@@ -98,6 +98,7 @@ describe("Codex native Usage observations", () => {
       productUsage: [
         {
           product: "7-day window",
+          periodType: "seven_day",
           usagePercent: 25,
           resetsAt: new Date(2_400 * 1000).toISOString(),
         },

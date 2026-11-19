@@ -1,5 +1,7 @@
+import { runDesktopMcpClient, runDesktopMcpServer } from "./desktop-mcp-bridge.js";
 import { runDelegationCli } from "./delegation-cli.js";
 import { runHostRuntime } from "./run-host-runtime.js";
+import { runSharedHostService } from "./shared-host-service.js";
 import { runRemoteControlAppServerBridge } from "./remote-control-app-server.js";
 import { runRemoteHostCli } from "./remote-host-cli.js";
 import { runClaudeAquaHarnessBroker } from "./aqua-harness-broker.js";
@@ -14,6 +16,8 @@ function runLoggedHostRuntime(): Promise<number> {
     stream: process.stderr,
     process,
   });
+  if (arguments_[0] === "--codexhost-shared-host")
+    return runSharedHostService(arguments_.slice(1), process.env, import.meta.url);
   return runHostRuntime({
     arguments: arguments_,
     environment: process.env,
@@ -22,12 +26,16 @@ function runLoggedHostRuntime(): Promise<number> {
 }
 
 process.exitCode =
-  arguments_[0] === "--codexhost-delegation-cli"
-    ? await runDelegationCli({ arguments: arguments_.slice(1), environment: process.env })
-    : arguments_[0] === "--codexhost-harness-broker"
-      ? await runClaudeAquaHarnessBroker(process.env, arguments_[1] ?? "claude-code")
-      : arguments_[0] === "--codexhost-remote"
-        ? await runRemoteHostCli({ arguments: arguments_.slice(1), environment: process.env })
-        : arguments_[0] === "--codexhost-remote-control-bridge"
-          ? await runRemoteControlAppServerBridge()
-          : await runLoggedHostRuntime();
+  arguments_[0] === "--codexhost-desktop-mcp-server"
+    ? await runDesktopMcpServer(arguments_.slice(1))
+    : arguments_[0] === "--codexhost-desktop-mcp-client"
+      ? await runDesktopMcpClient(arguments_.slice(1))
+      : arguments_[0] === "--codexhost-delegation-cli"
+        ? await runDelegationCli({ arguments: arguments_.slice(1), environment: process.env })
+        : arguments_[0] === "--codexhost-harness-broker"
+          ? await runClaudeAquaHarnessBroker(process.env, arguments_[1] ?? "claude-code")
+          : arguments_[0] === "--codexhost-remote"
+            ? await runRemoteHostCli({ arguments: arguments_.slice(1), environment: process.env })
+            : arguments_[0] === "--codexhost-remote-control-bridge"
+              ? await runRemoteControlAppServerBridge()
+              : await runLoggedHostRuntime();

@@ -24,6 +24,7 @@ import {
 } from "@agentclientprotocol/sdk";
 
 import { parseGrokAvailableCommands, type GrokAvailableCommand } from "./grok-slash-commands.js";
+import { parseGrokModelState } from "./grok-models.js";
 import { GrokExecutableError, grokInvocation, resolveGrokExecutable } from "./command.js";
 import {
   GROK_SESSION_DELETE_METHOD,
@@ -49,6 +50,18 @@ import {
   type GrokRewindParams,
 } from "./grok-rewind.js";
 import { decodeGrokPermissionModeId, grokPermissionModeSessionMeta } from "./permission-modes.js";
+import {
+  GROK_PERMISSION_MODE_METHOD,
+  GrokPermissionConfirmation,
+  grokPermissionLogFilter,
+} from "./permission-confirmation.js";
+
+import {
+  GROK_ASK_USER_QUESTION_METHOD,
+  parseGrokQuestionRequest,
+  type GrokQuestionRequest,
+  type GrokQuestionResponse,
+} from "./grok-questions.js";
 
 export type GrokTransportFaultKind =
   "notInstalled" | "authenticationRequired" | "unavailable" | "protocolError" | "processExited";
@@ -68,6 +81,7 @@ export class GrokTransportError extends Error {
 }
 
 export type GrokTransportEvent =
+  | { type: "interaction.resolved"; toolCallId: string; metadata?: Record<string, unknown> }
   | { type: "user.text"; text: string; messageId?: string; metadata?: Record<string, unknown> }
   | { type: "agent.text"; text: string; messageId?: string; metadata?: Record<string, unknown> }
   | { type: "agent.thought"; text: string; messageId?: string; metadata?: Record<string, unknown> }
@@ -190,6 +204,7 @@ export interface GrokOpenResult {
   signals?: unknown;
 }
 interface ActivePrompt {
+  onQuestion(request: GrokQuestionRequest): Promise<GrokQuestionResponse>;
   onEvent(event: GrokTransportEvent): void;
   onPermission(request: GrokPermissionRequest): Promise<RequestPermissionResponse>;
 }
@@ -272,7 +287,14 @@ function signalProcessTree(child: ChildProcessWithoutNullStreams, signal: NodeJS
   try {
     process.kill(-child.pid, signal);
   } catch (error) {
-    if (!isRecord(error) || error.code !== "ESRCH") throw error;
+    if (!isRecord(error) || error.code === "ESRCH") return;
+    // macOS can reject a negative-PID signal with EPERM after the detached
+    // group leader has exited; fall back to the child handle.
+    try {
+      child.kill(signal);
+    } catch (fallback) {
+      if (!isRecord(fallback) || fallback.code !== "ESRCH") throw fallback;
+    }
   }
 }
 
@@ -335,6 +357,12 @@ function transportEvent(
   if (compaction) return compaction;
   const subagent = grokSubagentEventFromUpdate(extension);
   if (subagent) return subagent;
+  if (extension.sessionUpdate === "interaction_resolved") {
+    const toolCallId = extension.tool_call_id ?? extension.toolCallId;
+    return typeof toolCallId === "string" && toolCallId.trim().length > 0
+      ? { type: "interaction.resolved", toolCallId, ...(metadata ? { metadata } : {}) }
+      : null;
+  }
   switch (update.sessionUpdate) {
     case "user_message_chunk":
     case "agent_message_chunk":
@@ -542,6 +570,8 @@ export class GrokAcpTransport {
   #child: ChildProcessWithoutNullStreams | null = null;
   #closed = false;
   #closing = false;
+  #closePromise: Promise<void> | null = null;
+  #permissionConfirmation: GrokPermissionConfirmation | null = null;
   #connection: ClientSideConnection | null = null;
   #initialize: InitializeResponse | null = null;
   #replay: GrokTransportEvent[] | null = null;
@@ -571,16 +601,31 @@ export class GrokAcpTransport {
     if (this.#sessionId) throw new Error("Grok ACP inspection cannot reuse an open Session");
     try {
       const initialize = await this.#ensureInitialized();
+      const connection = this.#connection;
+      if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
       if (initialize.agentCapabilities?.sessionCapabilities?.list) {
-        const connection = this.#connection;
-        if (!connection) throw new GrokTransportError("unavailable", "Grok ACP is unavailable");
         await withTimeout(
           connection.listSessions({ cwd: this.#options.cwd }),
           this.#options.commandTimeoutMs,
           "Grok Session inspection",
         );
       }
-      return initialize;
+      // initialize can contain the fallback catalog from before authentication recovered.
+      // Read the native catalog again after the startup round trips have completed.
+      try {
+        const response = await withTimeout(
+          connection.request("_x.ai/models/list", {}),
+          this.#options.commandTimeoutMs,
+          "Grok Model inspection",
+        );
+        const modelState = isRecord(response) ? response.result : undefined;
+        if (!parseGrokModelState(modelState))
+          throw new GrokTransportError("protocolError", "Grok returned an invalid Model catalog");
+        return { ...initialize, _meta: { ...initialize._meta, modelState } };
+      } catch (error) {
+        if (isGrokMethodNotFound(error)) return initialize;
+        throw error;
+      }
     } catch (error) {
       const classified = classifyStartupError(error);
       await this.close().catch(() => undefined);
@@ -798,7 +843,13 @@ export class GrokAcpTransport {
     const invocation = grokInvocation(executable, process.platform, this.#startupModelId);
     const child = spawn(invocation.command, invocation.arguments, {
       cwd: this.#options.cwd,
-      env: { ...process.env, ...this.#options.environment },
+      env: {
+        ...process.env,
+        ...this.#options.environment,
+        RUST_LOG: grokPermissionLogFilter(
+          this.#options.environment?.RUST_LOG ?? process.env.RUST_LOG,
+        ),
+      },
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -807,6 +858,7 @@ export class GrokAcpTransport {
     this.#child = child;
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
+      this.#permissionConfirmation?.accept(chunk.toString());
     });
     await withTimeout(
       new Promise<void>((resolve, reject) => {
@@ -826,6 +878,7 @@ export class GrokAcpTransport {
           sessionUpdate: (params) => this.#handleUpdate(params),
           requestPermission: (params) => this.#handlePermission(params),
           extNotification: (method, params) => this.#handleExtensionNotification(method, params),
+          extMethod: (method, params) => this.#handleExtMethod(method, params),
         }) satisfies Client,
       stream,
     );
@@ -866,13 +919,16 @@ export class GrokAcpTransport {
     text: string,
     onEvent: ActivePrompt["onEvent"],
     onPermission: ActivePrompt["onPermission"],
+    onQuestion: ActivePrompt["onQuestion"] = async () => ({ outcome: "cancelled" }),
   ): Promise<PromptResponse> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
       throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
     }
     if (this.#activePrompt) throw new Error("Grok ACP Session already has an active Prompt");
-    const active = { onEvent, onPermission };
+    if (this.#permissionConfirmation)
+      throw new GrokTransportError("unavailable", "Grok ACP Session has an active operation");
+    const active = { onEvent, onPermission, onQuestion };
     this.#activePrompt = active;
     try {
       return await connection.prompt({
@@ -894,7 +950,7 @@ export class GrokAcpTransport {
     if (!connection || !this.#sessionId || this.#closed || this.#closing) {
       throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
     }
-    if (this.#activePrompt || this.#activeCompact) {
+    if (this.#activePrompt || this.#activeCompact || this.#permissionConfirmation) {
       throw new GrokTransportError(
         "unavailable",
         "Grok ACP Session already has an active operation",
@@ -933,6 +989,8 @@ export class GrokAcpTransport {
   ): Promise<void> {
     const connection = this.#connection;
     if (!connection || !this.#sessionId) throw new Error("Grok ACP Session is unavailable");
+    if (this.#permissionConfirmation)
+      throw new GrokTransportError("unavailable", "Grok ACP Session has an active operation");
     const response = await connection.request<unknown, Record<string, unknown>>(
       "session/set_model",
       {
@@ -962,9 +1020,68 @@ export class GrokAcpTransport {
     return connection.cancel({ sessionId: this.#sessionId });
   }
 
-  async close(): Promise<void> {
+  async setPermissionMode(permissionModeId: HarnessPermissionModeId): Promise<void> {
+    const mode = decodeGrokPermissionModeId(permissionModeId);
+    const connection = this.#connection;
+    const sessionId = this.#sessionId;
+    if (!connection || !sessionId || this.#closed || this.#closing) {
+      throw new GrokTransportError("unavailable", "Grok ACP Session is unavailable");
+    }
+    if (this.#activePrompt || this.#activeCompact || this.#permissionConfirmation) {
+      throw new GrokTransportError("unavailable", "Grok ACP Session has an active operation");
+    }
+    const confirmation = new GrokPermissionConfirmation(mode);
+    this.#permissionConfirmation = confirmation;
+    try {
+      await withTimeout(
+        Promise.all([
+          confirmation.completed,
+          (async () => {
+            const flags = grokPermissionModeSessionMeta(mode);
+            await connection.notify(GROK_PERMISSION_MODE_METHOD, {
+              yolo_mode: flags.yoloMode,
+              auto_mode: flags.autoMode,
+              permission_mode: mode,
+            });
+            // The actor round trip verifies that the target Session still exists
+            // and has processed its queued permission commands. Logs confirm their values.
+            const response = await connection.request("_x.ai/session/info", { sessionId });
+            if (
+              !isRecord(response) ||
+              !isRecord(response.result) ||
+              response.result.sessionId !== sessionId
+            ) {
+              throw new Error("Grok did not confirm the target Session");
+            }
+          })(),
+        ]),
+        this.#options.commandTimeoutMs,
+        "Grok Permission Mode confirmation",
+      );
+      if (this.#closed || this.#closing)
+        throw new Error("Grok Session closed during configuration");
+    } catch (cause) {
+      const error = new GrokTransportError(
+        "protocolError",
+        "Grok Permission Mode could not be confirmed; reopen the Session to continue",
+        { cause },
+      );
+      this.#fault(error);
+      await this.close();
+      throw error;
+    } finally {
+      this.#permissionConfirmation = null;
+    }
+  }
+
+  close(): Promise<void> {
+    return (this.#closePromise ??= this.#close());
+  }
+
+  async #close(): Promise<void> {
     if (this.#closed) return;
     this.#closing = true;
+    this.#permissionConfirmation?.reject(new Error("Grok Session closed during configuration"));
     const child = this.#child;
     const connection = this.#connection;
     if (
@@ -972,7 +1089,11 @@ export class GrokAcpTransport {
       this.#sessionId &&
       this.#initialize?.agentCapabilities?.sessionCapabilities?.close
     ) {
-      await connection.closeSession({ sessionId: this.#sessionId }).catch(() => undefined);
+      await withTimeout(
+        connection.closeSession({ sessionId: this.#sessionId }),
+        this.#options.closeTimeoutMs,
+        "Grok Session close",
+      ).catch(() => undefined);
     }
     if (child?.stdin.writable) child.stdin.end();
     if (child && !(await waitForExit(child, this.#options.closeTimeoutMs))) {
@@ -1023,7 +1144,32 @@ export class GrokAcpTransport {
     return this.#activePrompt.onPermission({ request: params, options: params.options });
   }
 
+  async #handleExtMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (method !== GROK_ASK_USER_QUESTION_METHOD) throw RequestError.methodNotFound(method);
+    let request: GrokQuestionRequest;
+    try {
+      request = parseGrokQuestionRequest(params);
+    } catch (error) {
+      throw RequestError.invalidParams(undefined, errorText(error));
+    }
+    const active = this.#activePrompt;
+    if (
+      !active ||
+      this.#closed ||
+      this.#closing ||
+      this.#replay !== null ||
+      this.#activeCompact !== null ||
+      request.sessionId !== this.#sessionId
+    )
+      return { outcome: "cancelled" };
+    return { ...(await active.onQuestion(request)) };
+  }
+
   #fault(error: GrokTransportError): void {
+    this.#permissionConfirmation?.reject(error);
     if (this.#closing || this.#closed) return;
     this.#options.onFault?.(error);
   }

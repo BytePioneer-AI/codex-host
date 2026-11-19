@@ -22,7 +22,12 @@ function setup(error: unknown = unsupported, response: unknown = { thread: nativ
 }
 
 describe("native Thread ownership without the codexhost inspection API", () => {
-  it.each([unsupported, { code: -32601, message: "Method not found" }])(
+  it.each([
+    unsupported,
+    { code: -32601, message: "Method not found" },
+    Object.assign(new Error(unsupported.message), { jsonRpcCode: -32600 }),
+    Object.assign(new Error("Method not found"), { jsonRpcCode: -32601 }),
+  ])(
     "verifies the native Thread on the same connection when inspection is unsupported: %j",
     async (error) => {
       const { client, sendRequest } = setup(error);
@@ -43,6 +48,12 @@ describe("native Thread ownership without the codexhost inspection API", () => {
     { code: -32000, message: "request timed out" },
     { code: -32600, message: "Invalid request: invalid params" },
     { code: -32600, message: "Invalid request: unknown variant `codexhost/thread/usage/inspect`" },
+    Object.assign(new Error("unauthorized"), { jsonRpcCode: -32001 }),
+    Object.assign(new Error("connection closed"), { jsonRpcCode: -32000 }),
+    Object.assign(new Error("Invalid request: invalid params"), { jsonRpcCode: -32600 }),
+    Object.assign(new Error("Invalid request: unknown variant `codexhost/thread/usage/inspect`"), {
+      jsonRpcCode: -32600,
+    }),
   ])("does not bypass an ordinary inspection failure: %j", async (error) => {
     const { client, sendRequest } = setup(error);
     await expect(client.inspectThread({ threadId })).rejects.toBe(error);

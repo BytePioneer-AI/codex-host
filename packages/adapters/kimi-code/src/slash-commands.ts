@@ -6,6 +6,12 @@ import {
   type HarnessCommandDescriptor,
 } from "@codexhost/shared-contracts";
 
+const KIMI_COMPACT_COMMAND: AvailableCommand = {
+  name: "compact",
+  description: "Compact the conversation context",
+  input: { hint: "prompt" },
+};
+
 /**
  * Builds a validated HarnessCommandCatalog from native ACP AvailableCommands.
  * Strips leading slash from names if present, deduplicates command IDs,
@@ -34,6 +40,13 @@ export function buildKimiCommandCatalog(
       label: cleanId,
       argumentMode,
       ...(description ? { description } : {}),
+      // Only the known native built-in gets plugin copy. A live command with
+      // the same name but different wording/input retains its own semantics.
+      ...(cleanId === KIMI_COMPACT_COMMAND.name &&
+      rawDesc === KIMI_COMPACT_COMMAND.description &&
+      command.input?.hint === KIMI_COMPACT_COMMAND.input?.hint
+        ? { localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } } }
+        : {}),
     });
   }
 
@@ -41,11 +54,7 @@ export function buildKimiCommandCatalog(
 }
 
 export const KIMI_DEFAULT_COMMANDS: readonly AvailableCommand[] = [
-  {
-    name: "compact",
-    description: "Compact the conversation context",
-    input: { hint: "prompt" },
-  },
+  KIMI_COMPACT_COMMAND,
   {
     name: "status",
     description: "Show current session status",

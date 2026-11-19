@@ -9,6 +9,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
@@ -43,6 +44,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessIdSchema,
@@ -93,6 +96,7 @@ import {
   stripAnsi,
   KIMI_DEFAULT_COMMANDS,
 } from "./slash-commands.js";
+import { projectKimiPlanApprovalRequest } from "./plan-approval.js";
 
 const kimiHarnessId: HarnessId = harnessIdSchema.parse("kimi-code");
 const defaultNativeTurnFlushTimeoutMs = 6_000;
@@ -293,6 +297,7 @@ export class KimiSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -305,6 +310,7 @@ export class KimiSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -319,6 +325,9 @@ export class KimiSession implements HarnessSession {
     switch (command.type) {
       case "turn.start":
         return this.#handleTurnStart(command);
+      case "turn.steer":
+        // `kimi acp` has no same-turn insert. SDK Session.steer() starts another turn when idle.
+        return unsupportedSteer("Kimi ACP");
       case "turn.cancel":
         return this.#handleTurnCancel(command);
       case "interaction.respond":
@@ -753,6 +762,19 @@ export class KimiSession implements HarnessSession {
         completeReasoning();
         if (currentAgentMessage) {
           completeAgentMessage("commentary");
+        }
+        const plan = projectKimiPlanApprovalRequest(turnId, request);
+        if (plan) {
+          return new Promise<RequestPermissionResponse>((resolve) => {
+            this.#activeInteractions.set(plan.interaction.interactionId, {
+              id: plan.interaction.interactionId,
+              type: "question",
+              interaction: plan.interaction,
+              metadata: plan.schemaProperties,
+              resolve: (value) => resolve(plan.parseResponse(value as CreateElicitationResponse)),
+            });
+            this.#channel.emit({ kind: "interaction", interaction: plan.interaction });
+          });
         }
         const projected = projectKimiApprovalRequest(turnId, request);
         return new Promise<RequestPermissionResponse>((resolve) => {

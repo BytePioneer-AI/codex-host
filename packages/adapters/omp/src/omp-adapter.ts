@@ -1,4 +1,14 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { createOmpUsageStatistics } from "./omp-usage-statistics.js";
+import {
+  listOmpModels,
+  type OmpModelListInput,
+  type OmpModelListResult,
+} from "./omp-model-list.js";
 import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
@@ -16,6 +26,7 @@ import {
   type HarnessCommandInvocation,
   type HarnessError,
   type HarnessInspection,
+  type HarnessModelCatalog,
   type HarnessModelRef,
   type HarnessOutput,
   type HarnessResult,
@@ -36,8 +47,6 @@ import {
   type HostItemOutcome,
   type HostQuestionInteraction,
   type HostReasoningItem,
-  type HostSubagentDelegationItem,
-  type HostSubagentState,
   type HostSubagentStatus,
   type HostToolOutput,
   type InteractionRespondAccepted,
@@ -57,6 +66,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
@@ -66,7 +77,6 @@ import {
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
   hostItemIdSchema,
-  hostTurnIdSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   type HarnessId,
@@ -93,6 +103,8 @@ import { rollbackOmpLastTurn } from "./omp-last-turn-rollback.js";
 import {
   OmpRpcFaultError,
   OmpRpcSession,
+  OmpRpcSteerRejectedError,
+  OmpRpcSteerTargetEndedError,
   OmpRpcUnsupportedCommandError,
   type OmpInteractionRequest,
   type OmpInteractionResponse,
@@ -154,6 +166,7 @@ export interface OmpTurnTransport {
     onEvent: (event: OmpTurnEvent) => void,
   ): Promise<OmpCompactResult>;
   runTurn(text: string, onEvent: (event: OmpTurnEvent) => void): Promise<OmpTurnResult>;
+  steer(message: string): Promise<void>;
   respondToInteraction(response: OmpInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -163,6 +176,29 @@ export interface OmpTurnTransport {
 
 export interface OmpAdapterDependencies {
   createTransport(options: OmpRpcSessionOptions): OmpTurnTransport;
+  listModels?(input: OmpModelListInput): Promise<OmpModelListResult>;
+}
+
+function closedInspection(): HarnessInspection {
+  return {
+    status: "unavailable",
+    error: { code: "invalidState", message: "Omp Adapter is closed", retryable: false },
+  };
+}
+
+function ompInspectionCapabilities(
+  selectThinkingOption: boolean,
+): Extract<HarnessInspection, { status: "ready" }>["capabilities"] {
+  return {
+    configuration: {
+      selectModel: true,
+      selectThinkingOption,
+      selectPermissionMode: true,
+      permissionModeScope: "live",
+    },
+    history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
+    subagents: { observe: true, readTranscript: true },
+  };
 }
 
 interface ActiveTool {
@@ -183,6 +219,10 @@ interface ActiveTurn {
   agentMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
   sawAssistantMessage: boolean;
+  acceptedSteerCount: number;
+  acceptingSteers: boolean;
+  pendingSteers: Set<Promise<void>>;
+  steerFailure?: OmpRpcSteerTargetEndedError;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
@@ -194,11 +234,6 @@ interface ActiveTurn {
   resolveCompletion(): void;
 }
 
-interface BackgroundSubagentDelegation {
-  item: HostSubagentDelegationItem;
-  turnId: HostTurnId;
-}
-
 type SessionPhase = "open" | "closing" | "closed" | "faulted";
 
 const ompHarnessId = harnessIdSchema.parse("omp");
@@ -207,6 +242,7 @@ const ompCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "omp.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -665,9 +701,6 @@ class OmpHarnessSession implements HarnessSession {
   #usage: HostUsage | null;
   #usageGeneration = 0;
   #usageRefreshSequence = 0;
-  #backgroundTurnId: HostTurnId | null = null;
-  #backgroundSubagents = new Map<string, BackgroundSubagentDelegation>();
-  #backgroundTurnFailed = false;
 
   constructor(
     cwd: string,
@@ -696,16 +729,19 @@ class OmpHarnessSession implements HarnessSession {
     this.#toolOutputLimit = options.toolOutputLimit;
     this.#permissionMode = options.permissionMode;
     this.#permissionModeId = options.permissionModeId;
-    this.capabilities = {
+    this.capabilities = ((session) => ({
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: true,
-        permissionModeScope: "live",
+        permissionModeScope: "live" as const,
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       subagents: { observe: true, readTranscript: true },
-    };
+      get steer(): boolean {
+        return session.#canSteerActiveTurn();
+      },
+    }))(this);
     this.commands = {
       list: async () => ({ ok: true, value: this.#liveCommandCatalog() }),
       execute: (command) => this.#executeHarnessCommand(command),
@@ -759,55 +795,6 @@ class OmpHarnessSession implements HarnessSession {
         : status;
   }
 
-  #ensureBackgroundTurn(): HostTurnId {
-    if (this.#backgroundTurnId) return this.#backgroundTurnId;
-    const turnId = hostTurnIdSchema.parse(randomUUID());
-    this.#backgroundTurnId = turnId;
-    this.#backgroundTurnFailed = false;
-    this.#event({
-      type: "turn.autonomous.started",
-      turnId,
-      input: [],
-    });
-    return turnId;
-  }
-
-  #backgroundDelegationStart(
-    event:
-      | Extract<OmpTurnEvent, { type: "subagent.started" }>
-      | Extract<OmpTurnEvent, { type: "subagent.updated" }>
-      | Extract<OmpTurnEvent, { type: "subagent.completed" }>,
-  ): BackgroundSubagentDelegation {
-    const turnId = this.#ensureBackgroundTurn();
-    const description =
-      event.type === "subagent.started"
-        ? event.description
-        : event.type === "subagent.updated"
-          ? (event.description ?? "Background subagent")
-          : "Background subagent";
-    const role = event.type === "subagent.started" ? event.role : undefined;
-    const background = event.type === "subagent.started" ? event.background : true;
-    const state: HostSubagentState = {
-      subagentId: event.nativeSubagentId,
-      nativeSubagentId: event.nativeSubagentId,
-      description,
-      ...(role ? { role } : {}),
-      background,
-      status: "running",
-    };
-    const item: HostSubagentDelegationItem = {
-      type: "subagentDelegation",
-      itemId: this.#newItemId(),
-      operation: "spawn",
-      ...(event.type === "subagent.started" && event.prompt ? { prompt: event.prompt } : {}),
-      subagents: [state],
-    };
-    const delegation = { item, turnId };
-    this.#backgroundSubagents.set(event.callId, delegation);
-    this.#event({ type: "item.started", turnId, item });
-    return delegation;
-  }
-
   #handleBackgroundSubagentEvent(event: OmpTurnEvent): void {
     if (event.type === "subagent.transcript.changed") {
       this.#event({
@@ -823,10 +810,6 @@ class OmpHarnessSession implements HarnessSession {
     ) {
       return;
     }
-    let delegation = this.#backgroundSubagents.get(event.callId);
-    if (!delegation) delegation = this.#backgroundDelegationStart(event);
-    const current = delegation.item.subagents[0];
-    if (!current) throw new Error("Omp background delegation has no Agent state");
     if (event.type === "subagent.started") {
       this.#event({
         type: "subagent.state.changed",
@@ -837,19 +820,6 @@ class OmpHarnessSession implements HarnessSession {
     }
     if (event.type === "subagent.updated") {
       const status = this.#backgroundStatus(event.status);
-      const subagent: HostSubagentState = {
-        ...current,
-        status,
-        ...(event.description ? { description: event.description } : {}),
-        ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
-      };
-      delegation.item = { ...delegation.item, subagents: [subagent] };
-      this.#event({
-        type: "item.updated",
-        turnId: delegation.turnId,
-        itemId: delegation.item.itemId,
-        update: { type: "subagents.replace", subagents: delegation.item.subagents },
-      });
       this.#event({
         type: "subagent.state.changed",
         nativeSubagentId: event.nativeSubagentId,
@@ -859,65 +829,33 @@ class OmpHarnessSession implements HarnessSession {
       return;
     }
     const status: HostSubagentStatus = event.isError ? "failed" : "completed";
-    const subagent: HostSubagentState = {
-      ...current,
-      status,
-      ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
-    };
-    delegation.item = { ...delegation.item, subagents: [subagent] };
-    this.#event({
-      type: "item.updated",
-      turnId: delegation.turnId,
-      itemId: delegation.item.itemId,
-      update: { type: "subagents.replace", subagents: delegation.item.subagents },
-    });
-    this.#event({
-      type: "item.completed",
-      turnId: delegation.turnId,
-      snapshot: {
-        item: delegation.item,
-        outcome: event.isError
-          ? {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: "Omp background Subagent failed",
-                retryable: false,
-              },
-            }
-          : { status: "succeeded" },
-      },
-    });
     this.#event({
       type: "subagent.state.changed",
       nativeSubagentId: event.nativeSubagentId,
       status,
       ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),
     });
-    this.#backgroundTurnFailed ||= event.isError;
-    this.#backgroundSubagents.delete(event.callId);
-    if (this.#backgroundSubagents.size === 0 && this.#backgroundTurnId === delegation.turnId) {
-      const turnId = this.#backgroundTurnId;
-      this.#backgroundTurnId = null;
-      this.#event({
-        type: "turn.completed",
-        turnId,
-        outcome: this.#backgroundTurnFailed
-          ? {
-              status: "failed",
-              error: {
-                code: "nativeFailure",
-                message: "Omp background Subagent failed",
-                retryable: false,
-              },
-            }
-          : { status: "succeeded" },
-      });
-      this.#backgroundTurnFailed = false;
-    }
+  }
+
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? decodeOmpModelRef(state.effectiveModel).id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
   }
 
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open" && this.#phase !== "faulted") {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
@@ -967,6 +905,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -979,6 +918,7 @@ class OmpHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -990,6 +930,7 @@ class OmpHarnessSession implements HarnessSession {
       return { ok: false, error: invalidState("Omp Session is not open") };
     }
     if (command.type === "turn.cancel") return this.#cancel(command);
+    if (command.type === "turn.steer") return this.#steer(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
     if (command.type === "thinking.select") return this.#selectThinking(command);
@@ -1063,6 +1004,9 @@ class OmpHarnessSession implements HarnessSession {
         agentMessageId: null,
         compactionItem: null,
         sawAssistantMessage: false,
+        acceptedSteerCount: 0,
+        acceptingSteers: true,
+        pendingSteers: new Set(),
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
@@ -1463,6 +1407,60 @@ class OmpHarnessSession implements HarnessSession {
     }
   }
 
+  #canSteerActiveTurn(): boolean {
+    const active = this.#active;
+    return Boolean(
+      this.#phase === "open" &&
+      active &&
+      !active.cancellationRequested &&
+      active.acceptingSteers &&
+      active.tools.size > 0 &&
+      this.#transport,
+    );
+  }
+
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Omp steer text must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    const active = this.#active;
+    const transport = this.#transport;
+    if (
+      !active ||
+      !transport ||
+      active.command.turnId !== command.turnId ||
+      !this.#canSteerActiveTurn()
+    ) {
+      return { ok: false, error: invalidState("Omp Turn is not accepting native input") };
+    }
+    let accepted: Promise<void> | undefined;
+    try {
+      accepted = transport.steer(text).then(() => {
+        active.acceptedSteerCount += 1;
+      });
+      active.pendingSteers.add(accepted);
+      await accepted;
+      return { ok: true, value: { accepted: true } };
+    } catch (error) {
+      if (error instanceof OmpRpcSteerRejectedError) {
+        return { ok: false, error: invalidState(error.message) };
+      }
+      if (error instanceof OmpRpcSteerTargetEndedError) active.steerFailure = error;
+      // A missing acknowledgement may follow native acceptance; never invite stop-and-resend.
+      throw error;
+    } finally {
+      if (accepted) active.pendingSteers.delete(accepted);
+    }
+  }
+
   async #cancel(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>> {
     const active = this.#active;
     if (!active || active.command.turnId !== command.turnId) {
@@ -1587,6 +1585,9 @@ class OmpHarnessSession implements HarnessSession {
         agentMessageId: null,
         compactionItem: null,
         sawAssistantMessage: false,
+        acceptedSteerCount: 0,
+        acceptingSteers: false,
+        pendingSteers: new Set(),
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
@@ -2163,16 +2164,21 @@ class OmpHarnessSession implements HarnessSession {
     active: ActiveTurn,
     transport: OmpTurnTransport,
   ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef }> {
-    const snapshot = mapOmpSnapshot(await transport.getEntries(), {
+    active.acceptingSteers = false;
+    await Promise.allSettled([...active.pendingSteers]);
+    const history = active.steerFailure?.history ?? (await transport.getEntries());
+    const snapshot = mapOmpSnapshot(history, {
       sessionId: transport.state.sessionId,
       model: nativeModelForHistory(transport.state),
     });
     const created = snapshot.turns.filter(
       (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
     );
-    if (created.length !== 1) {
+    const expected = 1 + active.acceptedSteerCount;
+    if (created.length !== expected) {
+      const countText = expected === 1 ? "one" : `${expected}`;
       throw new Error(
-        `Omp Turn persisted ${created.length} new User Entries; exactly one is required`,
+        `Omp Turn persisted ${created.length} new User Entries; exactly ${countText} is required`,
       );
     }
     const turn = created[0];
@@ -2225,6 +2231,11 @@ class OmpHarnessSession implements HarnessSession {
       ...(ephemeral ? { ephemeral } : {}),
     });
     active.resolveCompletion();
+    if (active.steerFailure) {
+      // Fault only after publishing the Turn's outcome, so the Host can resume safely.
+      this.#fault(active.steerFailure);
+      return;
+    }
     queueMicrotask(() => {
       if (this.#phase === "open") void this.#refreshUsage(active.command.turnId);
     });
@@ -2270,6 +2281,7 @@ class OmpHarnessSession implements HarnessSession {
   }
 
   #event(event: HostEvent): void {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 
@@ -2350,6 +2362,12 @@ export class OmpAdapter implements HarnessAdapter {
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
   readonly #inspections = new Set<OmpTurnTransport>();
+  readonly #availabilityInFlight = new Map<string, Promise<HarnessInspection | null>>();
+  readonly #availabilityListings = new Set<AbortController>();
+  readonly #listModels: (input: {
+    cwd: string;
+    signal: AbortSignal;
+  }) => Promise<OmpModelListResult>;
   readonly #sessions = new Set<OmpHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -2362,6 +2380,14 @@ export class OmpAdapter implements HarnessAdapter {
     },
   ) {
     this.#createTransport = dependencies.createTransport;
+    const listModels = dependencies.listModels ?? listOmpModels;
+    this.#listModels = ({ cwd, signal }) =>
+      listModels({
+        cwd,
+        signal,
+        ...(options.command ? { command: options.command } : {}),
+        ...(options.environment ? { environment: options.environment } : {}),
+      });
     this.sessionImport = new OmpSessionImport({ ...process.env, ...options.environment });
     this.usageStatistics = createOmpUsageStatistics({ ...process.env, ...options.environment });
     this.#closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
@@ -2369,16 +2395,7 @@ export class OmpAdapter implements HarnessAdapter {
   }
 
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
-    if (this.#closePromise) {
-      return {
-        status: "unavailable",
-        error: {
-          code: "invalidState",
-          message: "Omp Adapter is closed",
-          retryable: false,
-        },
-      };
-    }
+    if (this.#closePromise) return closedInspection();
     const cwd = input.cwd ?? process.cwd();
     const inFlight = this.#inspectionInFlight.get(cwd);
     if (inFlight) return inFlight;
@@ -2386,7 +2403,40 @@ export class OmpAdapter implements HarnessAdapter {
       const cached = this.#inspectionCache.get(cwd);
       if (cached) return cached;
     }
+    if (input.purpose === "availability") return this.#inspectAvailability(cwd, input.refresh);
+    return this.#startFullInspection(cwd);
+  }
 
+  /**
+   * Availability without a Session: a Session startup runs OMP's own startup work, including
+   * Provider connection prewarm, for a Harness the user may never select. The listed result
+   * carries no native default Model or Thinking option, so it is neither cached nor used to
+   * update `#thinkingSelectionSupported`. When the list cannot answer, a full inspection answers
+   * instead, reusing one that is in flight or finished meanwhile.
+   */
+  async #inspectAvailability(cwd: string, refresh = false): Promise<HarnessInspection> {
+    // An explicit re-check must not leave an older full catalog to answer the next catalog load.
+    if (refresh) this.#inspectionCache.delete(cwd);
+    let pending = this.#availabilityInFlight.get(cwd);
+    if (!pending) {
+      const listing = this.#listAvailability(cwd);
+      pending = listing.finally(() => {
+        if (this.#availabilityInFlight.get(cwd) === pending) this.#availabilityInFlight.delete(cwd);
+      });
+      this.#availabilityInFlight.set(cwd, pending);
+    }
+    const listed = await pending;
+    if (listed) return listed;
+    if (this.#closePromise) return closedInspection();
+    // A full inspection may have started or finished while the list ran; it is newer than this check.
+    return (
+      this.#inspectionInFlight.get(cwd) ??
+      this.#inspectionCache.get(cwd) ??
+      this.#startFullInspection(cwd)
+    );
+  }
+
+  #startFullInspection(cwd: string): Promise<HarnessInspection> {
     const inspection = this.#inspectCwd(cwd).then((result) => {
       if (result.status === "ready") this.#inspectionCache.set(cwd, result);
       return result;
@@ -2397,6 +2447,59 @@ export class OmpAdapter implements HarnessAdapter {
         this.#inspectionInFlight.delete(cwd);
       }
     });
+  }
+
+  /** Returns null when a Session must answer: this OMP cannot list Models, or lists none. */
+  async #listAvailability(cwd: string): Promise<HarnessInspection | null> {
+    const startedAt = Date.now();
+    const stage = "model-list";
+    const controller = new AbortController();
+    this.#availabilityListings.add(controller);
+    let listed: OmpModelListResult;
+    try {
+      listed = await this.#listModels({ cwd, signal: controller.signal });
+    } finally {
+      this.#availabilityListings.delete(controller);
+    }
+    if (listed.kind === "unanswered") return null;
+    if (listed.kind === "notInstalled") {
+      return {
+        status: "notInstalled",
+        error: {
+          code: "notInstalled",
+          message: listed.message,
+          retryable: false,
+          stage,
+          durationMs: Date.now() - startedAt,
+        },
+      };
+    }
+    if (listed.kind === "timedOut") {
+      return {
+        status: "error",
+        error: {
+          code: "unavailable",
+          message: "Oh My Pi did not list its models in time",
+          retryable: true,
+          stage,
+          durationMs: Date.now() - startedAt,
+        },
+      };
+    }
+    // An empty list alone does not prove missing configuration; the Session reports the cause.
+    if (listed.models.length === 0) return null;
+    let catalog: HarnessModelCatalog;
+    try {
+      catalog = normalizeOmpModelCatalog(listed.models, null, null, null);
+    } catch {
+      return null;
+    }
+    return {
+      status: "ready",
+      catalog,
+      permissionModes: OMP_PERMISSION_MODE_CATALOG,
+      capabilities: ompInspectionCapabilities(false),
+    };
   }
 
   async #inspectCwd(cwd: string): Promise<HarnessInspection> {
@@ -2427,16 +2530,7 @@ export class OmpAdapter implements HarnessAdapter {
         status: "ready",
         catalog,
         permissionModes: OMP_PERMISSION_MODE_CATALOG,
-        capabilities: {
-          configuration: {
-            selectModel: true,
-            selectThinkingOption: thinkingLevels !== null,
-            selectPermissionMode: true,
-            permissionModeScope: "live",
-          },
-          history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
-          subagents: { observe: true, readTranscript: true },
-        },
+        capabilities: ompInspectionCapabilities(thinkingLevels !== null),
       };
     } catch (error) {
       await transport.close().catch(() => undefined);
@@ -2717,6 +2811,7 @@ export class OmpAdapter implements HarnessAdapter {
 
   close(): Promise<void> {
     if (!this.#closePromise) {
+      for (const listing of this.#availabilityListings) listing.abort();
       this.#closePromise = Promise.all([
         this.sessionImport.close(),
         ...[...this.#inspections].map((transport) => transport.close()),

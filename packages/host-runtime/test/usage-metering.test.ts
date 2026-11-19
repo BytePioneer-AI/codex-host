@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ModelPriceLookup } from "../src/model-prices.js";
 import { bundledModelPrices } from "../src/model-prices.generated.js";
-import { UsageMeter } from "../src/usage-metering.js";
+import { UsageMeter } from "@codexhost/session-runtime/usage-metering";
 
 const prices = new ModelPriceLookup({
   fetchedAtMs: 0,
@@ -211,6 +211,57 @@ describe("UsageMeter completeness", () => {
 });
 
 describe("UsageMeter timing", () => {
+  it.each([undefined, 0, 40])(
+    "uses timed output Tokens for live, stored and historical speed without changing cost: %s",
+    (timedOutputTokens) => {
+      const facts = {
+        outputTokens: 100,
+        ...(timedOutputTokens === undefined ? {} : { timedOutputTokens }),
+        startedAtMs: 1_000,
+        completedAtMs: 3_000,
+      };
+      const meter = completeMeter();
+      meter.replaceHistory([request("history", facts)], true);
+      const tokens = timedOutputTokens ?? 100;
+      expect(meter.derive(null, prices)?.sessionOutputTokensPerSecond).toBe(tokens / 2);
+      expect(meter.derive(null, prices)?.outputTokensPerSecond).toBeUndefined();
+      meter.turnStarted("turn", 0);
+      meter.recordRequest(request("live", facts), "turn");
+      meter.recordRequest(
+        request("other", { outputTokens: 20, startedAtMs: 4_000, completedAtMs: 5_000 }),
+        "turn",
+      );
+      const usage = meter.derive({ outputTokens: 220 }, prices);
+      expect(usage?.outputTokensPerSecond).toBe((tokens + 20) / 3);
+      expect(usage?.sessionOutputTokensPerSecond).toBe((tokens * 2 + 20) / 5);
+      expect(usage?.totalCostUsd).toBeCloseTo(9 + (220 * 15) / 1_000_000, 10);
+      expect(usage?.outputTokens).toBe(220);
+      const saved = meter.measurementSnapshot();
+      expect(saved.outputTimings).toEqual([
+        {
+          version: 4,
+          requestId: "live",
+          turnId: "turn",
+          outputTokens: tokens,
+          startedAtMs: 1_000,
+          completedAtMs: 3_000,
+        },
+        {
+          version: 4,
+          requestId: "other",
+          turnId: "turn",
+          outputTokens: 20,
+          startedAtMs: 4_000,
+          completedAtMs: 5_000,
+        },
+      ]);
+      const restored = new UsageMeter();
+      restored.restoreOutputTimings(saved.outputTimings ?? []);
+      expect(restored.derive(null, prices)?.sessionOutputTokensPerSecond).toBe((tokens + 20) / 3);
+      expect(restored.derive(null, prices)?.totalCostUsd).toBeUndefined();
+    },
+  );
+
   it("measures time to first output and per-request output speed", () => {
     const meter = completeMeter();
     meter.turnStarted("turn-1", 1_000);
@@ -305,4 +356,16 @@ describe("UsageMeter timing", () => {
     expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(0);
     expect(completeMeter().derive(null, prices)?.outputTokensPerSecond).toBeUndefined();
   });
+});
+
+it("preserves the latest native speed after taking a boundary snapshot without replacing native fees", () => {
+  const meter = new UsageMeter();
+  meter.restoreMeasurements({ outputTokensPerSecond: 100 }, "old", 1);
+  const native = { outputTokensPerSecond: 55, totalCostUsd: 0.25 };
+  expect(meter.derive(native, prices)).toMatchObject(native);
+  expect(meter.measurementSnapshot(native, "next").outputTokensPerSecond).toMatchObject({
+    value: 55,
+    turnId: "next",
+  });
+  expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(55);
 });

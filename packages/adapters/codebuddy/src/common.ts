@@ -88,6 +88,35 @@ export function failure<T>(
   return { ok: false, error: nativeError(new CodeBuddyError(code, message), profile) };
 }
 
+export function nativeTurnError(
+  stopReason: unknown,
+  meta: Record<string, unknown>,
+  profile: CodeBuddyRuntimeProfile,
+): HarnessError {
+  const fallback = `Native Turn stopped: ${text(stopReason) || "unknown"} (${text(meta["codebuddy.ai/outcome"]) || "no native outcome"})`;
+  const raw = text(meta["codebuddy.ai/errorMessage"]).trim();
+  let diagnostic = "";
+  let category: unknown;
+  if (raw) {
+    try {
+      const error = record(JSON.parse(raw));
+      const data = record(error.data);
+      diagnostic = text(data.details).trim() || text(error.message).trim();
+      category = data.category;
+    } catch {
+      diagnostic = raw;
+    }
+  }
+  return nativeError(
+    new CodeBuddyError(
+      // -32000 is shared by native refusals; the category identifies authentication failures.
+      category === "auth" ? "authenticationRequired" : "nativeFailure",
+      diagnostic ? `${fallback}: ${diagnostic}` : fallback,
+    ),
+    profile,
+  );
+}
+
 export async function bounded<T>(
   operation: Promise<T>,
   milliseconds: number,

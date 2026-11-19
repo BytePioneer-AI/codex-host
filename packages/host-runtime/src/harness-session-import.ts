@@ -1,4 +1,10 @@
-import type { HarnessAdapter, HarnessSessionImportCapability } from "@codexhost/harness-adapter";
+import { createHash } from "node:crypto";
+import type {
+  HarnessAdapter,
+  HarnessSession,
+  HarnessSessionImportCapability,
+  HarnessSessionImportSource,
+} from "@codexhost/harness-adapter";
 import { MappingStoreError, type StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   mapExternalThreadHarnessError,
@@ -21,6 +27,7 @@ import {
   externalThreadValue,
   type ExternalThreadRepository,
 } from "./external-thread-repository.js";
+import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 
 export type HarnessSessionListOutcome =
   | { ok: true; candidates: HarnessSessionImportCandidate[]; total: number }
@@ -28,6 +35,11 @@ export type HarnessSessionListOutcome =
 export type HarnessSessionImportOutcome =
   | { ok: true; threadId: HostThreadId; thread: JsonObject }
   | { ok: false; error: ExternalThreadRpcError };
+
+export interface PreparedSessionImportOptions {
+  environment?: Record<string, string | undefined>;
+  adoptPreparedSession?: (record: StoredThreadRecordV1, session: HarnessSession) => Promise<void>;
+}
 
 function fixedError(code: number, message: string): ExternalThreadRpcError {
   return { code, message };
@@ -56,18 +68,22 @@ export class HarnessSessionImporter {
   readonly #diagnose: (error: unknown) => void;
   readonly #imports = new Map<string, Promise<HarnessSessionImportOutcome>>();
   readonly #repository: ExternalThreadRepository;
+  readonly #preparedOptions: PreparedSessionImportOptions;
 
-  constructor(input: {
-    harnessId: HarnessId;
-    adapter?: HarnessAdapter | undefined;
-    diagnose?: (error: unknown) => void;
-    repository: ExternalThreadRepository;
-  }) {
+  constructor(
+    input: {
+      harnessId: HarnessId;
+      adapter?: HarnessAdapter | undefined;
+      diagnose?: (error: unknown) => void;
+      repository: ExternalThreadRepository;
+    } & PreparedSessionImportOptions,
+  ) {
     this.#harnessId = input.harnessId;
     this.#adapterRegistered = input.adapter?.harnessId === input.harnessId;
     this.#capability = this.#adapterRegistered ? input.adapter?.sessionImport : undefined;
     this.#diagnose = input.diagnose ?? (() => undefined);
     this.#repository = input.repository;
+    this.#preparedOptions = input;
   }
 
   #mappedRecord(
@@ -77,10 +93,22 @@ export class HarnessSessionImporter {
     return records.find(
       (record) =>
         !record.subagent &&
-        record.state === "ready" &&
-        record.nativeSessionRef?.harnessId === this.#harnessId &&
-        record.nativeSessionRef.nativeSessionId === nativeSessionId,
+        [record.nativeSessionRef, record.importSourceRef].some(
+          (ref) => ref?.harnessId === this.#harnessId && ref.nativeSessionId === nativeSessionId,
+        ),
     );
+  }
+
+  #existing(record: StoredThreadRecordV1): HarnessSessionImportOutcome {
+    return record.state === "ready"
+      ? importedThread(record)
+      : {
+          ok: false,
+          error: fixedError(
+            -32081,
+            "Session import outcome is unconfirmed. No new import will be attempted; check the native Session before recovery.",
+          ),
+        };
   }
 
   #unavailable(): ExternalThreadRpcError {
@@ -109,10 +137,10 @@ export class HarnessSessionImporter {
       }
       const mapped = new Set(
         (await this.#repository.list()).flatMap((record) =>
-          !record.subagent &&
-          record.state === "ready" &&
-          record.nativeSessionRef?.harnessId === this.#harnessId
-            ? [record.nativeSessionRef.nativeSessionId]
+          !record.subagent && record.state === "ready"
+            ? [record.nativeSessionRef, record.importSourceRef].flatMap((ref) =>
+                ref?.harnessId === this.#harnessId ? [ref.nativeSessionId] : [],
+              )
             : [],
         ),
       );
@@ -169,7 +197,7 @@ export class HarnessSessionImporter {
       return { ok: false, error: fixedError(-32081, "Session mappings could not be read") };
     }
     const existing = this.#mappedRecord(records, nativeSessionId);
-    if (existing) return importedThread(existing);
+    if (existing) return this.#existing(existing);
     // A stale page or a direct request must not turn a replaced Session into a second Thread.
     if (this.#repository.supersededNativeSessionIds(this.#harnessId).has(nativeSessionId))
       return { ok: false, error: fixedError(-32079, "Native Session is no longer available") };
@@ -189,7 +217,7 @@ export class HarnessSessionImporter {
       return { ok: false, error: fixedError(-32081, "Session mappings could not be read") };
     }
     const winner = this.#mappedRecord(records, nativeSessionId);
-    if (winner) return importedThread(winner);
+    if (winner) return this.#existing(winner);
     if (!source.ok)
       return {
         ok: false,
@@ -210,6 +238,12 @@ export class HarnessSessionImporter {
       return { ok: false, error: fixedError(-32076, "Harness Session import identity is invalid") };
     }
     const candidate = metadata.data;
+    if (capability.prepareImport) {
+      return this.#prepareImport(
+        { candidate, nativeRef: ref.data },
+        capability.prepareImport.bind(capability),
+      );
+    }
     if (candidate.running === true)
       return { ok: false, error: fixedError(-32072, "Native Session is busy") };
 
@@ -245,5 +279,93 @@ export class HarnessSessionImporter {
       }
       return { ok: false, error: fixedError(-32081, "Session import could not be persisted") };
     }
+  }
+
+  async #prepareImport(
+    source: HarnessSessionImportSource,
+    prepare: NonNullable<HarnessSessionImportCapability["prepareImport"]>,
+  ): Promise<HarnessSessionImportOutcome> {
+    const input = createExternalThreadRecordInput({
+      harnessId: this.#harnessId,
+      cwd: source.candidate.cwd,
+      ...(source.candidate.title ? { title: source.candidate.title } : {}),
+      transportModelId: transportModelIdForHarness(this.#harnessId),
+      ephemeral: false,
+      historyMode: "paginated",
+      importSourceRef: source.nativeRef,
+      createRequestId: `session-import:${this.#harnessId}:${createHash("sha256").update(source.nativeRef.nativeSessionId).digest("hex")}`,
+    });
+    let provisional: StoredThreadRecordV1;
+    try {
+      provisional = await this.#repository.createProvisional(input);
+    } catch {
+      return { ok: false, error: fixedError(-32081, "Session import could not be persisted") };
+    }
+    // The persisted request also excludes concurrent importers and survives Host restarts.
+    if (provisional.hostThreadId !== input.hostThreadId) return this.#existing(provisional);
+    let prepared;
+    try {
+      prepared = await prepare({
+        source,
+        environment: {
+          ...this.#preparedOptions.environment,
+          [DELEGATION_THREAD_ID_ENV]: provisional.hostThreadId,
+        },
+      });
+    } catch (error) {
+      this.#diagnose(error);
+      return this.#existing(provisional);
+    }
+    if (!prepared.ok) {
+      await this.#repository.removeProvisional(provisional.hostThreadId).catch(this.#diagnose);
+      return { ok: false, error: mapExternalThreadHarnessError(prepared.error, "resume") };
+    }
+    const { session } = prepared.value;
+    const close = async () => {
+      await session?.close().catch(this.#diagnose);
+    };
+    const ref = nativeSessionRefSchema.safeParse(prepared.value.nativeRef);
+    if (!ref.success || ref.data.harnessId !== this.#harnessId) {
+      await close();
+      return this.#existing(provisional);
+    }
+    let record: StoredThreadRecordV1;
+    try {
+      record = await this.#repository.commitNative(provisional.hostThreadId, ref.data, []);
+    } catch (error) {
+      this.#diagnose(error);
+      await close();
+      return this.#existing(provisional);
+    }
+    // Once the native ID is durable, even hydration failure must never create another branch.
+    if (session && this.#preparedOptions.adoptPreparedSession) {
+      const actualRef = session.initialState.nativeRef;
+      if (
+        actualRef?.harnessId !== ref.data.harnessId ||
+        actualRef.nativeSessionId !== ref.data.nativeSessionId
+      ) {
+        await close();
+        return {
+          ok: false,
+          error: fixedError(-32076, "Harness Session import identity is invalid"),
+        };
+      }
+      try {
+        await this.#preparedOptions.adoptPreparedSession(record, session);
+      } catch (error) {
+        this.#diagnose(error);
+        await close();
+        return {
+          ok: false,
+          error: fixedError(
+            -32082,
+            "Session was imported but could not be opened. Reopen the imported Thread to retry.",
+          ),
+        };
+      }
+    } else {
+      await close();
+    }
+    return importedThread(record);
   }
 }

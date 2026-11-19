@@ -44,6 +44,7 @@ export function projectCursorAccountUsage(
     credits: {
       usedPercent,
       label: "Auto · monthly",
+      scope: { id: "auto", label: "Auto" },
       periodType: "monthly",
       ...(resetsAt ? { resetsAt } : {}),
       ...(apiPercent === undefined
@@ -52,6 +53,8 @@ export function projectCursorAccountUsage(
             productUsage: [
               {
                 product: "API · monthly",
+                periodType: "monthly",
+                scope: { id: "api", label: "API" },
                 usagePercent: apiPercent,
                 ...(resetsAt ? { resetsAt } : {}),
               },

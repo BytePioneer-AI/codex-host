@@ -66,11 +66,13 @@ async function runPackagedHost(host, directory, requests) {
   Object.assign(environment, {
     HOME: directory,
     USERPROFILE: directory,
+    CODEX_HOME: path.join(directory, ".codex"),
     CODEXHOST_DATA_DIR: path.join(directory, "data"),
     CODEXHOST_PLUGIN_DIRECTORY: path.join(directory, "user-plugins"),
     CODEXHOST_STOCK_CODEX_PATH: process.execPath,
     CODEXHOST_CLAUDE_COMMAND: path.join(directory, "missing-claude"),
     CODEXHOST_ANTIGRAVITY_COMMAND: path.join(directory, "missing-antigravity"),
+    CODEXHOST_COPILOT_COMMAND: path.join(directory, "missing-copilot"),
   });
   const child = spawn(process.execPath, [host, "app-server"], {
     cwd: directory,
@@ -175,15 +177,31 @@ describe("release Host and independent plugin Bundles", () => {
       expect(hostAudit.runtimePackages).toEqual([
         "@deepseek-ai/cordis",
         "@deepseek-ai/cosmokit",
+        "@modelcontextprotocol/sdk",
+        "content-type",
+        "cross-spawn",
         "diff",
+        "eventsource-parser",
+        "isexe",
+        "path-key",
+        "pkce-challenge",
+        "shebang-command",
+        "shebang-regex",
+        "which",
         "ws",
+        "yaml",
         "zod",
       ]);
       const pluginAudits = await buildPreinstalledHarnessPlugins({
         repositoryRoot,
         outputDirectory: path.join(app, "plugins"),
       });
-      const expectedIds = preinstalledHarnessPlugins().configuration.enabled;
+      const preinstalled = preinstalledHarnessPlugins();
+      const expectedIds = preinstalled.configuration.enabled;
+      // Desktop hides Web-only Harnesses; the client channel would still list them.
+      const desktopIds = preinstalled.plugins
+        .filter(({ manifest }) => manifest.surfaces?.includes("desktop") ?? true)
+        .map(({ manifest }) => manifest.id);
       expect(pluginAudits.map(({ id }) => id)).toEqual(expectedIds);
       expect(pluginAudits.find(({ id }) => id === "claude-code").runtimePackages).toContain(
         "@anthropic-ai/claude-agent-sdk",
@@ -219,7 +237,7 @@ describe("release Host and independent plugin Bundles", () => {
           .find(({ id }) => id === 1)
           .result.plugins.map(({ id }) => id)
           .sort(),
-      ).toEqual([...expectedIds].sort());
+      ).toEqual([...desktopIds].sort());
       expect(first.lines.find(({ id }) => id === 2)).toMatchObject({ result: { official: true } });
       expect(first.stderr).not.toMatch(/loadFailed|loadTimeout|Dynamic require/u);
 
@@ -259,7 +277,7 @@ describe("release Host and independent plugin Bundles", () => {
           .find(({ id }) => id === 1)
           .result.plugins.map(({ id }) => id)
           .sort(),
-      ).toEqual([...expectedIds, "unknown-agent"].sort());
+      ).toEqual([...desktopIds, "unknown-agent"].sort());
 
       await rm(path.join(relocated, "plugins"), { recursive: true });
       await rm(userRoot, { recursive: true });

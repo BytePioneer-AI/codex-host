@@ -13,6 +13,7 @@ import type {
 } from "@opencode-ai/sdk/v2";
 
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   validateHostApprovalResponse,
   validateHostQuestionResponse,
@@ -55,6 +56,8 @@ import {
   type TurnOutcome,
   type TurnStartAccepted,
   type TurnStartCommand,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
 } from "@codexhost/harness-adapter";
 import {
   harnessCommandCatalogSchema,
@@ -268,6 +271,7 @@ export const openCodeCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: COMPACT_COMMAND_ID,
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current OpenCode Session context",
       argumentMode: "none",
@@ -421,6 +425,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -433,6 +438,7 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -443,6 +449,9 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("OpenCode Session is not open") };
     }
+    // Busy prompt_async is undocumented, and the live user-message binding drops the reply
+    // that follows an inserted message. This Session does not declare native steer.
+    if (command.type === "turn.steer") return unsupportedSteer("OpenCode");
     if (command.type === "turn.cancel") return this.#cancel(command);
     if (command.type === "interaction.respond") return this.#respond(command);
     if (command.type === "model.select") return this.#selectModel(command);
@@ -918,7 +927,9 @@ class OpenCodeHarnessSession implements HarnessSession, OpenCodeTransportListene
 
   #projectPart(active: ActiveTurn, part: Part): void {
     if (part.type === "text" || part.type === "reasoning") {
-      if ((part.type === "text" && part.ignored) || !part.text) return;
+      if (part.type === "text" && part.ignored) return;
+      // Native streams establish Part identity with empty text, then send deltas. Retain that
+      // typed seed so the first delta can be projected before the final full-text update.
       const existing = active.items.get(part.id);
       if (!existing) {
         const item: HostAgentMessageItem | HostReasoningItem =

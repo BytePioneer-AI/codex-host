@@ -23,27 +23,39 @@ const claudePermissionModes = [
   {
     id: "plan",
     label: "Plan mode",
+    localizations: {
+      "zh-CN": {
+        label: "规划模式",
+        description: "探索并制定计划；批准计划后退出规划，恢复此前的权限模式。",
+      },
+    },
     description:
       "Explore and prepare a plan; approval exits planning and resumes the previous permission mode.",
   },
   {
     id: "default",
     label: "Default",
+    localizations: { "zh-CN": { label: "默认", description: "编辑和其他受保护操作前询问。" } },
     description: "Ask before edits and other protected actions.",
   },
   {
     id: "acceptEdits",
     label: "Accept edits",
+    localizations: {
+      "zh-CN": { label: "接受编辑", description: "允许文件编辑；其他受保护操作前询问。" },
+    },
     description: "Allow file edits and ask for other protected actions.",
   },
   {
     id: "auto",
     label: "Auto mode",
+    localizations: { "zh-CN": { label: "自动模式", description: "由 Claude 判断权限请求。" } },
     description: "Let Claude classify permission requests.",
   },
   {
     id: "bypassPermissions",
     label: "Bypass permissions",
+    localizations: { "zh-CN": { label: "绕过权限", description: "跳过 Claude Code 权限检查。" } },
     description: "Skip Claude Code permission checks.",
     dangerous: true,
   },

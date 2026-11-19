@@ -39,6 +39,8 @@ export type {
   DecodedThreadRollbackRequest,
   ExternalThreadRpcError,
 } from "./thread-fork.js";
+export { decodeThreadInjectItemsRequest } from "./thread-inject.js";
+export type { DecodedThreadInjectItemsRequest } from "./thread-inject.js";
 export {
   carriesHostThreadListCursor,
   decodeHostThreadListCursor,

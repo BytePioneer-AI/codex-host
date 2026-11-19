@@ -18,10 +18,11 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
 
-async function childHistory(
+export async function childHistory(
   file: string,
   parentSessionId: string,
   identity: string,
+  validateParent = false,
 ): Promise<HostThreadSnapshot> {
   if (!path.isAbsolute(file)) throw new Error("Pi child Session path is not absolute");
   const handle = await open(
@@ -49,6 +50,8 @@ async function childHistory(
       header.version !== 3
     )
       throw new Error("Unsupported Pi child Session header");
+    if (validateParent && header.parentSession !== parentSessionId)
+      throw new Error("Pi child Session parent identity mismatch");
     const entries: PiSessionHistory["entries"] = [];
     for (const entry of values.slice(1)) {
       const parsed = jsonValueSchema.safeParse(entry);
@@ -57,7 +60,11 @@ async function childHistory(
       entries.push(parsed.data);
     }
     const history: PiSessionHistory = { entries, leafId: String(entries.at(-1)?.id ?? "") || null };
-    const snapshot = mapPiSnapshot(history, { sessionId: parentSessionId, model: null });
+    const snapshot = mapPiSnapshot(history, {
+      sessionId: parentSessionId,
+      model: null,
+      ...(typeof header.cwd === "string" ? { cwd: header.cwd } : {}),
+    });
     const prefix = createHash("sha256").update(identity).digest("hex");
     return {
       turns: snapshot.turns.map((turn) => {

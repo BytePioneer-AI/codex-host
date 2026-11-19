@@ -117,7 +117,9 @@ export interface ModernRemoteConnectionDependencies {
   ) => void;
 }
 
-const DEFAULT_STARTUP_TIMEOUT_MS = 20_000;
+// `dsh web` takes about 17 s to print its address when idle and over 50 s on a cold start after a
+// plugin upgrade; while Codex Desktop and other Harnesses start together it often passed 20 s.
+const DEFAULT_STARTUP_TIMEOUT_MS = 90_000;
 const DEFAULT_UNARY_TIMEOUT_MS = 10_000;
 const DEFAULT_STREAM_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;

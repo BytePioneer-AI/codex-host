@@ -16,6 +16,7 @@ export const QODER_FALLBACK_COMMAND_CATALOG: HarnessCommandCatalog =
       {
         id: "qoder.compact",
         invocation: "/compact",
+        localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
         label: "Compact",
         description: "Compresses the context by replacing it with a summary",
         argumentMode: "text",
@@ -69,7 +70,7 @@ export function mapQoderSlashCommands(
     if (typeof rawName !== "string") continue;
     const cleanName = rawName.replace(/^\//, "").trim().toLowerCase();
     // Qoder does not tell skills and commands apart.
-    if (!cleanName || isExcludedLiveCommand(cleanName, "command")) continue;
+    if (!cleanName || isExcludedLiveCommand(cleanName)) continue;
     const id = `qoder.${cleanName}`;
     if (seenIds.has(id)) continue;
     seenIds.add(id);

@@ -15,6 +15,14 @@ Use Harnesses that are installed and signed in only on a Windows machine from an
 2. On the other computer, open **Settings → Connections → Control other devices**, enter the pairing code, and select the Windows environment.
 3. Open a project in that environment and pick a Harness from the composer's Agent / Model selector.
 
+## Desktop compatibility and reconnects
+
+Both Renderer-managed and main-process RPC-managed Desktop layouts are supported. For the RPC layout, codexhost uses Desktop's loaded native manager, RPC and UI-controller contracts to preserve history, notifications, queued follow-ups and approval callbacks. Missing or ambiguous contracts leave the official Codex route available; they do not enable an unverified Harness route.
+
+The external Harness bridge is enabled only after the controlled machine reports a Windows Codex home. Native Remote Control to Linux and macOS keeps the official manager. This does not add external Harness support for POSIX targets.
+
+A physical disconnect retires the bridge even when Desktop reuses its native manager object. Reconnection creates a fresh process bridge; submitted turns are not replayed. Resume the existing Thread to retain its Harness and native session history. Tunnel writes and cleanup use the original RPC transport independently of the logical request queue, so a busy model/history queue cannot block its own responses.
+
 ## Troubleshooting
 
 First, make sure regular Codex tasks work over Remote Control. Pairing failures, missing environments, and account authorization errors come from Remote Control itself, not codexhost.

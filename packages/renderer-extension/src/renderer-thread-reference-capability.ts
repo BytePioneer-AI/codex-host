@@ -1,4 +1,6 @@
 import type { RendererModelClient } from "./renderer-model-client.js";
+import type { RendererMessageTarget } from "./renderer-manual-compaction.js";
+import { restoreRpcThreadReferenceCapability } from "./renderer-thread-reference-persistence.js";
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -8,7 +10,11 @@ export function restoreThreadReferenceCapability(
   client: RendererModelClient,
   manager: unknown,
   isCurrent: () => boolean,
+  messages: RendererMessageTarget | null = null,
 ): RendererModelClient {
+  if (record(manager) && manager.kind === "main-process-rpc") {
+    return restoreRpcThreadReferenceCapability(client, messages, isCurrent);
+  }
   if (!record(manager) || !record(manager.storage)) return client;
   const storage = manager.storage;
   const read = storage.readValue;

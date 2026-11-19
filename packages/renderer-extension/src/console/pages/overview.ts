@@ -1,4 +1,5 @@
 import { consolePost } from "../api.js";
+import { confirmAction } from "../confirm.js";
 import { button, h } from "../dom.js";
 import type { ConsoleMessages } from "../messages.js";
 import type { ConsoleOverview, ConsoleState } from "../state.js";
@@ -59,6 +60,7 @@ export function createOverviewPage(
       const document = context.content.ownerDocument;
       let launching = false;
       const render = (): void => {
+        if (context.content.querySelector("dialog")) return;
         const overview = state.overview;
         if (!overview) return;
         const summary = summaryView(overview, messages);
@@ -92,6 +94,52 @@ export function createOverviewPage(
           start.disabled = launching || !overview.launchAvailable;
           actions.append(start);
         }
+        const chinese = locale.startsWith("zh");
+        const actionError = h(document, "p", { role: "alert" });
+        const openWeb = (target: HTMLButtonElement, connectDevices: boolean): void => {
+          target.disabled = true;
+          actionError.textContent = "";
+          void consolePost("/api/web/open", { connectDevices })
+            .catch((cause: unknown) => {
+              actionError.textContent = cause instanceof Error ? cause.message : String(cause);
+            })
+            .finally(() => {
+              target.disabled = false;
+            });
+        };
+        const web = button(
+          document,
+          chinese ? "打开 Web" : "Open Web",
+          () => openWeb(web, false),
+          "primary",
+        );
+        const remote = button(
+          document,
+          [
+            createRendererSettingsIcon("mobile", 14),
+            chinese ? "远程访问（手机 / 其他电脑）" : "Remote access (phone / other computers)",
+          ],
+          () => openWeb(remote, true),
+        );
+        web.className += " console-web__open";
+        remote.className += " console-web__remote";
+        actions.append(
+          button(document, chinese ? "停止" : "Stop", () => {
+            confirmAction(
+              context.content,
+              context.signal,
+              chinese ? "停止 codexhost？" : "Stop codexhost?",
+              chinese
+                ? "将关闭所有 codexhost 服务，包括此控制台。运行中的任务和 Web 终端会被中断，会话数据保留。"
+                : "Stop all codexhost services, including this console. Running tasks and Web terminals will be interrupted; session data is kept.",
+              async () => {
+                await consolePost("/api/stop");
+                state.markStopped();
+              },
+              chinese,
+            );
+          }),
+        );
         if (state.update?.updateAvailable) {
           actions.append(
             button(document, `${messages.viewUpdate} · ${state.update.latestVersion ?? ""}`, () =>
@@ -151,6 +199,27 @@ export function createOverviewPage(
             ),
             actions,
           ),
+          h(
+            document,
+            "section",
+            { className: "console-web" },
+            h(
+              document,
+              "div",
+              { className: "console-web__copy" },
+              h(document, "div", { className: "console-hero__title" }, "Web"),
+              h(
+                document,
+                "div",
+                { className: "console-hero__detail" },
+                chinese
+                  ? "在浏览器里使用同样的界面，也可以用手机或其他电脑远程访问本机的所有 Agent。"
+                  : "Use the same interface in a browser, or reach every local Agent from a phone or another computer.",
+              ),
+            ),
+            h(document, "div", { className: "console-web__buttons" }, web, remote),
+          ),
+          actionError,
           versions,
           ...renderStartupDiagnostics(document, messages, overview, locale),
           h(document, "h2", { className: "console-section-title" }, messages.quickActions),

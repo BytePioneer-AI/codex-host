@@ -9,6 +9,12 @@ Claude 在 `run_in_background` 下启动 Bash 时，原生结果立即返回并�
 - 任务结束时，卡片在原 Turn 上补发完成：成功、失败或已停止。最终输出读取原生 `task_notification` 结构化给出的输出文件，按适配器的工具输出上限截断；文件读不到时，卡片以 `Native output is unavailable.` 完成。
 - Claude 收到结束通知后常会自己接着处理（读输出、再调用工具、汇报结果）。这段续段在第一条 Root 输出时作为自主 Turn 出现，之后实时显示，Thread 显示为运行中，用户可以停止它。续段结束前发送的消息返回 `sessionBusy`，不会开始新的 Turn 并吞掉续段的剩余输出；续段还没有 Root 输出时发送的消息照常开始 Turn，由该 Turn 接手之后的原生输出。
 
+## 历史身份与聊天分支
+
+独立续写在历史中也单独成轮：使用触发它的 `task-notification` 用户记录 UUID，与实时自主回合一致，用户输入为空。Checkpoint 是该续写最后一条 Root 消息的 UUID；前一轮的 Checkpoint 保持在通知之前，嵌套子智能体消息不推进 Root 边界。原生 `forkSession(upToMessageId)` 使用这个精确消息切点。
+
+后台 Agent 或 Workflow 的 occupancy 仍持有原回合时，通知和续写归属该回合。历史读取复用原生委派结果、任务身份与结算解析来还原占用关系；不能仅因出现通知就拆轮，也不能把独立后台 Bash 续写并入前一轮。
+
 ## 结算
 
 - 原生 `task_notification` 是后台任务唯一的终止信号（`stopTask` 之后也以 status 为 stopped 的通知收尾）。它由后台 Agent 与后台命令共用，且不带任务类型。现有的 `native-message.ts` 统一把它解析为带 `callId`（`tool_use_id`）的 `subagent.settled`，本功能只补上结构化的输出文件路径。

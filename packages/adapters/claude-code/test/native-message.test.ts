@@ -199,6 +199,69 @@ describe("Claude native Turn interpretation", () => {
     });
   });
 
+  it("publishes a later text record of a completed non-streamed message as its own checkpoint", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const first = assistantBlocks(
+      [{ type: "text", text: "first" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000000",
+    );
+    const second = assistantBlocks(
+      [{ type: "text", text: "second" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000001",
+    );
+    first.message.id = "request-split";
+    second.message.id = "request-split";
+
+    const events = [first, second, second].flatMap((frame) => turn.consume(frame).events ?? []);
+    expect(events.filter(({ type }) => type === "text.delta")).toMatchObject([
+      { messageId: "request-split", delta: "first" },
+      { messageId: "request-split", delta: "second" },
+    ]);
+    expect(events.filter(({ type }) => type === "message.completed")).toMatchObject([
+      { messageId: "request-split", checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000000" },
+      { messageId: "request-split", checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000001" },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
+  it("publishes each streamed block of one native message as its own completed message", () => {
+    const turn = new ClaudeNativeTurnAccumulator();
+    const start = {
+      type: "stream_event",
+      uuid: "stream-start",
+      parent_tool_use_id: null,
+      event: { type: "message_start", message: { id: "request-stream" } },
+    };
+    const first = assistantBlocks(
+      [{ type: "text", text: "first" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000000",
+    );
+    const second = assistantBlocks(
+      [{ type: "text", text: "second" }],
+      "cb93af3f-d06f-4ff8-bad0-000000000001",
+    );
+    first.message.id = "request-stream";
+    second.message.id = "request-stream";
+
+    const events = [
+      start,
+      partial("first", "stream-first"),
+      first,
+      partial("second", "stream-second"),
+      second,
+      second,
+    ].flatMap((frame) => turn.consume(frame).events ?? []);
+    expect(events.filter(({ type }) => type === "text.delta")).toMatchObject([
+      { delta: "first" },
+      { delta: "second" },
+    ]);
+    expect(events.filter(({ type }) => type === "message.completed")).toMatchObject([
+      { checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000000" },
+      { checkpointId: "cb93af3f-d06f-4ff8-bad0-000000000001" },
+    ]);
+    expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+  });
+
   it("reconciles separate Assistant text responses across a Tool loop", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
@@ -562,6 +625,14 @@ describe("Claude native Turn interpretation", () => {
     expect(turn.consume({ type: "system", subtype: "init", cwd: "/tmp" }).events).toEqual([
       { type: "segment.started" },
     ]);
+    expect(
+      turn.consume({
+        type: "system",
+        subtype: "init",
+        cwd: "/tmp",
+        mcp_servers: [{ name: "team..docs", status: "connected" }, { status: "failed" }],
+      }).events,
+    ).toEqual([{ type: "segment.started", mcpServers: ["team..docs"] }]);
   });
 
   it("maps SendMessage to an existing native Subagent without marking the Agent complete", () => {
@@ -602,6 +673,51 @@ describe("Claude native Turn interpretation", () => {
       },
     ]);
   });
+
+  it.each(["sdk", "transcript", "text", "blocks"])(
+    "recognizes a refused SendMessage without is_error (%s)",
+    (shape) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      turn.consume(toolUse("SendMessage", "send-1", { to: "stopped-agent", message: "continue" }));
+      const refused = {
+        success: false,
+        message: "Agent was stopped by the user and won't be resumed.",
+      };
+      const text =
+        shape === "sdk" || shape === "transcript" ? refused.message : JSON.stringify(refused);
+      const message = {
+        ...toolResult("send-1", {
+          content: shape === "text" ? text : [{ type: "text", text }],
+        }),
+        ...(shape === "sdk" ? { tool_use_result: refused } : {}),
+        ...(shape === "transcript" ? { toolUseResult: refused } : {}),
+      };
+      expect(turn.consume(message).events).toContainEqual({
+        type: "subagent.completed",
+        callId: "send-1",
+        isError: true,
+        resultSummary: text,
+      });
+      // A refused delegation does not fail the Root's subsequent recovery.
+      expect(turn.consume(result()).terminal).toEqual({ status: "succeeded" });
+    },
+  );
+
+  it.each(["SendMessage", "Agent", "Bash"])(
+    "does not infer %s failure from prose or an unrelated result field",
+    (toolName) => {
+      const turn = new ClaudeNativeTurnAccumulator();
+      turn.consume(toolUse(toolName, "call-1", { to: "agent-1" }));
+      const nativeResult = toolName === "SendMessage" ? { success: true } : { success: false };
+      const events = turn.consume(
+        toolResult("call-1", {
+          content: 'The input contains {"success":false}',
+          nativeResult,
+        }),
+      ).events;
+      expect(events).toContainEqual(expect.objectContaining({ callId: "call-1", isError: false }));
+    },
+  );
 
   it("correlates interleaved Tool results and preserves native file evidence", () => {
     const turn = new ClaudeNativeTurnAccumulator();
@@ -829,11 +945,7 @@ describe("Claude native Turn interpretation", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
     expect(turn.consume(thinkingPartial("visible ", "assistant-thinking")).events).toEqual([
-      {
-        type: "reasoning.delta",
-        messageId: "assistant-thinking",
-        delta: "visible ",
-      },
+      { type: "reasoning.delta", messageId: "assistant-thinking:thinking:0", delta: "visible " },
     ]);
     expect(
       turn.consume(
@@ -846,7 +958,7 @@ describe("Claude native Turn interpretation", () => {
         ),
       ).events,
     ).toEqual([
-      { type: "reasoning.completed", messageId: "assistant-thinking" },
+      { type: "reasoning.completed", messageId: "assistant-thinking:thinking:0" },
       { type: "text.delta", messageId: "assistant-thinking", delta: "answer" },
       {
         type: "message.completed",
@@ -884,7 +996,9 @@ describe("Claude native Turn interpretation", () => {
   it("ignores conflicting complete reasoning without failing the Turn", () => {
     const turn = new ClaudeNativeTurnAccumulator();
 
-    turn.consume(thinkingPartial("streamed", "reasoning-conflict"));
+    expect(turn.consume(thinkingPartial("streamed", "reasoning-conflict")).events).toEqual([
+      { type: "reasoning.delta", messageId: "reasoning-conflict:thinking:0", delta: "streamed" },
+    ]);
     expect(
       turn.consume(
         assistantBlocks(
@@ -893,7 +1007,7 @@ describe("Claude native Turn interpretation", () => {
         ),
       ).events,
     ).toEqual([
-      { type: "reasoning.completed", messageId: "reasoning-conflict" },
+      { type: "reasoning.completed", messageId: "reasoning-conflict:thinking:0" },
       {
         type: "message.completed",
         messageId: "reasoning-conflict",
@@ -1000,6 +1114,7 @@ describe("Claude native Turn interpretation", () => {
       {
         type: "message.completed",
         messageId: "recap-output",
+        localCommand: true,
         checkpointId: "recap-output",
       },
     ]);
@@ -1115,7 +1230,13 @@ describe("Claude native Turn interpretation", () => {
       result({
         total_cost_usd: 1.373,
         modelUsage: {
-          "claude-opus": { inputTokens: 100, outputTokens: 40 },
+          "claude-opus": {
+            inputTokens: 100,
+            outputTokens: 40,
+            cacheReadInputTokens: 900,
+            cacheCreationInputTokens: 50,
+            contextWindow: 1_000_000,
+          },
           "claude-sonnet": { inputTokens: 20, outputTokens: 5 },
         },
         usage: {
@@ -1131,8 +1252,14 @@ describe("Claude native Turn interpretation", () => {
         type: "usage.result",
         totalCostUsd: 1.373,
         modelUsage: [
-          { inputTokens: 100, outputTokens: 40 },
-          { inputTokens: 20, outputTokens: 5 },
+          {
+            model: "claude-opus",
+            inputTokens: 100,
+            outputTokens: 40,
+            promptTokens: 1_050,
+            contextWindowTokens: 1_000_000,
+          },
+          { model: "claude-sonnet", inputTokens: 20, outputTokens: 5, promptTokens: 20 },
         ],
         lastRequestUsage: {
           inputTokens: 10,

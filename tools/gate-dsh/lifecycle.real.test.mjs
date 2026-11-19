@@ -43,8 +43,10 @@ for (const [id, variable, Adapter] of [
             .reverse()
             .find((message) => message.role === "user");
           const text = JSON.stringify(user?.content ?? "");
-          const held = text.includes("HOLD_INPUT");
-          const main = /(?:FIRST|HOLD|THIRD)_INPUT/u.test(text);
+          // DSH's concurrent auxiliary title request embeds the first prompt; it is not a main request.
+          const title = text.includes("Generate the session title from this JSON array");
+          const held = !title && text.includes("HOLD_INPUT");
+          const main = !title && /(?:FIRST|HOLD|THIRD)_INPUT/u.test(text);
           modelRequests.push({
             held,
             main,

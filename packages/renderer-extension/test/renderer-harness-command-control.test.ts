@@ -1,27 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import type { HarnessCommandDescriptor } from "@codexhost/shared-contracts";
+import { harnessCommandDescriptorSchema } from "@codexhost/shared-contracts";
 
 import {
   rendererHarnessCommandPresentation,
   rendererHarnessMessages,
 } from "../src/renderer-harness-localization.js";
 
-const compactCommand = {
+const compactCommand = harnessCommandDescriptorSchema.parse({
   id: "pi.compact",
   invocation: "/compact",
   label: "Compact context",
+  localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
   description: "Compact the current conversation context",
   argumentMode: "text",
-} as HarnessCommandDescriptor;
+});
 
-const customCommand = {
+const customCommand = harnessCommandDescriptorSchema.parse({
   id: "custom.explain",
   invocation: "/explain",
   label: "Explain",
   description: "Explain the current change",
   argumentMode: "none",
-} as HarnessCommandDescriptor;
+});
 
 describe("Renderer Harness command localization", () => {
   it("uses Chinese chrome and compact copy for the Chinese settings locale", () => {

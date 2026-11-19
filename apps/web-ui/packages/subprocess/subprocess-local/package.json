@@ -1,0 +1,32 @@
+{
+  "name": "@deepseek-ai/dsh-subprocess-local",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./runner": {
+      "types": "./src/bin.ts",
+      "default": "./src/bin.ts"
+    },
+    "./output": {
+      "types": "./src/output.ts",
+      "default": "./src/output.ts"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-lazy-require": "*",
+    "@deepseek-ai/dsh-subprocess": "*",
+    "@deepseek-ai/dsh-timeout": "*",
+    "@deepseek-ai/dsh-win32-process": "*",
+    "koffi": "3.1.1",
+    "node-pty": "1.2.0-beta.15"
+  }
+}

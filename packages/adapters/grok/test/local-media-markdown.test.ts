@@ -1,8 +1,9 @@
 import path from "node:path";
 
+import { rewriteLocalMediaMarkdown } from "@codexhost/harness-adapter/local-media-markdown";
 import { describe, expect, it } from "vitest";
 
-import { grokMediaResolveRoots, rewriteLocalMediaMarkdown } from "../src/local-media-markdown.js";
+import { grokMediaResolveRoots } from "../src/local-media-markdown.js";
 
 const workspace = path.resolve("test-fixtures/workspace");
 const home = path.resolve("test-fixtures/home");
@@ -15,6 +16,8 @@ const files = new Set([
 ]);
 const roots = grokMediaResolveRoots(workspace, session);
 const exists = (absolutePath: string) => files.has(path.resolve(absolutePath));
+/** Markdown spelling of an absolute path: Windows drive paths use forward slashes. */
+const md = (absolutePath: string) => absolutePath.replaceAll("\\", "/");
 
 describe("Grok local media Markdown", () => {
   it("rewrites session-relative video images to absolute paths Codex can play", () => {
@@ -34,9 +37,9 @@ describe("Grok local media Markdown", () => {
       [
         "10 秒宣傳片做好了。",
         "",
-        `![usegrokbot-templates-promo-10s.mp4](${path.join(downloads, "usegrokbot-templates-promo-10s.mp4")})`,
+        `![usegrokbot-templates-promo-10s.mp4](${md(path.join(downloads, "usegrokbot-templates-promo-10s.mp4"))})`,
         "",
-        `![UseGrokBot Templates 10s promo](${path.join(session, "videos/usegrokbot-templates-promo-10s.mp4")})`,
+        `![UseGrokBot Templates 10s promo](${md(path.join(session, "videos/usegrokbot-templates-promo-10s.mp4"))})`,
       ].join("\n"),
     );
   });
@@ -65,11 +68,11 @@ describe("Grok local media Markdown", () => {
       [
         "影片在這裡：",
         "",
-        `![aura-10s.mp4](${path.join(session, "videos/aura-10s.mp4")})`,
+        `![aura-10s.mp4](${md(path.join(session, "videos/aura-10s.mp4"))})`,
         "",
         "打開這份：",
         "",
-        `![aura-product-film-10s.mp4](${path.join(downloads, "aura-product-film-10s.mp4")})`,
+        `![aura-product-film-10s.mp4](${md(path.join(downloads, "aura-product-film-10s.mp4"))})`,
       ].join("\n"),
     );
   });
@@ -89,7 +92,7 @@ describe("Grok local media Markdown", () => {
       emitted = projected;
     }
     expect(emitted).toBe(
-      `影片：\n\n![clip](${path.join(session, "videos/usegrokbot-templates-promo-10s.mp4")})\n完成`,
+      `影片：\n\n![clip](${md(path.join(session, "videos/usegrokbot-templates-promo-10s.mp4"))})\n完成`,
     );
   });
 
@@ -126,7 +129,7 @@ describe("Grok local media Markdown", () => {
       emitted = projected;
     }
     expect(emitted).toBe(
-      `影片：\n\n![usegrokbot-templates-promo-10s.mp4](${path.join(session, "videos/usegrokbot-templates-promo-10s.mp4")})\n完成`,
+      `影片：\n\n![usegrokbot-templates-promo-10s.mp4](${md(path.join(session, "videos/usegrokbot-templates-promo-10s.mp4"))})\n完成`,
     );
   });
 

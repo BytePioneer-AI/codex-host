@@ -1,0 +1,4 @@
+{
+  "title": "CLI / MCP / HTTP 接入",
+  "pages": ["interfaces", "cli", "mcp", "http-events"]
+}

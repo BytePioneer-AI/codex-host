@@ -1,7 +1,7 @@
 import type { HarnessSession } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime } from "../src/external-thread-runtime.js";
@@ -128,6 +128,28 @@ const fault = {
 } as const;
 
 describe("External Thread recovery lifecycle", () => {
+  it("restores after deletion closes an active Session without a terminal event but persistence fails", async () => {
+    const f = await fixture();
+    Object.assign(f.repository, {
+      removeThread: vi.fn(async () => {
+        throw new Error("delete failed");
+      }),
+    });
+    f.thread.running = true;
+    f.thread.activeTurnId = hostTurnIdSchema.parse("closed-active-turn");
+    f.closeGate.resolve();
+
+    await expect(f.runtime.deleteThread(f.id)).rejects.toThrow("delete failed");
+    expect(f.runtime.get(f.id)).toBeUndefined();
+    const restored = await f.runtime.resolve(f.id);
+    expect(restored.kind).toBe("external");
+    if (restored.kind !== "external") return;
+    expect(restored.thread).not.toBe(f.thread);
+    expect(restored.thread.running).toBe(false);
+    expect(restored.thread.activeTurnId).toBeNull();
+    expect(f.open).toHaveBeenCalledOnce();
+  });
+
   it("waits for output drain even after close has completed", async () => {
     const f = await fixture();
     const drain = deferred();

@@ -5,7 +5,7 @@ import {
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
 } from "./harness-permission-modes.js";
-import { harnessIdSchema, hostThreadIdSchema } from "./ids.js";
+import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "./ids.js";
 import { threadUsageSnapshotSchema } from "./thread-usage.js";
 
 export const HARNESS_MODEL_REF_MAX_LENGTH = 512;
@@ -204,6 +204,8 @@ export const harnessSessionCapabilitiesSchema = z
       })
       .strict()
       .optional(),
+    /** True only when `turn.steer` delivers input into the active Turn through a native primitive. */
+    steer: z.boolean().optional(),
   })
   .strict();
 
@@ -286,6 +288,8 @@ export const harnessInspectParamsSchema = z
     harnessId: harnessIdSchema,
     cwd: nonBlankTextSchema.max(16_384).optional(),
     refresh: z.boolean().optional(),
+    /** `availability` asks only whether the Harness can run; see `InspectHarnessInput.purpose`. */
+    purpose: z.literal("availability").optional(),
   })
   .strict();
 
@@ -333,7 +337,12 @@ export type ThreadInspectionParams = z.infer<typeof threadInspectionParamsSchema
 const codexThreadInspectionSchema = z
   .object({
     owner: z.literal("codex"),
-    locked: z.literal(true),
+    locked: z.boolean(),
+    effectiveModel: harnessModelRefSchema.optional(),
+    resolvedModelLabel: harnessResolvedModelLabelSchema.optional(),
+    effectiveThinkingOptionId: harnessThinkingOptionIdSchema.optional(),
+    effectivePermissionModeId: harnessPermissionModeIdSchema.optional(),
+    history: harnessHistoryCapabilitiesSchema.optional(),
     supportsThreadReferences: z.literal(true).optional(),
   })
   .strict();
@@ -424,3 +433,58 @@ export const threadOwnershipListResultSchema = z
   });
 
 export type ThreadOwnershipListResult = z.infer<typeof threadOwnershipListResultSchema>;
+
+export const threadSteeringInspectParamsSchema = z
+  .object({
+    threadId: hostThreadIdSchema,
+    /** The text about to be steered; a Harness command always stops and restarts. */
+    text: z.string().optional(),
+  })
+  .strict();
+
+/**
+ * `turn/steer` parameter naming the delivery the Renderer already presented, so the Host follows
+ * it instead of deciding again: `activeTurn` inserts natively, `newTurn` stops and restarts.
+ */
+export const THREAD_STEER_DELIVERY_PARAM = "codexhostSteerDelivery";
+/** Native RPC preparation retains additionalContext across its start/steer choice. */
+export const THREAD_STEERING_CONTEXT_PARAM = "codexhost_external_steering";
+export const threadSteeringContextSchema = z
+  .object({
+    kind: z.literal("application"),
+    value: z
+      .string()
+      .transform((text, context): unknown => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          context.addIssue({ code: "custom", message: "Invalid steering context JSON" });
+          return z.NEVER;
+        }
+      })
+      .pipe(
+        z
+          .object({
+            expectedTurnId: hostTurnIdSchema,
+            clientUserMessageId: z.string().min(1),
+            delivery: z.enum(["newTurn", "activeTurn"]),
+          })
+          .strict(),
+      ),
+  })
+  .strict()
+  .transform((context) => context.value);
+export const threadSteerDeliverySchema = z.enum(["activeTurn", "newTurn"]);
+export type ThreadSteerDelivery = z.infer<typeof threadSteerDeliverySchema>;
+
+/**
+ * How a steer submitted now reaches the Thread: `official` keeps Codex's own steer,
+ * `activeTurn` joins the running Turn natively, `newTurn` stops it and starts the input next.
+ */
+export const threadSteeringInspectResultSchema = z
+  .object({
+    delivery: z.enum(["official", "activeTurn", "newTurn"]),
+  })
+  .strict();
+
+export type ThreadSteeringInspectResult = z.infer<typeof threadSteeringInspectResultSchema>;

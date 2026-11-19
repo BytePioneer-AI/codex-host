@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  ModelInfo,
   OpenCodeClient,
   OpenCodeEvent,
   SessionInfo,
@@ -14,9 +15,10 @@ import {
 } from "@codexhost/harness-adapter";
 import { CodexTurnProjector } from "@codexhost/protocol-core";
 import { harnessModelCatalogSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { encodeOpenCodeVariant } from "../src/model-catalog.js";
 import { openCodeMajor } from "../src/version.js";
 import { assistantItems, projectHistory, readMessages } from "../src/v2/history.js";
-import { v2Locator, v2Permissions, v2Ref } from "../src/v2/state.js";
+import { v2Catalog, v2Locator, v2Permissions, v2Ref, v2State } from "../src/v2/state.js";
 import { V2Session } from "../src/v2/session.js";
 import { v2UsageRequest } from "../src/v2/usage.js";
 import { formInteraction, replyInteraction } from "../src/v2/interactions.js";
@@ -156,6 +158,42 @@ describe("OpenCode protocol versions", () => {
     expect(v2Locator(ref)).toEqual({ directory: "/workspace", executionPolicy: "default" });
     expect(() => v2Locator({ ...ref, locator: { directory: "/workspace" } })).toThrow(
       "v2 Native Ref",
+    );
+  });
+});
+
+describe("OpenCode v2 Thinking state", () => {
+  const model = (id: string, variants: string[]) =>
+    ({
+      id,
+      providerID: "test",
+      name: id,
+      enabled: true,
+      variants: variants.map((variant) => ({ id: variant })),
+    }) as unknown as ModelInfo;
+  const stateFor = (variants: string[], variant: string | undefined) =>
+    v2State(
+      { ...info, model: { providerID: "test", id: "model", ...(variant ? { variant } : {}) } },
+      v2Catalog([model("model", variants)], null),
+      "default",
+    );
+
+  it("reads the native default variant as the catalog's Default option", () => {
+    const state = stateFor(["high", "low"], "default");
+    expect(state.effectiveThinkingOptionId).toBe(encodeOpenCodeVariant(undefined));
+    expect(state.availableThinkingOptions?.map((option) => option.id)).toContain(
+      state.effectiveThinkingOptionId,
+    );
+  });
+
+  it("keeps a variant the model itself names default", () => {
+    const state = stateFor(["default", "high"], "default");
+    expect(state.effectiveThinkingOptionId).toBe(encodeOpenCodeVariant("default"));
+  });
+
+  it("keeps an explicit variant's own option", () => {
+    expect(stateFor(["high", "low"], "high").effectiveThinkingOptionId).toBe(
+      encodeOpenCodeVariant("high"),
     );
   });
 });
@@ -466,6 +504,128 @@ describe("OpenCode v2 Session lifecycle", () => {
     expect(started).toBeGreaterThanOrEqual(beforeOutput);
     expect(started).toBeLessThan(streamed);
   });
+  it.each([
+    [
+      "hidden body with reasoning start",
+      "session.reasoning.started",
+      800,
+      400,
+      1000,
+      21000,
+      31000,
+      "think",
+    ],
+    [
+      "sample-like observed reasoning",
+      "session.reasoning.delta",
+      477,
+      423,
+      1794764248416,
+      1794764252308,
+      1794764256401,
+      "think",
+    ],
+    ["unobserved positive reasoning", undefined, 800, 400, 1000, 21000, 31000, "think"],
+    ["known-zero text", undefined, 0, 400, 1000, 21000, 31000, "think"],
+    ["empty reasoning delta", "session.reasoning.delta", 800, 400, 1000, 21000, 31000, ""],
+  ] as const)(
+    "only times a reliable reasoning-inclusive boundary: %s",
+    async (_name, reasoningEvent, reasoning, output, first, text, streamed, delta) => {
+      const f = fixture();
+      await f.start();
+      await f.turn();
+      const now = vi.spyOn(Date, "now").mockReturnValue(first);
+      try {
+        f.emit("session.step.started", { assistantMessageID: "assistant" });
+        if (reasoningEvent)
+          f.emit(reasoningEvent, {
+            assistantMessageID: "assistant",
+            ordinal: 0,
+            ...(reasoningEvent === "session.reasoning.delta" ? { delta } : {}),
+          });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        now.mockReturnValue(text);
+        f.emit("session.text.delta", {
+          assistantMessageID: "assistant",
+          ordinal: 0,
+          delta: "answer",
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        f.messages.push({
+          ...assistant("answer"),
+          time: { created: first - 500, streamed, completed: streamed + 68000 },
+          tokens: { input: 1, output, reasoning, cache: { read: 0, write: 0 } },
+        });
+        f.emit("session.step.ended", { assistantMessageID: "assistant" });
+      } finally {
+        now.mockRestore();
+      }
+      const requests = () => f.usage.filter((e) => e.type === "usage.request");
+      await vi.waitFor(() => expect(requests()).toHaveLength(1));
+      const request = requests()[0];
+      expect(request).toMatchObject({
+        request: { outputTokens: output + reasoning, reasoningOutputTokens: reasoning },
+      });
+      if (reasoning === 0 || (reasoningEvent && delta))
+        expect(request).toMatchObject({
+          request: { startedAtMs: reasoningEvent ? first : text, completedAtMs: streamed },
+        });
+      else {
+        expect(request).not.toHaveProperty("request.startedAtMs");
+        expect(request).not.toHaveProperty("request.completedAtMs");
+      }
+      // Reconciliation and repeated completion notifications must not publish the step twice.
+      f.messages.push(idle());
+      f.emit("session.step.ended", { assistantMessageID: "assistant" });
+      f.emit("session.execution.succeeded");
+      await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+      expect(requests()).toHaveLength(1);
+    },
+  );
+
+  it("does not reuse reasoning provenance across steps or poison later known-zero text", async () => {
+    const f = fixture();
+    await f.start();
+    await f.turn();
+    const requests = () => f.usage.filter((e) => e.type === "usage.request");
+    for (const [index, reasoning] of [800, 800, 0].entries()) {
+      const id = `step-${index}`;
+      const first = 1000 + index * 40000;
+      const now = vi.spyOn(Date, "now").mockReturnValue(first);
+      try {
+        f.emit("session.step.started", { assistantMessageID: id });
+        if (index === 0)
+          f.emit("session.reasoning.started", { assistantMessageID: id, ordinal: 0 });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        now.mockReturnValue(first + 20000);
+        f.emit("session.text.delta", { assistantMessageID: id, ordinal: 0, delta: "answer" });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        f.messages.push({
+          ...assistant("answer"),
+          id,
+          time: { created: first - 500, streamed: first + 30000 },
+          tokens: { input: 1, output: 400, reasoning, cache: { read: 0, write: 0 } },
+        });
+        f.emit("session.step.ended", { assistantMessageID: id });
+      } finally {
+        now.mockRestore();
+      }
+      await vi.waitFor(() => expect(requests()).toHaveLength(index + 1));
+    }
+    expect(requests()[0]).toMatchObject({
+      request: { outputTokens: 1200, startedAtMs: 1000, completedAtMs: 31000 },
+    });
+    expect(requests()[1]).toMatchObject({ request: { outputTokens: 1200 } });
+    expect(requests()[1]).not.toHaveProperty("request.startedAtMs");
+    expect(requests()[1]).not.toHaveProperty("request.completedAtMs");
+    expect(requests()[2]).toMatchObject({
+      request: { outputTokens: 400, startedAtMs: 101000, completedAtMs: 111000 },
+    });
+    f.messages.push(idle());
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+  });
+
   it("restores recent CH and updates it before tool waits end, retaining it at Turn completion", async () => {
     const f = fixture();
     f.messages.push(
@@ -579,12 +739,25 @@ describe("OpenCode v2 Session lifecycle", () => {
         tokens: { input: 1, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
       },
       false,
-      1_000,
+      { firstOutputAtMs: 1_000, reasoningObserved: false },
     );
     expect(request).toMatchObject({ outputTokens: 8 });
     expect(request).not.toHaveProperty("startedAtMs");
     expect(request).not.toHaveProperty("completedAtMs");
   });
+  it("does not treat a missing native reasoning count as known zero", () => {
+    const message = {
+      ...assistant("answer"),
+      time: { created: 1, streamed: 31000 },
+      tokens: { input: 1, output: 400, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    // OpenCode requires reasoning in its token schema; a malformed response stays unusable.
+    Reflect.deleteProperty(message.tokens, "reasoning");
+    expect(() =>
+      v2UsageRequest(message, false, { firstOutputAtMs: 21000, reasoningObserved: false }),
+    ).toThrow();
+  });
+
   it("rejects concurrent starts and emits no lifecycle for rejected admission", async () => {
     const f = fixture();
     await f.start();
@@ -596,6 +769,19 @@ describe("OpenCode v2 Session lifecycle", () => {
     expect(
       f.events.filter((e) => e.kind === "event" && e.event.type === "turn.started"),
     ).toHaveLength(1);
+  });
+  it("rejects turn.steer without submitting another prompt", async () => {
+    const f = fixture();
+    await f.start();
+    await f.turn();
+    const calls = f.prompt.mock.calls.length;
+    const steered = await f.session.execute({
+      type: "turn.steer",
+      turnId: hostTurnIdSchema.parse("host-turn"),
+      input: [{ type: "text", text: "change direction" }],
+    });
+    expect(steered).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(f.prompt.mock.calls.length).toBe(calls);
   });
   it("closes the owned connection if rejected admission cannot be interrupted", async () => {
     const f = fixture();

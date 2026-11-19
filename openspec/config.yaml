@@ -1,20 +1,22 @@
-schema: spec-driven
+schema: codexhost-lite
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  codexhost 在 Codex Desktop 中以独立 Thread 运行外部 Agent Harness。
+  规格只描述可观察行为与契约，不写实现细节。
+  使用 docs/project/领域术语表.md 中的术语；不要混淆 Harness、Model、Provider、Account、Billing Source，
+  也不要混淆官方 Codex Thread 与外部 Harness Thread。
+  只有改变可观察行为或契约（新能力、协议、持久化与配置格式、删除功能）的变更才需要 OpenSpec；
+  局部修复、重构、文档、工具类变更请在 .openspec.yaml 中设置 skip_specs: true，或直接修改 docs/。
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - 控制在一页以内，只写为什么、改什么与关键决策，不写实现细节。
+    - 没有值得记录的决策时省略 Decisions 一节。
+  specs:
+    - 每条需求描述不超过 500 字符，示例与边界情况放进场景。
+    - 不写内部类名、函数名与库选择。
+  design:
+    - 按需产物，默认不写；仅在跨包变更、持久化或协议格式变化、安全或官方流量归属、迁移或回滚、存在编码前必须决定的歧义时创建。
+    - 简单变更的关键决策写进 proposal 的 Decisions，不要新建 design.md。
+  tasks:
+    - 每个任务写明如何验证；任务数量保持精简，测试与文档随各自任务完成。

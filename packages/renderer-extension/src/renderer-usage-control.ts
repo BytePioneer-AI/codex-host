@@ -1,4 +1,6 @@
 import type { ThreadUsageSnapshot } from "@codexhost/shared-contracts";
+import createElement from "lucide/dist/esm/createElement.mjs";
+import Activity from "lucide/dist/esm/icons/activity.mjs";
 
 import type { RendererSettingsLocale } from "./settings/localization.js";
 
@@ -26,12 +28,12 @@ export interface RendererUsageControl {
 
 interface RendererUsageMessages {
   readonly usage: string;
-  readonly account: string;
   readonly context: string;
   readonly recordedCredits: string;
   readonly latestCacheHit: string;
   readonly sessionCacheHit: string;
   readonly outputSpeed: string;
+  readonly averageOutputSpeed: string;
   readonly apiOutputSpeed: string;
   readonly apiOutputSpeedDescription: string;
   readonly timeToFirstOutput: string;
@@ -53,12 +55,12 @@ interface RendererUsageMessages {
 
 const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   usage: "Usage",
-  account: "Account",
   context: "Context",
   recordedCredits: "Recorded usage",
   latestCacheHit: "Latest cache hit (CH)",
   sessionCacheHit: "Average cache hit",
   outputSpeed: "Output speed (TPS)",
+  averageOutputSpeed: "Average output speed (TPS)",
   apiOutputSpeed: "API average speed",
   apiOutputSpeedDescription:
     "Output tokens / native API time, including first-token wait; not generation TPS.",
@@ -81,12 +83,12 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
 
 const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   usage: "用量",
-  account: "账号",
   context: "上下文",
   recordedCredits: "已记录消耗",
   latestCacheHit: "最近缓存命中（CH）",
   sessionCacheHit: "平均缓存命中",
   outputSpeed: "输出速度（TPS）",
+  averageOutputSpeed: "平均输出速度（TPS）",
   apiOutputSpeed: "API 平均速度",
   apiOutputSpeedDescription: "输出 Token ÷ 原生 API 耗时，含首字等待；不是生成 TPS。",
   timeToFirstOutput: "首 token（TTFT）",
@@ -252,6 +254,7 @@ export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): 
   return (
     usage?.cacheHitRatePercent !== undefined ||
     usage?.sessionCacheHitRatePercent !== undefined ||
+    usage?.sessionOutputTokensPerSecond !== undefined ||
     usage?.outputTokensPerSecond !== undefined ||
     usage?.apiOutputTokensPerSecond !== undefined ||
     usage?.timeToFirstOutputMs !== undefined ||
@@ -292,10 +295,10 @@ export function applyRendererPopoverChrome(popover: HTMLElement): void {
     "light-dark(0 10px 24px rgba(15, 23, 42, 0.12), 0 20px 45px rgba(0, 0, 0, 0.42)), 0 2px 8px light-dark(rgba(15, 23, 42, 0.06), rgba(0, 0, 0, 0.28))";
 }
 
-function addDetailRow(parent: HTMLElement, label: string, value: string, wrap = false): void {
+function addDetailRow(parent: HTMLElement, label: string, value: string): void {
   const row = document.createElement("div");
   row.style.display = "grid";
-  row.style.gridTemplateColumns = wrap ? "auto minmax(0, 1fr)" : "minmax(0, 1fr) auto";
+  row.style.gridTemplateColumns = "minmax(0, 1fr) auto";
   row.style.gap = "20px";
   row.style.padding = "4px 0";
   const labelElement = document.createElement("span");
@@ -305,10 +308,6 @@ function addDetailRow(parent: HTMLElement, label: string, value: string, wrap = 
   valueElement.textContent = value;
   valueElement.style.fontVariantNumeric = "tabular-nums";
   valueElement.style.textAlign = "right";
-  if (wrap) {
-    valueElement.style.overflowWrap = "anywhere";
-    valueElement.title = value;
-  }
   row.append(labelElement, valueElement);
   parent.append(row);
 }
@@ -379,7 +378,6 @@ function renderDetails(
   usage: ThreadUsageSnapshot | null,
   messages: RendererUsageMessages,
   locale: RendererSettingsLocale,
-  accountName: string | null,
 ): void {
   popover.replaceChildren();
   const heading = document.createElement("div");
@@ -387,8 +385,6 @@ function renderDetails(
   heading.style.fontWeight = "600";
   heading.style.marginBottom = "6px";
   popover.append(heading);
-
-  if (accountName) addDetailRow(popover, messages.account, accountName, true);
 
   if (usage?.contextUsagePercent !== undefined) {
     addContextRow(
@@ -430,6 +426,12 @@ function renderDetails(
     session.push([
       messages.sessionCacheHit,
       formatRendererCacheHitRate(usage.sessionCacheHitRatePercent),
+    ]);
+  }
+  if (usage?.sessionOutputTokensPerSecond !== undefined) {
+    session.push([
+      messages.averageOutputSpeed,
+      formatRendererTokenRate(usage.sessionOutputTokensPerSecond, locale),
     ]);
   }
   if (usage?.cacheHitRatePercent !== undefined) {
@@ -567,13 +569,20 @@ export function mountRendererUsageControl(
   trigger.style.fontVariantNumeric = "tabular-nums";
   trigger.style.letterSpacing = "0";
 
+  const icon = document.createElement("span");
+  icon.dataset.codexhostUsageIcon = "";
+  icon.style.display = "none";
+  icon.style.alignItems = "center";
+  icon.append(createElement(Activity, { width: 16, height: 16, "aria-hidden": "true" }));
+
   const label = document.createElement("span");
+  label.dataset.codexhostUsageLabel = "";
   label.style.display = "inline-block";
   label.style.maxWidth = "100%";
   label.style.overflow = "hidden";
   label.style.textOverflow = "ellipsis";
   label.style.whiteSpace = "nowrap";
-  trigger.append(label);
+  trigger.append(icon, label);
 
   const popover = document.createElement("div");
   popover.id = `${composerId}-usage-popover`;
@@ -669,7 +678,6 @@ export function renderRendererUsageControl(
   control: RendererUsageControl,
   usage: ThreadUsageSnapshot | null,
   locale: RendererSettingsLocale = control.locale,
-  accountName: string | null = null,
 ): boolean {
   control.locale = locale;
   const messages = rendererUsageMessages(locale);
@@ -685,7 +693,7 @@ export function renderRendererUsageControl(
     usage?.cachedInputTokens !== undefined ||
     usage?.cacheWriteInputTokens !== undefined ||
     usage?.outputTokens !== undefined;
-  const visible = rendererUsageHasDisplayData(usage) || Boolean(accountName);
+  const visible = rendererUsageHasDisplayData(usage);
   control.root.style.display = visible ? "inline-flex" : "none";
   if (!visible) {
     closePopover(control);
@@ -733,6 +741,6 @@ export function renderRendererUsageControl(
   control.trigger.setAttribute("aria-label", accessibleSummary);
   control.trigger.title = accessibleSummary;
   control.label.textContent = compactSummary;
-  renderDetails(control.popover, usage, messages, locale, accountName);
+  renderDetails(control.popover, usage, messages, locale);
   return true;
 }

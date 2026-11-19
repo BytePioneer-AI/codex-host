@@ -18,6 +18,7 @@
   "dependencies": {
     "@codexhost/desktop-control": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
-    "lucide": "1.28.0"
+    "lucide": "1.28.0",
+    "uqr": "0.1.3"
   }
 }

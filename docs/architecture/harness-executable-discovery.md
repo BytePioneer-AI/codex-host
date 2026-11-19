@@ -86,6 +86,12 @@ Windows 当前覆盖常见的：
 - `commandInvocation()`：封装 Windows `.cmd`/`.bat` 的 `cmd.exe` 调用和参数转义；
 - `withNodeRuntimeOnPath()`：把 codexhost 当前 Node Runtime 所在目录加入 Harness 子进程的 `PATH`。
 
+### Pi 的 Windows UNC 工作目录
+
+Pi RPC 在 Windows UNC 工作目录（例如 `\\wsl.localhost\Ubuntu\home\user\project`）下不能经过 `cmd.exe`：CMD 会把不支持的当前目录替换为 Windows 目录。Pi Adapter 仅在 UNC 目录与 batch 入口同时出现时处理此边界：标准 npm `pi.cmd` 直接执行所选安装声明的 JavaScript 入口；官方 managed `releases-v1` 安装执行同一安装的 `pi-launcher.js`，由原生 launcher 选择当前版本并设置 managed 环境。
+
+识别同时核对启动脚本与安装元数据，保留相邻 Node、managed 专用 Node 或 PATH Node 的选择。无法识别、被修改的 Pi batch launcher，以及 PATH/PATHEXT 优先选中的 Node batch shim 或文件关联入口，均明确拒绝；不擅自跳过用户脚本，也不尝试另一份 Pi 或 PATH 中更靠后的 Node。普通盘符目录、原生可执行文件和 macOS/Linux 的启动方式不变。此处理只保证 Windows Pi 的启动目录，不会把执行环境自动切换到 WSL，也不改写既有 Native Session 的目录。
+
 ## 当前接入情况
 
 | Harness | 公共可执行文件发现 | 公共 Windows invocation | Node Runtime PATH 补全 | 说明 |
@@ -94,15 +100,16 @@ Windows 当前覆盖常见的：
 | Pi | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | OMP | 是 | 否，仍保留 Adapter 内实现 | 是 | 找不到时保留原有延迟失败语义 |
 | Grok | 是 | 是 | 否 | GUI 精简 `PATH` 下仍应补齐 Node Runtime PATH |
+| Qwen Code | 是 | 不需要通用 shim 路径 | 不需要 | Windows 将 `qwen.cmd` 改写为 npm 包内 JavaScript 入口，由官方 SDK 使用 codexhost Node Runtime 启动 |
 | DeepSeek Harness | 否 | 否 | 否 | Adapter 内发现本地 `dsh`/`npx`，校验 CLI 版本格式后启动托管 Web |
 
 因此，当前准确结论是：
 
-> Claude Code、Pi、OMP 和 Grok 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
+> Claude Code、Pi、OMP、Grok 和 Qwen Code 已共用可执行文件发现引擎；DeepSeek Harness 尚未迁移。进程 invocation 和 Node Runtime PATH 补全也还没有在所有 Adapter 中完全统一。
 
 ## DeepSeek Harness 的特殊性
 
-DeepSeek Adapter 只对接写 Session Format V4 的 DSH，已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1` 和 `0.2.0-rc.2` 验证。低于最低版本 `0.1.7-rc.1` 的 CLI 在启动托管 Web 前被拒绝；不低于门槛的其他 SemVer 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
+DeepSeek Adapter 只对接写 Session Format V4 的 DSH，已在 `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.3`、`0.2.1-rc.4`、`0.2.1-rc.5`、`0.2.2-rc.1` 和 `0.2.2-rc.2` 验证。低于最低版本 `0.1.7-rc.1` 的 CLI 在启动托管 Web 前被拒绝；不低于门槛的其他 SemVer 版本不会只因版本不同被拒绝，但不代表已验证兼容。Legacy 协议及外部 Host attach/fallback 已移除。默认诊断端点为：
 
 ```text
 http://127.0.0.1:3080/
@@ -130,7 +137,7 @@ DeepSeek 的 endpoint 校验、Host 启动、就绪等待和 HTTP/WebSocket 生�
 
 - 命令明确区分 macOS/Linux 终端与 Windows PowerShell；npm 安装提示 Node.js 前置依赖。页面列出系统选项，不根据本机系统推断远程 Host 的系统。
 - 远程 Host 必须在目标机器操作；Windows 原生 Host 不会自动使用 WSL 中的安装。
-- DeepSeek 安装指引固定已通过真实 Gate 的 `@deepseek-ai/dsh@0.2.0-rc.2`，不追随 npm latest；这不是连接白名单。更新验证结果时应同步维护设置页的支持版本说明、安装指引，以及 Adapter `generation-selector.ts` 中的已验证版本列表（低版本提示和升级命令由它生成），参见[版本验证记录](../harnesses/deepseek/dsh-version-validation.md)。通常无需手动运行 `dsh web`。`dsh --version` 成功不代表 Web 插件可启动；诊断报插件加载错误时应核对实际依赖树，放开版本范围不能修复 DSH CLI 自身的启动故障。
+- DeepSeek 安装指引与连接页的“更新 CLI”跟随 npm `latest`；已验证版本列表不是连接白名单。更新验证结果时应同步维护设置页的支持版本说明、插件 notice，以及 Adapter `generation-selector.ts` 中的已验证版本列表（低版本提示使用此列表，升级命令跟随 npm `latest`），参见[版本验证记录](../harnesses/deepseek/dsh-version-validation.md)。通常无需手动运行 `dsh web`。`dsh --version` 成功不代表 Web 插件可启动；诊断报插件加载错误时应核对实际依赖树，放开版本范围不能修复 DSH CLI 自身的启动故障。
 - WorkBuddy 提供 macOS/Windows 官方下载与安装指南，不冒充 CLI npm 包、不提供未经确认的 Linux 安装命令。桌面登录态与内置 CLI 认证不能混为一谈。
 - Qoder 与 Qoder CN 使用各自安装源和启动命令。
 - 完成安装及原生认证/配置后，用户手动重新检测。复制失败显示反馈；诊断失败仍沿用现有连接错误详情。自定义 WorkBuddy 路径和环境变量变更可能需要重启 codexhost。

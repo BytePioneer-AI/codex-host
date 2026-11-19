@@ -48,21 +48,37 @@ export const kimiPermissionModeCatalog: HarnessPermissionModeCatalog =
       {
         id: harnessPermissionModeIdSchema.parse("default"),
         label: "询问确认",
+        localizations: {
+          en: { label: "Ask for approval" },
+          "zh-CN": { description: "工具正常执行，需要时手动审批。" },
+        },
         description: "Manual approvals; tools execute normally.",
       },
       {
         id: harnessPermissionModeIdSchema.parse("plan"),
         label: "计划模式",
+        localizations: {
+          en: { label: "Plan mode" },
+          "zh-CN": { description: "只读规划，不执行工具。" },
+        },
         description: "Read-only planning; no tool execution.",
       },
       {
         id: harnessPermissionModeIdSchema.parse("auto"),
         label: "按需询问",
+        localizations: {
+          en: { label: "Ask as needed" },
+          "zh-CN": { description: "自动批准安全操作。" },
+        },
         description: "Auto-approve safe operations.",
       },
       {
         id: harnessPermissionModeIdSchema.parse("yolo"),
         label: "无需询问",
+        localizations: {
+          en: { label: "No approval prompts" },
+          "zh-CN": { description: "自动批准所有操作。" },
+        },
         description: "Auto-approve everything.",
         dangerous: true,
       },
@@ -76,6 +92,9 @@ export interface KimiNativeConfig {
     model?: string;
     provider?: string;
     maxContextSize?: number;
+    capabilities?: string[];
+    supportEfforts?: string[];
+    defaultEffort?: string;
   }>;
   thinking?: {
     enabled?: boolean;
@@ -105,6 +124,17 @@ export function parseKimiConfigToml(content: string): KimiNativeConfig {
         if (typeof d.model === "string") item.model = d.model;
         if (typeof d.provider === "string") item.provider = d.provider;
         if (typeof d.max_context_size === "number") item.maxContextSize = d.max_context_size;
+        if (Array.isArray(d.capabilities)) {
+          item.capabilities = d.capabilities.filter(
+            (value): value is string => typeof value === "string",
+          );
+        }
+        if (Array.isArray(d.support_efforts)) {
+          item.supportEfforts = d.support_efforts.filter(
+            (value): value is string => typeof value === "string",
+          );
+        }
+        if (typeof d.default_effort === "string") item.defaultEffort = d.default_effort;
       }
       models.push(item);
     }
@@ -153,25 +183,40 @@ export interface AcpConfigOption {
   options?: AcpConfigOptionChoice[];
 }
 
+function configuredThinkingOptions(
+  model: KimiNativeConfig["models"][number],
+): HarnessThinkingOption[] {
+  const alwaysThinking = model.capabilities?.includes("always_thinking") === true;
+  if (!alwaysThinking && !model.capabilities?.includes("thinking")) return [];
+  const values = model.supportEfforts?.length ? ["off", ...model.supportEfforts] : ["off", "on"];
+  return [...new Set(values)]
+    .filter((value) => !alwaysThinking || value !== "off")
+    .map((value) =>
+      harnessThinkingOptionSchema.parse({ id: value, label: formatThinkingLabel(value) }),
+    );
+}
+
 export function buildModelCatalogFromConfig(
   config: KimiNativeConfig,
   thinkingOptionsList?: HarnessThinkingOption[],
 ): HarnessModelCatalog {
-  // The config file does not describe model-specific selectable Thinking values.
-  const thinkingOptions = thinkingOptionsList ?? [];
-
-  const thinkingIds = thinkingOptions.map((opt) => opt.id);
+  const thinkingOptions = new Map<string, HarnessThinkingOption>();
   const rawModels =
     config.models.length > 0 ? config.models : [{ alias: config.defaultModel ?? "default" }];
   const models: HarnessModel[] = rawModels.map((m) => {
+    const options =
+      thinkingOptionsList !== undefined
+        ? m.alias === config.defaultModel
+          ? thinkingOptionsList
+          : []
+        : configuredThinkingOptions(m);
+    for (const option of options) thinkingOptions.set(option.id, option);
     const label = m.model ? `${m.alias} (${m.model})` : m.alias;
     return harnessModelSchema.parse({
       ref: encodeKimiModelRef(m.alias),
       label: label.slice(0, 256),
       ...(m.model ? { resolvedModelLabel: m.model.slice(0, 256) } : {}),
-      ...(thinkingOptionsList && m.alias === config.defaultModel
-        ? { supportedThinkingOptionIds: thinkingIds }
-        : {}),
+      supportedThinkingOptionIds: options.map(({ id }) => id),
     });
   });
 
@@ -181,23 +226,20 @@ export function buildModelCatalogFromConfig(
       ? encodeKimiModelRef(config.defaultModel)
       : models[0]?.ref;
 
-  let defaultThinkingOptionId: HarnessThinkingOptionId | undefined = undefined;
-  if (
-    config.thinking?.effort &&
-    thinkingIds.includes(config.thinking.effort as HarnessThinkingOptionId)
-  ) {
-    defaultThinkingOptionId = harnessThinkingOptionIdSchema.parse(config.thinking.effort);
-  } else if (
-    config.thinking?.enabled === false &&
-    thinkingIds.includes("off" as HarnessThinkingOptionId)
-  ) {
-    defaultThinkingOptionId = harnessThinkingOptionIdSchema.parse("off");
-  }
+  const selectedModel = models.find((model) => model.ref.id === defaultModel?.id);
+  const configuredDefault = config.models.find(
+    (model) => encodeKimiModelRef(model.alias).id === defaultModel?.id,
+  )?.defaultEffort;
+  const requestedDefault =
+    config.thinking?.enabled === false ? "off" : (config.thinking?.effort ?? configuredDefault);
+  const defaultThinkingOptionId = selectedModel?.supportedThinkingOptionIds?.find(
+    (id) => id === requestedDefault,
+  );
 
   return harnessModelCatalogSchema.parse({
     models,
     ...(defaultModel ? { defaultModel } : {}),
-    thinkingOptions,
+    thinkingOptions: [...thinkingOptions.values()],
     ...(defaultThinkingOptionId ? { defaultThinkingOptionId } : {}),
   });
 }
@@ -308,7 +350,7 @@ export function buildModelCatalogFromAcp(
   }
 
   if (models.length === 0 && fallbackConfig) {
-    models.push(...buildModelCatalogFromConfig(fallbackConfig).models);
+    models.push(...buildModelCatalogFromConfig(fallbackConfig, []).models);
   }
 
   const currentModelAlias = modelOptions?.currentValue;

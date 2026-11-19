@@ -34,8 +34,31 @@ async function fixture(withCredits = true) {
   cleanups.push(() => server.close());
   const client = new BrokeredHarnessAdapter({ descriptorPath });
   cleanups.push(() => client.close());
-  return { client, native, credits, inspectAccount };
+  const readCredits = client.credits;
+  const refreshCredits = client.refreshCredits;
+  if (!readCredits || !refreshCredits) throw new Error("Expected quota capability");
+  return {
+    client: {
+      credits: readCredits,
+      refreshCredits,
+      close: () => client.close(),
+    },
+    native,
+    credits,
+    inspectAccount,
+  };
 }
+
+it("does not advertise quota when the plugin disables that optional capability", async () => {
+  const client = new BrokeredHarnessAdapter({
+    harnessId: "unknown-plugin",
+    accountCredits: false,
+    startBroker: false,
+  });
+  expect(client.credits).toBeUndefined();
+  expect(client.refreshCredits).toBeUndefined();
+  await client.close();
+});
 
 const snapshot: AccountCreditsSnapshot = {
   usedPercent: 25,

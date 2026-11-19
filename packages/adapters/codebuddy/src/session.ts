@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import type {
   HarnessCommandAccepted,
   HarnessCommandCapability,
@@ -24,7 +29,10 @@ import type {
   TurnOutcome,
   TurnStartAccepted,
   TurnStartCommand,
+  TurnSteerAccepted,
+  TurnSteerCommand,
 } from "@codexhost/harness-adapter";
+import { unsupportedSteer } from "@codexhost/harness-adapter";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
   nativeSessionRefSchema,
@@ -39,6 +47,7 @@ import {
   CodeBuddyError,
   failure,
   nativeError,
+  nativeTurnError,
   record,
   text,
   type CodeBuddyRuntimeProfile,
@@ -175,7 +184,13 @@ export class CodeBuddySession implements HarnessSession {
               return;
             }
             if (this.#replaying) return;
-            if (this.subagents.update(update)) return;
+            // A started Tool keeps its owner even when later fragments change its metadata.
+            if (
+              (text(record(update._meta)["codebuddy.ai/parentToolCallId"]) ||
+                !this.#active?.output.hasItem(`tool-${text(update.toolCallId)}`)) &&
+              this.subagents.update(update)
+            )
+              return;
             if (update.sessionUpdate === "config_option_update" && this.#config)
               this.#apply(configuration(update.configOptions, this.profile));
             if (
@@ -189,10 +204,7 @@ export class CodeBuddySession implements HarnessSession {
                 contextWindowTokens: update.size,
                 contextUsagePercent: (update.used / update.size) * 100,
               };
-              this.#emit({
-                type: "session.usage.changed",
-                usage: { ...this.#usage, ...this.#context },
-              });
+              this.#emitUsage();
               void this.refreshUsage();
             }
             this.#active?.output.update(update);
@@ -294,7 +306,16 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   #emit(event: HostEvent) {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
+  }
+
+  #emitUsage() {
+    const usage = { ...this.#usage, ...this.#context };
+    this.#emit({
+      type: "session.usage.changed",
+      usage: Object.keys(usage).length ? usage : null,
+    });
   }
 
   /** Publishes native requests not yet metered; the first read also declares completeness. */
@@ -308,6 +329,15 @@ export class CodeBuddySession implements HarnessSession {
     if (historical || !complete) this.#emit({ type: "usage.history", complete });
   }
   #apply(config: ReturnType<typeof configuration>, emit = true) {
+    // Context belongs to the last confirmed Model. Reconfirming that Model must
+    // preserve usage received after its config update but before the response.
+    if (
+      this.#state.effectiveModel &&
+      this.#state.effectiveModel.id !== config.state.effectiveModel?.id
+    ) {
+      this.#context = {};
+      this.#emitUsage();
+    }
     this.#config = config;
     if (this.#ref && record(this.#ref.locator).codebuddyDerived === 1)
       this.#ref = nativeSessionRefSchema.parse({
@@ -391,7 +421,7 @@ export class CodeBuddySession implements HarnessSession {
         return;
       this.#usage = historyUsage(history);
       this.#meterHistory(history, false);
-      this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      this.#emitUsage();
     } catch {
       // The native file may not exist yet or may be mid-append. Telemetry must not fail a Turn;
       // the next native usage notification, explicit refresh or terminal snapshot retries.
@@ -400,7 +430,25 @@ export class CodeBuddySession implements HarnessSession {
     }
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? nativeModel(state.effectiveModel) : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
     if (this.#busy || this.#active)
@@ -428,6 +476,7 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -439,7 +488,11 @@ export class CodeBuddySession implements HarnessSession {
     command: HostCommand,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     const invocation =
@@ -464,11 +517,16 @@ export class CodeBuddySession implements HarnessSession {
     nativeCommand = false,
   ): Promise<
     HarnessResult<
-      TurnStartAccepted | TurnCancelAccepted | InteractionRespondAccepted | ModelSelectCompleted
+      | TurnStartAccepted
+      | TurnSteerAccepted
+      | TurnCancelAccepted
+      | InteractionRespondAccepted
+      | ModelSelectCompleted
     >
   > {
     if (this.#closed || this.#fault)
       return failure("invalidState", "Session is closed or faulted", this.profile);
+    if (command.type === "turn.steer") return unsupportedSteer(this.profile.displayName);
     if (command.type === "interaction.respond") return this.#interactions.respond(command);
     if (command.type === "turn.cancel") {
       const active = this.#active;
@@ -578,13 +636,7 @@ export class CodeBuddySession implements HarnessSession {
             ? { status: "succeeded" }
             : {
                 status: "failed",
-                error: nativeError(
-                  new CodeBuddyError(
-                    "nativeFailure",
-                    `Native Turn stopped: ${text(stop) || "unknown"} (${text(meta["codebuddy.ai/outcome"]) || "no native outcome"})`,
-                  ),
-                  this.profile,
-                ),
+                error: nativeTurnError(stop, meta, this.profile),
               };
       const snapshot = await this.#snapshot();
       const added = snapshot.turns.filter(
@@ -603,7 +655,10 @@ export class CodeBuddySession implements HarnessSession {
           .flatMap((turn) => turn.items)
           .filter((snapshot) => !active.beforeItems.has(snapshot.item.itemId)),
       );
-      if (active.nativeCommand) active.output.replayCommandResult(added[0]?.items ?? []);
+      if (active.nativeCommand)
+        active.output.replayCommandResult(
+          (added[0]?.items ?? []).filter(({ item }) => !this.subagents.hasItem(item.itemId)),
+        );
       const nativeTurnRef = added[0]?.nativeTurnRef;
       if (nativeTurnRef) this.#hasTurn = true;
       if (response.userMessageId && nativeTurnRef?.nativeTurnKey !== response.userMessageId)
@@ -636,8 +691,7 @@ export class CodeBuddySession implements HarnessSession {
         },
         nativeTurnRef,
       );
-      if (this.#usage)
-        this.#emit({ type: "session.usage.changed", usage: { ...this.#usage, ...this.#context } });
+      if (this.#usage) this.#emitUsage();
     } catch (error) {
       if (!active.done)
         this.#finish(active, { status: "failed", error: nativeError(error, this.profile) });

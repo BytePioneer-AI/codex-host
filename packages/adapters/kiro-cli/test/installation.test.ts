@@ -28,6 +28,10 @@ describe("Kiro installation", () => {
         canUpdate: false,
         message: expect.stringContaining("native updater"),
         messageCode: "kiro-native-updater",
+        notice: {
+          en: "Use Kiro CLI's original installer or native updater to check for and install updates.",
+          "zh-CN": "请使用 Kiro CLI 原安装程序或原生更新器检查并安装更新。",
+        },
       },
     );
     expect(mocks.resolve).toHaveBeenCalledWith({ command: "/chosen/kiro-cli", environment });

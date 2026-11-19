@@ -1,0 +1,37 @@
+---
+title: Windows Remote Control (Experimental)
+description: No SSH or open firewall ports needed—enter a pairing code to drive Agents installed on a Windows PC from another computer.
+---
+
+If your projects and coding Agents are set up on a **Windows desktop** (at home or at your desk) and you want to drive them from another computer (such as a Mac laptop) without configuring SSH or port forwarding, try **Remote Control** mode.
+
+It rides directly on Codex Desktop's official Remote Control channel:
+
+- **Zero open ports**: No public web servers, tunnels, or firewall rules to configure.
+- **Credentials never leave Windows**: All API keys, Agent sign-ins, and project files stay on the target Windows PC.
+
+---
+
+## Connect in 3 Steps
+
+### Before You Pair
+
+- Install the **exact same CodexHost version** on both computers, and **launch Codex Desktop via `codexhost` on both sides**.
+- Sign in to the ChatGPT account required by official Remote Control on both machines.
+- Make sure the external Agents you want to use (Claude Code, Pi, Grok, etc.) are already installed and signed in on the Windows PC.
+
+### Pair & Start Working
+
+1. **On the target Windows PC**: Open Codex Desktop → **Settings → Connections → Control this computer**, enable access, and copy the **pairing code**.
+2. **On your controlling computer**: Open Codex Desktop → **Settings → Connections → Control another device**, enter the pairing code, and select the Windows environment.
+3. **Pick an Agent and chat**: Open a project on that Windows PC and choose any of its installed Agents from the bottom-right composer selector!
+
+---
+
+## Quick Troubleshooting
+
+1. **Test a native Codex prompt first**: If a plain Codex prompt fails too, the issue is with official Remote Control pairing rather than CodexHost—re-pair the two machines first.
+2. **Check how Windows launched Codex**: Make sure Codex Desktop on the Windows PC was launched through **`codexhost`** (opening vanilla Codex Desktop directly won't load external Agent support—quit it completely and relaunch via `codexhost`).
+3. **Keep versions matched**: If you see an unknown-method error, run `codexhost update` on both computers and reconnect.
+
+For further details, see the [Remote Control Host guide](https://github.com/BytePioneer-AI/codex-host/blob/main/docs/platforms/remote/remote-control-host.md) in the repository.

@@ -98,6 +98,7 @@ it("keeps the real Claude Adapter's same-native transports disjoint through Host
           });
           return pending();
         }),
+        steer: async () => undefined,
         respondToInteraction: async () => undefined,
         abort: async () => undefined,
         abortContinuation: async () => undefined,

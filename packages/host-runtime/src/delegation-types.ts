@@ -1,4 +1,6 @@
-import type { RoutedHarnessId } from "@codexhost/protocol-core";
+import type { ThreadExportInput, ThreadExportResult } from "./delegation-thread-export.js";
+import type { DelegationWorktree } from "./delegation-worktree.js";
+import type { JsonObject, JsonValue, RoutedHarnessId } from "@codexhost/protocol-core";
 import type {
   HarnessInspection,
   HarnessModelRef,
@@ -12,6 +14,11 @@ export const DELEGATION_CLI_PATH_ENV = "CODEXHOST_CLI_PATH";
 /** Node for the Launcher's delegation CLI in npm installations; read only by the Launcher. */
 export const DELEGATION_CLI_NODE_PATH_ENV = "CODEXHOST_CLI_NODE_PATH";
 export const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
+/** An external client token from `codexhost client add`, used when no Host connection is provided. */
+export const EXTERNAL_CLIENT_TOKEN_ENV = "CODEXHOST_CLIENT_TOKEN";
+export const EXTERNAL_CLIENT_TOKEN_FILE_ENV = "CODEXHOST_CLIENT_TOKEN_FILE";
+/** Port of the external client listener; `off` disables it. */
+export const EXTERNAL_CLIENT_PORT_ENV = "CODEXHOST_EXTERNAL_CLIENT_PORT";
 /**
  * Native Codex shares one app-server across Threads, so the Host cannot set
  * CODEXHOST_THREAD_ID per Thread; Codex exports the calling Thread here instead.
@@ -19,6 +26,11 @@ export const DELEGATION_THREAD_ID_ENV = "CODEXHOST_THREAD_ID";
 export const NATIVE_CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 /** Default watch expiry; callers adjust it with --timeout-ms. */
 export const DEFAULT_WATCH_TIMEOUT_MS = 29 * 60_000;
+/** Default `thread wait` budget; callers adjust it with --timeout-ms. */
+export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+/** Default `thread list` page size and ordering. */
+export const DEFAULT_LIST_LIMIT = 25;
+export const DEFAULT_LIST_SORT = "created-desc";
 
 export type DelegationThreadStatus =
   "creating" | "running" | "completed" | "failed" | "interrupted";
@@ -27,10 +39,16 @@ export type DelegationResultAvailability = "pending" | "available" | "unavailabl
 
 export interface DelegationMessage {
   id: string;
-  turnId: string;
   role: "user" | "agent";
   text: string;
-  phase?: "commentary" | "final";
+  phase?: "final";
+}
+
+export interface DelegationMessageTurn {
+  turnId: string | null;
+  turnNumber: number;
+  status: DelegationThreadStatus;
+  messages: DelegationMessage[];
 }
 
 export interface DelegationProgress {
@@ -39,10 +57,28 @@ export interface DelegationProgress {
   text: string;
 }
 
+/**
+ * One Question request the Host is waiting to answer. It is reported by
+ * `thread read`, so a caller can answer it without registering a watch, and it
+ * uses the same Question contract the Harness Adapter reported.
+ */
+export interface DelegationPendingQuestion {
+  /** Opaque Host request identity accepted by `thread answer --interaction`, not an Adapter ID. */
+  interactionId: string;
+  kind: "requestUserInput" | "requestUserInputAsync";
+  /** Turn that asked the question; asynchronous questions do not pause it. */
+  turnId: string;
+  expiresAt?: string;
+  /** Original request params, or one native async question with its source identity. */
+  request: JsonObject;
+}
+
 export interface DelegationThreadSnapshot {
   hostId?: string;
   threadId: string;
   harnessId: RoutedHarnessId;
+  cwd?: string;
+  title?: string;
   status: DelegationThreadStatus;
   turn: { turnId: string; status: DelegationThreadStatus } | null;
   progress: DelegationProgress[];
@@ -51,25 +87,42 @@ export interface DelegationThreadSnapshot {
     text?: string;
     message?: string;
   };
-  messages?: DelegationMessage[];
-  hasMore?: boolean;
-  nextCursor: string | null;
+  turns?: DelegationMessageTurn[];
+  totalTurns?: number;
+  /** Inclusive absolute Turn numbers; null when the range contains no Turns. */
+  from?: number | null;
+  to?: number | null;
+  /** Omitted when the Thread carries no references. */
+  refs?: string[];
+  /** Empty when the Thread has no unanswered questions. */
+  pendingQuestions?: DelegationPendingQuestion[];
 }
 
 export interface DelegationStartInput {
   harnessId: RoutedHarnessId;
   task: string;
+  /** Short display name; the full task remains the initial message. */
+  taskName?: string;
   cwd?: string;
   parentThreadId?: string;
   requestId?: string;
   model?: HarnessModelRef;
   thinkingOptionId?: HarnessThinkingOptionId;
+  /** Absolute URIs of where the work came from; children inherit them. */
+  refs?: string[];
 }
 
 export interface HarnessInspectInput {
   harnessId: RoutedHarnessId;
   cwd?: string;
   refresh?: boolean;
+  /** Calling Thread; an official parent cannot inspect a Harness Desktop must not present. */
+  parentThreadId?: string;
+}
+
+export interface HarnessListInput {
+  /** Calling Thread; an official parent cannot list a Harness Desktop must not present. */
+  parentThreadId?: string;
 }
 
 export interface HarnessInspectResult {
@@ -97,16 +150,25 @@ export interface DelegationStartResult {
   deepLink: string;
   status: DelegationThreadStatus;
   cwd?: string;
+  title?: string;
   parentThreadId?: string;
   configuration?: DelegationConfigurationResult;
+  /** References the child carries, inherited ones first; omitted when there are none. */
+  refs?: string[];
   /** Present only when the caller asked `delegate start` to also watch the child. */
   watch?: ThreadWatchResult | { state: "notRegistered"; reason: string };
+  /** Present when start prepared an isolated Git checkout. */
+  worktree?: DelegationWorktree;
   next: { read: string; wait: string };
 }
 
 export interface ThreadSendInput {
   threadId: string;
   message: string;
+  /** Stop the current Turn and confirm idle before sending; preserve existing watches. */
+  interrupt?: boolean;
+  /** Use the existing steering operation when running; idle Threads start a Turn. */
+  steer?: boolean;
 }
 
 export interface ThreadSendResult {
@@ -114,6 +176,8 @@ export interface ThreadSendResult {
   turnId: string;
   harnessId: RoutedHarnessId;
   status: "running";
+  /** Present only when send also requested a watch, in the same shape as delegate start. */
+  watch?: DelegationStartResult["watch"];
   next: { read: string; wait: string };
 }
 
@@ -135,17 +199,39 @@ export interface ThreadReadInput {
   hostId?: string;
   threadId: string;
   view: "result" | "messages";
-  cursor?: string;
-  limit?: number;
+  from?: number;
+  to?: number;
 }
 
 export interface ThreadWaitInput extends ThreadReadInput {
   timeoutMs: number;
 }
 
+export interface ThreadAnswerInput {
+  threadId: string;
+  /** Interaction ID reported by `thread read` in `pendingQuestions`. */
+  interactionId: string;
+  /** Existing requestUserInput result, or { answer: string } for a native async question. */
+  result: JsonValue;
+}
+
+export interface ThreadAnswerResult {
+  threadId: string;
+  interactionId: string;
+  turnId: string;
+  harnessId: RoutedHarnessId;
+  /** Reply submission receipt; read the Thread for its actual execution state. */
+  status: "running";
+  next: { read: string; wait: string };
+}
+
 export interface ThreadListInput {
   cwd?: string;
   parentThreadId?: string;
+  /** Threads an external client started without a parent Thread. */
+  client?: string;
+  /** Threads that carry this reference. */
+  ref?: string;
   limit: number;
   cursor?: string;
   sort:
@@ -166,6 +252,9 @@ export interface DelegationThreadListItem {
   title?: string;
   createdAt?: string;
   updatedAt?: string;
+  /** Set by native rows; recency-* sorts order by it, falling back to updatedAt. */
+  recencyAt?: string;
+  refs?: string[];
 }
 
 export interface DelegationThreadListResult {
@@ -185,6 +274,8 @@ export type ThreadWatchOutcome =
   | "completed"
   | "failed"
   | "interrupted"
+  /** The Thread is running but waiting for an answer. */
+  | "needsInput"
   /** The Thread was still running when the watch expired. */
   | "timedOut"
   /** Reads kept failing, so the state of the Thread is unknown. */
@@ -194,10 +285,15 @@ export type ThreadWatchOutcome =
 export interface ThreadWatchResult {
   threadId: string;
   notifyThreadId: string;
-  /** `alreadyTerminal` means no watch was registered and no notification will be sent. */
-  state: "watching" | "alreadyTerminal";
+  /**
+   * `alreadyTerminal` and `alreadyNeedsInput` mean no watch was registered and
+   * no notification will be sent.
+   */
+  state: "watching" | "alreadyTerminal" | "alreadyNeedsInput";
   status: DelegationThreadStatus;
   timeoutMs: number;
+  /** Present for `alreadyNeedsInput`, so the caller can answer without re-reading. */
+  pendingQuestions?: DelegationPendingQuestion[];
 }
 
 export interface ThreadWatchEntry {
@@ -205,11 +301,19 @@ export interface ThreadWatchEntry {
   notifyThreadId: string;
   state: "watching" | "pendingDelivery" | "undeliverable";
   outcome?: ThreadWatchOutcome;
-  /** Turn that reached the terminal outcome, when the Thread reported one. */
+  /** Turn that reached the reported outcome, when the Thread reported one. */
   turnId?: string;
+  /** Question request that reported `needsInput`. */
+  interactionId?: string;
   /** Present for `undeliverable`. */
   reason?: string;
   registeredAt: string;
+  /** Current title, or the last observed title when the Thread cannot be read. */
+  taskName?: string;
+  /** Current Thread status; omitted when the Thread cannot be read. */
+  threadStatus?: DelegationThreadStatus;
+  /** Elapsed time since registration, including Host downtime. */
+  watchedForMs?: number;
 }
 
 export interface ThreadWatchListResult {
@@ -227,13 +331,16 @@ export interface DelegationWatchApi {
 }
 
 export interface DelegationControlApi {
-  listHarnesses(): Promise<HarnessListResult>;
+  listHarnesses(input?: HarnessListInput): Promise<HarnessListResult>;
   inspect(input: HarnessInspectInput): Promise<HarnessInspectResult>;
   start(input: DelegationStartInput): Promise<DelegationStartResult>;
   send(input: ThreadSendInput): Promise<ThreadSendResult>;
   cancel(input: ThreadCancelInput): Promise<ThreadCancelResult>;
   read(input: ThreadReadInput): Promise<DelegationThreadSnapshot>;
+  /** Optional for older control registrations that do not support debug exports. */
+  exportThread?(input: ThreadExportInput): Promise<ThreadExportResult>;
   wait(input: ThreadWaitInput): Promise<DelegationThreadSnapshot & { timedOut: boolean }>;
+  answer(input: ThreadAnswerInput): Promise<ThreadAnswerResult>;
   list(input: ThreadListInput): Promise<DelegationThreadListResult>;
 }
 
@@ -252,6 +359,16 @@ export type DelegationControlErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
+  /** A result file is outside the Thread's exportable files. */
+  | "FORBIDDEN"
+  /** The operation requires a known local execution workspace. */
+  | "UNSUPPORTED"
+  /** The external client token is missing, unknown, or revoked. */
+  | "UNAUTHORIZED"
+  /** The event cursor is older than the oldest retained event. */
+  | "CURSOR_EXPIRED"
+  /** The Question request is unknown, already answered, or no longer pending. */
+  | "QUESTION_NOT_PENDING"
   | "INTERNAL_ERROR";
 
 export class DelegationControlError extends Error {

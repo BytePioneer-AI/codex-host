@@ -1,6 +1,8 @@
 **/*.md
 **/*.wxs
 .pi/
+# Local-only design scratch files.
+.local/
 reference/
 node_modules/
 target/
@@ -15,3 +17,17 @@ package-lock.json
 Cargo.lock
 # Generated models.dev price snapshot.
 packages/host-runtime/src/model-prices.generated.ts
+# Pinned upstream browser protocol codecs.
+apps/web-ui/**/generated/
+# Byte-for-byte DSH client-hmr import; provenance and hashes in import-manifest.json.
+apps/web-ui/packages/client/hmr/src/index.ts
+apps/web-ui/packages/client/hmr/tests/*.spec.ts
+# Imported browser build outputs and local diagnostics.
+apps/web-ui/**/lib/
+# Generated Next.js and Fumadocs outputs.
+apps/wiki/.next/
+apps/wiki/.source/
+apps/wiki/.vercel/
+apps/wiki/out/
+apps/wiki/next-env.d.ts
+.work/

@@ -1,6 +1,0 @@
-interface:
-  display_name: "dep-refs"
-  short_description: "Trace public exports and their actual callers"
-  default_prompt: "Use $dep-refs for the relevant parts of this task, following codexhost repository guidance."
-policy:
-  allow_implicit_invocation: true

@@ -122,6 +122,31 @@ describe("remote external attachments through the native Desktop file store", ()
     }
   });
 
+  it("reuses an image-only native manifest without requiring attachment storage", async () => {
+    const f = fixture();
+    Reflect.deleteProperty(f.manager, "createFileAttachment");
+    const params = request([
+      {
+        type: "text",
+        text: "# Files mentioned by the user:\n\n## original.png: /remote/.codex/attachments/native/original.png\nImage attachment: true\n",
+      },
+      image,
+    ]);
+    try {
+      await expect(f.manager.sendRequest("turn/start", params)).resolves.toEqual({
+        turn: { id: "turn" },
+      });
+      expect(f.createFileAttachment).not.toHaveBeenCalled();
+      expect(f.rpc).toHaveBeenCalledExactlyOnceWith(
+        "turn/start",
+        { ...params, codexhostSourceHostId: "ssh:remote" },
+        undefined,
+      );
+    } finally {
+      f.dispose();
+    }
+  });
+
   it("does not mistake an example in the user's request for native attachment context", async () => {
     const f = fixture();
     try {

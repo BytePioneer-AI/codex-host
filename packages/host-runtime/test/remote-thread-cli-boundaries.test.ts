@@ -32,7 +32,6 @@ it("preserves a remote Host in compact snapshot links", () => {
       turn: null,
       progress: [],
       result: { availability: "available", text: "done" },
-      nextCursor: null,
     }),
   ).toMatchObject({ thread: "thread://t?hostId=remote-ssh-discovered%3Amac" });
 });

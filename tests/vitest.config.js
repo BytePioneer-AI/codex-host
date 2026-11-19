@@ -1,20 +1,21 @@
-import { globSync, readFileSync } from "node:fs";
+import { globSync } from "node:fs";
 import path from "node:path";
 
 import { configDefaults, defineConfig } from "vitest/config";
 
+import { isPlatformTest } from "./platform-tests.mjs";
+
 const root = path.resolve(import.meta.dirname, "..");
+
 const include = [
   "packages/**/test/**/*.test.ts",
+  "tests/integration/**/*.test.ts",
+  "apps/web-ui/packages/client/ui-conversation/test/*.test.ts",
+  "apps/web-ui/packages/client/hmr/tests/*.spec.ts",
   "packages/repository-automation/test/**/*.test.mjs",
   "tests/release/**/*.test.mjs",
   "tools/**/*.test.mjs",
 ];
-
-// A test file touches OS behavior when it uses the filesystem, processes,
-// paths, the environment, or branches on the platform.
-const platformSensitive =
-  /node:(fs|child_process|os|path|net|worker_threads|url)|process\.(platform|env|execPath|kill|pid)|win32|tmpdir|spawn|execFile|MappingStore|mkdtemp|\.exe\b|USERPROFILE|APPDATA|\\\\/;
 
 // CODEXHOST_TEST_SCOPE=platform runs only platform-sensitive files. Secondary
 // OS lanes (macOS and Windows) use it; Linux x64 covers pure-logic files.
@@ -22,22 +23,27 @@ const platformSensitive =
 function platformIndependentFiles() {
   return globSync(include, { cwd: root, exclude: (name) => name === "node_modules" })
     .map((file) => file.replaceAll("\\", "/"))
-    .filter((file) => !platformSensitive.test(readFileSync(path.join(root, file), "utf8")));
+    .filter((file) => !isPlatformTest(path.join(root, file)));
 }
 
 const platformOnly = process.env.CODEXHOST_TEST_SCOPE === "platform";
 
 export default defineConfig({
   root,
-  build: {
-    assetsInlineLimit: 100000,
-  },
   test: {
     environment: "node",
     include,
-    ...(platformOnly
-      ? { exclude: [...configDefaults.exclude, ...platformIndependentFiles()] }
-      : {}),
+    // Imported DSH packages expose their TypeScript sources; Vite must transform
+    // them instead of handing them to Node's native loader.
+    server: { deps: { inline: [/@deepseek-ai\//] } },
+    // The Web Host owns Node test-runner suites, invoked by npm run test:web.
+    exclude: [
+      ...configDefaults.exclude,
+      "packages/web-server/test/**",
+      // Native service tests use Node's runner after building the Rust Launcher.
+      "packages/host-runtime/test/native/**",
+      ...(platformOnly ? platformIndependentFiles() : []),
+    ],
     maxWorkers: 4,
     passWithNoTests: false,
     // Hosted Windows runners have highly variable disk latency (fsync + rename

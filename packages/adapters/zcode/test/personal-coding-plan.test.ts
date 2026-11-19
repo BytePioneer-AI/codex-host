@@ -163,6 +163,204 @@ describe("Personal Coding Plan read-only account integration", () => {
     },
   );
 
+  const LOGIN = "synthetic-oauth-login";
+  const TOKEN = "synthetic-project-token";
+  const location = { organizationId: "org/one", projectId: "project/one", apiKeyId: "key/one" };
+  it.each(
+    ["start-plan", "individual-coding-plan"].flatMap((selection) =>
+      ["missing-key", "no-subscription", "unreadable-profile"].map((failure) => ({
+        selection,
+        failure,
+      })),
+    ),
+  )(
+    "keeps $failure diagnostics scoped to the $selection selection",
+    async ({ selection, failure }) => {
+      await select("zai", selection);
+      if (failure === "missing-key") Reflect.deleteProperty(credentials, keyName("zai"));
+      if (failure === "unreadable-profile") credentials["oauth:zai:user_info"] = "invalid-json";
+      await saveCredentials();
+      if (failure === "no-subscription")
+        vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ data: [] })));
+      const config = await accountConfig(installation, environment);
+      expect(config.params.states[id("zai")]).toMatchObject({ entitled: false });
+      if (selection === "individual-coding-plan")
+        expect(config.codingPlan.issue).toContain("Personal Coding Plan");
+      else expect(config.codingPlan.issue).toBeUndefined();
+    },
+  );
+  function locationKey(family: string, user = userId) {
+    return `project-key-location:v1:${encodeURIComponent(
+      JSON.stringify([
+        personalCodingPlanOrigin(family as "zai" | "bigmodel", environment),
+        family,
+        user,
+        null,
+        1,
+        "non-team",
+      ]),
+    )}`;
+  }
+  async function projectLogin(family: "zai" | "bigmodel" = "bigmodel") {
+    await login(family);
+    Reflect.deleteProperty(credentials, keyName(family));
+    credentials[`oauth:${family}:access_token`] = LOGIN;
+    credentials[locationKey(family)] = JSON.stringify(location);
+    await saveCredentials();
+    installation.version = "3.16.3";
+    vi.mocked(fetch).mockImplementation(
+      async (url) =>
+        new Response(
+          JSON.stringify(
+            String(url).endsWith("/access_tokens")
+              ? {
+                  code: 200,
+                  data: {
+                    accessToken: TOKEN,
+                    tokenType: "Bearer",
+                    expiresIn: 3600,
+                    expiresAt: Date.now() / 1000 + 3600,
+                  },
+                }
+              : { code: 200, data: [activeSubscription] },
+          ),
+        ),
+    );
+  }
+
+  it.each(["before", "during"])(
+    "returns no authentication diagnostic when cancelled %s token exchange",
+    async (when) => {
+      await projectLogin();
+      const config = await accountConfig(installation, environment);
+      const controller = new AbortController();
+      const reason = new Error(LOGIN);
+      vi.mocked(fetch)
+        .mockClear()
+        .mockImplementation(async () => {
+          controller.abort(reason);
+          throw reason;
+        });
+      if (when === "before") controller.abort(reason);
+      expect(await auth(config, request("bigmodel"), controller.signal)).toEqual({
+        headersApplied: false,
+      });
+      expect(fetch).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
+    },
+  );
+
+  it.each(["zai", "bigmodel"] as const)(
+    "recognizes %s project credentials and authenticates without a legacy key",
+    async (family) => {
+      await projectLogin(family);
+      const before = await readFile(path.join(installation.dataRoot, "credentials.json"), "utf8");
+      const config = await accountConfig(installation, environment);
+      expect(config.params.states[id(family)]).toMatchObject({
+        availability: "available",
+        entitled: true,
+        current: true,
+      });
+      expect(fetch).toHaveBeenCalledWith(
+        `${personalCodingPlanOrigin(family, environment)}/api/biz/subscription/list`,
+        expect.objectContaining({ headers: { Authorization: LOGIN } }),
+      );
+      expect(
+        vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/access_tokens")),
+      ).toBe(false);
+      const result = await auth(config, request(family));
+      expect(result).toMatchObject({
+        headersApplied: true,
+        requestAuth: { apiKey: TOKEN, apiKeyId: location.apiKeyId },
+      });
+      expect(fetch).toHaveBeenCalledWith(
+        `${personalCodingPlanOrigin(family, environment)}/api/biz/v1/organization/org%2Fone/projects/project%2Fone/api_keys/key%2Fone/access_tokens`,
+        expect.objectContaining({
+          method: "POST",
+          headers: { Authorization: `Bearer ${LOGIN}`, "Content-Type": "application/json" },
+          redirect: "error",
+        }),
+      );
+      expect(JSON.stringify(config.params)).not.toContain(LOGIN);
+      expect(JSON.stringify(config.params)).not.toContain(TOKEN);
+      expect(await readFile(path.join(installation.dataRoot, "credentials.json"), "utf8")).toBe(
+        before,
+      );
+      expect(verifier).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reuses valid project tokens and renews a rejected token only in the same account scope", async () => {
+    await projectLogin();
+    const config = await accountConfig(installation, environment);
+    const first = await auth(config, request("bigmodel"));
+    expect(first).toMatchObject({ headersApplied: true });
+    if (!first.headersApplied || !first.requestAuth || !("accountScope" in first.requestAuth))
+      throw new Error("missing scope");
+    const scope = first.requestAuth.accountScope;
+    await auth(config, request("bigmodel"));
+    const tokenCalls = () =>
+      vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/access_tokens"));
+    expect(tokenCalls()).toHaveLength(1);
+    expect(
+      (await auth(config, { ...request("bigmodel"), expectedAccountScope: "wrong-scope" }))
+        .headersApplied,
+    ).toBe(false);
+    expect(tokenCalls()).toHaveLength(1);
+    await auth(config, {
+      ...request("bigmodel"),
+      expectedAccountScope: scope,
+      rejectedProjectTokenFingerprint: createHash("sha256").update(TOKEN).digest("hex"),
+    });
+    expect(tokenCalls()).toHaveLength(2);
+  });
+
+  it.each(["identity", "selection", "login", "location"])(
+    "discards project token results crossing a %s change",
+    async (change) => {
+      await projectLogin();
+      const config = await accountConfig(installation, environment);
+      vi.mocked(fetch).mockImplementation(async () => {
+        if (change === "identity") await login("bigmodel", "another-user");
+        if (change === "selection") await select("bigmodel", "team-coding-plan");
+        if (change === "login") {
+          credentials["oauth:bigmodel:access_token"] = "new-login";
+          await saveCredentials();
+        }
+        if (change === "location") {
+          credentials[locationKey("bigmodel")] = JSON.stringify({
+            ...location,
+            projectId: "other",
+          });
+          await saveCredentials();
+        }
+        return new Response(
+          JSON.stringify({
+            code: 200,
+            data: {
+              accessToken: TOKEN,
+              tokenType: "Bearer",
+              expiresIn: 3600,
+              expiresAt: Date.now() / 1000 + 3600,
+            },
+          }),
+        );
+      });
+      const result = await auth(config, request("bigmodel"));
+      expect(result.headersApplied).toBe(false);
+      expect(JSON.stringify(result)).not.toContain(TOKEN);
+    },
+  );
+
+  it("never borrows a project locator belonging to another account", async () => {
+    await projectLogin();
+    credentials[locationKey("bigmodel", "other-user")] = JSON.stringify(location);
+    Reflect.deleteProperty(credentials, locationKey("bigmodel"));
+    await saveCredentials();
+    const config = await accountConfig(installation, environment);
+    expect(config.params.states[id("bigmodel")]).toMatchObject({ entitled: false });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([
     [[], "unavailable", "not-entitled"],
     [[{ ...activeSubscription, status: "EXPIRED" }], "unavailable", "not-entitled"],

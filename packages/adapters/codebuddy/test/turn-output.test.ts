@@ -65,6 +65,26 @@ function completedText(events: HostEvent[]) {
 }
 
 describe("CodeBuddy / WorkBuddy streamed message boundaries", () => {
+  it("starts a repeated command-history Item once and ignores its later live replay", () => {
+    const { output, events, finish } = fixture();
+    const snapshot = {
+      item: {
+        type: "toolExecution" as const,
+        itemId: hostItemIdSchema.parse("tool-call"),
+        toolName: "Read",
+        arguments: {},
+      },
+      outcome: { status: "succeeded" as const },
+    };
+    output.replayCommandResult([snapshot, snapshot]);
+    output.replayCommandResult([snapshot]);
+    output.update(tool);
+    output.update(toolEnd);
+    expect(events.filter((event) => event.type === "item.started")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "item.completed")).toHaveLength(1);
+    expect(finish()).toMatchObject({ status: "completed" });
+  });
+
   it("uses per-LLM identity rather than the shared Prompt ID and completes the previous message", () => {
     const { output, events, finish } = fixture();
     output.update(chunk("thought", "first analysis", llm("llm-1")));

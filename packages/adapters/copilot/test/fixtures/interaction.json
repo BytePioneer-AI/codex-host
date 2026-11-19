@@ -1,0 +1,624 @@
+[
+  {
+    "id": "1265d60e-3b57-4076-a7bf-34c555fed084",
+    "timestamp": "2026-10-22T10:12:46.259Z",
+    "parentId": null,
+    "type": "session.start",
+    "data": {
+      "sessionId": "d77f5f65-d7fc-4f05-90e6-65ecd18d00da",
+      "version": 1,
+      "producer": "copilot-agent",
+      "copilotVersion": "1.0.102",
+      "startTime": "2026-10-22T10:12:46.229Z"
+    }
+  },
+  {
+    "id": "c14d7995-6c21-484a-8da7-e9e34149c95a",
+    "timestamp": "2026-10-22T10:12:51.531Z",
+    "parentId": "0a527602-2e9f-4c8e-a46f-a785193f4ff7",
+    "type": "user.message",
+    "data": {
+      "content": "Use the bash tool to run sleep 30. Do not use any other tool.",
+      "messageId": "44639907-98ad-4523-9c27-46be97f8e0ea",
+      "delivery": "idle",
+      "parentAgentTaskId": "3e020364-f107-4c62-aa9e-577fcd2dd7d1"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "318f490d-0f5c-405f-bd74-04b0f49c53e8",
+    "timestamp": "2026-10-22T10:12:51.536Z",
+    "parentId": "840fd392-1ec6-4fcd-bcea-45ae21721875",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "bcd98b52-b7d6-4d3d-bce6-5779420619c7",
+    "timestamp": "2026-10-22T10:12:51.540Z",
+    "parentId": "318f490d-0f5c-405f-bd74-04b0f49c53e8",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 14323,
+      "messagesLength": 3
+    }
+  },
+  {
+    "id": "2d92cde4-4ef3-45e4-8f0f-729fd369f2d4",
+    "timestamp": "2026-10-22T10:12:55.299Z",
+    "parentId": "01f287b8-77b2-43af-8971-e42e6e5ea620",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "ac79e5a4-e29a-430f-8b29-6ca7a20ed3f4",
+      "originatingMessageId": "44639907-98ad-4523-9c27-46be97f8e0ea",
+      "content": ""
+    }
+  },
+  {
+    "id": "95ce4c53-d8ad-4e74-ab92-e0253e943e31",
+    "timestamp": "2026-10-22T10:12:55.301Z",
+    "parentId": "2d92cde4-4ef3-45e4-8f0f-729fd369f2d4",
+    "type": "tool.execution_start",
+    "data": {
+      "toolCallId": "call_K2cc1azhCKzVdRTjpr9VJ3ft",
+      "toolName": "bash",
+      "arguments": {
+        "command": "sleep 30",
+        "description": "Wait for 30 seconds",
+        "initial_wait": 30
+      },
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "11d91b6c-edf3-4e83-a655-2948c9ff6756",
+    "timestamp": "2026-10-22T10:12:55.451Z",
+    "parentId": "8c4139b0-cb39-4fdf-a8b4-5babd0613471",
+    "type": "abort",
+    "data": {
+      "reason": "user_initiated"
+    }
+  },
+  {
+    "id": "cec03e4e-94d0-4b38-b320-5779a2b64059",
+    "timestamp": "2026-10-22T10:12:55.453Z",
+    "parentId": "43b39344-dc4a-480c-a033-a7853ffeaa76",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "d85e2486-150c-4812-b70a-5af10217a9c2",
+    "timestamp": "2026-10-22T10:12:55.456Z",
+    "parentId": "f452c48f-2559-4299-841d-17a073ee922a",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "aborted": true,
+      "mode": "interactive"
+    }
+  },
+  {
+    "id": "e1a7068c-14e8-4f67-90d1-1956e5eede58",
+    "timestamp": "2026-10-22T10:12:56.663Z",
+    "parentId": "2dda44f0-8a01-4aae-be96-405a500c5d53",
+    "type": "user.message",
+    "data": {
+      "content": "Reply exactly CONTINUED. Do not use any tools.",
+      "messageId": "2631094b-32cd-4468-b110-a6951d588014",
+      "delivery": "idle",
+      "parentAgentTaskId": "413d5cfb-73ee-424d-9421-ce84f35070df"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "9e34c90b-8fd8-47af-b108-050c6b93c688",
+    "timestamp": "2026-10-22T10:12:56.666Z",
+    "parentId": "1132164b-8a82-4284-844a-424e4ec8754d",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "ef1fd1ab-853b-4609-bd5c-64867867c451",
+    "timestamp": "2026-10-22T10:12:56.666Z",
+    "parentId": "9e34c90b-8fd8-47af-b108-050c6b93c688",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 14450,
+      "messagesLength": 6
+    }
+  },
+  {
+    "id": "cc4f5d12-aad3-4c2b-8551-3f5b42a055d5",
+    "timestamp": "2026-10-22T10:12:57.926Z",
+    "parentId": "9e34c90b-8fd8-47af-b108-050c6b93c688",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "4e394344-e9ee-47ed-a17b-e410a3ea190f",
+      "deltaContent": "CONT"
+    }
+  },
+  {
+    "id": "42905973-6b80-4d85-92e2-d724f1b46b81",
+    "timestamp": "2026-10-22T10:12:57.926Z",
+    "parentId": "9e34c90b-8fd8-47af-b108-050c6b93c688",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "4e394344-e9ee-47ed-a17b-e410a3ea190f",
+      "deltaContent": "INU"
+    }
+  },
+  {
+    "id": "bd19fa7a-71bb-48f1-8029-2db164312e89",
+    "timestamp": "2026-10-22T10:12:57.928Z",
+    "parentId": "9e34c90b-8fd8-47af-b108-050c6b93c688",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "4e394344-e9ee-47ed-a17b-e410a3ea190f",
+      "deltaContent": "ED"
+    }
+  },
+  {
+    "id": "d64281cb-7a02-4030-af9a-0ae83d619818",
+    "timestamp": "2026-10-22T10:12:58.084Z",
+    "parentId": "abca46b4-be50-439a-990d-4f15ecd7a528",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "4e394344-e9ee-47ed-a17b-e410a3ea190f",
+      "originatingMessageId": "2631094b-32cd-4468-b110-a6951d588014",
+      "content": "CONTINUED",
+      "phase": "final_answer"
+    }
+  },
+  {
+    "id": "912c83a8-d2a6-47a8-94f1-ebb72e207302",
+    "timestamp": "2026-10-22T10:12:58.085Z",
+    "parentId": "d64281cb-7a02-4030-af9a-0ae83d619818",
+    "type": "assistant.reasoning",
+    "ephemeral": true,
+    "data": {
+      "reasoningId": "cXDPZYSk5A87EergIjXu6RGEhXN7kFF9ChHJBZb6uKCgn+K5Tx3eFW7YhXfAD5USnPK7gGliay9df5AoLtnIFMf6usZCzT3AhIaDJ9JccwxK9TubhBdddXmLVwXN/FNTAhwdAEwUY1wRZ0NwisDCRCRKmRm5xrSW4a8QiZY5Nik9OTwdjMmMZNzzzmXqOx7tN9PAIzHWzM/+5w+RgtBRZqpiutF8OWLxKuzsy/O09GhI1olWnxLEc7kX0gZYh3zcEMpyhiQ6B0GZq7wBTTqB7goI/6Rq0ajnsWVtlMnCuo9/mEwiEmAcN91fnunikGeAVAcjWNGaKfINdB5SmuXLuhJpNXIEHjqoybBEltSmcc4mIT/hp3V/K4eJsrzrDrMoSAh3Kkp3xtIJem0Pwp5id6EDGxop8GjmzWjzYb52oUjh+lfPzXCIFmiPGIFLpFddVl/AR3QyDAqAzdHlf00aU2WLMBXc+S5VjGZvbUD8nEs=",
+      "content": ""
+    }
+  },
+  {
+    "id": "6452e4a1-24d0-4f87-a935-d3a6d4433f6c",
+    "timestamp": "2026-10-22T10:12:58.086Z",
+    "parentId": "d64281cb-7a02-4030-af9a-0ae83d619818",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "6dbbea1e-a5f6-43b5-b129-2122385d505c",
+    "timestamp": "2026-10-22T10:12:58.103Z",
+    "parentId": "fb1eab2a-4648-4d34-9f1c-38825212831b",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "mode": "interactive"
+    }
+  },
+  {
+    "id": "6067ecb3-6c14-4d2f-b879-3cd6efa7c154",
+    "timestamp": "2026-10-22T10:12:58.123Z",
+    "parentId": "2f9524b6-105d-4168-9700-8a7a1d31dd1a",
+    "type": "user.message",
+    "data": {
+      "content": "Call ask_user to ask me to choose Alpha or Beta. Do not answer for me.",
+      "messageId": "ad218845-b395-4a5e-b7cf-38bc274b54f2",
+      "delivery": "idle",
+      "parentAgentTaskId": "92fd956d-5f56-4b33-aad8-6d14c2175bdb"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "34b16779-15a9-45e2-a6ae-1a59f79e62ff",
+    "timestamp": "2026-10-22T10:12:58.125Z",
+    "parentId": "546cba81-edca-4ab4-a897-40f9e99ecdc8",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "53f6b0f2-917e-41fa-b1da-acba7b6d4c1e",
+    "timestamp": "2026-10-22T10:12:58.126Z",
+    "parentId": "34b16779-15a9-45e2-a6ae-1a59f79e62ff",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 14515,
+      "messagesLength": 8
+    }
+  },
+  {
+    "id": "a05189bc-f37c-4b9c-a383-0be8e8419fb7",
+    "timestamp": "2026-10-22T10:12:59.679Z",
+    "parentId": "d602cd72-7f9a-40e7-83fe-16f2aa5b721c",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "88279e8c-424a-4af4-a54f-4312a75c93af",
+      "originatingMessageId": "ad218845-b395-4a5e-b7cf-38bc274b54f2",
+      "content": ""
+    }
+  },
+  {
+    "id": "6f27724c-a500-4e43-a874-4fba66a72062",
+    "timestamp": "2026-10-22T10:12:59.680Z",
+    "parentId": "a05189bc-f37c-4b9c-a383-0be8e8419fb7",
+    "type": "tool.execution_start",
+    "data": {
+      "toolCallId": "call_5qSU0JmOWpYJtSTXLqUIGmoT",
+      "toolName": "ask_user",
+      "arguments": {
+        "question": "Which do you choose?",
+        "choices": ["Alpha", "Beta"]
+      },
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "a6f0541d-797a-4971-89bb-087722a6c879",
+    "timestamp": "2026-10-22T10:12:59.800Z",
+    "parentId": "839e1cee-95c9-4ac8-bcd1-6b4d70051758",
+    "type": "abort",
+    "data": {
+      "reason": "user_initiated"
+    }
+  },
+  {
+    "id": "06e6100b-3cd1-40f3-b339-906a05aae5cb",
+    "timestamp": "2026-10-22T10:12:59.802Z",
+    "parentId": "a6f0541d-797a-4971-89bb-087722a6c879",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "41cbdb17-a2b7-411c-ba0d-3a89f5b8f4c7",
+    "timestamp": "2026-10-22T10:12:59.805Z",
+    "parentId": "33d83984-4e18-44ce-a036-233172b0f3b5",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "aborted": true,
+      "mode": "interactive"
+    }
+  },
+  {
+    "id": "d5e7c28e-d900-49ea-afdb-3e1811382e01",
+    "timestamp": "2026-10-22T10:12:59.826Z",
+    "parentId": "cbe783fe-de00-411a-b447-6eae95d6c17a",
+    "type": "user.message",
+    "data": {
+      "content": "Reply exactly CONTINUED. Do not use any tools.",
+      "messageId": "54ffd208-008b-46d6-ba75-5e202c9dba2b",
+      "delivery": "idle",
+      "parentAgentTaskId": "3cda5f41-c16e-45fa-9344-ef6e1c222495"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "f0df4d3d-ebc2-46e0-bdae-2070badfa2e9",
+    "timestamp": "2026-10-22T10:12:59.827Z",
+    "parentId": "dd48bc22-fb81-43b7-a0f1-ba27fe265c2b",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "90b15606-0415-480b-9441-673a23f95238",
+    "timestamp": "2026-10-22T10:12:59.828Z",
+    "parentId": "f0df4d3d-ebc2-46e0-bdae-2070badfa2e9",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 14643,
+      "messagesLength": 11
+    }
+  },
+  {
+    "id": "76198ee9-4c62-422d-9993-2d5f366125f1",
+    "timestamp": "2026-10-22T10:13:02.277Z",
+    "parentId": "f0df4d3d-ebc2-46e0-bdae-2070badfa2e9",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "2b953c9b-2f64-480b-8a0b-2220f966d4a2",
+      "deltaContent": "CONT"
+    }
+  },
+  {
+    "id": "65f2d054-ece3-4402-9799-28d74d8572c5",
+    "timestamp": "2026-10-22T10:13:02.280Z",
+    "parentId": "f0df4d3d-ebc2-46e0-bdae-2070badfa2e9",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "2b953c9b-2f64-480b-8a0b-2220f966d4a2",
+      "deltaContent": "INU"
+    }
+  },
+  {
+    "id": "ca62a929-6c65-4d70-b78f-88178bd40cb5",
+    "timestamp": "2026-10-22T10:13:02.299Z",
+    "parentId": "f0df4d3d-ebc2-46e0-bdae-2070badfa2e9",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "2b953c9b-2f64-480b-8a0b-2220f966d4a2",
+      "deltaContent": "ED"
+    }
+  },
+  {
+    "id": "c19cd145-b0fc-450e-ba5d-61dd251cbaa7",
+    "timestamp": "2026-10-22T10:13:02.630Z",
+    "parentId": "d463d7c7-c73f-4787-8249-a5da6b3c75c3",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "2b953c9b-2f64-480b-8a0b-2220f966d4a2",
+      "originatingMessageId": "54ffd208-008b-46d6-ba75-5e202c9dba2b",
+      "content": "CONTINUED",
+      "phase": "final_answer"
+    }
+  },
+  {
+    "id": "80c11897-ff9d-4643-93cf-cdba40ab7cbc",
+    "timestamp": "2026-10-22T10:13:02.631Z",
+    "parentId": "c19cd145-b0fc-450e-ba5d-61dd251cbaa7",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "f6a3b782-2a05-4731-b9e0-5846119b4701",
+    "timestamp": "2026-10-22T10:13:02.646Z",
+    "parentId": "2081bbb2-14bb-4765-b1b6-947a1d7bac61",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "mode": "interactive"
+    }
+  },
+  {
+    "id": "e75ef88c-bd17-4814-85d7-57f1cd0141eb",
+    "timestamp": "2026-10-22T10:13:03.968Z",
+    "parentId": "ea42c637-0655-49d2-bea7-b6c9d22c50fd",
+    "type": "user.message",
+    "data": {
+      "content": "Use the bash tool to run sleep 30 in foreground. Do not use any other tool.",
+      "messageId": "4de54ba5-bed9-40ec-87f9-8fcdaa7451ae",
+      "delivery": "idle",
+      "parentAgentTaskId": "366c5d14-085c-47d7-92dd-806a421d2eb4"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "73e33a36-4e4f-49c9-a7d7-d3361ce9717d",
+    "timestamp": "2026-10-22T10:13:03.970Z",
+    "parentId": "b45031e9-577d-4c70-b4ff-efb93788e560",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "b11cce4c-7a6f-4502-bd0e-9477d0761ac0",
+    "timestamp": "2026-10-22T10:13:03.970Z",
+    "parentId": "73e33a36-4e4f-49c9-a7d7-d3361ce9717d",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 14699,
+      "messagesLength": 13
+    }
+  },
+  {
+    "id": "7b7545ef-22db-499e-8944-6f2b6857748b",
+    "timestamp": "2026-10-22T10:13:05.289Z",
+    "parentId": "e7ee0580-a5f3-4462-8623-12520eb8dbec",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "7c824a17-7485-4228-bf3f-41359ce09b0f",
+      "originatingMessageId": "4de54ba5-bed9-40ec-87f9-8fcdaa7451ae",
+      "content": ""
+    }
+  },
+  {
+    "id": "2bff9b37-34e1-4b22-8829-fd9c87dc1ade",
+    "timestamp": "2026-10-22T10:13:05.290Z",
+    "parentId": "7b7545ef-22db-499e-8944-6f2b6857748b",
+    "type": "tool.execution_start",
+    "data": {
+      "toolCallId": "call_E7o5Jje7ncBd55nh9Ygh4lx0",
+      "toolName": "bash",
+      "arguments": {
+        "command": "sleep 30",
+        "description": "Wait for 30 seconds",
+        "initial_wait": 30
+      },
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "b1093e13-1728-45bb-b1a0-52d5faab2b94",
+    "timestamp": "2026-10-22T10:13:05.328Z",
+    "parentId": "f232d5d7-c2f5-40ba-b7a8-989afc58344d",
+    "type": "tool.execution_complete",
+    "data": {
+      "toolCallId": "call_E7o5Jje7ncBd55nh9Ygh4lx0",
+      "success": false,
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "173a46cb-07c9-4e07-a1ce-ad859462f321",
+    "timestamp": "2026-10-22T10:13:05.330Z",
+    "parentId": "b1093e13-1728-45bb-b1a0-52d5faab2b94",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "c22582c1-c42d-45e5-a26f-e0d43c40f44f",
+    "timestamp": "2026-10-22T10:13:05.330Z",
+    "parentId": "173a46cb-07c9-4e07-a1ce-ad859462f321",
+    "data": {
+      "turnId": "1"
+    }
+  },
+  {
+    "id": "9b33d6f1-8cf7-4a75-af8f-28d4fbefba13",
+    "timestamp": "2026-10-22T10:13:05.331Z",
+    "parentId": "c22582c1-c42d-45e5-a26f-e0d43c40f44f",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 14778,
+      "messagesLength": 15
+    }
+  },
+  {
+    "id": "d6568e58-e610-4536-a2df-09ef68a73f61",
+    "timestamp": "2026-10-22T10:13:06.792Z",
+    "parentId": "c22582c1-c42d-45e5-a26f-e0d43c40f44f",
+    "type": "abort",
+    "data": {
+      "reason": "user_initiated"
+    }
+  },
+  {
+    "id": "f92b5cd5-d16d-4d97-81d6-24caa528908b",
+    "timestamp": "2026-10-22T10:13:06.795Z",
+    "parentId": "d6568e58-e610-4536-a2df-09ef68a73f61",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "1"
+    }
+  },
+  {
+    "id": "8eeab13a-9a2c-4f5e-b8f8-09651fc1403e",
+    "timestamp": "2026-10-22T10:13:06.799Z",
+    "parentId": "543579cb-c7cc-4e57-8deb-63a99a77385e",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "aborted": true,
+      "mode": "interactive"
+    }
+  },
+  {
+    "id": "c4a17c45-7a4b-4bea-8a3e-6af7f7575e8c",
+    "timestamp": "2026-10-22T10:13:06.820Z",
+    "parentId": "c6b00200-3c72-4414-b499-9624d0434d86",
+    "type": "user.message",
+    "data": {
+      "content": "Reply exactly CONTINUED. Do not use any tools.",
+      "messageId": "38c9dafe-f357-4cc5-a2c2-97ac4029096a",
+      "delivery": "idle",
+      "parentAgentTaskId": "38a3ec9b-bbc6-4596-90ef-1b8349ddd4b2"
+    }
+  },
+  {
+    "type": "assistant.turn_start",
+    "id": "55df3cad-0a83-40e7-979e-1509e37ca733",
+    "timestamp": "2026-10-22T10:13:06.822Z",
+    "parentId": "99322108-71e3-438c-92a8-79bb39070d3c",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "9ef1ee58-039d-44ae-ba32-840a6ee6a69c",
+    "timestamp": "2026-10-22T10:13:06.823Z",
+    "parentId": "55df3cad-0a83-40e7-979e-1509e37ca733",
+    "type": "session.usage_info",
+    "ephemeral": true,
+    "data": {
+      "tokenLimit": 272000,
+      "currentTokens": 14834,
+      "messagesLength": 16
+    }
+  },
+  {
+    "id": "8adaec79-82a1-4643-8e97-8ff1efab16a8",
+    "timestamp": "2026-10-22T10:13:09.718Z",
+    "parentId": "55df3cad-0a83-40e7-979e-1509e37ca733",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "d74e02a1-b5a1-4f27-bda2-c340214ca1cc",
+      "deltaContent": "CONT"
+    }
+  },
+  {
+    "id": "8188fcd0-c47f-47a6-8b34-df1c107d5060",
+    "timestamp": "2026-10-22T10:13:09.718Z",
+    "parentId": "55df3cad-0a83-40e7-979e-1509e37ca733",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "d74e02a1-b5a1-4f27-bda2-c340214ca1cc",
+      "deltaContent": "INU"
+    }
+  },
+  {
+    "id": "f807a3aa-f01e-4e8a-b523-85fbf21b202c",
+    "timestamp": "2026-10-22T10:13:09.718Z",
+    "parentId": "55df3cad-0a83-40e7-979e-1509e37ca733",
+    "type": "assistant.message_delta",
+    "ephemeral": true,
+    "data": {
+      "messageId": "d74e02a1-b5a1-4f27-bda2-c340214ca1cc",
+      "deltaContent": "ED"
+    }
+  },
+  {
+    "id": "99ce2c85-5b44-4a7f-8f3e-46db2a376d6b",
+    "timestamp": "2026-10-22T10:13:09.812Z",
+    "parentId": "915e5df4-8d3b-43cf-8391-a80f6d5beea7",
+    "type": "assistant.message",
+    "data": {
+      "messageId": "d74e02a1-b5a1-4f27-bda2-c340214ca1cc",
+      "originatingMessageId": "38c9dafe-f357-4cc5-a2c2-97ac4029096a",
+      "content": "CONTINUED",
+      "phase": "final_answer"
+    }
+  },
+  {
+    "id": "257e1c10-9752-4a13-a332-68e45cf47728",
+    "timestamp": "2026-10-22T10:13:09.813Z",
+    "parentId": "99ce2c85-5b44-4a7f-8f3e-46db2a376d6b",
+    "type": "assistant.turn_end",
+    "data": {
+      "turnId": "0"
+    }
+  },
+  {
+    "id": "75f9fcf0-bced-4425-ae65-5cb962340907",
+    "timestamp": "2026-10-22T10:13:09.827Z",
+    "parentId": "2504f598-57d2-4045-9f28-31daefee6d4c",
+    "type": "session.idle",
+    "ephemeral": true,
+    "data": {
+      "mode": "interactive"
+    }
+  }
+]

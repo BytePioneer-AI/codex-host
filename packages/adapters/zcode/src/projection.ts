@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import { createPatch } from "diff";
 import type {
   HarnessError,
@@ -104,6 +105,9 @@ export function subagent(
     ...(text(args.subagent_type) || text(args.agentType)
       ? { role: text(args.subagent_type) || text(args.agentType) }
       : {}),
+    ...subagentConfiguration(args),
+    ...subagentConfiguration(data),
+    ...subagentConfiguration(result),
     background:
       args.run_in_background === true || result.background === true || data.background === true,
     status: ["running", "waiting", "blocked"].includes(status)

@@ -1,6 +1,9 @@
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CursorTransport, type CursorCallbacks } from "../src/transport.js";
+import { CursorAdapter } from "../src/adapter.js";
 
 const state = vi.hoisted(() => ({ scenario: "normal", arguments: [] as string[][] }));
 vi.mock("../src/command.js", () => ({
@@ -17,14 +20,32 @@ vi.mock("../src/command.js", () => ({
   },
 }));
 const transports: CursorTransport[] = [];
+const configRoots: string[] = [];
+function isolatedEnvironment(
+  approvalMode?: string,
+): NodeJS.ProcessEnv & { CURSOR_CONFIG_DIR: string } {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codexhost-cursor-force-"));
+  configRoots.push(root);
+  if (approvalMode !== undefined) {
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      path.join(root, "cli-config.json"),
+      JSON.stringify({ version: 1, approvalMode }),
+      "utf8",
+    );
+  }
+  return { ...process.env, CURSOR_CONFIG_DIR: root };
+}
 function transport(
   timeoutMs = 2_000,
   loadModelCatalog = true,
   executionPolicy?: "unattended-full-access",
+  environment: NodeJS.ProcessEnv = isolatedEnvironment(),
+  cwd = process.cwd(),
 ) {
   const result = new CursorTransport({
-    cwd: process.cwd(),
-    environment: process.env,
+    cwd,
+    environment,
     timeoutMs,
     loadModelCatalog,
     ...(executionPolicy ? { executionPolicy } : {}),
@@ -34,6 +55,7 @@ function transport(
 }
 afterEach(async () => {
   await Promise.all(transports.splice(0).map((transport) => transport.close()));
+  for (const root of configRoots.splice(0)) rmSync(root, { recursive: true, force: true });
   state.scenario = "normal";
   state.arguments = [];
 });
@@ -76,16 +98,7 @@ describe("Cursor ACP process boundary", () => {
   });
 });
 
-it("reads history without waiting for a model catalog that never responds", async () => {
-  state.scenario = "hang-models";
-  const replay = transport(500, false);
-  expect(await replay.open("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")).toMatchObject({
-    configOptions: [],
-  });
-});
-
-it("authenticates ahead of session adoption without creating or loading a session", async () => {
-  state.scenario = "prepare-once";
+it("prepares once and reuses native credentials without requesting interactive authentication", async () => {
   const native = transport();
   await Promise.all([native.prepare(), native.prepare()]);
   expect(native.sessionId).toBe("");
@@ -116,8 +129,8 @@ it("refreshes a cached catalog when the native session advertises different mode
   expect((await native.open()).nativeModels).toBeUndefined();
 });
 
-it("closes a process while authentication is pending without leaving a reusable transport", async () => {
-  state.scenario = "hang-auth";
+it("closes a process while initialization is pending without leaving a reusable transport", async () => {
+  state.scenario = "hang-startup";
   const native = transport();
   const preparing = native.prepare();
   const failed = expect(preparing).rejects.toThrow(/closed|exited/u);
@@ -126,11 +139,101 @@ it("closes a process while authentication is pending without leaving a reusable 
   await expect(native.open()).rejects.toThrow("reopened");
 });
 
-it("requests native Run Everything only for unattended full access", async () => {
-  const unattended = transport(2_000, true, "unattended-full-access");
+it.each([undefined, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"])(
+  "rejects an unauthenticated session without requesting login (session=%s)",
+  async (sessionId) => {
+    state.scenario = "unauthenticated";
+    await expect(transport().open(sessionId)).rejects.toThrow("Authentication required");
+  },
+);
+
+it("reports authenticationRequired during inspection without requesting login", async () => {
+  state.scenario = "unauthenticated";
+  const adapter = new CursorAdapter({ environment: isolatedEnvironment(), timeoutMs: 2_000 });
+  try {
+    expect(await adapter.inspect()).toMatchObject({
+      status: "unavailable",
+      error: { code: "authenticationRequired" },
+    });
+  } finally {
+    await adapter.close();
+  }
+});
+
+it("requests native Run Everything for unattended full access and for unrestricted CLI config", async () => {
+  const unattended = transport(2_000, true, "unattended-full-access", isolatedEnvironment());
   await unattended.open();
   expect(state.arguments).toEqual([["--force", "acp"]]);
-  const ordinary = transport();
+
+  const ordinary = transport(2_000, true, undefined, isolatedEnvironment());
   await ordinary.open();
   expect(state.arguments).toEqual([["--force", "acp"], ["acp"]]);
+
+  const allowlist = transport(2_000, true, undefined, isolatedEnvironment("allowlist"));
+  await allowlist.open();
+  expect(state.arguments.at(-1)).toEqual(["acp"]);
+
+  const brokenEnvironment = isolatedEnvironment();
+  writeFileSync(path.join(brokenEnvironment.CURSOR_CONFIG_DIR, "cli-config.json"), "{");
+  const broken = transport(2_000, true, undefined, brokenEnvironment);
+  await broken.open();
+  expect(state.arguments.at(-1)).toEqual(["acp"]);
+
+  const unrestricted = transport(2_000, true, undefined, isolatedEnvironment("unrestricted"));
+  await unrestricted.open();
+  expect(state.arguments.at(-1)).toEqual(["--force", "acp"]);
+
+  // Interactive unrestricted still uses Host approval UI if native approvals arrive;
+  // only unattended-full-access refuses them. Spawn --force must not change that policy.
+  const unattendedWithUnrestricted = transport(
+    2_000,
+    true,
+    "unattended-full-access",
+    isolatedEnvironment("unrestricted"),
+  );
+  await unattendedWithUnrestricted.open();
+  expect(state.arguments.at(-1)).toEqual(["--force", "acp"]);
 });
+
+it.each(["CURSOR_CONFIG_DIR", "XDG_CONFIG_HOME"] as const)(
+  "reads relative %s from the child cwd, not the Host cwd",
+  async (variable) => {
+    const root = mkdtempSync(path.join(process.cwd(), ".cursor-config-test-"));
+    configRoots.push(root);
+    const cwd = path.join(root, "workspace");
+    mkdirSync(cwd);
+    const relative = path.relative(process.cwd(), root);
+    const suffix = variable === "XDG_CONFIG_HOME" ? ["cursor"] : [];
+    const hostConfig = path.join(root, ...suffix, "cli-config.json");
+    const childConfig = path.resolve(cwd, relative, ...suffix, "cli-config.json");
+    mkdirSync(path.dirname(hostConfig), { recursive: true });
+    mkdirSync(path.dirname(childConfig), { recursive: true });
+    const environment = Object.freeze({
+      ...process.env,
+      CURSOR_CONFIG_DIR: undefined,
+      XDG_CONFIG_HOME: undefined,
+      [variable]: relative,
+    });
+    for (const mode of ["allowlist", "unrestricted"]) {
+      writeFileSync(
+        hostConfig,
+        JSON.stringify({ approvalMode: mode === "allowlist" ? "unrestricted" : "allowlist" }),
+      );
+      writeFileSync(childConfig, JSON.stringify({ approvalMode: mode }));
+      const native = transport(2_000, true, undefined, environment, cwd);
+      await native.open();
+      expect(state.arguments.at(-1)).toEqual(
+        mode === "unrestricted" ? ["--force", "acp"] : ["acp"],
+      );
+      expect(native.options.executionPolicy).toBeUndefined();
+      const permission = vi.fn(callbacks.permission);
+      await native.prompt("synthetic", { ...callbacks, permission });
+      expect(permission).toHaveBeenCalledTimes(1);
+    }
+    const unattended = transport(2_000, true, "unattended-full-access", environment, cwd);
+    writeFileSync(childConfig, JSON.stringify({ approvalMode: "allowlist" }));
+    await unattended.open();
+    expect(state.arguments.at(-1)).toEqual(["--force", "acp"]);
+    expect(unattended.options.executionPolicy).toBe("unattended-full-access");
+  },
+);

@@ -164,6 +164,18 @@ describe("DeepSeek Harness Modern Session list", () => {
     ]);
   });
 
+  // DSH 0.2.1-rc.1 reports `current` for attached rows and the stored status for cold rows.
+  it.each(["current", "migration-required"])(
+    "keeps a %s row as an import candidate without exposing its format status",
+    (formatStatus) => {
+      expect(
+        parseModernSessionCandidates({
+          items: [row({ formatStatus, agentAvailable: formatStatus === "current" })],
+        }),
+      ).toEqual([{ nativeSessionId: "session-1", title: null, updatedAt: 1, cwd, running: false }]);
+    },
+  );
+
   it.each([
     ["non-object root", []],
     ["extra root key", { items: [], extra: true }],
@@ -171,6 +183,7 @@ describe("DeepSeek Harness Modern Session list", () => {
     ["extra row key", { items: [row({ extra: true })] }],
     ["invalid running", { items: [row({ running: 1 })] }],
     ["invalid origin", { items: [row({ origin: "user" })] }],
+    ["invalid format status", { items: [row({ formatStatus: "migrated" })] }],
     ["invalid parent identity", { items: [row({ parentSessionId: " " })] }],
     ["invalid projections", { items: [row({ projections: { asOfSeq: 0 } })] }],
     [

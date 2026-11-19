@@ -405,6 +405,60 @@ describe("CodeBuddy native Adapter", () => {
     expect(await session.execute(turn("late"))).toMatchObject({ error: { code: "invalidState" } });
   });
 
+  it("completes consecutive Turns with native context injections and same-turn user input", async () => {
+    const { adapter, native } = setup();
+    const session = await create(adapter);
+    const events = collect(session);
+    const client = native.clients[0];
+    if (!client) throw Error("No client");
+    const complete = client.complete.bind(client);
+    vi.spyOn(client, "complete").mockImplementation((id, input) => {
+      native.history.push(
+        {
+          type: "message",
+          role: "user",
+          id: `context-${id}`,
+          parentId: id,
+          providerData: { startsNewUserRequest: false, conversationRequestId: id },
+          content:
+            '<system-reminder data-role="user-context">quoted <user_query></system-reminder>',
+        },
+        {
+          type: "message",
+          role: "user",
+          id: `steer-${id}`,
+          parentId: `context-${id}`,
+          providerData: { startsNewUserRequest: false, conversationRequestId: id },
+          content: "Only review; do not edit.",
+        },
+      );
+      return complete(id, input);
+    });
+
+    for (const [index, prompt] of ["first", "second"].entries()) {
+      expect(await session.execute(turn(prompt, prompt))).toMatchObject({ ok: true });
+      expect((await events.completed(index + 1)).at(-1)).toMatchObject({
+        event: {
+          outcome: { status: "succeeded", checkpoint: { checkpointId: `user-${index + 1}` } },
+          nativeTurnRef: { nativeTurnKey: `user-${index + 1}` },
+        },
+      });
+    }
+    const snapshot = await session.readSnapshot();
+    if (!snapshot.ok) throw Error(snapshot.error.message);
+    expect(snapshot.value.turns).toHaveLength(2);
+    expect(snapshot.value.turns.map((turn) => turn.input)).toEqual(
+      ["first", "second"].map((text) => [
+        { type: "text", text },
+        { type: "text", text: "Only review; do not edit." },
+      ]),
+    );
+    expect(snapshot.value.turns.map((turn) => turn.items)).toMatchObject([
+      [{ item: { type: "agentMessage", text: "Result first" } }],
+      [{ item: { type: "agentMessage", text: "Result second" } }],
+    ]);
+  });
+
   it("fails a successful native response that lacks persisted identity", async () => {
     const { adapter, native } = setup();
     const session = await create(adapter);

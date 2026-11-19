@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  harnessCommandCatalogSchema,
   harnessCommandDescriptorSchema,
   threadCommandExecuteParamsSchema,
   threadCommandExecuteResultSchema,
@@ -50,6 +51,20 @@ describe("Harness Command runtime contracts", () => {
         acceptsImages: true,
       }).success,
     ).toBe(false);
+  });
+
+  it("preserves partial discovery warnings without relaxing unique command IDs", () => {
+    const command = {
+      id: "compact",
+      invocation: "/compact",
+      label: "Compact",
+      argumentMode: "none",
+    };
+    const catalog = { commands: [command], warnings: ["Skills unavailable"] };
+    expect(harnessCommandCatalogSchema.parse(catalog)).toEqual(catalog);
+    expect(harnessCommandCatalogSchema.safeParse({ commands: [command, command] }).success).toBe(
+      false,
+    );
   });
 
   it("keeps completion promises out of the RPC result", () => {

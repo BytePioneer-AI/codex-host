@@ -281,6 +281,10 @@ describe("ZCode installation discovery", () => {
       updateAvailable: false,
       canUpdate: false,
       messageCode: "zcode-desktop-updater",
+      notice: {
+        en: "The CLI ships inside ZCode Desktop. Update ZCode Desktop itself to update it.",
+        "zh-CN": "CLI 随 ZCode Desktop 一起发布，请直接更新 ZCode Desktop。",
+      },
       message: expect.stringContaining("ZCode Desktop"),
     });
     await expect(installation("update")).rejects.toThrow("Update ZCode Desktop");

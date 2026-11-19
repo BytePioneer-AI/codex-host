@@ -75,7 +75,13 @@ export class RuntimeMaintenance {
   #starting: Promise<RuntimeStatus> | null = null;
   #startingVersion: string | null = null;
   constructor(
-    readonly options: { runtimePath: string; remote: boolean; environment: NodeJS.ProcessEnv },
+    readonly options: {
+      runtimePath: string;
+      remote: boolean;
+      environment: NodeJS.ProcessEnv;
+      /** How long the detached helper has to record its PID; tests shorten it. */
+      updaterStartTimeoutMs?: number;
+    },
   ) {
     this.#running = installation(options.runtimePath, options.environment);
     const home = options.environment.HOME ?? homedir();
@@ -84,6 +90,9 @@ export class RuntimeMaintenance {
       "remote-update.json",
     );
     this.#cancelPath = path.join(path.dirname(this.#statusPath), "remote-update.cancel");
+  }
+  get #startTimeoutMs(): number {
+    return this.options.updaterStartTimeoutMs ?? UPDATER_START_TIMEOUT_MS;
   }
   #ensureWatching(): void {
     if (this.#watch) return;
@@ -198,7 +207,7 @@ export class RuntimeMaintenance {
           } else {
             // The helper records its PID as soon as it starts; allow it a moment to do so.
             const written = (await stat(this.#statusPath)).mtimeMs;
-            alive = Date.now() - written < UPDATER_START_TIMEOUT_MS * 2;
+            alive = Date.now() - written < this.#startTimeoutMs * 2;
           }
           if (!alive) {
             parsed.phase = "failed";
@@ -343,7 +352,7 @@ export class RuntimeMaintenance {
       throw new Error("Remote updater could not be started");
     }
     // The helper records its own PID first; from then on status() can tell whether it is alive.
-    const deadline = Date.now() + UPDATER_START_TIMEOUT_MS;
+    const deadline = Date.now() + this.#startTimeoutMs;
     while (!(await this.#helperReported())) {
       if (Date.now() >= deadline) {
         try {

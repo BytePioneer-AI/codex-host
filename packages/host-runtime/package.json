@@ -23,9 +23,12 @@
     "@codexhost/harness-plugin-files": "0.0.0",
     "@codexhost/mapping-store": "0.0.0",
     "@codexhost/protocol-core": "0.0.0",
+    "@codexhost/session-runtime": "0.0.0",
     "@codexhost/shared-contracts": "0.0.0",
+    "@codexhost/skill-library": "0.0.0",
     "@codexhost/update-manager": "0.0.0",
     "@deepseek-ai/cordis": "4.0.4",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "ws": "8.21.3"
   }
 }

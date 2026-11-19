@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { createInterface } from "node:readline";
-import { stripVTControlCharacters } from "node:util";
-import { Readable } from "node:stream";
+import type { Readable } from "node:stream";
 import { CodeBuddyError } from "./common.js";
+import { codeBuddyAcpOutput } from "./acp-stdio.js";
 
 /** The existing administrative ACP process also owns a short-lived native delete endpoint. */
 export class CodeBuddyCopyCleanup {
@@ -35,17 +34,10 @@ export class CodeBuddyCopyCleanup {
 
   /** Native --serve banners include its password; never pass them to the ACP parser/logs. */
   protocolOutput(stdout: Readable): Readable {
-    return Readable.from(this.#protocolLines(stdout));
-  }
-
-  async *#protocolLines(stdout: Readable) {
-    for await (const line of createInterface({ input: stdout })) {
-      const endpoint = /^\s*Endpoint\s+(http:\/\/127\.0\.0\.1:\d+)\s*$/u.exec(
-        stripVTControlCharacters(line),
-      );
+    return codeBuddyAcpOutput(stdout, (line) => {
+      const endpoint = /^\s*Endpoint\s+(http:\/\/127\.0\.0\.1:\d+)\s*$/u.exec(line);
       if (endpoint) this.#endpoint = endpoint[1];
-      if (line.trimStart().startsWith("{")) yield Buffer.from(`${line}\n`);
-    }
+    });
   }
 
   async remove(): Promise<void> {

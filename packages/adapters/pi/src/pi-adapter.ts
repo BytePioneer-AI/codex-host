@@ -1,9 +1,13 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { createPiUsageStatistics } from "./pi-usage-statistics.js";
 import { fetchPiAccounts } from "./account-balance.js";
 import { createPiCredentialImports } from "./pi-credential-imports.js";
 import { PI_FAST_COMMAND, piFastModelKeys, withPiFast } from "./pi-fast-mode.js";
 import { persistEmptyPiSession, readPiEmptySessionConfiguration } from "./pi-empty-session.js";
-import { createTwoFilesPatch, parsePatch } from "diff";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
@@ -32,7 +36,6 @@ import {
   type HostCommandExecutionItem,
   type HostContextCompactionItem,
   type HostEvent,
-  type HostFileChange,
   type HostItem,
   type HostItemOutcome,
   type HostQuestionInteraction,
@@ -55,6 +58,8 @@ import {
   type TurnCancelCommand,
   type TurnOutcome,
   type TurnStartAccepted,
+  type TurnSteerAccepted,
+  type TurnSteerCommand,
   type TurnStartCommand,
 } from "@codexhost/harness-adapter";
 import {
@@ -78,8 +83,11 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
+import { piMessageItemId, type PiMessageIdentity } from "./pi-message-item-id.js";
 import { resolvePiInspectCwd } from "./command.js";
 import { mapPiSnapshot, resolvePiForkBoundary, type PiSessionHistory } from "./pi-history.js";
+import { piToolFileChanges } from "./pi-file-change.js";
+import { piToolCommand } from "./pi-tool-command.js";
 import {
   PiSubagents,
   parsePiSubagentId,
@@ -89,19 +97,29 @@ import {
 } from "./pi-subagents.js";
 import { parsePiWorkflowSubagentId } from "./pi-subagent-workflow.js";
 import { readPiWorkflowChild } from "./pi-workflow-child-history.js";
+import {
+  parseGotgenesId,
+  type GotgenesRecord,
+  type GotgenesObservationOwner,
+} from "./pi-gotgenes-subagents.js";
+import { readGotgenesChild } from "./pi-gotgenes-history.js";
 import { restorePiSubagents } from "./pi-subagent-history.js";
 import { rollbackPiLastTurn } from "./pi-last-turn-rollback.js";
 import { PiSessionImportIndex } from "./pi-session-import.js";
 import { SessionImportScope } from "@codexhost/harness-adapter/session-import";
 import {
   PiRpcFaultError,
+  PiRpcBusyError,
   PiRpcSession,
+  PiRpcSteerRejectedError,
+  PiRpcSteerTargetEndedError,
   PiRpcUnsupportedCommandError,
   type PiInteractionRequest,
   type PiInteractionResponse,
   type PiRpcSessionOptions,
   type PiSessionState,
   type PiAutonomousTurn,
+  type PiAutonomousTurnLifecycle,
   type PiCompactResult,
   type PiTurnEvent,
   type PiTurnResult,
@@ -134,9 +152,14 @@ export interface PiAdapterOptions {
 export interface PiTurnTransport {
   readonly state: PiSessionState;
   readonly stderrTail?: string;
+  readonly isBusy?: boolean;
+  setGotgenesStatusHandler?(
+    handler: (records: GotgenesRecord[], owner: GotgenesObservationOwner) => void,
+  ): void;
   setSubagentStatusHandler?(handler: (runs: PiSubagentNode[]) => void): void;
   inspectSubagent?(id: string): Promise<PiSubagentInspection>;
   setAutonomousTurnHandler(handler: (turn: PiAutonomousTurn) => void): void;
+  setAutonomousTurnLifecycleHandler?(handler: (update: PiAutonomousTurnLifecycle) => void): void;
   /** Finished assistant messages, for Host usage metering; absent on transports without it. */
   setUsageHandler?(handler: (observation: PiUsageObservation) => void): void;
   start(): Promise<unknown>;
@@ -158,6 +181,7 @@ export interface PiTurnTransport {
     onEvent: (event: PiTurnEvent) => void,
   ): Promise<PiCompactResult>;
   runTurn(text: string, onEvent: (event: PiTurnEvent) => void): Promise<PiTurnResult>;
+  steer(message: string): Promise<void>;
   respondToInteraction(response: PiInteractionResponse): Promise<void>;
   abort(): Promise<void>;
   close(): Promise<void>;
@@ -180,16 +204,23 @@ interface ActiveInteraction {
 
 interface ActiveTurn {
   command: TurnStartCommand;
+  autonomousRunId?: string;
   agentItem: HostAgentMessageItem | null;
   agentMessageId: string | null;
   compactionItem: HostContextCompactionItem | null;
   sawAssistantMessage: boolean;
+  acceptedSteerCount: number;
+  acceptingSteers: boolean;
+  pendingSteers: Set<Promise<void>>;
+  steerFailure?: PiRpcSteerTargetEndedError;
   reasoningItem: HostReasoningItem | null;
   tools: Map<string, ActiveTool>;
   interactions: Map<HostInteractionId, ActiveInteraction>;
   interactionByNativeId: Map<string, HostInteractionId>;
   cancellationRequested: boolean;
+  settling: boolean;
   beforeNativeTurnKeys: Set<string>;
+  progressItems: Set<HostItemId>;
   completion: Promise<void>;
   resolveCompletion(): void;
 }
@@ -202,6 +233,7 @@ const piCommandCatalog = harnessCommandCatalogSchema.parse({
     {
       id: "pi.compact",
       invocation: "/compact",
+      localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
       label: "Compact context",
       description: "Compact the current conversation context",
       argumentMode: "text",
@@ -226,6 +258,8 @@ class PiAdapterFaultError extends Error {
 }
 
 function normalizedError(error: unknown, fallbackCode: HarnessError["code"]): HarnessError {
+  if (error instanceof PiRpcBusyError)
+    return { code: "sessionBusy", message: error.message, retryable: true };
   if (isRecord(error) && error.code === "ENOENT") {
     return { code: "notInstalled", message: errorMessage(error), retryable: false };
   }
@@ -357,223 +391,10 @@ function outputText(output: HostToolOutput | undefined): string {
   );
 }
 
-function stringField(value: JsonValue, key: string): string | undefined {
-  if (!isRecord(value)) return undefined;
-  const field = value[key];
-  if (typeof field === "string" && field.length > 0) return field;
-  if (isRecord(value.input)) {
-    const nested = value.input[key];
-    if (typeof nested === "string" && nested.length > 0) return nested;
-  }
-  if (isRecord(value.arguments)) {
-    const nested = value.arguments[key];
-    if (typeof nested === "string" && nested.length > 0) return nested;
-  }
-  return undefined;
-}
-
 function numberField(value: JsonValue, key: string): number | null | undefined {
   if (!isRecord(value)) return undefined;
   const field = value[key];
   return typeof field === "number" || field === null ? field : undefined;
-}
-
-function stripDiffPrefix(pathString: string | undefined): string {
-  if (typeof pathString !== "string" || pathString.length === 0) return "";
-  return pathString.startsWith("a/") || pathString.startsWith("b/")
-    ? pathString.slice(2)
-    : pathString;
-}
-
-function displayPath(nativePath: string, cwd: string): { path: string; absolute: boolean } | null {
-  const resolvedCwd = path.resolve(cwd);
-  const resolvedPath = path.isAbsolute(nativePath)
-    ? path.resolve(nativePath)
-    : path.resolve(cwd, nativePath);
-  const relative = path.relative(resolvedCwd, resolvedPath);
-  const inside = relative.length > 0 && relative !== ".." && !relative.startsWith(`..${path.sep}`);
-  const selected = inside ? relative : resolvedPath;
-  const normalized = selected.replaceAll("\\", "/");
-  if (normalized.length === 0 || normalized === ".") return null;
-  return { path: normalized, absolute: !inside };
-}
-
-function normalizeToolName(name: string): string {
-  const lower = name.toLowerCase();
-  switch (lower) {
-    case "bash":
-    case "exec":
-    case "terminal":
-    case "run":
-      return "bash";
-    case "read":
-    case "read_file":
-    case "fileread":
-      return "Read";
-    case "edit":
-    case "edit_file":
-    case "fileedit":
-      return "Edit";
-    case "write":
-    case "write_file":
-    case "filewrite":
-      return "Write";
-    case "grep":
-    case "grep_search":
-      return "Grep";
-    case "find":
-    case "glob":
-    case "find_files":
-      return "Glob";
-    case "todo":
-      return "Todo";
-    case "web_search":
-    case "websearch":
-      return "WebSearch";
-    default:
-      return name.length > 0 ? `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}` : name;
-  }
-}
-
-function fileMutatingKind(toolName: string): "edit" | "write" | null {
-  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
-  if (
-    [
-      "edit",
-      "editfile",
-      "fileedit",
-      "strreplace",
-      "searchreplace",
-      "applypatch",
-      "replace",
-    ].includes(lower)
-  ) {
-    return "edit";
-  }
-  if (["write", "writefile", "filewrite", "create", "createfile"].includes(lower)) return "write";
-  return null;
-}
-
-function nestedToolString(value: unknown, keys: readonly string[]): string | undefined {
-  if (!isRecord(value)) return undefined;
-  for (const key of keys) {
-    const field = value[key];
-    if (typeof field === "string" && field.length > 0) return field;
-  }
-  for (const wrapper of ["input", "arguments", "params", "details"] as const) {
-    const nested = nestedToolString(value[wrapper], keys);
-    if (nested) return nested;
-  }
-  return undefined;
-}
-
-function patchFromResult(result: JsonValue): string | undefined {
-  if (!isRecord(result)) return undefined;
-  for (const key of ["patch", "diff", "unifiedDiff"] as const) {
-    const field = result[key];
-    if (typeof field === "string" && field.length > 0) return field;
-  }
-  if (isRecord(result.details)) {
-    for (const key of ["patch", "diff", "unifiedDiff"] as const) {
-      const field = result.details[key];
-      if (typeof field === "string" && field.length > 0) return field;
-    }
-  }
-  return undefined;
-}
-
-function fileChangeFromPatch(patch: string, cwd: string): HostFileChange[] | null {
-  let parsed: ReturnType<typeof parsePatch>;
-  try {
-    parsed = parsePatch(patch);
-  } catch {
-    return null;
-  }
-  const file = parsed[0];
-  if (parsed.length !== 1 || !file) return null;
-  const oldFile = typeof file.oldFileName === "string" ? file.oldFileName : undefined;
-  const newFile = typeof file.newFileName === "string" ? file.newFileName : undefined;
-  if (!oldFile && !newFile) return null;
-  const kind =
-    oldFile === "/dev/null" || !oldFile
-      ? "add"
-      : newFile === "/dev/null" || !newFile
-        ? "delete"
-        : "update";
-  const candidate = kind === "delete" ? oldFile : (newFile ?? oldFile);
-  const rawPath = stripDiffPrefix(candidate);
-  if (!rawPath || rawPath === "/dev/null") return null;
-  const displayed = displayPath(rawPath, cwd);
-  if (!displayed) return null;
-  return [{ path: displayed.path, kind, unifiedDiff: patch }];
-}
-
-function synthesizeFileChange(
-  kind: "edit" | "write",
-  args: unknown,
-  cwd: string,
-): HostFileChange[] | null {
-  const filePath = nestedToolString(args, ["path", "file_path", "filePath", "file"]);
-  if (!filePath) return null;
-  const displayed = displayPath(filePath, cwd);
-  if (!displayed) return null;
-  if (kind === "write") {
-    const content = nestedToolString(args, [
-      "content",
-      "new_string",
-      "newString",
-      "newText",
-      "text",
-    ]);
-    if (content === undefined) return null;
-    const oldHeader = "/dev/null";
-    const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-    return [
-      {
-        path: displayed.path,
-        kind: "add",
-        unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, "", content, "", "", { context: 3 }),
-        diffScope: "fragment",
-      },
-    ];
-  }
-  const oldText = nestedToolString(args, ["old_string", "oldString", "oldText", "old_text"]);
-  const newText = nestedToolString(args, [
-    "new_string",
-    "newString",
-    "newText",
-    "new_text",
-    "content",
-  ]);
-  if (oldText === undefined || newText === undefined) return null;
-  const oldHeader = displayed.absolute ? displayed.path : `a/${displayed.path}`;
-  const newHeader = displayed.absolute ? displayed.path : `b/${displayed.path}`;
-  return [
-    {
-      path: displayed.path,
-      kind: "update",
-      unifiedDiff: createTwoFilesPatch(oldHeader, newHeader, oldText, newText, "", "", {
-        context: 3,
-      }),
-      diffScope: "fragment",
-    },
-  ];
-}
-
-function reliableFileChange(
-  toolName: string,
-  args: unknown,
-  result: JsonValue,
-  cwd: string,
-): HostFileChange[] | null {
-  const kind = fileMutatingKind(toolName);
-  if (!kind) return null;
-  const patch = patchFromResult(result);
-  if (patch) {
-    const fromPatch = fileChangeFromPatch(patch, cwd);
-    if (fromPatch) return fromPatch;
-  }
-  return synthesizeFileChange(kind, args, cwd) ?? synthesizeFileChange(kind, result, cwd);
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -604,6 +425,12 @@ class PiHarnessSession implements HarnessSession {
   #configuring = false;
   #phase: SessionPhase = "open";
   #pendingAutonomousTurns: Array<{ transport: PiTurnTransport; turn: PiAutonomousTurn }> = [];
+  #pendingAutonomousLifecycle: Array<{
+    transport: PiTurnTransport;
+    update: PiAutonomousTurnLifecycle;
+    bytes: number;
+  }> = [];
+  #pendingAutonomousLifecycleBytes = 0;
   #starting: Promise<PiTurnTransport> | null = null;
   #state: HarnessSessionState = {};
   #transport: PiTurnTransport | null = null;
@@ -637,17 +464,21 @@ class PiHarnessSession implements HarnessSession {
     this.#requestedThinkingOptionId = options.thinkingOptionId;
     this.#toolOutputLimit = options.toolOutputLimit;
     this.#isFastSupported = options.isFastSupported;
-    this.capabilities = {
+    this.capabilities = ((session) => ({
       configuration: {
         selectModel: true,
         selectThinkingOption: options.supportsThinkingSelection,
         selectPermissionMode: false,
-        permissionModeScope: "live",
+        permissionModeScope: "live" as const,
       },
       history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
       autonomousTurns: { observe: true },
       subagents: { observe: true, readTranscript: true },
-    };
+      // Root Tools provide an admission window; the transport also checks native receipt order.
+      get steer(): boolean {
+        return session.#canSteerActiveTurn();
+      },
+    }))(this);
     this.commands = {
       list: async () => ({ ok: true, value: await this.#refreshLiveCommands() }),
       execute: (command) => this.#executeHarnessCommand(command),
@@ -682,6 +513,18 @@ class PiHarnessSession implements HarnessSession {
     return (await this.#ensureTransport()).getEntries();
   }
 
+  async readGotgenesChild(id: string, cwd: string): Promise<HarnessResult<HostThreadSnapshot>> {
+    const history = await this.readSubagentHistory(cwd);
+    const transport = this.#transport;
+    if (!transport) throw new Error("Pi parent Session is closed");
+    return readGotgenesChild(
+      history,
+      transport.state.sessionId,
+      id,
+      this.#subagents.gotgenes.records.get(id),
+    );
+  }
+
   async inspectSubagent(id: string, cwd: string): Promise<PiSubagentInspection> {
     if (this.#phase !== "open" || path.resolve(cwd) !== path.resolve(this.#cwd)) {
       throw new Error("Pi Subagent parent workspace or Session is unavailable");
@@ -696,7 +539,25 @@ class PiHarnessSession implements HarnessSession {
     queueMicrotask(() => this.#fault(error));
   }
 
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? decodePiModelRef(state.effectiveModel).id : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#phase !== "open") {
       return { ok: false, error: invalidState("Pi Session is not open") };
     }
@@ -722,6 +583,7 @@ class PiHarnessSession implements HarnessSession {
             {
               sessionId: transport.state.sessionId,
               model: nativeModelForHistory(transport.state),
+              cwd: this.#cwd,
             },
             this.#subagents,
           ),
@@ -734,6 +596,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -746,6 +609,7 @@ class PiHarnessSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -770,7 +634,8 @@ class PiHarnessSession implements HarnessSession {
         },
       };
     }
-    if (this.#acceptingTurn || this.#active || this.#configuring) {
+    if (command.type === "turn.steer") return this.#steer(command);
+    if (this.#acceptingTurn || this.#active || this.#configuring || this.#transport?.isBusy) {
       return {
         ok: false,
         error: {
@@ -814,6 +679,17 @@ class PiHarnessSession implements HarnessSession {
         return { ok: false, error: normalizedError(error, "protocolError") };
       }
 
+      // A native autonomous run can begin while startup/history preflight is awaiting RPC.
+      // Reject before publishing acceptance; do not resend the user's input behind that run.
+      if (
+        this.#active ||
+        transport.isBusy ||
+        this.#pendingAutonomousLifecycle.length > 0 ||
+        this.#pendingAutonomousTurns.length > 0
+      ) {
+        return { ok: false, error: normalizedError(new PiRpcBusyError(), "sessionBusy") };
+      }
+
       let resolveCompletion = (): void => undefined;
       const completion = new Promise<void>((resolve) => {
         resolveCompletion = resolve;
@@ -829,14 +705,19 @@ class PiHarnessSession implements HarnessSession {
         agentMessageId: null,
         compactionItem: null,
         sawAssistantMessage: false,
+        acceptedSteerCount: 0,
+        acceptingSteers: true,
+        pendingSteers: new Set(),
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
         interactionByNativeId: new Map(),
         cancellationRequested: false,
+        settling: false,
         beforeNativeTurnKeys: new Set(
           beforeHistory.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey),
         ),
+        progressItems: new Set(),
         completion,
         resolveCompletion,
       };
@@ -847,6 +728,7 @@ class PiHarnessSession implements HarnessSession {
       void transport
         .runTurn(text, (event) => this.#handleTurnEvent(active, event))
         .then(async (result) => {
+          active.settling = true;
           try {
             const identity = await this.#completedTurnIdentity(active, transport);
             this.#completeTurn(
@@ -855,9 +737,12 @@ class PiHarnessSession implements HarnessSession {
                 ? {
                     status: "cancelled",
                     reason: "Cancelled by user",
-                    checkpoint: identity.checkpoint,
+                    ...(identity.checkpoint ? { checkpoint: identity.checkpoint } : {}),
                   }
-                : { status: "succeeded", checkpoint: identity.checkpoint },
+                : {
+                    status: "succeeded",
+                    ...(identity.checkpoint ? { checkpoint: identity.checkpoint } : {}),
+                  },
               result.text,
               identity.nativeTurnRef,
             );
@@ -869,8 +754,9 @@ class PiHarnessSession implements HarnessSession {
           }
         })
         .catch(async (error: unknown) => {
+          active.settling = true;
           let identity:
-            { nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef } | undefined;
+            { nativeTurnRef: NativeTurnRef; checkpoint?: NativeCheckpointRef } | undefined;
           try {
             identity = await this.#completedTurnIdentity(active, transport);
           } catch {
@@ -878,11 +764,17 @@ class PiHarnessSession implements HarnessSession {
           }
           this.#completeTurn(
             active,
-            {
-              status: "failed",
-              error: normalizedError(error, "nativeFailure"),
-              ...(identity ? { checkpoint: identity.checkpoint } : {}),
-            },
+            active.cancellationRequested
+              ? {
+                  status: "cancelled",
+                  reason: "Cancelled by user",
+                  ...(identity?.checkpoint ? { checkpoint: identity.checkpoint } : {}),
+                }
+              : {
+                  status: "failed",
+                  error: normalizedError(error, "nativeFailure"),
+                  ...(identity?.checkpoint ? { checkpoint: identity.checkpoint } : {}),
+                },
             undefined,
             identity?.nativeTurnRef,
           );
@@ -891,6 +783,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { turnId: command.turnId } };
     } finally {
       this.#acceptingTurn = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
   }
 
@@ -1022,6 +915,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { completed: true } };
     } finally {
       this.#configuring = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
   }
 
@@ -1099,6 +993,61 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { completed: true } };
     } finally {
       this.#configuring = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
+    }
+  }
+
+  #canSteerActiveTurn(): boolean {
+    const active = this.#active;
+    return Boolean(
+      this.#phase === "open" &&
+      active &&
+      !active.cancellationRequested &&
+      active.acceptingSteers &&
+      active.tools.size > 0 &&
+      this.#transport,
+    );
+  }
+
+  async #steer(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>> {
+    const text = command.input.map((input) => input.text).join("\n");
+    if (text.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "invalidRequest",
+          message: "Pi steer text must not be empty",
+          retryable: false,
+        },
+      };
+    }
+    const active = this.#active;
+    const transport = this.#transport;
+    if (
+      !active ||
+      !transport ||
+      active.command.turnId !== command.turnId ||
+      !this.#canSteerActiveTurn()
+    ) {
+      return { ok: false, error: invalidState("Pi Turn is not accepting native input") };
+    }
+    let accepted: Promise<void> | undefined;
+    try {
+      accepted = transport.steer(text).then(() => {
+        active.acceptedSteerCount += 1;
+      });
+      active.pendingSteers.add(accepted);
+      await accepted;
+      return { ok: true, value: { accepted: true } };
+    } catch (error) {
+      if (error instanceof PiRpcSteerRejectedError) {
+        return { ok: false, error: invalidState(error.message) };
+      }
+      if (error instanceof PiRpcSteerTargetEndedError) active.steerFailure = error;
+      // A missing acknowledgement may follow native acceptance; never invite stop-and-resend.
+      throw error;
+    } finally {
+      if (accepted) active.pendingSteers.delete(accepted);
     }
   }
 
@@ -1108,6 +1057,15 @@ class PiHarnessSession implements HarnessSession {
       return {
         ok: false,
         error: invalidState("Pi Turn Cancel must reference the active Turn"),
+      };
+    }
+    if (active.settling) {
+      // Native execution has ended; abort may now target a deferred autonomous successor.
+      return {
+        ok: false,
+        error: invalidState(
+          "Pi Turn has finished native execution and is recording its completion",
+        ),
       };
     }
     if (active.cancellationRequested) {
@@ -1232,12 +1190,17 @@ class PiHarnessSession implements HarnessSession {
         agentMessageId: null,
         compactionItem: null,
         sawAssistantMessage: false,
+        acceptedSteerCount: 0,
+        acceptingSteers: false,
+        pendingSteers: new Set(),
         reasoningItem: null,
         tools: new Map(),
         interactions: new Map(),
         interactionByNativeId: new Map(),
         cancellationRequested: false,
+        settling: false,
         beforeNativeTurnKeys: new Set(),
+        progressItems: new Set(),
         completion,
         resolveCompletion,
       };
@@ -1273,6 +1236,7 @@ class PiHarnessSession implements HarnessSession {
       return { ok: true, value: { turnId: command.turnId } };
     } finally {
       this.#acceptingTurn = false;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
     }
   }
 
@@ -1328,6 +1292,13 @@ class PiHarnessSession implements HarnessSession {
         this.#pendingAutonomousTurns = this.#pendingAutonomousTurns.filter(
           (pending) => pending.transport !== transport,
         );
+        this.#pendingAutonomousLifecycle = this.#pendingAutonomousLifecycle.filter(
+          (pending) => pending.transport !== transport,
+        );
+        this.#pendingAutonomousLifecycleBytes = this.#pendingAutonomousLifecycle.reduce(
+          (total, pending) => total + pending.bytes,
+          0,
+        );
         await transport.close().catch(() => undefined);
         if (this.#phase === "open") this.#fault(error);
         throw error;
@@ -1340,6 +1311,15 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #bindAutonomousTurnHandler(transport: PiTurnTransport): void {
+    transport.setGotgenesStatusHandler?.((records, owner) => {
+      if (this.#phase !== "open") return;
+      this.#subagents.observeGotgenes(
+        records,
+        owner === "requested" && this.#active && !this.#active.settling
+          ? { turnId: this.#active.command.turnId, nextItemId: () => this.#newItemId() }
+          : undefined,
+      );
+    });
     transport.setSubagentStatusHandler?.((runs) => {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) this.#pendingSubagentStatus = runs;
@@ -1352,6 +1332,12 @@ class PiHarnessSession implements HarnessSession {
         this.#event({ type: "usage.request", request: record.request });
       else if (record?.kind === "missing") this.#event({ type: "usage.history", complete: false });
     });
+    if (transport.setAutonomousTurnLifecycleHandler) {
+      transport.setAutonomousTurnLifecycleHandler((update) =>
+        this.#handleAutonomousLifecycle(transport, update),
+      );
+      return;
+    }
     transport.setAutonomousTurnHandler((turn) => {
       if (this.#phase !== "open") return;
       if (this.#transport !== transport) {
@@ -1363,6 +1349,21 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #drainPendingAutonomousTurns(transport: PiTurnTransport): void {
+    if (this.#phase !== "open" || this.#acceptingTurn || this.#configuring) return;
+    for (;;) {
+      const pending = this.#pendingAutonomousLifecycle[0];
+      if (
+        !pending ||
+        pending.transport !== transport ||
+        (this.#active && this.#active.autonomousRunId !== pending.update.runId)
+      )
+        break;
+      this.#pendingAutonomousLifecycle.shift();
+      this.#pendingAutonomousLifecycleBytes -= pending.bytes;
+      this.#applyAutonomousLifecycle(transport, pending.update);
+      if (this.#phase !== "open") return;
+    }
+    if (this.#active) return;
     if (this.#pendingSubagentStatus) {
       this.#subagents.observe(this.#pendingSubagentStatus);
       this.#pendingSubagentStatus = null;
@@ -1379,6 +1380,67 @@ class PiHarnessSession implements HarnessSession {
     }
   }
 
+  #handleAutonomousLifecycle(transport: PiTurnTransport, update: PiAutonomousTurnLifecycle): void {
+    if (
+      this.#phase === "closing" &&
+      this.#transport === transport &&
+      update.type !== "started" &&
+      this.#active?.autonomousRunId === update.runId
+    ) {
+      // Closing stops admission, but the current native run still owes its cancellation terminal.
+      this.#applyAutonomousLifecycle(transport, update);
+      return;
+    }
+    if (this.#phase !== "open") return;
+    if (
+      this.#transport !== transport ||
+      this.#acceptingTurn ||
+      this.#configuring ||
+      this.#pendingAutonomousLifecycle.length > 0 ||
+      (this.#active && this.#active.autonomousRunId !== update.runId)
+    ) {
+      const bytes = Buffer.byteLength(JSON.stringify(update));
+      if (this.#pendingAutonomousLifecycleBytes + bytes > 8 * 1024 * 1024) {
+        this.#fault(
+          new PiAdapterFaultError({
+            code: "protocolError",
+            message: "Pi autonomous lifecycle exceeded its ordered event buffer bound",
+            retryable: false,
+          }),
+        );
+        return;
+      }
+      this.#pendingAutonomousLifecycle.push({ transport, update, bytes });
+      this.#pendingAutonomousLifecycleBytes += bytes;
+      if (this.#transport === transport) this.#drainPendingAutonomousTurns(transport);
+      return;
+    }
+    this.#applyAutonomousLifecycle(transport, update);
+  }
+
+  #applyAutonomousLifecycle(transport: PiTurnTransport, update: PiAutonomousTurnLifecycle): void {
+    if (update.type === "started" && !this.#active) {
+      this.#startAutonomousHostTurn(update.runId);
+      return;
+    }
+    const active = this.#active;
+    if (!active || active.autonomousRunId !== update.runId || update.type === "started") {
+      this.#fault(
+        new PiAdapterFaultError({
+          code: "protocolError",
+          message: "Pi autonomous event has no matching active run",
+          retryable: false,
+        }),
+      );
+      return;
+    }
+    if (update.type === "event") this.#handleTurnEvent(active, update.event);
+    else {
+      active.settling = true;
+      this.#finishAutonomousHostTurn(transport, active, update.turn);
+    }
+  }
+
   #handleAutonomousTurn(transport: PiTurnTransport, turn: PiAutonomousTurn): void {
     if (this.#phase !== "open") return;
     if (this.#transport !== transport) {
@@ -1391,7 +1453,7 @@ class PiHarnessSession implements HarnessSession {
       );
       return;
     }
-    if (this.#active || this.#acceptingTurn || this.#configuring) {
+    if (this.#active && !this.#active.settling) {
       this.#fault(
         new PiAdapterFaultError({
           code: "protocolError",
@@ -1401,7 +1463,26 @@ class PiHarnessSession implements HarnessSession {
       );
       return;
     }
+    if (this.#active || this.#acceptingTurn || this.#configuring) {
+      // Native deferred actions may finish while the prior requested Turn reads its identity.
+      // Preserve their own boundary and publish only after that Host operation has ended.
+      if (this.#pendingAutonomousTurns.length >= 128) {
+        this.#fault(
+          new PiAdapterFaultError({
+            code: "protocolError",
+            message: "Pi autonomous completion queue exceeded its bound",
+            retryable: false,
+          }),
+        );
+      } else this.#pendingAutonomousTurns.push({ transport, turn });
+      return;
+    }
 
+    const active = this.#startAutonomousHostTurn();
+    this.#finishAutonomousHostTurn(transport, active, turn);
+  }
+
+  #startAutonomousHostTurn(runId?: string): ActiveTurn {
     const turnId = hostTurnIdSchema.parse(randomUUID());
     let resolveCompletion = (): void => undefined;
     const completion = new Promise<void>((resolve) => {
@@ -1414,45 +1495,84 @@ class PiHarnessSession implements HarnessSession {
     };
     const active: ActiveTurn = {
       command: { type: "turn.start", turnId, input: [] },
+      ...(runId ? { autonomousRunId: runId } : {}),
       agentItem: item,
       agentMessageId: null,
       compactionItem: null,
       sawAssistantMessage: false,
+      acceptedSteerCount: 0,
+      acceptingSteers: false,
+      pendingSteers: new Set(),
       reasoningItem: null,
       tools: new Map(),
       interactions: new Map(),
       interactionByNativeId: new Map(),
       cancellationRequested: false,
+      settling: false,
       beforeNativeTurnKeys: new Set(),
+      progressItems: new Set(),
       completion,
       resolveCompletion,
     };
-    const nativeTurnRef = nativeTurnRefSchema.parse({
-      harnessId: this.harnessId,
-      nativeSessionId: transport.state.sessionId,
-      nativeTurnKey: turn.nativeTurnKey,
-      formatVersion: 1,
-    });
     this.#active = active;
     this.#event({ type: "turn.autonomous.started", turnId, input: [] });
     this.#event({ type: "turn.started", turnId });
     this.#event({ type: "item.started", turnId, item });
 
+    return active;
+  }
+
+  #finishAutonomousHostTurn(
+    transport: PiTurnTransport,
+    active: ActiveTurn,
+    turn: PiAutonomousTurn,
+  ): void {
+    const nativeTurnRef = turn.nativeTurnKey
+      ? nativeTurnRefSchema.parse({
+          harnessId: this.harnessId,
+          nativeSessionId: transport.state.sessionId,
+          nativeTurnKey: turn.nativeTurnKey,
+          formatVersion: 1,
+        })
+      : undefined;
+    const checkpoint = nativeTurnRef
+      ? nativeCheckpointRefSchema.parse({
+          harnessId: this.harnessId,
+          nativeSessionId: transport.state.sessionId,
+          checkpointId: nativeTurnRef.nativeTurnKey,
+          formatVersion: 1,
+        })
+      : undefined;
+
     try {
       for (const event of turn.events) this.#handleTurnEvent(active, event);
       if (turn.result.status === "succeeded") {
-        this.#completeTurn(active, { status: "succeeded" }, turn.result.text, nativeTurnRef);
+        if (!nativeTurnRef) throw new Error("Pi autonomous Turn has no native identity");
+        this.#completeTurn(
+          active,
+          { status: "succeeded", ...(checkpoint ? { checkpoint } : {}) },
+          turn.result.text,
+          nativeTurnRef,
+        );
       } else if (turn.result.status === "cancelled") {
         this.#completeTurn(
           active,
-          { status: "cancelled", reason: turn.result.reason },
+          {
+            status: "cancelled",
+            reason: turn.result.reason,
+            ...(checkpoint ? { checkpoint } : {}),
+          },
           turn.result.text,
           nativeTurnRef,
         );
       } else {
         this.#completeTurn(
           active,
-          { status: "failed", error: normalizedError(turn.result.error, "nativeFailure") },
+          {
+            status: "failed",
+            error: normalizedError(turn.result.error, "nativeFailure"),
+            ...(checkpoint ? { checkpoint } : {}),
+          },
           turn.result.text,
           nativeTurnRef,
         );
@@ -1522,17 +1642,34 @@ class PiHarnessSession implements HarnessSession {
   #handleTurnEvent(active: ActiveTurn, event: PiTurnEvent): void {
     if (this.#active !== active || this.#phase === "closed" || this.#phase === "faulted") return;
     switch (event.type) {
+      case "progress.message": {
+        if (active.progressItems.has(event.itemId)) return;
+        active.progressItems.add(event.itemId);
+        const item: HostAgentMessageItem = {
+          type: "agentMessage",
+          itemId: event.itemId,
+          text: event.text,
+          phase: "commentary",
+        };
+        this.#event({ type: "item.started", turnId: active.command.turnId, item });
+        this.#completeItem(active, item, { status: "succeeded" });
+        return;
+      }
       case "text.delta":
-        this.#activateAgentMessage(active, event.messageId);
+        this.#activateAgentMessage(active, event.messageId, event.nativeMessageIdentity);
+        active.sawAssistantMessage = true;
         this.#appendText(active, event.delta);
         return;
       case "reasoning.delta":
-        this.#appendReasoning(active, event.delta);
+        this.#activateAgentMessage(active, event.messageId, event.nativeMessageIdentity);
+        this.#appendReasoning(active, event.delta, event.nativeMessageIdentity);
         return;
       case "reasoning.completed":
         this.#completeReasoning(active, { status: "succeeded" });
         return;
       case "message.completed":
+        if (event.phase && active.agentMessageId === event.messageId && active.agentItem)
+          active.agentItem = { ...active.agentItem, phase: event.phase };
         void this.#refreshUsage(active.command.turnId);
         return;
       case "compaction.started":
@@ -1673,16 +1810,25 @@ class PiHarnessSession implements HarnessSession {
     });
   }
 
-  #activateAgentMessage(active: ActiveTurn, messageId: string): void {
+  #activateAgentMessage(
+    active: ActiveTurn,
+    messageId: string,
+    nativeMessageIdentity?: PiMessageIdentity,
+  ): void {
     if (active.agentMessageId === messageId) return;
+    const nativeItemId = piMessageItemId(nativeMessageIdentity, "assistant");
+    if (nativeItemId && active.agentMessageId === null && active.agentItem?.text === "") {
+      // The projector has not put this empty placeholder on the wire.
+      this.#completeAgentItem(active, { status: "succeeded" }, true);
+    }
     if (active.agentMessageId !== null) {
       this.#completeReasoning(active, { status: "succeeded" });
-      this.#completeAgentItem(active, { status: "succeeded" }, false);
+      this.#completeAgentItem(active, { status: "succeeded" }, true);
     }
     if (!active.agentItem) {
       active.agentItem = {
         type: "agentMessage",
-        itemId: this.#newItemId(),
+        itemId: nativeItemId ?? this.#newItemId(),
         text: "",
       };
       this.#event({
@@ -1692,7 +1838,6 @@ class PiHarnessSession implements HarnessSession {
       });
     }
     active.agentMessageId = messageId;
-    active.sawAssistantMessage = true;
   }
 
   #appendText(active: ActiveTurn, text: string): void {
@@ -1716,12 +1861,16 @@ class PiHarnessSession implements HarnessSession {
     this.#completeItem(active, item, outcome);
   }
 
-  #appendReasoning(active: ActiveTurn, text: string): void {
+  #appendReasoning(
+    active: ActiveTurn,
+    text: string,
+    nativeMessageIdentity?: PiMessageIdentity,
+  ): void {
     if (text.length === 0) return;
     if (!active.reasoningItem) {
       active.reasoningItem = {
         type: "reasoning",
-        itemId: this.#newItemId(),
+        itemId: piMessageItemId(nativeMessageIdentity, "reasoning") ?? this.#newItemId(),
         text: "",
       };
       this.#event({
@@ -1751,21 +1900,13 @@ class PiHarnessSession implements HarnessSession {
 
   #startTool(active: ActiveTurn, event: Extract<PiTurnEvent, { type: "tool.started" }>): void {
     if (active.tools.has(event.callId)) throw new Error("Pi Tool started more than once");
-    const normalizedName = normalizeToolName(event.toolName);
-    const command =
-      normalizedName === "bash"
-        ? (stringField(event.arguments, "command") ??
-          stringField(event.arguments, "cmd") ??
-          stringField(event.arguments, "script") ??
-          stringField(event.arguments, "commandLine") ??
-          stringField(event.arguments, "command_line"))
-        : undefined;
-    const item: HostCommandExecutionItem | HostToolExecutionItem = command
+    const shell = piToolCommand(event.toolName, event.arguments);
+    const item: HostCommandExecutionItem | HostToolExecutionItem = shell
       ? {
           type: "commandExecution",
           itemId: this.#newItemId(),
-          command,
-          cwd: stringField(event.arguments, "cwd") ?? this.#cwd,
+          command: shell.command,
+          cwd: shell.cwd ?? this.#cwd,
         }
       : {
           type: "toolExecution",
@@ -1863,12 +2004,8 @@ class PiHarnessSession implements HarnessSession {
 
     if (!event.isError) {
       try {
-        const kind = fileMutatingKind(event.toolName);
         const args = tool.item.type === "toolExecution" ? tool.item.arguments : {};
-        if (kind && !patchFromResult(event.result) && synthesizeFileChange(kind, args, this.#cwd)) {
-          return;
-        }
-        const changes = reliableFileChange(event.toolName, args, event.result, this.#cwd);
+        const changes = piToolFileChanges(event.toolName, args, event.result, this.#cwd);
         if (changes) {
           const fileItem: HostItem = {
             type: "fileChange",
@@ -1913,22 +2050,29 @@ class PiHarnessSession implements HarnessSession {
   async #completedTurnIdentity(
     active: ActiveTurn,
     transport: PiTurnTransport,
-  ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint: NativeCheckpointRef }> {
-    const snapshot = mapPiSnapshot(await transport.getEntries(), {
+  ): Promise<{ nativeTurnRef: NativeTurnRef; checkpoint?: NativeCheckpointRef }> {
+    active.acceptingSteers = false;
+    await Promise.allSettled([...active.pendingSteers]);
+    const snapshot = mapPiSnapshot(active.steerFailure?.history ?? (await transport.getEntries()), {
       sessionId: transport.state.sessionId,
       model: nativeModelForHistory(transport.state),
     });
     const created = snapshot.turns.filter(
-      (turn) => !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
+      (turn) =>
+        turn.input.length > 0 && !active.beforeNativeTurnKeys.has(turn.nativeTurnRef.nativeTurnKey),
     );
-    if (created.length !== 1) {
+    const expected = 1 + active.acceptedSteerCount;
+    if (created.length !== expected) {
       throw new Error(
-        `Pi Turn persisted ${created.length} new User Entries; exactly one is required`,
+        `Pi Turn persisted ${created.length} new User Entries; exactly ${expected} is required`,
       );
     }
     const turn = created[0];
-    if (!turn?.checkpoint) throw new Error("Pi Turn has no terminal Checkpoint identity");
-    return { nativeTurnRef: turn.nativeTurnRef, checkpoint: turn.checkpoint };
+    if (!turn) throw new Error("Pi Turn has no persisted User identity");
+    return {
+      nativeTurnRef: turn.nativeTurnRef,
+      ...(turn.checkpoint ? { checkpoint: turn.checkpoint } : {}),
+    };
   }
 
   #completeTurn(
@@ -1968,14 +2112,24 @@ class PiHarnessSession implements HarnessSession {
       ...(nativeTurnRef ? { nativeTurnRef } : {}),
     });
     active.resolveCompletion();
+    if (active.steerFailure) {
+      // The completed Turn keeps its real outcome; Host recovery reopens the same history.
+      this.#fault(active.steerFailure);
+      return;
+    }
     queueMicrotask(() => {
-      if (this.#phase === "open") void this.#refreshUsage(active.command.turnId);
+      if (this.#phase !== "open") return;
+      if (this.#transport) this.#drainPendingAutonomousTurns(this.#transport);
+      void this.#refreshUsage(active.command.turnId);
     });
   }
 
   #fault(error: unknown): void {
     if (this.#phase === "closed" || this.#phase === "faulted") return;
     const normalized = normalizedError(error, "internalError");
+    this.#pendingAutonomousTurns = [];
+    this.#pendingAutonomousLifecycle = [];
+    this.#pendingAutonomousLifecycleBytes = 0;
     if (this.#active) {
       this.#completeTurn(this.#active, { status: "failed", error: normalized });
     }
@@ -1985,6 +2139,9 @@ class PiHarnessSession implements HarnessSession {
   }
 
   async #close(): Promise<void> {
+    this.#pendingAutonomousTurns = [];
+    this.#pendingAutonomousLifecycle = [];
+    this.#pendingAutonomousLifecycleBytes = 0;
     if (this.#phase === "closed") return;
     const wasFaulted = this.#phase === "faulted";
     if (!wasFaulted) this.#phase = "closing";
@@ -2013,6 +2170,7 @@ class PiHarnessSession implements HarnessSession {
   }
 
   #event(event: HostEvent): void {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
 
@@ -2033,13 +2191,15 @@ export class PiAdapter implements HarnessAdapter {
         if (this.#closePromise || parent.harnessId !== this.harnessId) {
           return { ok: false, error: invalidState("Pi Subagent parent is unavailable") };
         }
+        const gotgenes = parseGotgenesId(nativeSubagentId);
         const workflow = parsePiWorkflowSubagentId(nativeSubagentId);
-        if (!workflow) parsePiSubagentId(nativeSubagentId);
+        if (!workflow && !gotgenes) parsePiSubagentId(nativeSubagentId);
         const live = [...this.#sessions].find((session) =>
           session.ownsNativeSession(parent.nativeSessionId),
         );
         let reply: PiSubagentInspection;
         if (live) {
+          if (gotgenes) return await live.readGotgenesChild(gotgenes, cwd);
           if (workflow)
             return await readPiWorkflowChild(
               await live.readSubagentHistory(cwd),
@@ -2055,6 +2215,12 @@ export class PiAdapter implements HarnessAdapter {
           if (transport.state.sessionId !== parent.nativeSessionId)
             throw new Error("Pi Subagent parent identity mismatch");
           await transport.verifySessionCwd(cwd);
+          if (gotgenes)
+            return await readGotgenesChild(
+              await transport.getEntries(),
+              parent.nativeSessionId,
+              gotgenes,
+            );
           if (workflow)
             return await readPiWorkflowChild(
               await transport.getEntries(),
@@ -2209,9 +2375,10 @@ export class PiAdapter implements HarnessAdapter {
         nativeModelFromState(transport.state),
         thinkingLevels,
         transport.state.thinkingLevel,
+        transport.state.modelReasoning ?? null,
       );
       const fastModels = (await transport.supportsFastMode?.())
-        ? await piFastModelKeys(models, this.#environment)
+        ? piFastModelKeys(models)
         : new Set<string>();
       const catalog = withPiFast(normalized, fastModels);
       await transport.close();
@@ -2424,8 +2591,11 @@ export class PiAdapter implements HarnessAdapter {
         );
         if (!rolledBack.ok) {
           throw new PiAdapterFaultError({
-            code: "invalidState",
-            message: "Pi Native Session has no Turn to roll back",
+            code: rolledBack.reason === "unsupported" ? "unsupported" : "invalidState",
+            message:
+              rolledBack.reason === "unsupported"
+                ? "Pi cannot roll back a custom-triggered Turn at an exact native boundary"
+                : "Pi Native Session has no Turn to roll back",
             retryable: false,
           });
         }
@@ -2548,10 +2718,7 @@ export class PiAdapter implements HarnessAdapter {
           // The picker may have inspected another cwd. Check the live Session instead
           // of treating a cache miss as unsupported or spawning another Pi process.
           if (!(await transport.supportsFastMode?.())) return false;
-          const fastModels = await piFastModelKeys(
-            await transport.getAvailableModels(),
-            environment ?? this.#environment,
-          );
+          const fastModels = piFastModelKeys(await transport.getAvailableModels());
           return fastModels.has(encodePiModelRef({ ...decodePiModelRef(ref), fast: false }).id);
         },
         ...(options.startedTransport ? { startedTransport: options.startedTransport } : {}),

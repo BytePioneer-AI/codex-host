@@ -19,7 +19,7 @@ describe("WorkBuddy app discovery", () => {
         dependencies,
       );
       expect(invocation.command).toBe(executable);
-      expect(invocation.arguments).toEqual([cli, "--acp"]);
+      expect(invocation.arguments).toEqual(["--eval", expect.any(String), cli, "--acp"]);
       expect(invocation.environment.ELECTRON_RUN_AS_NODE).toBe("1");
       expect(() =>
         workBuddyInvocation({ CODEXHOST_WORKBUDDY_COMMAND: directory }, false, {
@@ -53,7 +53,7 @@ describe("WorkBuddy app discovery", () => {
         isExecutable: (file) => file === executable || file === cli,
       });
       expect(invocation.command).toBe(executable);
-      expect(invocation.arguments).toEqual([cli, "--acp"]);
+      expect(invocation.arguments).toEqual(["--eval", expect.any(String), cli, "--acp"]);
       expect(invocation.environment.ELECTRON_RUN_AS_NODE).toBe("1");
       expect(() =>
         workBuddyInvocation({ CODEXHOST_WORKBUDDY_COMMAND: executable }, false, {
@@ -87,7 +87,13 @@ describe("WorkBuddy app discovery", () => {
       },
     );
     expect(invocation.command.toLowerCase()).toBe(executable.toLowerCase());
-    expect(invocation.arguments).toEqual([cli, "--acp", "--no-session-persistence"]);
+    expect(invocation.arguments).toEqual([
+      "--eval",
+      expect.any(String),
+      cli,
+      "--acp",
+      "--no-session-persistence",
+    ]);
     expect(invocation.environment).toMatchObject({
       ELECTRON_RUN_AS_NODE: "1",
       WORKBUDDY_CONFIG_DIR: "C:\\Users\\Test\\.workbuddy-ai",
@@ -107,7 +113,7 @@ describe("WorkBuddy app discovery", () => {
       isExecutable: (candidate) => [executable, cli].includes(candidate),
     });
     expect(invocation.command).toBe(executable);
-    expect(invocation.arguments).toEqual([cli, "--acp"]);
+    expect(invocation.arguments).toEqual(["--eval", expect.any(String), cli, "--acp"]);
   });
 
   it("never combines an app executable with another installation's CLI", () => {

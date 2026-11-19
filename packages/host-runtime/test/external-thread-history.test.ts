@@ -65,13 +65,19 @@ describe("External Thread history pagination", () => {
   });
 
   it("projects summary and full Turn item views", () => {
-    const turns = [turn(1)];
+    const turns = [{ ...turn(1), codexhostFileOperations: [] }];
+    for (const itemsView of ["summary", "notLoaded"]) {
+      expect(listExternalTurns(turns, { itemsView }).data[0]).not.toHaveProperty(
+        "codexhostFileOperations",
+      );
+    }
     expect(listExternalTurns(turns, {}).data[0]).toMatchObject({
       itemsView: "summary",
       items: [{ id: "user-1" }, { id: "agent-1" }],
     });
     expect(listExternalTurns(turns, { itemsView: "full" }).data[0]).toMatchObject({
       itemsView: "full",
+      codexhostFileOperations: [],
       items: [{ id: "user-1" }, { id: "tool-1" }, { id: "agent-1" }],
     });
   });

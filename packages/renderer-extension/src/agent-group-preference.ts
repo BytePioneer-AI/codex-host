@@ -1,4 +1,7 @@
-import type { HarnessDisplayEntries } from "@codexhost/shared-contracts";
+import {
+  DEFAULT_HARNESS_DISPLAY_ORDER,
+  type HarnessDisplayEntries,
+} from "@codexhost/shared-contracts";
 import type { ExternalRendererAgent, RendererAgent } from "./agent-selection-state.js";
 
 /** Display-only grouping; never affects installation or availability. */
@@ -32,25 +35,7 @@ export interface AgentGroupPreferenceStore {
 export const AGENT_GROUP_PREFERENCE_STORAGE_KEY = "codexhost.agentGroupPreference.v1";
 
 // Display preference only: this list never registers or synthesizes plugins.
-const DEFAULT_AGENT_ORDER = [
-  "pi",
-  "claude-code",
-  "deepseek-harness",
-  "opencode",
-  "grok",
-  "omp",
-  "antigravity",
-  "kiro-cli",
-  "codebuddy",
-  "workbuddy",
-  "cursor-cli",
-  "hermes",
-  "qoder",
-  "qoder-cn",
-  "kimi-code",
-  "zcode",
-];
-const defaultRank = new Map(DEFAULT_AGENT_ORDER.map((id, index) => [id, index]));
+const defaultRank = new Map(DEFAULT_HARNESS_DISPLAY_ORDER.map((id, index) => [id, index]));
 function safeLocalStorage(): Storage | null {
   try {
     return typeof window !== "undefined" ? window.localStorage : null;

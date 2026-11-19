@@ -1,7 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
-import type { DelegationControlRegistration } from "../src/delegation-types.js";
+import {
+  DelegationControlError,
+  type DelegationControlRegistration,
+  type DelegationThreadSnapshot,
+  type DelegationThreadStatus,
+  type ThreadCancelResult,
+} from "../src/delegation-types.js";
+import type { DelegationWatchStore, PersistedWatch } from "../src/delegation-watch-store.js";
 
 function registration(threadId: string): DelegationControlRegistration {
   return {
@@ -53,8 +60,6 @@ function registration(threadId: string): DelegationControlRegistration {
       turn: null,
       progress: [],
       result: { availability: "pending" as const },
-      messages: [],
-      nextCursor: null,
     })),
     wait: vi.fn(async () => ({
       threadId,
@@ -63,9 +68,15 @@ function registration(threadId: string): DelegationControlRegistration {
       turn: null,
       progress: [],
       result: { availability: "pending" as const },
-      messages: [],
-      nextCursor: null,
       timedOut: true,
+    })),
+    answer: vi.fn(async (input) => ({
+      threadId: input.threadId,
+      interactionId: input.interactionId,
+      turnId: `turn-${threadId}`,
+      harnessId: "pi" as const,
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
     })),
     list: vi.fn(async () => ({ threads: [], nextCursor: null })),
   };
@@ -140,6 +151,21 @@ describe("DelegationControlRegistry", () => {
     await registry.listHarnesses();
     expect(native.listHarnesses).toHaveBeenCalledOnce();
   });
+  it("rejects conflicting or non-boolean send options before choosing a session", async () => {
+    const registry = new DelegationControlRegistry();
+    const target = registration("target");
+    registry.register(target);
+    for (const input of [
+      { threadId: "target", message: "adjust", steer: true, interrupt: true },
+      { threadId: "target", message: "adjust", steer: "true" },
+      { threadId: "target", message: "adjust", interrupt: "true" },
+    ])
+      await expect(
+        registry.send(input as unknown as Parameters<typeof registry.send>[0]),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(target.send).not.toHaveBeenCalled();
+    registry.close();
+  });
   it("discovers targets from the active session without inspecting Models", async () => {
     const registry = new DelegationControlRegistry();
     const session = registration("parent");
@@ -170,11 +196,18 @@ describe("DelegationControlRegistry", () => {
     await registry.read({ threadId: "parent-a", view: "result" });
     await registry.send({ threadId: "parent-b", message: "continue" });
     await registry.cancel({ threadId: "parent-a" });
+    await registry.answer({
+      threadId: "parent-b",
+      interactionId: "interaction-1",
+      result: { answers: { decision: { answers: ["continue"] } } },
+    });
 
     expect(second.start).toHaveBeenCalledOnce();
     expect(first.read).toHaveBeenCalledOnce();
     expect(second.send).toHaveBeenCalledOnce();
     expect(first.cancel).toHaveBeenCalledOnce();
+    expect(second.answer).toHaveBeenCalledOnce();
+    expect(first.answer).not.toHaveBeenCalled();
   });
 
   it("requires a unique active session for implicit start and unscoped list", async () => {
@@ -220,7 +253,6 @@ describe("DelegationControlRegistry", () => {
         turn: null,
         progress: [],
         result: { availability: "available", text: "done" },
-        nextCursor: null,
       });
       await vi.advanceTimersByTimeAsync(2_000);
       expect(subscriber.send).toHaveBeenCalledTimes(1);
@@ -246,6 +278,545 @@ describe("DelegationControlRegistry", () => {
       registry.watch({ threadId: "child", notifyThreadId: "", timeoutMs: 60_000 }),
     ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     expect(session.read).not.toHaveBeenCalled();
+    registry.close();
+  });
+});
+
+describe("DelegationControlRegistry cancel watches", () => {
+  const registries: DelegationControlRegistry[] = [];
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    for (const registry of registries.splice(0)) registry.close();
+    vi.useRealTimers();
+  });
+
+  function setup() {
+    const records = new Map<string, PersistedWatch>();
+    const store: DelegationWatchStore = {
+      adopt: async () => [...records.values()].map((record) => structuredClone(record)),
+      save: vi.fn(async (watch) => {
+        records.set(watch.id, structuredClone(watch));
+      }),
+      remove: vi.fn(async (id) => {
+        records.delete(id);
+      }),
+    };
+    const clientEvents = { append: vi.fn(async () => undefined) };
+    const registry = new DelegationControlRegistry({ watchStore: store, clientEvents });
+    registries.push(registry);
+    const child = registration("child");
+    const parent = registration("parent");
+    registry.register(child);
+    registry.register(parent);
+    const snapshot = (status: DelegationThreadStatus): DelegationThreadSnapshot => ({
+      threadId: "child",
+      harnessId: "pi",
+      status,
+      turn: null,
+      progress: [],
+      result: { availability: "pending" },
+    });
+    const result: ThreadCancelResult = {
+      threadId: "child",
+      harnessId: "pi",
+      turnId: "turn-child",
+      cancelled: true,
+    };
+    vi.mocked(child.cancel).mockImplementation(async () => {
+      vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+      return result;
+    });
+    const watch = (notifyThreadId = "parent") =>
+      registry.watch({
+        threadId: "child",
+        notifyThreadId,
+        timeoutMs: 60_000,
+      });
+    return { registry, child, parent, store, records, snapshot, result, watch, clientEvents };
+  }
+
+  it("removes watches from memory and storage after an accepted cancel without notifying", async () => {
+    const { registry, parent, records, result, watch } = setup();
+    await watch();
+    expect(records.size).toBe(1);
+    await expect(registry.cancel({ threadId: "child" })).resolves.toBe(result);
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+    expect(records.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("still notifies on natural completion without cancel", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).toHaveBeenCalledOnce();
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+    expect(records.size).toBe(0);
+  });
+
+  it("removes a client's watch without appending an event", async () => {
+    const { registry, records, watch, clientEvents } = setup();
+    await watch("client:reviewer");
+    await registry.cancel({ threadId: "child" });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(records.size).toBe(0);
+    expect(clientEvents.append).not.toHaveBeenCalled();
+  });
+
+  it("accepts cancellation without any watch", async () => {
+    const { registry, records, result } = setup();
+    await expect(registry.cancel({ threadId: "child" })).resolves.toBe(result);
+    expect(records.size).toBe(0);
+  });
+
+  it("removes every notify target but keeps watches on other Threads", async () => {
+    const { registry, parent, records, watch } = setup();
+    const other = registration("other");
+    registry.register(other);
+    await watch();
+    await watch("other");
+    await registry.watch({ threadId: "other", notifyThreadId: "parent", timeoutMs: 60_000 });
+    await registry.cancel({ threadId: "child" });
+    expect((await registry.watches()).watches).toMatchObject([{ threadId: "other" }]);
+    expect([...records.values()]).toMatchObject([{ threadId: "other" }]);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(parent.send).not.toHaveBeenCalled();
+    expect(other.send).not.toHaveBeenCalled();
+  });
+
+  it.each(["rejected", "idle"] as const)("preserves watches when cancel is %s", async (mode) => {
+    const { registry, child, parent, records, result, snapshot, watch } = setup();
+    await watch();
+    const failure = new DelegationControlError("DELEGATION_FAILED", "cancel refused");
+    if (mode === "rejected") vi.mocked(child.cancel).mockRejectedValue(failure);
+    else vi.mocked(child.cancel).mockResolvedValue({ ...result, cancelled: false });
+    const cancelled = registry.cancel({ threadId: "child" });
+    if (mode === "rejected") await expect(cancelled).rejects.toBe(failure);
+    else await expect(cancelled).resolves.toMatchObject({ cancelled: false });
+    expect((await registry.watches()).watches).toHaveLength(1);
+    expect(records.size).toBe(1);
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])(
+    "holds terminal notifications until cancel settles (accepted=%s)",
+    async (accepted) => {
+      const { registry, child, parent, records, result, snapshot, watch } = setup();
+      await watch();
+      const completion = Promise.withResolvers<ThreadCancelResult>();
+      const started = Promise.withResolvers<undefined>();
+      vi.mocked(child.cancel).mockImplementation(() => {
+        vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+        started.resolve(undefined);
+        return completion.promise;
+      });
+      const cancelled = registry.cancel({ threadId: "child" });
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(parent.send).not.toHaveBeenCalled();
+      completion.resolve({ ...result, cancelled: accepted });
+      await cancelled;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(parent.send).toHaveBeenCalledTimes(accepted ? 0 : 1);
+      expect(records.size).toBe(0);
+    },
+  );
+
+  it("keeps delivery paused until overlapping cancels have both settled", async () => {
+    const { registry, child, parent, result, snapshot, watch } = setup();
+    await watch();
+    const first = Promise.withResolvers<ThreadCancelResult>();
+    const second = Promise.withResolvers<ThreadCancelResult>();
+    const started = Promise.withResolvers<undefined>();
+    vi.mocked(child.cancel)
+      .mockReturnValueOnce(first.promise)
+      .mockImplementationOnce(() => {
+        started.resolve(undefined);
+        return second.promise;
+      });
+    const one = registry.cancel({ threadId: "child" });
+    const two = registry.cancel({ threadId: "child" });
+    await started.promise;
+    first.resolve({ ...result, cancelled: false });
+    await one;
+    vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).not.toHaveBeenCalled();
+    second.resolve(result);
+    await two;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("removes pending notifications when a later active Turn is cancelled", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    vi.mocked(parent.send).mockRejectedValue(new DelegationControlError("THREAD_BUSY", "busy"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect((await registry.watches()).watches).toMatchObject([{ state: "pendingDelivery" }]);
+    vi.mocked(child.read).mockResolvedValue(snapshot("running"));
+    await watch();
+    await registry.cancel({ threadId: "child" });
+    expect(records.size).toBe(0);
+    vi.mocked(parent.send).mockClear();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a cancelled watch when an already-started send is rejected", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    const delivery = Promise.withResolvers<Awaited<ReturnType<typeof parent.send>>>();
+    vi.mocked(parent.send).mockReturnValueOnce(delivery.promise);
+    vi.mocked(child.read).mockResolvedValue(snapshot("completed"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(parent.send).toHaveBeenCalledOnce();
+    await registry.cancel({ threadId: "child" });
+    delivery.reject(new DelegationControlError("THREAD_BUSY", "busy"));
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(records.size).toBe(0);
+    expect(parent.send).toHaveBeenCalledOnce();
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+  });
+
+  it("does not resurrect a removed watch when an in-flight observation finishes", async () => {
+    const { registry, child, parent, records, snapshot, watch } = setup();
+    await watch();
+    const observation = Promise.withResolvers<DelegationThreadSnapshot>();
+    vi.mocked(child.read).mockReturnValueOnce(observation.promise);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await registry.cancel({ threadId: "child" });
+    observation.resolve(snapshot("interrupted"));
+    await vi.advanceTimersByTimeAsync(4_000);
+    await expect(registry.watches()).resolves.toEqual({ watches: [] });
+    expect(records.size).toBe(0);
+    expect(parent.send).not.toHaveBeenCalled();
+  });
+
+  it("does not deliver a restored notice removed while waiting for its subscriber", async () => {
+    const { registry, child, parent, store, records, snapshot, watch } = setup();
+    await watch();
+    registry.close();
+    for (const record of records.values()) {
+      record.state = "pendingDelivery";
+      record.outcome = "completed";
+      record.deliveryDeadline = Date.now() + 60_000;
+    }
+    const restored = new DelegationControlRegistry({ watchStore: store });
+    registries.push(restored);
+    restored.register(child);
+    restored.register(parent);
+    const subscriber = Promise.withResolvers<DelegationThreadSnapshot>();
+    vi.mocked(parent.read).mockReturnValueOnce(subscriber.promise);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await restored.cancel({ threadId: "child" });
+    subscriber.resolve({ ...snapshot("completed"), threadId: "parent" });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(parent.send).not.toHaveBeenCalled();
+    expect(records.size).toBe(0);
+  });
+
+  it.each([false, true])(
+    "filters cancelled notices out of a prepared delivery (batched=%s)",
+    async (batched) => {
+      const { registry, child, parent, store, records, snapshot, watch } = setup();
+      await watch();
+      if (batched) {
+        const other = registration("other");
+        registry.register(other);
+        await registry.watch({ threadId: "other", notifyThreadId: "parent", timeoutMs: 60_000 });
+        vi.mocked(other.read).mockResolvedValue({ ...snapshot("completed"), threadId: "other" });
+      }
+      const saving = Promise.withResolvers<undefined>();
+      vi.mocked(store.save).mockImplementation(async (record) => {
+        if (record.delivering) await saving.promise;
+        records.set(record.id, structuredClone(record));
+      });
+      vi.mocked(child.read).mockResolvedValue(snapshot("interrupted"));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(store.save).toHaveBeenCalledWith(expect.objectContaining({ delivering: true }));
+      const started = Promise.withResolvers<undefined>();
+      vi.mocked(child.cancel).mockImplementation(async () => {
+        started.resolve(undefined);
+        return { threadId: "child", harnessId: "pi", turnId: "turn-child", cancelled: true };
+      });
+      const cancelled = registry.cancel({ threadId: "child" });
+      await started.promise;
+      saving.resolve(undefined);
+      await cancelled;
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(parent.send).toHaveBeenCalledTimes(batched ? 1 : 0);
+      if (batched) {
+        const message = vi.mocked(parent.send).mock.calls[0]?.[0].message;
+        expect(message).toContain("thread://other");
+        expect(message).not.toContain("thread://child");
+      }
+      expect(records.size).toBe(0);
+    },
+  );
+});
+
+describe("DelegationControlRegistry list paging across sessions", () => {
+  type Row = Awaited<ReturnType<DelegationControlRegistration["list"]>>["threads"][number];
+  type Sort = Parameters<DelegationControlRegistration["list"]>[0]["sort"];
+
+  const order = (sort: Sort) => (left: Row, right: Row) => {
+    const field = sort.startsWith("created") ? "createdAt" : "updatedAt";
+    const direction = sort.endsWith("asc") ? 1 : -1;
+    return (
+      (Date.parse(left[field] ?? "") - Date.parse(right[field] ?? "")) * direction ||
+      left.threadId.localeCompare(right.threadId)
+    );
+  };
+
+  /** A session that pages its own Threads with an opaque offset cursor, like the coordinator. */
+  function session(name: string, rows: Row[]): DelegationControlRegistration {
+    const value = registration(`parent-${name}`);
+    value.list = vi.fn(async ({ limit, cursor, sort }) => {
+      const sorted = [...rows].sort(order(sort));
+      const start = cursor ? Number(Buffer.from(cursor, "base64url").toString("utf8")) : 0;
+      const end = start + limit;
+      return {
+        threads: sorted.slice(start, end),
+        nextCursor: end < sorted.length ? Buffer.from(String(end)).toString("base64url") : null,
+      };
+    });
+    return value;
+  }
+
+  function threads(name: string, count: number, offsetMinutes: number): Row[] {
+    return Array.from({ length: count }, (_, index) => ({
+      threadId: `${name}-${String(index).padStart(2, "0")}`,
+      harnessId: "pi" as const,
+      deepLink: `codex://threads/${name}-${index}`,
+      status: "completed" as const,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, index * 2 + offsetMinutes)).toISOString(),
+      // Reverse the update order so updated-* sorts interleave differently from created-*.
+      updatedAt: new Date(
+        Date.UTC(2026, 0, 2, 0, (count - index) * 3 + offsetMinutes),
+      ).toISOString(),
+    }));
+  }
+
+  async function pageAll(
+    registry: DelegationControlRegistry,
+    sort: Sort,
+    limits: number[],
+  ): Promise<{ ids: string[]; pages: number }> {
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const limit = limits[pages % limits.length] ?? 25;
+      const page = await registry.list({
+        cwd: "/synthetic",
+        limit,
+        sort,
+        ...(cursor ? { cursor } : {}),
+      });
+      expect(page.threads.length).toBeLessThanOrEqual(limit);
+      ids.push(...page.threads.map(({ threadId }) => threadId));
+      cursor = page.nextCursor ?? undefined;
+      pages += 1;
+      expect(pages).toBeLessThan(100);
+    } while (cursor);
+    return { ids, pages };
+  }
+
+  it.each<[Sort, number[]]>([
+    ["created-desc", [25]],
+    ["updated-asc", [7]],
+    ["created-asc", [10, 3, 17]],
+  ])("pages through 60 Threads in two sessions sorted %s", async (sort, limits) => {
+    const first = threads("a", 30, 0);
+    const second = threads("b", 30, 1);
+    const registry = new DelegationControlRegistry();
+    registry.register(session("a", first));
+    registry.register(session("b", second));
+
+    const { ids, pages } = await pageAll(registry, sort, limits);
+    const expected = [...first, ...second].sort(order(sort)).map(({ threadId }) => threadId);
+    expect(ids).toEqual(expected);
+    expect(new Set(ids).size).toBe(60);
+    if (limits.length === 1) expect(pages).toBe(Math.ceil(60 / (limits[0] ?? 1)));
+    registry.close();
+  });
+
+  it("pages through sessions of different sizes, including an empty one", async () => {
+    const registry = new DelegationControlRegistry();
+    const rows = threads("a", 9, 0);
+    registry.register(session("a", rows));
+    registry.register(session("empty", []));
+    registry.register(session("c", threads("c", 4, 1)));
+    const { ids } = await pageAll(registry, "created-desc", [4]);
+    expect(ids).toHaveLength(13);
+    expect(new Set(ids).size).toBe(13);
+    registry.close();
+  });
+
+  it("keeps the single-session cursor unchanged", async () => {
+    const registry = new DelegationControlRegistry();
+    const only = session("a", threads("a", 30, 0));
+    registry.register(only);
+    const first = await registry.list({ cwd: "/synthetic", limit: 25, sort: "created-desc" });
+    expect(first.nextCursor).toBe(Buffer.from("25").toString("base64url"));
+    await registry.list({
+      cwd: "/synthetic",
+      limit: 25,
+      sort: "created-desc",
+      cursor: first.nextCursor ?? "",
+    });
+    expect(only.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: first.nextCursor }),
+    );
+    registry.close();
+  });
+
+  it("rejects a merged cursor after a session re-registers", async () => {
+    const registry = new DelegationControlRegistry();
+    const a = session("a", threads("a", 30, 0));
+    const b = session("b", threads("b", 30, 1));
+    const unregisterA = registry.register(a);
+    registry.register(b);
+    const first = await registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    expect(first.nextCursor).not.toBeNull();
+
+    // Same session count, but iteration order is now b, a: the old positions would be swapped.
+    unregisterA();
+    registry.register(a);
+    await expect(
+      registry.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "created-desc",
+        cursor: first.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    registry.close();
+  });
+
+  it("rejects a merged cursor once only one session is left", async () => {
+    const registry = new DelegationControlRegistry();
+    const a = session("a", threads("a", 30, 0));
+    const b = session("b", threads("b", 30, 1));
+    registry.register(a);
+    const unregisterB = registry.register(b);
+    const first = await registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    expect(first.nextCursor).not.toBeNull();
+
+    unregisterB();
+    vi.mocked(a.list).mockClear();
+    await expect(
+      registry.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "created-desc",
+        cursor: first.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "List cursor does not match the active Host Runtime sessions",
+    });
+    expect(a.list).not.toHaveBeenCalled();
+    registry.close();
+  });
+
+  it("rejects a merged cursor from another Registry or with an invalid session position", async () => {
+    const build = () => {
+      const registry = new DelegationControlRegistry();
+      registry.register(session("a", threads("a", 30, 0)));
+      registry.register(session("b", threads("b", 30, 1)));
+      return registry;
+    };
+    const original = build();
+    const first = await original.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    const cursor = first.nextCursor ?? "";
+    const rebuilt = build();
+    await expect(
+      rebuilt.list({ cwd: "/synthetic", limit: 5, sort: "created-desc", cursor }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+      sessions: ({ cursor: string | null } | null)[];
+    };
+    const position = decoded.sessions.find((entry) => entry !== null);
+    if (!position) throw new Error("Expected an open session position");
+    position.cursor = "";
+    await expect(
+      original.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "created-desc",
+        cursor: Buffer.from(JSON.stringify(decoded)).toString("base64url"),
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    original.close();
+    rebuilt.close();
+  });
+
+  it("does not forward Registry-merged cursors to a catalog list", async () => {
+    const registry = new DelegationControlRegistry();
+    const a = session("a", threads("a", 10, 0));
+    const b = session("b", threads("b", 10, 1));
+    registry.register(a);
+    registry.register(b);
+    try {
+      const first = await registry.list({ cwd: "/synthetic", limit: 2, sort: "created-desc" });
+      vi.mocked(a.list).mockClear();
+      vi.mocked(b.list).mockClear();
+      registry.register(a, { harnessCatalog: true });
+      await expect(
+        registry.list({
+          cwd: "/synthetic",
+          limit: 2,
+          sort: "created-desc",
+          cursor: first.nextCursor ?? "",
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      expect(a.list).not.toHaveBeenCalled();
+      expect(b.list).not.toHaveBeenCalled();
+    } finally {
+      registry.close();
+    }
+  });
+
+  it("rejects malformed merged cursors", async () => {
+    const registry = new DelegationControlRegistry();
+    registry.register(session("a", threads("a", 30, 0)));
+    registry.register(session("b", threads("b", 30, 1)));
+    const first = await registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc" });
+    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const issued = JSON.parse(Buffer.from(first.nextCursor ?? "", "base64url").toString("utf8"));
+    for (const cursor of [
+      "not a cursor",
+      Buffer.from("{").toString("base64url"),
+      encode([]),
+      encode({ ...issued, v: 1 }),
+      encode({ ...issued, cwd: undefined }),
+      encode({ ...issued, sessions: [{ cursor: "" }, null] }),
+      encode({ ...issued, sessions: [{ cursor: 1 }, null] }),
+      encode({ ...issued, sessions: [{}, null] }),
+      encode({ ...issued, sessions: [[null, 0, 5], null] }),
+      encode({ ...issued, sessions: [null] }),
+    ]) {
+      await expect(
+        registry.list({ cwd: "/synthetic", limit: 5, sort: "created-desc", cursor }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    }
+    // A cursor only continues the sort it was issued for.
+    await expect(
+      registry.list({
+        cwd: "/synthetic",
+        limit: 5,
+        sort: "updated-desc",
+        cursor: first.nextCursor ?? "",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
     registry.close();
   });
 });

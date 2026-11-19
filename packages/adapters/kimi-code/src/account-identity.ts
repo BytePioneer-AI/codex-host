@@ -114,6 +114,8 @@ export function projectKimiUsages(payload: unknown): HarnessAccountSnapshot | nu
     return [
       {
         product: "Kimi Code · 5-hour window",
+        periodType: "five_hour" as const,
+        scope: { id: "kimi-code", label: "Kimi Code" },
         usagePercent: share.usedPercent,
         ...(share.resetsAt ? { resetsAt: share.resetsAt } : {}),
       },

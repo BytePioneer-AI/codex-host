@@ -60,6 +60,10 @@ export class FailingListMappingStore extends MappingStore {
   override listThreads(): Promise<never> {
     return Promise.reject(new Error("Synthetic list read failure"));
   }
+
+  override listThreadSummaries(): Promise<never> {
+    return Promise.reject(new Error("Synthetic list read failure"));
+  }
 }
 
 export class FailingDelegationMappingStore extends MappingStore {
@@ -98,12 +102,14 @@ export class JsonLineCollector {
     });
   }
 
-  waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
+  waitFor(
+    predicate: (message: JsonObject) => boolean,
+    timeoutMs = process.platform === "win32" ? 10_000 : 2_000,
+  ): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
     // Host responses can require Mapping Store fsync/rename operations.
     // Allow for Windows disk latency, as in tests/vitest.config.js.
-    const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,
@@ -269,11 +275,15 @@ export class ModernSessionImportAdapter extends FakeHarnessAdapter {
 export function createFixture(
   options: {
     sharedThreads?: SharedThreadBridge;
+    sharedDelegation?: DelegationControlRegistration;
+    externalOnly?: boolean;
     environment?: NodeJS.ProcessEnv;
     pluginDirectory?: string;
     codexUsage?: boolean;
     externalAdapters?: ReadonlyMap<ExternalHarnessId, FakeHarnessAdapter>;
-    mappingStore?: MappingStore;
+    /** Adapters without Fake Session state, e.g. a real plugin used by an integration test. */
+    additionalAdapters?: ReadonlyMap<ExternalHarnessId, HarnessAdapter>;
+    mappingStore?: AppServerHostOptions["mappingStore"];
     mappingStoreDirectory?: string;
     closeMappingStoreOnExit?: boolean;
     desktopOutput?: PassThrough;
@@ -283,6 +293,7 @@ export function createFixture(
     updateCoordinator?: HostUpdateCoordinator;
     runtimeMaintenance?: RuntimeMaintenance;
     consoleOpener?: HostConsoleOpener;
+    webOpener?: AppServerHostOptions["webOpener"];
     accountControl?: CodexAccountControl;
     officialRuntimeScope?: OfficialRuntimeScope;
     onDelegationApi?: (api: DelegationControlRegistration) => (() => void) | undefined;
@@ -317,7 +328,11 @@ export function createFixture(
   const official = new FakeOfficialProcess(options.officialExitsOnInputEnd);
   const collector = new JsonLineCollector(desktopOutput);
   const startup = Promise.withResolvers<undefined>();
-  void startup.promise.catch(() => undefined);
+  const ready = startup.promise.then(
+    () => new Promise<undefined>((resolve) => setImmediate(resolve, undefined)),
+  );
+  // Tests that close before startup may never await ready; awaiting it still rejects.
+  void ready.catch(() => undefined);
   const spawnOfficial = vi.fn(() => {
     startup.resolve(undefined);
     return official as unknown as ChildProcessWithoutNullStreams;
@@ -326,8 +341,10 @@ export function createFixture(
   if (options.officialRuntimeScope) startup.resolve(undefined);
   const host = new AppServerHost({
     ...(options.sharedThreads ? { sharedThreads: options.sharedThreads } : {}),
+    ...(options.sharedDelegation ? { sharedDelegation: options.sharedDelegation } : {}),
     stockCodexPath: "/synthetic/codex",
     arguments: ["app-server"],
+    ...(options.externalOnly !== undefined ? { externalOnly: options.externalOnly } : {}),
     desktopInput,
     desktopOutput,
     diagnosticOutput,
@@ -336,12 +353,17 @@ export function createFixture(
       ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
       : {}),
     environment: {
+      HOME: mappingStoreDirectory,
+      CODEX_HOME: path.join(mappingStoreDirectory, ".codex"),
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       ...(options.environment ?? {}),
     },
     ...(pluginDirectory ? { pluginRoots: [pluginDirectory] } : {}),
-    externalAdapters:
-      options.externalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>([["pi", adapter]]),
+    externalAdapters: new Map<ExternalHarnessId, HarnessAdapter>([
+      ...(options.externalAdapters ??
+        new Map<ExternalHarnessId, FakeHarnessAdapter>([["pi", adapter]])),
+      ...(options.additionalAdapters ?? new Map<ExternalHarnessId, HarnessAdapter>()),
+    ]),
     spawnOfficial: spawnOfficial as unknown as typeof spawn,
     // The fake process exits synchronously on kill; real-time grace only slows tests.
     officialCloseTimeoutMs: 50,
@@ -356,6 +378,7 @@ export function createFixture(
     ...(options.updateCoordinator ? { updateCoordinator: options.updateCoordinator } : {}),
     ...(options.runtimeMaintenance ? { runtimeMaintenance: options.runtimeMaintenance } : {}),
     ...(options.consoleOpener ? { consoleOpener: options.consoleOpener } : {}),
+    ...(options.webOpener ? { webOpener: options.webOpener } : {}),
     ...(options.modelPrices ? { modelPrices: options.modelPrices } : {}),
     ...(options.usageStatistics ? { usageStatistics: options.usageStatistics } : {}),
     ...(options.accountControl ? { accountControl: options.accountControl } : {}),
@@ -377,9 +400,7 @@ export function createFixture(
     host,
     official,
     running,
-    ready: startup.promise.then(
-      () => new Promise<undefined>((resolve) => setImmediate(resolve, undefined)),
-    ),
+    ready,
     mappingStore,
     mappingStoreDirectory,
     spawnOfficial,
@@ -469,13 +490,14 @@ export async function bindOfficialThread(
 export async function answerOfficialParentCwd(
   fixture: ReturnType<typeof createFixture>,
   threadId = "parent-thread",
+  name?: string,
 ): Promise<void> {
   const request = await readJsonLine(fixture.official.stdin);
   expect(request).toMatchObject({ method: "thread/read", params: { threadId } });
   fixture.official.stdout.write(
     `${JSON.stringify({
       id: request.id,
-      result: { thread: { id: threadId, cwd: "/synthetic" } },
+      result: { thread: { id: threadId, cwd: "/synthetic", ...(name ? { name } : {}) } },
     })}\n`,
   );
 }

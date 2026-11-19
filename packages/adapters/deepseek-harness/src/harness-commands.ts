@@ -14,6 +14,7 @@ const commandDefinitions = [
   {
     id: "dsh.compact",
     invocation: "/compact",
+    localizations: { "zh-CN": { label: "压缩上下文", description: "压缩当前对话上下文" } },
     label: "Compact context",
     description: "Compact the current conversation context",
     argumentMode: "none",

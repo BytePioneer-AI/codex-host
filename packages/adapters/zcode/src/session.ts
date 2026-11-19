@@ -1,5 +1,12 @@
+import { decodeModel } from "./models.js";
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import { randomUUID } from "node:crypto";
 import {
+  unsupportedSteer,
   HarnessOutputChannel,
   parseHostUsage,
   type HarnessCommandInvocation,
@@ -14,12 +21,14 @@ import {
   type TurnOutcome,
   type HostItemOutcome,
   type TurnStartCommand,
+  type TurnSteerCommand,
   type TurnCancelCommand,
   type InteractionRespondCommand,
   type ModelSelectCommand,
   type ThinkingSelectCommand,
   type PermissionModeSelectCommand,
   type TurnStartAccepted,
+  type TurnSteerAccepted,
   type TurnCancelAccepted,
   type InteractionRespondAccepted,
   type ModelSelectCompleted,
@@ -122,6 +131,7 @@ export class ZcodeSession implements HarnessSession {
     return Boolean(this.#active || this.#configuring || this.isLocked());
   }
   #emit(event: HostEvent) {
+    event = configureSubagentEvent(event, this.#subagentConfiguration());
     this.#channel.emit({ kind: "event", event });
   }
   async subscribe() {
@@ -241,7 +251,25 @@ export class ZcodeSession implements HarnessSession {
       /* Usage is optional; the transport separately reports fatal failures. */
     }
   }
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.#state;
+    const model = state.effectiveModel ? decodeModel(state.effectiveModel).modelId : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed || this.#faulted) return failure("invalidState", "ZCode session is closed");
     if (this.busy) return failure("sessionBusy", "ZCode is executing an operation", true);
     try {
@@ -253,6 +281,7 @@ export class ZcodeSession implements HarnessSession {
     }
   }
   execute(command: TurnStartCommand): Promise<HarnessResult<TurnStartAccepted>>;
+  execute(command: TurnSteerCommand): Promise<HarnessResult<TurnSteerAccepted>>;
   execute(command: TurnCancelCommand): Promise<HarnessResult<TurnCancelAccepted>>;
   execute(command: InteractionRespondCommand): Promise<HarnessResult<InteractionRespondAccepted>>;
   execute(command: ModelSelectCommand): Promise<HarnessResult<ModelSelectCompleted>>;
@@ -265,6 +294,7 @@ export class ZcodeSession implements HarnessSession {
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
+      | TurnSteerAccepted
       | TurnCancelAccepted
       | InteractionRespondAccepted
       | ModelSelectCompleted
@@ -274,6 +304,7 @@ export class ZcodeSession implements HarnessSession {
   > {
     if (this.#closed || this.#faulted) return failure("invalidState", "ZCode session is closed");
     try {
+      if (command.type === "turn.steer") return unsupportedSteer("ZCode");
       if (command.type === "turn.start") {
         if (
           !hostTurnIdSchema.safeParse(command.turnId).success ||

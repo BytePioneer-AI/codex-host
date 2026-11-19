@@ -1,13 +1,14 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   acquireUpdateOperationLock,
   cleanupTerminalUpdateState,
   discoverLatestUpdateStatus,
+  discoverRecentCompletedUpdateStatus,
   isUpdateOperationActive,
   recoverUpdateOperationLock,
 } from "@codexhost/update-manager";
@@ -20,6 +21,7 @@ async function status(
   name: string,
   phase: "prepared" | "succeeded" | "failed",
   updatedAt: number,
+  serviceStopOutput?: string,
 ): Promise<string> {
   const directory = path.join(root, name);
   await mkdir(directory, { recursive: true });
@@ -32,6 +34,7 @@ async function status(
       installation: "npm",
       phase,
       updatedAt,
+      ...(serviceStopOutput === undefined ? {} : { serviceStopOutput }),
       ...(phase === "failed" ? { error: "permission denied" } : {}),
     }),
   );
@@ -39,6 +42,24 @@ async function status(
 }
 
 describe("update operation state", () => {
+  it("transfers the prepared operation to the updater without releasing its lock", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-transfer-"));
+    roots.push(root);
+    const operation = await acquireUpdateOperationLock(root);
+    if (!operation) throw new Error("Missing operation lock");
+    await expect(operation.transferTo(process.pid)).rejects.toThrow("not prepared");
+    const statusPath = await status(root, "update-active", "prepared", 20);
+    await operation.setStatusPath(statusPath);
+    await expect(operation.transferTo(0)).rejects.toThrow("Invalid update owner PID");
+    await operation.transferTo(process.ppid);
+    expect(JSON.parse(await readFile(operation.path, "utf8"))).toEqual({
+      ownerPid: process.ppid,
+      statusPath,
+    });
+    await recoverUpdateOperationLock(root);
+    expect(await acquireUpdateOperationLock(root)).toBeNull();
+    await operation.release();
+  });
   it("recovers a crashed remote updater lock but preserves a live remote updater", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-update-remote-"));
     roots.push(root);
@@ -67,6 +88,45 @@ describe("update operation state", () => {
     await expect(discoverLatestUpdateStatus(root)).resolves.toMatchObject({
       statusPath: latest,
       status: { phase: "failed", error: "permission denied" },
+    });
+  });
+
+  it.each([
+    { phase: "succeeded", age: 0, output: "opaque\n", restore: true },
+    { phase: "failed", age: 86_400, output: "opaque\n", restore: true },
+    { phase: "succeeded", age: 86_401, output: "opaque\n", restore: false },
+    { phase: "failed", age: 86_401, output: "opaque\n", restore: false },
+    { phase: "succeeded", age: 0, output: "", restore: true },
+    { phase: "failed", age: 0, output: undefined, restore: true },
+    { phase: "prepared", age: 0, output: "opaque\n", restore: false },
+  ] as const)(
+    "restores the recent completed status with optional output: $phase/$age/$output",
+    async ({ phase, age, output, restore }) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-recent-update-"));
+      roots.push(root);
+      const now = 1_800_000_000;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now * 1000);
+      try {
+        const statusPath = await status(root, "update-result", phase, now - age, output);
+        const result = await discoverRecentCompletedUpdateStatus(root);
+        if (restore) {
+          expect(result).toMatchObject({ statusPath, status: { phase } });
+          expect(result?.status.serviceStopOutput).toBe(output);
+        } else expect(result).toBeNull();
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it("does not resurrect an older output when the latest update has none", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexhost-recent-update-"));
+    roots.push(root);
+    const now = Math.floor(Date.now() / 1000);
+    await status(root, "update-old", "failed", now - 10, "old failure output\n");
+    await status(root, "update-latest", "succeeded", now, "");
+    await expect(discoverRecentCompletedUpdateStatus(root)).resolves.toMatchObject({
+      status: { phase: "succeeded", serviceStopOutput: "" },
     });
   });
 

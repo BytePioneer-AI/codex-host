@@ -1,6 +1,7 @@
+import { createReadStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 
 function projectDirectoryName(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/gu, "-");
@@ -20,7 +21,7 @@ async function existingFile(file: string): Promise<boolean> {
   }
 }
 
-async function findTranscript(input: {
+export async function findClaudeTranscript(input: {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   sessionId: string;
@@ -43,6 +44,29 @@ async function findTranscript(input: {
   return null;
 }
 
+async function* transcriptLines(transcript: string): AsyncGenerator<string> {
+  const stream = createReadStream(transcript, { encoding: "utf8" });
+  let pending = "";
+  try {
+    for await (const chunk of stream) {
+      const contents = chunk as string;
+      let start = 0;
+      let newline: number;
+      // Split only on LF: Unicode line separators are valid inside JSON strings.
+      while ((newline = contents.indexOf("\n", start)) !== -1) {
+        const line = pending + contents.slice(start, newline);
+        pending = "";
+        yield line;
+        start = newline + 1;
+      }
+      pending += contents.slice(start);
+    }
+    if (pending.length > 0) yield pending;
+  } finally {
+    stream.destroy();
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -54,19 +78,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * branch. Claude can attach a later prompt to a system record before the prior
  * assistant terminal, which makes that otherwise valid branch omit prior
  * assistant messages. History recovery needs every persisted main-session
- * message in transcript order instead. Like the native SDK, resolve repeated
- * UUIDs to their last record (including metadata), retaining first-seen order.
+ * message and attachment in transcript order instead. Like the native SDK, resolve
+ * repeated UUIDs to their last record (including metadata), retaining first-seen order.
  */
 export async function readClaudeTranscript(input: {
   cwd: string;
   environment: NodeJS.ProcessEnv;
   sessionId: string;
 }): Promise<unknown[] | null> {
-  const transcript = await findTranscript(input);
+  const transcript = await findClaudeTranscript(input);
   if (!transcript) return null;
-  const contents = await readFile(transcript, "utf8");
   const messages = new Map<string, Record<string, unknown>>();
-  for (const line of contents.split("\n")) {
+  for await (const line of transcriptLines(transcript)) {
     if (line.trim().length === 0) continue;
     let entry: unknown;
     try {
@@ -76,9 +99,9 @@ export async function readClaudeTranscript(input: {
     }
     if (
       !isRecord(entry) ||
-      (entry.type !== "user" && entry.type !== "assistant") ||
+      (entry.type !== "user" && entry.type !== "assistant" && entry.type !== "attachment") ||
       typeof entry.uuid !== "string" ||
-      !isRecord(entry.message)
+      (entry.type !== "attachment" && !isRecord(entry.message))
     ) {
       continue;
     }

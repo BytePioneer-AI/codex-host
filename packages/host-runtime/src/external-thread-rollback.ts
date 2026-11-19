@@ -23,6 +23,7 @@ import {
 } from "./external-thread-repository.js";
 import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
+import { ownTurns } from "./external-thread-side-chat.js";
 
 export type ExternalThreadRollbackResult =
   { ok: false; error: ExternalThreadRpcError } | { ok: true; thread: JsonObject };
@@ -203,9 +204,10 @@ async function executeCurrentLastTurnRollback(input: {
       error: { code: -32081, message: "External rollback could not be persisted" },
     };
   }
+  // The response lists a Side Chat's own Turns; the runtime keeps the inherited ones as context.
   const thread = externalThreadValue({
     record: aligned.record,
-    turns: aligned.turns,
+    turns: ownTurns(aligned.record, aligned.turns),
     sessionId: current.sessionId,
   });
   await runtime.replace(current, {
@@ -232,6 +234,18 @@ export async function executeExternalThreadRollback(input: {
   if (derived.running) {
     return { ok: false, error: { code: -32072, message: "External Thread has an active Turn" } };
   }
+  // Native history may have split a steered Turn that Desktop still shows whole. Only the undone
+  // Turns matter: Turns after a split still map one-to-one to native Turns.
+  const undone = derived.record.turnMappings.slice(-rollback.numTurns);
+  if (undone.some((mapping) => derived.steeredTurnIds.has(mapping.hostTurnId))) {
+    return {
+      ok: false,
+      error: {
+        code: -32080,
+        message: "A Turn here took steered input; reopen the Thread before undoing Turns",
+      },
+    };
+  }
   const refreshError = await runtime.refresh(derived);
   if (refreshError) return { ok: false, error: refreshError };
   if (
@@ -241,6 +255,16 @@ export async function executeExternalThreadRollback(input: {
     return {
       ok: false,
       error: { code: -32080, message: "External Revert boundary is unavailable" },
+    };
+  }
+  // A Side Chat lists only its own Turns, so only those can be undone.
+  const inherited = derived.record.attachedToThreadId
+    ? (derived.record.inheritedTurnCount ?? 0)
+    : 0;
+  if (inherited > 0 && rollback.numTurns > derived.record.turnMappings.length - inherited) {
+    return {
+      ok: false,
+      error: { code: -32602, message: "A Side Chat cannot undo the history it inherited" },
     };
   }
   if (rollback.numTurns === 1 && derived.session.capabilities.history.rollbackLastTurn) {
@@ -389,7 +413,7 @@ export async function executeExternalThreadRollback(input: {
   }
   const thread = externalThreadValue({
     record: aligned.record,
-    turns: aligned.turns,
+    turns: ownTurns(aligned.record, aligned.turns),
     sessionId: derived.sessionId,
   });
   await runtime.replace(derived, {

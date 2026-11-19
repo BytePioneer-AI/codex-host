@@ -5,7 +5,11 @@ const state = vi.hoisted(() => ({ scenario: "normal" }));
 vi.mock("../src/command.js", () => ({
   codeBuddyInvocation: () => ({
     command: process.execPath,
-    arguments: [path.resolve("packages/adapters/codebuddy/test/fixtures/acp.mjs"), state.scenario],
+    arguments: [
+      path.resolve("packages/adapters/codebuddy/test/fixtures/acp.mjs"),
+      state.scenario,
+      ...(state.scenario === "serve-banner" ? ["--serve"] : []),
+    ],
     environment: process.env,
     windowsVerbatimArguments: false,
   }),
@@ -17,6 +21,24 @@ const handlers = () => ({
   fault: vi.fn(),
 });
 describe("CodeBuddy ACP process retirement", () => {
+  it("initializes a server-mode ACP process without parsing its native banner", async () => {
+    state.scenario = "serve-banner";
+    const callbacks = handlers();
+    const client = new CodeBuddyAcpClient({
+      cwd: process.cwd(),
+      environment: process.env,
+      ephemeral: true,
+      handlers: callbacks,
+    });
+    try {
+      await expect(client.initialize()).resolves.toMatchObject({ protocolVersion: 1 });
+      await expect(client.open(process.cwd())).resolves.toMatchObject({ sessionId: "native" });
+      expect(callbacks.fault).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      state.scenario = "normal";
+    }
+  });
   it("settles an accepted prompt on exit even while descendants retain native pipes", async () => {
     state.scenario = "exit-open-pipes";
     const callbacks = handlers();

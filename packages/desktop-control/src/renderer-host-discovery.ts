@@ -59,14 +59,13 @@ export function requestManagerFromHookState(
   if (!record(value)) return null;
   const direct = manager(value) ?? manager(value.manager);
   if (direct) return direct;
-  if (
-    !hostId ||
-    typeof value.addManager !== "function" ||
-    typeof value.getForHostId !== "function" ||
-    typeof value.waitForManagerForHostId !== "function"
-  )
+  if (!hostId || typeof value.addManager !== "function" || typeof value.getForHostId !== "function")
     return null;
-  return manager(value.getForHostId(hostId));
+  try {
+    return manager(value.getForHostId(hostId));
+  } catch {
+    return null;
+  }
 }
 
 /** Discover native owners, not a selected draft policy. Registry lookups are done
@@ -114,9 +113,7 @@ export function discoverRendererHosts(
         "addManager" in value &&
         typeof value.addManager === "function" &&
         "getForHostId" in value &&
-        typeof value.getForHostId === "function" &&
-        "waitForManagerForHostId" in value &&
-        typeof value.waitForManagerForHostId === "function"
+        typeof value.getForHostId === "function"
       ) {
         registries.add(value as RendererHostRegistry);
       }
@@ -140,7 +137,15 @@ export function resolveRendererHostManager(
 ): RendererNativeRequestManager | null {
   if (!hostId) return null;
   const candidates = discovery.registries.length
-    ? discovery.registries.map((registry) => managerFrom(registry.getForHostId(hostId)))
+    ? discovery.registries.flatMap((registry) => {
+        try {
+          return [managerFrom(registry.getForHostId(hostId))];
+        } catch {
+          // One failing registry must not hide the others, and must not reopen
+          // the direct-manager fallback a present registry is meant to override.
+          return [];
+        }
+      })
     : discovery.managers;
   const matching = new Set(
     candidates.filter(

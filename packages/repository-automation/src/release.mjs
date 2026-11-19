@@ -141,15 +141,17 @@ export async function resolveRelease({
   tag,
   expectedRefSha,
   waitForCi = false,
+  skipCi = false,
 }) {
   const metadata = await readReleaseMetadata({ root, tag, expectedRefSha });
+  if (skipCi === true) return { ...metadata, ciSkipped: true };
   const evidence = waitForCi
     ? await waitForReleaseCi({ github, repo, sha: metadata.sha })
     : assertReleaseCi(
         await readCi({ github, repo, sha: metadata.sha, release: true }),
         metadata.sha,
       );
-  return { ...metadata, ...evidence };
+  return { ...metadata, ...evidence, ciSkipped: false };
 }
 
 export async function verifyRelease({
@@ -160,6 +162,7 @@ export async function verifyRelease({
   tagObjectSha,
   ciRunId,
   ciRunAttempt,
+  skipCi = false,
 }) {
   validateReleaseVersion(tag?.startsWith("v") ? tag.slice(1) : "");
   if (!SHA.test(sha) || !SHA.test(tagObjectSha))
@@ -178,6 +181,7 @@ export async function verifyRelease({
   ) {
     throw new Error("release commit is no longer on main");
   }
+  if (skipCi === true) return { ciSkipped: true };
   const ci = await readCi({ github, repo, sha, release: true });
   const evidence = assertReleaseCi(ci, sha);
   if (

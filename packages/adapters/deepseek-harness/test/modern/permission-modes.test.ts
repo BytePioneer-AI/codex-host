@@ -58,9 +58,25 @@ describe("DeepSeek Harness Modern Permission Mode boundary", () => {
     const remote = new FakeRemote({ ok: true, value: presetCatalog() });
     await expect(loadModernPermissionModeCatalog(remote, undefined)).resolves.toEqual({
       modes: [
-        { id: "read-only", label: "Read only", description: "Read files only." },
-        { id: "workspace-write", label: "workspace-write" },
-        { id: "danger-full-access", label: "danger-full-access" },
+        {
+          id: "read-only",
+          label: "Read only",
+          description: "Read files only.",
+          localizations: { en: { label: "Read only" }, "zh-CN": { label: "只读" } },
+        },
+        {
+          id: "workspace-write",
+          label: "workspace-write",
+          localizations: { en: { label: "Workspace write" }, "zh-CN": { label: "工作区写入" } },
+        },
+        {
+          id: "danger-full-access",
+          label: "danger-full-access",
+          localizations: {
+            en: { label: "Full access (dangerous)" },
+            "zh-CN": { label: "完全访问（危险）" },
+          },
+        },
       ],
       defaultModeId: "workspace-write",
     });

@@ -18,6 +18,7 @@ import {
   text,
   type CodeBuddyRuntimeProfile,
 } from "./common.js";
+import { permissionLocalizations } from "./permission-presentation.js";
 
 export const CODEBUDDY_CAPABILITIES: HarnessSessionCapabilities = {
   configuration: {
@@ -90,6 +91,7 @@ export function configuration(
     modes: rows(mode.options).map((option) => ({
       id: option.value,
       label: option.name,
+      localizations: permissionLocalizations(text(option.name), text(option.description)),
       ...(option.description ? { description: option.description } : {}),
       ...(["bypassPermissions", "fullAccess"].includes(text(option.value))
         ? { dangerous: true }

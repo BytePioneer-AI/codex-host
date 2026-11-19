@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import {
   RendererCodexAccountState,
   shouldApplyCodexAccountSnapshot,
@@ -19,6 +19,15 @@ const snapshot = (currentAccountId: string | null, revision: number, instanceId 
   accounts: currentAccountId ? [account(currentAccountId)] : [],
 });
 
+const fallbackAccountSnapshot = (
+  revision: number,
+  instanceId?: string,
+  email = "first@example.test",
+) => ({
+  ...snapshot("current", revision, instanceId),
+  accounts: [{ ...account("current"), email }],
+});
+
 function createState(sendRequest: (method: string, params: unknown) => Promise<unknown>) {
   const client = createRendererModelClient([{ sendRequest }]);
   if (!client) throw new Error("Test client is unavailable");
@@ -37,6 +46,52 @@ describe("Host-scoped Codex Account state", () => {
     await first;
     expect(sendRequest).toHaveBeenCalledExactlyOnceWith("codexhost/account/list", {});
     expect(state.readyAccountId).toBe("default");
+  });
+
+  it.each([
+    ["Account", snapshot("other", 3)],
+    [
+      "Account email under the fallback ID",
+      fallbackAccountSnapshot(3, "host-a", "second@example.test"),
+    ],
+    ["Host instance", fallbackAccountSnapshot(1, "host-b")],
+  ] as const)("shares pending usage across drafts until the %s changes", async (_, replacement) => {
+    let accounts: ReturnType<typeof snapshot> = fallbackAccountSnapshot(1);
+    const oldUsage = Promise.withResolvers<unknown>();
+    const newUsage = Promise.withResolvers<unknown>();
+    const inspectUsage = vi
+      .fn<() => Promise<unknown>>()
+      .mockReturnValueOnce(oldUsage.promise)
+      .mockReturnValueOnce(newUsage.promise);
+    const state = createState(async (method) => {
+      return method === "codexhost/account/list" ? accounts : inspectUsage();
+    });
+    await state.refresh();
+    const firstAccount = state.usageAccount;
+    assert(firstAccount);
+    const first = state.inspectUsage(firstAccount);
+    assert(first);
+
+    accounts = fallbackAccountSnapshot(2);
+    await state.refresh();
+    expect(state.inspectUsage(firstAccount)).toBe(first);
+    expect(inspectUsage).toHaveBeenCalledTimes(1);
+
+    accounts = replacement;
+    await state.refresh();
+    const nextAccount = state.usageAccount;
+    assert(nextAccount);
+    expect(state.inspectUsage(firstAccount)).toBeNull();
+    const next = state.inspectUsage(nextAccount);
+    assert(next);
+
+    const usage = { accountId: "current", usage: null, freshness: "live", observedAt: null };
+    oldUsage.resolve(usage);
+    await first;
+    expect(state.inspectUsage(nextAccount)).toBe(next);
+    newUsage.resolve({ ...usage, accountId: replacement.currentAccountId });
+    await next;
+    expect(inspectUsage).toHaveBeenCalledTimes(2);
   });
 
   it("does not inherit another Host's Account state when the remote API is absent", async () => {

@@ -3,6 +3,9 @@ import {
   harnessPluginDescriptorSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
+  type AccountCreditsSnapshot,
+  type CodexAccountListResult,
+  type CodexAccountUsageResult,
 } from "@codexhost/shared-contracts";
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 
@@ -12,6 +15,7 @@ import {
   rendererModelSelectionFailed,
   type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
+import type { RendererModelClient } from "../src/renderer-model-client.js";
 import type { RendererRequestOptions } from "../src/renderer-request-sender.js";
 import type { installRendererSidebarAgentIcons } from "../src/renderer-sidebar-agent-icons.js";
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
@@ -23,6 +27,7 @@ const testState = vi.hoisted(() => ({
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
+  renderedCredits: [] as Array<AccountCreditsSnapshot | null>,
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
@@ -82,8 +87,12 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       _switching: unknown,
       _availability: unknown,
       modelView: RendererModelControlView,
+      _permissionModeView: unknown,
+      _usage: unknown,
+      accountCredits: AccountCreditsSnapshot | null,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
+      testState.renderedCredits.push(accountCredits);
     },
     reconcileComposerNativeControls: vi.fn(),
     disposeComposerAgentControl: vi.fn(),
@@ -214,6 +223,7 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.renderedCredits = [];
   testState.selectModel = null;
   testState.selectThinking = null;
   testState.getConnectionDiagnostics = null;
@@ -293,6 +303,424 @@ afterEach(() => {
   api?.dispose();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+});
+
+describe("Renderer binding Codex draft quota", () => {
+  type AccountClient = Pick<
+    RendererModelClient,
+    "listCodexAccounts" | "inspectCodexAccountUsage" | "subscribeCodexAccounts"
+  >;
+  const account: CodexAccountListResult = {
+    version: 2,
+    currentAccountId: "test-account",
+    phase: "ready",
+    revision: 1,
+    accounts: [{ accountId: "test-account", label: "Test account" }],
+  };
+  const quota = (usedPercent: number): CodexAccountUsageResult => ({
+    accountId: "test-account",
+    usage: null,
+    accountCredits: { usedPercent, periodType: "weekly" },
+    freshness: "live",
+    observedAt: null,
+  });
+
+  async function mountWithAccountClient(accountClient: AccountClient) {
+    const hostDefaults = {
+      listHarnessPlugins: async () => ({ plugins: [] }),
+      inspectThread: async () => {
+        throw new Error("Thread ownership unavailable");
+      },
+    };
+    let host = { ...hostDefaults, ...accountClient };
+    let connected = true;
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({ enabledAgents: ["codex"], defaultAgent: "codex" });
+    const replaceClient = (replacement: AccountClient): void => {
+      host = { ...hostDefaults, ...replacement };
+    };
+    const setAdapter = (replacement?: AccountClient): void => {
+      if (replacement) replaceClient(replacement);
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        undefined,
+        { currentHostId: () => "local", clientForHost: () => (connected ? host : null) } as never,
+      );
+    };
+    setAdapter();
+    return {
+      setAdapter,
+      replaceClient,
+      setConnected(value: boolean) {
+        connected = value;
+      },
+    };
+  }
+
+  function flushFrame(): void {
+    for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+  }
+
+  function scanAfterMutation(): void {
+    const notify = testState.notifyMutations;
+    assert(notify);
+    notify([{ type: "attributes", target: testState.composer } as unknown as MutationRecord]);
+    flushFrame();
+  }
+
+  function submitDraft(): void {
+    const submit = testState.documentListeners.get("submit");
+    assert(submit);
+    const event = new Event("submit", { cancelable: true });
+    submit(event);
+    expect(event.defaultPrevented).toBe(false);
+  }
+
+  function resumeDraft(): void {
+    const beforeInput = testState.documentListeners.get("beforeinput");
+    assert(beforeInput);
+    beforeInput(new Event("beforeinput"));
+    flushFrame();
+  }
+
+  it("does not retry the account list on DOM changes for an existing Thread with failed ownership", async () => {
+    installFakeBrowser();
+    const listCodexAccounts = vi.fn(async () => account);
+    await mountWithAccountClient({ listCodexAccounts });
+    await vi.waitFor(() => expect(listCodexAccounts).toHaveBeenCalled());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const readsBeforeScan = listCodexAccounts.mock.calls.length;
+    scanAfterMutation();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(listCodexAccounts).toHaveBeenCalledTimes(readsBeforeScan);
+  });
+
+  it("keeps the same Codex Account's quota visible while refreshing it", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const initial = quota(8);
+    const inspectCodexAccountUsage = vi.fn(async () => initial);
+    await mountWithAccountClient({
+      listCodexAccounts: async () => account,
+      inspectCodexAccountUsage,
+    });
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(initial.accountCredits),
+    );
+
+    const pending = Promise.withResolvers<CodexAccountUsageResult>();
+    inspectCodexAccountUsage.mockReturnValue(pending.promise);
+    const readsBeforeFocus = inspectCodexAccountUsage.mock.calls.length;
+    const rendersBeforeFocus = testState.renderedCredits.length;
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() =>
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(readsBeforeFocus + 1),
+    );
+    const hidQuota = testState.renderedCredits
+      .slice(rendersBeforeFocus)
+      .some((credits) => credits === null);
+    const updated = quota(18);
+    pending.resolve(updated);
+    expect(hidQuota).toBe(false);
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(updated.accountCredits),
+    );
+  });
+
+  it.each(["adapter", "Host epoch"])(
+    "starts a new quota request after changing the %s on the same client",
+    async (change) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const oldQuota = Promise.withResolvers<CodexAccountUsageResult>();
+      const currentQuota = quota(18);
+      const inspectCodexAccountUsage = vi
+        .fn(async () => currentQuota)
+        .mockReturnValueOnce(oldQuota.promise);
+      let notifyAccount: ((snapshot: CodexAccountListResult) => void) | undefined;
+      const { setAdapter } = await mountWithAccountClient({
+        listCodexAccounts: async () => account,
+        inspectCodexAccountUsage,
+        subscribeCodexAccounts: (listener) => {
+          notifyAccount = listener;
+          return () => undefined;
+        },
+      });
+      await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1));
+
+      if (change === "adapter") {
+        setAdapter();
+      } else {
+        assert(notifyAccount);
+        notifyAccount({ ...account, instanceId: "next-host" });
+      }
+      await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+      oldQuota.resolve(quota(8));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+      expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18);
+    },
+  );
+
+  it("hides old quota while the replacement client reads its Account list", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const oldQuota = Promise.withResolvers<CodexAccountUsageResult>();
+    const initial = quota(8);
+    const inspectCodexAccountUsage = vi.fn(async () => initial);
+    const { setAdapter } = await mountWithAccountClient({
+      listCodexAccounts: async () => account,
+      inspectCodexAccountUsage,
+    });
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(initial.accountCredits),
+    );
+    inspectCodexAccountUsage.mockReturnValue(oldQuota.promise);
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2));
+
+    const replacementAccount = Promise.withResolvers<CodexAccountListResult>();
+    const replacementQuota = quota(18);
+    setAdapter({
+      listCodexAccounts: () => replacementAccount.promise,
+      inspectCodexAccountUsage: async () => replacementQuota,
+    });
+    expect(testState.renderedCredits.at(-1) === null).toBe(true);
+    oldQuota.resolve(initial);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(testState.renderedCredits.at(-1) === null).toBe(true);
+    replacementAccount.resolve(account);
+    await vi.waitFor(() =>
+      expect(testState.renderedCredits.at(-1)).toEqual(replacementQuota.accountCredits),
+    );
+  });
+
+  it("loads a changed Account once when typing resumes after an abandoned submission", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    let currentAccount = account;
+    let notifyAccount: ((snapshot: CodexAccountListResult) => void) | undefined;
+    const inspectCodexAccountUsage = vi.fn(async ({ accountId }: { accountId: string }) => ({
+      ...quota(accountId === "test-account" ? 8 : 18),
+      accountId,
+    }));
+    await mountWithAccountClient({
+      listCodexAccounts: async () => currentAccount,
+      inspectCodexAccountUsage,
+      subscribeCodexAccounts: (listener) => {
+        notifyAccount = listener;
+        return () => undefined;
+      },
+    });
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+    assert(notifyAccount);
+    submitDraft();
+    currentAccount = {
+      ...account,
+      currentAccountId: "new-account",
+      revision: 2,
+      accounts: [{ accountId: "new-account", label: "New account" }],
+    };
+    notifyAccount(currentAccount);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    flushFrame();
+    expect(testState.renderedCredits.at(-1)).toBeNull();
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+    resumeDraft();
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+    scanAfterMutation();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+    expect(inspectCodexAccountUsage).toHaveBeenLastCalledWith({ accountId: "new-account" });
+  });
+
+  it.each([
+    { completion: "during", expectedUsage: 18, expectedReads: 2 },
+    { completion: "after", expectedUsage: 8, expectedReads: 1 },
+    { completion: "failed", expectedUsage: undefined, expectedReads: 1 },
+  ] as const)(
+    "reconciles quota on resuming an abandoned submission ($completion)",
+    async ({ completion, expectedUsage, expectedReads }) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const firstQuota = Promise.withResolvers<CodexAccountUsageResult>();
+      const inspectCodexAccountUsage = vi
+        .fn(async () => quota(18))
+        .mockReturnValueOnce(firstQuota.promise);
+      await mountWithAccountClient({
+        listCodexAccounts: async () => account,
+        inspectCodexAccountUsage,
+      });
+      await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1));
+      submitDraft();
+      if (completion !== "after") {
+        if (completion === "during") firstQuota.resolve(quota(8));
+        else firstQuota.reject(new Error("Usage query failed"));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      flushFrame();
+      expect(testState.renderedCredits.at(-1)).toBeNull();
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+      resumeDraft();
+      if (completion === "after") firstQuota.resolve(quota(8));
+      await vi.waitFor(() =>
+        expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(expectedUsage),
+      );
+      scanAfterMutation();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(expectedReads);
+    },
+  );
+
+  it("invalidates old quota when the Host client changes during submission", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const { replaceClient } = await mountWithAccountClient({
+      listCodexAccounts: async () => account,
+      inspectCodexAccountUsage: async () => quota(8),
+    });
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+    submitDraft();
+    const listCodexAccounts = vi.fn(async () => account);
+    const inspectCodexAccountUsage = vi.fn(async () => quota(18));
+    replaceClient({ listCodexAccounts, inspectCodexAccountUsage });
+    scanAfterMutation();
+    expect(testState.renderedCredits.at(-1) === null).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(listCodexAccounts).not.toHaveBeenCalled();
+    expect(inspectCodexAccountUsage).not.toHaveBeenCalled();
+
+    resumeDraft();
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["loaded", "pending"] as const)(
+    "reloads %s quota after the same client reconnects during submission",
+    async (status) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const oldQuota = Promise.withResolvers<CodexAccountUsageResult>();
+      const inspectCodexAccountUsage = vi
+        .fn(async () => quota(18))
+        .mockReturnValueOnce(oldQuota.promise);
+      const { setConnected } = await mountWithAccountClient({
+        listCodexAccounts: async () => account,
+        inspectCodexAccountUsage,
+      });
+      await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1));
+      if (status === "loaded") {
+        oldQuota.resolve(quota(8));
+        await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+      }
+      submitDraft();
+
+      setConnected(false);
+      scanAfterMutation();
+      expect(testState.renderedCredits.at(-1)).toBeNull();
+      setConnected(true);
+      scanAfterMutation();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+      resumeDraft();
+      await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+      if (status === "pending") oldQuota.resolve(quota(8));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18);
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("performs one deferred focus refresh after the draft resumes", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default", "client-new-thread:quota"];
+    const listCodexAccounts = vi.fn(async () => account);
+    const inspectCodexAccountUsage = vi.fn(async () => quota(18)).mockResolvedValueOnce(quota(8));
+    await mountWithAccountClient({ listCodexAccounts, inspectCodexAccountUsage });
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+    submitDraft();
+    const accountReads = listCodexAccounts.mock.calls.length;
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(listCodexAccounts).toHaveBeenCalledTimes(accountReads + 1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8);
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(1);
+
+    resumeDraft();
+    await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+    scanAfterMutation();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["fails", "succeeds"] as const)(
+    "settles a deferred focus refresh when the in-flight quota request %s after resuming",
+    async (outcome) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const inFlight = Promise.withResolvers<CodexAccountUsageResult>();
+      const listCodexAccounts = vi.fn(async () => account);
+      const inspectCodexAccountUsage = vi
+        .fn(async () => quota(18))
+        .mockResolvedValueOnce(quota(8))
+        .mockReturnValueOnce(inFlight.promise);
+      await mountWithAccountClient({ listCodexAccounts, inspectCodexAccountUsage });
+      await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(8));
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2));
+      submitDraft();
+      const accountReads = listCodexAccounts.mock.calls.length;
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(listCodexAccounts).toHaveBeenCalledTimes(accountReads + 1));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      resumeDraft();
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(2);
+      if (outcome === "fails") inFlight.reject(new Error("Usage query failed"));
+      else inFlight.resolve(quota(12));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      flushFrame();
+      await vi.waitFor(() =>
+        expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(outcome === "fails" ? 18 : 12),
+      );
+      scanAfterMutation();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(outcome === "fails" ? 3 : 2);
+    },
+  );
+
+  it.each(["draft", "Thread"] as const)(
+    "uses the ready Account without reading its list again when the composer resumes as a %s",
+    async (target) => {
+      installFakeBrowser();
+      testState.modelTarget = ["default", "client-new-thread:quota"];
+      const firstAccount = Promise.withResolvers<CodexAccountListResult>();
+      const listCodexAccounts = vi.fn(() => firstAccount.promise);
+      const inspectCodexAccountUsage = vi.fn(async () => quota(18));
+      await mountWithAccountClient({ listCodexAccounts, inspectCodexAccountUsage });
+      await vi.waitFor(() => expect(listCodexAccounts).toHaveBeenCalledTimes(1));
+      submitDraft();
+      firstAccount.resolve(account);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      flushFrame();
+      expect(inspectCodexAccountUsage).not.toHaveBeenCalled();
+
+      if (target === "Thread") testState.modelTarget = ["conversation", "thread-a"];
+      resumeDraft();
+      if (target === "draft") {
+        await vi.waitFor(() => expect(testState.renderedCredits.at(-1)?.usedPercent).toBe(18));
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(listCodexAccounts).toHaveBeenCalledTimes(1);
+      expect(inspectCodexAccountUsage).toHaveBeenCalledTimes(target === "draft" ? 1 : 0);
+    },
+  );
 });
 
 describe("Renderer binding Host-scoped Claude catalogs", () => {

@@ -1272,13 +1272,23 @@ describe("inspection and errors", () => {
 
 describe("Antigravity idle background output episodes", () => {
   it("closes the idle output window when a pre-submit successor starts", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-background-cancel-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
     const first = await start(session, transports, "t1");
+    const db = await createNativeHistoryDatabase(home, required(first.sessionId));
+    userStep(db, 0, "hello");
+    db.close();
     first.result.resolve({ stopReason: "end_turn" });
     await completed(outputs, "t1");
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "turn.completed",
+        turnId: "t1",
+        nativeTurnRef: expect.anything(),
+      }),
+    );
     const usageGate =
       deferred<
         Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
@@ -1304,6 +1314,7 @@ describe("Antigravity idle background output episodes", () => {
     await refresh;
     await completed(outputs, "cancel-before-submit");
     transports.at(-1)?.eventHandler?.({ type: "agent.text", text: "orphan" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(events(outputs)).not.toContainEqual(
       expect.objectContaining({ type: "item.background.started" }),
     );
@@ -1367,6 +1378,17 @@ describe("Antigravity idle background output episodes", () => {
         ],
       },
     });
+    const nativeRef = session.nativeRef;
+    if (!nativeRef) throw new Error("First Turn has no Native Session");
+    await session.close();
+    const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });
+    if (!reopened.ok) throw new Error(reopened.error.message);
+    const coldSnapshot = await reopened.value.readSnapshot();
+    expect(coldSnapshot).toMatchObject({ ok: true });
+    const coldWake = (coldSnapshot.ok ? coldSnapshot.value.turns : []).flatMap((turn) =>
+      turn.items.filter((item) => item.item.type === "agentMessage" && item.item.text === "wake"),
+    );
+    expect(coldWake).toHaveLength(1);
   });
 
   it("attributes idle agent output to the most recently completed Turn and settles it on the next prompt", async () => {

@@ -235,8 +235,13 @@ it(
     const log = (await readFile(path.join(codexHome, "native-calls.jsonl"), "utf8"))
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line) as { type: string; feature?: boolean });
-    assert.equal(log.filter((entry) => entry.type === "startup").length, 1);
+      .map((line) => JSON.parse(line) as { type: string; feature?: boolean; pid?: number });
+    const startups = log.filter((entry) => entry.type === "startup");
+    assert.equal(
+      startups.length,
+      1,
+      `official Codex started ${String(startups.length)} times: ${JSON.stringify(startups)} ${await hostDiagnostics(path.join(data, "logs", `host-runtime-${String(endpoint.pid)}.log`))}`,
+    );
     assert.equal(log.find((entry) => entry.type === "startup")?.feature, true);
     assert.equal(log.filter((entry) => entry.type === "turn/start").length, 2);
     assert.equal(
@@ -248,3 +253,16 @@ it(
     assert.deepEqual(await secondExited, [0, null]);
   },
 );
+
+/** Failure-only context: the host log lines that explain official backend starts. */
+async function hostDiagnostics(file: string): Promise<string> {
+  try {
+    return (await readFile(file, "utf8"))
+      .split("\n")
+      .filter((line) => /official|Desktop|spawn|backend|fallback/i.test(line))
+      .slice(-40)
+      .join("\n");
+  } catch {
+    return "(no host log)";
+  }
+}

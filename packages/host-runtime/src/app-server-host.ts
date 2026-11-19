@@ -343,6 +343,7 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
+import { ThreadTreeWatch } from "./thread-tree-watch.js";
 import {
   externalThreadListEntries,
   type ExternalThreadListRuntimeState,
@@ -865,6 +866,7 @@ export class AppServerHost {
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
   readonly #threadTree: ThreadTree;
+  readonly #treeWatch: ThreadTreeWatch;
   #sectionOperations: Promise<unknown> = Promise.resolve();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
@@ -994,6 +996,7 @@ export class AppServerHost {
     this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
       this.#noteDesktopReply(value);
       this.#client.observeDesktopMessage(value);
+      this.#treeWatch?.observe(value);
       return this.#takeConsoleReply(value);
     });
     this.#skills =
@@ -1037,6 +1040,7 @@ export class AppServerHost {
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
         this.#activeOfficialTurns.clear();
+        this.#treeWatch?.resetOfficial();
         this.#client.resetNativeSession();
         for (const listener of this.#nativeSettingsNotifications) listener(null);
         this.#signalActiveWorkChanged();
@@ -1078,6 +1082,28 @@ export class AppServerHost {
     this.#threadTree = new ThreadTree(this.#repository, () =>
       this.#runSectionOperation(() => this.#threadPins.list()),
     );
+    this.#treeWatch = new ThreadTreeWatch({
+      tree: this.#threadTree,
+      repository: this.#repository,
+      events: this.clientEvents,
+      shared: options.sharedThreads,
+      externalOnly: options.externalOnly,
+      localStatus: (id) => {
+        const thread = this.#externalRuntime.get(id);
+        return thread
+          ? thread.running || thread.activeTurnId !== null
+            ? "running"
+            : "idle"
+          : undefined;
+      },
+      waiting: (id) =>
+        [...this.#pendingDesktopApprovals.values()].some(({ thread }) => thread.id === id) ||
+        this.#pendingDelegationQuestions(id).length > 0,
+      readOfficial: (threadId) =>
+        this.#requestOfficial("thread/read", { threadId, includeTurns: false }),
+      send: (message) => this.#writer.json(message),
+      diagnose: (error) => this.#diagnose(error),
+    });
     this.#externalAdapters = new Map(options.externalAdapters);
     for (const [harnessId, adapter] of this.#externalAdapters) {
       if (adapter.harnessId !== harnessId) {
@@ -1497,6 +1523,7 @@ export class AppServerHost {
       return this.#closeRequested ? 0 : 1;
     } finally {
       this.#skills?.dispose();
+      this.#treeWatch.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
       // Stop replacement waiters before waiting for their tracked Host operations.
@@ -1974,6 +2001,7 @@ export class AppServerHost {
       }
       return;
     }
+    if (await this.#treeWatch.handle(request)) return;
     if (await this.#desktopControl.handle(request)) return;
     if (request.method === "codexhost/thread/tree/read") {
       this.#dispatchDesktopReply(request, async () => {
@@ -2057,6 +2085,7 @@ export class AppServerHost {
     const original = this.#officialServerRequests.get(requestId);
     if (original === undefined) return false;
     this.#officialServerRequests.delete(requestId);
+    this.#treeWatch.resolveOfficial(original);
     await this.#officialRuntime.send({ ...response, id: original });
     return true;
   }
@@ -2106,6 +2135,7 @@ export class AppServerHost {
     value: JsonValue;
   }): Promise<void> {
     for (const listener of this.#nativeSettingsNotifications) listener(input.value);
+    this.#treeWatch.observe(input.value, true);
     if (this.#options.externalOnly) {
       this.#client.observeNativeMessage(input.value);
       // Native children created through Delegation still have a native owner
@@ -2917,7 +2947,16 @@ export class AppServerHost {
               },
             ],
       );
-    return [...this.#questions.read(threadId), ...native, ...asynchronous];
+    const multi = [...this.#pendingDesktopQuestions.values()]
+      .filter(({ thread }) => thread.id === threadId)
+      .map(({ interaction }): DelegationPendingQuestion => ({
+        interactionId: interaction.interactionId,
+        turnId: interaction.turnId,
+        kind: "requestUserInput",
+        ...(interaction.expiresAt ? { expiresAt: interaction.expiresAt } : {}),
+        request: jsonValueSchema.parse(sharedQuestion(interaction)) as JsonObject,
+      }));
+    return [...this.#questions.read(threadId), ...native, ...asynchronous, ...multi];
   }
 
   async #answerDelegationQuestion(input: ThreadAnswerInput): Promise<ThreadAnswerResult> {
@@ -2937,6 +2976,32 @@ export class AppServerHost {
         interactionId: input.interactionId,
         turnId: native.turnId,
         harnessId: "codex",
+        status: "running",
+        next: {
+          read: `codexhost thread read ${input.threadId}`,
+          wait: `codexhost thread wait ${input.threadId} --timeout-ms 30000`,
+        },
+      };
+    }
+    const multi = [...this.#pendingDesktopQuestions.values()].find(
+      ({ thread, interaction }) =>
+        thread.id === input.threadId && interaction.interactionId === input.interactionId,
+    );
+    if (multi) {
+      const answers = isRecord(input.result) ? input.result.answers : undefined;
+      const reply = await this.#handleControlRequest(THREAD_QUESTION_RESPOND_METHOD, {
+        threadId: input.threadId,
+        turnId: multi.interaction.turnId,
+        interactionId: input.interactionId,
+        ...(answers === undefined ? {} : { answers: jsonValueSchema.parse(answers) }),
+      });
+      if ("error" in reply)
+        throw new DelegationControlError("INVALID_ARGUMENT", reply.error.message);
+      return {
+        threadId: input.threadId,
+        turnId: multi.interaction.turnId,
+        interactionId: input.interactionId,
+        harnessId: multi.thread.harnessId,
         status: "running",
         next: {
           read: `codexhost thread read ${input.threadId}`,

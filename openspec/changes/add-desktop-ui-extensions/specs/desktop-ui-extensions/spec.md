@@ -79,7 +79,7 @@ Desktop 正在运行时，启用、禁用以及已启用扩展的文件变化 SH
 
 ### Requirement: 窗口重载与重新连接后的一致性
 
-Desktop 窗口重载后，以及 Desktop Controller 重新连接已打开的窗口后，系统 SHALL 恢复为最新的启用集合，每个扩展只有一个实例。在 Controller 不可用期间被禁用的扩展，MUST NOT 在之后的窗口重载中继续运行。
+Desktop Controller 在线时，窗口重载后系统 SHALL 恢复为最新的启用集合，每个扩展只有一个实例。Controller 不可用期间重载的窗口 SHALL 不运行任何扩展；Controller 重新连接后 SHALL 立即按最新保存的选择恢复，且不产生重复实例。在 Controller 不可用期间被禁用的扩展 MUST NOT 再运行。
 
 #### Scenario: 窗口重载
 
@@ -90,6 +90,11 @@ Desktop 窗口重载后，以及 Desktop Controller 重新连接已打开的窗�
 
 - **WHEN** Desktop Controller 重启后重新连接仍在运行的 Desktop 窗口
 - **THEN** 已在运行且内容未变的扩展保持原实例，不出现重复界面
+
+#### Scenario: Controller 离线期间重载窗口
+
+- **WHEN** Controller 不可用时窗口被重载，期间用户又在 Console 中禁用了其中一个扩展，之后 Controller 重新连接
+- **THEN** 重载后的窗口在 Controller 恢复前不运行任何扩展；恢复后只激活仍处于启用状态的扩展，被禁用的扩展不出现
 
 ### Requirement: 按扩展作用域的宿主 API
 

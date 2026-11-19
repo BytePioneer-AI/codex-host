@@ -61,9 +61,10 @@ $CODEXHOST_DATA_DIR/extensions/        （默认 ~/.codexhost/extensions/，权�
 
 1. **触发**：`fs.watch(root, { recursive: true })`，事件只作提示，防抖 150 ms；另外在 `ensureInstalled`、主页面 `Runtime.executionContextCreated`（`renderer-loaded-modules.ts` 已在监听）时触发；兜底每 30 s 重新计算一次已启用扩展的 hash。正确性**只取决于重新扫描加 hash 比较**，不依赖 watch 事件是否可靠。
 2. **计算期望集合**：discover → 过滤已启用且兼容的 → 用 `resolveDesktopExtensionSlots`（D6）得到生效者与冲突项 → 得到 `[{id, hash, slots, script, style}]`，保持 `enabled` 顺序。
-3. **未来文档**：Controller 始终只保留**一个**扩展快照脚本的 `addScriptToEvaluateOnNewDocument` 标识，注册在核心 bundle 之后。集合变化时**先移除旧标识，再注册新标识**；如果在两步之间崩溃，结果是没有扩展，属于安全的方向。快照脚本只做一件事：把期望集合交给注册表，由注册表等宿主桥就绪后再激活。
+3. **未来文档（仅在 Controller 在线期间有效）**：Controller 始终只保留**一个**扩展快照脚本的 `addScriptToEvaluateOnNewDocument` 标识，注册在核心 bundle 之后。集合变化时**先移除旧标识，再注册新标识**；如果在两步之间崩溃，结果是没有扩展，属于安全的方向。快照脚本只做一件事：把期望集合交给注册表，由注册表等宿主桥就绪后再激活。它的作用仅限于在线重载时减少原生侧栏的闪现。
    - 放弃的做法一：按版本调用 addScript。旧标识永不移除，重载后新旧版本会同时运行。
-   - 放弃的做法二：只在 `executionContextCreated` 后重新注入。每次重载都会先闪出原生侧栏，而且 Controller 不在线时重载就会丢掉扩展。
+   - 放弃的做法二：只在 `executionContextCreated` 后重新注入。在线重载时每次都会先闪出原生侧栏。
+   - **离线重载不恢复扩展**：这类脚本绑定在 CDP 会话的生命周期上，Controller 断开后就不再生效；即使能保留，它也无从得知离线期间启用配置是否已经变化。因此约定：Controller 断开期间重载窗口，扩展不运行。这与核心 bundle 在同样情况下也不注入的行为一致。Controller 重新连接后，立即按最新的 `enabled.json` 走第 4、5 步做幂等对账。放弃了"离线重载也能恢复"的方案，因为它需要一个独立于 Controller、可信的 Desktop 启动注入入口，复杂度与 v1 不相称。
 4. **当前文档**：`Runtime.evaluate` 调用 `__codexhostDesktopExtensionsV1.reconcile(entries)`。每个脚本被包装成
    `(function (define) { "use strict";\n<desktop.js>\n})\n//# sourceURL=codexhost-extension://<id>/desktop.js`，
    样式以字符串传入。顺序固定为**先更新快照脚本，再做实时对账**，这样中途重载拿到的也是新集合。
@@ -145,6 +146,11 @@ interface DesktopSidebarRow {
 - 实现放在新模块 `host-runtime/src/thread-tree-watch.ts`。`app-server-host.ts` 已有 7000 多行，只在其中加路由。连接关闭时释放该连接的全部订阅。
 - **owner 合并**：前端 Host 有订阅者时，经 `SharedThreadBridge` 向 owner 订阅**同一个** `thread/tree/watch`，用一条 owner 订阅服务这个前端 Host 的所有本地订阅者。对 owner 拥有的 Thread（依据 `ownership` 或已知集合），采用 owner 快照中的状态，其余 Thread 用本地状态。owner 断开或不支持该方法时，owner 拥有的节点报告 `unknown`，诊断只记录一次。`SharedThreadBridge` 必须**截获** owner 发来的 `thread/tree/snapshot`，不能像其他 owner 通知那样转发给 Desktop。
 - **状态来源**：`waiting` 覆盖审批、提问（包括 Desktop 的多选提问，这正是 #926 评审中指出的 `#pendingDelegationQuestions` 漏项，在共享来源中一并修正）和计划审阅。官方 Codex Thread 的状态来自前端 Host 观察到的官方 Turn 通知和待处理请求。
+- **初始状态**（Turn 事件之前没有观察记录时）：订阅建立时，以及有官方 Thread 新进入树关系时，对这些 Thread 各执行一次只读的官方 `thread/read`，不 resume，不加载 Thread，并限制并发数和单次数量。返回值按以下规则映射：
+  - `active`：活动标记表明在等待审批或用户输入时为 `waiting`，否则为 `running`；
+  - `idle`：为 `idle`；
+  - `notLoaded`、`systemError`、读取失败、超时，或无法确认该 Thread 由前端 Host 连接的官方运行时执行：一律为 `unknown`。
+    **绝不把"没观察到 Turn"当成 `idle`**。之后到来的 Turn 和交互事件会覆盖初始值；同一个 Thread 不重复读取。外部 Thread 不走这条路径，它们的初始状态由各自的执行所有者直接给出。
 - **推送**：订阅以下事件——已有的 `tree/changed` 触发点、Turn 开始与结束、交互出现与处理完成、标题变化——合并窗口 250 ms，保证在 1 s 内送达。
 - Web 的 `tree/read` 和 `tree/changed` 不变。#926 的 `delegation-children` 和 #947 的 `thread/tree/nodes` 不合入主干。
 
@@ -182,6 +188,7 @@ interface DesktopSidebarRow {
 - [快照脚本注入时机早于宿主桥就绪] → 注册表排队，等 binding 就绪再激活。重载时可能短暂闪出原生侧栏，可以接受。
 - [owner 版本较旧，没有 `thread/tree/watch`] → owner 拥有的节点报告 `unknown`，诊断只记录一次，不让读取失败。
 - [单次 evaluate 载荷过大] → 单扩展和总量都有上限；hash 未变的扩展不重新传脚本。
+- [Controller 断开期间重载窗口，扩展暂时消失] → 这是有意的约定（见 D3），与核心 bundle 的行为一致；Controller 重新连接后自动恢复，Console 期间显示"等待 Desktop"。
 - [扩展是受信任代码，可以绕过 API 调用 Desktop 私有能力] → 明确定位为受信任代码，沿用 Harness 插件的信任立场；文件属主和权限检查防止其他本机用户注入。
 
 ## Migration
@@ -193,4 +200,3 @@ interface DesktopSidebarRow {
 ## Open Questions
 
 - v1 是否在 Console 中提供"从本机目录安装（复制）"，还是只写手工复制的文档？两者都不影响规范与任务划分，默认先只写文档。
-- Desktop 在官方 Codex Turn 开始之后才连接时，官方 Thread 的初始状态从哪里取？倾向于订阅时对关系中的官方 Thread 读取一次官方 Thread 状态；如果官方协议不提供该字段，则在第一个 Turn 事件到来之前报告 `unknown`，**不报告 `idle`**。需要在实现 2.1 时对照当前官方 app-server 协议确认。

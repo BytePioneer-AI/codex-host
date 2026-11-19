@@ -8,8 +8,8 @@
 
 ## 2. 主干 Thread 树订阅（host-runtime）
 
-- [ ] 2.1 新增 `thread-tree-watch.ts`，在 `app-server-host.ts` 中只加路由。实现内容：快照（`parents` 复用 `ThreadTree.read()`）、本地状态（审批、提问含多选、计划审阅；同时在共享的待处理问题来源中补上多选提问）、250 ms 合并推送、版本号、5000 节点上限与 `truncated`、连接关闭时释放订阅。官方 Thread 的初始状态按 design 中的 Open Question 确认。验证：新增聚焦测试，覆盖首次快照、新委派在 1 s 内推送、Turn 开始与结束、多选提问报告为 `waiting`、置顶子 Thread 成为顶层、截断标记、断开连接后不再推送；现有 Web `tree/read` 测试保持通过。
-- [ ] 2.2 实现 owner 合并：前端 Host 有订阅者时，经 `SharedThreadBridge` 向 owner 建立一条 watch；owner 拥有的 Thread 采用 owner 的状态；owner 断开或版本过旧时报告 `unknown`，诊断只记一次；截获 owner 的 snapshot 通知，不转发给 Desktop。验证：扩展 `local-shared-host.test.ts`，覆盖 Web 发起的共享外部 Thread 在 Desktop 快照中先为 `running`、结束后为 `idle`，owner 断开时为 `unknown`，Desktop 输出流中不出现 owner 的 snapshot 通知。同步更新 `docs/architecture/web-thread-tree.md`，补充订阅协议与 owner 合并规则。
+- [x] 2.1 新增 `thread-tree-watch.ts`，在 `app-server-host.ts` 中只加路由。实现内容：快照（`parents` 复用 `ThreadTree.read()`）、本地状态（审批、提问含多选、计划审阅；同时在共享的待处理问题来源中补上多选提问）、250 ms 合并推送、版本号、5000 节点上限与 `truncated`、连接关闭时释放订阅。官方 Thread 的初始状态按 design 中的 Open Question 确认。验证：新增聚焦测试，覆盖首次快照、新委派在 1 s 内推送、Turn 开始与结束、多选提问报告为 `waiting`、置顶子 Thread 成为顶层、截断标记、断开连接后不再推送；现有 Web `tree/read` 测试保持通过。
+- [x] 2.2 实现 owner 合并：前端 Host 有订阅者时，经 `SharedThreadBridge` 向 owner 建立一条 watch；owner 拥有的 Thread 采用 owner 的状态；owner 断开或版本过旧时报告 `unknown`，诊断只记一次；截获 owner 的 snapshot 通知，不转发给 Desktop。验证：扩展 `local-shared-host.test.ts`，覆盖 Web 发起的共享外部 Thread 在 Desktop 快照中先为 `running`、结束后为 `idle`，owner 断开时为 `unknown`，Desktop 输出流中不出现 owner 的 snapshot 通知。同步更新 `docs/architecture/web-thread-tree.md`，补充订阅协议与 owner 合并规则。
 
 ## 3. 扩展文件与 Console（harness-plugin-files、console-server、renderer-extension/console）
 

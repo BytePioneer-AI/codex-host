@@ -22,7 +22,7 @@ Host SHALL 允许 Desktop 连接订阅 Thread 树。订阅后先返回一份完�
 
 ### Requirement: 状态以执行所有者为准
 
-每个 Thread 的状态 SHALL 为运行中、等待处理（有未处理的审批、提问或计划审阅，包括多选提问）、空闲、未知之一，并 SHALL 反映实际执行该 Thread 的 Host。当 Desktop 连接的 Host 与执行外部 Thread 的共享 Host 不是同一个时，系统 SHALL 采用所有者的运行和交互状态。暂时无法联系所有者时，相关 Thread SHALL 报告未知，MUST NOT 报告为空闲。
+每个 Thread 的状态 SHALL 为运行中、等待处理（有未处理的审批、提问或计划审阅，包括多选提问）、空闲、未知之一，并 SHALL 反映实际执行该 Thread 的 Host。当 Desktop 连接的 Host 与执行外部 Thread 的共享 Host 不是同一个时，系统 SHALL 采用所有者的运行和交互状态。尚未观察到 Turn 时，初始状态 SHALL 取自执行所有者明确报告的运行或空闲；所有者未加载该 Thread、报告错误、读取失败、暂时无法联系或无法确认所有者时 SHALL 报告未知，MUST NOT 推断为空闲。
 
 #### Scenario: 在共享 Host 中运行
 
@@ -33,6 +33,11 @@ Host SHALL 允许 Desktop 连接订阅 Thread 树。订阅后先返回一份完�
 
 - **WHEN** 一个委派子 Thread 正在等待用户回答多选提问
 - **THEN** 该 Thread 的状态为等待处理
+
+#### Scenario: 订阅前已在运行的官方 Thread
+
+- **WHEN** 一个官方 Codex 子 Thread 在 Desktop 订阅之前已开始 Turn，订阅后尚未收到任何 Turn 事件
+- **THEN** 官方运行时报告其正在运行时显示运行中；官方运行时未加载该 Thread 或读取失败时显示未知，而不是空闲
 
 #### Scenario: 所有者暂时断开
 

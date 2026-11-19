@@ -583,11 +583,13 @@ export function planLimitFromAccountCredits(
   const event: ClaudePlanLimitEvent = {};
   if (credits.periodType === "five_hour") {
     event.fiveHour = planLimitWindowFromCredits(credits.usedPercent, credits.resetsAt);
-    const sevenDay = credits.productUsage?.find((product) => product.periodType === "seven_day");
+    const sevenDay = credits.productUsage?.find(
+      (product) => product.periodType === "seven_day" && !product.scope,
+    );
     if (sevenDay) {
       event.sevenDay = planLimitWindowFromCredits(sevenDay.usagePercent, sevenDay.resetsAt);
     }
-  } else if (credits.periodType === "seven_day") {
+  } else if (credits.periodType === "seven_day" && !credits.scope) {
     event.sevenDay = planLimitWindowFromCredits(credits.usedPercent, credits.resetsAt);
   } else {
     return null;
@@ -3417,12 +3419,19 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         this.#accountCreditsSupported = account?.credits !== undefined;
         const inspected = planLimitFromAccountCredits(account?.credits);
         if (inspected) {
-          this.#latestPlanLimit = inspected;
-          this.#accountCreditsSupported = true;
+          const next: ClaudePlanLimitEvent = { ...(this.#latestPlanLimit ?? {}) };
+          if (inspected.fiveHour) next.fiveHour = inspected.fiveHour;
+          if (inspected.sevenDay) next.sevenDay = inspected.sevenDay;
+          if (
+            accountCreditsSnapshotSchema.safeParse(projectClaudePlanLimitToCredits(next)).success
+          ) {
+            this.#latestPlanLimit = next.fiveHour || next.sevenDay ? next : null;
+            this.#accountCreditsSupported = true;
+          }
         }
         for (const session of this.#sessions) {
           session.publishAccountCreditsSupport(this.#accountCreditsSupported);
-          if (inspected) session.publishPlanLimit(inspected);
+          if (this.#latestPlanLimit && inspected) session.publishPlanLimit(this.#latestPlanLimit);
         }
       }
       return account;

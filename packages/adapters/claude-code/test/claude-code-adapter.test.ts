@@ -817,6 +817,34 @@ describe("planLimitFromAccountCredits", () => {
     expect(planLimitFromAccountCredits(null)).toBeNull();
     expect(planLimitFromAccountCredits(undefined)).toBeNull();
   });
+
+  it("ignores model-scoped seven-day product windows when seeding the account cache", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 10,
+        periodType: "five_hour",
+        productUsage: [
+          {
+            product: "Sonnet · 7-day",
+            periodType: "seven_day",
+            scope: { id: "Sonnet", label: "Sonnet" },
+            usagePercent: 91,
+          },
+        ],
+      }),
+    ).toEqual({ fiveHour: { utilizationPercent: 10 } });
+  });
+
+  it("does not treat a scoped primary seven-day window as the account weekly limit", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 91,
+        periodType: "seven_day",
+        scope: { id: "Sonnet", label: "Sonnet" },
+        label: "Sonnet · 7-day",
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("projectClaudePlanLimitToCredits", () => {
@@ -7293,6 +7321,41 @@ describe("Claude Code HarnessAdapter", () => {
       periodType: "five_hour",
     });
     expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("keeps a previously observed weekly window when inspection only returns the five-hour window", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("inspect-partial-windows"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 44 },
+      sevenDay: { utilizationPercent: 18 },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 44, planSevenDayUsedPercent: 18 },
+    });
+    await adapter.inspectAccount();
+    expect(adapter.credits()).toEqual({
+      usedPercent: 10,
+      periodType: "five_hour",
+      productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 18 }],
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 10, planSevenDayUsedPercent: 18 },
+    });
+    transport.finish({ status: "succeeded" });
+    await session.close();
   });
 
   it("does not let a slower account inspection overwrite a native plan-limit push", async () => {

@@ -121,6 +121,7 @@ import {
   harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
   catalogModelForRef,
+  HARNESS_MODEL_LABEL_MAX_LENGTH,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
@@ -2356,20 +2357,37 @@ export class AppServerHost {
             return [id.data];
           })
         : [];
-      return [
+      const serviceTiers = Array.isArray(candidate.serviceTiers)
+        ? candidate.serviceTiers.flatMap((tier) => (isRecord(tier) ? [tier.id] : []))
+        : [];
+      const model = {
+        ref: encodeOfficialCodexModelRef(candidate.model),
+        label:
+          typeof candidate.displayName === "string" && candidate.displayName.trim()
+            ? candidate.displayName
+            : candidate.model,
+        ...(supportedThinkingOptionIds.length > 0 ? { supportedThinkingOptionIds } : {}),
+      };
+      const selections = [
         {
-          ref: encodeOfficialCodexModelRef(candidate.model),
-          ...(Array.isArray(candidate.serviceTiers) &&
-          candidate.serviceTiers.some((tier) => isRecord(tier) && tier.id === "priority")
+          ...model,
+          ...(serviceTiers.includes("priority")
             ? { fastModel: encodeOfficialCodexModelRef(candidate.model, "priority") }
             : {}),
-          label:
-            typeof candidate.displayName === "string" && candidate.displayName.trim()
-              ? candidate.displayName
-              : candidate.model,
-          ...(supportedThinkingOptionIds.length > 0 ? { supportedThinkingOptionIds } : {}),
         },
       ];
+      if (serviceTiers.includes("ultrafast")) {
+        const suffix = " · Ultrafast";
+        const label = model.label
+          .slice(0, HARNESS_MODEL_LABEL_MAX_LENGTH - suffix.length)
+          .replace(/[\uD800-\uDBFF]$/u, "");
+        selections.push({
+          ...model,
+          ref: encodeOfficialCodexModelRef(candidate.model, "ultrafast"),
+          label: label + suffix,
+        });
+      }
+      return selections;
     });
     const defaultEntry = data.find(
       (candidate) => isRecord(candidate) && candidate.isDefault === true,

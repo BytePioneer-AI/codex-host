@@ -6,7 +6,11 @@ import {
 
 export const OFFICIAL_CODEX_MODEL_REF_PREFIX = "codex-model-v1.";
 
-const OFFICIAL_CODEX_FAST_MODEL_REF_PREFIX = "codex-fast-model-v1.";
+const modelRefPrefixes = [
+  ["codex-fast-model-v1.", "priority"],
+  ["codex-ultra-v1.", "ultrafast"],
+  [OFFICIAL_CODEX_MODEL_REF_PREFIX, null],
+] as const;
 
 export function encodeOfficialCodexModelRef(
   nativeModelId: string,
@@ -20,9 +24,8 @@ export function encodeOfficialCodexModelRef(
     .replace(/\//gu, "_")
     .replace(/=+$/u, "");
   const prefix =
-    serviceTier === "priority"
-      ? OFFICIAL_CODEX_FAST_MODEL_REF_PREFIX
-      : OFFICIAL_CODEX_MODEL_REF_PREFIX;
+    modelRefPrefixes.find(([, tier]) => tier === serviceTier)?.[0] ??
+    OFFICIAL_CODEX_MODEL_REF_PREFIX;
   const id = `${prefix}${encoded}`;
   if (id.length > HARNESS_MODEL_REF_MAX_LENGTH) {
     throw new Error("Official Codex Model id is too long for a Model Ref");
@@ -31,10 +34,18 @@ export function encodeOfficialCodexModelRef(
 }
 
 export function decodeOfficialCodexModelRef(ref: HarnessModelRef): string {
+  return decodeOfficialCodexModelSelection(ref).model;
+}
+
+/** Ordinary selections explicitly clear the tier; omitted selections preserve native settings. */
+export function decodeOfficialCodexModelSelection(ref: HarnessModelRef): {
+  model: string;
+  serviceTier: (typeof modelRefPrefixes)[number][1];
+} {
   const parsed = harnessModelRefSchema.parse(ref);
-  const fast = parsed.id.startsWith(OFFICIAL_CODEX_FAST_MODEL_REF_PREFIX);
-  const prefix = fast ? OFFICIAL_CODEX_FAST_MODEL_REF_PREFIX : OFFICIAL_CODEX_MODEL_REF_PREFIX;
-  if (!parsed.id.startsWith(prefix)) return parsed.id;
+  const match = modelRefPrefixes.find(([prefix]) => parsed.id.startsWith(prefix));
+  if (!match) return { model: parsed.id, serviceTier: null };
+  const [prefix, serviceTier] = match;
   const encoded = parsed.id.slice(prefix.length);
   if (!encoded) throw new Error("Official Codex Model Ref is empty");
   let nativeModelId: string;
@@ -48,21 +59,10 @@ export function decodeOfficialCodexModelRef(ref: HarnessModelRef): string {
     throw new Error("Official Codex Model Ref is not canonical");
   }
   if (!nativeModelId.trim()) throw new Error("Official Codex Model Ref is malformed");
-  if (encodeOfficialCodexModelRef(nativeModelId, fast ? "priority" : null).id !== parsed.id) {
+  if (encodeOfficialCodexModelRef(nativeModelId, serviceTier).id !== parsed.id) {
     throw new Error("Official Codex Model Ref is not canonical");
   }
-  return nativeModelId;
-}
-
-/** Ordinary selections explicitly clear Fast; omitted selections preserve native settings. */
-export function decodeOfficialCodexModelSelection(ref: HarnessModelRef): {
-  model: string;
-  serviceTier: "priority" | null;
-} {
-  return {
-    model: decodeOfficialCodexModelRef(ref),
-    serviceTier: ref.id.startsWith(OFFICIAL_CODEX_FAST_MODEL_REF_PREFIX) ? "priority" : null,
-  };
+  return { model: nativeModelId, serviceTier };
 }
 
 export function canonicalizeOfficialCodexModelRef(ref: HarnessModelRef): HarnessModelRef {

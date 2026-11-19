@@ -53,6 +53,8 @@ export const zh = {
   "fast.off": "Fast 已关闭 · 点击开启",
   "fast.on": "Fast 已开启 · 点击关闭",
   "fast.description": "Codex Fast 模式：优先处理请求，可能增加额度消耗。",
+  "speed.label": "响应速度",
+  "speed.standard": "标准",
 } satisfies Record<string, string>;
 
 /** The model namespace key union. */
@@ -104,4 +106,6 @@ export const en = {
   "fast.off": "Fast is off · Click to enable",
   "fast.on": "Fast is on · Click to disable",
   "fast.description": "Codex Fast mode prioritizes requests and may increase usage.",
+  "speed.label": "Response speed",
+  "speed.standard": "Standard",
 } satisfies Record<ModelKey, string>;

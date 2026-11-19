@@ -6,7 +6,9 @@ Web 与 Codex Desktop 在同一仓库开发，浏览器通过 `packages/web-serv
 
 已有原生 Codex 会话不需要“导入”即可查看历史、续聊、停止当前 Turn、重命名和归档。浏览器只是同一运行时的客户端，不为每个原生会话启动新的 `codex app-server`，也不把原生 ID 转成外部 Harness ID。消息、任务状态和待处理交互通过共享通道重新同步；断线后不自动重发结果未知的写请求。模型、Thinking 和权限可在 Web 切换，仅在官方 `thread/settings/updated` 确认后显示已生效；权限选项来自官方档案列表。官方 Thread 支持共享队列、`/compact`、`/review`、Skill 菜单、同目录 Fork、置顶和用量，Web 不开放其历史回退。
 
-Codex 的 Fast 闪电仅在官方 `model/list` 为当前 Model 的 `serviceTiers` 声明 `priority` 时显示，不根据 Model 名、Thinking 或旧 `additionalSpeedTiers` 推断能力。普通和 Fast 复用公共 `fastModel` 引用契约，对应同一原生 Model；Host 将开启转换为 `serviceTier: "priority"`，显式关闭转换为 `serviceTier: null`。未指定 Model 选择时不覆盖官方默认或恢复配置。创建响应、恢复响应和 `thread/settings/updated` 中确认的档位决定选中状态，Desktop 的配置变化也会同步。
+Codex 的 Fast 选项仅在官方 `model/list` 为当前 Model 的 `serviceTiers` 声明 `priority` 时显示，不根据 Model 名、Thinking 或旧 `additionalSpeedTiers` 推断能力。普通和 Fast 复用公共 `fastModel` 引用契约，对应同一原生 Model；Host 将开启转换为 `serviceTier: "priority"`，显式关闭转换为 `serviceTier: null`。未指定 Model 选择时不覆盖官方默认或恢复配置。创建响应、恢复响应和 `thread/settings/updated` 中确认的档位决定选中状态，Desktop 的配置变化也会同步。
+
+当当前 Host 的官方模型目录声明 `ultrafast` 时，Web 输入框旁的闪电会显示当前响应速度，并打开包含标准、Fast（若支持）和 Ultrafast 的菜单。切换保留同一个原生模型和 Thinking，通过原生设置选择档位。模型下拉菜单与 `/model` 也提供「模型名 · Ultrafast」。使用 Ultrafast 时，从模型下拉或 `/model` 选择基础模型，或从闪电菜单选择标准，都会清除显式档位并保留 Thinking。SSH 和 Remote Control 会话使用各自远端 Host 的目录与设置确认。
 
 运行中切换通过 `thread/settings/update`，保留 Thinking，并等待成功响应及 Model、service tier 均匹配的通知后返回确认；省略 service tier 的 Thinking 或权限更新不会清除 Fast。后续 Turn 沿用官方 Thread 设置，不把 Fast 引用作为原生 Model 名发送，也不承诺改变正在运行的请求。Fast 可能增加额度消耗；目录声明仅表示能力，不保证账号可用额度、实际调度或速度。
 
@@ -82,7 +84,7 @@ codexhost stop
 
 打开远程会话时，Web 通过 Desktop 向所属 Host 读取对话用量，并在输入框下方显示该 Host 提供的缓存命中率、估算费用等数据。用量读取与历史加载独立，旧 Host 无用量接口时仍可以正常读取会话。
 
-原生 Codex 远程会话的当前模型从所属 Host 的 Thread 元数据读取，模型目录也来自该 Host。模型与 Fast 变体通过远端原生设置接口切换，收到确认后更新投影；缺少当前模型或目录时显示不可用，不使用本机默认模型替代。
+原生 Codex 远程会话的当前模型从所属 Host 的 Thread 元数据读取，模型目录也来自该 Host。模型与速度档位通过远端原生设置接口切换，收到确认后更新投影；缺少当前模型或目录时显示不可用，不使用本机默认模型替代。
 
 远程 external 会话的 Harness 名称、模型目录、当前模型、思考等级与权限来自同一远端 Host；Web 不使用本机模型目录替代。远程模型菜单的目录请求携带 Session 身份，按会话隔离缓存；本机会话仍共享本机 Host 目录。模型、思考等级与权限选择分别路由到远端 Thread 的原生配置接口，每次只确认一个设置；重连后过期的设置请求会被拒绝，未知结果的写请求不重试。可选的 Harness 发现结果按连接缓存，临时失败经退避后允许重试，不影响历史读取。模型与思考等级组合选择按顺序确认；部分完成时报告失败，不自动重发已确认的写入。
 

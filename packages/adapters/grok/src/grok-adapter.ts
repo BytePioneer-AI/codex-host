@@ -128,6 +128,7 @@ import {
   type GrokProjectedToolItem,
 } from "./grok-tool-output.js";
 import {
+  decodeGrokModelRef,
   modelStateFromInitialize,
   modelStateFromSessionResponse,
   stateForGrokModel,
@@ -822,7 +823,7 @@ class GrokHarnessSession implements HarnessSession {
     this.#configuring = true;
     try {
       const contextWindow = this.#modelState.defaultContextWindowTokensByModel.get(model.id);
-      await this.#transport.setModel(model.id, thinkingOptionId, contextWindow);
+      await this.#transport.setModel(decodeGrokModelRef(model), thinkingOptionId, contextWindow);
       if (contextWindow !== undefined) {
         this.#modelState.contextWindowTokensByModel = new Map([
           ...this.#modelState.contextWindowTokensByModel,
@@ -1864,7 +1865,9 @@ export class GrokAdapter implements HarnessAdapter {
             : {
                 kind: "create",
                 permissionModeId: requestedPermissionModeId,
-                ...(input.kind === "create" && input.model ? { modelId: input.model.id } : {}),
+                ...(input.kind === "create" && input.model
+                  ? { modelId: decodeGrokModelRef(input.model) }
+                  : {}),
               },
         );
       }
@@ -1960,7 +1963,7 @@ export class GrokAdapter implements HarnessAdapter {
           modelState.contextWindowTokensByModel.get(modelState.currentModel.id) !== contextWindow)
       ) {
         await transport.setModel(
-          modelState.currentModel.id,
+          decodeGrokModelRef(modelState.currentModel),
           modelState.currentThinkingOptionId,
           contextWindow,
         );

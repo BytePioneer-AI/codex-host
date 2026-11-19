@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -79,13 +79,29 @@ async function fixture() {
   return { home, sourceRef, file, options, openSession };
 }
 describe("native SQLite Fork", () => {
-  it.each([0, 1, 2])(
-    "retains exactly the prefix through turn-%i and supports another cwd",
-    async (index) => {
+  it.each([
+    [0, false],
+    [1, false],
+    [2, false],
+    [0, true],
+  ] as const)(
+    "retains only the prefix through turn-%i and supports another cwd (live: %s)",
+    async (index, live) => {
       const f = await fixture();
+      const halfWritten = path.join(
+        nativeBrainDirPath(f.sourceRef.nativeSessionId, f.home),
+        "partial.json",
+      );
+      if (live) {
+        const db = new DatabaseSync(f.file);
+        db.exec("PRAGMA journal_mode=WAL");
+        db.close();
+        await writeFile(halfWritten, '{"state":');
+      }
       const before = await readFile(f.file);
       const result = await forkAntigravitySession({
         ...f.options,
+        ...(live ? { sourceSession: { isActive: true, activeForkTurnIndex: () => 2 } } : {}),
         input: {
           kind: "fork",
           sourceRef: f.sourceRef,
@@ -120,10 +136,17 @@ describe("native SQLite Fork", () => {
         derived.close();
       }
       expect(await readFile(f.file)).toEqual(before);
-      expect(await readFile(path.join(nativeBrainDirPath(id, f.home), "artifact.md"), "utf8")).toBe(
-        "artifact",
-      );
-      expect(await readdir(nativeBrainDirPath(id, f.home))).toEqual(["artifact.md"]);
+      if (live) {
+        await expect(access(nativeBrainDirPath(id, f.home))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+        expect(await readFile(halfWritten, "utf8")).toBe('{"state":');
+      } else {
+        expect(
+          await readFile(path.join(nativeBrainDirPath(id, f.home), "artifact.md"), "utf8"),
+        ).toBe("artifact");
+        expect(await readdir(nativeBrainDirPath(id, f.home))).toEqual(["artifact.md"]);
+      }
     },
   );
   it.each([
@@ -173,7 +196,17 @@ describe("native SQLite Fork", () => {
     ).toMatchObject({ ok: false, error: { code: "checkpointNotFound" } });
     expect(
       await forkAntigravitySession({ ...f.options, input, sourceSession: { isActive: true } }),
-    ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    ).toMatchObject({ ok: false, error: { code: "sessionBusy", retryable: true } });
+    expect(
+      await forkAntigravitySession({
+        ...f.options,
+        input,
+        sourceSession: { isActive: true, activeForkTurnIndex: () => 2 },
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "sessionBusy", retryable: true, message: expect.stringContaining("WAL") },
+    });
     expect(f.openSession).not.toHaveBeenCalled();
   });
 });

@@ -1,16 +1,25 @@
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { harnessIdSchema } from "@codexhost/shared-contracts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cloneNativeConversationDb,
+  forkAntigravitySession,
   minimalTrajectoryMetadataBlob,
   nativeConversationDbPath,
   nativeConversationSummariesDbPath,
 } from "../src/fork.js";
 import { bytes, nanoseconds } from "./support/native-timing-fixture.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, open: vi.fn(fs.open) };
+});
+
 const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
@@ -39,10 +48,23 @@ async function fixture() {
   return { home, sourceId, derivedId, file, source };
 }
 describe("SQLite clone fidelity", () => {
-  it("includes committed WAL pages and truncates by native user-input boundary", async () => {
+  it("trims the same WAL snapshot used to find the boundary despite a concurrent commit", async () => {
     const f = await fixture();
+    const reserve = vi.mocked(fs.open);
+    const open = reserve.getMockImplementation()!;
+    // The transaction has read the boundary by the time it reserves the destination.
+    reserve.mockImplementationOnce((...args) => {
+      if (args[0] === nativeConversationDbPath(f.derivedId, f.home)) {
+        f.source.exec(
+          "BEGIN IMMEDIATE; UPDATE steps SET step_type = 17 WHERE idx = 2; UPDATE steps SET idx = 7 WHERE idx = 5; INSERT INTO steps (idx, step_type) VALUES (5, 15); COMMIT",
+        );
+      }
+      return open(...args);
+    });
     try {
-      expect(await cloneNativeConversationDb(f.sourceId, f.derivedId, 2, f.home)).toBe(true);
+      expect(
+        await cloneNativeConversationDb(f.sourceId, f.derivedId, 2, f.home, { activeTurnIndex: 2 }),
+      ).toBe(true);
       const target = new DatabaseSync(nativeConversationDbPath(f.derivedId, f.home), {
         readOnly: true,
       });
@@ -53,14 +75,22 @@ describe("SQLite clone fidelity", () => {
             .all()
             .map((row) => row.idx),
         ).toEqual([0, 1, 2, 3, 4]);
+        expect(target.prepare("SELECT step_type FROM steps WHERE idx = 2").get()?.step_type).toBe(
+          16,
+        );
         expect(target.prepare("SELECT cascade_id FROM trajectory_meta").get()?.cascade_id).toBe(
           f.derivedId,
         );
-        expect(f.source.prepare("SELECT count(*) AS n FROM steps").get()?.n).toBe(7);
+        expect(
+          f.source
+            .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1")
+            .get()?.idx,
+        ).toBe(7);
       } finally {
         target.close();
       }
     } finally {
+      reserve.mockReset();
       f.source.close();
     }
   });
@@ -125,34 +155,70 @@ describe("SQLite clone fidelity", () => {
       ]);
     },
   );
-  it.each(["writable", "locked"])(
-    "registers prefix statistics or cleans up if the summaries DB is %s",
+  it.each(["writable", "locked", "reporting an active Subagent"])(
+    "registers prefix statistics or refuses cleanly when the summaries DB is %s",
     async (access) => {
       const f = await fixture();
       f.source.close();
       const summaries = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
       try {
         summaries.exec(
-          "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, status TEXT, step_count INTEGER, last_modified_time TEXT, raw_summary BLOB, last_user_input_step_index INTEGER, last_user_input_time TEXT NOT NULL, not_fully_idle INTEGER, killed INTEGER)",
+          "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, status TEXT, step_count INTEGER, last_modified_time TEXT, raw_summary BLOB, last_user_input_step_index INTEGER, last_user_input_time TEXT NOT NULL, not_fully_idle INTEGER, killed INTEGER, parent_conversation_id TEXT)",
         );
         summaries
           .prepare(
-            "INSERT INTO conversation_summaries VALUES (?, 'CASCADE_RUN_STATUS_RUNNING', 2, 'original-time', ?, 5, '2023-11-15T00:00:00Z', 1, 1)",
+            "INSERT INTO conversation_summaries VALUES (?, 'CASCADE_RUN_STATUS_RUNNING', 2, 'original-time', ?, 5, '2023-11-15T00:00:00Z', 1, 1, NULL)",
           )
           .run(f.sourceId, Buffer.from("original-summary"));
         const getSummary = summaries.prepare(
           "SELECT * FROM conversation_summaries WHERE conversation_id = ?",
         );
         const before = getSummary.get(f.sourceId);
-        if (access === "locked") {
-          summaries.exec("BEGIN IMMEDIATE");
-          await expect(
-            cloneNativeConversationDb(f.sourceId, f.derivedId, 1, f.home),
-          ).rejects.toThrow("locked");
+        if (access !== "writable") {
+          const childId = randomUUID();
+          if (access === "locked") summaries.exec("BEGIN IMMEDIATE");
+          else
+            summaries
+              .prepare(
+                `INSERT INTO conversation_summaries (conversation_id, status, last_user_input_time, parent_conversation_id)
+            VALUES (?, 'CASCADE_RUN_STATUS_RUNNING', '', ?)`,
+              )
+              .run(childId, f.sourceId);
+          const harnessId = harnessIdSchema.parse("antigravity");
+          const sourceRef = { harnessId, nativeSessionId: f.sourceId, formatVersion: 1 };
+          const openSession = vi.fn();
           expect(
-            (await readdir(path.dirname(f.file))).some((name) => name.startsWith(f.derivedId)),
-          ).toBe(false);
-          expect(getSummary.get(f.derivedId)).toBeUndefined();
+            await forkAntigravitySession({
+              harnessId,
+              adapterEnvironment: { HOME: f.home, USERPROFILE: f.home },
+              sourceSession: { isActive: true, activeForkTurnIndex: () => 2 },
+              input: {
+                kind: "fork",
+                sourceRef,
+                checkpoint: { ...sourceRef, checkpointId: "turn-0" },
+                cwd: f.home,
+              },
+              openSession,
+            }),
+          ).toMatchObject({
+            ok: false,
+            error: {
+              code: "sessionBusy",
+              retryable: true,
+              message: expect.stringContaining(access === "locked" ? "locked" : "Subagent"),
+            },
+          });
+          expect(openSession).not.toHaveBeenCalled();
+          expect(
+            (await readdir(path.dirname(f.file))).filter((name) => name.endsWith(".db")),
+          ).toEqual([path.basename(f.file)]);
+          expect(
+            summaries
+              .prepare("SELECT conversation_id FROM conversation_summaries")
+              .all()
+              .map((row) => row.conversation_id)
+              .sort(),
+          ).toEqual((access === "locked" ? [f.sourceId] : [f.sourceId, childId]).sort());
         } else {
           await cloneNativeConversationDb(f.sourceId, f.derivedId, 1, f.home);
           expect(getSummary.get(f.derivedId)).toMatchObject({

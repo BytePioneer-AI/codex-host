@@ -36,7 +36,7 @@
 | B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | `src/antigravity-adapter.ts`、`src/model-catalog.ts` | `test/antigravity-adapter.test.ts`；实测 `session/set_config_option(thought_level)` | 支持 `low` / `medium` / `high` / `xhigh` 按模型动态裁剪 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 支持 | `src/permission-modes.ts`、`src/antigravity-adapter.ts` | `test/permission-modes.test.ts`、`test/antigravity-adapter.test.ts`；实测 `session/set_mode` | 原生 `default`、`accept-edits`、`auto`、`plan` 实时切换，并兼容 `dangerously-skip-permissions` |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 支持 | `src/antigravity-adapter.ts`、`src/acp-transport.ts` | `test/skip-permissions.test.ts` | `unattended-full-access` 启动 `agy acp --dangerously-skip-permissions` 并写入 `locator` 供恢复保持 |
-| B5 | Fork | 原生有则必做 | P1 | 支持 | `src/fork.ts` | `test/fork.test.ts` | 原生无 `session/fork` RPC；空闲态按 SQLite `step_type=14` 边界克隆裁剪后经 `session/resume` 打开 |
+| B5 | Fork | 原生有则必做 | P1 | 支持 | `src/fork.ts` | `test/fork.test.ts` | 原生无 `session/fork` RPC；按 SQLite `step_type=14` 边界克隆裁剪后经 `session/resume` 打开（源运行中仅限早于活动 Turn 的已确认回合） |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 支持 | `src/fork.ts`、`src/antigravity-adapter.ts` | `test/fork.test.ts` | 克隆会话通过 `session/resume({ cwd })` 绑定新工作目录 |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 支持 | `src/rollback.ts` | `test/rollback.test.ts` | 空闲态克隆并截断最后一轮 SQLite `step_type=14` 边界，不破坏源会话 |
 | B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 支持 | `src/acp-projection.ts`、`src/tool-projection.ts` | `test/acp-projection.test.ts`；实测 `tool_call` / `tool_call_update` | 映射命令、工具、思考块与原生 `{ type: "diff" }` 文件变更 |
@@ -65,7 +65,7 @@
 ## 受限与已知缺口
 
 - 最低 CLI 版本要求 `agy >= 1.5.8`：早期 `1.1.x–1.4.x` 无 `agy acp`，`1.5.0–1.5.7` 缺少 `usage_update` 或存在权限二次弹窗/关闭保存缺陷；低于 `1.5.8` 时 `inspect` 返回明确升级提示，连接页可直接一键更新。
-- Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；活动 Turn 期间拒绝派生操作并返回 `sessionBusy`。裁剪时 `gen_metadata`、`executor_metadata`、`parent_references`、`battle_mode_infos` 按各自 protobuf 中的原生步骤索引保留前缀（它们的行号不是步骤号），派生摘要由保留前缀重算。
+- Fork 与回滚：原生 `agy acp` 1.5.9 未实现 `session/fork` RPC（返回 `-32601 Method not found`），因此通过空闲态克隆并按原生 SQLite `steps` 表 `step_type = 14`（`user_input`）边界裁剪数据库后调用 `session/resume` 实现；回滚在活动 Turn 期间拒绝并返回 `sessionBusy`；fork 在源 Turn 运行时，仅当目标 checkpoint 是当前 Adapter 会话已确认完成、且严格早于活动 Turn 的回合、没有运行中的子代理、源库为 WAL 时放行：在同一只读快照内定位边界并克隆，不占用源会话，也不复制 `brain` 目录（`session/resume` 仅依赖 SQLite 前缀），其余情形返回可重试的 `sessionBusy`。裁剪时 `gen_metadata`、`executor_metadata`、`parent_references`、`battle_mode_infos` 按各自 protobuf 中的原生步骤索引保留前缀（它们的行号不是步骤号），派生摘要由保留前缀重算。
 - 权限模式中的 `dangerously-skip-permissions` 对应 CLI 启动参数 `--dangerously-skip-permissions`；在会话空闲态与普通 ACP 模式互切时，Adapter 在保持同一 `nativeSessionId` 的前提下重建进程并通过 `session/resume` 无缝恢复。
 - 历史由原生 SQLite 读取，包含工具调用名称、参数与配对结果文本；读取不依赖 ACP 进程，耗时为毫秒级，由 Host 分页。连续的用户输入沿用既有分组规则合并为一轮，以保持已存 Turn 身份稳定。
 

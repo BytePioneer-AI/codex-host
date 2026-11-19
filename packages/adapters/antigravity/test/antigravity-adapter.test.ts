@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
@@ -140,12 +141,16 @@ class FakeTransport implements AntigravityAcpTransportLike {
 }
 const adapters: AntigravityAdapter[] = [];
 const directories: string[] = [];
-function fixture(options: ConstructorParameters<typeof AntigravityAdapter>[0] = {}) {
+function fixture(
+  options: ConstructorParameters<typeof AntigravityAdapter>[0] = {},
+  configureTransport?: (transport: FakeTransport, index: number) => void,
+) {
   const transports: FakeTransport[] = [];
   const adapter = new AntigravityAdapter({
     ...options,
     createTransport: (input) => {
       const transport = new FakeTransport(input);
+      configureTransport?.(transport, transports.length);
       transports.push(transport);
       return transport;
     },
@@ -526,6 +531,110 @@ describe("Antigravity ACP Session", () => {
     });
     await forked;
     await start(session, transports);
+  });
+  it("forks a committed prefix without holding up the running or next source Turn", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-live-fork-"));
+    directories.push(home);
+    const resume = deferred<void>();
+    const { adapter, transports } = fixture(
+      { environment: { HOME: home, USERPROFILE: home } },
+      (transport, index) => {
+        if (index === 1) {
+          const open = transport.openSession.getMockImplementation()!;
+          transport.openSession.mockImplementation(async (input) => {
+            await resume.promise;
+            return open(input);
+          });
+        }
+      },
+    );
+    const nativeRef = ref();
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    db.exec(`PRAGMA journal_mode = WAL;
+      CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+      CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);`);
+    db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
+      randomUUID(),
+      nativeRef.nativeSessionId,
+    );
+    try {
+      const source = await sessionOf(await adapter.open({ kind: "resume", cwd: home, nativeRef }));
+      const transport = await start(source.session, transports);
+      userStep(db, 0, "early input");
+      answerStep(db, 1, "early answer");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(source.outputs);
+      const terminal = events(source.outputs).find((event) => event.type === "turn.completed");
+      assert(terminal?.outcome.checkpoint);
+      const request = {
+        kind: "fork" as const,
+        cwd: home,
+        sourceRef: nativeRef,
+        checkpoint: terminal.outcome.checkpoint,
+      };
+      transport.result = deferred();
+      await start(source.session, transports, "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const busy = { ok: false, error: { code: "sessionBusy", retryable: true } };
+      expect(await adapter.open(request)).toMatchObject({
+        ...busy,
+        error: { ...busy.error, message: expect.stringContaining("no committed user input") },
+      });
+      userStep(db, 2, "source-only input");
+      expect(
+        await adapter.open({
+          ...request,
+          checkpoint: { ...request.checkpoint, checkpointId: "turn-1" },
+        }),
+      ).toMatchObject(busy);
+      expect(
+        await adapter.open({ kind: "rollbackLastTurn", cwd: home, sourceRef: nativeRef }),
+      ).toMatchObject(busy);
+
+      const forked = adapter.open(request);
+      await vi.waitFor(() => expect(transports).toHaveLength(2));
+      expect(transport.cancel).not.toHaveBeenCalled();
+      answerStep(db, 3, "source-only answer");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(source.outputs, "t2");
+      transport.result = deferred();
+      await start(source.session, [transport], "t3");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(3));
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(source.outputs, "t3");
+      resume.resolve();
+
+      const branch = await sessionOf(await forked);
+      const derivedId = required(branch.session.initialState.nativeRef).nativeSessionId;
+      expect(derivedId).not.toBe(nativeRef.nativeSessionId);
+      const inputs = async (session: HarnessSession) => {
+        const snapshot = await session.readSnapshot();
+        assert(snapshot.ok);
+        return snapshot.value.turns.map((turn) => turn.input);
+      };
+      expect(await inputs(branch.session)).toEqual([[{ type: "text", text: "early input" }]]);
+      const branchTransport = await start(branch.session, transports, "branch");
+      const derivedDb = new DatabaseSync(nativeFork.nativeConversationDbPath(derivedId, home));
+      try {
+        userStep(derivedDb, 2, "branch-only input");
+        answerStep(derivedDb, 3, "branch-only answer");
+      } finally {
+        derivedDb.close();
+      }
+      branchTransport.result.resolve({ stopReason: "end_turn" });
+      await completed(branch.outputs, "branch");
+      expect(await inputs(branch.session)).toEqual([
+        [{ type: "text", text: "early input" }],
+        [{ type: "text", text: "branch-only input" }],
+      ]);
+      expect(await inputs(source.session)).toEqual([
+        [{ type: "text", text: "early input" }],
+        [{ type: "text", text: "source-only input" }],
+      ]);
+    } finally {
+      resume.resolve();
+      db.close();
+    }
   });
   it("publishes native request timing once and completes metering with output that includes reasoning", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-native-metering-"));

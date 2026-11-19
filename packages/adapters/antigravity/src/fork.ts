@@ -22,7 +22,7 @@ import {
   minimalTrajectoryMetadataBlob,
   rewriteTrajectoryMetadataCascadeId,
 } from "./native-trajectory-metadata.js";
-import { nativeHistoryError, readNativeTurnCount } from "./native-turn-boundaries.js";
+import { nativeHistoryError } from "./native-turn-boundaries.js";
 import { antigravityHome } from "./usage-statistics.js";
 
 export {
@@ -51,12 +51,16 @@ export function validNativeSessionRef(ref: NativeSessionRef, harnessId: HarnessI
   );
 }
 
+class ForkBoundaryError extends Error {}
+class ActiveForkUnavailable extends Error {}
+
 /** SQLite backup includes committed WAL pages; byte-copying the main file does not. */
 export async function cloneNativeConversationDb(
   sourceId: string,
   derivedId: string,
   retainedTurnsCountOrHome?: number | string,
   homeOption = os.homedir(),
+  fork?: { activeTurnIndex?: number },
 ): Promise<boolean> {
   if (![sourceId, derivedId].every((id) => /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(id)))
     throw new Error("Invalid native conversation ID");
@@ -67,23 +71,49 @@ export async function cloneNativeConversationDb(
   const targetPath = nativeConversationDbPath(derivedId, home);
   await access(sourcePath);
   const { DatabaseSync, backup } = await import("node:sqlite");
-  const source = new DatabaseSync(sourcePath, { readOnly: true });
   let owned = false;
+  let cutoff: number | undefined;
+  const activeTurnIndex = fork?.activeTurnIndex;
   try {
-    source.exec("BEGIN");
-    const count = Number(
-      source.prepare("SELECT count(*) AS n FROM steps WHERE step_type = 14").get()?.n ?? 0,
-    );
-    if (
-      retained !== undefined &&
-      (!Number.isSafeInteger(retained) || retained < 0 || retained > count)
-    )
-      throw new Error("Invalid retained native Turn count");
-    await mkdir(path.dirname(targetPath), { recursive: true });
-    const reservation = await open(targetPath, "wx");
-    owned = true;
-    await reservation.close();
-    await backup(source, targetPath);
+    const source = new DatabaseSync(sourcePath, { readOnly: true });
+    try {
+      source.exec("BEGIN");
+      // WAL readers do not hold up commits by the active agy process.
+      if (
+        activeTurnIndex !== undefined &&
+        source.prepare("PRAGMA journal_mode").get()?.journal_mode !== "wal"
+      )
+        throw new ActiveForkUnavailable(
+          "Running Antigravity Session has no WAL snapshot; retry when idle",
+        );
+      const count = Number(
+        source.prepare("SELECT count(*) AS n FROM steps WHERE step_type = 14").get()?.n ?? 0,
+      );
+      if (activeTurnIndex !== undefined && count <= activeTurnIndex)
+        throw new ActiveForkUnavailable(
+          "The running Antigravity Turn has no committed user input yet; retry shortly",
+        );
+      if (
+        retained !== undefined &&
+        (!Number.isSafeInteger(retained) || retained < 0 || retained > count)
+      ) {
+        if (fork) throw new ForkBoundaryError();
+        throw new Error("Invalid retained native Turn count");
+      }
+      if (retained !== undefined && retained < count) {
+        const boundary = source
+          .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx LIMIT 1 OFFSET ?")
+          .get(retained);
+        cutoff = retained === 0 ? 0 : Number(boundary?.idx);
+      }
+      await mkdir(path.dirname(targetPath), { recursive: true });
+      const reservation = await open(targetPath, "wx");
+      owned = true;
+      await reservation.close();
+      await backup(source, targetPath);
+    } finally {
+      source.close();
+    }
     const target = new DatabaseSync(targetPath);
     try {
       target.exec("BEGIN IMMEDIATE");
@@ -99,12 +129,9 @@ export async function cloneNativeConversationDb(
       target
         .prepare("INSERT OR REPLACE INTO trajectory_metadata_blob (id, data) VALUES ('main', ?)")
         .run(blob);
-      if (retained !== undefined && retained < count) {
-        const boundary = target
-          .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx LIMIT 1 OFFSET ?")
-          .get(retained);
-        const cutoff = retained === 0 ? 0 : Number(boundary?.idx);
-        target.prepare("DELETE FROM steps WHERE idx >= ?").run(cutoff);
+      if (cutoff !== undefined) {
+        const cutoffIndex = cutoff;
+        target.prepare("DELETE FROM steps WHERE idx >= ?").run(cutoffIndex);
         // agy stores these as separate repeated fields, with ordinal keys rather than step keys.
         // The Branch implementation uses the protobuf's own step indices to bound each list.
         for (const [table, stepFields] of Object.entries<number[]>({
@@ -130,7 +157,7 @@ export async function cloneNativeConversationDb(
               const fields = data instanceof Uint8Array && readProtoFields(data);
               const indices = fields && generatorStepIndices(fields);
               if (!indices) throw new Error("Invalid native generator metadata");
-              if (indices.some((step) => step >= cutoff)) break;
+              if (indices.some((step) => step >= cutoffIndex)) break;
               // Invocations without steps belong to the prefix only before a retained invocation.
               if (indices.length > 0) last = Number(idx);
             }
@@ -147,7 +174,7 @@ export async function cloneNativeConversationDb(
               (field) =>
                 stepFields.includes(field.number) &&
                 typeof field.value === "bigint" &&
-                BigInt.asIntN(32, field.value) >= BigInt(cutoff),
+                BigInt.asIntN(32, field.value) >= BigInt(cutoffIndex),
             );
             if (outsidePrefix) remove.run(Number(idx));
             else {
@@ -161,13 +188,11 @@ export async function cloneNativeConversationDb(
     } finally {
       target.close();
     }
-    await registerDerivedSummary(sourceId, derivedId, home);
+    await registerDerivedSummary(sourceId, derivedId, home, activeTurnIndex !== undefined);
     return true;
   } catch (error) {
     if (owned) await removeDerivedDb(derivedId, home);
     throw error;
-  } finally {
-    source.close();
   }
 }
 
@@ -175,6 +200,7 @@ async function registerDerivedSummary(
   sourceId: string,
   derivedId: string,
   home: string,
+  liveFork: boolean,
 ): Promise<void> {
   const summaryPath = nativeConversationSummariesDbPath(home);
   try {
@@ -190,6 +216,17 @@ async function registerDerivedSummary(
       .prepare("SELECT * FROM conversation_summaries WHERE conversation_id = ?")
       .get(sourceId);
     if (!template) return;
+    if (
+      liveFork &&
+      "parent_conversation_id" in template &&
+      summaries
+        .prepare(
+          `SELECT 1 FROM conversation_summaries
+        WHERE parent_conversation_id = ? AND status IS NOT 'CASCADE_RUN_STATUS_IDLE' LIMIT 1`,
+        )
+        .get(sourceId)
+    )
+      throw new ActiveForkUnavailable("A native Subagent is not idle; retry after it settles");
     const derived = new DatabaseSync(nativeConversationDbPath(derivedId, home), { readOnly: true });
     let row;
     try {
@@ -289,6 +326,9 @@ export interface NativeDerivationOptions {
 }
 export interface ForkAntigravitySessionOptions extends NativeDerivationOptions {
   input: ForkSessionInput;
+  sourceSession?: NativeDerivationOptions["sourceSession"] & {
+    activeForkTurnIndex?(checkpointId: string, home: string): number | undefined;
+  };
 }
 
 /** Only this invocation's freshly generated derived identity is disposable. */
@@ -297,15 +337,18 @@ export async function openDerivedAntigravitySession(
   input: ResumeSessionInput,
   sourceRef: NativeSessionRef,
   retained: number,
+  fork?: { activeTurnIndex?: number },
 ): Promise<HarnessResult<HarnessSession>> {
   const environment = { ...options.adapterEnvironment, ...input.environment };
   const home = antigravityHome(environment);
   const derivedId = randomUUID();
   let cloned = false;
   try {
-    await cloneNativeConversationDb(sourceRef.nativeSessionId, derivedId, retained, home);
+    await cloneNativeConversationDb(sourceRef.nativeSessionId, derivedId, retained, home, fork);
     cloned = true;
-    await copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedId, home);
+    // Brain files have neither a snapshot nor a Turn boundary. Resume can load the SQLite prefix alone.
+    if (fork?.activeTurnIndex === undefined)
+      await copyNativeBrainDirIfExists(sourceRef.nativeSessionId, derivedId, home);
     const result = await options.openSession({
       ...input,
       environment,
@@ -320,6 +363,8 @@ export async function openDerivedAntigravitySession(
       ? { ok: false, error: { ...result.error, diagnostic: cleanupFailure } }
       : result;
   } catch (error) {
+    if (error instanceof ForkBoundaryError) return checkpointError();
+    if (error instanceof ActiveForkUnavailable) return activeForkError(error.message);
     const cleanupFailure = await cleanup().then(
       () => undefined,
       () => "Derived native history cleanup failed",
@@ -362,40 +407,37 @@ export async function forkAntigravitySession(
     checkpoint.data.nativeSessionId !== input.sourceRef.nativeSessionId
   )
     return checkpointError();
-  if (options.sourceSession?.isActive)
-    return {
-      ok: false,
-      error: {
-        code: "sessionBusy",
-        message: "Source Session is busy",
-        retryable: true,
-      },
-    };
-  const match = /^turn-(0|[1-9]\d*)$/u.exec(checkpoint.data.checkpointId);
+  const checkpointId = checkpoint.data.checkpointId;
+  const match = /^turn-(0|[1-9]\d*)$/u.exec(checkpointId);
   if (!match) return checkpointError();
-  try {
-    const count = await readNativeTurnCount(
-      nativeConversationDbPath(
-        input.sourceRef.nativeSessionId,
-        antigravityHome({ ...options.adapterEnvironment, ...input.environment }),
-      ),
+  const index = Number(match[1]);
+  if (!Number.isSafeInteger(index + 1)) return checkpointError();
+  let activeTurnIndex: number | undefined;
+  if (options.sourceSession?.isActive) {
+    activeTurnIndex = options.sourceSession.activeForkTurnIndex?.(
+      checkpointId,
+      antigravityHome({ ...options.adapterEnvironment, ...input.environment }),
     );
-    const index = Number(match[1]);
-    if (!Number.isSafeInteger(index) || index >= count) return checkpointError();
-    return openDerivedAntigravitySession(
-      options,
-      {
-        kind: "resume",
-        nativeRef: input.sourceRef,
-        cwd: input.cwd,
-        ...(input.environment ? { environment: input.environment } : {}),
-      },
-      input.sourceRef,
-      index + 1,
-    );
-  } catch (error) {
-    return { ok: false, error: nativeHistoryError(error) };
+    if (activeTurnIndex === undefined || index >= activeTurnIndex)
+      return activeForkError(
+        "Fork requires a confirmed completed Turn before the running Antigravity Turn and no active Subagents; retry when idle",
+      );
   }
+  return openDerivedAntigravitySession(
+    options,
+    {
+      kind: "resume",
+      nativeRef: input.sourceRef,
+      cwd: input.cwd,
+      ...(input.environment ? { environment: input.environment } : {}),
+    },
+    input.sourceRef,
+    index + 1,
+    activeTurnIndex === undefined ? {} : { activeTurnIndex },
+  );
+}
+function activeForkError(message: string): HarnessResult<never> {
+  return { ok: false, error: { code: "sessionBusy", message, retryable: true } };
 }
 function checkpointError(): HarnessResult<never> {
   return {

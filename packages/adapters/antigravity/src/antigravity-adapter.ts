@@ -311,6 +311,7 @@ export class AntigravitySession implements HarnessSession {
   #catalog: HarnessModelCatalog | undefined;
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   #turnCount = 0;
+  readonly #confirmedCheckpoints = new Set<string>();
   #active: ActiveTurn | undefined;
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
@@ -353,6 +354,20 @@ export class AntigravitySession implements HarnessSession {
   }
   hasBackgroundWork(): boolean {
     return this.#subagents.running;
+  }
+  activeForkTurnIndex(checkpointId: string, home: string): number | undefined {
+    if (
+      this.#active?.promptSubmitted &&
+      !this.#opening &&
+      !this.#configuring &&
+      !this.#subagents.running &&
+      !this.#historyOperation &&
+      !this.#closed &&
+      !this.#faulted &&
+      home === antigravityHome(this.#options.environment) &&
+      this.#confirmedCheckpoints.has(checkpointId)
+    )
+      return this.#turnCount;
   }
   reserveHistoryOperation(): (() => void) | null {
     if (this.isActive || this.#historyOperation || this.#closed || this.#faulted) return null;
@@ -900,6 +915,7 @@ export class AntigravitySession implements HarnessSession {
   async #runTurn(turn: ActiveTurn, command: TurnStartCommand): Promise<void> {
     let outcome: TurnOutcome;
     let nativeTurnRef: NativeTurnRef | undefined;
+    let confirmedCheckpoint: string | undefined;
     try {
       await this.initialize();
       await this.#usageWork;
@@ -979,6 +995,7 @@ export class AntigravitySession implements HarnessSession {
         count = await readNativeTurnCount(
           nativeConversationDbPath(ref.nativeSessionId, antigravityHome(this.#options.environment)),
         );
+        if (count === before + 1) confirmedCheckpoint = `turn-${count - 1}`;
       } catch {
         count = outcome.status === "succeeded" ? before + 1 : before;
       }
@@ -1039,7 +1056,11 @@ export class AntigravitySession implements HarnessSession {
     } finally {
       this.#usage?.endTurn();
     }
-    if (this.#isCurrent(turn)) this.#finish(turn, outcome, nativeTurnRef);
+    if (this.#isCurrent(turn)) {
+      if (confirmedCheckpoint && outcome.checkpoint)
+        this.#confirmedCheckpoints.add(confirmedCheckpoint);
+      this.#finish(turn, outcome, nativeTurnRef);
+    }
   }
   #isCurrent(turn: ActiveTurn): boolean {
     return this.#active === turn && !turn.ended;
@@ -1387,8 +1408,11 @@ export class AntigravityAdapter implements HarnessAdapter {
       const source = [...this.#sessions].find(
         (session) => session.nativeRef?.nativeSessionId === input.sourceRef.nativeSessionId,
       );
-      const release = source?.reserveHistoryOperation();
-      if (source && !release) return err("sessionBusy", "Source Session is busy", true);
+      // A live fork reads only a WAL snapshot. It never reserves the writer's Session.
+      const liveSource = input.kind === "fork" && source?.isActive ? source : undefined;
+      const release = liveSource ? undefined : source?.reserveHistoryOperation();
+      if (source && !liveSource && !release)
+        return err("sessionBusy", "Source Session is busy; retry when idle", true);
       const common = {
         harnessId,
         adapterEnvironment: this.#environment,
@@ -1411,7 +1435,11 @@ export class AntigravityAdapter implements HarnessAdapter {
       };
       try {
         return await (input.kind === "fork"
-          ? forkAntigravitySession({ ...common, input })
+          ? forkAntigravitySession({
+              ...common,
+              input,
+              ...(liveSource ? { sourceSession: liveSource } : {}),
+            })
           : rollbackAntigravityLastTurn({ ...common, input }));
       } finally {
         release?.();

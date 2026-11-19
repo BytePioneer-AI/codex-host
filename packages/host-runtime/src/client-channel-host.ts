@@ -3,6 +3,8 @@ import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/
 import { jsonRpcRequestSchema, type JsonObject, type JsonValue } from "@codexhost/protocol-core";
 import {
   CLIENT_CHANNEL_METHODS,
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  threadArchiveConfirmParamsSchema,
   clientThreadSnapshotSchema,
   threadTitleInputSchema,
   clientProjectlessWorkspaceSchema,
@@ -78,7 +80,7 @@ export interface PendingClientInteraction {
 /** Pending interactions keyed by Host request ID, answered through the Desktop response path. */
 export interface ClientInteractionSource {
   readonly approvals: ReadonlyMap<number, PendingClientInteraction>;
-  readonly questions: ReadonlyMap<number, PendingClientInteraction>;
+  questions(): ReadonlyMap<number, PendingClientInteraction>;
   isApprovalRequestId(value: unknown): value is number;
   isQuestionRequestId(value: unknown): value is number;
   respondApproval(response: JsonValue): Promise<boolean>;
@@ -161,6 +163,24 @@ export class ClientChannelHost {
     this.#native?.resetGeneration();
   }
 
+  nativeQuestions(threadId: string) {
+    return (this.#native?.interactions(threadId) ?? []).flatMap((pending) => {
+      const params = pending.request.params;
+      return pending.kind === "question" &&
+        pending.request.method === "item/tool/requestUserInput" &&
+        typeof pending.requestId === "string" &&
+        isRecord(params) &&
+        typeof params.turnId === "string"
+        ? [{ requestId: pending.requestId, turnId: params.turnId, request: params as JsonObject }]
+        : [];
+    });
+  }
+
+  nativeChannel(): NativeClientChannel {
+    if (!this.#native) throw new Error("Native client channel is unavailable");
+    return this.#native;
+  }
+
   /** Route only to the confirmed external owner or this service's shared native client. */
   async handleClientRequest(method: string, input: unknown): Promise<ConsoleHostReply> {
     if (!(CLIENT_CHANNEL_METHODS as readonly string[]).includes(method))
@@ -169,6 +189,12 @@ export class ClientChannelHost {
     if (!parsed.success || !isRecord(parsed.data.params))
       return { error: { code: -32602, message: "Invalid client parameters" } };
     const params = parsed.data.params as JsonObject;
+    if (method === THREAD_ARCHIVE_CONFIRM_METHOD) {
+      const confirm = threadArchiveConfirmParamsSchema.safeParse(params);
+      if (!confirm.success)
+        return { error: { code: -32602, message: "Invalid archive confirmation params" } };
+      return this.#host.submit(method, confirm.data, undefined);
+    }
     if (method === "codexhost/thread/title/generate") {
       const title = threadTitleInputSchema.safeParse(params);
       if (!title.success)
@@ -436,7 +462,7 @@ export class ClientChannelHost {
           interaction: pending.interaction,
           request: pending.projection.request,
         })),
-      ...[...this.#host.interactions.questions]
+      ...[...this.#host.interactions.questions()]
         .filter(([, pending]) => pending.thread === thread)
         .map(([requestId, pending]) => ({
           requestId,
@@ -500,7 +526,7 @@ export class ClientChannelHost {
       ? interactions.approvals.get(id)
       : undefined;
     const question = interactions.isQuestionRequestId(id)
-      ? interactions.questions.get(id)
+      ? interactions.questions().get(id)
       : undefined;
     const pending = approval ?? question;
     if (!pending) {

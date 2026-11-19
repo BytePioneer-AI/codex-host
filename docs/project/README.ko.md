@@ -68,6 +68,14 @@ codexhost stop     # CodexHost의 모든 백그라운드 서비스 중지
 
 [Releases](https://github.com/BytePioneer-AI/codex-host/releases)에서 플랫폼에 맞는 설치 프로그램을 다운로드하세요. Web: 설치 후 codexhost를 열고 로컬에서 http://127.0.0.1:4400 에 접속합니다.
 
+**방법 3: WinGet** (Windows x64 / ARM64)
+
+설치와 업그레이드에 같은 명령을 사용합니다:
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
 > Linux는 x64 / ARM64를 지원합니다. 자세한 내용은 [Linux 안내](../platforms/linux/linux.md)를 참고하세요.
 
 **업그레이드와 중지**: `codexhost update`로 업그레이드하고, `codexhost stop`으로 모든 백그라운드 서비스를 중지합니다. npm으로 덮어써 설치하기 전에는 먼저 `codexhost stop`을 실행하세요.

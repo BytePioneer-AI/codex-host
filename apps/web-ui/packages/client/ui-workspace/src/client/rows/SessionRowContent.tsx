@@ -6,7 +6,6 @@ export function SessionRowContent({
   identity,
   ambient,
   title,
-  onTitleDoubleClick,
   onIdentityClick,
   identityLabel,
   identityControls,
@@ -16,7 +15,6 @@ export function SessionRowContent({
   identity: ReactNode;
   ambient?: ReactNode;
   title: string;
-  onTitleDoubleClick?: MouseEventHandler<HTMLSpanElement>;
   /** Set on rows that fold: the icon then toggles instead of opening the session. */
   onIdentityClick?: MouseEventHandler<HTMLElement>;
   identityLabel?: string | undefined;
@@ -49,7 +47,7 @@ export function SessionRowContent({
       ) : (
         <span className={css.slot}>{content}</span>
       )}
-      <span data-session-title className={css.title} onDoubleClick={onTitleDoubleClick}>
+      <span data-session-title className={css.title}>
         {title}
       </span>
       {children}

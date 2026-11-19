@@ -208,11 +208,15 @@ RPC 的 `action: "install"` 调用可选 `HarnessAdapter.install()`，不会把 
 
 恢复时，Host 将旧映射解码为 Model、Thinking、Permission Mode 提示并传给 `open({ kind: "resume" })`。Adapter 决定恢复提示还是保留权威原生配置；Host 不再按 Harness ID 补发配置命令。OMP、DSH 在各自 Adapter 内恢复权限；OpenCode 保留原生确认的权限状态。成功读到原生配置后，Host 用共享载体保存确认值，旧映射仍可读取。
 
+Antigravity 普通恢复只保留持久身份，查看历史通过独立原生 `session/load` 连接完成，不预先启动可写 `session/resume`。首次发送或修改配置时再恢复可写连接，并应用保存的配置提示；只读连接的配置不作为可写 Session 的确认状态返回，避免覆盖这些提示。只读进程按命令、权限与账号环境边界在 Adapter 内串行复用：每次重放后等待原生 `session/close` 确认即释放给后续读取，异常进程立即退役重建，Adapter 关闭时统一回收，不与可写连接混用，也不建立本地历史镜像。活动 Turn 的历史读取仍与写连接隔离，历史用量回放保持可用。Fork/回滚派生的 Session 在交付前确认目标目录与配置的可写恢复。
+
 Mapping Store 允许 Thread 主记录及独立元数据文件出现未知的顶层字段：当前版本不使用它们，更新文件时原样保留，不因新增字段隔离会话。已知字段的类型、必填要求及身份和映射约束仍照常校验；已知元数据字段的清除不影响同文件中的未知字段。
 
 主记录和备份均无法恢复时，Mapping Store 先将独立元数据原样复制到 `quarantine/<id>.json.<时间戳>.invalid.metadata`，再将主记录移到同名的 `.invalid` 文件，不覆盖已有隔离文件。任一步失败只跳过该 Thread，保留源记录及元数据供后续启动重试，并将其元数据排除在孤儿清理之外；健康 Thread 仍可访问。成功隔离后才尽力清理源元数据，清理失败会在后续启动重试。隔离文件用于人工恢复，不会自动重新导入；Harness 原生会话不受此流程删除。
 
 Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。Windows 发生锁冲突时，通过本机 CIM `Win32_Process` 查询进程路径和创建时间；创建时间显式转换为 UTC ISO 字符串，查询最多等待 5 秒。即使系统进程路径不可读，只要创建时间与锁中记录相差超过既有的 5 秒容差，也能识别 PID 复用并回收旧锁，不结束占用该 PID 的进程。查询失败、超时或身份信息不足时仍保留锁并报 `STORE_LOCKED`；旧锁缺少进程创建时间时，不以锁文件的创建时间代替进程身份。
+
+锁记录先写入同目录临时文件并关闭，再通过硬链接原子发布到 `store.lock`，避免其他实例把尚未写完的记录当成失效锁。回收失效锁时，竞争者创建硬链接快照，只在内容与已检查记录一致、链接数为 2、当前路径仍指向同一 inode 时删除旧锁，并保留快照直到删除完成；并发竞争失败报 `STORE_LOCKED`。发布文件和快照带有进程身份，后续竞争者可清除已退出进程的残留链接。存储目录所在文件系统必须支持硬链接；不支持时获取锁失败。
 
 ## 加载与关闭行为
 
@@ -236,7 +240,7 @@ Mapping Store 使用 `store.lock` 限制同一目录只有一个写入实例。W
 
 本机与远程均保留 Desktop 原生的草稿预热；它只提前创建 Session，不发送用户消息。Desktop Control 只给外部、非 ephemeral 的预热 `thread/start` 加上 `codexhostPrewarm: true`，正式创建与官方 Codex 请求不加此标记。配置变更、策略清理或退役时，已返回的外部预热与之后迟到的结果通过 `codexhost/thread/prewarm/discard { threadId }` 请求释放，不能只在前端丢弃结果。
 
-未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。普通非预热 Thread 的创建行为不变。
+未提交的外部预热不进入侧栏：即使 Harness 已返回 Native Session 身份，Host 也只在当前 Session 状态中保留它，映射仍为 `creating`，不发出 `thread/started`，普通与分区会话列表均不展示。首次提交消息或执行原生命令时，Host 先提交已知身份再执行；身份仍未就绪时由后续原生状态事件提交并发布。真实原生自主 Turn 也会将预热转为正式 Thread。单纯读取、恢复或配置选择不发布草稿；清理不会留下已公布的空会话入口，重启时沿用 Mapping Store 对无原生身份的 provisional 记录的清理规则。首轮已提交但原生身份尚未就绪的当前运行时 Thread 会进入目录与会话列表，包括初始化失败后保留的首轮；身份就绪不改变 Host Thread ID，归档仍按正常列表过滤处理。普通非预热 Thread 的创建行为不变。
 
 Host 在现有每 Thread 请求队列内裁决接管与释放：Turn、原生命令、配置选择、恢复等操作接管后，迟到清理返回 `discarded: false`，不关闭 Session；普通空 Thread 也不能被此接口删除。未接管且没有活动工作或历史的预热先关闭 Session、等待输出结束，再移除 Host 映射；重复清理无副作用，关闭报告失败时保留映射并阻止继续使用这个未确认关闭的预热。该标记只是当前 Host 的内存所有权，不把预分配身份持久化为原生历史。
 
@@ -302,7 +306,7 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 支持配置选择的 Adapter 不因已有活动 Turn 而拒绝 `model.select` / `thinking.select`；通过原生配置接口执行，或更新供下一次原生调用使用的配置。生效时机由 Harness 决定，Host 不承诺当前 Turn 中途换模型，也不统一排队到 Turn 结束。原生拒绝仍作为失败返回，配置成功后发布已确认的 `session.state.changed`。
 
-仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 按启动该 CLI 进程时的 Model 计算当前 Turn 用量，后续配置选择不会重标已运行请求。
+仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 通过 ACP `session/set_config_option` 切换模型与推理档位，并按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 逐请求计费，后续配置选择不会重标已完成请求。
 
 ## 运行中调整方向
 

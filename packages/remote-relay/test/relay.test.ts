@@ -26,11 +26,13 @@ beforeEach(async () => {
     controlHost: "relay.test",
     cert: `${certDirectory}/cert.pem`,
     key: keyPath,
+    ipConnectionLimit: 100,
   });
   relay.server.listen(4480, "127.0.0.1");
   await once(relay.server, "listening");
 });
 afterEach(async () => {
+  vi.useRealTimers();
   await relay.close();
   rmSync(certDirectory, { recursive: true });
 });
@@ -262,9 +264,13 @@ describe("control registration", () => {
   });
 
   it("closes an unregistered computer after ten seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const agent = await fakeAgent({ silent: true });
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(agent.ws.readyState).toBe(WebSocket.OPEN);
+    await vi.advanceTimersByTimeAsync(1);
     expect(await agent.closed).toBe(4408);
-  }, 12_000);
+  });
 
   it("returns HTTP 404 without upgrading an unknown version", async () => {
     // ws forwards SNI to tls.connect, but ClientOptions omits servername.

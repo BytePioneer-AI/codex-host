@@ -99,7 +99,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
 
   async inspect(): Promise<InitializeResponse> {
-    return initialize;
+    return this.initializeResponse;
   }
 
   async open(input: GrokOpenInput): Promise<GrokOpenResult> {
@@ -602,6 +602,53 @@ describe("Grok Adapter ACP projection", () => {
 
     await adapter.close();
   });
+
+  it.each(["expiry", "explicit refresh", "different cwd"])(
+    "reloads the native Model catalog after %s",
+    async (reason) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(0);
+      const transport = new FakeGrokTransport();
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "grok-id",
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      try {
+        const initial = await adapter.inspect({ cwd: "/synthetic" });
+        transport.initializeResponse = {
+          ...initialize,
+          _meta: {
+            modelState: {
+              currentModelId: "grok-4.7-build-fast",
+              availableModels: [{ modelId: "grok-4.7-build-fast", name: "Grok 4.7 Fast" }],
+            },
+          },
+        };
+        vi.setSystemTime(29_999);
+        expect(await adapter.inspect({ cwd: "/synthetic" })).toEqual(initial);
+        if (reason === "expiry") vi.setSystemTime(30_000);
+        await expect(
+          adapter.inspect({
+            cwd: reason === "different cwd" ? "/other" : "/synthetic",
+            ...(reason === "explicit refresh" ? { refresh: true } : {}),
+          }),
+        ).resolves.toMatchObject({
+          status: "ready",
+          catalog: {
+            models: [{ ref: { id: "grok-4.7-build-fast" } }],
+            defaultModel: { id: "grok-4.7-build-fast" },
+          },
+        });
+      } finally {
+        await adapter.close();
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("uses always-approve for unattended full-access sessions", async () => {
     const transport = new FakeGrokTransport();
@@ -1531,7 +1578,7 @@ describe("Grok Adapter ACP projection", () => {
     }
   });
 
-  it("publishes received-text TPS when native reasoning is not streamed", async () => {
+  it("preserves usage and publishes text-window TPS when native reasoning is not streamed", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);
@@ -1566,6 +1613,9 @@ describe("Grok Adapter ACP projection", () => {
           inputTokens: 26222,
           outputTokens: 104,
           reasoningTokens: 54,
+          cachedReadTokens: 0,
+          cacheCreationTokens: 0,
+          costUsdTicks: 100000000,
           modelCalls: 1,
         },
       );
@@ -1575,10 +1625,15 @@ describe("Grok Adapter ACP projection", () => {
         events.push(event);
         if (event.type === "turn.completed") break;
       }
-      expect(events.findLast((e) => e.type === "session.usage.changed")?.usage).toMatchObject({
+      const snapshots = events.filter((event) => event.type === "session.usage.changed");
+      expect(snapshots.length).toBeGreaterThan(0);
+      expect(snapshots.at(-1)?.usage).toMatchObject({
+        inputTokens: 26222,
         outputTokens: 104,
         reasoningOutputTokens: 54,
-        outputTokensPerSecond: 52,
+        outputTokensPerSecond: 25,
+        totalCostUsd: 0.01,
+        sessionCacheUsage: { inputTokens: 26222, cachedInputTokens: 0 },
       });
     } finally {
       await adapter.close();

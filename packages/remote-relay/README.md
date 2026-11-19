@@ -25,6 +25,9 @@ node packages/remote-relay/dist/cli.js --domain example.com
 | `--rate` | 每地址名、每方向的字节/秒，正整数；令牌桶容量为一秒的量 | 不限制 |
 | `--daily-quota` | 每地址名的 UTC 日双向总字节额度，正整数，含 TLS 开销 | 不限制 |
 | `--max-connections` | 监听端口的 TCP 连接总数上限，正整数；包含电脑、手机和尚未完成 ClientHello 的连接 | 不限制 |
+| `--ip-connection-limit` | 每个来源 IP 在滑动窗口内允许的新 TCP 连接数，正整数 | `50` |
+| `--ip-connection-window` | 按来源 IP 统计新连接的滑动窗口，正整数，毫秒 | `10000`（10 秒） |
+| `--ip-ban-duration` | 来源 IP 超限后拒绝新连接的冷却时间，正整数，毫秒 | `10000`（10 秒） |
 
 CLI 支持电脑注册自选地址名，名称留空时使用公钥派生 ID。`names.json` 在数据目录中持久保存地址名与签名身份的绑定；同一身份可重用名称，其他身份不能抢占，控制地址与其他身份的派生 ID 也不可占用。程序以前台单进程运行，监听全部网络接口，无后台守护或端口回退。`CODEXHOST_RELAY_DATA_DIR` 可设置数据目录默认值，CLI 优先；`CODEXHOST_RELAY_ACME_DIRECTORY` 可指定测试 CA，默认 Let's Encrypt 生产目录。启动配置或手动证书读取失败由 Node 报错退出。
 
@@ -48,7 +51,7 @@ kill -HUP <relay-pid>
 
 ## 嵌入与注册检查
 
-`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`dataDir`、`rate`、`dailyQuota`、`maxConnections` 与启动参数同义，另有可选的 `heartbeatInterval`（毫秒，默认 25000）及以下可选回调：
+`@codexhost/remote-relay` 导出 `createRelay(options)`、`RelayOptions`、`RegistrationRequest` 和 `RegistrationResult`。`options` 的 `domain`、`controlHost`、`cert`、`key`、`dataDir`、`rate`、`dailyQuota`、`maxConnections`、`ipConnectionLimit`、`ipConnectionWindow`、`ipBanDuration` 与启动参数同义，后两项以毫秒为单位；IP 连接频率限制省略时也使用默认值。另有可选的 `heartbeatInterval`（毫秒，默认 25000）及以下可选回调：
 
 ```ts
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -112,9 +115,11 @@ ALPN 恰好为 `acme-tls/1` 时，连接与用量始终标记 `acme: true`（不
 - WSS 只协商 `http/1.1`，不压缩，单消息上限 1 MiB；其上 Relay 是 HTTP/2 客户端，电脑是服务端。
 - 每条手机连接对应 `POST /v1/tcp`，传递来源 IP/端口；FIN 独立传递，异常中断两端。
 - 每地址名最多 32 条手机连接；每流接收窗口 2 MiB、连接窗口 8 MiB。Node 自动补充连接窗口，因此总缓存并非 8 MiB：每地址名每方向约最多 64 MiB，另加 WebSocket 消息及传输缓冲。
+- 手机连接连续 30 分钟双向均无字节转发时，关闭连接及对应 HTTP/2 流并释放名额；任一方向实际转发字节都会重置空闲计时。此限制也覆盖只发 ClientHello 后停住的连接，不判断 TLS 握手或访问认证是否完成；持续发送数据或反复重连仍可能争抢名额。
 - ClientHello 最多 16 KiB、10 秒，支持跨 TCP 分段和 TLS 记录。SNI 子域接受合法 DNS 标签，不限于 26 位 ID；缺 SNI、非法域名和离线地址名直接断开。
 - 每 25 秒发送 WebSocket ping；下一周期仍无 pong 时 `terminate()` 并注销。
 - 达到总 TCP 上限时直接关闭新连接，已有连接不受影响；连接关闭后释放名额。被拒绝的电脑沿用随机退避重连。
+- 默认同一来源 IP 在 10 秒滑动窗口内超过 50 次新 TCP 连接时，从触发超限的连接起直接 `socket.destroy()`，10 秒冷却结束后恢复；电脑、手机及未发送 ClientHello 的连接在主端口接受时统一计数（含总 TCP 上限拒绝的尝试），封禁期间不解析数据、重试不延长冷却，已有连接不受影响。计数和封禁只存内存，重启清零，过期记录定期清理；共享 NAT/办公网络出口共用额度，可按并发用户数调高阈值。
 - 日额度达到后关闭该地址名现有手机连接。仅 ALPN 列表恰为 `acme-tls/1` 的新连接可例外转发：每条双向合计 64 KiB、10 秒，每地址名每 UTC 整点小时合计 1 MiB；仍受 32 条并发与带宽限制。
 - 首次达到当天额度时，通过控制连接发送 `POST /v1/notice`，正文为 `{"quota":"exhausted","until":"<下一个 UTC 日的 ISO 时间>"}`，例如 `{"quota":"exhausted","until":"2026-11-07T00:00:00.000Z"}`。注册时已超额也会发送通知。控制连接保持，次日恢复访问；旧电脑拒绝通知流不影响控制连接。
 - 证书机构变更时，通过 `POST /v1/notice` 发送 `{"certificateAuthority":{"directory":"<目录>"}}`。
@@ -122,7 +127,7 @@ ALPN 恰好为 `acme-tls/1` 时，连接与用量始终标记 `acme: true`（不
 - 外部账户凭据：控制地址接受 `POST /v1/external-account`，带 `Authorization: Bearer <token>`。返回 200 `{ keyId, hmacKey }`；404 不提供；429 带 `Retry-After`（秒）；503 暂时不可用；401 凭证无效或调用期间注册已失效。这两类请求不交给 `onRequest`。
 - 字节计数为手机侧转发的加密字节，两个方向相加。日额度和验证小时额度按地址名留在内存，重连不清零；重启后可通过 `usedToday` 恢复当天用量，否则从零起算。UTC 日期/小时变化时按需清零。
 - 每小时清理早于 UTC 当天、且对应电脑当前未注册的用量记录；当天的离线记录保留，断开后重连不能清零当天额度。当前已注册电脑的记录也保留。
-- 不提供 `check` 时，任何持有有效签名的电脑都能注册，依次更换身份可获得新 ID 的每日额度。准入、注册数量限制和封禁规则不在核心中。
+- 不提供 `check` 时，任何持有有效签名的电脑都能注册，依次更换身份可获得新 ID 的每日额度。准入、注册数量限制和身份或地址名封禁规则不在核心中。
 
 ## 日志
 
@@ -136,7 +141,7 @@ stdout 仅输出 JSON 行，不输出启动信息、逐连接统计或转发内�
 | `time` | UTC ISO 8601 时间 |
 | `bytes` | 仅超额事件携带该地址名的当日累计字节数 |
 
-核心没有邀请码登记表、封禁规则、监控或磁盘计数。自建部署不提供准入功能；Docker 和 Compose 示例见[自建中转](../../docs/product/self-hosted-relay.md)。
+核心没有邀请码登记表、身份或地址名封禁规则、监控或磁盘计数。自建部署不提供准入功能；Docker 和 Compose 示例见[自建中转](../../docs/product/self-hosted-relay.md)。
 
 ## 本机验证
 

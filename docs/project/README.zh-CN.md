@@ -68,6 +68,14 @@ codexhost stop     # 停止 CodexHost 的全部后台服务
 
 从 [Releases](https://github.com/BytePioneer-AI/codex-host/releases) 下载对应平台的安装包。Web 端：安装后打开 codexhost，本地访问 http://127.0.0.1:4400 。
 
+**方式三：WinGet**（Windows x64 / ARM64）
+
+安装或升级均使用同一条命令：
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
 > Linux 支持 x64 / ARM64，详见 [Linux 说明](../platforms/linux/linux.zh-CN.md)。
 
 **升级与停止**：运行 `codexhost update` 升级；`codexhost stop` 停止全部后台服务。用 npm 覆盖安装前，请先运行 `codexhost stop`。

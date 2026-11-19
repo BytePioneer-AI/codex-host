@@ -1,6 +1,7 @@
 import { z } from "zod";
 export * from "./client-channel.js";
 export * from "./thread-catalog.js";
+export * from "./thread-archive-confirm.js";
 export * from "./voice.js";
 export * from "./skills.js";
 export * from "./skill-reference.js";
@@ -383,6 +384,21 @@ export {
 } from "./thread-watch-notice.js";
 
 export {
+  RESPONSE_ANNOTATIONS_CLOSE,
+  RESPONSE_ANNOTATIONS_GUIDANCE,
+  RESPONSE_ANNOTATIONS_HEADER,
+  RESPONSE_ANNOTATIONS_OPEN,
+  RESPONSE_ANNOTATIONS_REQUEST_HEADER,
+  composeAnnotatedMessage,
+  formatResponseAnnotations,
+  parseAnnotatedMessage,
+  responseAnnotationIndex,
+  responseAnnotationsOf,
+  type ParsedAnnotatedMessage,
+  type ResponseAnnotation,
+} from "./response-annotation.js";
+
+export {
   REMOTE_SSH_SETUP_METHOD,
   remoteSshSetupParamsSchema,
   remoteSshSetupResultSchema,
@@ -413,7 +429,12 @@ export {
   type ThreadTitleInput,
 } from "./thread-title.js";
 
-export { usageMeasurementsSchema, type UsageMeasurementsSnapshot } from "./thread-usage.js";
+export {
+  usageMeasurementsSchema,
+  mergeUsageOutputTimings,
+  type UsageMeasurementsSnapshot,
+  type UsageOutputTiming,
+} from "./thread-usage.js";
 
 export {
   webUiExtensionIdSchema,

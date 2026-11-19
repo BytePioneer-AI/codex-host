@@ -1,584 +1,382 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { HostEvent, HostItemSnapshot } from "@codexhost/harness-adapter";
-import { hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { hostItemIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type * as TranscriptModule from "../src/subagent-transcript.js";
-
-import { AntigravitySubagents } from "../src/subagents.js";
-import {
-  parseSubagentTranscript,
-  readSubagentTranscript,
-  subagentRpc,
-  subagentRunStatus,
-} from "../src/subagent-transcript.js";
-
-vi.mock("../src/subagent-transcript.js", async (original) => ({
-  ...(await original<typeof TranscriptModule>()),
-  subagentRpc: vi.fn(),
-  readSubagentTranscript: vi.fn(),
-}));
-
-const parent = "448c75b2-603b-4bee-99a4-544288dfccad";
-const child = "30dce1a0-bc56-4c5d-a50d-264f235f09a9";
-const turnId = hostTurnIdSchema.parse("subagent-test");
-const row = (value: object) => JSON.stringify(value) + "\n";
-const transcript =
-  row({
-    step_index: 0,
-    source: "USER_EXPLICIT",
-    type: "USER_INPUT",
-    status: "DONE",
-    content:
-      "<USER_REQUEST>\nInspect fixture\n</USER_REQUEST>\n<ADDITIONAL_METADATA>native metadata</ADDITIONAL_METADATA>",
-  }) +
-  row({
-    step_index: 1,
-    source: "MODEL",
-    type: "PLANNER_RESPONSE",
-    status: "DONE",
-    tool_calls: [{ name: "list_dir", args: { DirectoryPath: "fixture" } }],
-  }) +
-  row({ step_index: 2, source: "MODEL", type: "GENERIC", status: "DONE", content: "marker.txt" }) +
-  row({
-    step_index: 3,
-    source: "MODEL",
-    type: "PLANNER_RESPONSE",
-    status: "DONE",
-    content: "AGY_CHILD_PROBE_OK",
-  });
-const native = (status: string, parentId = parent) => ({
-  status: `CASCADE_RUN_STATUS_${status}`,
-  trajectory: { metadata: { parentConversationId: parentId }, steps: [] },
+import { nativeBrainDirPath, nativeConversationSummariesDbPath } from "../src/fork.js";
+import { AntigravitySubagents, readNativeSubagentStatus } from "../src/subagents.js";
+import { parseSubagentTranscript, readSubagentTranscript } from "../src/subagent-transcript.js";
+const homes: string[] = [];
+const observers: AntigravitySubagents[] = [];
+afterEach(async () => {
+  await Promise.all(observers.splice(0).map((observer) => observer.close()));
+  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
-const step = (state: string) => ({
-  conversation_id: parent,
-  step_index: 2,
-  step_type: "subagent",
-  state,
-  tool_name: "invoke_subagent",
-  subagent_info: {
-    subagents: [
-      {
-        type_name: "research",
-        role: "Probe Subagent",
-        initial_prompt: "Inspect fixture",
-        conversation_id: child,
-        log_uri: "file:///not-a-trusted-path",
-      },
-    ],
-  },
-});
-
-function fixture(options: Partial<ConstructorParameters<typeof AntigravitySubagents>[0]> = {}) {
+const transcript = (text: string) =>
+  [
+    {
+      step_index: 0,
+      source: "USER",
+      type: "USER_INPUT",
+      status: "DONE",
+      content: "<USER_REQUEST>\ntask\n</USER_REQUEST>",
+    },
+    {
+      step_index: 1,
+      source: "MODEL",
+      type: "PLANNER_RESPONSE",
+      status: "DONE",
+      thinking: "public summary",
+      content: text,
+    },
+  ]
+    .map((step) => JSON.stringify(step))
+    .join("\n") + "\n";
+async function fixture(observationTimeoutMs = 30_000) {
+  const home = await mkdtemp(path.join(os.tmpdir(), "agy-subagents-"));
+  homes.push(home);
+  const parentId = randomUUID();
+  const childId = randomUUID();
+  await mkdir(path.dirname(nativeConversationSummariesDbPath(home)), { recursive: true });
+  const db = new DatabaseSync(nativeConversationSummariesDbPath(home));
+  db.exec(
+    "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, parent_conversation_id TEXT, status TEXT)",
+  );
+  db.prepare("INSERT INTO conversation_summaries VALUES (?, ?, 'CASCADE_RUN_STATUS_RUNNING')").run(
+    childId,
+    parentId,
+  );
+  db.close();
+  const log = path.join(
+    nativeBrainDirPath(childId, home),
+    ".system_generated",
+    "logs",
+    "transcript.jsonl",
+  );
+  await mkdir(path.dirname(log), { recursive: true });
+  await writeFile(log, transcript("progress"));
   const events: HostEvent[] = [];
-  const completed: HostItemSnapshot[] = [];
   const observer = new AntigravitySubagents({
-    turnId,
-    parentId: () => parent,
-    port: async () => 1,
-    cwd: process.cwd(),
-    outputLimit: 64_000,
-    observationTimeoutMs: 30_000,
+    parentId: () => parentId,
+    home,
+    cwd: home,
+    outputLimit: 1000,
+    pollIntervalMs: 100,
+    observationTimeoutMs,
     emit: (event) => events.push(event),
-    complete: (snapshot) => completed.push(snapshot),
-    schedule: (work) => {
-      void work();
-    },
-    ...options,
   });
-  return { observer, events, completed };
-}
-
-afterEach(() => {
-  vi.clearAllMocks();
-});
-
-describe("Antigravity Subagents", () => {
-  it("projects captured transcript shapes with stable IDs, input, tools and final text", () => {
-    const snapshot = parseSubagentTranscript(
-      transcript,
-      parent,
-      child,
-      "completed",
-      process.cwd(),
-      64_000,
-    );
-    expect(snapshot).toEqual(
-      parseSubagentTranscript(transcript, parent, child, "completed", process.cwd(), 64_000),
-    );
-    expect(snapshot.turns).toHaveLength(1);
-    expect(snapshot.turns[0]?.input).toEqual([{ type: "text", text: "Inspect fixture" }]);
-    expect(snapshot.turns[0]?.items).toMatchObject([
-      {
-        item: {
-          type: "toolExecution",
-          toolName: "list_dir",
-          output: { content: [{ text: "marker.txt" }] },
-        },
-      },
-      { item: { type: "agentMessage", text: "AGY_CHILD_PROBE_OK" } },
-    ]);
-    expect(snapshot.turns[0]?.outcome).toEqual({ status: "succeeded" });
-    const ids = snapshot.turns.flatMap((turn) => turn.items.map(({ item }) => item.itemId));
-    expect(new Set(ids).size).toBe(ids.length);
-    const otherParent = parseSubagentTranscript(
-      transcript,
-      child,
-      child,
-      "completed",
-      process.cwd(),
-      64_000,
-    );
-    expect(otherParent.turns[0]?.items[0]?.item.itemId).not.toBe(ids[0]);
-  });
-
-  it("projects PLANNER_RESPONSE thinking as a reasoning Item before tool calls and final text", () => {
-    const withThinking =
-      row({
-        step_index: 0,
-        source: "USER_EXPLICIT",
-        type: "USER_INPUT",
-        status: "DONE",
-        content: "<USER_REQUEST>\nInspect fixture\n</USER_REQUEST>",
-      }) +
-      row({
-        step_index: 1,
-        source: "MODEL",
-        type: "PLANNER_RESPONSE",
-        status: "DONE",
-        thinking: "Checking directory contents first.",
-        tool_calls: [{ name: "list_dir", args: { DirectoryPath: "fixture" } }],
-      }) +
-      row({
-        step_index: 2,
-        source: "MODEL",
-        type: "GENERIC",
-        status: "DONE",
-        content: "marker.txt",
-      }) +
-      row({
-        step_index: 3,
-        source: "MODEL",
-        type: "PLANNER_RESPONSE",
-        status: "DONE",
-        thinking: "Found marker.txt; summarizing result.",
-        content: "AGY_CHILD_PROBE_OK",
-      });
-    const snapshot = parseSubagentTranscript(
-      withThinking,
-      parent,
-      child,
-      "completed",
-      process.cwd(),
-      64_000,
-    );
-    expect(snapshot.turns[0]?.items).toMatchObject([
-      {
-        item: {
-          type: "reasoning",
-          itemId: `agy-${parent}-${child}-1-thinking`,
-          text: "Checking directory contents first.",
-        },
-        outcome: { status: "succeeded" },
-      },
-      {
-        item: {
-          type: "toolExecution",
-          toolName: "list_dir",
-          output: { content: [{ text: "marker.txt" }] },
-        },
-      },
-      {
-        item: {
-          type: "reasoning",
-          itemId: `agy-${parent}-${child}-3-thinking`,
-          text: "Found marker.txt; summarizing result.",
-        },
-        outcome: { status: "succeeded" },
-      },
-      {
-        item: {
-          type: "agentMessage",
-          itemId: `agy-${parent}-${child}-3`,
-          text: "AGY_CHILD_PROBE_OK",
-        },
-      },
-    ]);
-  });
-
-  it("ignores an incomplete final line, rejects interior corruption and does not invent terminal success", () => {
-    const snapshot = parseSubagentTranscript(
-      transcript + '{"step_index":4',
-      parent,
-      child,
-      "running",
-      process.cwd(),
-      64_000,
-    );
-    expect(snapshot.turns[0]?.outcome.status).toBe("unknown");
-    expect(snapshot.turns[0]?.items).toHaveLength(2);
-    expect(() =>
-      parseSubagentTranscript(
-        "{broken}\n" + transcript,
-        parent,
-        child,
-        "running",
-        process.cwd(),
-        64_000,
-      ),
-    ).toThrow();
-    expect(() =>
-      parseSubagentTranscript(
-        transcript + transcript,
-        parent,
-        child,
-        "running",
-        process.cwd(),
-        64_000,
-      ),
-    ).toThrow();
-    expect(subagentRunStatus(native("IDLE", "foreign-parent"), parent)).toBeNull();
-    expect(subagentRunStatus(native("RUNNING"), parent)).toBe("running");
-    expect(subagentRunStatus(native("IDLE"), parent)).toBe("completed");
-  });
-
-  it("keeps a DONE spawn running until native idle and publishes progress separately", async () => {
-    const { observer, events, completed } = fixture();
-    vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING"));
-    vi.mocked(readSubagentTranscript).mockResolvedValue({
-      ok: true,
-      value: parseSubagentTranscript(transcript, parent, child, "running", process.cwd(), 64_000),
-    });
-    try {
-      observer.handle(step("ACTIVE"));
-      observer.handle(step("DONE"));
-      observer.handle(step("DONE"));
-      expect(completed).toHaveLength(1);
-      expect(completed[0]?.item).toMatchObject({
-        type: "subagentDelegation",
-        subagents: [{ status: "running" }],
-      });
-      await observer.refresh();
-      expect(observer.running).toBe(true);
-      expect(events.some((event) => event.type === "subagent.transcript.changed")).toBe(true);
-      vi.mocked(subagentRpc).mockResolvedValue(native("IDLE"));
-      await observer.refresh();
-      expect(observer.state(child)).toMatchObject({
-        status: "completed",
-        resultSummary: "AGY_CHILD_PROBE_OK",
-      });
-      observer.finish({ status: "succeeded" });
-      await observer.settled;
-      expect(events.filter((event) => event.type === "item.started")).toHaveLength(1);
-      expect(events.filter((event) => event.type === "item.completed")).toHaveLength(1);
-    } finally {
-      observer.stop();
-    }
-  });
-
-  it("keeps observation alive after parent completion and does not treat an RPC failure as child success", async () => {
-    const { observer } = fixture();
-    vi.mocked(subagentRpc).mockRejectedValue(new Error("transient"));
-    vi.mocked(readSubagentTranscript).mockResolvedValue({
-      ok: false,
-      error: { code: "protocolError", message: "Not ready", retryable: true },
-    });
-    try {
-      observer.handle(step("DONE"));
-      observer.finish({ status: "succeeded" });
-      let settled = false;
-      void observer.settled.then(() => {
-        settled = true;
-      });
-      await observer.refresh();
-      expect(settled).toBe(false);
-      expect(observer.running).toBe(true);
-      vi.mocked(subagentRpc).mockResolvedValue(native("IDLE"));
-      await observer.refresh();
-      await observer.settled;
-      expect(observer.running).toBe(false);
-    } finally {
-      observer.stop();
-    }
-  });
-
-  it("interrupts only after native status has been unobservable since parent completion", async () => {
-    vi.useFakeTimers();
-    const events: HostEvent[] = [];
-    const observer = new AntigravitySubagents({
-      turnId,
-      parentId: () => parent,
-      port: async () => 1,
-      cwd: process.cwd(),
-      outputLimit: 64_000,
-      observationTimeoutMs: 30_000,
-      emit: (event) => events.push(event),
-      complete: () => undefined,
-      schedule: () => undefined,
-    });
-    vi.mocked(readSubagentTranscript).mockResolvedValue({ ok: true, value: { turns: [] } });
-    try {
-      observer.handle(step("DONE"));
-      observer.finish({ status: "succeeded" });
-      vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING"));
-      await vi.advanceTimersByTimeAsync(25_000);
-      await observer.refresh();
-      vi.mocked(subagentRpc).mockRejectedValue(new Error("401 missing CSRF token"));
-      await vi.advanceTimersByTimeAsync(29_000);
-      await observer.refresh();
-      expect(observer.state(child)?.status).toBe("running");
-
-      await vi.advanceTimersByTimeAsync(2_000);
-      await observer.refresh();
-      await observer.settled;
-      expect(observer.state(child)).toMatchObject({
-        status: "interrupted",
-        resultSummary: expect.stringContaining("could not be confirmed"),
-      });
-      expect(events.filter((event) => event.type === "subagent.state.changed")).toHaveLength(1);
-    } finally {
-      observer.stop();
-      vi.useRealTimers();
-    }
-  });
-
-  it.each(["running", "unobservable"])(
-    "keeps a healthy child observable when later %s children take over 30 seconds to poll",
-    async (siblings) => {
-      vi.useFakeTimers();
-      const { observer, events } = fixture({ schedule: () => undefined });
-      const slowChildren = Array.from(
-        { length: 16 },
-        (_, index) => `30dce1a0-bc56-4c5d-a50d-${String(index).padStart(12, "0")}`,
-      );
-      let settled = false;
-      void observer.settled.then(() => {
-        settled = true;
-      });
-      vi.mocked(readSubagentTranscript).mockResolvedValue({ ok: true, value: { turns: [] } });
-      vi.mocked(subagentRpc).mockImplementation(async (_port, id) => {
-        if (id === child) return native("RUNNING");
-        await new Promise((resolve) => setTimeout(resolve, 2_000));
-        if (siblings === "unobservable") throw new Error("Subagent RPC timed out");
-        return native("RUNNING");
-      });
-      try {
-        const update = step("DONE");
-        update.subagent_info.subagents = update.subagent_info.subagents.flatMap((subagent) =>
-          [child, ...slowChildren].map((id) => ({ ...subagent, conversation_id: id })),
-        );
-        observer.handle(update);
-        observer.finish({ status: "succeeded" });
-        const refresh = observer.refresh();
-        await vi.advanceTimersByTimeAsync(32_000);
-        await refresh;
-        expect(observer.state(child)?.status).toBe("running");
-        expect(settled).toBe(false);
-        expect(events).not.toContainEqual(
-          expect.objectContaining({
-            type: "subagent.state.changed",
-            nativeSubagentId: child,
-            status: "interrupted",
-          }),
-        );
-        if (siblings === "running") {
-          for (const id of slowChildren) expect(observer.state(id)?.status).toBe("running");
-        } else {
-          // Subsequent failed observations retire only the unavailable siblings.
-          vi.mocked(subagentRpc).mockImplementation(async (_port, id) => {
-            if (id === child) return native("RUNNING");
-            throw new Error("Subagent RPC timed out");
-          });
-          await observer.refresh();
-          for (const id of slowChildren) expect(observer.state(id)?.status).toBe("interrupted");
-          expect(observer.state(child)?.status).toBe("running");
-          expect(settled).toBe(false);
-        }
-        vi.mocked(subagentRpc).mockResolvedValue(native("IDLE"));
-        await observer.refresh();
-        await observer.settled;
-        expect(observer.state(child)?.status).toBe("completed");
-        expect(observer.running).toBe(false);
-      } finally {
-        observer.stop();
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it("does not expire a valid running status while its transcript read is slow", async () => {
-    vi.useFakeTimers();
-    const { observer } = fixture({ schedule: () => undefined });
-    vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING"));
-    vi.mocked(readSubagentTranscript).mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 31_000));
-      return { ok: true, value: { turns: [] } };
-    });
-    try {
-      observer.handle(step("DONE"));
-      observer.finish({ status: "succeeded" });
-      const refresh = observer.refresh();
-      await vi.advanceTimersByTimeAsync(31_000);
-      await refresh;
-      expect(observer.state(child)?.status).toBe("running");
-    } finally {
-      observer.stop();
-      vi.useRealTimers();
-    }
-  });
-
-  it.each(["missing port", "missing parent", "invalid status", "RPC failure"])(
-    "expires unavailable children only after parent completion: %s",
-    async (failure) => {
-      vi.useFakeTimers();
-      const { observer, events } = fixture({
-        schedule: () => undefined,
-        port: async () => (failure === "missing port" ? null : 1),
-        parentId: () => (failure === "missing parent" ? undefined : parent),
-      });
-      vi.mocked(readSubagentTranscript).mockResolvedValue({ ok: true, value: { turns: [] } });
-      if (failure === "RPC failure") {
-        vi.mocked(subagentRpc).mockRejectedValue(new Error("Subagent RPC failed"));
-      } else {
-        vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING", "foreign-parent"));
-      }
-      try {
-        observer.handle(step("DONE"));
-        await vi.advanceTimersByTimeAsync(31_000);
-        await observer.refresh();
-        expect(observer.state(child)?.status).toBe("running");
-        observer.finish({ status: "succeeded" });
-        await vi.advanceTimersByTimeAsync(29_999);
-        await observer.refresh();
-        expect(observer.state(child)?.status).toBe("running");
-        await vi.advanceTimersByTimeAsync(1);
-        await observer.refresh();
-        await observer.settled;
-        expect(observer.state(child)).toMatchObject({
-          status: "interrupted",
-          resultSummary: expect.stringContaining("could not be confirmed"),
-        });
-        await observer.refresh();
-        expect(events.filter((event) => event.type === "subagent.state.changed")).toHaveLength(1);
-        expect(subagentRpc).not.toHaveBeenCalledWith(1, child, "CancelCascadeInvocation");
-      } finally {
-        observer.stop();
-        vi.useRealTimers();
-      }
-    },
-  );
-
-  it("validates ownership before cancelling and distinguishes unavailable native cancellation", async () => {
-    const { observer, events } = fixture();
-    observer.handle(step("ACTIVE"));
-    vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING"));
-    await Promise.all([observer.cancel(), observer.cancel()]);
-    observer.finish({ status: "cancelled" });
-    expect(subagentRpc).toHaveBeenCalledWith(1, child, "CancelCascadeInvocation");
-    expect(
-      vi
-        .mocked(subagentRpc)
-        .mock.calls.filter((args) => args[1] === child && args[2] === "CancelCascadeInvocation"),
-    ).toHaveLength(1);
-    expect(observer.state(child)?.status).toBe("interrupted");
-    expect(events.at(-1)).toMatchObject({
-      type: "item.completed",
-      snapshot: { outcome: { status: "cancelled" } },
-    });
-    const foreign = fixture();
-    foreign.observer.handle(step("ACTIVE"));
-    vi.mocked(subagentRpc).mockClear().mockResolvedValue(native("RUNNING", "other"));
-    await foreign.observer.cancel();
-    expect(subagentRpc).not.toHaveBeenCalledWith(1, child, "CancelCascadeInvocation");
-    expect(foreign.observer.state(child)?.resultSummary).toContain("could not be confirmed");
-  });
-
-  it("observes a previously completed child in a later Turn without creating another card", async () => {
-    const events: HostEvent[] = [];
-    const observer = new AntigravitySubagents({
-      turnId,
-      parentId: () => parent,
-      port: async () => 1,
-      cwd: process.cwd(),
-      outputLimit: 64_000,
-      observationTimeoutMs: 30_000,
-      complete: () => undefined,
-      emit: (event) => events.push(event),
-      schedule: () => undefined,
-      initialStates: [
+  observers.push(observer);
+  const item: HostItemSnapshot = {
+    item: {
+      type: "subagentDelegation",
+      itemId: hostItemIdSchema.parse("spawn"),
+      operation: "spawn",
+      subagents: [
         {
-          subagentId: child,
-          nativeSubagentId: child,
-          description: "Existing",
-          status: "interrupted",
+          subagentId: childId,
+          nativeSubagentId: childId,
+          description: "research",
+          model: "gemini",
           background: true,
+          status: "running",
         },
       ],
+    },
+    outcome: { status: "succeeded" },
+  };
+  return { home, parentId, childId, log, events, observer, item };
+}
+describe("native ACP Subagent observation", () => {
+  it("observes background status/transcript changes without adding Items to a completed parent Turn", async () => {
+    const f = await fixture();
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.running).toBe(true);
+    expect(f.events).toContainEqual({
+      type: "subagent.transcript.changed",
+      nativeSubagentId: f.childId,
     });
-    vi.mocked(readSubagentTranscript).mockResolvedValue({ ok: true, value: { turns: [] } });
-    try {
-      vi.mocked(subagentRpc).mockResolvedValue(native("IDLE"));
-      await observer.refresh();
-      expect(observer.state(child)?.status).toBe("interrupted");
-      vi.mocked(subagentRpc).mockResolvedValue(native("RUNNING"));
-      await observer.refresh();
-      expect(observer.state(child)?.status).toBe("running");
-      vi.mocked(subagentRpc).mockResolvedValue(native("IDLE"));
-      await observer.refresh();
-      expect(observer.state(child)?.status).toBe("completed");
-      expect(events.some((event) => event.type === "item.started")).toBe(false);
-    } finally {
-      observer.stop();
-    }
+    expect(f.observer.state(f.childId)).toMatchObject({
+      model: "gemini",
+      resultSummary: "progress",
+      status: "running",
+    });
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare(
+      "UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE' WHERE conversation_id = ?",
+    ).run(f.childId);
+    db.close();
+    await writeFile(f.log, transcript("finished"));
+    await f.observer.refresh();
+    expect(f.observer.running).toBe(false);
+    expect(f.events).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: f.childId,
+      status: "completed",
+      resultSummary: "finished",
+    });
+    expect(
+      f.events.every((event) => !event.type.startsWith("item.") && !event.type.startsWith("turn.")),
+    ).toBe(true);
+    const count = f.events.length;
+    await f.observer.refresh();
+    expect(f.events).toHaveLength(count);
   });
-});
-
-describe("Antigravity child configuration", () => {
-  it.each([{}, { model: "native-model", reasoningEffort: "low" }])(
-    "uses native data before parent defaults: %j",
-    (configuration) => {
-      const { observer, events, completed } = fixture({
-        parentConfiguration: { model: "parent-model", reasoningEffort: "high" },
-      });
-      const event = step("RUNNING");
-      const childInfo = event.subagent_info.subagents[0];
-      if (!childInfo) throw new Error("Expected child info");
-      Object.assign(childInfo, configuration);
-      observer.handle(event);
-      expect(events[0]).toMatchObject({
-        item: {
-          prompt: "Inspect fixture",
-          subagents: [
-            {
-              model: "parent-model",
-              reasoningEffort: "high",
-              ...configuration,
-              nativeSubagentId: child,
-              role: "research",
-              status: "running",
-            },
-          ],
+  it("reports a terminal transcript error as failed rather than successful idle", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare(
+      "UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE' WHERE conversation_id = ?",
+    ).run(f.childId);
+    db.close();
+    await writeFile(
+      f.log,
+      transcript("progress") +
+        JSON.stringify({
+          step_index: 2,
+          source: "MODEL",
+          type: "ERROR",
+          status: "ERROR",
+          content: "native error",
+        }) +
+        "\n",
+    );
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.state(f.childId)?.status).toBe("failed");
+    expect(f.observer.running).toBe(false);
+  });
+  it("does not invent completion when native status is unavailable or belongs to another parent", async () => {
+    const f = await fixture();
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(await readNativeSubagentStatus(f.home, randomUUID(), f.childId)).toBeNull();
+    await rm(nativeConversationSummariesDbPath(f.home));
+    await f.observer.refresh();
+    expect(f.observer.running).toBe(true);
+  });
+  it("does not read or publish another parent's child transcript", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare("UPDATE conversation_summaries SET parent_conversation_id = ?").run(randomUUID());
+    db.close();
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.running).toBe(false);
+    expect(f.observer.state(f.childId)).not.toHaveProperty("resultSummary");
+    expect(f.events.some((event) => event.type === "subagent.transcript.changed")).toBe(false);
+    expect(f.events).toContainEqual({
+      type: "subagent.state.changed",
+      nativeSubagentId: f.childId,
+      status: "interrupted",
+    });
+  });
+  it("stops the timer after terminal transcript synchronization and restarts it on a send", async () => {
+    vi.useFakeTimers();
+    const f = await fixture();
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(vi.getTimerCount()).toBe(1);
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare("UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE'").run();
+    db.close();
+    await f.observer.refresh();
+    expect(f.observer.running).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    f.observer.track(f.childId, f.item);
+    expect(f.observer.running).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    await f.observer.refresh();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("recovers failed status when a retry completes between observations", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+    db.prepare("UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE'").run();
+    db.close();
+    await writeFile(
+      f.log,
+      transcript("before") +
+        JSON.stringify({
+          step_index: 2,
+          source: "MODEL",
+          type: "ERROR",
+          status: "ERROR",
+          content: "failed",
+        }) +
+        "\n",
+    );
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.state(f.childId)?.status).toBe("failed");
+    const retry =
+      [
+        { step_index: 3, source: "USER", type: "USER_INPUT", status: "DONE", content: "retry" },
+        {
+          step_index: 4,
+          source: "MODEL",
+          type: "PLANNER_RESPONSE",
+          status: "DONE",
+          content: "success",
         },
+      ]
+        .map((step) => JSON.stringify(step))
+        .join("\n") + "\n";
+    await writeFile(f.log, transcript("before") + retry);
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(f.observer.state(f.childId)).toMatchObject({
+      status: "completed",
+      resultSummary: "success",
+    });
+  });
+  it.each(["status", "transcript"])(
+    "bounds unavailable %s without inventing successful completion",
+    async (missing) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      const f = await fixture(100);
+      f.observer.track(f.childId, f.item);
+      await f.observer.refresh();
+      if (missing === "status") await rm(nativeConversationSummariesDbPath(f.home));
+      else {
+        const db = new DatabaseSync(nativeConversationSummariesDbPath(f.home));
+        db.prepare("UPDATE conversation_summaries SET status = 'CASCADE_RUN_STATUS_IDLE'").run();
+        db.close();
+        await rm(f.log);
+      }
+      await f.observer.refresh();
+      expect(f.observer.running).toBe(true);
+      vi.setSystemTime(1101);
+      await f.observer.refresh();
+      expect(f.observer.state(f.childId)).toMatchObject({
+        status: "interrupted",
+        resultSummary: "Native Subagent status could not be confirmed",
       });
-      observer.handle(step("DONE"));
-      expect(completed[0]?.item).toMatchObject({
-        subagents: [{ model: "parent-model", reasoningEffort: "high", ...configuration }],
-      });
-      observer.stop();
+      expect(f.observer.running).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
     },
   );
-});
-
-it("does not discard Antigravity delegation identity when optional native configuration is opaque", () => {
-  const { observer, events } = fixture({
-    parentConfiguration: { model: "parent", reasoningEffort: "high" },
+  it.each(["missing", "oversized"])(
+    "keeps confirmed native RUNNING active with a %s transcript beyond the observation timeout",
+    async (kind) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      const f = await fixture(100);
+      if (kind === "missing") await rm(f.log);
+      else await writeFile(f.log, "x".repeat(8 * 1024 * 1024 + 1));
+      f.observer.track(f.childId, f.item);
+      await f.observer.refresh();
+      expect(f.observer.running).toBe(true);
+      vi.setSystemTime(1200);
+      await f.observer.refresh();
+      expect(f.observer.running).toBe(true);
+      expect(f.observer.state(f.childId)?.status).toBe("running");
+      expect(
+        f.events.some(
+          (event) => event.type === "subagent.state.changed" && event.status === "interrupted",
+        ),
+      ).toBe(false);
+      expect(vi.getTimerCount()).toBe(1);
+    },
+  );
+  it("stops polling and publishing on close, including an in-flight refresh", async () => {
+    vi.useFakeTimers();
+    const f = await fixture();
+    f.observer.track(f.childId, f.item);
+    await f.observer.refresh();
+    expect(vi.getTimerCount()).toBe(1);
+    const refresh = f.observer.refresh();
+    await f.observer.close();
+    await refresh;
+    expect(vi.getTimerCount()).toBe(0);
+    const count = f.events.length;
+    await writeFile(f.log, transcript("late"));
+    await f.observer.refresh();
+    expect(f.events).toHaveLength(count);
   });
-  const event = step("RUNNING");
-  const childInfo = event.subagent_info.subagents[0];
-  if (!childInfo) throw new Error("Expected child info");
-  Object.assign(childInfo, { model: { id: "opaque" }, thinking: null });
-  observer.handle(event);
-  expect(events[0]).toMatchObject({
-    item: { subagents: [{ nativeSubagentId: child, model: "parent", reasoningEffort: "high" }] },
+  it("reads stable native transcript identities and real child status", async () => {
+    const f = await fixture();
+    const input = {
+      parentId: f.parentId,
+      childId: f.childId,
+      status: "completed" as const,
+      cwd: f.home,
+      outputLimit: 1000,
+      home: f.home,
+    };
+    const first = await readSubagentTranscript(input);
+    expect(first).toEqual(await readSubagentTranscript(input));
+    expect(first).toMatchObject({
+      ok: true,
+      value: {
+        turns: [
+          {
+            input: [{ type: "text", text: "task" }],
+            outcome: { status: "succeeded" },
+            items: [
+              { item: { type: "reasoning", text: "public summary" } },
+              { item: { type: "agentMessage", text: "progress" } },
+            ],
+          },
+        ],
+      },
+    });
   });
-  observer.stop();
+  it("rejects traversal and logs redirected outside their native location", async () => {
+    const f = await fixture();
+    expect(
+      await readSubagentTranscript({
+        parentId: f.parentId,
+        childId: "../escape",
+        status: "running",
+        cwd: f.home,
+        outputLimit: 1000,
+        home: f.home,
+      }),
+    ).toMatchObject({ ok: false, error: { code: "invalidRequest" } });
+    await rm(f.log);
+    const outside = path.join(f.home, "outside.jsonl");
+    await writeFile(outside, transcript("secret"));
+    await symlink(outside, f.log);
+    expect(
+      await readSubagentTranscript({
+        parentId: f.parentId,
+        childId: f.childId,
+        status: "running",
+        cwd: f.home,
+        outputLimit: 1000,
+        home: f.home,
+      }),
+    ).toMatchObject({ ok: false, error: { code: "protocolError" } });
+  });
+  it("ignores an incomplete final line but rejects duplicate native steps", () => {
+    const parent = randomUUID();
+    const child = randomUUID();
+    expect(
+      parseSubagentTranscript(
+        transcript("text") + '{"step_index":2',
+        parent,
+        child,
+        "running",
+        "/cwd",
+        100,
+      ).turns[0]?.outcome.status,
+    ).toBe("unknown");
+    expect(() =>
+      parseSubagentTranscript(
+        transcript("text") + transcript("duplicate"),
+        parent,
+        child,
+        "completed",
+        "/cwd",
+        100,
+      ),
+    ).toThrow("Duplicate");
+  });
 });

@@ -1,5 +1,6 @@
 use std::env;
 use std::error::Error;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -113,6 +114,18 @@ impl OwnerRecord {
         }))
     }
 }
+
+/// Another live Codex Desktop process owns the local Host Runtime for this data directory.
+#[derive(Debug)]
+pub(crate) struct OtherDesktopOwnsRuntime(String);
+
+impl fmt::Display for OtherDesktopOwnsRuntime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl Error for OtherDesktopOwnsRuntime {}
 
 pub(crate) struct LocalRuntimeLease {
     data_directory: PathBuf,
@@ -267,10 +280,10 @@ impl LocalRuntimeLease {
             }
 
             if is_live_other_desktop(owner.desktop_process_id, desktop_process_id) {
-                return Err(format!(
+                return Err(OtherDesktopOwnsRuntime(format!(
                     "another Codex Desktop process owns the local Host Runtime (Shim PID {}, Desktop PID {})",
                     owner.process_id, owner.desktop_process_id,
-                )
+                ))
                 .into());
             }
 
@@ -319,6 +332,39 @@ impl Drop for LocalRuntimeLease {
             return;
         };
         let _ = remove_owner_if_matches(&mutation_lock, &self.directory, &self.record);
+    }
+}
+
+pub(crate) enum LocalRuntimeAdmission {
+    Owner(LocalRuntimeLease),
+    OfficialCli(String),
+}
+
+/// Admits this invocation as the local Host Runtime owner, or routes it to the official CLI.
+///
+/// Only Codex Desktop's main app-server may own the local Host Runtime. A caller that is
+/// positively not Desktop, such as an auxiliary service whose Launcher metadata went stale,
+/// must not fail when another live process already owns the Host state: it falls back to the
+/// official CLI like any other Desktop helper. Desktop itself keeps the explicit failure.
+pub(crate) fn admit_local_runtime(
+    data_directory: &Path,
+    stock_codex_path: &Path,
+) -> Result<LocalRuntimeAdmission, Box<dyn Error>> {
+    let non_desktop_caller =
+        crate::desktop_invocation::is_known_non_desktop_caller(stock_codex_path);
+    if non_desktop_caller && let Some(owner) = live_mapping_store_owner(data_directory)? {
+        return Ok(LocalRuntimeAdmission::OfficialCli(format!(
+            "Host Runtime PID {owner} already owns the Mapping Store"
+        )));
+    }
+    match LocalRuntimeLease::acquire(data_directory) {
+        Ok(lease) => Ok(LocalRuntimeAdmission::Owner(lease)),
+        Err(error)
+            if non_desktop_caller && error.downcast_ref::<OtherDesktopOwnsRuntime>().is_some() =>
+        {
+            Ok(LocalRuntimeAdmission::OfficialCli(error.to_string()))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -606,15 +652,52 @@ fn owner_shim_state(owner: &OwnerRecord) -> Result<OwnerShimState, Box<dyn Error
     )
 }
 
+fn mapping_store_lock_path(data_directory: &Path) -> PathBuf {
+    MAPPING_STORE_LOCK_PATH
+        .iter()
+        .fold(data_directory.to_path_buf(), |path, segment| {
+            path.join(segment)
+        })
+}
+
+/// Returns the live Host Runtime process recorded in the Mapping Store lock, if any.
+///
+/// Missing lock records and absent or non-Node processes cannot identify a live owner.
+/// On macOS a readable start identity also excludes a reused PID, with Mapping Store's
+/// five-second tolerance. Missing or unparseable start identities retain legacy behavior.
+pub(crate) fn live_mapping_store_owner(
+    data_directory: &Path,
+) -> Result<Option<u32>, Box<dyn Error>> {
+    let Ok(contents) = fs::read_to_string(mapping_store_lock_path(data_directory)) else {
+        return Ok(None);
+    };
+    let Some(process_id) = mapping_store_lock_process_id(&contents) else {
+        return Ok(None);
+    };
+    if process_id == process::id() {
+        return Ok(None);
+    }
+    Ok(current_process_snapshot(process_id)?
+        .filter(|snapshot| {
+            #[cfg(target_os = "macos")]
+            if let Some(started_at) = mapping_store_lock_started_at_micros(&contents)
+                && snapshot.started_at_micros.abs_diff(started_at) > 5_000_000
+            {
+                return false;
+            }
+            snapshot
+                .executable
+                .file_name()
+                .is_some_and(|name| is_node_executable_name(&name.to_string_lossy()))
+        })
+        .map(|snapshot| snapshot.id))
+}
+
 fn retire_legacy_mapping_store_owner(
     data_directory: &Path,
     current_desktop_process_id: u32,
 ) -> Result<(), Box<dyn Error>> {
-    let lock_path = MAPPING_STORE_LOCK_PATH
-        .iter()
-        .fold(data_directory.to_path_buf(), |path, segment| {
-            path.join(segment)
-        });
+    let lock_path = mapping_store_lock_path(data_directory);
     let Some(runtime_process_id) = legacy_lock_process_id(&lock_path) else {
         return Ok(());
     };
@@ -639,9 +722,9 @@ fn retire_legacy_mapping_store_owner(
     }
     let legacy_desktop_process_id = shim_snapshot.parent_id;
     if is_live_other_desktop(legacy_desktop_process_id, current_desktop_process_id) {
-        return Err(format!(
+        return Err(OtherDesktopOwnsRuntime(format!(
             "another Codex Desktop process owns the legacy local Host Runtime (Shim PID {shim_process_id}, Desktop PID {legacy_desktop_process_id})",
-        )
+        ))
         .into());
     }
 
@@ -673,8 +756,55 @@ fn is_live_other_desktop(process_id: u32, current_desktop_process_id: u32) -> bo
     process_exists(process_id)
 }
 
+// Node writes processStartedAt with Date.toISOString(): UTC with millisecond precision.
+// Other formats cannot disprove a live owner. Linux snapshots use monotonic, not epoch time.
+#[cfg(target_os = "macos")]
+fn mapping_store_lock_started_at_micros(contents: &str) -> Option<u64> {
+    let value = contents
+        .split_once("\"processStartedAt\"")?
+        .1
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?
+        .split_once('"')?
+        .0;
+    if value.len() != 24
+        || !value.bytes().enumerate().all(|(index, byte)| match index {
+            4 | 7 => byte == b'-',
+            10 => byte == b'T',
+            13 | 16 => byte == b':',
+            19 => byte == b'.',
+            23 => byte == b'Z',
+            _ => byte.is_ascii_digit(),
+        })
+    {
+        return None;
+    }
+    let number = |start, end| value.get(start..end)?.parse::<u64>().ok();
+    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+    let (hour, minute, second) = (number(11, 13)?, number(14, 16)?, number(17, 19)?);
+    let leap = u64::from(year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    let month_days = [31, 28 + leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if year < 1970 || !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    if day == 0 || day > month_days[(month - 1) as usize] {
+        return None;
+    }
+    let days_through_year = |year: u64| 365 * year + year / 4 - year / 100 + year / 400;
+    let days = days_through_year(year - 1) - days_through_year(1969)
+        + month_days[..(month - 1) as usize].iter().sum::<u64>()
+        + day
+        - 1;
+    Some((((days * 24 + hour) * 60 + minute) * 60 + second) * 1_000_000 + number(20, 23)? * 1_000)
+}
+
 fn legacy_lock_process_id(path: &Path) -> Option<u32> {
-    let contents = fs::read_to_string(path).ok()?;
+    mapping_store_lock_process_id(&fs::read_to_string(path).ok()?)
+}
+
+fn mapping_store_lock_process_id(contents: &str) -> Option<u32> {
     let after_key = contents.split_once("\"pid\"")?.1;
     let after_colon = after_key.split_once(':')?.1.trim_start();
     let digits = after_colon

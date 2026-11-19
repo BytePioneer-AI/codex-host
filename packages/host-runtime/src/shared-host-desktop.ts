@@ -18,7 +18,10 @@ import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js";
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
-import { isDesktopContextVariable } from "./desktop-context-environment.js";
+import {
+  DESKTOP_BROWSER_CONTEXT_ENV,
+  isDesktopContextVariable,
+} from "./desktop-context-environment.js";
 import {
   isDesktopOfficialBackendSpawnerDescriptor,
   type DesktopOfficialBackendSpawnerDescriptor,
@@ -67,7 +70,9 @@ function desktopContext(
     arguments: envelope.arguments as string[],
     officialSpawner: envelope.officialSpawner,
     environment: {
-      ...base,
+      ...Object.fromEntries(
+        Object.entries(base).filter(([key]) => !DESKTOP_BROWSER_CONTEXT_ENV.includes(key)),
+      ),
       ...context,
       CODEXHOST_DATA_DIR: base.CODEXHOST_DATA_DIR,
       CODEX_HOME: base.CODEX_HOME,

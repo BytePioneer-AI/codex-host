@@ -19,7 +19,11 @@ import {
 } from "./codex-runtime/desktop-official-backend-spawner.js";
 import type { OfficialAppServerExit } from "./official-app-server-connection.js";
 import { resolveOfficialCodexExecutable } from "./codex-runtime/command.js";
-import { DESKTOP_APP_TOOLS_PIPE_ENV } from "./desktop-context-environment.js";
+import {
+  DESKTOP_APP_TOOLS_PIPE_ENV,
+  DESKTOP_BROWSER_CONTEXT_ENV,
+  desktopBrowserMcpArguments,
+} from "./desktop-context-environment.js";
 import {
   captureCodexRuntimeFiles,
   assertCodexRuntimeFilesPresent,
@@ -200,7 +204,7 @@ export async function prepareLocalCodex(input: {
         const launch = {
           stockCodexPath: startup.stockCodexPath,
           cwd: home,
-          arguments: startup.arguments,
+          arguments: [...startup.arguments, ...desktopBrowserMcpArguments(startup.environment)],
           environment: { ...officialEnvironment(startup.environment), CODEX_HOME: home },
         };
         const backend = spawner
@@ -307,7 +311,10 @@ export async function prepareLocalCodex(input: {
         // A reopened Desktop serves its app tools on a new pipe; the old one is gone.
         current.environment[DESKTOP_APP_TOOLS_PIPE_ENV] !==
           next.environment[DESKTOP_APP_TOOLS_PIPE_ENV] ||
-        (!currentlySpawnedByDesktop && Boolean(next.officialSpawner));
+        (!currentlySpawnedByDesktop && Boolean(next.officialSpawner)) ||
+        DESKTOP_BROWSER_CONTEXT_ENV.some(
+          (key) => current.environment[key] !== next.environment[key],
+        );
       // Whatever happens to the running generation, the next one starts from this request.
       startup = next;
       // The running generation, not the next requested invocation, owns these files.

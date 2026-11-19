@@ -28,6 +28,13 @@ export class ClientChannelEvents {
       ...(cwd ? { cwd } : {}),
     });
   }
+  harnessInspectionChanged(harnessId: string): void {
+    this.publish({
+      type: "harness-inspection-changed",
+      cursor: { epoch: this.epoch, sequence: ++this.sequence },
+      harnessId,
+    });
+  }
   displaySettingsChanged(): void {
     this.publish({
       type: "display-settings-changed",

@@ -29,7 +29,7 @@ describe.skipIf(!RUN_REAL)("Antigravity real Subagent Desktop protocol", () => {
     const evidence: unknown[] = [];
     let stage = "start";
     function runtime() {
-      const adapter = new AntigravityAdapter({ environment, printTimeout: "2m" });
+      const adapter = new AntigravityAdapter({ environment, commandTimeoutMs: 120_000 });
       const input = new PassThrough();
       const output = new PassThrough();
       const diagnostics = new PassThrough();

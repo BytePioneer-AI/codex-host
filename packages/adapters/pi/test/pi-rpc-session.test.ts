@@ -2074,34 +2074,144 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("times a request from its first output token, excluding prefill", async () => {
+  it.each([
+    { name: "tool block alone", events: [{ type: "toolcall_start" }], timed: false },
+    {
+      name: "empty text block",
+      events: [{ type: "text_start" }],
+      timed: false,
+    },
+    {
+      name: "assembled arguments",
+      events: [
+        { type: "toolcall_start" },
+        { type: "toolcall_delta", delta: '{"path":"file"}' },
+        { type: "toolcall_end" },
+        { type: "text_delta", delta: "later text" },
+      ],
+      timed: false,
+    },
+    {
+      name: "completed tool before text",
+      events: [
+        { type: "toolcall_start" },
+        { type: "toolcall_end" },
+        { type: "text_delta", delta: "later text" },
+      ],
+      timed: false,
+    },
+    {
+      name: "incremental arguments",
+      events: [
+        { type: "toolcall_start" },
+        { type: "toolcall_delta", delta: '{"path":' },
+        { type: "toolcall_delta", delta: '"file"}' },
+        { type: "toolcall_end" },
+      ],
+      timed: true,
+    },
+    {
+      name: "hidden thinking before assembled tool",
+      events: [{ type: "thinking_start" }, { type: "toolcall_delta", delta: '{"path":"file"}' }],
+      timed: true,
+    },
+    {
+      name: "thinking before assembled tool",
+      events: [
+        { type: "thinking_delta", delta: "thinking" },
+        { type: "toolcall_delta", delta: '{"path":"file"}' },
+      ],
+      timed: true,
+    },
+  ])("only times observable generation: $name", async ({ events, timed }) => {
     const { rpc, process: fakeProcess } = autonomousSession();
     const observations: PiUsageObservation[] = [];
     rpc.setUsageHandler((observation) => observations.push(observation));
     rpc.setAutonomousTurnHandler(() => undefined);
     await rpc.start();
-    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     try {
-      const message = { role: "assistant", responseId: "tool-only", content: [] };
-      fakeProcess().emitFrame({ type: "message_start", message });
-      await sleep(120);
-      // A tool-call-only reply still starts generating at its tool-call block.
-      fakeProcess().emitFrame({
-        type: "message_update",
-        assistantMessageEvent: { type: "toolcall_start", contentIndex: 0 },
-        message,
-      });
-      await sleep(20);
+      const content: Record<string, unknown>[] = [];
+      for (const event of events) {
+        if (event.type === "text_delta") content.push({ type: "text", text: event.delta });
+        if (event.type === "thinking_delta")
+          content.push({ type: "thinking", thinking: event.delta });
+      }
+      const message = { role: "assistant", responseId: "tool-only", content };
+      fakeProcess().emitFrame({ type: "message_start", message: { ...message, content: [] } });
+      clock.mockReturnValue(2000);
+      for (const event of events)
+        fakeProcess().emitFrame({
+          type: "message_update",
+          assistantMessageEvent: { ...event, contentIndex: 0 },
+          message,
+        });
+      clock.mockReturnValue(3000);
       fakeProcess().emitFrame({ type: "message_end", message });
       fakeProcess().emitAgentSettled();
       await waitFor(() => observations.length === 1);
-      const [observation] = observations;
-      if (!observation?.startedAtMs) throw new Error("Request timing is missing");
-      expect(observation.completedAtMs - observation.startedAtMs).toBeLessThan(100);
+      expect(observations[0]?.startedAtMs).toBe(timed ? 2000 : null);
+      expect(observations[0]?.completedAtMs).toBe(3000);
+      const next = {
+        role: "assistant",
+        responseId: "next",
+        content: [{ type: "text", text: "fresh request" }],
+      };
+      fakeProcess().emitFrame({ type: "message_start", message: { ...next, content: [] } });
+      fakeProcess().emitFrame({
+        type: "message_update",
+        assistantMessageEvent: { type: "text_delta", delta: "fresh request", contentIndex: 0 },
+        message: next,
+      });
+      clock.mockReturnValue(4000);
+      fakeProcess().emitFrame({ type: "message_end", message: next });
+      fakeProcess().emitAgentSettled();
+      await waitFor(() => observations.length === 2);
+      expect(observations[1]?.startedAtMs).toBe(3000);
     } finally {
+      clock.mockRestore();
       await rpc.close();
     }
   });
+
+  it.each(["thinking_start", "reasoning_start", "thought_start"])(
+    "includes hidden thinking time from %s",
+    async (type) => {
+      const { rpc, process: fakeProcess } = autonomousSession();
+      const observations: PiUsageObservation[] = [];
+      rpc.setUsageHandler((observation) => observations.push(observation));
+      await rpc.start();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(0);
+      try {
+        const message = {
+          role: "assistant",
+          responseId: "hidden-thinking",
+          content: [],
+          usage: { input: 1, output: 1200, reasoning: 800, cacheRead: 0, cacheWrite: 0 },
+        };
+        fakeProcess().emitFrame({ type: "message_start", message });
+        clock.mockReturnValue(1000);
+        fakeProcess().emitFrame({
+          type: "message_update",
+          assistantMessageEvent: { type, contentIndex: 0 },
+          message,
+        });
+        clock.mockReturnValue(21_000);
+        fakeProcess().emitFrame({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta: "answer", contentIndex: 1 },
+          message,
+        });
+        clock.mockReturnValue(31_000);
+        fakeProcess().emitFrame({ type: "message_end", message });
+        expect(observations).toHaveLength(1);
+        expect(observations[0]).toMatchObject({ startedAtMs: 1000, completedAtMs: 31_000 });
+      } finally {
+        clock.mockRestore();
+        await rpc.close();
+      }
+    },
+  );
 
   it("uses the persisted custom Entry identity rather than a provider response ID", async () => {
     const { rpc, process: fakeProcess, onFault } = autonomousSession();

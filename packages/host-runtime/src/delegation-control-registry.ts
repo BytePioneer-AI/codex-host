@@ -8,6 +8,7 @@ import {
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -124,6 +125,13 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
     if (input.interrupt !== undefined && typeof input.interrupt !== "boolean")
       throw new DelegationControlError("INVALID_ARGUMENT", "interrupt must be a boolean");
+    if (input.steer !== undefined && typeof input.steer !== "boolean")
+      throw new DelegationControlError("INVALID_ARGUMENT", "steer must be a boolean");
+    if (input.steer && input.interrupt)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "steer and interrupt are mutually exclusive",
+      );
     const registration = await this.#registrationForThread(input.threadId);
     if (!input.interrupt) return registration.send(input);
     const send = { threadId: input.threadId, message: input.message };
@@ -183,6 +191,10 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
     const snapshot = await (await this.#registrationForThread(input.threadId)).wait(input);
     return withRefs(snapshot, (await this.#refs?.get(snapshot.threadId)) ?? []);
+  }
+
+  async answer(input: ThreadAnswerInput) {
+    return (await this.#registrationForThread(input.threadId)).answer(input);
   }
 
   async watch(input: ThreadWatchInput) {

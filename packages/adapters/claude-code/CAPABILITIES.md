@@ -21,20 +21,20 @@
 | A2 | 工厂 | 必做 | P0 | 支持 | src/plugin.ts | test/plugin-warmup.test.ts | 保留受管远端 Broker 分支 |
 | A3 | 检查 | 必做 | P0 | 支持 | src/claude-code-adapter.ts | 原生 inspect ready；test/model-catalog.test.ts | 检查不发 Prompt |
 | A4 | 创建 Session | 必做 | P0 | 支持 | src/claude-code-adapter.ts、pending-session.ts | test/claude-code-adapter.test.ts | 原生延迟建 Session |
-| A5 | 执行 Turn | 必做 | P0 | 支持 | src/claude-code-adapter.ts、sdk-transport.ts | 既有 Haiku 实机；test/claude-code-adapter.test.ts | 本次不新增执行路径 |
+| A5 | 执行 Turn | 必做 | P0 | 支持 | src/claude-code-adapter.ts、sdk-transport.ts、turn-input.ts | 既有 Haiku 实机；test/claude-code-adapter.test.ts、turn-input.test.ts | Desktop 图片附件随文字以原生 image 块发送（开始 Turn 与 steer）；仅 ≤20 MiB 的 PNG/JPEG/GIF/WebP 发 image 块，steer 另限 base64 ≤5 MB 且宽高 ≤2000 px；其他格式、超限或读不到的文件只保留路径文字 |
 | A6 | 取消 | 必做 | P0 | 受限 | src/claude-code-adapter.ts、process-fence.ts | test/claude-code-adapter.test.ts | 有原生确认及超时升级，版本相关路径未全部实测 |
-| A7 | 只读快照 | 必做 | P0 | 受限 | src/claude-history.ts、claude-transcript.ts、claude-queued-command.ts | test/claude-queued-history.test.ts、claude-history.test.ts、claude-transcript.test.ts；默认 Adapter 回放三份 2.1.319 原生样本 | queued_command 恢复见历史文档；无 Result 时 outcome 为 unknown |
+| A7 | 只读快照 | 必做 | P0 | 受限 | src/claude-history.ts、claude-transcript.ts、claude-queued-command.ts | test/claude-queued-history.test.ts、claude-history.test.ts、claude-transcript.test.ts；默认 Adapter 回放三份 2.1.319 原生样本 | queued_command 恢复见历史文档；带图片的 prompt 取其 text 块；无 Result 时 outcome 为 unknown |
 | A8 | 持久身份 + resume | 必做 | P0 | 支持 | src/claude-code-adapter.ts、pending-session.ts | test/claude-code-adapter.test.ts | Turn 使用原生 root UUID，非每次读取重建身份 |
 | A9 | 错误与并发 | 必做 | P0 | 支持 | src/claude-code-adapter.ts | test/claude-code-adapter.test.ts | sessionBusy / invalidState / protocolError |
 | A10 | 关闭 | 必做 | P0 | 支持 | src/sdk-transport.ts、claude-code-adapter.ts | test/sdk-transport.test.ts、claude-code-adapter.test.ts | 本次不改进程生命周期 |
 | B1 | 切换 Model | 原生有则必做 | P1 | 支持 | src/model-catalog.ts、claude-code-adapter.ts | inspect Haiku 4.5；test/model-catalog.test.ts | requested 与 effective 分开 |
-| B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/thinking-options.ts | test/model-catalog.test.ts | 原生动态能力 |
+| B2 | 切换 Thinking | 原生有则必做 | P1 | 支持 | src/thinking-options.ts、model-catalog.ts、claude-code-adapter.ts | test/model-catalog.test.ts、claude-code-adapter.test.ts、sdk-transport.test.ts | 每个模型的档位来自原生 ModelInfo；会话启动与切换模型时把档位收敛到该模型支持的范围 |
 | B3 | 权限模式 | 原生有则必做 | P1 | 支持 | src/permission-modes.ts | test/permission-modes.test.ts | live scope |
 | B4 | 无人值守执行 | 必做（支持或明确拒绝） | P1 | 受限 | src/claude-code-adapter.ts | test/claude-code-adapter.test.ts | bypass 不可用时拒绝，不模拟授权 |
 | B5 | Fork | 原生有则必做 | P1 | 受限 | src/claude-fork.ts、claude-fork-references.ts | test/claude-queued-fork.test.ts、claude-rollback.test.ts、claude-fork-references.test.ts | 校验原生完整前缀；本次不执行真实 Fork |
 | B6 | 跨目录 Fork | 原生有则必做 | P2 | 不支持 | src/claude-code-adapter.ts | history.forkAcrossCwd=false；test/claude-code-adapter.test.ts | 原生会话 cwd 约束 |
 | B7 | 回滚最后一轮 | 原生有则必做 | P1 | 受限 | src/claude-fork.ts、pending-session.ts | test/claude-rollback.test.ts | 派生并校验前缀，不改源 Session |
-| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 支持 | src/native-message.ts、tool-lifecycle.ts、file-change.ts | test/native-message.test.ts、file-change.test.ts | 历史不把普通附件当用户输入 |
+| B8 | 工具、命令、文件内容 | 原生有则必做 | P0 | 支持 | src/native-message.ts、tool-lifecycle.ts、claude-tool-item.ts、file-change.ts | test/native-message.test.ts、file-change.test.ts；claude-code-adapter.test.ts、claude-history.test.ts 的 MCP/WebSearch 用例 | 历史不把普通附件当用户输入；`mcp__<server>__<tool>` 显示为 MCP 工具调用，成功的 WebSearch 显示为网页搜索、失败的保留通用工具卡及错误，实时与历史同一映射；Monitor 仍为通用工具卡 |
 | B9 | 审批 | 原生有则必做 | P0 | 支持 | src/sdk-transport.ts、claude-code-adapter.ts | test/sdk-transport.test.ts、claude-code-adapter.test.ts | 使用公共 Interaction |
 | B10 | 提问 | 原生有则必做 | P0 | 支持 | src/sdk-transport.ts、claude-code-adapter.ts | test/sdk-transport.test.ts、claude-code-adapter.test.ts | 使用原生问题回调 |
 | B11 | 原生 Subagent | 原生有则必做 | P2 | 支持 | src/subagent-lifecycle.ts、claude-history.ts | test/claude-history.test.ts、native-message.test.ts | 根级与子 Agent 不混淆 |
@@ -60,15 +60,21 @@
 ## 受限与已知缺口
 
 - 本清单记录现有实现与本次历史修复范围，不是所有原生版本、平台、Desktop、委派和发行加载的完整认证。
+- A5：图片输入只读取 Desktop 附件清单中的本地路径；未在真实 Desktop 附图流程与真实模型上验收。按 Agent SDK 0.3.273 内置 CLI 代码，原生只缩放作为 Turn 开始的输入中的 image 块，插入运行中 Turn 的 queued_command 图片原样发送，故 steer 在本地限尺寸；其他版本未逐一核对。带图片的 steer 历史按 CLI 2.1.323 源码中 queued_command prompt 可为内容块数组的形态解析，无原生样本。
 - A6、B4：取消、无头权限依赖原生能力和确认；不承诺所有 CLI 版本一致。
 - A7：只恢复有明确人类来源的 prompt queued_command；不推断其他附件。原生结果证据不完整时保持 unknown。公共历史 Item 不携带本地 Web requestId 或每条输入的发送时间。
 - B5、B7：只接受原生可精确保留且验证通过的前缀，不把附件 UUID 用作 checkpoint；原生 Fork 未保留内容时拒绝派生结果。
 - B12、C8：后台续态与额度依原生帧/接口，不将未知状态猜成支持或成功。
+- B2：档位按原生 ModelInfo 映射：Low～Max 取 `supportedEffortLevels`（`supportsEffort` 为 false 时不提供），Ultracode 需要 `xhigh`，Off 在 `supportsThinkingOff` 为 false 时隐藏（该字段由 CLI 返回，SDK 类型未声明），Auto 始终提供。一行里这些字段都没有时（旧 CLI 或 `modelPicker` 自定义行）保留全部八个档位。第三方模型（如网关 Gemini）的能力由 Claude Code 的 `CLAUDE_CODE_MODEL_CAPABILITIES` 决定。
+- B2：发给 Claude Code 的 `thinking` 仍为 `{type:"adaptive", display:"summarized"}` 或 disabled。SDK 把它转成 `--thinking adaptive`，只表示开启思考；CLI 2.1.323 在请求时对支持的模型发 adaptive，对其余模型改发 token 预算（已读 CLI 源码确认，未实机发送）。SDK 的 `ThinkingConfig` 必须带 `type`，`{type:"enabled"}` 不带预算时也转成同一个参数，所以不另做区分。effort 由会话按目录收敛：所选档位不在模型列表中时降到该模型不高于所选档位的最高 effort（Ultracode 按 Extra High 算，例如 Extra High/Max/Ultracode 在只到 High 的模型上变为 High），没有这样的档位（含 Off 不可用）时改用 Auto；尚未完成检查、没有目录时沿用原选择，此时 CLI 自身会把不支持的 xhigh/max 降为 high。
 - B15、B16、D3：仅定位既有实现/测试，没有完成完整委派或插件 Loader/发行验证。
+- B8：Codex 的网页搜索 Item 没有状态，Desktop 也不渲染 `results`，因此成功的搜索只显示查询词；未成功的搜索改投影为带原生错误的通用工具卡（实时与历史一致）。实时搜索在结果确定后才出现在 Desktop，Web 行随该 Item 结束，不等 Turn 结束。WebFetch 仍为通用工具卡。Monitor 只返回“已启动”，之后的事件以不带 `tool-use-id`、`<status>` 和输出文件的 `<task-notification><event>` 逐条到达，没有可确认的结束信号，与后台 Bash 依输出文件和结束通知收尾的方式不同，因此不映射为命令卡。
 
 ## 插件外改动
 
 `docs/harnesses/claude-code/claude-code-steer.md` 记录冷历史恢复规则、checkpoint 与验证边界。恢复输入使用已有 `HostUserMessageItem`，不扩展公共契约；Web 通过通用的同轮用户 Item 投影独立显示，不读取 Claude 原生 attachment。官方 Codex 的队列和实时工具修复由 Host Runtime 负责，不属于本插件。
+
+公共契约新增 `HostMcpToolCallItem`（server、tool、arguments、output）与 `HostWebSearchItem`（query），Protocol Core 投影为 Codex app-server 的 `mcpToolCall` 与 `webSearch`；两者均在随 Codex Desktop 附带的 codex-cli 0.167.0-alpha.4.1 生成的 `ThreadItem` 中，Desktop 渲染层有对应分支。Web 把这两类 Item 转回 `server__tool` 与 `web_search` 工具行。
 
 ## 验证记录
 
@@ -80,6 +86,9 @@
 | 插件加载 | `npm run build:typescript` 包含 `build:plugins`；不替换已安装插件 | 构建通过；已安装 CC 插件加载未验收 |
 | Host 集成 | 运行中共享 Host 保持原状 | 本次未部署修复 |
 | 真实原生验收 | 新模型执行、真实 Fork / rollback | 本次未执行；仅只读历史 |
+| 图片输入（2026-11-14） | `npx tsc -b`；vitest 指定 turn-input、claude-queued-history、claude-code-adapter、claude-rollback、sdk-transport 及 host-runtime external-thread-claude-continuation；所改文件 eslint / prettier；`node tools/check-boundaries.mjs` | 通过；未在真实 Desktop 附图与真实模型上验收 |
 | Desktop / 委派 | GUI 工具限制与本次范围 | 本次未执行 |
+| 按模型的思考档位（B2） | `npx tsc -b`；tests/tsconfig.json 类型检查；所改文件 eslint / prettier；`npx vitest run --config tests/vitest.config.js` 指定 model-catalog、claude-code-adapter、sdk-transport、ultracode 四个测试文件 | 通过；未在 Desktop 或真实网关模型上实机验收 |
+| MCP / WebSearch 投影 | `npx tsc -b`；vitest 跑 codex-ui-projector、claude-code-adapter、claude-history 三个测试文件；`node --import tsx --test` 跑 web-server ch-tool-items | 通过；未在 Codex Desktop 实机查看卡片 |
 
 本次原生回放和聚焦测试结果存于 `/tmp/cc-queued-command-analysis-7WczIV/`，这是本地临时证据，不是发行依赖。冷历史 Item 身份稳定于原生记录，不承诺与 Host 的实时 Item ID 或本地 Web requestId 相同。

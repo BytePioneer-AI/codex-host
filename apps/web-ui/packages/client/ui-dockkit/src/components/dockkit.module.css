@@ -182,6 +182,12 @@
   background: var(--dsw-alias-bg-base);
 }
 
+:global(body[data-codexhost-wallpaper]) :is(.tabHost:not(.float), .emptyTabHost) {
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 28%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
 .tabCell[data-dockkit-host="dock"][data-dockkit-column="0"] > .tabHost {
   border-left: 0.5px solid var(--dsw-alias-border-l4);
 }

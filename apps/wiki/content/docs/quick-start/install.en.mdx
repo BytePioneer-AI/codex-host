@@ -1,0 +1,69 @@
+---
+title: Install, Update & Start/Stop
+description: Install CodexHost via native installer, npm, or WinGet, and learn how Desktop and Web stay in sync.
+---
+
+## Before You Install
+
+- **Using the Desktop UI**: Install the official **Codex Desktop** app first.
+- **Using only the Web / mobile UI**: You do **not** need Codex Desktop installed.
+- **Using external Agents** (Claude Code, Pi, Grok, etc.): Install and sign in to whichever Agent CLIs you want to use—or install them later right from **Settings → Connections**.
+
+---
+
+## Pick an Installation Method
+
+### Option 1: Native Installer (Recommended for macOS & Windows)
+
+Download the installer for your system from [GitHub Releases](https://github.com/BytePioneer-AI/codex-host/releases).
+
+- After installing, open **`codexhost`** to launch Codex Desktop with CodexHost enabled.
+- To open the Web app locally, visit `http://127.0.0.1:4400` in your browser.
+
+### Option 2: npm CLI (macOS / Windows / Linux)
+
+Requires **Node.js 22.19+** or **Node.js 24** (Node 23.x is not supported):
+
+```bash
+npm install -g @codexhost/cli
+```
+
+Everyday commands:
+
+```bash
+codexhost          # Launch Codex Desktop (automatically opens Web if Desktop isn't installed)
+codexhost web      # Start the Web app in the background and open it (127.0.0.1:4400)
+codexhost status   # Check whether background services are running and see version info
+codexhost stop     # Shut down all background services managed by CodexHost
+```
+
+### Option 3: WinGet (Windows x64 / ARM64)
+
+Run the same command in PowerShell to install or upgrade:
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
+---
+
+## Updating, Stopping & Login Autostart
+
+- **Update**: Run `codexhost update` (or update from Settings / Local Console). If you plan to overwrite an npm installation manually with `npm install -g`, run `codexhost stop` first.
+- **Stop everything**: Run `codexhost stop`. This stops the managed Desktop, Web, background Host, and Console processes. Running Agent turns will be interrupted, **but none of your chat history, project files, or settings are deleted**.
+- **Start automatically at login**: Useful if you want your computer ready for mobile access whenever it's on:
+  ```bash
+  codexhost autostart on      # Enable login autostart
+  codexhost autostart off     # Disable login autostart
+  codexhost autostart status  # Check current status
+  ```
+
+---
+
+## How Do Desktop and Web Work Together?
+
+**Codex Desktop** and the **Web app (`127.0.0.1:4400`)** are two windows into the **exact same background Host** on your computer:
+
+- Every chat session, tool approval prompt, Agent question, and running turn lives in that shared background service.
+- Closing the Codex Desktop window or closing your browser tab **does not stop running tasks**.
+- You can kick off a long task on your desktop, close the window, check progress or approve a command from your phone while away, and pick right back up on your computer later.

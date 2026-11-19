@@ -68,6 +68,14 @@ codexhost stop     # stop all CodexHost background services
 
 Grab the installer for your platform from [Releases](https://github.com/BytePioneer-AI/codex-host/releases). For Web: open codexhost after installing, then visit http://127.0.0.1:4400 locally.
 
+**Option 3: WinGet** (Windows x64 / ARM64)
+
+Install or upgrade with the same command:
+
+```powershell
+winget install --id BytePioneer-AI.CodexHost --exact
+```
+
 > Linux is supported on x64 and ARM64. See the [Linux guide](docs/platforms/linux/linux.md).
 
 **Upgrade and stop:** run `codexhost update` to upgrade, and `codexhost stop` to stop all background services. Before installing over an existing npm installation, run `codexhost stop` first.

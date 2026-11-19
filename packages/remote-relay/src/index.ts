@@ -10,6 +10,7 @@ import { WebSocketServer } from "ws";
 import { readClientHello } from "./client-hello.js";
 import { ControlCertificate } from "./certificates.js";
 import { CertificateRequests } from "./certificate-requests.js";
+import { ConnectionRateLimiter } from "./connection-rate.js";
 import type { ExternalAccount } from "./protocol.js";
 import { isDnsLabel, maxPayload, normalizeControlHost, paths } from "./protocol.js";
 import { forward } from "./forward.js";
@@ -36,6 +37,12 @@ export interface RelayOptions {
   rate?: number;
   dailyQuota?: number;
   maxConnections?: number;
+  /** New TCP connections per IP within the sliding window; defaults to 10. */
+  ipConnectionLimit?: number;
+  /** Sliding window in milliseconds; defaults to 10,000. */
+  ipConnectionWindow?: number;
+  /** Cooldown in milliseconds; defaults to 60,000. */
+  ipBanDuration?: number;
   certificateDirectory?: string;
   externalAccount?: (request: {
     id: string;
@@ -55,6 +62,11 @@ export function createRelay(options: RelayOptions) {
   ) {
     throw new Error("--max-connections must be a positive integer");
   }
+  const connectionRate = new ConnectionRateLimiter(
+    options.ipConnectionLimit,
+    options.ipConnectionWindow,
+    options.ipBanDuration,
+  );
   const domain = normalizeControlHost(options.domain);
   const controlHost = normalizeControlHost(options.controlHost ?? `relay.${domain}`);
   if ((options.cert === undefined) !== (options.key === undefined)) {
@@ -109,9 +121,16 @@ export function createRelay(options: RelayOptions) {
     });
   });
   const server = createServer({ allowHalfOpen: true }, (socket) => {
+    socket.on("error", () => socket.destroy());
+    if (
+      !connectionRate.allow(socket.remoteAddress) ||
+      (maxConnections !== undefined && sockets.size >= maxConnections)
+    ) {
+      socket.destroy();
+      return;
+    }
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
-    socket.on("error", () => socket.destroy());
     // A phone that disappears after its ClientHello can make the stream request throw; that
     // must close this connection, not reject unhandled and stop the whole Relay.
     void readClientHello(socket)
@@ -146,7 +165,8 @@ export function createRelay(options: RelayOptions) {
       })
       .catch(() => socket.destroy());
   });
-  if (maxConnections !== undefined) server.maxConnections = maxConnections;
+  const cleanupConnections = setInterval(() => connectionRate.prune(), 60_000);
+  cleanupConnections.unref();
   const cleanupUsage = setInterval(() => pruneUsage(usageByName, agents), 60 * 60_000);
   cleanupUsage.unref();
   const reload = () => tls.setSecureContext(credentials());
@@ -165,6 +185,7 @@ export function createRelay(options: RelayOptions) {
     },
     async close(): Promise<void> {
       certificates?.stop();
+      clearInterval(cleanupConnections);
       clearInterval(cleanupUsage);
       process.off("SIGHUP", reload);
       const closed = [...wss.clients, ...sockets].map(

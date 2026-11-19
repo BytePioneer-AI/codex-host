@@ -1,6 +1,7 @@
 /** Chat-owned Slot declarations and composed component props. */
 import type { ReactNode } from "react";
 import type { MessageId } from "@deepseek-ai/dsh-llm/brand";
+import type { ResponseAnnotation } from "@codexhost/shared-contracts";
 import type { SessionId, SessionSeq } from "@deepseek-ai/dsh-session/types";
 import type {
   CommandNode,
@@ -66,6 +67,10 @@ export type UsePresentation = SnapshotSelectorHook<ChatPresentationPolicy>;
 export interface OpenFileOptions {
   /** 1-based line to reveal; absent = the file's beginning. */
   readonly line?: number;
+  /** Hand the original file to the Host operating system's default application. */
+  readonly external?: boolean;
+  /** Reveal the original file's containing folder on the Host desktop. */
+  readonly reveal?: boolean;
 }
 
 /** Owner currency of the completed-Turn extension chain. */
@@ -196,11 +201,17 @@ export interface SentMessageEditing {
     seq: number;
     text: string;
     content: readonly unknown[];
+    responseAnnotations: readonly ResponseAnnotation[];
     pending: boolean;
     blocked: boolean;
     error?: string;
   } | null;
-  begin(seq: number, text: string, content: readonly unknown[]): void;
+  begin(
+    seq: number,
+    text: string,
+    content: readonly unknown[],
+    responseAnnotations?: readonly ResponseAnnotation[],
+  ): void;
   change(text: string): void;
   cancel(): void;
   send(): void;
@@ -245,6 +256,12 @@ export interface ChatNodeOwnerProps {
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined;
   /** Turn-process state when this Node belongs to a projected Turn. */
   turnProcess?: TurnProcessOwnerProps | undefined;
+  /**
+   * Annotations of the user message this Node's Turn answers, in attachment
+   * order; empty when the Turn answers a message without any. The seat resolves
+   * them per Node, so every renderer receives the array it actually reads.
+   */
+  responseAnnotations: readonly ResponseAnnotation[];
 }
 
 /** Shared presentation state for one Turn-process answer generation. */
@@ -297,6 +314,8 @@ export interface ChatViewInjected {
   hooks: {
     /** Live presentation policy derived from the accepted work-details mode. */
     presentation: ObservableSnapshot<ChatPresentationPolicy>;
+    /** Whether the Sidebar Browser is registered. */
+    browserAvailable: ObservableSnapshot<boolean>;
   };
   keyedHooks: {
     /** Resolve the stable source for one Chat Node key. */
@@ -312,6 +331,8 @@ export interface ChatViewInjected {
   openSkill: (name: string) => void;
   /** Open one HTTP(S) message link at the selected destination, using an external tab if Sidebar Browser is unavailable. */
   openExternalLink: (url: string) => void;
+  /** Open one HTTP(S) message link in Sidebar Browser when available. */
+  openLinkInSidebar: (url: string) => boolean;
   /** Resolve product-specific message links without exposing their protocols to Chat. */
   resolveLink?: MarkdownLinkResolver | undefined;
   openFile: (path: string, options?: OpenFileOptions) => Promise<void>;

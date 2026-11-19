@@ -6,9 +6,94 @@ import {
   remoteSessionRequestBytes,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   type RemoteSessionOperation,
+  type RemoteConnectionsReply,
 } from "@codexhost/shared-contracts";
 import { requestDesktopRemoteConnections } from "./remote-connections-control.js";
 import { readRemoteProjectMetadata } from "./remote-project-metadata.js";
+
+export class RemoteSessionError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "RemoteSessionError";
+  }
+}
+
+function resultOf(reply: RemoteConnectionsReply): unknown {
+  if ("error" in reply) throw new RemoteSessionError(reply.error.code, reply.error.message);
+  return reply.result;
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Assemble bounded Controller pages without putting the complete history on one reply. */
+async function readHistory(
+  input: Extract<RemoteSessionOperation, { kind: "read" }>,
+  request: (operation: RemoteSessionOperation) => Promise<RemoteConnectionsReply>,
+): Promise<unknown> {
+  const turns: unknown[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  let epoch: string | undefined;
+  let bytes = 0;
+  for (let page = 0; page < 5000; page++) {
+    const reply = await request({
+      ...input,
+      page: { cursor, ...(epoch === undefined ? {} : { epoch }) },
+    });
+    const snapshot = resultOf(reply);
+    if (
+      !record(snapshot) ||
+      typeof snapshot.epoch !== "string" ||
+      !snapshot.epoch ||
+      !record(snapshot.result) ||
+      !record(snapshot.result.thread) ||
+      snapshot.result.thread.id !== input.threadId ||
+      !Array.isArray(snapshot.result.thread.turns) ||
+      (snapshot.nextCursor !== null &&
+        (typeof snapshot.nextCursor !== "string" || snapshot.nextCursor.length === 0))
+    )
+      throw new RemoteSessionError(-32603, "Invalid remote history page; refresh and retry.");
+    if (epoch !== undefined && snapshot.epoch !== epoch)
+      throw new RemoteSessionError(
+        -32095,
+        "Remote connection changed during history pagination; refresh and retry.",
+      );
+    epoch = snapshot.epoch;
+    bytes += Buffer.byteLength(JSON.stringify(snapshot.result.thread.turns));
+    if (bytes > 128 * 1024 * 1024 || turns.length + snapshot.result.thread.turns.length > 5000)
+      throw new RemoteSessionError(
+        -32094,
+        "Remote history exceeds the Web history limit (128 MiB or 5,000 Turns); open this chat in Codex Desktop.",
+      );
+    turns.push(...snapshot.result.thread.turns);
+    cursor = snapshot.nextCursor;
+    if (cursor === null) {
+      const complete = { ...snapshot };
+      delete complete.nextCursor;
+      return {
+        ...complete,
+        result: { ...snapshot.result, thread: { ...snapshot.result.thread, turns } },
+      };
+    }
+    if (snapshot.result.thread.turns.length === 0)
+      throw new RemoteSessionError(
+        -32603,
+        "Remote history page did not advance; refresh and retry.",
+      );
+    if (cursors.has(cursor))
+      throw new RemoteSessionError(-32603, "Remote history cursor repeated; refresh and retry.");
+    cursors.add(cursor);
+  }
+  throw new RemoteSessionError(
+    -32094,
+    "Remote history exceeds the page limit; open this chat in Codex Desktop.",
+  );
+}
 
 export function remoteSessionDescriptorPaths(
   environment: NodeJS.ProcessEnv = process.env,
@@ -72,23 +157,23 @@ export async function requestRemoteSession(
   const value = [...unique.values()][0];
   if (!value) throw new Error("Desktop descriptor unavailable");
   // Discovery finishes before dispatch. Never try another descriptor after a lost reply.
-  const reply = await requestDesktopRemoteConnections(
-    {
-      CODEXHOST_CONTROL_PORT: String(value.control_port),
-      CODEXHOST_CONTROL_NONCE: value.nonce,
-    },
-    { action: "session", operation: input },
-  );
-  if ("error" in reply) throw new Error(reply.error.message);
-  if (input.kind === "hosts" && Array.isArray(reply.result)) {
+  const environment = {
+    CODEXHOST_CONTROL_PORT: String(value.control_port),
+    CODEXHOST_CONTROL_NONCE: value.nonce,
+  };
+  const request = (operation: RemoteSessionOperation) =>
+    requestDesktopRemoteConnections(environment, { action: "session", operation });
+  if (input.kind === "read" && input.page === undefined) return readHistory(input, request);
+  const result = resultOf(await request(input));
+  if (input.kind === "hosts" && Array.isArray(result)) {
     const projects = await readRemoteProjectMetadata().catch(() => []);
-    return reply.result.map((host) =>
+    return result.map((host) =>
       host && typeof host === "object" && !Array.isArray(host)
         ? { ...host, projects: projects.filter((p) => p.hostId === host.hostId) }
         : host,
     );
   }
-  return reply.result;
+  return result;
 }
 
 async function readDescriptor(

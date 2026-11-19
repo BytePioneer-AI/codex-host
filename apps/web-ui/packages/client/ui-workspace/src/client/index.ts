@@ -375,6 +375,9 @@ export function apply(ctx: Context): void {
       uiWorkspace.startSession(workspaceId);
     },
     open: openSession,
+    markCompletionsRead: (sessionIds) => {
+      ctx.get("uiSession")?.markCompletionsRead(sessionIds);
+    },
     searchSessions,
     refreshSessions: () => {
       void sessions.refresh();

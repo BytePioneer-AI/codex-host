@@ -127,10 +127,8 @@ export class SharedThreadBridge {
           if (this.#peer === peer) this.#peer = null;
           this.#invalidateLists();
         });
-        // Announce existing Threads when a GUI starts or the SSH service is discovered later.
-        for (const thread of await this.#rows(peer, {})) {
-          this.#publish({ method: "thread/started", params: { thread }, emittedAtMs: Date.now() });
-        }
+        // History is read through thread/list. Replaying it as thread/started makes each
+        // downstream viewer rebuild its catalog once per historical Thread.
         return peer;
       })
       .catch((error: unknown) => {

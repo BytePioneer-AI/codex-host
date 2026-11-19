@@ -70,6 +70,14 @@ function registration(threadId: string): DelegationControlRegistration {
       result: { availability: "pending" as const },
       timedOut: true,
     })),
+    answer: vi.fn(async (input) => ({
+      threadId: input.threadId,
+      interactionId: input.interactionId,
+      turnId: `turn-${threadId}`,
+      harnessId: "pi" as const,
+      status: "running" as const,
+      next: { read: "read", wait: "wait" },
+    })),
     list: vi.fn(async () => ({ threads: [], nextCursor: null })),
   };
 }
@@ -143,6 +151,21 @@ describe("DelegationControlRegistry", () => {
     await registry.listHarnesses();
     expect(native.listHarnesses).toHaveBeenCalledOnce();
   });
+  it("rejects conflicting or non-boolean send options before choosing a session", async () => {
+    const registry = new DelegationControlRegistry();
+    const target = registration("target");
+    registry.register(target);
+    for (const input of [
+      { threadId: "target", message: "adjust", steer: true, interrupt: true },
+      { threadId: "target", message: "adjust", steer: "true" },
+      { threadId: "target", message: "adjust", interrupt: "true" },
+    ])
+      await expect(
+        registry.send(input as unknown as Parameters<typeof registry.send>[0]),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    expect(target.send).not.toHaveBeenCalled();
+    registry.close();
+  });
   it("discovers targets from the active session without inspecting Models", async () => {
     const registry = new DelegationControlRegistry();
     const session = registration("parent");
@@ -173,11 +196,18 @@ describe("DelegationControlRegistry", () => {
     await registry.read({ threadId: "parent-a", view: "result" });
     await registry.send({ threadId: "parent-b", message: "continue" });
     await registry.cancel({ threadId: "parent-a" });
+    await registry.answer({
+      threadId: "parent-b",
+      interactionId: "interaction-1",
+      result: { answers: { decision: { answers: ["continue"] } } },
+    });
 
     expect(second.start).toHaveBeenCalledOnce();
     expect(first.read).toHaveBeenCalledOnce();
     expect(second.send).toHaveBeenCalledOnce();
     expect(first.cancel).toHaveBeenCalledOnce();
+    expect(second.answer).toHaveBeenCalledOnce();
+    expect(first.answer).not.toHaveBeenCalled();
   });
 
   it("requires a unique active session for implicit start and unscoped list", async () => {

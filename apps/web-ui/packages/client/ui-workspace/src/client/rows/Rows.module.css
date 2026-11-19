@@ -207,6 +207,18 @@
   cursor: pointer;
 }
 
+.identityButton::after {
+  content: "";
+  position: absolute;
+  inset: -6px -4px -6px -8px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .sessionRow:not(:has(> [data-thread-summary])) .identityButton::after {
+    inset: -12px -6px -12px -8px;
+  }
+}
+
 .foldChevron {
   position: absolute;
   inset: 0;
@@ -664,6 +676,37 @@
 :global([data-phone-drawer]) .rowActions,
 :global([data-phone-drawer]) .rowActions::before {
   background: transparent;
+}
+
+:global(body[data-codexhost-wallpaper]) :is(.projectRow, .sessionRow) {
+  --dsh-row-surface: transparent;
+}
+
+:global(body[data-codexhost-wallpaper])
+  :is(.projectRow, .sessionRow):is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+}
+
+:global(body[data-codexhost-wallpaper]) .sessionRow.selected {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+}
+
+:global(body[data-codexhost-wallpaper])
+  .sessionRow.selected:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :global(body[data-codexhost-wallpaper]) :is(.projectRow > .rowActions, .sessionRow .rowActions) {
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 82%, transparent);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+
+  :global(body[data-codexhost-wallpaper])
+    :is(.projectRow > .rowActions::before, .sessionRow .rowActions::before) {
+    display: none;
+  }
 }
 
 /* Keep the hit target and keyboard ring; a press changes the glyph, not a

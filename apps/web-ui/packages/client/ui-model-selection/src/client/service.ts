@@ -56,6 +56,7 @@ export class ModelDirectoryResolver extends Service {
     void this.migrateLegacyFavorites().catch(() => {});
     ctx.remote.$on("codexhost/preferences-changed", () => this.refreshCatalogs());
     ctx.remote.$on("codexhost/display-settings-changed", () => this.refreshCatalogs());
+    ctx.remote.$on("codexhost/harness-inspection-changed", () => this.catalog.refresh());
     ctx.effect(() => {
       const focus = () => this.refreshCatalogs();
       const visible = () => {

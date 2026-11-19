@@ -32,11 +32,13 @@ HTTP 与 MCP 的以下参数及 JSON 结果和 CLI 对齐（HTTP 用 `threadId`�
 
 | HTTP | MCP | 参数与结果 |
 | --- | --- | --- |
-| `POST /v1/thread/send` | `thread_send` | `message`、可选布尔值 `interrupt`、`watch` 及正整数 `watchTimeoutMs` |
+| `POST /v1/thread/send` | `thread_send` | `message`、可选布尔值 `interrupt` 与 `steer`、`watch` 及正整数 `watchTimeoutMs` |
 | `POST /v1/delegate/start` | `delegate_start` | 可选 `worktree`（新分支名）、`base`（Git ref）、`watch` 及 `watchTimeoutMs` |
 | `POST /v1/thread/watches` | `thread_watches` | 原样返回 Host 的 watches，含 `taskName`、`threadStatus`、`watchedForMs` |
 
 `interrupt: true` 先取消活动 Turn、确认空闲后只发送一次，读取、取消和等待停下共用 30 秒期限；取消失败或超时不发送。目标空闲时直接发送，不排队、不自动重试，保留已有 watch 并抑制临时停下通知。省略或 `false` 保持普通 send 行为。
+
+`steer: true` 与 CLI 的 `--steer true` 相同：空闲 Thread 启动新 Turn；运行中 Thread 复用 Desktop 的调整方向操作，原生 Codex 使用 `turn/steer`，外部 Harness 按能力原生接受或沿既有停止后重发路径。成功回执只表示已接受输入，不表示已在当前轮执行或任务完成。`steer: true` 与 `interrupt: true` 互斥，同时请求在发送前以 `INVALID_ARGUMENT` 拒绝。省略或 `false` 保留忙时 `THREAD_BUSY`。
 
 `watch: true` 在成功 start / send 后观察，默认 29 分钟；`watchTimeoutMs` 必须是正整数。为兼容 CLI 控制协议，单独提供 `watchTimeoutMs` 也会启用 watch；显式 `watch: false` 时不能提供超时。响应的 `watch` 与 CLI 相同：`watching` / `alreadyTerminal`（含 Thread、通知目标、状态、超时），或 `{state: "notRegistered", reason}`。watch 注册失败不撤销成功的消息提交；未请求时不增加 `watch` 字段。无父 Thread 的委派和未指定通知 Thread 的 send 均向调用客户端的事件日志投递，不启动通知 Turn。见 [Thread watch](thread-watch.md)。
 
@@ -76,7 +78,7 @@ Rarely needed: debugging only. Exports the full Thread to a JSON file and return
 
 ## 监听与发现
 
-- 本机共享后台 Host、本机 Desktop Runtime 与受管 Remote Host 均在 `127.0.0.1:4398` 提供外部监听；`CODEXHOST_EXTERNAL_CLIENT_PORT` 改端口，`off` 关闭。端口被占用时只停用外部监听并写诊断，Host 的其他功能不受影响。不要求 GUI 或 Web 页面保持打开，Remote Host 的委派使用其共享执行会话。
+- 本机共享后台 Host、本机 Desktop Runtime 与受管 Remote Host 均在 `127.0.0.1:4398` 提供外部监听；`CODEXHOST_EXTERNAL_CLIENT_PORT` 改端口，`off` 关闭；Launcher、Host 启动封装与 Web 预览清理继承环境时保留该变量，因此它对新启动的共享 Host 生效，已在运行的 Host 重启前沿用原端口。端口被占用时只停用外部监听并写诊断，Host 的其他功能不受影响。不要求 GUI 或 Web 页面保持打开，Remote Host 的委派使用其共享执行会话。
 - Remote Host 的客户端登记、凭据与事件使用该 Host 的数据目录（默认 `~/.codexhost/remote/data`）。运行 `codexhost client` 时须使用相同的 `CODEXHOST_DATA_DIR`。
 - 无界面的共享执行会话在首次原生 Codex 委派前协商官方协议；使用默认模型无需先查询模型目录或打开 Desktop。
 - 监听只接受客户端令牌，不接受 Host 内部令牌；令牌缺失、未知或已吊销都返回相同的 `UNAUTHORIZED`，不透露客户端名称。

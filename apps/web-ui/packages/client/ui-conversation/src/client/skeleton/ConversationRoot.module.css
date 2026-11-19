@@ -7,6 +7,10 @@
   background: var(--dsw-alias-bg-base);
 }
 
+:global(body[data-codexhost-wallpaper]) .root {
+  background: transparent;
+}
+
 /* 76px with its rule: the height of the Sidebar's tab strip and header row
    (ui-dockkit `.tabStrip` 38px + the pane header's 38px), so the two rules
    meet at the column edge. The rows add up to it — 10px top inset, the 30px
@@ -489,6 +493,11 @@ button.crumb:hover {
   :global([data-phone]) .composerSeat {
     --dsh-phone-composer-mask: initial;
   }
+}
+
+:global(body[data-codexhost-wallpaper]) .root[data-phase="active"] .composerSeat,
+:global(body[data-codexhost-wallpaper]) .embeddedBody[data-content-phase="active"] .composerSeat {
+  background: transparent;
 }
 
 /* An open @/slash menu (data-trigger-menu, ui-input-trigger) renders inside

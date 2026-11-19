@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "./harness-models.js";
 import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
+import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
  * NOT appendable transcript deltas. Clients reconcile absolute snapshots. */
@@ -28,6 +29,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "thread/name/set",
   "codexhost/thread/title/generate",
   "thread/archive",
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   "thread/unarchive",
   "turn/start",
   "turn/interrupt",
@@ -122,6 +124,11 @@ export const clientChannelEventSchema = z.discriminatedUnion("type", [
     cursor: clientChannelCursorSchema,
     cwd: z.string().optional(),
   }),
+  z.object({
+    type: z.literal("harness-inspection-changed"),
+    cursor: clientChannelCursorSchema,
+    harnessId: z.string().min(1),
+  }),
   z.object({ type: z.literal("display-settings-changed"), cursor: clientChannelCursorSchema }),
   z.object({
     type: z.literal("preferences-changed"),
@@ -208,6 +215,8 @@ const clientTurnSchema = z
   .object({
     id: z.string().min(1),
     status: z.string().min(1),
+    /** Native history has no terminal evidence; Desktop's status vocabulary cannot express this. */
+    codexhostTurnOutcome: z.object({ status: z.literal("unknown"), reason: z.string() }).optional(),
     items: z.array(z.object({ id: z.string().min(1), type: z.string().min(1) }).passthrough()),
     /** Original file operations, independent of the cumulative Desktop fileChange card.
      * Insert before the named non-file Item; null appends at the end of the Turn.
@@ -257,7 +266,14 @@ export const clientThreadSnapshotSchema = z.object({
   /** Current interruptible Host Turn, including command Turns omitted from client history. */
   activeTurnId: z.string().min(1).nullable().optional(),
   /** Most recent explicit command in this Host process; not native conversation history. */
-  command: z.object({ name: z.string().min(1), turn: clientTurnSchema }).optional(),
+  command: z
+    .object({
+      name: z.string().min(1),
+      turn: clientTurnSchema,
+      /** First ordinary Turn started after this command; its retained result is not a new event. */
+      subsequentTurnId: z.string().min(1).optional(),
+    })
+    .optional(),
   thread: z
     .object({
       id: z.string().min(1),

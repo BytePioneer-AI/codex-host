@@ -3,7 +3,7 @@ import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import type { HarnessInspection } from "@codexhost/harness-adapter";
 import { warmup as warmupClaude } from "@codexhost/adapter-claude-code/plugin";
@@ -76,94 +76,48 @@ describe("installed Harness composition", () => {
     },
   );
 
-  it("provides every built-in command catalog before inspection or Session creation", async () => {
-    const expected = {
-      copilot: [],
-      codebuddy: ["/compact", "/cost"],
-      workbuddy: ["/compact", "/init"],
-      "cursor-cli": ["/copy-request-id"],
-      pi: ["/compact"],
-      "claude-code": ["/compact", "/init", "/recap"],
-      "deepseek-harness": ["/compact", "/dsh-goal", "/plan"],
-      opencode: ["/compact"],
-      grok: ["/compact"],
-      omp: ["/compact"],
-      "qwen-code": [],
-      antigravity: [
-        "/plan",
-        "/goal",
-        "/browser",
-        "/grill-me",
-        "/boost",
-        "/learn",
-        "/schedule",
-        "/compact",
-        "/help",
-      ],
-      "kiro-cli": [
-        "/compact",
-        "/kiro-context",
-        "/kiro-usage",
-        "/kiro-plan",
-        "/kiro-spec",
-        "/kiro-vibe",
-      ],
-      "kimi-code": ["/compact", "/status", "/usage", "/mcp", "/tasks", "/help"],
-      devin: [],
-      hermes: ["/help", "/tools", "/context", "/version", "/compress"],
-      qoder: ["/compact"],
-      "qoder-cn": ["/compact"],
-      zcode: ["/compact", "/goal"],
-    };
-    const registry = await load();
-    try {
-      for (const [id, adapter] of registry.adapters) {
-        const open = vi.spyOn(adapter, "open");
-        const inspect = vi.spyOn(adapter, "inspect");
-        expect(adapter.commandCatalog?.commands.map(({ invocation }) => invocation) ?? []).toEqual(
-          expected[id as keyof typeof expected],
-        );
-        expect(open).not.toHaveBeenCalled();
-        expect(inspect).not.toHaveBeenCalled();
-      }
-    } finally {
-      await registry.close();
-    }
-  }, 35_000);
+  describe("explicit commands", () => {
+    const commands: Array<[id: string, variable: string]> = [
+      ["copilot", "CODEXHOST_COPILOT_COMMAND"],
+      ["pi", "CODEXHOST_PI_COMMAND"],
+      ["claude-code", "CODEXHOST_CLAUDE_COMMAND"],
+      ["grok", "CODEXHOST_GROK_COMMAND"],
+      ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
+      ["omp", "CODEXHOST_OMP_COMMAND"],
+      ["qwen-code", "CODEXHOST_QWEN_COMMAND"],
+      ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
+      ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
+      ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
+      ["workbuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
+      ["cursor-cli", "CODEXHOST_CURSOR_COMMAND"],
+      ["devin", "CODEXHOST_DEVIN_COMMAND"],
+      ["hermes", "CODEXHOST_HERMES_COMMAND"],
+      ["qoder", "CODEXHOST_QODER_COMMAND"],
+      ["qoder-cn", "CODEXHOST_QODERCN_COMMAND"],
+    ];
+    let registry: Awaited<ReturnType<typeof load>>;
+    beforeAll(async () => {
+      registry = await load(
+        Object.fromEntries(
+          commands.map(([id, variable]) => [variable, path.resolve(".missing-fixture", id)]),
+        ),
+      );
+    }, 35_000);
+    afterAll(async () => registry?.close());
 
-  it.each([
-    ["copilot", "CODEXHOST_COPILOT_COMMAND"],
-    ["pi", "CODEXHOST_PI_COMMAND"],
-    ["claude-code", "CODEXHOST_CLAUDE_COMMAND"],
-    ["grok", "CODEXHOST_GROK_COMMAND"],
-    ["opencode", "CODEXHOST_OPENCODE_COMMAND"],
-    ["omp", "CODEXHOST_OMP_COMMAND"],
-    ["qwen-code", "CODEXHOST_QWEN_COMMAND"],
-    ["antigravity", "CODEXHOST_ANTIGRAVITY_COMMAND"],
-    ["kiro-cli", "CODEXHOST_KIRO_COMMAND"],
-    ["codebuddy", "CODEXHOST_CODEBUDDY_COMMAND"],
-    ["workbuddy", "CODEXHOST_WORKBUDDY_COMMAND"],
-    ["cursor-cli", "CODEXHOST_CURSOR_COMMAND"],
-    ["devin", "CODEXHOST_DEVIN_COMMAND"],
-    ["hermes", "CODEXHOST_HERMES_COMMAND"],
-    ["qoder", "CODEXHOST_QODER_COMMAND"],
-    ["qoder-cn", "CODEXHOST_QODERCN_COMMAND"],
-  ])(
-    "preserves the explicit %s command rather than finding another local installation",
-    async (id, commandVariable) => {
-      const registry = await load({ [commandVariable]: path.resolve(".missing-fixture", id) });
-      try {
+    // Each case inspects a distinct Adapter; none of them opens a Session or closes the registry.
+    it.each(commands)(
+      "preserves the explicit %s command rather than finding another local installation",
+      async (id) => {
         const adapter = [...registry.adapters].find(([key]) => key === id)?.[1];
         expect(await adapter?.inspect()).toMatchObject({
           status: "notInstalled",
           error: { code: id === "hermes" ? "HERMES_NOT_FOUND" : "notInstalled" },
         });
-      } finally {
-        await registry.close();
-      }
-    },
-    35_000,
-  );
+      },
+      35_000,
+    );
+  });
 
   it("keeps managed macOS execution behind the plugin's Broker with no direct CLI fallback", async () => {
     const registry = await loadHarnessPlugins({

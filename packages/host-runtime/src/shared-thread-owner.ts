@@ -4,7 +4,7 @@ import {
   jsonRpcRequestSchema,
   parseJsonFrame,
   readLfFrames,
-  writeJsonFrame,
+  encodeJsonFrame,
   type JsonObject,
   type JsonRpcId,
 } from "@codexhost/protocol-core";
@@ -122,13 +122,18 @@ export class SharedThreadOwner {
     let detached = false;
     const send = (message: JsonObject): void => {
       if (detached || streams.output.destroyed) return;
-      // Detach if the session's output stream stops draining.
-      if (streams.output.writableLength > 8 * 1024 * 1024) {
+      // The viewer transport bounds its queue independently of an in-flight frame.
+      const failed = () => {
         peer.close();
         streams.input.destroy();
-        return;
+      };
+      try {
+        streams.output.write(encodeJsonFrame(message), (error) => {
+          if (error) failed();
+        });
+      } catch {
+        failed();
       }
-      void writeJsonFrame(streams.output, message).catch(() => peer.close());
     };
     const unsubscribe = peer.subscribe(send);
     return {

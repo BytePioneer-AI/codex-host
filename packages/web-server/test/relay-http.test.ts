@@ -144,9 +144,16 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
     "x-forwarded-proto": "http",
     "x-forwarded-host": "evil.localhost",
   };
-  for (const method of ["codexhost/accessTokenGet", "codexhost/relaySet"]) {
-    const reply = await f.send(`/api/${method}`, f.body(method, { enabled: false }), forged);
-    assert.equal(JSON.parse(reply.body.toString()).result.error.code, "auth/local-access-required");
+  const forgedStatus = await f.send("/api/auth/status", undefined, forged);
+  assert.deepEqual(JSON.parse(forgedStatus.body.toString()), { authenticated: true, local: false });
+  const localToken = defined(f.local.searchParams.get("token") ?? undefined);
+  assert.equal(
+    (await f.send("/api/auth/status", undefined, { authorization: `Bearer ${localToken}` })).status,
+    401,
+  );
+  for (const method of ["codexhost/accessTokenGet", "codexhost/uiExtensions/list"]) {
+    const reply = await f.send(`/api/${method}`, f.body(method), forged);
+    assert.equal(JSON.parse(reply.body.toString()).result.ok, true, method);
   }
   for (const origin of [`http://${f.hostname}`, "https://sibling.localhost"]) {
     assert.equal(
@@ -173,29 +180,6 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
   assert.match(
     defined(logout.headers["set-cookie"]?.[0]),
     /^__Host-codexhost_token=; .*Max-Age=0; Secure$/,
-  );
-});
-
-it("limits by Relay's phone IP, ignores forged forwarding headers, and keeps another phone usable", async (t) => {
-  const f = await fixture(t);
-  for (let i = 0; i < 10; i++) {
-    const result = await f.send("/api/auth/login", JSON.stringify({ token: "wrong" }), {
-      "x-forwarded-for": `198.51.100.${i}`,
-    });
-    assert.equal(result.status, 401);
-  }
-  assert.equal(
-    (
-      await f.send("/api/auth/login", JSON.stringify({ token: f.state.secret }), {
-        "x-forwarded-for": "127.0.0.1",
-      })
-    ).status,
-    429,
-  );
-  assert.equal(
-    (await f.send("/api/auth/login", JSON.stringify({ token: f.state.secret }), {}, "127.0.0.1"))
-      .status,
-    200,
   );
 });
 

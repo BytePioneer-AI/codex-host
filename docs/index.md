@@ -24,6 +24,7 @@
 | [`architecture/harness-questions.md`](architecture/harness-questions.md) | 外部 Harness 多选提问卡片、原生单选分流、回答归属与生命周期；修改提问交互时阅读。 |
 | [`architecture/external-thread-steering.md`](architecture/external-thread-steering.md) | 外部 Thread 按 Session 能力选择原生同轮插入或停止后重发；修改 steering 时阅读。 |
 | [`architecture/external-thread-queue.md`](architecture/external-thread-queue.md) | 外部 Thread 跟进消息的 Host 原生 `thread/queue/*`、自动推进与中断暂停；修改排队或 Turn 启动时阅读。 |
+| [`architecture/external-thread-side-chats.md`](architecture/external-thread-side-chats.md) | 外部 Thread 的侧边聊天：挂靠 Fork、来源运行中的 Fork、边界消息暂存并随下一个 Turn 交付，以及列表、历史与删除规则；修改侧边聊天或 Fork 时阅读。 |
 | [`architecture/host-client-channel.md`](architecture/host-client-channel.md) | GUI、Web 与 App 共享原生 Codex／外部 Harness 的生命周期、认证通道、事件驱动快照、交互仲裁及恢复边界。 |
 | [OpenSpec：状态刷新与轮询优化](../openspec/changes/reduce-redundant-state-polling/proposal.md) | Web 目录与组织状态分别校验，远程设置页和 Console 按可见性降频；查看方案、实现进度与验收边界时阅读。 |
 | [`architecture/gui-web-shared-state-design.md`](architecture/gui-web-shared-state-design.md) | 共享 Host 的官方 Codex 与外部 Thread 所有权、存储边界、启动发现及生命周期；不提供旧 standalone 迁移。 |
@@ -32,24 +33,26 @@
 | [`architecture/delegation-worktrees.md`](architecture/delegation-worktrees.md) | CLI 与 HTTP/MCP 委派创建独立 Git worktree 的目录、HEAD 基线、返回字段、状态校验与失败保留边界。 |
 | [`architecture/delegation-thread-list.md`](architecture/delegation-thread-list.md) | 委派 CLI 列表的共享 catalog、独立来源分页、查询绑定与活列表一致性边界。 |
 | [`architecture/web-thread-tree.md`](architecture/web-thread-tree.md) | Web 侧栏会话树：委派关系决定的显示父 Thread、Host 树接口、祖先补齐、归档级联、排序与置顶规则；修改侧栏层级或委派显示时阅读。 |
-| [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
+| [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下或等待回答通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
 | [`architecture/external-clients.md`](architecture/external-clients.md) | 同用户 CLI 自动认证、命名客户端登记、本机监听、Thread 引用、调试导出、事件日志与 MCP；修改外部接入时阅读。 |
+| [`architecture/delegation-questions.md`](architecture/delegation-questions.md) | 委派问题（`pendingQuestions`/`thread answer`）的来源、唯一状态、回答与失效语义；修改子 Agent 提问交互时阅读。 |
 | [`architecture/official-traffic-ownership.md`](architecture/official-traffic-ownership.md) | Host 只截获自身流量、其余原样转发官方的归属判别与例外；修改请求路由或参数校验时阅读。 |
 | [`architecture/app-server-transport.md`](architecture/app-server-transport.md) | 原生大历史响应的 WebSocket 与 JSONL 传输边界；排查任务加载、消息大小和转发性能时阅读。 |
 | [`architecture/turn-activity-folding.md`](architecture/turn-activity-folding.md) | 回合完成后过程折叠的 Desktop 条件与 `final_answer` 推断规则；修改 Agent 消息阶段投影或排查过程无法收起时阅读。 |
 | [`architecture/acp-layer-follow-up.md`](architecture/acp-layer-follow-up.md) | 共享 ACP 层的抽取条件与边界；出现第二个适合共享实现的生产 ACP Harness 时阅读。 |
+| [`architecture/acp-implementation-research.md`](architecture/acp-implementation-research.md) | ACP 实现事实记录：本地插件分布、重复职责、会话与进程关系，以及 T3 Code 固定提交的公共 ACP 层和隔离机制；不包含改造方案。 |
 
 ## Harness 专项
 
-[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，以及 Pi 权限模式、Antigravity 审批与压缩等剩余缺口。
+[能力表边界](harnesses/capability-boundaries.md)记录各 Harness 的接入条件、Kimi 动态 Thinking、Cursor 的单向委派，以及 Pi 权限模式、Antigravity ACP 审批/派生/压缩等边界。
 
 ### Antigravity
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
-| [`harnesses/antigravity/antigravity-tool-approval.md`](harnesses/antigravity/antigravity-tool-approval.md) | agy 的危险跳过权限、旧模式拒绝和问题桥边界；修改权限或交互时阅读。 |
-| [`harnesses/antigravity/antigravity-subagents.md`](harnesses/antigravity/antigravity-subagents.md) | agy 原生 Subagent 生命周期、Transcript 和公共投影；修改 Subagent 支持时阅读。 |
-| [`harnesses/antigravity/antigravity-question-interaction-postmortem.md`](harnesses/antigravity/antigravity-question-interaction-postmortem.md) | Ask Question 失败历史、后续 Hook 桥实测和限制；排查 agy 提问交互时阅读。 |
+| [`harnesses/antigravity/antigravity-tool-approval.md`](harnesses/antigravity/antigravity-tool-approval.md) | `agy acp` 权限模式、原生 `session/request_permission` 工具审批与 `elicitation/create` 提问边界；修改权限或交互时阅读。 |
+| [`harnesses/antigravity/antigravity-subagents.md`](harnesses/antigravity/antigravity-subagents.md) | `agy acp` 原生 Subagent 生命周期、`conversation_summaries.db` 状态观测、Transcript 和公共投影；修改 Subagent 支持时阅读。 |
+| [`harnesses/antigravity/antigravity-question-interaction-postmortem.md`](harnesses/antigravity/antigravity-question-interaction-postmortem.md) | 历史归档：早期 PrintMode 下 Ask Question 失败复盘与旧 Hook 桥记录（现行实现已改用原生 ACP `elicitation/create`）。 |
 
 ### Claude Code
 
@@ -98,12 +101,14 @@
 | [`harnesses/pi/pi-subagents.md`](harnesses/pi/pi-subagents.md) | Pi 的 gotgenes / nicobailon 子代理身份、实时状态、只读子会话与适配边界。 |
 | [`harnesses/pi/pi-fast.md`](harnesses/pi/pi-fast.md) | Pi Codex Fast 闪电开关、别名 Provider 能力判定、自动加载和 priority 请求边界。 |
 | [`harnesses/pi/pi-progress.md`](harnesses/pi/pi-progress.md) | Pi 可见通知、重试状态、流式完成态核对及历史恢复边界。 |
+| [`harnesses/pi/pi-steer.md`](harnesses/pi/pi-steer.md) | Pi 原生插话窗口、拒绝与未知回执、历史和实机 Gate。 |
 
 ### OMP
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/omp/omp-interactions.md`](harnesses/omp/omp-interactions.md) | OMP 原生提问、审批、选项说明和超时语义；维护 OMP 交互时阅读。 |
+| [`harnesses/omp/omp-steer.md`](harnesses/omp/omp-steer.md) | OMP 原生插话窗口、拒绝与未知回执、历史和实机 Gate。 |
 
 ### Grok
 
@@ -139,7 +144,7 @@
 | [`product/self-hosted-relay.md`](product/self-hosted-relay.md) | 自建 Relay：Compose 从源码构建、通配 DNS、443 自动证书与电脑端连接。 |
 | [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH Web 插件安装、原生前后端运行、资源路由、启停、依赖检查、恢复与原包验证边界；使用或维护界面扩展时阅读。 |
 | [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及待实现的原生插件和 Codex GUI 分端接入边界。 |
-| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、Web/Desktop 共用的官方 Codex Thread、原生项目归组、历史分页、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
+| [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、Web/Desktop 共用的官方 Codex Thread、原生项目归组、历史分页、选中回复文字加入对话、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
 | [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`../packages/remote-relay/README.md`](../packages/remote-relay/README.md) | 独立 Relay 的启动参数、部署要求、控制证书重载、协议与流量限制、元数据日志和本机验证；自建 Docker 部署见产品文档。 |
 | [`proposals/herdr-core-terminal-backend.md`](proposals/herdr-core-terminal-backend.md) | 暂缓实施的终端后台调研：现有 DSH/xterm 路径、Alma 证据、Herdr Core 原生契约、输入确认缺口、独立进程生命周期及候选迁移与验收边界。 |
@@ -188,6 +193,7 @@
 
 | 文档 | 内容与阅读时机 |
 | --- | --- |
+| [`proposals/documentation-system-research.md`](proposals/documentation-system-research.md) | 官方开发者工具文档体系调研、六种文档载体比较，以及 codexhost 信息架构、能力/CLI 生成、文档 CI 和中英文维护建议；不代表已实施。 |
 | [`proposals/external-harness-idle-unload-proposal.md`](proposals/external-harness-idle-unload-proposal.md) | 外部 Harness 空闲释放与恢复方案、实现进展及验证边界；评估闲置资源回收时阅读。 |
 | [`proposals/Reasoning 实时预览与持久 Transcript 的后续方案.md`](proposals/Reasoning%20实时预览与持久%20Transcript%20的后续方案.md) | Reasoning 实时预览与持久留痕方案；规划 Reasoning 展示时阅读。 |
 | [`proposals/外部 Harness 回合文件变更汇总问题与后续方案.md`](proposals/外部%20Harness%20回合文件变更汇总问题与后续方案.md) | Turn 文件变更重复汇总问题、语义分层和候选方案；设计净 diff 时阅读。 |

@@ -46,11 +46,14 @@ Reuse --request-id for an idempotent retry. Identical recent parent/target/task/
 --ref records where the work came from, such as an issue URL; repeat it for several. Absolute URIs only, at most 16 per Thread; credentials in a URI are removed. A child inherits its parent Thread's references.
 An external client that omits --parent-thread starts the work as itself (parent client:<name>) and must pass --cwd.
 The response confirms cwd and parent. Use its Thread reference with thread read, wait, send, cancel, or watch.`,
-  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
+  "thread send": `codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--watch true|false] [--watch-timeout-ms <n>] [--format json|compact|text]
 Start a new Turn in a writable Thread and return after submission.
 --message and --message-file are mutually exclusive. --message-file reads UTF-8 from a file, or stdin for -; maximum 262144 bytes (256 KiB) before removing one final LF or CRLF. Other whitespace and special characters are preserved; empty/whitespace-only input is rejected. Terminal stdin is rejected: use a quoted heredoc (<<'EOF') or a pipe. --message is unchanged.
-Without --interrupt, THREAD_BUSY means the current Turn is still active. Messages are not queued.
+Without --interrupt or --steer true, THREAD_BUSY means the current Turn is still active. Messages are not queued.
 --interrupt cancels an active Turn and confirms it stopped before sending (30 s stop timeout); an idle Thread is sent normally. Cancellation failure/timeout sends nothing. It preserves existing watches, suppressing the temporary stop notification; it never retries or queues a failed send.
+--steer true and --interrupt true are mutually exclusive; asking for both is rejected before any request.
+--steer true uses the same adjustment operation as Desktop: native steering where supported, otherwise stop and resend. An idle Thread starts a new Turn. Omitted or false keeps the busy rejection above.
+Success confirms acceptance, not execution in the current Turn or task completion. Use read/wait to observe the result.
 --watch true registers a watch only after sending succeeds, notifying the resolved caller (CODEXHOST_THREAD_ID, then CODEX_THREAD_ID; otherwise the external client itself). The response's watch field has the same shape as delegate start: watching/alreadyTerminal, or notRegistered with a reason, including a missing caller. --watch-timeout-ms requires --watch true and defaults to 1740000 (29 min).`,
   "thread cancel": `codexhost thread cancel <thread> [--format json|compact|text]
 Request cancellation of the active Turn while preserving the Thread and history.
@@ -58,21 +61,28 @@ Accepted cancellation also removes all watches on that Thread; thread send --int
 cancelled=true (compact: cancelRequested=true) means the cancellation request was accepted. Read or wait to confirm the terminal state. An idle Thread returns false.`,
   "thread read": `codexhost thread read <thread> [--host <hostId>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
 Read immediately without starting a Turn. Accepts thread://<id>?hostId=<encoded-host-id> or --host with a bare ID. Explicit remote Hosts use the existing Desktop connection, never local fallback. Requires updated local and remote codexhost; remote send/wait/watch are not supported.
+pendingQuestions lists the unanswered Questions, with interaction ID, Turn, kind, and native question data in request; an empty list means none. No watch is needed to read or answer them.
 The default result view reports the latest Turn's status and result. Text result output shows Thread metadata, then --- and verbatim result text. Full JSON retains the complete snapshot. Tool calls/output, file activity, and reasoning are not included.
 ${MESSAGE_VIEW_HELP}`,
   "thread export": `codexhost thread export <thread> [--out <path>] [--format json|compact|text]
 Rarely needed: debugging only. Exports the full Thread to a JSON file and returns its path.`,
   "thread wait": `codexhost thread wait <thread> [--timeout-ms <n>] [--view result|messages] [--from <n>] [--to <m>] [--format json|compact|text]
-Wait until the Thread is terminal or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
-timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
+Wait until the Thread is terminal, is waiting for an answer, or the timeout expires (default 30000 ms), then return the same snapshot as thread read plus timedOut.
+A pending Question returns immediately with timedOut=false; an asynchronous Question may let the Turn keep working. timedOut=true is a running checkpoint: the child keeps running. The response already includes the result when available; another read is unnecessary unless more information is needed.
 ${MESSAGE_VIEW_HELP}`,
+  "thread answer": `codexhost thread answer <thread> --interaction <id> --answers-file <file> [--format json|compact]
+Answer one pending Question request reported by thread read in pendingQuestions, and let the original Turn continue.
+--interaction is the opaque interactionId reported by read. --answers-file contains the existing reply result for kind=requestUserInput, for example {"answers":{"decision":{"answers":["Continue"]}}}. For kind=requestUserInputAsync, each entry is one question: read request.title and request.options and submit {"answer":"Continue"}. Native async questions follow the client channel: answers steer the current active Turn, or start a Turn when idle; the original question need not belong to the current Turn.
+Read pendingQuestions[].request for the original prompts and option labels. Reply interpretation, cancellation, and invalid-input behavior belong to the existing handler, just as for Desktop. Do not assume a rejected reply can be retried; read the Thread again.
+QUESTION_NOT_PENDING means the interaction ID is unknown, already answered by the user or another caller, cancelled, expired, or from a finished Turn or retired Runtime.
+The reply is submitted to the existing request handler, and the same Question closes in Desktop. The receipt means the answer was accepted, not that the delegated work succeeded: read or wait for the outcome.`,
   "thread watch": `codexhost thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--format json|compact|text]
-Ask the Host to notify one Thread, once, when the watched Thread stops. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
+Ask the Host to notify one Thread, once, when the watched Thread stops or waits for an answer. Returns immediately; no waiting or polling by the caller is needed, and the caller may end its Turn.
 --notify defaults to the calling Thread when it is identified (CODEXHOST_THREAD_ID, or CODEX_THREAD_ID in native Codex); for an external client it defaults to the client, and the notification becomes an event in its log (see codexhost events). Otherwise it is required. delegate start reports the caller as its parent.
-The notification starts a new Turn in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, timedOut, unreadable, or notFound. It reports execution state only and asks the notified agent to read each Thread's result before continuing.
+The notification starts a new Turn in the notified Thread with the watched Thread's link and outcome: completed, failed, interrupted, needsInput, timedOut, unreadable, or notFound. It reports execution state only and asks the notified agent to read each Thread's result before continuing.
 Link labels use the observed title (Thread id if unavailable); a suffix after " · " is limited to 20 characters plus an ellipsis without renaming the Thread.
 --timeout-ms defaults to 1740000 (29 min). timedOut means the Thread had not reached a terminal state, which also covers a Harness that stopped without reporting it; watch again to keep waiting. unreadable means reads failed for 60 s, so the state is unknown.
-state=watching means registered. state=alreadyTerminal means the Thread was not running: nothing was registered and nothing will be sent.
+state=watching means registered. state=alreadyTerminal means the Thread was not running and state=alreadyNeedsInput means it already has an unanswered Question: nothing was registered, nothing will be sent, and the response already includes pendingQuestions. After answering, watch again for the next Question or the end of the Turn.
 A busy notified Thread is notified after its Turn ends (retried for up to 6 hours); notifications due together arrive as one message. THREAD_BUSY is never treated as delivered.
 A watch is one-shot with no standalone unsubscribe command; an accepted thread cancel removes all watches on the watched Thread. Watching the same pair again while it is still watched returns that watch; once it has stopped, a new watch covers the next stop and any pending notification is still delivered. Watches are stored and resume after a Host Runtime restart; a notification whose delivery was in progress when the Runtime stopped is sent again, so a restart may repeat one. A Turn that was running when the Runtime restarted is reported as interrupted, because the restart ended its Harness process.`,
   "thread watches": `codexhost thread watches [--format json|compact|text]
@@ -106,11 +116,12 @@ export const DELEGATION_HELP = `usage:
   codexhost harness list
   codexhost harness inspect <harness>
   codexhost delegate start --harness <id> (--task <text> | --task-file <path|->)
-  codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--watch true]
+  codexhost thread send <thread> (--message <text> | --message-file <path|->) [--interrupt] [--steer true|false] [--watch true]
   codexhost thread cancel <thread>
   codexhost thread read <thread>
   codexhost thread export <thread> (rarely needed)
   codexhost thread wait <thread>
+  codexhost thread answer <thread> --interaction <id> --answers-file <file>
   codexhost thread watch <thread>
   codexhost thread watches
   codexhost thread list

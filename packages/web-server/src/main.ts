@@ -28,6 +28,7 @@ import {
   takeNpmEntrypoint,
 } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
+import { downloadWorkspaceFile, openWorkspaceFile } from "./workspace-file-actions.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
 import { AccessTokenStore } from "./access-tokens.ts";
@@ -267,6 +268,7 @@ const sessions = new ChSessions(
   displayEntries,
   preferences,
   enabledHarnesses,
+  (path, action) => openWorkspaceFile(launcher, path, action),
 );
 // The right Sidebar's DSH backend runs in this process; a failure disables the
 // panel without taking Web down.
@@ -436,16 +438,13 @@ registerAccessTokenRpc(rpc, accessTokens, {
 });
 registerBackgroundControls(rpc, accessTokens, {
   background: background !== undefined,
-  port: () => listeningPort,
   data,
   launcher,
   npmEntrypoint,
   shutdown,
 });
 registerMisc(rpc, { events });
-registerUiExtensionRpc(rpc, extensions, {
-  port: () => (server.address() as { port: number }).port,
-});
+registerUiExtensionRpc(rpc, extensions);
 registerVoiceStatus(rpc, chHost);
 
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
@@ -521,6 +520,15 @@ const server = createWebServer((request, response) => {
       const admission = await auth.gate(request, response, pathname);
       if (admission.handled) return;
       requestAuth = admission.auth;
+    }
+    if (
+      pathname === "/api/workspace-file/download" &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      await downloadWorkspaceFile(request, response, new URL(url, "http://localhost"), (id) =>
+        sessions.fileWorkspaceRoot(id),
+      );
+      return;
     }
     if (pathname === "/api/file" && (request.method === "GET" || request.method === "HEAD")) {
       const path = new URL(url, "http://localhost").searchParams.get("path");
@@ -700,7 +708,7 @@ const server = createWebServer((request, response) => {
 });
 
 const relay = new RemoteRelay(data, accessTokens !== undefined, server, trust);
-registerRelayRpc(rpc, accessTokens, () => listeningPort, relay);
+registerRelayRpc(rpc, accessTokens, relay);
 if (serviceOptions.relayEnabled) relay.start();
 
 const wss = createBrowserWebSocketServer();

@@ -291,6 +291,8 @@ export type WorkspaceBrowserInjected = {
   startSession: (workspaceId?: WorkspaceId) => void;
   /** Open a real Session. */
   open: (sessionId: SessionId) => void;
+  /** Acknowledge unread completion reminders for the given Sessions without opening them. */
+  markCompletionsRead?: ((sessionIds: Iterable<SessionId>) => void) | undefined;
   /**
    * Search current visible conversation messages. The Host fixes the result
    * bound; `hasMore` means the query needs narrowing.
@@ -305,7 +307,7 @@ export type WorkspaceBrowserInjected = {
   loadMoreSessions: () => void;
   /** Maximum number of merged rows rendered for one search. */
   searchResultLimit: number;
-  /** Open the Session rename dialog (a row title double-click); the rename action entry raises the same request. */
+  /** Open the Session rename dialog; row actions and keyboard commands raise this request. */
   requestSessionRename: (sessionId: SessionId, currentTitle: string) => void;
   /** Tell the user an archived row cannot be opened (a click on it). */
   notifyArchivedNotOpenable: () => void;

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { homedir } from "node:os";
+import type { Duplex } from "node:stream";
 import {
   ensureHostService,
   discoverHostClientChannel,
@@ -8,6 +9,7 @@ import {
 import { WebSocket, createWebSocketStream } from "ws";
 import { StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
 import { isDesktopContextVariable } from "./desktop-context-environment.js";
+import { createDesktopMcpBridge } from "./desktop-mcp-bridge.js";
 import {
   CODEX_RUNTIME_REMOVED_MESSAGE,
   CodexRuntimeFilesRemovedError,
@@ -126,8 +128,7 @@ export async function connectLocalSharedExternalHost(
   return peer;
 }
 
-/** Desktop's Shim remains a byte-transparent frontend. It owns no Adapter,
- * MappingStore or native Codex backend; closing stdin detaches only this viewer. */
+/** Desktop owns its browser MCP children while the shared Host owns task execution. */
 export async function runLocalDesktopBridge(
   environment: NodeJS.ProcessEnv,
   runtime: string,
@@ -137,9 +138,19 @@ export async function runLocalDesktopBridge(
   const launcher = environment.CODEXHOST_LAUNCHER_EXECUTABLE;
   if (!launcher || !path.isAbsolute(launcher))
     throw new Error("Independent Host requires the native Launcher");
+  const mcp =
+    process.platform === "darwin"
+      ? await createDesktopMcpBridge({
+          runtimePath: runtime,
+          native: { executable: stockCodex, arguments: arguments_ },
+          nodeReplPath: path.join(path.dirname(process.execPath), "node_repl"),
+          environment,
+        })
+      : undefined;
   const officialSpawner = await startDesktopOfficialBackendSpawner();
+  let stream: Duplex | undefined;
   try {
-    const stream = await connectStream(
+    stream = await connectStream(
       {
         launcher,
         runtime,
@@ -150,29 +161,35 @@ export async function runLocalDesktopBridge(
         ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
       },
       {
-        environment,
+        environment: { ...environment, ...mcp?.environment },
         arguments: arguments_,
         officialSpawner: officialSpawner.descriptor,
       },
     );
-    try {
-      const closed = new Promise<number>((resolve) => {
-        stream.once("error", (error) => {
-          if (error instanceof CodexRuntimeFilesRemovedError)
-            process.stderr.write(`${error.message}\n`);
-          resolve(1);
-        });
-        stream.once("close", () => resolve(0));
+    const connection = stream;
+    const closed = new Promise<number>((resolve) => {
+      connection.once("error", (error) => {
+        if (error instanceof CodexRuntimeFilesRemovedError)
+          process.stderr.write(`${error.message}\n`);
+        resolve(1);
       });
+      connection.once("close", () => resolve(0));
+    });
+    if (mcp) {
+      mcp.input.on("error", (error) => stream?.destroy(error));
+      process.stdin.pipe(mcp.input).pipe(stream);
+    } else {
       process.stdin.pipe(stream);
-      stream.pipe(process.stdout, { end: false });
-      return await closed;
-    } finally {
-      process.stdin.unpipe(stream);
-      stream.unpipe(process.stdout);
-      stream.destroy();
     }
+    stream.pipe(process.stdout, { end: false });
+    return await closed;
   } finally {
+    process.stdin.unpipe(mcp?.input ?? stream);
+    process.stdin.pause();
+    mcp?.input.destroy();
+    stream?.unpipe(process.stdout);
+    stream?.destroy();
+    await mcp?.close();
     await officialSpawner.detach();
   }
 }

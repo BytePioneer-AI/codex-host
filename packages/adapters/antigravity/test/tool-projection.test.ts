@@ -10,12 +10,27 @@ import {
   startAntigravityToolItem,
   synthesizeAntigravityCommand,
   toolTargetFile,
-} from "../src/index.js";
+} from "../src/tool-projection.js";
 
 const CWD = path.resolve("/test/workspace");
 const newItemId = () => hostItemIdSchema.parse("item-12345");
 
 describe("Antigravity Tool Projection", () => {
+  it("accepts minimal tool input without a stream envelope", () => {
+    const started = startAntigravityToolItem(
+      newItemId(),
+      { state: "ACTIVE", tool_name: "run_command", tool_info: { parameters: { command: "pwd" } } },
+      CWD,
+    );
+    expect(started).toMatchObject({ type: "commandExecution", command: "pwd", cwd: CWD });
+    expect(
+      completeAntigravityToolItem(
+        started,
+        { state: "DONE", tool_info: { output: "workspace" } },
+        4,
+      ),
+    ).toMatchObject({ output: "work", outputTruncated: true, exitCode: 0 });
+  });
   describe("displayPath", () => {
     it("handles relative path inside cwd", () => {
       const result = displayPath("src/index.ts", CWD);

@@ -208,9 +208,11 @@ function watchBrowserNetwork(controller: ConnectionController): () => void {
   // Both tab return and cache restoration check the carrier before replacing it.
   const restore = (): void => {
     if (document?.visibilityState === "hidden") return;
+    wasHidden = false;
     if (restoreTimer !== undefined) return;
     const available = browser.navigator?.onLine !== false;
     controller.setNetworkAvailable(available);
+    controller.setPageVisible(true);
     if (!available) return;
     restoreTimer = setTimeout(() => {
       restoreTimer = undefined;
@@ -219,16 +221,18 @@ function watchBrowserNetwork(controller: ConnectionController): () => void {
     }, 0);
   };
   const visible = (): void => {
-    if (document?.visibilityState === "hidden") wasHidden = true;
-    else if (wasHidden) {
-      wasHidden = false;
-      restore();
-    }
+    if (document?.visibilityState === "hidden") {
+      wasHidden = true;
+      clearTimeout(restoreTimer);
+      restoreTimer = undefined;
+      controller.setPageVisible(false);
+    } else if (wasHidden) restore();
   };
   const shown = (event: Event): void => {
     if ((event as PageTransitionEvent).persisted) restore();
   };
   controller.setNetworkAvailable(initiallyAvailable);
+  controller.setPageVisible(!wasHidden);
   browser.addEventListener("online", online);
   browser.addEventListener("offline", offline);
   browser.addEventListener("pageshow", shown);

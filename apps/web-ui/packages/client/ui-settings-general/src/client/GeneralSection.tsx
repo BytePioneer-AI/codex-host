@@ -20,6 +20,7 @@ const GROUPS: readonly { title: SettingsKey; items: readonly string[] }[] = [
     items: [
       "language",
       "appearance",
+      "codexhost.wallpaper",
       "font-size",
       "workspace.thread-tree-style",
       "workspace.recent-navigation",

@@ -8,6 +8,7 @@ import {
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadCancelInput,
   type ThreadListInput,
   type ThreadSendInput,
@@ -49,13 +50,16 @@ export function writeJson(response: ServerResponse, status: number, value: unkno
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-export async function jsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+export async function jsonBody(
+  request: IncomingMessage,
+  maximumBytes = MAX_REQUEST_BYTES,
+): Promise<Record<string, unknown>> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_REQUEST_BYTES)
+    if (size > maximumBytes)
       throw new DelegationControlError("INVALID_ARGUMENT", "Request body is too large");
     chunks.push(buffer);
   }
@@ -196,6 +200,8 @@ export async function routeDelegationRequest(
         ? handlers.api.read(body as unknown as ThreadReadInput)
         : handlers.api.wait(body as unknown as ThreadWaitInput);
     }
+    case "/v1/thread/answer":
+      return handlers.api.answer(body as unknown as ThreadAnswerInput);
     case "/v1/thread/watch":
       return watchApi(handlers.watchApi).watch(body as unknown as ThreadWatchInput);
     case "/v1/thread/watches":

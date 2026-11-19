@@ -11,6 +11,8 @@ import { externalThreadValue } from "./external-thread-repository.js";
 
 export interface ExternalThreadListRuntimeState {
   running: boolean;
+  /** Submitted work remains visible while the Harness is establishing its native identity. */
+  hasSubmittedTurn?: boolean;
 }
 
 export interface ThreadListEntry {
@@ -90,8 +92,9 @@ function includesExternalRecord(
   query: DecodedThreadListRequest,
   byId: ReadonlyMap<string, StoredThreadSummaryV1>,
   sectionId: string | null,
+  hasSubmittedTurn: boolean,
 ): boolean {
-  if (record.state !== "ready" || !record.nativeSessionRef) return false;
+  if ((record.state !== "ready" || !record.nativeSessionRef) && !hasSubmittedTurn) return false;
   // Rollback retains old records for historical links, but only rebound children
   // belong to the parent's current Native Session (including nested children).
   let current = record;
@@ -129,6 +132,13 @@ function includesExternalRecord(
     if (record.hostThreadId === query.ancestorThreadId || parentId !== query.ancestorThreadId)
       return false;
   }
+  // As in native Codex, a Side Chat is listed under its source or by a search that asks for it.
+  if (
+    query.attachedToThreadId !== null
+      ? record.attachedToThreadId !== query.attachedToThreadId
+      : record.attachedToThreadId !== undefined && !query.includeAttachedThreads
+  )
+    return false;
   if (record.archived !== query.archived) return false;
   if (query.projectId !== undefined && (record.projectId ?? null) !== query.projectId) return false;
   if (query.cwd !== null && !query.cwd.includes(record.cwd)) return false;
@@ -203,9 +213,9 @@ export interface ExternalThreadListInput {
   placementOf?(threadId: string): StoredSectionPlacementV1 | undefined;
 }
 
-/** The list visibility predicate without runtime lookup or row projection. */
+/** Filter metadata without reading native history; submitted runtime work is also visible. */
 export function filterExternalThreadListRecords(
-  input: Pick<ExternalThreadListInput, "records" | "query" | "placementOf">,
+  input: Pick<ExternalThreadListInput, "records" | "query" | "placementOf" | "runtimeFor">,
 ): StoredThreadSummaryV1[] {
   const byId = new Map(input.records.map((record) => [record.hostThreadId, record]));
   return input.records.filter((record) =>
@@ -214,6 +224,8 @@ export function filterExternalThreadListRecords(
       input.query,
       byId,
       input.placementOf?.(record.hostThreadId)?.section.id ?? null,
+      record.state === "creating" &&
+        input.runtimeFor(record.hostThreadId)?.hasSubmittedTurn === true,
     ),
   );
 }

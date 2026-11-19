@@ -24,7 +24,7 @@ export const ompDiscoverySpec: HarnessDiscoverySpec = {
       "/opt/homebrew/bin",
       "/usr/local/bin",
     ],
-    windows: ["${APPDATA}/npm", "~/.local/bin", VERSION_MANAGER_ROOTS],
+    windows: ["${APPDATA}/npm", "${LOCALAPPDATA}/omp", "~/.local/bin", VERSION_MANAGER_ROOTS],
   },
 };
 

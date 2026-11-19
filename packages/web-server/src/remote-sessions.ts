@@ -301,6 +301,7 @@ export class RemoteSessions {
         const confirmed = harnessConfigurationStateSchema.safeParse(result);
         // Retain ownership, not pre-mutation effective settings. Missing or
         // malformed confirmations leave those settings unknown until inspected.
+        delete entry.controls.nativeModelWithoutTier;
         entry.controls.configuration = {
           ...(configuration.owner === "external"
             ? {

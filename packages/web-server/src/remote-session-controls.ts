@@ -31,6 +31,7 @@ export interface RemoteControlsSnapshot {
 
 export interface RemoteControls {
   configuration?: ThreadInspection;
+  // A base model ref synthesized for display does not confirm Standard.
   nativeModelWithoutTier?: string;
   inspection?: HarnessInspection;
   harness?: z.infer<typeof remoteHarnessDescriptorSchema>;
@@ -117,7 +118,9 @@ export function mergeRemoteControls(
   )
     return next;
   const confirmed =
-    previousConfiguration?.owner === "codex" ? previousConfiguration.effectiveModel : undefined;
+    previousConfiguration?.owner === "codex" && previous.nativeModelWithoutTier === undefined
+      ? previousConfiguration.effectiveModel
+      : undefined;
   const configuration =
     nextConfiguration?.owner === "codex" &&
     next.nativeModelWithoutTier !== undefined &&
@@ -134,6 +137,13 @@ export function mergeRemoteControls(
   const nextHarness =
     external && next.harness?.id === external.harnessId ? next.harness : undefined;
   const merged: RemoteControls = { configuration };
+  const nativeModelWithoutTier =
+    nextConfiguration === undefined
+      ? previous.nativeModelWithoutTier
+      : configuration === nextConfiguration
+        ? next.nativeModelWithoutTier
+        : undefined;
+  if (nativeModelWithoutTier !== undefined) merged.nativeModelWithoutTier = nativeModelWithoutTier;
   const inspection = next.inspection ?? previous.inspection;
   if (inspection !== undefined) merged.inspection = inspection;
   const harness = nextHarness ?? previousHarness;
@@ -268,7 +278,10 @@ export async function selectRemoteModel(
   let changed = false;
   let refreshedAfterModel = false;
   let currentConfiguration = configuration;
-  if (currentConfiguration.effectiveModel?.id !== request.model) {
+  if (
+    currentConfiguration.effectiveModel?.id !== request.model ||
+    entry.controls?.nativeModelWithoutTier !== undefined
+  ) {
     await configure(entry, { modelId: request.model });
     changed = true;
     if (typeof request.reasoningEffort === "string") {

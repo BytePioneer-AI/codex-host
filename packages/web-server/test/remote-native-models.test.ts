@@ -167,6 +167,7 @@ it("reads and changes the remote native model without consulting local defaults"
     if (op.kind === "configure") {
       assert.equal(op.hostId, "remote-ssh:mac");
       assert.equal(op.threadId, "native");
+      assert.equal(op.epoch, epoch);
       assert.ok(op.modelId);
       const selection = decodeOfficialCodexModelSelection({ id: op.modelId } as ReturnType<
         typeof ref
@@ -239,10 +240,21 @@ it("reads and changes the remote native model without consulting local defaults"
     (await call("session/selectModel", { provider: "claude-code", model: "wrong" })).ok,
     false,
   );
-  epoch = "two";
+  await t.test(
+    "clears an unreported speed tier when Standard is selected after reconnect",
+    async () => {
+      epoch = "two";
+      tier = "ultrafast";
+      await remote.read(id);
+      const standard = { provider: "codex", model: encodeOfficialCodexModelRef("gpt-6-astra").id };
+      assert.ok((await call("session/selectModel", standard)).ok);
+      assert.equal(tier, null);
+    },
+  );
+  epoch = "three";
   model = undefined;
   available = false;
   await remote.read(id);
   assert.equal((await call("session/modelCatalog")).ok, false);
-  assert.equal(writes, 4);
+  assert.equal(writes, 5);
 });

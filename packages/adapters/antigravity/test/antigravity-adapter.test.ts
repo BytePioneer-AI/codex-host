@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { setImmediate } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
@@ -40,6 +43,11 @@ import {
   userStep,
 } from "./support/native-history-fixture.js";
 import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, createReadStream: vi.fn(fs.createReadStream) };
+});
 
 const mode = harnessPermissionModeIdSchema.parse;
 const model = (id: string) => harnessModelRefSchema.parse({ id });
@@ -527,84 +535,158 @@ describe("Antigravity ACP Session", () => {
     await forked;
     await start(session, transports);
   });
-  it("publishes native request timing once and completes metering with output that includes reasoning", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "agy-native-metering-"));
-    directories.push(home);
-    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
-    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
-    const transport = await start(session, transports);
-    const sessionId = required(transport.sessionId);
-    const created = Date.now();
-    await writeNativeTimingDatabase(
-      home,
-      [
+  it.each(["retry", "trailing"])(
+    "collects a late transcript via %s and attributes cross-Turn timing",
+    async (mode) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agy-native-metering-"));
+      directories.push(home);
+      const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+      const { session, outputs } = await sessionOf(
+        await adapter.open({ kind: "create", cwd: home }),
+      );
+      const transport = await start(session, transports);
+      const sessionId = required(transport.sessionId);
+      const created = Date.now();
+      const metadata = [
         {
           step: 1,
           input: 13035,
           cached: 0,
           output: 146,
+          thought: 107,
           created,
           started: created + 1,
           completed: created + 3,
         },
-      ],
-      sessionId,
-    );
-    const log = path.join(
-      home,
-      ".gemini/antigravity-cli/brain",
-      sessionId,
-      ".system_generated/logs/transcript.jsonl",
-    );
-    await mkdir(path.dirname(log), { recursive: true });
-    await writeFile(
-      log,
-      JSON.stringify({
-        type: "PLANNER_RESPONSE",
-        status: "DONE",
-        step_index: 1,
-        model: "gemini-4-carbon-medium",
-        input_tokens: 13035,
-        cache_read_tokens: 0,
-        output_tokens: 146,
-      }) + "\n",
-    );
-    await vi.waitFor(() => expect(Date.now()).toBeGreaterThanOrEqual(created + 3));
-    required(transport.handler).onEvent({ type: "usage.context", used: 13181, size: 1048576 });
-    await vi.waitFor(() =>
-      expect(events(outputs).filter((event) => event.type === "usage.request")).toHaveLength(1),
-    );
-    await vi.waitFor(() =>
+      ];
+      const database = new DatabaseSync(await writeNativeTimingDatabase(home, metadata, sessionId));
+      try {
+        database.exec("DELETE FROM gen_metadata");
+      } finally {
+        database.close();
+      }
+      const log = path.join(
+        home,
+        ".gemini/antigravity-cli/brain",
+        sessionId,
+        ".system_generated/logs/transcript.jsonl",
+      );
+      await mkdir(path.dirname(log), { recursive: true });
+      const notice = () =>
+        required(transport.handler).onEvent({ type: "usage.context", used: 13181, size: 1048576 });
+      const commitTranscript = () =>
+        writeFile(
+          log,
+          JSON.stringify({
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            step_index: 1,
+            model: "gemini-4-carbon-medium",
+            input_tokens: 13035,
+            cache_read_tokens: 0,
+            output_tokens: 146,
+          }) + "\n",
+        );
+      const expectRequest = () =>
+        expect(events(outputs).filter((event) => event.type === "usage.request")).toMatchObject([
+          { request: { outputTokens: 146, cacheWriteInputTokens: 0, reasoningOutputTokens: 107 } },
+        ]);
+      if (mode === "retry") {
+        const historyCount = () =>
+          events(outputs).filter((event) => event.type === "usage.history").length;
+        const before = historyCount();
+        notice();
+        await vi.waitFor(() => expect(historyCount()).toBeGreaterThan(before));
+        expect(events(outputs).filter((event) => event.type === "usage.request")).toEqual([]);
+        await commitTranscript();
+        await vi.waitFor(expectRequest);
+      } else {
+        // Hold the first filesystem read at EOF so the next scan is the only one that sees the commit.
+        await writeFile(log, "");
+        const eof = deferred<void>();
+        const release = deferred<void>();
+        const { createReadStream, read, open, close } = await vi.importActual<typeof fs>("node:fs");
+        vi.mocked(fs.createReadStream).mockImplementationOnce((file, options) =>
+          createReadStream(file, {
+            ...(typeof options === "string" ? { encoding: options } : options),
+            fs: {
+              open,
+              close,
+              read: (fd, buffer, offset, length, position, callback) => {
+                read(fd, buffer, offset, length, position, (error, bytesRead, data) => {
+                  eof.resolve();
+                  void release.promise.then(() => callback(error, bytesRead, data));
+                });
+              },
+            },
+          }),
+        );
+        const work = session.refreshUsage?.();
+        await eof.promise;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          await commitTranscript();
+          notice();
+          notice();
+          release.resolve();
+          await work;
+          await setImmediate();
+          expectRequest();
+        } finally {
+          release.resolve();
+          await vi.runAllTimersAsync();
+          vi.useRealTimers();
+        }
+      }
+      expect(events(outputs).filter((event) => event.type === "usage.request.timing")).toEqual([]);
+      await vi.waitFor(() =>
+        expect(
+          events(outputs)
+            .filter((event) => event.type === "usage.history")
+            .at(-1),
+        ).toEqual({ type: "usage.history", complete: true }),
+      );
+      expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
+      transport.result.resolve({
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 13035,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+          outputTokens: 146,
+          thoughtTokens: 107,
+          totalTokens: 13181,
+        },
+      });
+      await completed(outputs);
+      expect(events(outputs).filter((event) => event.type === "usage.request.timing")).toEqual([]);
+      delete transport.handler;
+      transport.result = deferred<AntigravityPromptResult>();
+      await start(session, transports, "t2");
+      await writeNativeTimingDatabase(home, metadata, sessionId);
+      notice();
+      await vi.waitFor(() =>
+        expect(events(outputs).filter((event) => event.type === "usage.request.timing")).toEqual([
+          {
+            type: "usage.request.timing",
+            turnId: "t1",
+            timing: {
+              requestId: "step:1",
+              requestStartedAtMs: created,
+              timeToFirstOutputMs: 1,
+              output: { outputTokens: 39, startedAtMs: created + 1, completedAtMs: created + 3 },
+            },
+          },
+        ]),
+      );
+      expect(events(outputs).filter((event) => event.type === "usage.request")).toHaveLength(1);
       expect(
         events(outputs)
           .filter((event) => event.type === "usage.history")
           .at(-1),
-      ).toEqual({ type: "usage.history", complete: true }),
-    );
-    expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
-    transport.result.resolve({
-      stopReason: "end_turn",
-      usage: {
-        inputTokens: 13035,
-        cachedReadTokens: 0,
-        cachedWriteTokens: 0,
-        outputTokens: 146,
-        thoughtTokens: 107,
-        totalTokens: 13181,
-      },
-    });
-    await completed(outputs);
-    expect(events(outputs).filter((event) => event.type === "usage.request")).toMatchObject([
-      {
-        request: { outputTokens: 146, startedAtMs: created + 1, completedAtMs: created + 3 },
-      },
-    ]);
-    expect(
-      events(outputs)
-        .filter((event) => event.type === "usage.history")
-        .at(-1),
-    ).toEqual({ type: "usage.history", complete: true });
-  });
+      ).toEqual({ type: "usage.history", complete: true });
+    },
+  );
 
   it("streams ordered text/reasoning, usage and stable Turn identity", async () => {
     const { adapter, transports } = fixture();

@@ -110,6 +110,7 @@ export const threadUsageSnapshotSchema = z
     planSevenDayResetsAtUnix: nonNegativeSafeIntegerSchema.optional(),
     sessionCacheHitRatePercent: cacheHitRatePercentSchema.optional(),
     timeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
+    latestRequestTimeToFirstOutputMs: nonNegativeSafeIntegerSchema.optional(),
     costSource: z.enum(["publicPrice", "native"]).optional(),
     unpricedModels: z.array(z.string().min(1)).min(1).optional(),
   })

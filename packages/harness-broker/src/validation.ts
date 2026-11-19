@@ -268,6 +268,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["session.state.changed", new Set(["type", "state"])],
   ["session.usage.changed", new Set(["type", "usage", "observedForTurnId"])],
   ["usage.request", new Set(["type", "request"])],
+  ["usage.request.timing", new Set(["type", "turnId", "timing"])],
   ["usage.history", new Set(["type", "complete"])],
   ["subagent.state.changed", new Set(["type", "nativeSubagentId", "status", "resultSummary"])],
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],

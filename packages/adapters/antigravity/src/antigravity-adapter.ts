@@ -803,6 +803,7 @@ export class AntigravitySession implements HarnessSession {
           // A successor prompt ends the idle-output window of the previous Turn
           // before the new Turn announces itself.
           this.#settleBackground({ status: "succeeded" });
+          this.#lastCompletedTurnId = undefined;
           this.#emit({ type: "turn.started", turnId: turn.turnId });
           void this.#runTurn(turn, command);
           return ok({ turnId: command.turnId });

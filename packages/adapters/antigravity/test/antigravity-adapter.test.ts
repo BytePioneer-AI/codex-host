@@ -1271,7 +1271,7 @@ describe("inspection and errors", () => {
 });
 
 describe("Antigravity idle background output episodes", () => {
-  it("does not make a pre-submit cancelled Turn the idle output target", async () => {
+  it("closes the idle output window when a pre-submit successor starts", async () => {
     const { adapter, transports } = fixture();
     const { session, outputs } = await sessionOf(
       await adapter.open({ kind: "create", cwd: process.cwd() }),
@@ -1305,12 +1305,7 @@ describe("Antigravity idle background output episodes", () => {
     await completed(outputs, "cancel-before-submit");
     transports.at(-1)?.eventHandler?.({ type: "agent.text", text: "orphan" });
     expect(events(outputs)).not.toContainEqual(
-      expect.objectContaining({ type: "item.background.started", turnId: "cancel-before-submit" }),
-    );
-    await vi.waitFor(() =>
-      expect(events(outputs)).toContainEqual(
-        expect.objectContaining({ type: "item.background.started", turnId: "t1" }),
-      ),
+      expect.objectContaining({ type: "item.background.started" }),
     );
   });
 

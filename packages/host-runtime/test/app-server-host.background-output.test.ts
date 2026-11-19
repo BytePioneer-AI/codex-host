@@ -96,11 +96,19 @@ describe("Host runtime idle background output on a completed Turn", () => {
       await fixture.collector.waitFor((message) =>
         turnEvent(message, "turn/started", successorTurnId),
       );
-      session.succeedTurn();
+      writeRequest(fixture.desktopInput, {
+        id: 4,
+        method: "turn/interrupt",
+        params: { threadId, turnId: successorTurnId },
+      });
+      expect(
+        await fixture.collector.waitFor((message) => requestId(message, 4)),
+      ).not.toHaveProperty("error");
+      session.completeCancellation();
       await fixture.collector.waitFor((message) =>
         turnEvent(message, "turn/completed", successorTurnId),
       );
-      const turns = await readHistoryTurns(fixture, threadId, 4);
+      const turns = await readHistoryTurns(fixture, threadId, 5);
       const wakeItems = turns
         .flatMap((turn) => (turn.items ?? []) as JsonObject[])
         .filter((item) => item.type === "agentMessage" && item.text === "wake from native history");

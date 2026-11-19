@@ -122,6 +122,11 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
+import {
+  loadSidebarCatalog,
+  reconcileRemoteSidebarThread,
+  observeRemoteSidebarClosures,
+} from "./remote-sidebar-history.js";
 import { openCodexSchedules } from "./codex-schedule-navigation.js";
 import { openRendererThread } from "./renderer-fork-control.js";
 import type {
@@ -828,7 +833,24 @@ export function installRendererBindingProbe(
     return null;
   };
   const sidebarThreadState = installRendererSidebarThreadState();
+  let sidebarCatalog: ReturnType<typeof loadSidebarCatalog> | undefined;
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
+    checkRemotePlaceholder(hostId, threadId, cwd) {
+      const current = () => window.__codexhostHostRoutingV1?.forHost(hostId)?.manager;
+      const manager = current();
+      if (!manager || !("kind" in manager) || manager.kind !== "main-process-rpc") return;
+      void reconcileRemoteSidebarThread(
+        manager,
+        { hostId, threadId },
+        cwd,
+        () =>
+          (sidebarCatalog ??= loadSidebarCatalog(window).catch(() => {
+            sidebarCatalog = undefined;
+            return null;
+          })),
+        () => !disposed && current() === manager,
+      ).catch(() => {});
+    },
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {
       if (hostId === "durable") return undefined;
@@ -848,6 +870,10 @@ export function installRendererBindingProbe(
     },
     getLocalAgent: localAgentForSidebarThread,
   });
+  const stopSidebarClosures = observeRemoteSidebarClosures(
+    window,
+    sidebarAgentIcons.remoteThreadClosed,
+  );
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
   const usageStatistics = createRendererUsageStatisticsSource({
@@ -3621,6 +3647,7 @@ export function installRendererBindingProbe(
       delegationMention?.dispose();
       skillLibrary.dispose();
       disposeSkillReferences();
+      stopSidebarClosures();
       sidebarAgentIcons.dispose();
       sidebarThreadState.dispose();
       nativeScheduleControls.dispose();

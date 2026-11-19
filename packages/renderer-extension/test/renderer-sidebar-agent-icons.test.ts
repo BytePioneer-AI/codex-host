@@ -51,6 +51,12 @@ class FakeRow implements SidebarAgentIconRow {
     return this.id;
   }
 
+  path: string | null = null;
+
+  placeholderPath(): string | null {
+    return this.path;
+  }
+
   draftId(): string | null {
     return this.draft;
   }
@@ -162,6 +168,39 @@ describe("Renderer sidebar Agent ownership", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("checks SSH path rows only after native ownership and rechecks them on closure", async () => {
+    const host = "remote-ssh-discovered:test";
+    const agents = ["codex", "claude-code", "deepseek-harness"] as const;
+    const rows = agents.map(() => new FakeRow(crypto.randomUUID(), null, host));
+    for (const row of rows) row.path = "/workspace";
+    const dom = new FakeDom(rows);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => {
+        const agent = agents[rows.findIndex((row) => row.id === threadId)];
+        return !agent || agent === "codex"
+          ? { threadId, owner: "codex" as const }
+          : { threadId, owner: "external" as const, harnessId: harnessIdSchema.parse(agent) };
+      }),
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(1));
+      const native = rows[0];
+      if (!native?.id) throw new Error("Missing test thread");
+      expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, native.id, "/workspace");
+      icons.remoteThreadClosed(host, native.id);
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2));
+      expect(rows.map((row) => row.agent)).toEqual(agents);
+    } finally {
+      icons.dispose();
+    }
   });
 
   it("resolves the draft key separately from the Fiber conversation identity", () => {

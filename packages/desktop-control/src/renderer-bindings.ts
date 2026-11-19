@@ -3,7 +3,11 @@ export {
   committedReactAncestors,
   REACT_FIBER_WALK_LIMIT_EVENT,
 } from "./renderer-react-ownership.js";
-export type { RendererHostRoute, RendererHostRouting } from "./renderer-host-routing.js";
+export type {
+  RendererHostRoute,
+  RendererHostRouting,
+  RendererHostRpcManager,
+} from "./renderer-host-routing.js";
 export {
   NATIVE_SCHEDULE_SIDEBAR_ROW_SELECTOR,
   readNativeScheduleSidebarThread,

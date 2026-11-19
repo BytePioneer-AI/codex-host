@@ -8,6 +8,7 @@
 
 export interface RendererHostRpc {
   getConversation?(threadId: string): Promise<unknown>;
+  discardConversationFromCache?(threadId: string): Promise<unknown>;
   replyWithCommandExecutionApprovalDecision?(
     threadId: string,
     requestId: string | number,

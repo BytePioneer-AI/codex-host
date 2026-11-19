@@ -119,6 +119,7 @@ export interface SidebarAgentIconRow {
   hostId(): string | null;
   threadId(): string | null;
   draftId(): string | null;
+  placeholderPath?(): string | null;
   render(agent: RendererAgent, plugin?: HarnessPluginDescriptor): void;
   clear(): void;
 }
@@ -132,6 +133,7 @@ export interface SidebarAgentIconDom {
 
 export interface RendererSidebarAgentIcons {
   refresh(): void;
+  remoteThreadClosed(hostId: string, threadId: string): void;
   dispose(): void;
 }
 
@@ -177,6 +179,11 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
         : readNativeScheduleSidebarThread(this.element);
     this.#scheduledThread = undefined;
     return threadId;
+  }
+
+  placeholderPath(): string | null {
+    const title = this.element.getAttribute("data-app-action-sidebar-thread-title");
+    return title?.startsWith("/") ? title : null;
   }
 
   draftId(): string | null {
@@ -295,6 +302,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
         SIDEBAR_THREAD_ROW_ATTRIBUTE,
         SIDEBAR_THREAD_ID_ATTRIBUTE,
         SIDEBAR_THREAD_HOST_ID_ATTRIBUTE,
+        "data-app-action-sidebar-thread-title",
         "data-sidebar-cycle-item",
         "aria-labelledby",
         "role",
@@ -313,6 +321,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
 
 export function installRendererSidebarAgentIcons(options: {
   getClient(hostId: string): RendererModelClient | null;
+  checkRemotePlaceholder?(hostId: string, threadId: string, cwd: string): void;
   getPlugins?(hostId: string): readonly HarnessPluginDescriptor[] | undefined;
   getLocalAgent?(input: {
     hostId: string;
@@ -329,6 +338,10 @@ export function installRendererSidebarAgentIcons(options: {
   const ownershipRetryAttempts = new Map<string, number>();
   const ownershipRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const dirtyRows = new Set<SidebarAgentIconRow>();
+  const checked = new WeakMap<
+    SidebarAgentIconRow,
+    { key: string; client: RendererModelClient; cwd: string }
+  >();
   // Index mounted row identities so replies/retries update only the affected
   // Thread, including duplicate rows, without retaining stale recycled identities.
   const rowsByThread = new Map<string, Set<SidebarAgentIconRow>>();
@@ -410,6 +423,7 @@ export function installRendererSidebarAgentIcons(options: {
       .then(() => client.listThreadOwnership({ threadIds }))
       .then(({ threads }) => {
         if (disposed) return;
+        let currentClient: RendererModelClient | null | undefined;
         for (const ownership of threads) {
           const key = ownershipKey(hostId, ownership.threadId);
           ownershipByThread.set(key, {
@@ -418,6 +432,25 @@ export function installRendererSidebarAgentIcons(options: {
           });
           failed.delete(key);
           if (ownership.owner === "codex") {
+            if (options.checkRemotePlaceholder && hostId.startsWith("remote-ssh")) {
+              for (const row of rowsByThread.get(key) ?? []) {
+                const cwd = row.placeholderPath?.();
+                const previous = checked.get(row);
+                if (
+                  !cwd ||
+                  !row.isConnected() ||
+                  row.threadId() !== ownership.threadId ||
+                  row.hostId() !== hostId ||
+                  (previous?.key === key && previous.client === client && previous.cwd === cwd)
+                )
+                  continue;
+                currentClient ??= options.getClient(hostId);
+                if (currentClient !== client) break;
+                checked.set(row, { key, client, cwd });
+                options.checkRemotePlaceholder(hostId, ownership.threadId, cwd);
+                break;
+              }
+            }
             provisionalCodex.add(key);
             scheduleOwnershipRetry(hostId, ownership.threadId);
           } else {
@@ -531,6 +564,16 @@ export function installRendererSidebarAgentIcons(options: {
   scan();
 
   return {
+    remoteThreadClosed(hostId, threadId) {
+      const key = ownershipKey(hostId, threadId);
+      const rows = rowsByThread.get(key);
+      if (!rows || ![...rows].some((row) => row.placeholderPath?.())) return;
+      for (const row of rows) checked.delete(row);
+      const cached = ownershipByThread.get(key);
+      if (cached) cached.stale = true;
+      failed.delete(key);
+      scheduleScan(rows);
+    },
     refresh() {
       if (disposed) return;
       failed.clear();

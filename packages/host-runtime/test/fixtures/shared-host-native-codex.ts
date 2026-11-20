@@ -8,7 +8,12 @@ const home = process.env.CODEX_HOME;
 if (!home) throw new Error("Native fixture requires an isolated Codex home");
 const log = (value: unknown) =>
   appendFileSync(path.join(home, "native-calls.jsonl"), JSON.stringify(value) + "\n");
-log({ pid: process.pid, type: "startup", feature: process.argv.includes("features.fixture=true") });
+log({
+  pid: process.pid,
+  type: "startup",
+  feature: process.argv.includes("features.fixture=true"),
+  browserAccess: process.env.BROWSER_USE_ACCESS_PIPE_PATH !== undefined,
+});
 const file = path.join(home, "native-thread.json");
 let thread: Record<string, unknown> | undefined;
 try {

@@ -856,7 +856,7 @@ export class AppServerHost {
   #sessionImportRequests: SessionImportRequests | undefined;
   readonly #delegationApi: DelegationControlRegistration;
   #unregisterDelegationApi: (() => void) | undefined;
-  #unsubscribeAccountState: (() => void) | undefined;
+  #unsubscribeOfficialState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
   /** Active reply guards by request ID; each records whether its request was answered. */
   readonly #replyGuards = new Map<unknown, Set<{ answered: boolean }>>();
@@ -987,6 +987,7 @@ export class AppServerHost {
             native: {
               events: this.clientEvents,
               asyncQuestions: this.#asyncQuestions,
+              refreshBeforeRequest: () => this.#officialRuntimeScope.refreshBeforeRequest(),
               request: (method: string, params: JsonObject) =>
                 this.#requestClientNative(method, params),
               respond: (
@@ -1050,6 +1051,7 @@ export class AppServerHost {
       }));
     this.#officialRuntime = new OfficialRuntimeClient({
       scope: this.#officialRuntimeScope,
+      refreshBeforeRequests: !options.externalOnly,
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
         this.#activeOfficialTurns.clear();
@@ -1076,8 +1078,17 @@ export class AppServerHost {
             this.#diagnose("Codex Account identity or notification could not be updated"),
         })
       : undefined;
-    this.#unsubscribeAccountState = this.#officialRuntimeScope.gate.subscribe(() => {
-      if (this.#options.externalOnly) return;
+    const { gate, owner } = this.#officialRuntimeScope;
+    let readyGeneration = gate.phase === "ready" ? owner.generation : undefined;
+    this.#unsubscribeOfficialState = gate.subscribe(() => {
+      if (this.#options.externalOnly) {
+        // Only the shared channel owner publishes catalog invalidations for the scope.
+        if (gate.phase !== "ready") return;
+        const replaced = readyGeneration !== undefined && readyGeneration !== owner.generation;
+        readyGeneration = owner.generation;
+        if (replaced) this.clientEvents.harnessInspectionChanged("codex");
+        return;
+      }
       const snapshot = this.#accountControl.snapshot();
       void this.#writer
         .json({ method: "codexhost/account/changed", params: jsonValueSchema.parse(snapshot) })
@@ -1511,8 +1522,8 @@ export class AppServerHost {
       await this.#closeAdapters();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
-      this.#unsubscribeAccountState?.();
-      this.#unsubscribeAccountState = undefined;
+      this.#unsubscribeOfficialState?.();
+      this.#unsubscribeOfficialState = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
@@ -1587,8 +1598,8 @@ export class AppServerHost {
       this.#routeObservationTracker.clear();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
-      this.#unsubscribeAccountState?.();
-      this.#unsubscribeAccountState = undefined;
+      this.#unsubscribeOfficialState?.();
+      this.#unsubscribeOfficialState = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((error) => this.#diagnose(error));
       }
@@ -2242,9 +2253,13 @@ export class AppServerHost {
     }
   }
 
-  async #initializeSharedOfficial(): Promise<void> {
+  async #initializeSharedOfficial(refresh = true): Promise<void> {
     // The independent owner starts native Codex only when native metadata or
     // an explicit native Delegation needs it, not when Web merely connects.
+    if (refresh) {
+      const refreshing = this.#officialRuntimeScope.refreshBeforeRequest();
+      if (refreshing) await refreshing;
+    }
     await this.#officialRuntime.initialize();
     await this.#officialRuntime.initializeProtocol({
       clientInfo: { name: "codexhost-shared-threads", version: "1" },
@@ -2263,14 +2278,14 @@ export class AppServerHost {
     this.#signalActiveWorkChanged();
   }
 
-  async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
-    if (this.#options.externalOnly) await this.#initializeSharedOfficial();
+  async #requestOfficial(method: string, params: JsonObject, refresh = true): Promise<JsonObject> {
+    if (this.#options.externalOnly) await this.#initializeSharedOfficial(refresh);
     return this.#officialRuntime.request(method, params);
   }
 
   async #requestClientNative(method: string, params: JsonObject): Promise<ConsoleHostReply> {
     try {
-      const response = await this.#requestOfficial(method, params);
+      const response = await this.#requestOfficial(method, params, false);
       if (isRecord(response.error)) {
         return {
           error: {

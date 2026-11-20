@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { TransformStream } from "node:stream/web";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { ClientSideConnection } from "@agentclientprotocol/sdk";
 import type { HostEvent } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +60,12 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     promptId=req.id;
     if (scenario === 'exit-prompt') return setTimeout(() => process.exit(8), 10);
     if (scenario === 'stall-prompt' || scenario === 'close-stalled') return;
+    if (scenario === 'same-write-permission') {
+      return process.stdout.write([
+        {id:req.id,result:{stopReason:'end_turn'}},
+        {id:'late',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'late',name:'run_command'},options:[{optionId:'deny',name:'Deny',kind:'reject_once'}]}},
+      ].map(value => JSON.stringify({jsonrpc:'2.0',...value})+'\\n').join(''));
+    }
     if (scenario === 'same-write-tail') {
       const chunk = (sessionUpdate, text) => ({method:'session/update',params:{sessionId:'native',update:{sessionUpdate,content:{type:'text',text}}}});
       return process.stdout.write([
@@ -439,6 +446,33 @@ describe("native ACP stdio transport", () => {
     );
     await value.cancel();
     expect((await pending).stopReason).toBe("cancelled");
+  });
+  it("cancels a permission request sent in the same write after the prompt response", async () => {
+    const value = transport("same-write-permission");
+    await open(value);
+    const onPermission = vi.fn(handler().onPermission);
+    const prompt = ClientSideConnection.prototype.prompt;
+    // Keep the real SDK dispatching wire messages, but hold its prompt result
+    // until the callback reply so prompt()'s cleanup cannot mask the race.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    using _sdkPrompt = vi
+      .spyOn(ClientSideConnection.prototype, "prompt")
+      .mockImplementation(async function (this: ClientSideConnection, params) {
+        const response = await prompt.call(this, params);
+        await promise;
+        return response;
+      });
+    const pending = value.prompt([], { ...handler(), onPermission });
+    try {
+      await vi.waitFor(async () =>
+        expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } }),
+      );
+      expect(onPermission).not.toHaveBeenCalled();
+    } finally {
+      resolve();
+      await pending;
+    }
+    expect((await pending).stopReason).toBe("end_turn");
   });
   it.each(["cancel", "prompt-end", "close"])(
     "cleans pending callbacks on %s even when Host handlers never resolve",

@@ -50,6 +50,7 @@ interface ActiveNativeTool {
   name: string;
   subagent: boolean;
   workflow: boolean;
+  spawnName?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -138,21 +139,25 @@ function targetedSubagentId(argumentsValue: unknown): string | undefined {
   );
 }
 
+/** SDK history may retain only the JSON text, not the structured SendMessage result. */
+function sendResultFromText(outputText: string | undefined): Record<string, unknown> | undefined {
+  if (!outputText) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(outputText);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** SendMessage can refuse delivery without setting the Tool Result's is_error flag. */
 export function claudeSendMessageFailed(
   nativeResult: unknown,
   outputText: string | undefined,
 ): boolean {
-  if (isRecord(nativeResult) && typeof nativeResult.success === "boolean") {
-    return nativeResult.success === false;
-  }
-  // SDK history may retain only the JSON text, not the structured native result.
-  try {
-    const parsed: unknown = JSON.parse(outputText ?? "");
-    return isRecord(parsed) && parsed.success === false;
-  } catch {
-    return false;
-  }
+  return isRecord(nativeResult) && typeof nativeResult.success === "boolean"
+    ? !nativeResult.success
+    : sendResultFromText(outputText)?.success === false;
 }
 
 function includesAuthenticationFailure(errors: string[]): boolean {
@@ -340,7 +345,12 @@ function nativeSubagentId(
 ): string | undefined {
   if (isRecord(nativeResult)) {
     const structured = boundedString(
-      nativeResult.agentId ?? nativeResult.agent_id ?? nativeResult.task_id,
+      nativeResult.agentId ??
+        nativeResult.agent_id ??
+        nativeResult.task_id ??
+        nativeResult.resumedAgentId ??
+        nativeResult.revivedAgentId ??
+        (isRecord(nativeResult.pin) ? nativeResult.pin.id : undefined),
       SUBAGENT_DESCRIPTION_LIMIT,
     );
     if (structured) return structured;
@@ -496,6 +506,7 @@ export interface ClaudeNativeMessageResult {
 
 export class ClaudeNativeTurnAccumulator {
   readonly #provider: string | undefined;
+  readonly #subagentIdsByName: Map<string, string>;
   #activeRootStreamMessageId: string | null = null;
   /** Native record UUIDs already published, across stream and request message IDs. */
   #publishedCheckpointIds = new Set<string>();
@@ -511,8 +522,9 @@ export class ClaudeNativeTurnAccumulator {
   #textConflict = false;
   #tools = new Map<string, ActiveNativeTool>();
 
-  constructor(options: { provider?: string } = {}) {
+  constructor(options: { provider?: string; subagentIdsByName?: Map<string, string> } = {}) {
     this.#provider = options.provider;
+    this.#subagentIdsByName = options.subagentIdsByName ?? new Map();
   }
 
   requestCancel(): void {
@@ -1080,7 +1092,16 @@ export class ClaudeNativeTurnAccumulator {
       }
       const subagent = CLAUDE_SUBAGENT_TOOLS.has(block.name);
       const workflow = block.name === CLAUDE_WORKFLOW_TOOL;
-      this.#tools.set(block.id, { name: block.name, subagent, workflow });
+      const spawnName =
+        subagent && block.name !== "SendMessage" && isRecord(argumentsResult.data)
+          ? boundedString(argumentsResult.data.name, SUBAGENT_DESCRIPTION_LIMIT)
+          : undefined;
+      this.#tools.set(block.id, {
+        name: block.name,
+        subagent,
+        workflow,
+        ...(spawnName ? { spawnName } : {}),
+      });
       if (workflow) {
         const name = isRecord(argumentsResult.data)
           ? boundedString(argumentsResult.data.name, SUBAGENT_DESCRIPTION_LIMIT)
@@ -1089,7 +1110,11 @@ export class ClaudeNativeTurnAccumulator {
       } else if (subagent) {
         const prompt = subagentPrompt(argumentsResult.data);
         const role = subagentRole(argumentsResult.data);
-        const agentId = targetedSubagentId(argumentsResult.data);
+        const target = targetedSubagentId(argumentsResult.data);
+        const agentId =
+          block.name === "SendMessage" && target
+            ? (this.#subagentIdsByName.get(target) ?? target)
+            : target;
         events.push({
           type: "subagent.started",
           ...subagentConfiguration(argumentsResult.data),
@@ -1189,13 +1214,23 @@ export class ClaudeNativeTurnAccumulator {
       }
       if (tool.subagent) {
         const resultSummary = boundedString(outputText, SUBAGENT_SUMMARY_LIMIT);
-        const agentId = nativeSubagentId(nativeResult, outputText);
+        const send = tool.name === "SendMessage";
+        const result =
+          send && !isRecord(nativeResult) ? sendResultFromText(outputText) : nativeResult;
+        const failed = isError || (send && claudeSendMessageFailed(result, outputText));
+        const agentId = nativeSubagentId(result, outputText);
+        if (!failed) {
+          if (tool.spawnName && agentId) this.#subagentIdsByName.set(tool.spawnName, agentId);
+          if (send && isRecord(result) && isRecord(result.pin)) {
+            const name = boundedString(result.pin.name, SUBAGENT_DESCRIPTION_LIMIT);
+            const id = boundedString(result.pin.id, SUBAGENT_DESCRIPTION_LIMIT);
+            if (name && id) this.#subagentIdsByName.set(name, id);
+          }
+        }
         events.push({
           type: "subagent.completed",
           callId,
-          isError:
-            isError ||
-            (tool.name === "SendMessage" && claudeSendMessageFailed(nativeResult, outputText)),
+          isError: failed,
           ...(subagentContinuesInBackground(nativeResult, outputText)
             ? { continuesInBackground: true }
             : {}),

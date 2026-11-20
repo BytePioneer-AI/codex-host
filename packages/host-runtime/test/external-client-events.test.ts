@@ -130,7 +130,6 @@ describe("client event log", () => {
             turn: { turnId: "turn-1", status },
             progress: [],
             result: { availability: "pending" },
-            nextCursor: null,
           }),
         ),
         send,

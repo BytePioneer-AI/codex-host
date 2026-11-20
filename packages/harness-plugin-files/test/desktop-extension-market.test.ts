@@ -4,6 +4,7 @@ import type * as FsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { DESKTOP_EXTENSION_ICON_MAX_BYTES } from "@codexhost/shared-contracts";
 import { extensionZip, makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import seed from "../../../registry/desktop-extensions/catalog.json";
 import { reportDesktopExtensionInstall } from "../src/desktop-extension-installer.js";
@@ -71,6 +72,36 @@ it("installs STORE and DEFLATE resources, then replaces an enabled extension and
     list: { configuration: { enabled: [], revision: 4 }, extensions: [] },
   });
   expect(await readdir(extensionsRoot)).toEqual(["enabled.json"]);
+});
+
+it("installs a declared logo and exposes it in the management list", async () => {
+  const icon = "images/logo.webp";
+  const bytes = Buffer.from("RIFF\0\0\0\0WEBP");
+  await installFromZipBuffer({
+    extensionsRoot,
+    zipBuffer: extensionZip({ manifest: { icon }, extras: [{ name: icon, data: bytes }] }),
+  });
+  expect((await listDesktopExtensions(dataDir)).extensions).toMatchObject([
+    { manifest: { icon }, iconDataUrl: `data:image/webp;base64,${bytes.toString("base64")}` },
+  ]);
+});
+
+it.each([
+  ["missing", undefined, /file not found/u],
+  ["oversize", Buffer.alloc(DESKTOP_EXTENSION_ICON_MAX_BYTES + 1), /exceeds its limit/u],
+  ["mislabeled", Buffer.from([0xff, 0xd8, 0xff]), /signature does not match image\/png/u],
+] as const)("rejects a ZIP with a %s declared logo", async (_kind, bytes, reason) => {
+  const icon = "images/logo.png";
+  await expect(
+    installFromZipBuffer({
+      extensionsRoot,
+      zipBuffer: extensionZip({
+        manifest: { icon },
+        extras: bytes ? [{ name: icon, data: bytes }] : [],
+      }),
+    }),
+  ).rejects.toThrow(reason);
+  expect(await readdir(extensionsRoot)).toEqual([]);
 });
 
 it.each([

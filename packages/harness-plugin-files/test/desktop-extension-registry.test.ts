@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { DESKTOP_EXTENSION_ICON_MAX_BYTES } from "@codexhost/shared-contracts";
 import { buildCatalog } from "../../../registry/desktop-extensions/validate-and-build-catalog.mjs";
 import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 
@@ -43,6 +44,7 @@ function mockGitHub(
   readMetadata: (headers: Headers) => Response,
   archive = (id: string) => extensionZip({ id }),
   stats?: (init: RequestInit) => Response,
+  images: Record<string, Buffer> = {},
 ) {
   vi.stubGlobal("fetch", async (url: URL, init: RequestInit) => {
     if (stats && url.href === `${statsBase}stats.json`) return stats(init);
@@ -52,13 +54,16 @@ function mockGitHub(
     if (href === `${api}/releases/latest`)
       return Response.json({
         published_at: publishedAt,
-        assets: ids.map((id) => ({
-          name: `${id}.zip`,
-          browser_download_url: `${releaseUrl}/${id}.zip`,
+        assets: [...ids.map((id) => `${id}.zip`), ...Object.keys(images)].map((name) => ({
+          name,
+          browser_download_url: `${releaseUrl}/${name}`,
         })),
       });
     for (const id of ids) {
       if (href === `${releaseUrl}/${id}.zip`) return new Response(new Uint8Array(archive(id)));
+    }
+    for (const [name, bytes] of Object.entries(images)) {
+      if (url.href === `${releaseUrl}/${name}`) return new Response(new Uint8Array(bytes));
     }
     throw new Error(`Unexpected request: ${url.href}`);
   });
@@ -151,6 +156,83 @@ it.each([
   const { extensions } = JSON.parse(await syncCatalog());
   expect(extensions).toHaveLength(2);
   for (const entry of extensions) expect(entry).not.toHaveProperty("downloads");
+});
+
+const icon = "images/logo.png";
+const png = Buffer.from("89504e470d0a1a0a", "hex");
+
+function mockReleaseLogo(zipped: Buffer | undefined, published: Buffer | undefined) {
+  mockGitHub(
+    () => Response.json({}),
+    (id) =>
+      id === "sample"
+        ? extensionZip({
+            id,
+            manifest: { icon },
+            extras: zipped ? [{ name: icon, data: zipped }] : [],
+          })
+        : extensionZip({ id }),
+    undefined,
+    published ? { "logo.png": published } : {},
+  );
+}
+
+it("indexes the matching Release logo asset and omits the field for packages without a logo", async () => {
+  mockReleaseLogo(png, png);
+  const { extensions } = JSON.parse(await syncCatalog());
+  expect(extensions[0]).not.toHaveProperty("icon");
+  expect(extensions[1]).toMatchObject({ id: "sample", icon: `${releaseUrl}/logo.png` });
+});
+
+it("indexes a commit-pinned Raw logo for a source zipball", async () => {
+  await writeFile(
+    new URL("sources.json", directory),
+    JSON.stringify({ schemaVersion: 1, sources: [{ id: "sample", repository }] }),
+  );
+  const sha = "a".repeat(40);
+  const rawIcon = `https://raw.githubusercontent.com/owner/repo/${sha}/images/my%20logo.png`;
+  const archive = extensionZip({
+    wrapper: "owner-repo-sha",
+    manifest: { icon: "images/my logo.png" },
+    extras: [{ name: "owner-repo-sha/images/my logo.png", data: png }],
+  });
+  vi.stubGlobal("fetch", async (url: URL) => {
+    if (url.href === `${api}/releases/latest`) return new Response(null, { status: 404 });
+    if (url.href === `${api}/commits?per_page=1`)
+      return Response.json([{ sha, commit: { committer: { date: publishedAt } } }]);
+    if (url.href === `${api}/zipball/${sha}`) return new Response(new Uint8Array(archive));
+    if (url.href === rawIcon) return new Response(new Uint8Array(png));
+    if (url.href === api) return Response.json({});
+    throw new Error(`Unexpected request: ${url.href}`);
+  });
+  expect(JSON.parse(await syncCatalog()).extensions).toMatchObject([
+    { id: "sample", icon: rawIcon },
+  ]);
+});
+
+const oversizedLogo = Buffer.alloc(DESKTOP_EXTENSION_ICON_MAX_BYTES + 1);
+png.copy(oversizedLogo);
+
+it.each([
+  ["missing from the ZIP", undefined, png, /Missing or oversized resource: images\/logo\.png/u],
+  ["oversized in the ZIP", oversizedLogo, png, /Missing or oversized resource: images\/logo\.png/u],
+  ["mislabeled", Buffer.from("not PNG"), png, /Icon type does not match images\/logo\.png/u],
+  ["missing from the Release", png, undefined, /Also attach images\/logo\.png to the Release/u],
+  ["oversized in the Release", png, oversizedLogo, /GitHub download exceeds the size limit/u],
+  [
+    "different in the Release",
+    png,
+    Buffer.concat([png, Buffer.from([1])]),
+    /Published icon differs from ZIP/u,
+  ],
+] as const)("rejects a declared logo that is %s", async (_kind, zipped, published, reason) => {
+  mockReleaseLogo(zipped, published);
+  const { failed, markdown } = await buildCatalog({ directory });
+  expect(failed).toBe(true);
+  expect(markdown).toMatch(reason);
+  await expect(readFile(new URL("catalog.json", directory))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
 });
 
 it("indexes a backend-only package without executing its entry", async () => {

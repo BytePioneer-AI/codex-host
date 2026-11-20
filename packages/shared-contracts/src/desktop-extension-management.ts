@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   DESKTOP_EXTENSION_SCREENSHOT_LIMIT,
   DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH,
@@ -58,20 +59,19 @@ export const desktopExtensionsRecoveryParamsSchema = z.strictObject({
   expectedRevision: revisionSchema.optional(),
 });
 
+const rasterDataUrlSchema = (maxBytes: number) =>
+  z
+    .string()
+    .max("data:image/jpeg;base64,".length + 4 * Math.ceil(maxBytes / 3))
+    .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u);
+
 export const desktopExtensionListItemSchema = z.strictObject({
   // An invalid discovery can have a directory name that isn't a valid extension ID.
   id: z.string().min(1),
   manifest: desktopExtensionManifestSchema.optional(),
+  iconDataUrl: rasterDataUrlSchema(DESKTOP_EXTENSION_ICON_MAX_BYTES).optional(),
   screenshotDataUrls: z
-    .array(
-      z
-        .string()
-        .max(
-          "data:image/jpeg;base64,".length +
-            4 * Math.ceil(DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES / 3),
-        )
-        .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u),
-    )
+    .array(rasterDataUrlSchema(DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES))
     .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
     .optional(),
   enabled: z.boolean(),

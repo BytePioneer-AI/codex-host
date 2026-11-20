@@ -29,6 +29,7 @@ import {
   isDesktopExtensionTransactionEntry,
   privateExtensionDirectory,
   readDesktopExtensionBackend,
+  readDesktopExtensionIcon,
   readDesktopExtensionScreenshot,
   readExtensionResource,
 } from "./extension-discovery.js";
@@ -153,6 +154,7 @@ export async function installFromZipBuffer(
             );
         }
         if (manifest.backend) await readDesktopExtensionBackend(staging, manifest.backend.script);
+        if (manifest.icon) await readDesktopExtensionIcon(staging, manifest.icon);
         for (const screenshot of manifest.screenshots ?? [])
           await readDesktopExtensionScreenshot(staging, screenshot);
         return manifest;

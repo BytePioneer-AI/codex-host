@@ -9,7 +9,8 @@ const { outputFiles } = await build({
   stdin: {
     contents: `
       export {
-        DESKTOP_EXTENSION_MANIFEST_MAX_BYTES, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
+        DESKTOP_EXTENSION_ICON_MAX_BYTES, DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
+        DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
         DESKTOP_EXTENSION_STYLE_MAX_BYTES, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
         DESKTOP_EXTENSION_ZIP_MAX_BYTES, compareExtensionVersions, desktopExtensionCatalogSchema,
         desktopExtensionCatalogEntrySchema, desktopExtensionHttpUrlSchema,

@@ -210,6 +210,7 @@ var DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH = 4 * Math.ceil(DESKTOP_EXTENSION_ZI
 var DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 128 * 1024;
 var DESKTOP_EXTENSION_SCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 var DESKTOP_EXTENSION_STYLE_MAX_BYTES = 256 * 1024;
+var DESKTOP_EXTENSION_ICON_MAX_BYTES = 128 * 1024;
 var DESKTOP_EXTENSION_SCREENSHOT_LIMIT = 4;
 var DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES = 512 * 1024;
 var DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES = 8 * 1024 * 1024;
@@ -266,10 +267,10 @@ var desktopExtensionAssetPathSchema = pluginRelativeResourceSchema.refine(
   (resource) => hasPortableSegments(resource) && desktopExtensionAssetMimeType(resource) !== void 0,
   "Expected a relative Desktop extension asset path with a supported suffix",
 );
-var screenshotPathSchema = pluginRelativeResourceSchema.refine(
+var imagePathSchema = pluginRelativeResourceSchema.refine(
   (resource) =>
     desktopExtensionScreenshotMimeType(resource) !== void 0 && hasPortableSegments(resource),
-  "Screenshots must be relative .png, .jpg, .jpeg, or .webp paths with no segments ending in a dot or space",
+  "Images must be relative .png, .jpg, .jpeg, or .webp paths with no segments ending in a dot or space",
 );
 var desktopExtensionHttpUrlSchema = z4
   .string()
@@ -374,8 +375,9 @@ var desktopExtensionManifestSchema = manifestHeader
     details: z4
       .strictObject({ en: z4.string().max(16384), "zh-CN": z4.string().max(16384).optional() })
       .optional(),
+    icon: imagePathSchema.optional(),
     screenshots: z4
-      .array(screenshotPathSchema)
+      .array(imagePathSchema)
       .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
       .refine(
         (screenshots) => new Set(screenshots).size === screenshots.length,
@@ -468,6 +470,7 @@ var desktopExtensionCatalogEntrySchema = z4.strictObject({
   downloads: z4.number().int().min(0).optional(),
   categories: categoriesSchema.optional(),
   trustTier: desktopExtensionTrustTierSchema.default("community"),
+  icon: desktopExtensionHttpUrlSchema.optional(),
   screenshots: z4
     .array(desktopExtensionHttpUrlSchema)
     .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
@@ -674,10 +677,11 @@ function readDesktopExtensionZip(zip, subpath) {
   }
   check(central === end, "incorrect central directory size");
   ranges.sort((a, b) => a.start - b.start);
-  check(
-    ranges.every(({ start: start2 }, index) => index === 0 || ranges[index - 1].end <= start2),
-    "overlapping local entries",
-  );
+  let previousEnd = 0;
+  for (const { start: start2, end: end2 } of ranges) {
+    check(previousEnd <= start2, "overlapping local entries");
+    previousEnd = end2;
+  }
   if (subdirectory === void 0 && files.has("manifest.json")) return files;
   const roots = [...paths.values()].filter(({ name }) => !name.includes("/"));
   const [wrapper] = roots;
@@ -694,6 +698,7 @@ function readDesktopExtensionZip(zip, subpath) {
   return selected;
 }
 export {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
   DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,

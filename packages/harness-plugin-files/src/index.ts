@@ -9,6 +9,7 @@ export {
   desktopExtensionsRoot,
   desktopExtensionsStatusPath,
   isDesktopExtensionTransactionEntry,
+  readDesktopExtensionIcon,
   readDesktopExtensionScreenshot,
   type DesktopExtensionInstallation,
 } from "./extension-discovery.js";

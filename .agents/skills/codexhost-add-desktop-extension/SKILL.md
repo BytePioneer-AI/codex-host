@@ -34,6 +34,7 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-layout"],
   "categories": ["interface", "workflow"],
+  "icon": "images/logo.png",
   "screenshots": ["images/sidebar.png"]
 }
 ```
@@ -43,6 +44,8 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
 - `author` 可选，去掉首尾空白后为 1–128 字符。`repository` 可选，只接受 `http://` 或 `https://` URL（至多 2048 字符），推荐填写公开的 GitHub 仓库 HTTPS 链接。
 - 推荐填写双语 `details`（`{ en, "zh-CN" }`），详情弹窗会按**安全子集 Markdown** 渲染：支持 `#` / `##` / `###` 标题、无序/有序列表、`**加粗**`、`*斜体*`、`` `行内代码` ``、```` ``` ```` 围栏代码块、`>` 引用块以及 `http://` / `https://` 链接（非法协议与原始 HTML 会安全降级为纯文本）。提供时 `en` 必填，`zh-CN` 可省略，每种语言最多 16384 字符；写清用途、操作和适用范围。
 - **强烈推荐**在 `manifest.json` 中附带 `screenshots`（1–4 张界面截图，详情弹窗会自动展示截图画廊并支持点击大图预览）。将图片放在 `<source-dir>/` 下，如 `images/sidebar.png`，与示例路径一致；暂时没有截图时可省略字段。最多 4 张、不重复，每张 ≤ 512 KiB，只能用 PNG、JPEG（`.jpg` / `.jpeg`）或 WebP，扩展名须匹配文件签名。使用 `/` 分隔路径，不用绝对路径、`..`、以点或空格结尾的路径段或指向目录外的链接。工具会校验并原样复制，管理列表提供 `screenshotDataUrls` 供 `<img>` 使用。
+
+- `icon` 是可选的 Logo 文件路径，推荐正方形 PNG 或 WebP，文件 ≤ 128 KiB。支持的格式、相对路径和签名规则与 `screenshots` 相同。不填时，设置页按分类自动展示与界面协调的矢量图标（由设置页实现）。
 
 `categories` 是可选的多选标签。只选能说明扩展主要用途的项，允许跨类但不能重复；没有适合的标签时省略或填 `[]`。标签只用于归类，不授予 API 能力，也不参与槽位互斥。六个预置值如下：
 
@@ -57,7 +60,7 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
 
 `sidebar.thread-badge` 用于角标与计数，`sidebar.thread-layout` 用于改变行布局，`appearance.theme` 用于整套皮肤（同一时间只能启用一套）。只声明实际使用的槽位；纯工具或后端可省略 `slots` 或填 `[]`。扩展必须取得全部声明的槽位才会激活。没有样式时省略 `desktop.style`；纯后端可省略 `desktop`，但至少声明 `desktop` 或 `backend` 之一。
 
-完成条件：manifest 通过 v1 schema；名称和描述均有中英文文案；标签与用途相符，目录名、入口和槽位与实际产物一致；声明的截图全部能通过打包校验。
+完成条件：manifest 通过 v1 schema；名称和描述均有中英文文案；标签与用途相符，目录名、入口和槽位与实际产物一致；声明的 Logo 和截图均通过打包校验。
 
 ## 2. 实现所声明的入口
 
@@ -102,7 +105,7 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
      "$CODEXHOST_DATA_DIR/desktop-extensions"
    ```
 
-   将样板路径替换为实际源码目录。此工具只构建界面入口、样式和截图。含后端或其他资源时，自行构建并按 manifest 的相对路径放入 ZIP，再通过 Console 安装。安装不启用新扩展；目录和文件须归当前用户所有，不允许同组或其他用户写入。
+   将样板路径替换为实际源码目录。此工具只构建界面入口和样式，并原样复制声明的 Logo 和截图。含后端或其他资源时，自行构建并按 manifest 的相对路径放入 ZIP，再通过 Console 安装。安装不启用新扩展；目录和文件须归当前用户所有，不允许同组或其他用户写入。
 
 3. 在 Console 的扩展页启用。确认从等待进入运行中；重复构建一次确认热更新且没有旧实例；禁用后原生行恢复。验证远程行不变；使用同槽位样板验证冲突提示包含占用者。记录实际验证范围。
 4. 看不到扩展时，核对数据目录、目录名、manifest 与权限。等待状态时确认 Desktop 主窗口已建立界面控制；失败时先看状态原因和声明的文件，修复后重新构建。若 Desktop 无法操作，在独立的 **Console → 扩展** 选择「禁用全部扩展并重载 Desktop」；选择会立即保存，有在线 Controller 时才执行窗口重载。
@@ -111,7 +114,7 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
 
 ## 4. 通过 GitHub 分发
 
-将 `manifest.json` 和声明的 `desktop.script` / `backend.script`（构建好的 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把样式、截图及其他静态资源也提交到对应路径。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
+将 `manifest.json` 和声明的 `desktop.script` / `backend.script`（构建好的 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把样式、Logo、截图及其他静态资源也提交到对应路径。上架索引时，若使用 Release ZIP，Logo 和截图还须各自作为同名文件资产上传，且与 ZIP 内的字节一致。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
 
 完成条件：确认选中的 GitHub 目录同时包含 manifest 和声明的入口 JS，安装时不需要构建。
 

@@ -24,6 +24,7 @@ import type {
   DraftInitializationOptions,
   DraftInitializationResult,
   DraftResponseAnnotation,
+  DraftResponseAnnotationInput,
   InputActions,
   InputEffect,
   InputNotice,
@@ -54,7 +55,7 @@ import { SubmitMachine } from "./machine.ts";
 import { resolveDraftInput, snapshotDraft } from "../draft.ts";
 import { DraftEditorRuntime } from "./editor/runtime.ts";
 import type { EditorProjection } from "./editor/projection.ts";
-import { composeAnnotatedMessage, type ResponseAnnotation } from "@codexhost/shared-contracts";
+import { composeAnnotatedMessage } from "@codexhost/shared-contracts";
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -449,7 +450,7 @@ export class SessionInputShell implements SessionInput {
    * @param annotation - selected text and its optional comment.
    * @returns the draft identity, or undefined when the draft is locked.
    */
-  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined {
+  addResponseAnnotation(annotation: DraftResponseAnnotationInput): DraftAttachmentId | undefined {
     if (this.snapshot.phase === "adjudicating" || this.snapshot.phase === "submitting")
       return undefined;
     this.annotationSeq += 1;
@@ -460,6 +461,7 @@ export class SessionInputShell implements SessionInput {
         id,
         text: annotation.text.trim(),
         ...(annotation.annotation === undefined ? {} : { annotation: annotation.annotation }),
+        ...(annotation.anchor === undefined ? {} : { anchor: annotation.anchor }),
       },
     ];
     this.publish();

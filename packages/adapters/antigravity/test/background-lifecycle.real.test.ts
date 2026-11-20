@@ -85,6 +85,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
 });
 `,
   );
+  if (process.platform === "win32") {
+    const shim = `${cli}.cmd`;
+    await writeFile(shim, `@"${process.execPath}" "${cli}" %*\r\n`);
+    return shim;
+  }
   await chmod(cli, 0o700);
   return cli;
 }

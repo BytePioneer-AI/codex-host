@@ -12,6 +12,7 @@ import {
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -25,6 +26,8 @@ import {
 import { DelegationWatchService, type ClientEventSink } from "./delegation-watch.js";
 import type { DelegationWatchStore } from "./delegation-watch-store.js";
 import { clientOrigin, originClientName } from "./external-client-origin.js";
+import { interruptAndSend } from "./delegation-interrupt-send.js";
+import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
 
 const REF_CURSOR_PREFIX = "ref:";
@@ -162,6 +165,15 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
+    if (input.interrupt !== undefined && typeof input.interrupt !== "boolean")
+      throw new DelegationControlError("INVALID_ARGUMENT", "interrupt must be a boolean");
+    if (input.steer !== undefined && typeof input.steer !== "boolean")
+      throw new DelegationControlError("INVALID_ARGUMENT", "steer must be a boolean");
+    if (input.steer && input.interrupt)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "steer and interrupt are mutually exclusive",
+      );
     const queued = await this.#capacity.peek(input.threadId);
     if (queued) {
       throw new DelegationControlError(
@@ -172,21 +184,28 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     }
     if (await this.#neverStarted({ threadId: input.threadId, view: "result" }))
       throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was never started");
-    return (await this.#registrationForThread(input.threadId)).send(input);
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!input.interrupt) return registration.send(input);
+    const send = { threadId: input.threadId, message: input.message };
+    return this.#watchService.holdNotifications(input.threadId, () =>
+      interruptAndSend(registration, send),
+    );
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {
-    const removed = await this.#capacity.cancel(input.threadId);
-    if (removed) return removed;
-    const finished = await this.#neverStarted({ threadId: input.threadId, view: "result" });
-    if (finished)
-      return {
-        threadId: input.threadId,
-        turnId: null,
-        harnessId: finished.harnessId,
-        cancelled: false,
-      };
-    return (await this.#registrationForThread(input.threadId)).cancel(input);
+    return this.#watchService.cancel(input.threadId, async () => {
+      const removed = await this.#capacity.cancel(input.threadId);
+      if (removed) return removed;
+      const finished = await this.#neverStarted({ threadId: input.threadId, view: "result" });
+      if (finished)
+        return {
+          threadId: input.threadId,
+          turnId: null,
+          harnessId: finished.harnessId,
+          cancelled: false,
+        };
+      return (await this.#registrationForThread(input.threadId)).cancel(input);
+    });
   }
 
   async read(input: ThreadReadInput) {
@@ -223,11 +242,23 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return (await this.#registrationForThread(read.threadId)).read(read);
   }
 
+  async exportThread(input: ThreadExportInput) {
+    validateThreadExportInput(input);
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!registration.exportThread)
+      throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
+    return registration.exportThread(input);
+  }
+
   async wait(input: ThreadWaitInput) {
     if (input.hostId !== undefined && input.hostId !== "local")
       throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
     const snapshot = await this.#wait(input);
     return withRefs(snapshot, (await this.#refs?.get(snapshot.threadId)) ?? []);
+  }
+
+  async answer(input: ThreadAnswerInput) {
+    return (await this.#registrationForThread(input.threadId)).answer(input);
   }
 
   /** A queued Thread is waited for through the queue first, then through its session. */

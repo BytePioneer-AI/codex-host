@@ -34,7 +34,9 @@ async function recordingAgy(): Promise<{
   const script = `
 const fs = require("node:fs");
 fs.writeFileSync(${JSON.stringify(record)}, process.env.${ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV} ?? "<unset>");
-if (process.argv.includes("models")) {
+if (process.argv.includes("--version")) {
+  process.stdout.write("agy version 1.5.9\\n");
+} else if (process.argv.includes("models")) {
   process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
 }
 `;

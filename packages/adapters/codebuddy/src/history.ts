@@ -722,6 +722,10 @@ export function snapshotFromHistory(
         if (typeof row.timestamp === "number") current.completedAtMs = row.timestamp;
       }
     } else if (row.type === "function_call") {
+      // Aborted streams can persist discarded argument fragments. Keep their parent-chain
+      // nodes, but do not parse or render them as Tools that actually started.
+      if (row.status === "incomplete" && data.isPartialAborted === true && data.discard === true)
+        continue;
       let input: unknown = row.arguments;
       if (typeof input === "string") {
         try {

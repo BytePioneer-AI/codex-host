@@ -442,6 +442,7 @@ describe("Renderer fixed Model request client", () => {
       "listHarnessSessions",
       "listLoadedSessions",
       "listSessionImportSources",
+      "listSkills",
       "listThreadOwnership",
       "openConsole",
       "openHarnessWebUi",
@@ -463,6 +464,7 @@ describe("Renderer fixed Model request client", () => {
       "subscribeCodexAccounts",
       "subscribeHarnessDisplaySettings",
       "subscribeHarnessPreferences",
+      "subscribeSkillsChanged",
       "subscribeThreadUsage",
       "updateRemote",
     ]);

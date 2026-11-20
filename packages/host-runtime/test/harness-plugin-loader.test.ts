@@ -72,7 +72,7 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
-  it.each(["credits", "refreshCredits"])(
+  it.each(["credits", "refreshCredits", "balance", "refreshBalance"])(
     "rejects malformed optional %s capabilities",
     async (method) => {
       const directory = await root(["broken-quota"]);
@@ -674,6 +674,35 @@ describe("Harness plugin discovery and loading", () => {
       expect(inspections.every((inspection) => inspection.status === "ready")).toBe(true);
     } finally {
       await registry.close();
+    }
+  });
+
+  it("evaluates plugin modules one at a time so a load wave never stalls the Host", async () => {
+    const ids = ["one-agent", "two-agent", "three-agent", "four-agent", "five-agent"];
+    const directory = await root(ids);
+    for (const id of ids) {
+      await plugin(directory, id, {
+        code: `
+      import { FakeHarnessAdapter } from ${JSON.stringify(fakeModule)};
+      globalThis.__pluginEvaluation.push("start");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      globalThis.__pluginEvaluation.push("end");
+      export function createHarnessAdapter() { return new FakeHarnessAdapter(${JSON.stringify(id)}); }
+    `,
+      });
+    }
+    const evaluation: string[] = [];
+    Reflect.set(globalThis, "__pluginEvaluation", evaluation);
+    try {
+      const registry = await loadHarnessPlugins({ roots: [directory], context });
+      try {
+        expect(registry.list()).toHaveLength(ids.length);
+        expect(evaluation).toEqual(ids.flatMap(() => ["start", "end"]));
+      } finally {
+        await registry.close();
+      }
+    } finally {
+      Reflect.deleteProperty(globalThis, "__pluginEvaluation");
     }
   });
 

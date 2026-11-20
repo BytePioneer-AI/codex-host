@@ -141,6 +141,8 @@ export class PushableInput<T> implements AsyncIterable<T> {
 interface ActiveTurnState {
   turnId: HostTurnId;
   userMessageUuid: string;
+  startedToolIds: Set<string>;
+  projectedTextSnapshots: Set<string>;
   lastAssistantMessageUuid?: string | undefined;
   activeStreamingMessageItemId?: HostItemId | undefined;
   accumulatedStreamingText: string;
@@ -392,6 +394,14 @@ export class QoderSession implements HarnessSession {
   }
 
   async #dispatchMessage(message: SDKMessage): Promise<void> {
+    if (
+      (message.type === "assistant" ||
+        message.type === "stream_event" ||
+        message.type === "user") &&
+      message.parent_tool_use_id !== null &&
+      message.parent_tool_use_id !== undefined
+    )
+      return;
     switch (message.type) {
       case "system":
         this.#handleSystemMessage(message as SDKSystemMessage);
@@ -590,7 +600,17 @@ export class QoderSession implements HarnessSession {
         (block as Record<string, unknown>).type === "tool_use",
     );
 
-    for (const block of content) {
+    for (const [index, block] of content.entries()) {
+      if (message.uuid && typeof block === "object" && block !== null) {
+        const raw = block as Record<string, unknown>;
+        const text =
+          raw.type === "text" ? raw.text : raw.type === "thinking" ? raw.thinking : undefined;
+        if (typeof text === "string") {
+          const key = JSON.stringify([message.uuid, index, raw.type, text]);
+          if (this.#activeTurn.projectedTextSnapshots.has(key)) continue;
+          this.#activeTurn.projectedTextSnapshots.add(key);
+        }
+      }
       this.#projectAssistantBlock(block, hasToolUseInMessage);
     }
   }
@@ -717,6 +737,11 @@ export class QoderSession implements HarnessSession {
         });
       }
     } else if (rawBlock.type === "tool_use") {
+      if (typeof rawBlock.id === "string" && rawBlock.id.trim()) {
+        if (this.#activeTurn.startedToolIds.has(rawBlock.id)) return;
+        this.#activeTurn.startedToolIds.add(rawBlock.id);
+      }
+
       if (this.#activeTurn.activeStreamingMessageItemId) {
         this.#emitEvent({
           type: "item.completed",
@@ -1307,6 +1332,8 @@ export class QoderSession implements HarnessSession {
         this.#activeTurn = {
           turnId: command.turnId,
           userMessageUuid,
+          startedToolIds: new Set(),
+          projectedTextSnapshots: new Set(),
           accumulatedStreamingText: "",
           accumulatedStreamingReasoning: "",
         };
@@ -1776,6 +1803,8 @@ export class QoderSession implements HarnessSession {
     this.#activeTurn = {
       turnId: command.turnId,
       userMessageUuid,
+      startedToolIds: new Set(),
+      projectedTextSnapshots: new Set(),
       accumulatedStreamingText: "",
       accumulatedStreamingReasoning: "",
       isCompaction,

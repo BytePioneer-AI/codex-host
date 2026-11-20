@@ -1,4 +1,4 @@
-/** Explicit phone counterpart of dragging a Session reference into the current draft. */
+/** Insert a Session reference from its menu into the current draft. */
 import { useRef, useState, useSyncExternalStore } from "react";
 import {
   IconLinkOutlineRegular,
@@ -12,20 +12,19 @@ const noSubscription = () => () => {};
 
 export function ReferenceSessionMenuItem(props: SessionMenuItemProps<ReferenceSessionInjected>) {
   const sidebar = usePhoneSidebar();
-  // The provider exists only inside AppFrame's phone drawer, not desktop or native Renderer.
-  if (sidebar === null || !sidebar.open) return null;
+  if (sidebar !== null && !sidebar.open) return null;
   return (
-    <PhoneReferenceSessionMenuItem key={props.sessionId} {...props} closeDrawer={sidebar.close} />
+    <DraftReferenceSessionMenuItem key={props.sessionId} {...props} closeDrawer={sidebar?.close} />
   );
 }
 
-function PhoneReferenceSessionMenuItem({
+function DraftReferenceSessionMenuItem({
   sessionId,
   prepareDraftReference,
   closeDrawer,
   useMenuOpenState,
   t,
-}: SessionMenuItemProps<ReferenceSessionInjected> & { closeDrawer(): void }) {
+}: SessionMenuItemProps<ReferenceSessionInjected> & { closeDrawer?: (() => void) | undefined }) {
   const [action] = useState(() => prepareDraftReference(sessionId));
   const available = useSyncExternalStore(
     action?.subscribe ?? noSubscription,
@@ -34,8 +33,8 @@ function PhoneReferenceSessionMenuItem({
   const attempted = useRef(false);
   const [failed, setFailed] = useState(false);
   const [, setMenuOpen] = useMenuOpenState();
-  // Invalid sources and non-editable drafts have no actionable-looking entry.
-  if (!failed && !available) return null;
+  // Keep a captured action visible but disabled while its Composer is unavailable.
+  if (action === undefined) return null;
   return (
     <>
       <MenuItemButton
@@ -47,7 +46,7 @@ function PhoneReferenceSessionMenuItem({
           try {
             if (action?.insert() === true) {
               setMenuOpen(false);
-              closeDrawer();
+              closeDrawer?.();
               return;
             }
           } catch {

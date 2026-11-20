@@ -638,8 +638,8 @@ export class DelegationCapacityQueue implements DelegationCapacityGate {
       turns: [],
       running,
       view: input.view,
-      ...(input.cursor ? { cursor: input.cursor } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.from !== undefined ? { from: input.from } : {}),
+      ...(input.to !== undefined ? { to: input.to } : {}),
     });
   }
 

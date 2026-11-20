@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import {
   DelegationControlError,
+  type DelegationPendingQuestion,
   type DelegationThreadSnapshot,
   type DelegationThreadStatus,
 } from "../src/delegation-types.js";
@@ -56,6 +57,51 @@ describe("client event log", () => {
     expect((await log.read("other", 0)).events).toEqual([]);
   });
 
+  it("persists the captured Question identity in a named client's needsInput event", async () => {
+    const log = new ClientEventLog({ directory, retentionDays: 7 });
+    let pending: DelegationPendingQuestion[] = [];
+    const fake = {
+      read: vi.fn(async () => ({
+        threadId: "child",
+        harnessId: "pi" as const,
+        status: "running" as const,
+        turn: { turnId: "current-turn", status: "running" as const },
+        progress: [],
+        result: { availability: "pending" as const },
+        pendingQuestions: pending,
+      })),
+      send: vi.fn(),
+    };
+    const service = new DelegationWatchService(fake, { pollIntervalMs: 10, clientEvents: log });
+    try {
+      await service.watch({ threadId: "child", notifyThreadId: "client:bot", timeoutMs: 60_000 });
+      pending = [
+        {
+          interactionId: "captured-question",
+          kind: "requestUserInput",
+          turnId: "question-turn",
+          request: {},
+        },
+      ];
+      // The watch ends only after its event is appended, so wait for both.
+      await vi.waitFor(async () => {
+        expect((await log.read("bot", 0)).events).toMatchObject([
+          {
+            type: "watch",
+            threadId: "child",
+            outcome: "needsInput",
+            turnId: "question-turn",
+            interactionId: "captured-question",
+          },
+        ]);
+        expect((await service.watches()).watches).toEqual([]);
+      });
+      expect(fake.send).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+    }
+  });
+
   it("continues above earlier ids after a restart, even with a slower clock", async () => {
     const before = new ClientEventLog({ directory, retentionDays: 7, now: () => 2_000_000 });
     const [last] = await before.append("bot", [event("a")]);
@@ -84,7 +130,6 @@ describe("client event log", () => {
             turn: { turnId: "turn-1", status },
             progress: [],
             result: { availability: "pending" },
-            nextCursor: null,
           }),
         ),
         send,
@@ -198,7 +243,6 @@ describe("watches that notify an external client", () => {
           turn: { turnId: "turn-1", status: status.child },
           progress: [],
           result: { availability: "pending" },
-          nextCursor: null,
           refs: ["https://github.com/o/r/issues/12"],
         } as DelegationThreadSnapshot;
       }),

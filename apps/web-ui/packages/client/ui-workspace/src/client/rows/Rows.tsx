@@ -10,7 +10,7 @@
  * context; this package's own actions are entries like any plugin's. The
  * session and workspace hover cards are suppressed while a menu is open.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import type { PropsRenderSlots } from "@deepseek-ai/dsh-client-ui-slots";
 import {
@@ -40,6 +40,10 @@ import { SessionRowContent } from "./SessionRowContent.tsx";
 import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
 import { HostBadge } from "./HostBadge.tsx";
+import { useThreadTreeView } from "./ThreadTreeView.tsx";
+import { ThreadTreeSummary, useThreadChildGroup } from "./ThreadTreeControls.tsx";
+import { ThreadTreeRing } from "./ThreadTreeRing.tsx";
+import { threadTreeSummary } from "./thread-tree-presentation.ts";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -222,7 +226,7 @@ export function ProjectRowItem({
       <span className={css.projectText}>
         <span className={css.title}>{label}</span>
       </span>
-      {row.workspaceId !== undefined && <HostBadge host={row.remote} t={t} />}
+      {row.workspaceId !== undefined && row.remote && <HostBadge host={row.remote} t={t} />}
       <span className={css.rowActions}>
         {actions !== undefined && (
           <Menu
@@ -309,9 +313,9 @@ export function ProjectRowItem({
 }
 
 /**
- * Hover-card body: full title, relative time, the Session's own scheduled-task
- * section, and every relevant live status. The task section sits above the
- * status lines so they stay the card's trailing status line.
+ * Hover-card body: full title, Session working directory, relative time, the
+ * Session's own scheduled-task section, and every relevant live status.
+ * The task section sits above the trailing status lines.
  */
 function SessionHoverContent({
   node,
@@ -332,6 +336,7 @@ function SessionHoverContent({
   return (
     <div className={css.hoverContent}>
       <div className={css.hoverTitle}>{displayTitle(node, t)}</div>
+      {node.cwd && <div className={css.hoverPath}>{node.cwd}</div>}
       {/* Same placeholder rule as the row's trailing cell: no timestamp
           before the first prompt. */}
       {!node.blank && <div className={css.hoverTime}>{hoverTimeLabel(node.updatedAt, now, t)}</div>}
@@ -424,6 +429,7 @@ export function SearchResultItem({
       <span className={css.searchResultMeta}>
         <span className={css.searchResultWorkspace}>
           {result.workspace || t("group.ungrouped")}
+          {result.parentTitle !== undefined && ` · ${result.parentTitle || t("session.untitled")}`}
         </span>
         {result.snippet !== undefined && (
           <span className={css.searchResultSnippet}>{result.snippet}</span>
@@ -442,7 +448,7 @@ export function SearchResultItem({
  * @param props.currentId - selected session id (row highlight).
  * @param props.now - epoch ms for relative-time formatting.
  * @param props.onOpen - open a session by id.
- * @param props.onRenameRequest - open the rename dialog from a title double-click (id + current title).
+ * @param props.onRenameRequest - open the rename dialog for this session (id + current title).
  * @param props.renderSlot - child-seat renderer for the row's action lists
  * (`sidebar.workspaces.session.menu.item` / `sidebar.workspaces.session.row.action`),
  * its leading decoration, and its hover-card section.
@@ -460,7 +466,7 @@ export function SessionNodeItem({
   onRenameRequest,
   renderSlot,
   onReveal,
-  drag,
+  drag: suppliedDrag,
   showHost = true,
   t,
 }: {
@@ -471,7 +477,7 @@ export function SessionNodeItem({
   currentId: string | undefined;
   now: number;
   onOpen: (id: SessionNode["id"]) => void;
-  /** Open the rename dialog from a title double-click (id + current title). */
+  /** Open the rename dialog for this session (id + current title). */
   onRenameRequest: (id: SessionNode["id"], currentTitle: string) => void;
   /** Scroll this row into view after search navigation, then acknowledge it. */
   onReveal?: (() => void) | undefined;
@@ -486,6 +492,11 @@ export function SessionNodeItem({
   | "sidebar.session.row.hover"
 >) {
   const row = node;
+  const { expansion, toggle, markCompletionsRead, collapseStyle } = useThreadTreeView();
+  const childGroupId = useThreadChildGroup();
+  const depth = node.tree?.depth ?? 0;
+  const expanded = expansion[node.id] === true;
+  const drag = depth === 0 ? suppliedDrag : undefined;
   const title = displayTitle(node, t);
   const selected = node.id === currentId;
   const statuses = sessionStatuses(node, t);
@@ -513,6 +524,11 @@ export function SessionNodeItem({
     <div
       ref={rowRef}
       data-row-key={rowKey}
+      data-thread-parent={node.tree?.parentId ?? undefined}
+      data-thread-depth={depth}
+      data-thread-sortable={String(reorderable)}
+      data-thread-pinned={String(node.pinned)}
+      style={{ "--dsh-thread-indent": `${Math.min(depth, 3) * 24}px` } as CSSProperties}
       className={clsx(
         css.sessionRow,
         selected && css.selected,
@@ -524,6 +540,8 @@ export function SessionNodeItem({
       role="treeitem"
       aria-selected={selected}
       aria-current={selected ? "page" : undefined}
+      aria-level={depth + 1}
+      aria-expanded={node.tree?.descendantCount ? expanded : undefined}
       tabIndex={-1}
       onContextMenu={(e) => {
         if (row.blank || (e.target as HTMLElement).closest("button")) return;
@@ -548,7 +566,13 @@ export function SessionNodeItem({
         dragged.current = false;
       }}
       onClick={() => {
-        if (!dragged.current) onOpen(node.id);
+        if (dragged.current) return;
+        if (selected && !row.archived && node.tree?.descendantCount) {
+          if (expanded) markCompletionsRead(node.tree.descendantIds);
+          toggle(node.id, !expanded, childGroupId);
+          return;
+        }
+        onOpen(node.id);
       }}
       draggable={draggable}
       onDragStart={
@@ -588,104 +612,136 @@ export function SessionNodeItem({
             }
       }
     >
-      <SessionRowContent
-        identity={renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
-        ambient={
-          !row.archived &&
-          !row.blank &&
-          !showStatus &&
-          renderSlot("sidebar.session.row.leading", { sessionId: node.id })
-        }
-        title={title}
-        onTitleDoubleClick={
-          row.blank
-            ? undefined
-            : (e) => {
-                e.stopPropagation();
-                onRenameRequest(node.id, row.title);
-              }
-        }
-      >
-        {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
-        <span className={css.trailing}>
-          {/* A blank New Session row is a provisional placeholder: nothing has
+      <div className={css.sessionMain}>
+        <SessionRowContent
+          identityLabel={
+            node.tree?.descendantCount
+              ? !expanded && collapseStyle === "ring"
+                ? t("threadTree.expandSummary", {
+                    title,
+                    summary: threadTreeSummary(node.tree.descendantCount, node.tree.activity, t),
+                  })
+                : t(expanded ? "threadTree.collapse" : "threadTree.expand", {
+                    n: node.tree.descendantCount,
+                  })
+              : undefined
+          }
+          identityExpanded={node.tree?.descendantCount ? expanded : undefined}
+          identityControls={childGroupId}
+          identity={
+            <>
+              {renderSlot("sidebar.session.row.identity", { sessionId: node.id })}
+              {!expanded && collapseStyle === "ring" && !!node.tree?.descendantCount && (
+                <ThreadTreeRing activity={node.tree.activity} />
+              )}
+            </>
+          }
+          ambient={
+            !row.archived &&
+            !row.blank &&
+            !showStatus &&
+            renderSlot("sidebar.session.row.leading", { sessionId: node.id })
+          }
+          title={title}
+          onIdentityClick={
+            node.tree?.descendantCount
+              ? (e) => {
+                  e.stopPropagation();
+                  toggle(node.id, !expanded, childGroupId);
+                }
+              : undefined
+          }
+        >
+          {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
+          <span className={css.trailing}>
+            {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not
           exist — both trailing cells stay off until the first prompt. */}
-          {!row.blank && (
-            <span
-              className={clsx(css.time, showStatus && css.timeStatus)}
-              data-session-status={showStatus ? primaryStatus.state : undefined}
-            >
-              {showStatus ? (
-                <>
-                  <SessionStatusDots statuses={statuses} />
-                  {primaryStatus.trailingLabel !== undefined && (
-                    <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
-                  )}
-                </>
-              ) : (
-                timeLabel(row.updatedAt, now, t)
-              )}
-            </span>
-          )}
-          {/* The strip's clicks stay in the strip: the trigger and every
+            {!row.blank && (
+              <span
+                className={clsx(css.time, showStatus && css.timeStatus)}
+                data-session-status={showStatus ? primaryStatus.state : undefined}
+              >
+                {showStatus ? (
+                  <>
+                    <SessionStatusDots statuses={statuses} />
+                    {primaryStatus.trailingLabel !== undefined && (
+                      <span aria-hidden="true">{primaryStatus.trailingLabel}</span>
+                    )}
+                  </>
+                ) : (
+                  timeLabel(row.updatedAt, now, t)
+                )}
+              </span>
+            )}
+            {/* The strip's clicks stay in the strip: the trigger and every
           row.action entry act without also opening the row, so an entry's
           button needs no propagation handling of its own. */}
-          {!row.blank && (
-            <span
-              className={css.rowActions}
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
-            >
-              <Menu
-                open={menuOpen}
-                onClose={() => {
-                  setMenuOpen(false);
+            {!row.blank && (
+              <span
+                className={css.rowActions}
+                onClick={(e) => {
+                  e.stopPropagation();
                 }}
-                portal
-                autoFocus
-                phoneSidebarTitle={title}
-                phoneSidebarFooterBackLabel={t("session.backToList")}
-                phoneSidebarDetails={
-                  <div className={css.phoneDetails}>
-                    <SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />
-                  </div>
-                }
-                getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
-                anchor={
-                  <button
-                    type="button"
-                    className={css.iconButton}
-                    aria-label={t("actions.session.aria", { name: title })}
-                    aria-haspopup="menu"
-                    aria-expanded={menuOpen}
-                    onClick={() => {
-                      setContextPoint(null);
-                      setMenuOpen((v) => !v);
-                    }}
-                  >
-                    <IconEllipsisOutlineRegular />
-                  </button>
-                }
               >
-                {renderSlot(
-                  "sidebar.workspaces.session.menu.item",
-                  { sessionId: node.id, displayTitle: row.title },
-                  { hookContext: menuOpenState },
-                )}
-              </Menu>
-              <span className={css.quickActions}>
-                {renderSlot("sidebar.workspaces.session.row.action", {
-                  sessionId: node.id,
-                  displayTitle: row.title,
-                })}
+                <Menu
+                  open={menuOpen}
+                  onClose={() => {
+                    setMenuOpen(false);
+                  }}
+                  portal
+                  autoFocus
+                  phoneSidebarTitle={title}
+                  phoneSidebarFooterBackLabel={t("session.backToList")}
+                  phoneSidebarDetails={
+                    <div className={css.phoneDetails}>
+                      <SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />
+                    </div>
+                  }
+                  getAnchorRect={contextPoint === null ? undefined : () => contextPoint}
+                  anchor={
+                    <button
+                      type="button"
+                      className={css.iconButton}
+                      aria-label={t("actions.session.aria", { name: title })}
+                      aria-haspopup="menu"
+                      aria-expanded={menuOpen}
+                      onClick={() => {
+                        setContextPoint(null);
+                        setMenuOpen((v) => !v);
+                      }}
+                    >
+                      <IconEllipsisOutlineRegular />
+                    </button>
+                  }
+                >
+                  {renderSlot(
+                    "sidebar.workspaces.session.menu.item",
+                    { sessionId: node.id, displayTitle: row.title, threadTreeChild: depth > 0 },
+                    { hookContext: menuOpenState },
+                  )}
+                </Menu>
+                <span className={css.quickActions}>
+                  {renderSlot("sidebar.workspaces.session.row.action", {
+                    sessionId: node.id,
+                    displayTitle: row.title,
+                    threadTreeChild: depth > 0,
+                  })}
+                </span>
               </span>
-            </span>
-          )}
-        </span>
-      </SessionRowContent>
+            )}
+          </span>
+        </SessionRowContent>
+      </div>
+      {!expanded && collapseStyle === "summary" && (
+        <ThreadTreeSummary
+          node={node}
+          title={title}
+          toggle={() => toggle(node.id, true, childGroupId)}
+          t={t}
+        />
+      )}
     </div>
   );
   return (

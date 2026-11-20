@@ -5,6 +5,7 @@ export interface DraftConfiguration {
 }
 
 export function draftPermissionMode(
+  harnessId: string,
   inspection: {
     status: string;
     permissionModes?:
@@ -14,7 +15,8 @@ export function draftPermissionMode(
 ): string | undefined {
   if (inspection.status !== "ready") return undefined;
   const catalog = inspection.permissionModes;
-  return preferred && catalog?.modes.some((mode) => mode.id === preferred)
-    ? preferred
-    : catalog?.defaultModeId;
+  if (preferred && catalog?.modes.some((mode) => mode.id === preferred)) return preferred;
+  if (harnessId === "codex")
+    return catalog?.modes.find((mode) => mode.id === ":danger-full-access")?.id;
+  return catalog?.defaultModeId;
 }

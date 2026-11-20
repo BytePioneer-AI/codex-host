@@ -18,16 +18,14 @@ export default [
       ".codexhost/**",
       ".pi/**",
       ".work/**",
+      // Independently installed Next.js site has its own ESLint configuration.
+      "apps/wiki/**",
       "build/**",
       "coverage/**",
       "node_modules/**",
       "openspec/**",
-      "playwright-report/**",
       "reference/**",
       "target/**",
-      "test-results/**",
-      // Imported DSH test sources keep their upstream lint rules.
-      "tests/dsh/**",
       "**/dist/**",
     ],
   },

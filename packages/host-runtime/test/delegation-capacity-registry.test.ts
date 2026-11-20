@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { parseThreadWatchNotice } from "@codexhost/shared-contracts";
 
 import { FileDelegationQueueStore } from "../src/delegation-capacity-store.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
@@ -64,6 +65,9 @@ function session() {
   const registration: DelegationControlRegistration = {
     listHarnesses: async () => ({ harnesses: ["codex", "pi"] }),
     inspect: async () => {
+      throw new Error("not used");
+    },
+    answer: async () => {
       throw new Error("not used");
     },
     canHandleStart: (input) => input.parentThreadId === PARENT,
@@ -332,25 +336,26 @@ describe("delegation capacity in the registry", () => {
     finish(queued.threadId);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(registration.send).toHaveBeenCalledOnce();
-    expect(registration.send).toHaveBeenCalledWith({
-      threadId: PARENT,
-      message: expect.stringContaining(`codex://threads/${queued.threadId}: completed`),
-    });
+    const notice = vi.mocked(registration.send).mock.calls[0]?.[0];
+    expect(notice?.threadId).toBe(PARENT);
+    expect(parseThreadWatchNotice(notice?.message ?? "")).toMatchObject([
+      { threadId: queued.threadId, outcome: "completed" },
+    ]);
   });
 
-  it("notifies a watch on a queued Thread that is removed from the queue", async () => {
+  it("removes watches without notification when a queued Thread is cancelled", async () => {
     vi.useFakeTimers();
     const { registry, registration } = registryWith();
     registry.capacity.configure({ enabled: true, maxRunning: 1 });
     await start(registry, "running");
     const queued = await start(registry, "queued");
     await registry.watch({ threadId: queued.threadId, notifyThreadId: PARENT, timeoutMs: 600_000 });
-    await registry.cancel({ threadId: queued.threadId });
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(registration.send).toHaveBeenCalledWith({
-      threadId: PARENT,
-      message: expect.stringContaining(`codex://threads/${queued.threadId}: interrupted`),
+    await expect(registry.cancel({ threadId: queued.threadId })).resolves.toMatchObject({
+      cancelled: true,
     });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(registration.send).not.toHaveBeenCalled();
+    expect((await registry.watches()).watches).toEqual([]);
   });
 
   it("keeps the queue across a Host Runtime restart", async () => {

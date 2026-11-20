@@ -142,7 +142,6 @@ async function watchFixture() {
         turn: { turnId: `${threadId}-turn`, status },
         progress: [],
         result: { availability: "pending" },
-        nextCursor: null,
       }),
       send: (input) => send(input),
     },
@@ -207,7 +206,7 @@ describe("watch delivery through native Codex resume", () => {
         method: "turn/start",
         params: {
           threadId: "native-parent",
-          input: [{ type: "text", text: expect.stringContaining("Turn child-turn") }],
+          input: [{ type: "text", text: expect.stringContaining("(thread://child): completed") }],
         },
       });
       value.answer(start.id, { result: { turn: { id: "notification-turn" } } });

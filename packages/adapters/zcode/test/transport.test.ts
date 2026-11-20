@@ -28,6 +28,7 @@ beforeEach(() => {
   });
 });
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   // Windows keeps a just-exited fake CLI's executable locked for a moment; retry instead of
   // failing the test on EBUSY.
@@ -544,20 +545,27 @@ describe("ZCode installed CLI transport", () => {
 
   it("gives compact its own timeout and fails the connection on other timeouts", async () => {
     const { options } = await fixture(
-      "if(method==='session/compact')setTimeout(()=>reply({accepted:true}),1500);else if(method!=='session/read')reply(null)",
+      "if(method==='session/compact')global.compactReply=reply;else if(method==='session/setMode'){global.compactReply({accepted:true});reply(null)}",
     );
     const transport = await started(options({ timeoutMs: 1000 }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      expect(await transport.request("compactSession", { sessionId: "s", inputId: "i" })).toEqual({
-        accepted: true,
-      });
-      await expect(transport.request("readSession", { sessionId: "s" })).rejects.toMatchObject({
-        code: "unavailable",
-      });
+      const compact = expect(
+        transport.request("compactSession", { sessionId: "s", inputId: "i" }),
+      ).resolves.toEqual({ accepted: true });
+      // Hold the CLI reply until the ordinary request deadline has passed.
+      vi.advanceTimersByTime(1500);
+      await Promise.all([compact, transport.request("setMode", { sessionId: "s" })]);
+      const timedOut = expect(
+        transport.request("readSession", { sessionId: "s" }),
+      ).rejects.toMatchObject({ code: "unavailable" });
+      await vi.advanceTimersByTimeAsync(1000);
+      await timedOut;
       await expect(transport.request("setMode", { sessionId: "s" })).rejects.toMatchObject({
         code: "unavailable",
       });
     } finally {
+      vi.useRealTimers();
       await transport.close();
     }
   });

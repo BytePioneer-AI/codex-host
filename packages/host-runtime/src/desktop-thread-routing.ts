@@ -19,6 +19,7 @@ import {
   type JsonValue,
 } from "@codexhost/protocol-core";
 import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   THREAD_QUESTIONS_LIST_METHOD,
   THREAD_QUESTION_RESPOND_METHOD,
   harnessCommandsInspectParamsSchema,
@@ -54,6 +55,7 @@ const EXPLICIT_EXTERNAL_THREAD_METHODS = new Set([
   "thread/archive",
   "thread/delete",
   "thread/fork",
+  "thread/inject_items",
   "thread/items/list",
   "thread/metadata/update",
   "thread/name/set",
@@ -81,7 +83,10 @@ export interface DesktopThreadRoutingHost {
   };
   readonly routeObservationTracker: RequestRouteObservationTracker;
   /** Native Turn starts awaiting their response, keyed by JSON-RPC request ID. */
-  readonly pendingOfficialTurnStarts: Map<unknown, string>;
+  readonly pendingOfficialTurnStarts: Map<
+    unknown,
+    { threadId: string; completedTurnIds: Set<string> }
+  >;
   locateExternalThread(threadId: string): Promise<ExternalThreadLocation>;
   resolveExternalThread(threadId: string): Promise<ExternalThreadResolution>;
   /** Answers the request when the Thread could not be resolved; returns whether it did. */
@@ -95,6 +100,7 @@ export interface DesktopThreadRoutingHost {
   inspectThread(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
   listThreadOwnership(request: JsonRpcRequest): Promise<void>;
+  confirmThreadArchived(request: JsonRpcRequest): Promise<void>;
   inspectThreadSteering(request: JsonRpcRequest): Promise<void>;
   handleSharedQuestionRequest(request: JsonRpcRequest): Promise<void>;
   selectThreadModel(request: JsonRpcRequest): Promise<void>;
@@ -121,11 +127,7 @@ export interface DesktopThreadRoutingHost {
     origin: HostRequestOrigin,
   ): Promise<void>;
   runSectionOperation<T>(run: () => Promise<T>): Promise<T>;
-  moveThreadSection(
-    request: JsonRpcRequest,
-    frame: Buffer<ArrayBufferLike>,
-    move: DecodedThreadSectionMoveRequest,
-  ): Promise<void>;
+  moveThreadSection(request: JsonRpcRequest, move: DecodedThreadSectionMoveRequest): Promise<void>;
   setExternalThreadArchived(
     request: JsonRpcRequest,
     location: ExternalLocation,
@@ -185,6 +187,7 @@ export interface DesktopThreadRoutingHost {
     name: JsonValue | undefined,
   ): Promise<void>;
   deleteExternalThread(request: JsonRpcRequest, location: ExternalLocation): Promise<void>;
+  injectExternalThreadItems(request: JsonRpcRequest, location: ExternalLocation): Promise<void>;
   cleanExternalBackgroundTerminals(request: JsonRpcRequest, threadId: string): Promise<void>;
   startExternalCompaction(request: JsonRpcRequest, threadId: string): Promise<void>;
 }
@@ -206,6 +209,10 @@ export class DesktopThreadRouting {
     frame: Buffer<ArrayBufferLike>,
     origin: HostRequestOrigin,
   ): Promise<boolean> {
+    if (request.method === THREAD_ARCHIVE_CONFIRM_METHOD) {
+      this.#host.dispatchReply(request, () => this.#host.confirmThreadArchived(request));
+      return true;
+    }
     if (request.method === "codexhost/thread/fork") {
       await this.#host.forkExternalThreadFromRenderer(request);
       return true;
@@ -365,7 +372,7 @@ export class DesktopThreadRouting {
       }
       // Moves read and rewrite one shared order, so they apply one at a time.
       const task = this.#host.runSectionOperation(() =>
-        this.#host.moveThreadSection(request, frame, move),
+        this.#host.moveThreadSection(request, move),
       );
       this.#host.dispatchReply(request, () => task);
       return true;
@@ -565,7 +572,10 @@ export class DesktopThreadRouting {
         return true;
       }
       if (typeof threadId === "string") {
-        this.#host.pendingOfficialTurnStarts.set(request.id, threadId);
+        this.#host.pendingOfficialTurnStarts.set(request.id, {
+          threadId,
+          completedTurnIds: new Set(),
+        });
       }
     }
     if (request.method === "turn/steer") {
@@ -690,6 +700,18 @@ export class DesktopThreadRouting {
           await this.#host.deleteExternalThread(request, location);
         }
         return true;
+      }
+    }
+    if (request.method === "thread/inject_items") {
+      const threadId = routingParams(request).threadId;
+      if (typeof threadId === "string") {
+        // Awaited here so a following `turn/start` already finds the held text.
+        const location = await this.#host.locateExternalThread(threadId);
+        if (await this.#host.writeResolutionError(request, location)) return true;
+        if (location.kind === "external") {
+          await this.#host.injectExternalThreadItems(request, location);
+          return true;
+        }
       }
     }
     if (

@@ -22,7 +22,9 @@ import {
 } from "@codexhost/shared-contracts";
 import { consumeBrokerFrames, writeBrokerFrame } from "./framing.js";
 import {
+  HARNESS_BROKER_MAX_FRAME_BYTES,
   HARNESS_BROKER_MAX_PENDING_REQUESTS,
+  HARNESS_BROKER_MAX_RESPONSE_BYTES,
   HARNESS_BROKER_PROTOCOL_VERSION,
   HARNESS_BROKER_RETIRING_ERROR_CODE,
   harnessBrokerHelloSchema,
@@ -74,6 +76,7 @@ interface ConnectionState {
   id: string;
   socket: Socket;
   authenticated: boolean;
+  maxResponseBytes: number;
   inputSequence: number;
   outputSequence: number;
   sessions: Set<string>;
@@ -311,6 +314,7 @@ export async function startHarnessBrokerServer(input: {
       id: randomUUID(),
       socket,
       authenticated: false,
+      maxResponseBytes: HARNESS_BROKER_MAX_FRAME_BYTES,
       inputSequence: 0,
       outputSequence: 0,
       sessions: new Set(),
@@ -325,13 +329,18 @@ export async function startHarnessBrokerServer(input: {
     });
 
     const send = async (frame: object): Promise<void> => {
+      const writing = writeBrokerFrame(
+        socket,
+        {
+          version: HARNESS_BROKER_PROTOCOL_VERSION,
+          generation,
+          sequence: state.outputSequence + 1,
+          ...frame,
+        },
+        state.maxResponseBytes,
+      );
       state.outputSequence += 1;
-      await writeBrokerFrame(socket, {
-        version: HARNESS_BROKER_PROTOCOL_VERSION,
-        generation,
-        sequence: state.outputSequence,
-        ...frame,
-      });
+      await writing;
     };
     const respond = async (
       request: HarnessBrokerRequest,
@@ -1011,6 +1020,10 @@ export async function startHarnessBrokerServer(input: {
                 socket.destroy();
                 return;
               }
+              state.maxResponseBytes = Math.min(
+                hello.data.maxResponseBytes ?? HARNESS_BROKER_MAX_FRAME_BYTES,
+                HARNESS_BROKER_MAX_RESPONSE_BYTES,
+              );
               state.authenticated = true;
               state.inputSequence = 1;
               await send({ kind: "response", id: randomUUID(), ok: true, value: { ready: true } });

@@ -398,6 +398,40 @@ fn forwards_stderr_and_exit_code_without_polluting_stdout() {
     assert_eq!(output.stderr, b"official stderr");
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn preserves_failure_stderr_after_descendant_cleanup() {
+    for with_descendant in [false, true] {
+        // Linux throttles process-tree snapshots to one per 500 ms. Keep the root alive across
+        // one refresh so the shim records the descendant before the root exits and orphans it;
+        // otherwise this test races lineage discovery instead of exercising failure cleanup.
+        let script = format!(
+            "{}printf 'first line\\noriginal child failure\\n' >&2; exit 23",
+            if with_descendant {
+                "sleep 10 >/dev/null 2>&1 & printf '%s\\n' \"$!\"; sleep 1; "
+            } else {
+                ""
+            }
+        );
+        let output = run_shim(b"", &["-c", &script], &[(STOCK_CODEX_PATH_ENV, "/bin/sh")]);
+        assert_eq!(output.status.code(), Some(23));
+        assert_eq!(output.stderr, b"first line\noriginal child failure\n");
+        if with_descendant {
+            let child_id = String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap();
+            assert!(
+                !process_exists(child_id),
+                "descendant PID {child_id} survived failure cleanup"
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+    }
+}
+
 #[test]
 fn drains_large_output_after_stdin_eof() {
     let input = vec![b'x'; 2 * 1024 * 1024];
@@ -486,6 +520,52 @@ fn macos_fixture_bundle(directory: &std::path::Path) -> PathBuf {
     fs::copy(fake_codex_path(), bundle.join("Contents/MacOS/ChatGPT")).unwrap();
     fs::copy(fake_codex_path(), bundle.join("Contents/Resources/codex")).unwrap();
     bundle
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_helpers_replace_the_shim_process_with_the_official_cli() {
+    for arguments in [
+        vec!["app-server", "--listen", "stdio://"],
+        vec!["sandbox", "--", "/official/node", "/official/kernel.js"],
+    ] {
+        let directory = temporary_directory();
+        let bundle = macos_fixture_bundle(&directory);
+        let ready = directory.join("helper-ready");
+        let mut command = Command::new(shim_path());
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("CODEXHOST_") {
+                command.env_remove(key);
+            }
+        }
+        let mut child = command
+            .args(&arguments)
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(CUSTOM_INSTALL_ROOT_ENV, &bundle)
+            .env("FAKE_CODEX_HOST_RUNTIME_READY", &ready)
+            .env("FAKE_CODEX_HOST_RUNTIME_EOF_DELAY_MS", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let shim_id = child.id();
+        let observed = wait_for_optional_file(&ready, Duration::from_secs(5));
+        drop(child.stdin.take());
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let observed = observed.expect("official helper published readiness");
+        fs::remove_dir_all(directory).unwrap();
+        assert_eq!(
+            process_id_from_ready(&observed, "root="),
+            shim_id,
+            "the official helper must retain the launched process ID: {arguments:?}"
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -631,17 +711,61 @@ fn macos_browser_sandbox_fallback_rejects_unrelated_commands() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_native_helpers_do_not_become_host_runtime_owners() {
-    assert_macos_native_helper_routing(false);
+    assert_macos_native_helper_routing(false, LauncherState::Live);
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_nested_cli_native_helpers_do_not_become_host_runtime_owners() {
-    assert_macos_native_helper_routing(true);
+    assert_macos_native_helper_routing(true, LauncherState::Live);
+}
+
+// Computer Use keeps spawning helpers after the Launcher that started Desktop has exited.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_native_helpers_stay_on_the_official_cli_after_the_launcher_exits() {
+    assert_macos_native_helper_routing(false, LauncherState::Exited);
+    assert_macos_native_helper_routing(true, LauncherState::Exited);
 }
 
 #[cfg(target_os = "macos")]
-fn assert_macos_native_helper_routing(nested_cli: bool) {
+#[test]
+fn macos_native_helpers_stay_on_the_official_cli_after_the_launcher_pid_is_reused() {
+    assert_macos_native_helper_routing(false, LauncherState::Reused);
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum LauncherState {
+    Live,
+    Exited,
+    Reused,
+}
+
+#[cfg(target_os = "macos")]
+fn exited_process_id() -> u32 {
+    let mut child = Command::new("/usr/bin/true")
+        .spawn()
+        .expect("spawn short-lived launcher fixture");
+    let process_id = child.id();
+    child.wait().expect("wait for short-lived launcher fixture");
+    process_id
+}
+
+#[cfg(target_os = "macos")]
+fn assert_macos_native_helper_routing(nested_cli: bool, launcher: LauncherState) {
+    // A reused launcher PID belongs to an unrelated executable started after Desktop.
+    let mut reused_launcher = matches!(launcher, LauncherState::Reused).then(|| {
+        Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn unrelated process at the launcher PID")
+    });
+    let launcher_id = match launcher {
+        LauncherState::Live => process::id(),
+        LauncherState::Exited => exited_process_id(),
+        LauncherState::Reused => reused_launcher.as_ref().unwrap().id(),
+    };
     for (depth, detached) in [
         (0, false),
         (1, false),
@@ -676,7 +800,7 @@ fn assert_macos_native_helper_routing(nested_cli: bool) {
             .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
             .env("FAKE_CODEX_PRINT_INVOCATION", "1")
             .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
-            .env("CODEXHOST_LAUNCHER_PID", process::id().to_string())
+            .env("CODEXHOST_LAUNCHER_PID", launcher_id.to_string())
             .env(
                 "CODEXHOST_LAUNCHER_EXECUTABLE",
                 std::env::current_exe().unwrap(),
@@ -720,6 +844,236 @@ fn assert_macos_native_helper_routing(nested_cli: bool) {
         }
         fs::remove_dir_all(directory).unwrap();
     }
+    if let Some(mut reused_launcher) = reused_launcher.take() {
+        let _ = reused_launcher.kill();
+        let _ = reused_launcher.wait();
+    }
+}
+
+/// Runs `app-server --listen stdio://` from a fixture Desktop bundle through `depth` helpers,
+/// without Launcher metadata, so only Host ownership decides the route.
+#[cfg(target_os = "macos")]
+fn run_unmanaged_bundle_app_server(
+    bundle_root: &std::path::Path,
+    data_directory: &std::path::Path,
+    depth: u32,
+    exchange: bool,
+) -> std::process::Output {
+    fs::create_dir_all(bundle_root).unwrap();
+    let bundle = macos_fixture_bundle(bundle_root);
+    let mut child = Command::new(bundle.join("Contents/MacOS/ChatGPT"))
+        .args(["app-server", "--listen", "stdio://"])
+        .env("FAKE_CODEX_HELPER_SHIM", shim_path())
+        .env("FAKE_CODEX_HELPER_DEPTH", depth.to_string())
+        .env("FAKE_CODEX_HELPER_EXECUTABLE", fake_codex_path())
+        .env("FAKE_CODEX_PRINT_INVOCATION", "1")
+        .env("FAKE_CODEX_ROUTE_RESPONSE", "1")
+        .env_remove("CODEXHOST_LAUNCHER_PID")
+        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+        .env_remove("CODEXHOST_NPM_NODE_PATH")
+        .env_remove("CODEXHOST_NPM_PACKAGE_ROOT")
+        .env_remove(REMOTE_SSH_MANAGED_ENV)
+        .env("CODEXHOST_DATA_DIR", data_directory)
+        .env(
+            STOCK_CODEX_PATH_ENV,
+            bundle.join("Contents/Resources/codex"),
+        )
+        .env(CODEX_CLI_PATH_ENV, shim_path())
+        .env(HOST_NODE_PATH_ENV, fake_codex_path())
+        .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    if exchange {
+        stdin.write_all(b"x").unwrap();
+        let mut response = [0_u8; 8];
+        child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut response)
+            .unwrap();
+        assert_eq!(&response, b"response");
+    }
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_non_desktop_caller_uses_the_official_cli_when_another_desktop_owns_the_host() {
+    let directory = temporary_directory();
+    let owner_ready = directory.join("owner-ready");
+    let mut owner = host_runtime_shim(&directory, &owner_ready);
+    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
+    let owner_root = process_id_from_ready(
+        &wait_for_file(&owner_ready, Duration::from_secs(5)),
+        "root=",
+    );
+
+    let helper = run_unmanaged_bundle_app_server(&directory.join("helper"), &directory, 1, true);
+    let helper_stderr = String::from_utf8_lossy(&helper.stderr);
+    assert!(helper.status.success(), "{helper_stderr}");
+    assert!(
+        helper_stderr.contains("args=app-server|--listen|stdio://"),
+        "a non-Desktop caller must reach the official CLI: {helper_stderr}"
+    );
+    assert!(
+        helper_stderr.contains("another Codex Desktop process owns the local Host Runtime"),
+        "{helper_stderr}"
+    );
+
+    // Desktop's own main app-server keeps the explicit ownership failure.
+    let desktop = run_unmanaged_bundle_app_server(&directory.join("desktop"), &directory, 0, false);
+    let desktop_stderr = String::from_utf8_lossy(&desktop.stderr);
+    assert!(!desktop.status.success(), "{desktop_stderr}");
+    assert!(
+        desktop_stderr.contains("another Codex Desktop process owns the local Host Runtime"),
+        "{desktop_stderr}"
+    );
+    assert!(
+        !desktop_stderr.contains("args=app-server|"),
+        "{desktop_stderr}"
+    );
+
+    assert!(
+        process_exists(owner.id()) && process_exists(owner_root),
+        "the owning Shim or Host Runtime was terminated"
+    );
+    drop(owner_stdin);
+    assert!(wait_for_process_exit(&mut owner, Duration::from_secs(5)));
+    fs::remove_dir_all(directory).expect("remove Host ownership fixture");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_non_desktop_caller_routes_by_the_mapping_store_owner_identity() {
+    let directory = temporary_directory();
+    let ready = directory.join("node-started-at");
+    let mut runtime = Command::new("node")
+        .args([
+            "-e",
+            "require('node:fs').writeFileSync(process.argv[1], new Date(performance.timeOrigin).toISOString()); setInterval(() => {}, 1000)",
+        ])
+        .arg(&ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn live Node process");
+    let started_at = wait_for_file(&ready, Duration::from_secs(5));
+    let mut results = Vec::new();
+    for (name, identity, official_cli) in [
+        ("legacy", None, true),
+        ("matching", Some(started_at.as_str()), true),
+        ("unreadable", Some("invalid"), true),
+        ("stale", Some("2000-01-01T00:00:00.000Z"), false),
+    ] {
+        let data = directory.join(name);
+        fs::create_dir_all(data.join("mapping-store")).unwrap();
+        let identity = identity.map_or_else(String::new, |value| {
+            format!(",\"processStartedAt\":\"{value}\"")
+        });
+        fs::write(
+            data.join("mapping-store/store.lock"),
+            format!(
+                "{{\"pid\":{},\"instanceId\":\"remote-listener\",\"startedAt\":\"2026-11-07T03:59:59.986Z\"{identity}}}\n",
+                runtime.id()
+            ),
+        )
+        .unwrap();
+        let helper = run_unmanaged_bundle_app_server(&data.join("bundle"), &data, 1, true);
+        results.push((name, official_cli, data, helper));
+    }
+    let runtime_survived = process_exists(runtime.id());
+    let _ = runtime.kill();
+    let _ = runtime.wait();
+    assert!(
+        runtime_survived,
+        "the unrelated Node process was terminated"
+    );
+    for (name, official_cli, data, helper) in results {
+        let stderr = String::from_utf8_lossy(&helper.stderr);
+        assert!(helper.status.success(), "{name}: {stderr}");
+        assert_eq!(
+            stderr.contains("args=app-server|--listen|stdio://"),
+            official_cli,
+            "{name}: {stderr}"
+        );
+        assert_eq!(
+            stderr.contains(&format!(
+                "Host Runtime PID {} already owns the Mapping Store",
+                runtime.id()
+            )),
+            official_cli,
+            "{name}: {stderr}"
+        );
+        assert_eq!(
+            data.join("local-host-runtime-owner.lock").exists(),
+            !official_cli,
+            "{name}: only the Host route may acquire a lease"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn managed_remote_listener_refuses_a_local_launcher_session_or_missing_data_directory() {
+    static NEXT_GUARD_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    let directory = PathBuf::from("/tmp").join(format!(
+        "codexhost-remote-guard-{}-{}",
+        process::id(),
+        NEXT_GUARD_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir(&directory).expect("create remote listener guard fixture");
+    let ready = directory.join("ready");
+    for (launcher, data_directory, expected) in [
+        (
+            true,
+            true,
+            "refusing to start the managed remote listener inside a local codexhost Desktop session",
+        ),
+        (
+            false,
+            false,
+            "refusing to start the managed remote listener without CODEXHOST_DATA_DIR",
+        ),
+    ] {
+        let mut command = Command::new(shim_path());
+        command
+            .args(["app-server", "--listen", "unix://"])
+            .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+            .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+            .env_remove("CODEXHOST_DATA_DIR")
+            .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+            .env(HOST_NODE_PATH_ENV, fake_codex_path())
+            .env(HOST_RUNTIME_PATH_ENV, fake_codex_path())
+            .env(REMOTE_SSH_MANAGED_ENV, "1")
+            .env("CODEX_HOME", directory.join("home"))
+            .env("FAKE_CODEX_READY_PATH", &ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if launcher {
+            command.env("CODEXHOST_LAUNCHER_PID", process::id().to_string());
+        } else {
+            command.env_remove("CODEXHOST_LAUNCHER_PID");
+        }
+        if data_directory {
+            command.env("CODEXHOST_DATA_DIR", directory.join("data"));
+        }
+        let output = command.output().expect("run guarded remote listener");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains(expected), "{stderr}");
+        assert!(!ready.exists(), "no listener may start: {stderr}");
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -990,6 +1344,7 @@ fn assert_managed_remote_listener_session(session: &str) {
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
         .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
@@ -1071,6 +1426,7 @@ fn assert_managed_remote_listener_session(session: &str) {
             .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
             .env(CODEX_CLI_PATH_ENV, shim_path())
             .env(REMOTE_SSH_MANAGED_ENV, "1")
+            .env("CODEXHOST_DATA_DIR", directory.join("data"))
             .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
             .env("CODEX_HOME", &codex_home)
             .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
@@ -1123,6 +1479,7 @@ fn assert_managed_remote_listener_session(session: &str) {
         .env(STOCK_CODEX_PATH_ENV, &alternate_stock)
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_DATA_DIR", directory.join("data"))
         .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
@@ -1234,117 +1591,6 @@ fn assert_managed_remote_listener_session(session: &str) {
             "detached listener process {process_id} survived shutdown"
         );
     }
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-#[test]
-fn managed_remote_listener_replaces_a_stale_socket_before_the_startup_timeout() {
-    use std::os::unix::net::{UnixListener, UnixStream};
-
-    static NEXT_STALE_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
-
-    let directory = PathBuf::from("/tmp").join(format!(
-        "codexhost-stale-test-{}-{}",
-        process::id(),
-        NEXT_STALE_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
-    ));
-    fs::create_dir(&directory).expect("create short stale socket fixture directory");
-    let codex_home = directory.join("home");
-    let socket = codex_home
-        .join("app-server-control")
-        .join("app-server-control.sock");
-    let ready = directory.join("ready");
-    fs::create_dir_all(socket.parent().expect("control socket directory"))
-        .expect("create control socket directory");
-    // A listener that exits without cleanup leaves a socket that no process owns.
-    drop(UnixListener::bind(&socket).expect("bind stale control socket"));
-    let stale_socket = fs::metadata(&socket).expect("read stale control socket identity");
-    assert!(
-        UnixStream::connect(&socket).is_err(),
-        "stale control socket unexpectedly accepts connections"
-    );
-
-    let started = Instant::now();
-    let output = Command::new(shim_path())
-        .env_remove("CODEXHOST_LAUNCHER_PID")
-        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
-        .args([
-            "-c",
-            "features.code_mode_host=true",
-            "app-server",
-            "--listen",
-            "unix://",
-        ])
-        .env_remove(HOST_NODE_PATH_ENV)
-        .env_remove(HOST_RUNTIME_PATH_ENV)
-        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
-        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
-        .env(CODEX_CLI_PATH_ENV, shim_path())
-        .env(REMOTE_SSH_MANAGED_ENV, "1")
-        .env("CODEX_HOME", &codex_home)
-        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
-        .env("FAKE_CODEX_READY_PATH", &ready)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run managed remote listener bootstrap over a stale socket");
-    let elapsed = started.elapsed();
-
-    let identities = fs::read_to_string(&ready).unwrap_or_default();
-    let identity = |label: &str| {
-        identities
-            .lines()
-            .find_map(|line| line.strip_prefix(label))
-            .and_then(|value| value.parse::<u32>().ok())
-    };
-    let process_ids = [identity("root="), identity("shim=")]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    let listener_survived =
-        process_ids.len() == 2 && process_ids.iter().copied().all(process_exists);
-    let replacement_accepts = UnixStream::connect(&socket).is_ok();
-    let replacement_socket = fs::metadata(&socket).ok();
-
-    for process_id in &process_ids {
-        let _ = Command::new("/bin/kill")
-            .args(["-TERM", &process_id.to_string()])
-            .status();
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_ids.iter().copied().any(process_exists) && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(20));
-    }
-    for process_id in process_ids
-        .iter()
-        .copied()
-        .filter(|process_id| process_exists(*process_id))
-    {
-        let _ = Command::new("/bin/kill")
-            .args(["-KILL", &process_id.to_string()])
-            .status();
-    }
-    fs::remove_dir_all(&directory).expect("remove stale socket fixture");
-
-    assert!(
-        output.status.success(),
-        "bootstrap over a stale socket failed after {elapsed:?}: {}; stderr={}; stale_inode={}; replacement_inode={:?}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr),
-        stale_socket.ino(),
-        replacement_socket.as_ref().map(MetadataExt::ino),
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "bootstrap over a stale socket waited for the startup timeout: {elapsed:?}"
-    );
-    assert!(
-        listener_survived,
-        "bootstrap terminated the replacement listener"
-    );
-    assert!(
-        replacement_accepts,
-        "replacement listener socket does not accept connections"
-    );
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -2273,125 +2519,6 @@ fn refuses_version_one_takeover_when_the_recorded_child_outlives_its_shim() {
     assert!(
         recorded_child_survived,
         "replacement signalled a version-one child without a verified process-instance identity"
-    );
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-#[test]
-fn retires_an_exact_owner_child_after_its_shim_exits() {
-    let directory = temporary_directory();
-    let fixture_directory = temporary_directory();
-    let owner_ready = directory.join("owner-ready");
-    let fixture_ready = fixture_directory.join("fixture-ready");
-    let replacement_ready = directory.join("replacement-ready");
-
-    let mut owner = host_runtime_shim(&directory, &owner_ready);
-    let owner_stdin = owner.stdin.take().expect("owner Host Runtime stdin");
-    wait_for_file(&owner_ready, Duration::from_secs(5));
-    let owner_contents =
-        wait_for_complete_owner_record(&mut owner, &directory, Duration::from_secs(10));
-
-    // Keep an independently owned Host Runtime alive so this exact-child fixture also works on
-    // Windows, where killing a Shim normally closes its Job and retires its own process tree.
-    let mut fixture = host_runtime_shim(&fixture_directory, &fixture_ready);
-    let fixture_stdin = fixture.stdin.take().expect("fixture Host Runtime stdin");
-    let fixture_root = process_id_from_ready(
-        &wait_for_file(&fixture_ready, Duration::from_secs(5)),
-        "root=",
-    );
-    let fixture_contents =
-        wait_for_complete_owner_record(&mut fixture, &fixture_directory, Duration::from_secs(10));
-    let fixture_child_started_at_micros = fixture_contents
-        .lines()
-        .find_map(|line| line.strip_prefix("child_process_started_at_micros="))
-        .filter(|value| !value.is_empty())
-        .expect("fixture child start identity")
-        .parse::<u64>()
-        .expect("fixture child start identity micros");
-    let mut reused_desktop_process = Command::new(fake_codex_path())
-        .env("FAKE_CODEX_DELAY_MS", "60000")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn reused Desktop PID fixture");
-
-    force_stop_test_process(owner.id());
-    assert!(
-        wait_for_process_exit(&mut owner, Duration::from_secs(5)),
-        "exact owner Shim did not exit"
-    );
-    drop(owner_stdin);
-
-    let owner_record = directory.join("local-host-runtime-owner-v1").join("owner");
-    let orphaned_exact_owner = owner_contents
-        .lines()
-        .map(|line| {
-            if line.starts_with("child_process_id=") {
-                format!("child_process_id={fixture_root}")
-            } else if line.starts_with("child_process_started_at_micros=") {
-                format!("child_process_started_at_micros={fixture_child_started_at_micros}")
-            } else if line.starts_with("desktop_process_id=") {
-                format!("desktop_process_id={}", reused_desktop_process.id())
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(&owner_record, format!("{orphaned_exact_owner}\n"))
-        .expect("publish orphaned exact owner record");
-    assert!(
-        exact_process_instance_is_executable(fixture_root, fixture_child_started_at_micros),
-        "exact child fixture exited before replacement"
-    );
-
-    let mut replacement = host_runtime_shim(&directory, &replacement_ready);
-    let replacement_stdin = replacement
-        .stdin
-        .take()
-        .expect("replacement Host Runtime stdin");
-    let replacement_identity = wait_for_optional_file(&replacement_ready, Duration::from_secs(2));
-    let replacement_root = replacement_identity
-        .as_deref()
-        .map(|identity| process_id_from_ready(identity, "root="));
-    let orphaned_child_was_retired =
-        !exact_process_instance_is_executable(fixture_root, fixture_child_started_at_micros);
-    let reused_desktop_was_not_signalled = reused_desktop_process
-        .try_wait()
-        .expect("poll reused Desktop PID fixture")
-        .is_none();
-
-    drop(replacement_stdin);
-    if !wait_for_process_exit(&mut replacement, Duration::from_secs(5)) {
-        force_stop_test_process(replacement.id());
-        if let Some(replacement_root) = replacement_root {
-            force_stop_test_process(replacement_root);
-        }
-        let _ = replacement.wait();
-    }
-    drop(fixture_stdin);
-    if !wait_for_process_exit(&mut fixture, Duration::from_secs(5)) {
-        force_stop_test_process(fixture.id());
-        force_stop_test_process(fixture_root);
-        let _ = fixture.wait();
-    }
-    force_stop_test_process(reused_desktop_process.id());
-    let _ = reused_desktop_process.wait();
-    let _ = fs::remove_dir_all(&directory);
-    let _ = fs::remove_dir_all(&fixture_directory);
-
-    assert!(
-        replacement_identity.is_some(),
-        "replacement trusted a stale PID-only Desktop identity after the exact owner Shim exited"
-    );
-    assert!(
-        reused_desktop_was_not_signalled,
-        "replacement signalled the unrelated process that reused the recorded Desktop PID"
-    );
-    assert!(
-        orphaned_child_was_retired,
-        "replacement started without retiring the exact child whose recorded Shim had exited"
     );
 }
 

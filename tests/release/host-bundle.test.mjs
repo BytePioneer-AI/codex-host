@@ -177,8 +177,19 @@ describe("release Host and independent plugin Bundles", () => {
       expect(hostAudit.runtimePackages).toEqual([
         "@deepseek-ai/cordis",
         "@deepseek-ai/cosmokit",
+        "@modelcontextprotocol/sdk",
+        "content-type",
+        "cross-spawn",
         "diff",
+        "eventsource-parser",
+        "isexe",
+        "path-key",
+        "pkce-challenge",
+        "shebang-command",
+        "shebang-regex",
+        "which",
         "ws",
+        "yaml",
         "zod",
       ]);
       const pluginAudits = await buildPreinstalledHarnessPlugins({

@@ -2,7 +2,7 @@
  * `#` menu for the Codex Composer.
  *
  * Typing `#` opens a floating list with the delegation targets (Harnesses)
- * first, then the current Harness's native commands and skills (the same
+ * first, then the current Harness's native commands and the Skill Library (the same
  * catalog and selection path as the Composer ⌘ button). Picking a command removes `#query` and runs
  * or claims it exactly like the button. Picking
  * one replaces `#query` with Codex Desktop's native `agentMention` chip, so
@@ -23,6 +23,7 @@ import {
 import type {
   HarnessCommandDescriptor,
   HarnessPluginDescriptor,
+  LibrarySkill,
 } from "@codexhost/shared-contracts";
 
 import type { RendererAgent } from "./agent-selection-state.js";
@@ -37,6 +38,7 @@ import {
   type NativeTextRange,
 } from "./renderer-native-composer-controller.js";
 import type { RendererSettingsLocale } from "./settings/localization.js";
+import { createSkillIcon, skillMention } from "./renderer-skill-reference.js";
 
 const MENU_ATTRIBUTE = "data-codexhost-delegation-mention-menu";
 const STYLE_ATTRIBUTE = "data-codexhost-delegation-mention-style";
@@ -140,37 +142,17 @@ export function filterDelegationCommands(
  * `/skill:code-review`). Labels that are already readable are kept.
  */
 export function harnessCommandDisplayName(label: string): string {
-  const slug = label
-    .trim()
-    .replace(/^\//u, "")
-    .replace(/^skill:/u, "");
+  const slug = label.trim().replace(/^\//u, "");
   if (!slug || /\s/u.test(slug) || /[A-Z]/u.test(slug) || /[^\x00-\x7F]/u.test(slug)) {
     return slug || label;
   }
-  // Plugin-namespaced names (`plugin:skill`) show the skill part.
+  // Namespaced commands show the command part.
   const name = slug.split(":").filter(Boolean).at(-1) ?? slug;
   return name
     .split(/[-_.]+/u)
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
-}
-
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-/** Outline cube for skills, drawn in the row's text color. */
-function createSkillIcon(ownerDocument: Document): SVGSVGElement {
-  const svg = ownerDocument.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.7");
-  svg.setAttribute("stroke-linejoin", "round");
-  svg.setAttribute("aria-hidden", "true");
-  const path = ownerDocument.createElementNS(SVG_NS, "path");
-  path.setAttribute("d", "M12 3 20 7.5v9L12 21l-8-4.5v-9ZM4 7.5 12 12l8-4.5M12 12v9");
-  svg.append(path);
-  return svg;
 }
 
 function agentsTitle(locale: RendererSettingsLocale): string {
@@ -267,8 +249,10 @@ export interface RendererDelegationMentionOptions {
   anchorForEditor(editor: HTMLElement): Element | null;
   /** Native commands of the Composer's current Harness, if it has any. */
   readCommands(editor: HTMLElement): RendererDelegationCommandSource | null;
-  /** Called when the menu opens for an editor, e.g. to refresh live commands. */
+  readSkills?(editor: HTMLElement): RendererDelegationSkillSource | null;
+  /** Called when the menu opens for an editor, e.g. to refresh live catalogs. */
   onOpen?(editor: HTMLElement): void;
+  onClose?(): void;
 }
 
 export interface RendererDelegationMentionControl {
@@ -283,7 +267,7 @@ export interface RendererDelegationMentionControl {
 export interface RendererDelegationCommandSource {
   commands: readonly HarnessCommandDescriptor[];
   /**
-   * Shown below the commands while the workspace's live commands and skills
+   * Shown below the commands while the workspace's live commands
    * are not loaded yet (a draft whose native Session has not run).
    */
   pendingNotice?: string | null;
@@ -292,9 +276,29 @@ export interface RendererDelegationCommandSource {
   select(command: HarnessCommandDescriptor): void;
 }
 
+export interface RendererDelegationSkillSource {
+  skills: readonly LibrarySkill[];
+  notice?: string;
+  warning?: string;
+  error?: string;
+  retry(): void;
+}
+
+export function filterDelegationSkills(
+  skills: readonly LibrarySkill[],
+  query: string,
+): LibrarySkill[] {
+  const needle = query.trim().toLowerCase();
+  return skills.filter((skill) =>
+    `${skill.name}\n${skill.description ?? ""}`.toLowerCase().includes(needle),
+  );
+}
+
 type MenuEntry =
   | { kind: "command"; command: HarnessCommandDescriptor; source: RendererDelegationCommandSource }
-  | { kind: "agent"; target: RendererDelegationTarget };
+  | { kind: "agent"; target: RendererDelegationTarget }
+  | { kind: "librarySkill"; skill: LibrarySkill }
+  | { kind: "retrySkills"; retry(): void };
 
 export function installRendererDelegationMention(
   ownerDocument: Document,
@@ -343,9 +347,11 @@ export function installRendererDelegationMention(
 
   const close = (): void => {
     active = null;
+    openedFor = null;
     entries = [];
     setMenuOpen(false);
     list.replaceChildren();
+    options.onClose?.();
   };
 
   const highlight = (): void => {
@@ -440,6 +446,7 @@ export function installRendererDelegationMention(
       matches: HarnessCommandDescriptor[];
     } | null,
     targets: RendererDelegationTarget[],
+    skills: RendererDelegationSkillSource | null,
   ): void => {
     const locale = options.readLocale();
     const rows: HTMLElement[] = [];
@@ -460,22 +467,13 @@ export function installRendererDelegationMention(
       }
     }
     if (commands) {
-      // Harnesses that report the distinction get separate Skills; everything
-      // else is a command, like Desktop's own `/` vs `$` split.
-      const groups: [string, HarnessCommandDescriptor[]][] = [
-        [commandsTitle(locale), commands.matches.filter(({ kind }) => kind !== "skill")],
-        [skillsTitle(locale), commands.matches.filter(({ kind }) => kind === "skill")],
-      ];
-      for (const [title, group] of groups) {
-        if (group.length === 0) continue;
-        rows.push(sectionHeader(title));
-        for (const command of group) {
+      if (commands.matches.length) {
+        rows.push(sectionHeader(commandsTitle(locale)));
+        for (const command of commands.matches) {
           const reason = commands.source.disabledReason(command);
           const presentation = rendererHarnessCommandPresentation(command, locale);
           const content = rowContent(
-            command.kind === "skill"
-              ? createSkillIcon(ownerDocument)
-              : createHarnessCommandIcon(ownerDocument),
+            createHarnessCommandIcon(ownerDocument),
             harnessCommandDisplayName(presentation.label),
             reason ?? presentation.description,
           );
@@ -502,6 +500,51 @@ export function installRendererDelegationMention(
       hint.className = "px-row-x py-1.5 text-sm text-codex-description";
       hint.textContent = notice;
       rows.push(hint);
+    }
+    if (skills) {
+      rows.push(sectionHeader(skillsTitle(locale)));
+      const matches = filterDelegationSkills(skills.skills, trigger.query);
+      for (const skill of matches) {
+        const scope =
+          locale === "zh-CN"
+            ? skill.scope === "project"
+              ? "项目"
+              : "全局"
+            : skill.scope === "project"
+              ? "Project"
+              : "Global";
+        const detail = `${scope} · ${skill.source} · ${skill.path}${skill.description ? ` — ${skill.description}` : ""}`;
+        const content = rowContent(createSkillIcon(ownerDocument), skill.name, detail);
+        content.setAttribute("data-skill-path", skill.path);
+        content.title = detail;
+        rows.push(optionRow({ kind: "librarySkill", skill }, content));
+      }
+      const hint = (label: string, detail = ""): void => {
+        const row = ownerDocument.createElement("div");
+        row.className = `${ROW_CLASS} opacity-50`;
+        row.setAttribute("aria-disabled", "true");
+        row.title = detail;
+        row.append(rowContent(null, label, detail));
+        rows.push(row);
+      };
+      if (skills.error) {
+        rows.push(
+          optionRow(
+            { kind: "retrySkills", retry: skills.retry },
+            rowContent(
+              null,
+              locale === "zh-CN" ? "重试 Skill 库" : "Retry Skill Library",
+              skills.error,
+            ),
+          ),
+        );
+      } else if (skills.notice) hint(skills.notice);
+      else if (!matches.length) hint(locale === "zh-CN" ? "未找到 Skill" : "No Skills found");
+      if (skills.warning)
+        hint(
+          locale === "zh-CN" ? "部分 Skill 无法读取" : "Some Skills could not be read",
+          skills.warning,
+        );
     }
     rowsRendered = rows.length;
     list.replaceChildren(...rows);
@@ -548,15 +591,16 @@ export function installRendererDelegationMention(
     const targets = filterDelegationTargets(allTargets, trigger.query);
     const source = options.readCommands(trigger.editor);
     const commandMatches = source ? filterDelegationCommands(source.commands, trigger.query) : [];
+    const skills = options.readSkills?.(trigger.editor) ?? null;
     const showsNotice = Boolean(source?.pendingNotice) && trigger.query === "";
-    if (targets.length === 0 && commandMatches.length === 0 && !showsNotice) {
+    if (targets.length === 0 && commandMatches.length === 0 && !showsNotice && !skills) {
       close();
       return;
     }
     const sameQuery = active?.query === trigger.query && active.node === trigger.node;
     active = trigger;
     if (!sameQuery) activeIndex = 0;
-    render(trigger, source ? { source, matches: commandMatches } : null, targets);
+    render(trigger, source ? { source, matches: commandMatches } : null, targets, skills);
     // Keep a menu of only disabled rows open so their explanation stays visible.
     if (rowsRendered === 0) close();
   };
@@ -637,7 +681,12 @@ export function installRendererDelegationMention(
   };
 
   const choose = async (entry: MenuEntry): Promise<void> => {
+    if (entry.kind === "retrySkills") {
+      entry.retry();
+      return;
+    }
     const trigger = active;
+    if (entry.kind === "librarySkill" && trigger && !options.readSkills?.(trigger.editor)) return;
     close();
     if (!trigger || !trigger.node.isConnected) return;
     const expected = `#${trigger.query}`;
@@ -646,7 +695,15 @@ export function installRendererDelegationMention(
     inserting = true;
     try {
       if (entry.kind === "agent") await insertAgent(trigger, range, entry.target);
-      else await runCommand(trigger, range, entry);
+      else if (entry.kind === "librarySkill") {
+        const mention = skillMention(entry.skill);
+        if (!insertNativeAgentMention(trigger.editor, range, mention)) {
+          if (!(await selectTriggerText(trigger))) return;
+          const carrier = `[@${mention.name}](${mention.path}) `;
+          if (!dispatchPlainTextPaste(trigger.editor, carrier))
+            ownerDocument.execCommand("insertText", false, carrier);
+        }
+      } else await runCommand(trigger, range, entry);
     } finally {
       inserting = false;
     }
@@ -705,6 +762,7 @@ export function installRendererDelegationMention(
     ownerDocument.removeEventListener("pointerdown", onPointerDown, true);
     view.removeEventListener("resize", onViewportChange);
     view.removeEventListener("scroll", onViewportChange, true);
+    options.onClose?.();
     menu.remove();
     ownerDocument.querySelector(`style[${STYLE_ATTRIBUTE}]`)?.remove();
   };

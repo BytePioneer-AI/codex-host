@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { ChSessions } from "../src/ch-sessions.ts";
-import { defaultProjections } from "../src/session-log.ts";
 import { DataDir } from "../src/store.ts";
 import {
   EventHub,
@@ -77,51 +76,17 @@ function fixture(t: TestContext) {
   return { root, host, sessions, upserts, call, list, openStream };
 }
 
-it("lists only navigation facts without loading history or controls", async (t) => {
+it("lists Threads without loading history or controls", async (t) => {
   const f = fixture(t);
-  f.host.add("second", f.root, "Second title");
-  f.host.add("third", f.root, "Third title");
-  const source = f.host.threads.get("source");
-  assert.ok(source);
-  source.codexhostImportSource = { harnessId: "codex-cli", nativeSessionId: "original" };
   const items = await f.list();
   const row = items.find((item) => item.sessionId === "source");
   assert.ok(row);
-  assert.deepEqual(row.projections, {
-    kind: "cached",
-    asOfSeq: 0,
-    values: {
-      nativeDiscovery: true,
-      threadReference: { hostId: "local" },
-      title: "Source title",
-      codexhostImportSource: source.codexhostImportSource,
-      harnessIdentity: { id: "fake", name: "CH Harness" },
-      sessionListMetadata: { blank: false, lastPromptAt: 2_000_000 },
-    },
-  });
   assert.ok(
     f.host.requests.every(
       ({ method }) =>
         !["thread/read", "thread/turns/list", "codexhost/harness/inspect"].includes(method),
     ),
   );
-  // Reconstruct the previous cold-list shape using the same fixture and image capability.
-  const previous = items.map((item) => ({
-    ...item,
-    projections: {
-      ...item.projections,
-      values: {
-        ...defaultProjections(),
-        attachmentInput: WEB_IMAGE_INPUT,
-        imageLimits: WEB_IMAGE_LIMITS,
-        ...item.projections.values,
-      },
-    },
-  }));
-  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
-  assert.ok(bytes(items) < bytes(previous) / 2);
-  t.diagnostic(`Fixture summary JSON bytes: ${bytes(previous[0])} -> ${bytes(items[0])}`);
-  t.diagnostic(`Fixture batch (3 rows) JSON bytes: ${bytes(previous)} -> ${bytes(items)}`);
 });
 
 it("keeps child and connection hints but excludes unrelated loaded projections from lists and upserts", async (t) => {

@@ -4,18 +4,17 @@ import {
   copyFileSync,
   linkSync,
   mkdtempSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { after } from "node:test";
 
 const root = mkdtempSync(join(tmpdir(), "codexhost-test-cli-"));
 const windows = process.platform === "win32";
-process.once("exit", () =>
-  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
-);
+after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 if (windows) {
   const bootstrap = join(root, "bootstrap.cjs");
   writeFileSync(

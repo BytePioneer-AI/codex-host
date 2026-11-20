@@ -1,10 +1,10 @@
 import type { DelegationCliCommand } from "./delegation-cli-help.js";
 import {
-  DelegationControlError,
   type DelegationStartResult,
   type DelegationThreadListResult,
   type DelegationThreadSnapshot,
   type HarnessInspectResult,
+  type ThreadAnswerResult,
   type ThreadCancelResult,
   type ThreadSendResult,
   type ThreadWatchListResult,
@@ -17,7 +17,7 @@ function targetLink(identifier: string): string {
   return originClientName(identifier) !== undefined ? identifier : threadLink(identifier);
 }
 
-export type DelegationCliFormat = "json" | "compact";
+export type DelegationCliFormat = "json" | "compact" | "text";
 
 function threadLink(threadId: string): string {
   return `codex://threads/${threadId}`;
@@ -25,16 +25,15 @@ function threadLink(threadId: string): string {
 
 function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown } {
   if (!watch) return {};
+  if (watch.state === "notRegistered") return { watch };
   return {
-    watch:
-      watch.state === "notRegistered"
-        ? watch
-        : {
-            state: watch.state,
-            notify: targetLink(watch.notifyThreadId),
-            timeoutMs: watch.timeoutMs,
-            ...(watch.stallAfterMs !== undefined ? { stallAfterMs: watch.stallAfterMs } : {}),
-          },
+    watch: {
+      state: watch.state,
+      notify: targetLink(watch.notifyThreadId),
+      timeoutMs: watch.timeoutMs,
+      ...(watch.stallAfterMs !== undefined ? { stallAfterMs: watch.stallAfterMs } : {}),
+      ...(watch.pendingQuestions?.length ? { pendingQuestions: watch.pendingQuestions } : {}),
+    },
   };
 }
 
@@ -70,23 +69,25 @@ function snapshotOutput(
     status: snapshot.status,
     ...(snapshot.queue ? { queuePosition: snapshot.queue.position } : {}),
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
+    ...(snapshot.pendingQuestions !== undefined
+      ? { pendingQuestions: snapshot.pendingQuestions }
+      : {}),
   };
   if (view === "messages") {
-    if (typeof snapshot.hasMore !== "boolean") {
-      throw new DelegationControlError(
-        "INTERNAL_ERROR",
-        "Compact message pagination requires an updated Host Runtime; use --format json with this Runtime.",
-      );
-    }
     return {
       ...common,
-      messages: (snapshot.messages ?? []).map(({ role, phase, text }) => ({
-        role,
-        ...(phase ? { phase } : {}),
-        text,
+      totalTurns: snapshot.totalTurns,
+      from: snapshot.from,
+      to: snapshot.to,
+      turns: (snapshot.turns ?? []).map(({ turnNumber, status, messages }) => ({
+        turnNumber,
+        status,
+        messages: messages.map(({ role, phase, text }) => ({
+          role,
+          ...(phase ? { phase } : {}),
+          text,
+        })),
       })),
-      hasMore: snapshot.hasMore,
-      nextCursor: snapshot.nextCursor,
       ...(snapshot.result.message ? { error: snapshot.result.message } : {}),
     };
   }
@@ -106,6 +107,10 @@ export function compactDelegationOutput(
   view: "result" | "messages" = "result",
 ): unknown {
   switch (command) {
+    case "host info":
+    case "project list":
+    case "thread file":
+    case "thread export":
     case "harness list":
       return body;
     case "harness inspect":
@@ -119,6 +124,7 @@ export function compactDelegationOutput(
         status: result.status,
         ...(result.queue ? { queuePosition: result.queue.position } : {}),
         ...(result.cwd ? { cwd: result.cwd } : {}),
+        ...(result.worktree ? { worktree: result.worktree } : {}),
         ...(result.parentThreadId
           ? {
               parent: targetLink(result.parentThreadId),
@@ -137,6 +143,7 @@ export function compactDelegationOutput(
         thread: threadLink(result.threadId),
         harnessId: result.harnessId,
         status: result.status,
+        ...watchOutput(result.watch),
       };
     }
     case "thread cancel": {
@@ -150,6 +157,16 @@ export function compactDelegationOutput(
     case "thread read":
     case "thread wait":
       return snapshotOutput(body as DelegationThreadSnapshot, view);
+    case "thread answer": {
+      const result = body as ThreadAnswerResult;
+      return {
+        thread: threadLink(result.threadId),
+        interaction: result.interactionId,
+        turn: result.turnId,
+        harnessId: result.harnessId,
+        status: result.status,
+      };
+    }
     case "thread watch": {
       const result = body as ThreadWatchResult;
       return {
@@ -159,18 +176,36 @@ export function compactDelegationOutput(
         status: result.status,
         timeoutMs: result.timeoutMs,
         ...(result.stallAfterMs !== undefined ? { stallAfterMs: result.stallAfterMs } : {}),
+        ...(result.pendingQuestions?.length ? { pendingQuestions: result.pendingQuestions } : {}),
       };
     }
     case "thread watches": {
       const result = body as ThreadWatchListResult;
       return {
         watches: result.watches.map(
-          ({ threadId, notifyThreadId, state, outcome, reason, stallAfterMs }) => ({
+          ({
+            threadId,
+            notifyThreadId,
+            state,
+            outcome,
+            turnId,
+            reason,
+            interactionId,
+            taskName,
+            threadStatus,
+            watchedForMs,
+            stallAfterMs,
+          }) => ({
             thread: threadLink(threadId),
             notify: targetLink(notifyThreadId),
             state,
             ...(outcome ? { outcome } : {}),
+            ...(outcome === "needsInput" && turnId ? { turn: turnId } : {}),
+            ...(outcome === "needsInput" && interactionId ? { interaction: interactionId } : {}),
             ...(reason ? { reason } : {}),
+            ...(taskName ? { taskName } : {}),
+            ...(threadStatus ? { threadStatus } : {}),
+            ...(watchedForMs !== undefined ? { watchedForMs } : {}),
             ...(stallAfterMs !== undefined ? { stallAfterMs } : {}),
           }),
         ),

@@ -8,6 +8,7 @@ import {
   harnessPermissionModeIdSchema,
   harnessThinkingOptionIdSchema,
   hostInteractionIdSchema,
+  hostItemIdSchema,
   hostTurnIdSchema,
   jsonObjectSchema,
   nativeCheckpointRefSchema,
@@ -277,6 +278,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
   ["item.completed", new Set(["type", "turnId", "snapshot"])],
   ["item.detached", new Set(["type", "turnId", "itemId"])],
+  ["item.background.started", new Set(["type", "turnId", "item"])],
   ["interaction.closed", new Set(["type", "interactionId", "turnId", "reason"])],
   ["turn.completed", new Set(["type", "turnId", "nativeTurnRef", "outcome"])],
   ["session.faulted", new Set(["type", "error"])],
@@ -323,6 +325,18 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
     if (!strictKeys(event, eventKeys.get(String(event?.type)))) return false;
     if (event.type === "session.state.changed")
       return harnessSessionStateSchema.safeParse(event.state).success;
+    if (event.type === "item.background.started")
+      return (
+        hostTurnIdSchema.safeParse(event.turnId).success &&
+        z
+          .object({
+            type: z.enum(["agentMessage", "reasoning"]),
+            itemId: hostItemIdSchema,
+            text: z.string(),
+          })
+          .strict()
+          .safeParse(event.item).success
+      );
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
     if (event.type === "usage.history") return typeof event.complete === "boolean";
     return true;

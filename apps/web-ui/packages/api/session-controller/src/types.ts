@@ -149,6 +149,8 @@ export interface ModelCatalogModel {
   readonly description?: string;
   /** Model id of this Model's Fast variant; absent when the Harness offers none. */
   readonly fastModel?: string;
+  /** Model id of this Model's Ultrafast variant when the Host advertises it. */
+  readonly ultrafastModel?: string;
   readonly reasoning?: ModelReasoning;
 }
 

@@ -19,6 +19,7 @@ export interface ClientEvent {
   threadId: string;
   outcome: ThreadWatchOutcome;
   turnId?: string;
+  interactionId?: string;
   harnessId?: string;
   deepLink: string;
   refs?: string[];

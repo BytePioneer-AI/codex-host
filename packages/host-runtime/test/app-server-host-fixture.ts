@@ -60,6 +60,10 @@ export class FailingListMappingStore extends MappingStore {
   override listThreads(): Promise<never> {
     return Promise.reject(new Error("Synthetic list read failure"));
   }
+
+  override listThreadSummaries(): Promise<never> {
+    return Promise.reject(new Error("Synthetic list read failure"));
+  }
 }
 
 export class FailingDelegationMappingStore extends MappingStore {
@@ -98,12 +102,14 @@ export class JsonLineCollector {
     });
   }
 
-  waitFor(predicate: (message: JsonObject) => boolean): Promise<JsonObject> {
+  waitFor(
+    predicate: (message: JsonObject) => boolean,
+    timeoutMs = process.platform === "win32" ? 10_000 : 2_000,
+  ): Promise<JsonObject> {
     const existing = this.messages.find(predicate);
     if (existing) return Promise.resolve(existing);
     // Host responses can require Mapping Store fsync/rename operations.
     // Allow for Windows disk latency, as in tests/vitest.config.js.
-    const timeoutMs = process.platform === "win32" ? 10_000 : 2_000;
     return new Promise<JsonObject>((resolve, reject) => {
       const waiter = {
         predicate,
@@ -347,6 +353,8 @@ export function createFixture(
       ? { closeMappingStoreOnExit: options.closeMappingStoreOnExit }
       : {}),
     environment: {
+      HOME: mappingStoreDirectory,
+      CODEX_HOME: path.join(mappingStoreDirectory, ".codex"),
       CODEXHOST_DATA_DIR: mappingStoreDirectory,
       ...(options.environment ?? {}),
     },

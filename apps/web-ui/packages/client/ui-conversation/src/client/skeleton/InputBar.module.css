@@ -9,6 +9,10 @@
   padding: 0 var(--dsh-composer-side-clearance) 4px;
 }
 
+:global([data-phone]) .root {
+  padding-bottom: max(4px, calc(env(safe-area-inset-bottom) - 23px));
+}
+
 .dock {
   display: flex;
   align-items: center;
@@ -79,34 +83,44 @@
    the card. Blur on this background-only pseudo-element leaves fixed overlays
    viewport-anchored and does not create a new stacking context on the card. */
 @supports (backdrop-filter: blur(14px)) or (-webkit-backdrop-filter: blur(14px)) {
+  :global(body[data-codexhost-wallpaper]) .card,
   :global([data-phone]) .card {
     background: transparent;
     box-shadow: none;
   }
 
+  :global(body[data-codexhost-wallpaper]) .card::before,
   :global([data-phone]) .card::before {
     content: "";
     position: absolute;
     inset: 0;
     z-index: -1;
     border-radius: inherit;
-    background: color-mix(in srgb, var(--dsw-specific-input-major) 24%, transparent);
-    -webkit-backdrop-filter: blur(14px);
-    backdrop-filter: blur(14px);
+    background: color-mix(in srgb, var(--dsw-specific-input-major) 60%, transparent);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
     box-shadow:
       inset 0 1px 0 color-mix(in srgb, var(--dsw-alias-bg-layer-3) 65%, transparent),
       var(--dsw-elevation-soft),
       0 8px 24px -12px var(--dsw-alias-bg-mask-2);
     pointer-events: none;
   }
+
+  :global(body:not([data-codexhost-wallpaper]) [data-phone]) .card::before {
+    background: color-mix(in srgb, var(--dsw-specific-input-major) 24%, transparent);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+  }
 }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :global(body[data-codexhost-wallpaper]) .card,
   :global([data-phone]) .card {
     background: var(--dsw-specific-input-major);
     box-shadow: var(--dsw-elevation-soft);
   }
 
+  :global(body[data-codexhost-wallpaper]) .card::before,
   :global([data-phone]) .card::before {
     display: none;
   }
@@ -620,4 +634,23 @@
 .activityExpanded {
   flex: 1;
   min-width: 0;
+}
+
+/* Attached response annotations: one row above the draft, scrollable
+   sideways when many are pending (the rail grows with the message). */
+.annotations {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  overflow-x: auto;
+  padding: 8px 12px 0;
+  scrollbar-width: none;
+}
+
+.annotations::-webkit-scrollbar {
+  display: none;
+}
+
+.annotations > * {
+  flex: none;
 }

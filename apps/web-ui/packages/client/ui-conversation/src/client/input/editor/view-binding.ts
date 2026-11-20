@@ -18,7 +18,7 @@ interface DraftViewGate {
   steeringAvailable: boolean;
   busyEnter: BusyEnterBehavior;
   intakeFiles: (files: readonly File[], directories?: ReadonlySet<File>) => void;
-  uploadsPending: boolean;
+  uploadsFailed: boolean;
   showToast: (text: string) => void;
   t: ComposerBarProps["t"];
   canAcceptDrop: boolean;
@@ -135,8 +135,12 @@ export function installDraftKeymap(
       gate.current.primaryAction?.disabled !== true,
     submit: (accelerated) => {
       const g = gate.current;
+      if (g.uploadsFailed) {
+        g.showToast(g.t("file.retryOrRemove"));
+        return;
+      }
       if (g.primaryAction !== undefined) {
-        if (!g.uploadsPending) g.primaryAction.run();
+        g.primaryAction.run();
         return;
       }
       // Empty-draft accelerated Enter acts on the queue instead of the
@@ -144,10 +148,6 @@ export function installDraftKeymap(
       // steers every still-pending queued message into the running turn.
       if (accelerated && g.canSteerQueue) {
         keyboard.steerQueue();
-        return;
-      }
-      if (g.uploadsPending) {
-        g.showToast(g.t("file.stillUploading"));
         return;
       }
       keyboard.submit(

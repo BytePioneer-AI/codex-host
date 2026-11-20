@@ -592,7 +592,7 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
               onBlurCapture={blurAnswerSurface}
             >
               {question.detail !== undefined && (
-                <div className={css.detail}>
+                <div className={css.detail} tabIndex={0}>
                   <MarkdownText text={question.detail} labels={markdownLabels} />
                 </div>
               )}
@@ -607,10 +607,7 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
                     <button
                       type="button"
                       key={`${option.label}-${String(optionIndex)}`}
-                      className={clsx(
-                        css.option,
-                        selected && question.multiSelect !== true && css.optionSelected,
-                      )}
+                      className={clsx(css.option, selected && css.optionSelected)}
                       role={question.multiSelect === true ? "checkbox" : "radio"}
                       aria-checked={selected}
                       aria-label={display.label}
@@ -708,42 +705,44 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
             </div>
 
             <footer className={css.footer}>
-              <div className={css.pager}>
-                <button
-                  type="button"
-                  className={css.iconButton}
-                  aria-label={t("nav.prev")}
-                  disabled={index === 0 || busy !== null}
-                  onClick={() => {
-                    replaceProgress(index - 1, drafts);
-                    setError(null);
-                  }}
-                >
-                  <IconChevronLeftOutlineRegular />
-                </button>
-                <span className={css.progress}>
-                  {index + 1} / {questions.length}
-                </span>
-                <button
-                  type="button"
-                  className={css.iconButton}
-                  aria-label={t("nav.next")}
-                  disabled={index === questions.length - 1 || busy !== null}
-                  onClick={() => {
-                    replaceProgress(index + 1, drafts);
-                    setError(null);
-                  }}
-                >
-                  <IconChevronRightOutlineRegular />
-                </button>
-              </div>
+              {questions.length > 1 && (
+                <div className={css.pager}>
+                  <button
+                    type="button"
+                    className={css.iconButton}
+                    aria-label={t("nav.prev")}
+                    disabled={index === 0 || busy !== null}
+                    onClick={() => {
+                      replaceProgress(index - 1, drafts);
+                      setError(null);
+                    }}
+                  >
+                    <IconChevronLeftOutlineRegular />
+                  </button>
+                  <span className={css.progress}>
+                    {index + 1} / {questions.length}
+                  </span>
+                  <button
+                    type="button"
+                    className={css.iconButton}
+                    aria-label={t("nav.next")}
+                    disabled={index === questions.length - 1 || busy !== null}
+                    onClick={() => {
+                      replaceProgress(index + 1, drafts);
+                      setError(null);
+                    }}
+                  >
+                    <IconChevronRightOutlineRegular />
+                  </button>
+                </div>
+              )}
               <div className={css.feedback} role="status">
                 {error === null ? null : "key" in error ? t(error.key) : error.text}
               </div>
               {/* A review card has nothing to send: the pager alone walks the record. */}
               {review === undefined && (
                 <div className={css.footerActions}>
-                  <Button variant="outline" disabled={busy !== null} onClick={skipQuestion}>
+                  <Button variant="ghost" disabled={busy !== null} onClick={skipQuestion}>
                     {t("action.skip")}
                   </Button>
                   <Button

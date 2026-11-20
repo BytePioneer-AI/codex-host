@@ -32,6 +32,7 @@ import {
 } from "../src/index.js";
 
 import { parseGrokQuestionRequest } from "../src/grok-questions.js";
+import { encodeGrokModelRef } from "../src/grok-models.js";
 
 const initialize: InitializeResponse = {
   protocolVersion: 1,
@@ -56,6 +57,36 @@ const initialize: InitializeResponse = {
     },
   },
 };
+
+const nativeGatewayModel = "magpie/grok-2/grok-4.7";
+const gatewayAliasModel = "magpie-grok47";
+const gatewayModelIds = [nativeGatewayModel, gatewayAliasModel, "grok-4.6", "grok-4.5"];
+
+function gatewayModelInitialize(currentModelId = nativeGatewayModel): InitializeResponse {
+  return {
+    ...initialize,
+    _meta: {
+      modelState: {
+        currentModelId,
+        availableModels: gatewayModelIds.map((modelId) => ({
+          modelId,
+          name: modelId,
+          _meta: {
+            totalContextTokens:
+              modelId === nativeGatewayModel
+                ? 500000
+                : modelId === gatewayAliasModel
+                  ? 272000
+                  : 256000,
+            ...(modelId === nativeGatewayModel ? { contextWindows: [256000, 500000] } : {}),
+            reasoningEffort: "high",
+            reasoningEfforts: [{ id: "high", label: "High" }],
+          },
+        })),
+      },
+    },
+  };
+}
 
 const nativeResponseUsage = {
   input_tokens: 100,
@@ -99,7 +130,7 @@ class FakeGrokTransport implements GrokAcpTransportLike {
   #compactOnEvent: ((event: GrokTransportEvent) => void) | null = null;
 
   async inspect(): Promise<InitializeResponse> {
-    return initialize;
+    return this.initializeResponse;
   }
 
   async open(input: GrokOpenInput): Promise<GrokOpenResult> {
@@ -603,6 +634,53 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it.each(["expiry", "explicit refresh", "different cwd"])(
+    "reloads the native Model catalog after %s",
+    async (reason) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(0);
+      const transport = new FakeGrokTransport();
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: () => "grok-id",
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      try {
+        const initial = await adapter.inspect({ cwd: "/synthetic" });
+        transport.initializeResponse = {
+          ...initialize,
+          _meta: {
+            modelState: {
+              currentModelId: "grok-4.7-build-fast",
+              availableModels: [{ modelId: "grok-4.7-build-fast", name: "Grok 4.7 Fast" }],
+            },
+          },
+        };
+        vi.setSystemTime(29_999);
+        expect(await adapter.inspect({ cwd: "/synthetic" })).toEqual(initial);
+        if (reason === "expiry") vi.setSystemTime(30_000);
+        await expect(
+          adapter.inspect({
+            cwd: reason === "different cwd" ? "/other" : "/synthetic",
+            ...(reason === "explicit refresh" ? { refresh: true } : {}),
+          }),
+        ).resolves.toMatchObject({
+          status: "ready",
+          catalog: {
+            models: [{ ref: { id: "grok-4.7-build-fast" } }],
+            defaultModel: { id: "grok-4.7-build-fast" },
+          },
+        });
+      } finally {
+        await adapter.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("uses always-approve for unattended full-access sessions", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
@@ -856,6 +934,78 @@ describe("Grok Adapter ACP projection", () => {
       modelId: "grok-4.6",
     });
     await adapter.close();
+  });
+
+  it("round-trips a native slash Model ID through inspection, creation, and selection", async () => {
+    const transport = new FakeGrokTransport();
+    transport.initializeResponse = gatewayModelInitialize();
+    const adapter = new GrokAdapter(
+      {},
+      {
+        randomUUID: () => "grok-id",
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const inspection = await adapter.inspect({ cwd: "/synthetic" });
+    if (inspection.status !== "ready") throw new Error("Expected a ready Grok inspection");
+    expect(inspection.catalog.models.map(({ ref }) => ref.id)).toEqual(
+      gatewayModelIds.map((id) => encodeGrokModelRef(id).id),
+    );
+
+    const nativeRef = encodeGrokModelRef(nativeGatewayModel);
+    const opened = await adapter.open({ kind: "create", cwd: "/synthetic", model: nativeRef });
+    if (!opened.ok) throw new Error(opened.error.message);
+    expect(transport.openCalls).toContainEqual({
+      kind: "create",
+      permissionModeId: "ask",
+      modelId: nativeGatewayModel,
+    });
+    expect(opened.value.initialState.effectiveModel).toEqual(nativeRef);
+
+    await expect(
+      opened.value.execute({
+        type: "model.select",
+        model: encodeGrokModelRef(gatewayAliasModel),
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setModel).toHaveBeenLastCalledWith(gatewayAliasModel, "high", undefined);
+    await expect(
+      opened.value.execute({ type: "model.select", model: nativeRef }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(transport.setModel).toHaveBeenLastCalledWith(nativeGatewayModel, "high", 500000);
+    await adapter.close();
+  });
+
+  it("restores the saved native slash Model when cold resume returns no Model state", async () => {
+    const transport = new FakeGrokTransport();
+    transport.initializeResponse = gatewayModelInitialize(gatewayAliasModel);
+    const adapter = new GrokAdapter(
+      {},
+      {
+        createTransport: () => transport,
+        fetchCredits: async () => null,
+      },
+    );
+    const model = encodeGrokModelRef(nativeGatewayModel);
+
+    try {
+      const resumed = await adapter.open({
+        kind: "resume",
+        cwd: "/synthetic",
+        nativeRef: {
+          harnessId: adapter.harnessId,
+          nativeSessionId: transport.sessionId,
+          formatVersion: 1,
+        },
+        model,
+      });
+      if (!resumed.ok) throw new Error(resumed.error.message);
+      expect(transport.setModel).toHaveBeenCalledWith(nativeGatewayModel, "high", 500000);
+      expect(resumed.value.initialState.effectiveModel).toEqual(model);
+    } finally {
+      await adapter.close();
+    }
   });
 
   it("passes user input unchanged without injecting Model identity instructions", async () => {
@@ -1531,7 +1681,7 @@ describe("Grok Adapter ACP projection", () => {
     }
   });
 
-  it("publishes received-text TPS when native reasoning is not streamed", async () => {
+  it("preserves usage and publishes text-window TPS when native reasoning is not streamed", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
     const transport = new FakeGrokTransport();
     const { adapter, session } = await openedSession(transport);
@@ -1566,6 +1716,9 @@ describe("Grok Adapter ACP projection", () => {
           inputTokens: 26222,
           outputTokens: 104,
           reasoningTokens: 54,
+          cachedReadTokens: 0,
+          cacheCreationTokens: 0,
+          costUsdTicks: 100000000,
           modelCalls: 1,
         },
       );
@@ -1575,10 +1728,15 @@ describe("Grok Adapter ACP projection", () => {
         events.push(event);
         if (event.type === "turn.completed") break;
       }
-      expect(events.findLast((e) => e.type === "session.usage.changed")?.usage).toMatchObject({
+      const snapshots = events.filter((event) => event.type === "session.usage.changed");
+      expect(snapshots.length).toBeGreaterThan(0);
+      expect(snapshots.at(-1)?.usage).toMatchObject({
+        inputTokens: 26222,
         outputTokens: 104,
         reasoningOutputTokens: 54,
-        outputTokensPerSecond: 52,
+        outputTokensPerSecond: 25,
+        totalCostUsd: 0.01,
+        sessionCacheUsage: { inputTokens: 26222, cachedInputTokens: 0 },
       });
     } finally {
       await adapter.close();
@@ -2863,6 +3021,74 @@ describe("Grok Adapter ACP projection", () => {
     await adapter.close();
   });
 
+  it.each(["fork", "rollbackLastTurn"] as const)(
+    "restores a native slash Model ID after %s",
+    async (kind) => {
+      const transport = new FakeGrokTransport();
+      transport.initializeResponse = gatewayModelInitialize();
+      const adapter = new GrokAdapter(
+        {},
+        {
+          randomUUID: vi.fn(() => "id"),
+          createTransport: () => transport,
+          fetchCredits: async () => null,
+        },
+      );
+      const created = await adapter.open({
+        kind: "create",
+        cwd: "/synthetic",
+        model: encodeGrokModelRef(nativeGatewayModel),
+      });
+      if (!created.ok) throw new Error(created.error.message);
+      const sourceRef = created.value.initialState.nativeRef;
+      if (!sourceRef) throw new Error("Created Session is missing its Native reference");
+      const sourceHistory: GrokTransportEvent[] = [
+        { type: "user.text", text: "first", metadata: { eventId: "user-1" } },
+        { type: "agent.text", text: "answer-1" },
+        { type: "turn.completed", nativeTurnKey: "prompt-1", stopReason: "end_turn" },
+        { type: "user.text", text: "second", metadata: { eventId: "user-2" } },
+        { type: "agent.text", text: "answer-2" },
+        { type: "turn.completed", nativeTurnKey: "prompt-2", stopReason: "end_turn" },
+      ];
+      transport.histories.set(sourceRef.nativeSessionId, sourceHistory);
+      transport.forkImpl = async () => {
+        transport.histories.set("child-session", sourceHistory.slice(0, 3));
+        return { sessionId: "child-session" };
+      };
+      transport.rewindImpl = async (input) => {
+        transport.histories.set(input.sessionId, [
+          ...sourceHistory,
+          { type: "rewind.marker", targetPromptIndex: input.targetPromptIndex },
+        ]);
+      };
+      transport.setModel.mockClear();
+      transport.initializeResponse = gatewayModelInitialize(gatewayAliasModel);
+
+      const opened = await adapter.open(
+        kind === "fork"
+          ? {
+              kind,
+              cwd: "/synthetic",
+              sourceRef,
+              checkpoint: nativeCheckpointRefSchema.parse({
+                harnessId: adapter.harnessId,
+                nativeSessionId: sourceRef.nativeSessionId,
+                checkpointId: "0",
+                formatVersion: 1,
+              }),
+            }
+          : { kind, cwd: "/synthetic", sourceRef },
+      );
+      if (!opened.ok) throw new Error(opened.error.message);
+      expect(transport.setModel).toHaveBeenCalledWith(nativeGatewayModel, "high", 500000);
+      expect(opened.value.initialState.effectiveModel).toEqual(
+        encodeGrokModelRef(nativeGatewayModel),
+      );
+      await created.value.close();
+      await opened.value.close();
+    },
+  );
+
   it("restores the source Session Model and Thinking after Rewind", async () => {
     const transport = new FakeGrokTransport();
     const adapter = new GrokAdapter(
@@ -3271,13 +3497,13 @@ describe("Grok Adapter ACP projection", () => {
   });
 
   it.each([
-    { model: undefined, reportedModel: undefined },
-    { model: "grok-4.5", reportedModel: undefined },
-    { model: "grok-4.5", reportedModel: "grok-4.6" },
-    { model: undefined, reportedModel: "provider/child-model" },
+    { model: undefined, reportedModel: undefined, effort: undefined },
+    { model: "grok-4.5", reportedModel: undefined, effort: undefined },
+    { model: "grok-4.5", reportedModel: "grok-4.6", effort: undefined },
+    { model: undefined, reportedModel: "provider/child-model", effort: "low" },
   ])(
-    "projects Grok Subagents without inferring child configuration: %j",
-    async ({ model, reportedModel }) => {
+    "projects Grok Subagents using native configuration before parent defaults: %j",
+    async ({ model, reportedModel, effort }) => {
       const transport = new FakeGrokTransport();
       const { adapter, session } = await openedSession(transport);
       expect(session.capabilities.subagents).toEqual({ observe: true, readTranscript: true });
@@ -3301,6 +3527,7 @@ describe("Grok Adapter ACP projection", () => {
           prompt: "Look at the repo",
           subagent_type: "explore",
           ...(model ? { model } : {}),
+          ...(effort ? { reasoning_effort: effort } : {}),
           background: true,
         },
         status: "in_progress",
@@ -3326,9 +3553,12 @@ describe("Grok Adapter ACP projection", () => {
       if (started.type !== "item.started" || started.item.type !== "subagentDelegation") {
         throw new Error("Expected Subagent delegation");
       }
-      expect(started.item.subagents[0]?.model).toBe(model);
-      expect(started.item.subagents[0]).not.toHaveProperty("reasoningEffort");
-      if (!model) expect(started.item.subagents[0]).not.toHaveProperty("model");
+      expect(started.item.subagents[0]?.model).toBe(
+        model ?? session.initialState.effectiveModel?.id,
+      );
+      expect(started.item.subagents[0]?.reasoningEffort).toBe(
+        effort ?? session.initialState.effectiveThinkingOptionId,
+      );
 
       transport.event({
         type: "tool.update",

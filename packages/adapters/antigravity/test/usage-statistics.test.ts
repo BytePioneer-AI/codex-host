@@ -104,6 +104,48 @@ describe("Antigravity usage statistics", () => {
     ]);
   });
 
+  it("reads 1.5.9 native models and providers without changing legacy dedup IDs", async () => {
+    const models = [
+      ["gemini-4-carbon-high", { model: "gemini-4-carbon", provider: "google" }],
+      ["claude-sonnet-5-5-medium", { model: "claude-sonnet-5-5", provider: "anthropic" }],
+      ["claude-opus-4-6-thinking", { model: "claude-opus-4-6", provider: "anthropic" }],
+      ["claude-opus-4-6-thinking-high", { model: "claude-opus-4-6", provider: "anthropic" }],
+      ["gpt-oss-120b-medium", { model: "gpt-oss-120b" }],
+      ["gpt-oss-120b", { model: "gpt-oss-120b" }],
+      ["gpt-5-xhigh", { model: "gpt-5", provider: "openai" }],
+      ["custom-high", { model: "custom-high" }],
+      [undefined, {}],
+    ] as const;
+    const file = await transcript(
+      "conv-models",
+      models.map(([model], index) =>
+        step(index, "PLANNER_RESPONSE", {
+          model,
+          input_tokens: 2217,
+          cache_read_tokens: 219282,
+          output_tokens: 436,
+        }),
+      ),
+    );
+    const entries = await createAntigravityUsageStatistics(environment()).readSource(file, signal);
+    expect(entries).toEqual(
+      models.map(([, identity], index) => ({
+        id: `2026-09-01T08:00:00Z:${index}:2217:219282:436`,
+        occurredAtMs: Date.parse("2026-09-01T08:00:00Z"),
+        ...identity,
+        inputTokens: 221499,
+        cachedInputTokens: 219282,
+        ...("provider" in identity && identity.provider === "google"
+          ? { cacheWriteInputTokens: 0 }
+          : "model" in identity && identity.model.startsWith("gpt-")
+            ? { cacheWriteInputTokens: 0 }
+            : {}),
+        outputTokens: 436,
+        sessionId: "conv-models",
+      })),
+    );
+  });
+
   it("gives a request copied into a derived Conversation the same ID", async () => {
     const original = request(1, "2026-09-01T08:00:01Z", {
       input_tokens: 7_000,

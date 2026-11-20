@@ -190,6 +190,9 @@ function ArchiveConfirmForm({
       }
     >
       <ul className={browserCss.archiveActivity} aria-label={t("archive.confirm.activity")}>
+        {request.runningThreads?.map((thread) => (
+          <li key={thread.id}>{t("archive.confirm.thread", { title: thread.title })}</li>
+        ))}
         {request.activity.map((entry, index) => (
           <li key={`${entry.kind}-${String(index)}`}>{activityLine(entry, t)}</li>
         ))}

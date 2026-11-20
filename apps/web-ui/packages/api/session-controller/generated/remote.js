@@ -78,7 +78,6 @@ const _deepseek_ai_dsh_api_session_controller_session_control_result$schema = ()
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({
@@ -296,7 +295,6 @@ const _deepseek_ai_dsh_api_session_controller_session_follow_result$schema = () 
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({
@@ -513,7 +511,6 @@ const _deepseek_ai_dsh_api_session_controller_session_list_result$schema = () =>
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({
@@ -666,6 +663,10 @@ const _deepseek_ai_dsh_api_session_controller_session_modelCatalog_result$schema
   'message': z.string().readonly(),
 })).readonly(),
 }))
+let _deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$schema$value
+const _deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$schema$value ??= z.union([z.undefined(), z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+})]))
 let _deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema$value ??= z.object({
   'action': z.literal("reveal").readonly().optional(),
@@ -738,7 +739,6 @@ const _deepseek_ai_dsh_api_session_controller_session_projections_result$schema 
   'maxImagesPerMessage': z.number(),
   'maxMessageImageBytes': z.number(),
   'maxImagePixels': z.number(),
-  'maxImageDimension': z.number(),
   'mediaTypes': z.array(z.union([z.literal("image/png"), z.literal("image/jpeg"), z.literal("image/webp"), z.literal("image/gif")])),
 }).optional(),
   'modelSelection': z.object({
@@ -1213,13 +1213,24 @@ export const TYPERT_REMOTE = {
       method: 'modelCatalog',
       invocation: { kind: 'direct' },
       parameters: [
+        {
+          name: 'request',
+          wire: 'request',
+          source: 'json',
+          acceptsUndefined: true,
+          codec: {
+            mode: 'strict',
+            typeSymbol: '@deepseek-ai/dsh-api-session-controller#session/modelCatalog:request',
+            create: _deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$schema,
+          },
+        },
       ],
       result: {
         mode: 'strict',
         typeSymbol: '@deepseek-ai/dsh-api-session-controller/types#ModelCatalog',
         create: _deepseek_ai_dsh_api_session_controller_session_modelCatalog_result$schema,
       },
-      sourceLocation: {"file":"packages/api/session-controller/src/index.ts","line":317,"column":3},
+      sourceLocation: {"file":"packages/api/session-controller/src/index.ts","line":345,"column":3},
     },
     {
       id: '@deepseek-ai/dsh-api-session-controller#session/openWorkspacePath',

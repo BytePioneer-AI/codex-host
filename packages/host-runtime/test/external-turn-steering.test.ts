@@ -11,8 +11,10 @@ import { harnessIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import {
   ExternalSteerNotTakenError,
+  ExternalSteerOutcomeUnknownError,
   ExternalTurnSteering,
   externalSteeringDelivery,
+  insertNativeSteer,
 } from "../src/external-turn-steering.js";
 
 type Cancel = (command: TurnCancelCommand) => Promise<HarnessResult<TurnCancelAccepted>>;
@@ -194,7 +196,10 @@ describe("Host stop-then-start coordination", () => {
       const ack = Promise.withResolvers<Awaited<ReturnType<Cancel>>>();
       if (waitingFor === "acknowledgement") f.execute.mockReturnValue(ack.promise);
       const result = f.coordinator.run(f.thread, f.params, f.start, f.insert);
-      const rejected = expect(result).rejects.toThrow("Timed out");
+      const rejected = expect(result).rejects.toMatchObject({
+        message: expect.stringContaining("Timed out"),
+        notStarted: true,
+      });
       await vi.advanceTimersByTimeAsync(50);
       await rejected;
       f.complete();
@@ -204,6 +209,17 @@ describe("Host stop-then-start coordination", () => {
       expect(f.coordinator.hasPending()).toBe(false);
     },
   );
+
+  it("keeps the input retryable when explicitly stopped before replacement starts", async () => {
+    const f = fixture();
+    const result = f.coordinator.run(f.thread, f.params, f.start, f.insert);
+    f.coordinator.interrupt("thread", "old");
+    await expect(result).rejects.toMatchObject({
+      message: expect.stringContaining("stopped before starting"),
+      notStarted: true,
+    });
+    expect(f.start).not.toHaveBeenCalled();
+  });
 
   it.each(["close", "fault", "failed", "persistence", "autonomous", "interrupt"])(
     "does not replace after %s",
@@ -324,6 +340,36 @@ describe("Host native steering", () => {
     });
     expect(f.insert).toHaveBeenCalledTimes(2);
   });
+  it("retains an unknown receipt so retrying the same identity cannot send it twice", async () => {
+    const f = fixture();
+    f.thread.session.capabilities.steer = true;
+    const unknown = new ExternalSteerOutcomeUnknownError(new Error("native reply lost"));
+    f.insert.mockRejectedValueOnce(unknown);
+    const first = f.coordinator.run(f.thread, f.params, f.start, f.insert);
+    await expect(first).rejects.toBe(unknown);
+    const retry = f.coordinator.run(f.thread, f.params, f.start, f.insert);
+    expect(retry).toBe(first);
+    await expect(retry).rejects.toBe(unknown);
+    expect(f.insert).toHaveBeenCalledOnce();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("classifies an execute exception as an unknown outcome and releases projection ordering", async () => {
+    const thread = {
+      pendingSteerProjections: new Set<Promise<void>>(),
+      steeredTurnIds: new Set<ReturnType<typeof hostTurnIdSchema.parse>>(),
+      session: { execute: vi.fn().mockRejectedValue(new Error("native reply lost")) },
+    };
+    const host = { project: vi.fn(), diagnose: vi.fn() };
+    await expect(
+      insertNativeSteer(thread, { turnId: hostTurnIdSchema.parse("old"), text: "input" }, host),
+    ).rejects.toBeInstanceOf(ExternalSteerOutcomeUnknownError);
+    expect(thread.pendingSteerProjections.size).toBe(0);
+    expect(thread.steeredTurnIds.size).toBe(0);
+    expect(host.project).not.toHaveBeenCalled();
+  });
+
   it("starts the next Turn when untaken input arrives after the active Turn ended", async () => {
     const f = fixture();
     f.thread.session.capabilities.steer = true;

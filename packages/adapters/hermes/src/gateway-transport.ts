@@ -31,7 +31,7 @@ export function gatewayString(value: unknown): string {
 // gateway's canonical WebSocket (official client path: ensure runtime -> control-socket ticket
 // -> WS), and frames flow back to stdout. Same tui_gateway.server.dispatch, same wire protocol,
 // and every attached client (Ink TUI, Desktop, this bridge) coexists with the resident gateway.
-const GATEWAY_LAUNCH = `import asyncio
+export const GATEWAY_LAUNCH = `import asyncio
 import sys
 
 
@@ -65,16 +65,85 @@ async def _bridge():
             raise SystemExit("[bridge-exit] gateway protocol mismatch; update/restart required")
 
         loop = asyncio.get_running_loop()
-        # A full prompt rides on ONE JSON-RPC line; StreamReader's default 64 KiB
-        # line limit aborts the bridge on large pastes (LimitOverrunError), so the
-        # stdin side matches the WebSocket side's 8 MiB frame ceiling.
-        reader = asyncio.StreamReader(limit=8 * 1024 * 1024)
-        await loop.connect_read_pipe(
-            lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
-        )
+        # A full prompt rides on ONE JSON-RPC line, and StreamReader's default
+        # 64 KiB line limit aborts the bridge on large pastes (LimitOverrunError),
+        # so the cap matches the WebSocket side's 8 MiB frame ceiling. On Windows
+        # the Proactor loop cannot connect_read_pipe() a stdio file object
+        # (bpo-26832), so stdin is read in a worker thread there instead.
+        LINE_LIMIT = 8 * 1024 * 1024
+
+        if sys.platform == "win32":
+            import queue
+            import threading
+
+            async def read_stdin():
+                requests = queue.Queue(maxsize=1)
+                stopped = threading.Event()
+
+                def deliver(future, raw):
+                    if not future.done():
+                        if isinstance(raw, Exception):
+                            future.set_exception(raw)
+                        else:
+                            future.set_result(raw)
+
+                def read():
+                    stream = None
+                    try:
+                        while not stopped.is_set():
+                            future = requests.get()
+                            if future is None or stopped.is_set():
+                                return
+                            try:
+                                # A separate buffer avoids holding sys.stdin's
+                                # lock during interpreter shutdown.
+                                if stream is None:
+                                    stream = open(sys.stdin.fileno(), "rb", closefd=False)
+                                raw = stream.readline(LINE_LIMIT + 1)
+                            except Exception as exc:
+                                raw = exc
+                            try:
+                                loop.call_soon_threadsafe(deliver, future, raw)
+                            except RuntimeError:
+                                return  # The event loop already closed.
+                            if isinstance(raw, Exception) or not raw:
+                                return
+                    finally:
+                        if stream is not None:
+                            stream.close()
+
+                # A blocked pipe read cannot be cancelled. One daemon worker,
+                # outside the default executor, must not delay bridge exit.
+                threading.Thread(target=read, daemon=True).start()
+                try:
+                    while True:
+                        future = loop.create_future()
+                        requests.put_nowait(future)
+                        raw = await future
+                        if not raw:
+                            break
+                        # StreamReader's content ceiling excludes the newline.
+                        if len(raw) > LINE_LIMIT and not raw.endswith(b"\\n"):
+                            raise ValueError("stdin line exceeds the 8 MiB bridge limit")
+                        yield raw
+                finally:
+                    stopped.set()
+                    try:
+                        requests.put_nowait(None)
+                    except queue.Full:
+                        pass  # The worker will observe stopped on that request.
+        else:
+            reader = asyncio.StreamReader(limit=LINE_LIMIT)
+            await loop.connect_read_pipe(
+                lambda: asyncio.StreamReaderProtocol(reader), sys.stdin
+            )
+
+            async def read_stdin():
+                async for raw in reader:
+                    yield raw
 
         async def pump_in():
-            async for raw in reader:
+            async for raw in read_stdin():
                 line = raw.decode("utf-8", "replace").strip()
                 if line:
                     await ws.send(line)

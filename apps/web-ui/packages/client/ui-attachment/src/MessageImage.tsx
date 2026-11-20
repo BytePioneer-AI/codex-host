@@ -41,6 +41,8 @@ export interface MessageImageLabels {
   loading: string;
   /** Retry-control label shown when the load fails. */
   loadFailed: string;
+  /** Non-retryable resource-limit failure. */
+  tooLarge: string;
   /** Lightbox strings forwarded to the opened preview. */
   lightbox: ImageLightboxLabels;
 }
@@ -106,7 +108,7 @@ export function MessageImage({
   const [loaded, setLoaded] = useState<string | null>(() =>
     attachment === undefined ? null : (load.peek?.(attachment) ?? null),
   );
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<"unavailable" | "too-large" | null>(null);
   const [natural, setNatural] = useState<{ width: number; height: number }>();
   const [open, setOpen] = useState(false);
   // Retry re-arms the one load effect below, so every attempt — first load or
@@ -132,15 +134,24 @@ export function MessageImage({
   useEffect(() => {
     if (attachment === undefined) return;
     let live = true;
-    setError(false);
+    setError(null);
     setNatural(undefined);
     setLoaded(load.peek?.(attachment) ?? null);
     void load(attachment)
       .then((url) => {
         if (live) setLoaded(url);
       })
-      .catch(() => {
-        if (live) setError(true);
+      .catch((error: unknown) => {
+        if (!live) return;
+        const reason =
+          error !== null && typeof error === "object" && "details" in error
+            ? (error.details as { reason?: unknown } | undefined)?.reason
+            : undefined;
+        setError(
+          reason === "IMAGE_TOO_LARGE" || reason === "IMAGE_TOO_MANY_PIXELS"
+            ? "too-large"
+            : "unavailable",
+        );
       });
     return () => {
       live = false;
@@ -154,6 +165,12 @@ export function MessageImage({
     attachment?.name ??
     labels.image;
   const loadingThumbnail = variant === "thumbnail" && src === null;
+  if (error === "too-large")
+    return (
+      <div className={css.error} data-variant={variant} role="status" title={labels.tooLarge}>
+        {labels.tooLarge}
+      </div>
+    );
   if (error)
     return (
       <button
@@ -208,7 +225,7 @@ export function MessageImage({
                     : { width, height },
                 );
             }}
-            onError={() => setError(true)}
+            onError={() => setError("unavailable")}
             style={fit === undefined ? undefined : { objectPosition: fit.objectPosition }}
           />
         )}

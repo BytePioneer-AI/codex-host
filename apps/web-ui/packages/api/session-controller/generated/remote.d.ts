@@ -23,7 +23,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     fork: (request: SessionForkRequest) => Promise<RemoteResult<SessionForkValue>>
     initializeDefaultModel: () => Promise<RemoteResult<void>>
     list: (_request: SessionListRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionListValue>>
-    modelCatalog: () => Promise<RemoteResult<ModelCatalog>>
+    modelCatalog: (request?: { readonly sessionId: SessionId; }) => Promise<RemoteResult<ModelCatalog>>
     openWorkspacePath: (request: SessionOpenWorkspacePathRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionOpenWorkspacePathValue>>
     page: (request: SessionPageRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionPage>>
     projections: (request: SessionProjectionsRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionProjectionsValue>>
@@ -49,7 +49,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'session/fork': (request: SessionForkRequest) => Promise<RemoteResult<SessionForkValue>>
     'session/initializeDefaultModel': () => Promise<RemoteResult<void>>
     'session/list': (_request: SessionListRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionListValue>>
-    'session/modelCatalog': () => Promise<RemoteResult<ModelCatalog>>
+    'session/modelCatalog': (request?: { readonly sessionId: SessionId; }) => Promise<RemoteResult<ModelCatalog>>
     'session/openWorkspacePath': (request: SessionOpenWorkspacePathRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionOpenWorkspacePathValue>>
     'session/page': (request: SessionPageRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionPage>>
     'session/projections': (request: SessionProjectionsRequest, signal?: AbortSignal) => Promise<RemoteResult<SessionProjectionsValue>>

@@ -16,7 +16,10 @@ export interface HostServiceLaunch {
   environment?: NodeJS.ProcessEnv;
 }
 
-/** PID presence alone is not liveness: a descriptor may outlive its original PID. */
+/** PID presence alone is not liveness: a descriptor may outlive its original PID.
+ * A stopped Host refuses the connection immediately; the timeout only bounds a live Host
+ * that is busy starting, and matches the event channel's connect deadline.
+ */
 export async function isHostClientChannelOnline(
   descriptor: ClientChannelDescriptor,
 ): Promise<boolean> {
@@ -24,7 +27,7 @@ export async function isHostClientChannelOnline(
     const response = await fetch(`http://127.0.0.1:${descriptor.port}/v1/events`, {
       headers: { authorization: `Bearer ${descriptor.token}` },
       redirect: "error",
-      signal: AbortSignal.timeout(1500),
+      signal: AbortSignal.timeout(5000),
     });
     if (!response.ok || !response.body) {
       await response.body?.cancel();
@@ -82,6 +85,7 @@ export async function ensureHostService(options: HostServiceLaunch): Promise<voi
     Object.entries({ ...process.env, ...options.environment }).filter(([key, value]) => {
       const upper = key.toUpperCase();
       if (upper === "CODEXHOST_WEB_SERVICE") return value === "0" || value === "1";
+      if (upper === "CODEXHOST_EXTERNAL_CLIENT_PORT") return typeof value === "string";
       if (
         [
           "CODEXHOST_NPM_NODE_PATH",

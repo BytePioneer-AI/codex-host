@@ -62,6 +62,7 @@ it("flushes external metrics at completion into metadata and restores them with 
     session.succeedTurn();
     await first.collector.waitFor((message) => turnEvent(message, "turn/completed", turn));
     const saved = JSON.parse(await readFile(metadata, "utf8"));
+    expect(saved.usageMeasurements.values.outputTimings).toHaveLength(10);
     expect(saved.usageMeasurements.values).toMatchObject({
       outputTokensPerSecond: { value: 200, turnId: turn },
       timeToFirstOutputMs: { value: 20, turnId: turn },
@@ -90,6 +91,7 @@ it("flushes external metrics at completion into metadata and restores them with 
       externalAdapters: new Map([[adapter.harnessId, adapter]]),
     });
     expect(await inspect(second, id)).toMatchObject({
+      sessionOutputTokensPerSecond: 200,
       outputTokensPerSecond: 200,
       timeToFirstOutputMs: 20,
     });
@@ -115,6 +117,7 @@ it("flushes external metrics at completion into metadata and restores them with 
     const reopened = second;
     await vi.waitFor(async () =>
       expect(await inspect(reopened, id)).toMatchObject({
+        sessionOutputTokensPerSecond: 120 / 0.7,
         outputTokensPerSecond: 100,
         timeToFirstOutputMs: 50,
       }),

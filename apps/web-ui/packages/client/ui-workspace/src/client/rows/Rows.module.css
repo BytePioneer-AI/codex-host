@@ -178,8 +178,93 @@
 
 /* Session cell (figma): pad 8, a 16px status slot, then a 4px title gap. */
 .sessionRow {
-  height: 32px;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding-inline-start: calc(
+    8px + var(--dsh-workspace-indent, 0px) + var(--dsh-thread-indent, 0px)
+  );
+}
+
+.sessionMain {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--dsh-thread-row-height);
+  flex: none;
+}
+
+.identityButton {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.identityButton::after {
+  content: "";
+  position: absolute;
+  inset: -6px -4px -6px -8px;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .sessionRow:not(:has(> [data-thread-summary])) .identityButton::after {
+    inset: -12px -6px -12px -8px;
+  }
+}
+
+.foldChevron {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.foldChevron::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateX(-1px) rotate(-45deg);
+}
+
+.identityButton[aria-expanded="true"] .foldChevron::before {
+  transform: translateY(-1px) rotate(45deg);
+}
+
+.identityButton[aria-expanded="true"] > :not(.foldChevron) {
+  visibility: hidden;
+}
+
+.identityButton[aria-expanded="true"] .foldChevron {
+  display: flex;
+  color: var(--dsw-alias-label-secondary, currentColor);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .identityButton:hover > :not(.foldChevron),
+  .identityButton:focus-visible > :not(.foldChevron) {
+    visibility: hidden;
+  }
+
+  .identityButton:hover .foldChevron,
+  .identityButton:focus-visible .foldChevron {
+    display: flex;
+    color: var(--dsw-alias-text-secondary, currentColor);
+  }
+}
+
+.identityButton:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
 }
 
 .sessionRow .title {
@@ -373,20 +458,24 @@
   margin-left: auto;
 }
 
-.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time {
-  visibility: hidden;
-}
-
 @media (hover: hover) and (pointer: fine) {
+  .sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) .time {
+    visibility: hidden;
+  }
+
   .projectRow > .rowActions,
   .sessionRow .rowActions {
     position: absolute;
-    inset-inline-end: 8px;
+    inset-inline-end: 0;
     top: 50%;
     transform: translateY(-50%);
     z-index: 1;
     background: var(--dsh-row-surface);
     border-radius: var(--dsw-radius-sm);
+  }
+
+  .projectRow > .rowActions {
+    inset-inline-end: 8px;
   }
 
   .projectRow > .rowActions::before,
@@ -403,8 +492,51 @@
 
 /* Frame phone layout only: touch laptops and desktop search keep their rules. */
 :global([data-phone-drawer]) .sessionRow {
-  height: 48px;
-  min-height: 48px;
+  min-height: 44px;
+}
+
+/* Keep a collapsed Thread's title and summary inside one phone-height row. */
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) {
+  display: grid;
+  grid-template-columns: var(--dsh-thread-icon-size, 16px) minmax(0, 1fr) auto;
+  grid-template-rows: 24px 24px;
+  column-gap: 8px;
+  padding-block: 2px;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .sessionMain {
+  display: contents;
+  position: static;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .slot {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .title {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  margin: 0;
+}
+
+:global([data-phone-drawer]) .sessionRow:has(> [data-thread-summary]) .trailing {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+
+:global([data-phone-drawer]) .sessionRow > [data-thread-summary] {
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
+  margin: 0;
+  padding-inline: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .phoneDetails {
@@ -544,6 +676,37 @@
 :global([data-phone-drawer]) .rowActions,
 :global([data-phone-drawer]) .rowActions::before {
   background: transparent;
+}
+
+:global(body[data-codexhost-wallpaper]) :is(.projectRow, .sessionRow) {
+  --dsh-row-surface: transparent;
+}
+
+:global(body[data-codexhost-wallpaper])
+  :is(.projectRow, .sessionRow):is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+}
+
+:global(body[data-codexhost-wallpaper]) .sessionRow.selected {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+}
+
+:global(body[data-codexhost-wallpaper])
+  .sessionRow.selected:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :global(body[data-codexhost-wallpaper]) :is(.projectRow > .rowActions, .sessionRow .rowActions) {
+    background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 82%, transparent);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+
+  :global(body[data-codexhost-wallpaper])
+    :is(.projectRow > .rowActions::before, .sessionRow .rowActions::before) {
+    display: none;
+  }
 }
 
 /* Keep the hit target and keyboard ring; a press changes the glyph, not a

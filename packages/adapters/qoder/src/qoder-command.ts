@@ -39,12 +39,14 @@ function discoverySpec(variant: QoderVariant): HarnessDiscoverySpec {
     installRoots: {
       posix: [
         "~/.local/bin",
+        `~/${configDirectory}/bin/${command}`,
         `~/${configDirectory}/bin`,
         VERSION_MANAGER_ROOTS,
         "/usr/local/bin",
         "/opt/homebrew/bin",
       ],
       windows: [
+        `~/${configDirectory}/bin/${command}`,
         `\${LOCALAPPDATA}/Programs/${productName}`,
         `\${LOCALAPPDATA}/${productName}`,
         `~/${configDirectory}/bin`,

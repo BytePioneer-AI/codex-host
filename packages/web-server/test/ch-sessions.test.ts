@@ -3,14 +3,18 @@ import { mkdtempSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
-import { decodeHarnessPluginRoute } from "@codexhost/shared-contracts";
+import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  decodeHarnessPluginRoute,
+} from "@codexhost/shared-contracts";
 import { DataDir } from "../src/store.ts";
-import { Workspaces } from "../src/workspaces.ts";
+import { Workspaces, projectRootTitles } from "../src/workspaces.ts";
 import { EventHub, RpcRegistry, StreamRegistry, type StreamHandler } from "../src/transport.ts";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DesktopChHostClient } from "../src/ch-host-client.ts";
 import { projectGroupRoot } from "../src/ch-project-groups.ts";
 import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
 it("shares canonical CH identity and cwd without a Web index/history or physical mkdir", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-web-"));
@@ -188,6 +192,7 @@ it("resolves an existing unbound draft summary without native reads, then follow
   assert.deepEqual(
     host.requests.map((req) => ({ method: req.method, threadId: req.params.threadId })),
     [
+      { method: "codexhost/thread/tree/read", threadId: undefined },
       { method: "codexhost/thread/inspect", threadId: canonical },
       { method: "thread/read", threadId: canonical },
     ],
@@ -519,6 +524,8 @@ it("workspace mirror: preserves Web information and identities across native tit
   const first = workspaces.byPath(firstRoot);
   const second = workspaces.byPath(secondRoot);
   assert.ok(first && second);
+  assert.equal(first.title, "Native title", "the project's first root keeps the project name");
+  assert.equal(second.title, "second", "extra roots fall back to their folder name");
   assert.deepEqual(
     first.sessionIds,
     ["moving"],
@@ -554,7 +561,7 @@ it("workspace mirror: preserves Web information and identities across native tit
   assert.ok(updated);
   assert.equal(updated.workspaceId, second.workspaceId);
   assert.equal(updated.createdAt, second.createdAt);
-  assert.equal(updated.title, project.name);
+  assert.equal(updated.title, "second", "extra roots keep their folder name after a rename");
   assert.deepEqual(updated.sessionIds, ["second-root", "moving"]);
   const firstProject = workspaces
     .list()
@@ -580,6 +587,128 @@ it("workspace mirror: preserves Web information and identities across native tit
     { type: "upsert", workspace: visibleExplicit },
     { type: "order", workspaceIds: [explicit.workspaceId] },
   ]);
+});
+
+it("workspace mirror: disambiguates conflicting project root titles", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-title-conflict-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const projectRoot = join(root, "app");
+  const extraRoot = join(root, "other", "app");
+  const legacyWeb = workspaces.create(extraRoot, true).workspace;
+  workspaces.selectReferenceWorkspace(extraRoot);
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    { name: "app", rootPaths: [projectRoot, extraRoot] },
+  ]);
+  assert.equal(
+    workspaces.byPath(projectRoot)?.title,
+    "app",
+    "the project's first root keeps the project name",
+  );
+  assert.equal(
+    workspaces.byPath(extraRoot)?.title,
+    extraRoot,
+    "a conflicting root falls back to its full path",
+  );
+  assert.equal(
+    workspaces.byPath(extraRoot)?.workspaceId,
+    legacyWeb.workspaceId,
+    "the pre-existing Web workspace keeps its identity",
+  );
+});
+
+it("workspace mirror: migrates legacy project names on Web roots and preserves custom titles", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-legacy-title-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const firstRoot = join(root, "first");
+  const extraRoot = join(root, "extra");
+  const customRoot = join(root, "custom");
+  const project = { name: "Native project", rootPaths: [firstRoot, extraRoot, customRoot] };
+  for (const path of project.rootPaths) {
+    workspaces.attachReferencedSession(`thread-${path}`, path, project.name);
+    workspaces.selectReferenceWorkspace(path);
+  }
+  const custom = workspaces.byPath(customRoot);
+  assert.ok(custom);
+  custom.title = "My custom title";
+  const original = workspaces.byPath(extraRoot);
+  assert.ok(original);
+  const before = structuredClone(original);
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [project]);
+  const migrated = workspaces.byPath(extraRoot);
+  assert.ok(migrated);
+  assert.equal(migrated.title, "extra");
+  assert.equal(migrated.workspaceId, before.workspaceId);
+  assert.equal(migrated.createdAt, before.createdAt);
+  assert.deepEqual(migrated.sessionIds, before.sessionIds);
+  assert.equal(workspaces.byPath(firstRoot)?.title, project.name);
+  assert.equal(workspaces.byPath(customRoot)?.title, "My custom title");
+  assert.equal(new Workspaces(data, root).byPath(extraRoot)?.title, "extra");
+  const writes = t.mock.method(data, "writeJson");
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [project]);
+  assert.equal(writes.mock.callCount(), 0, "the migration is idempotent");
+});
+
+it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const extraRoot = join(root, "extra");
+  const projects = [{ name: "Native", rootPaths: [join(root, "first"), extraRoot] }];
+  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
+  const extra = workspaces.byPath(extraRoot);
+  assert.ok(extra);
+  const rpc = new RpcRegistry();
+  workspaces.register(rpc, new StreamRegistry());
+  assert.ok(
+    (
+      await rpc.dispatch("workspace/delete", {
+        args: { request: { workspaceId: extra.workspaceId } },
+      })
+    ).ok,
+  );
+  assert.equal(workspaces.byPath(extra.path), undefined);
+  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
+  const recreated = workspaces.byPath(extra.path);
+  assert.ok(recreated);
+  assert.equal(recreated.title, "extra");
+  assert.notEqual(recreated.workspaceId, extra.workspaceId);
+});
+
+it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {
+  const titles = projectRootTitles([
+    { name: "app", rootPaths: ["/srv/app", "/"] },
+    { name: "other", rootPaths: ["/a/other", "/b/dup", "/c/dup"] },
+  ]);
+  assert.equal(titles.get(resolve("/srv/app")), "app");
+  assert.equal(titles.get(resolve("/")), resolve("/"), "an empty basename uses the full path");
+  assert.equal(
+    titles.get(resolve("/a/other")),
+    "other",
+    "a project's first root keeps the project name",
+  );
+  assert.equal(
+    titles.get(resolve("/b/dup")),
+    resolve("/b/dup"),
+    "a conflicting folder name uses the full path",
+  );
+  assert.equal(titles.get(resolve("/c/dup")), resolve("/c/dup"));
+  const sameName = projectRootTitles([
+    { name: "app", rootPaths: ["/one", "/two"] },
+    { name: "app", rootPaths: ["/three"] },
+  ]);
+  assert.equal(
+    sameName.get(resolve("/one")),
+    resolve("/one"),
+    "duplicate project names disambiguate by path",
+  );
+  assert.equal(sameName.get(resolve("/three")), resolve("/three"));
+  const unique = projectRootTitles([{ name: "app", rootPaths: ["/srv/app", "/srv/extra"] }]);
+  assert.equal(unique.get(resolve("/srv/app")), "app");
+  assert.equal(unique.get(resolve("/srv/extra")), "extra", "unique titles keep the folder name");
 });
 
 it("workspace mirror: propagates a failed save without accepting the mirror", (t) => {
@@ -636,6 +765,39 @@ it("uses existing Desktop routing without installing code, and does not retry re
   );
   assert.equal(host.requests.filter((req) => req.method === "turn/start").length, 1);
   await assert.rejects(client.request("shell/execute", {}), /Unsupported CH method/);
+});
+
+it("projects native archive confirmation through the legacy Desktop transport", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-desktop-archive-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = nativeCodex(new FakeChHost());
+  const id = "native-desktop-archive";
+  host.add(id, root).modelProvider = "openai";
+  host.archivedIds.add(id);
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> => {
+    if (method === "thread/archive")
+      throw Object.assign(new Error(`no rollout found for thread id ${id}`), { code: -32600 });
+    return request<T>(method, params);
+  };
+  const debuggerServer = await startFakeChDebugger(host);
+  t.after(() => debuggerServer.close());
+  const client = new DesktopChHostClient(debuggerServer.endpoint);
+  const workspaces = new Workspaces(new DataDir(root), root, true);
+  const sessions = new ChSessions(client, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  assert.equal(workspaces.isArchived(id), false);
+  assert.deepEqual(
+    await rpc.dispatch("workspace/archiveSession", {
+      args: { request: { sessionId: id } },
+    }),
+    { ok: true, value: { archivedSessionIds: [id] } },
+  );
+  assert.equal(workspaces.isArchived(id), true);
+  assert.equal(host.requests.filter((r) => r.method === THREAD_ARCHIVE_CONFIRM_METHOD).length, 1);
 });
 
 it("keeps a Thread created during an in-flight catalog read for its first history read", async (t) => {

@@ -1,11 +1,35 @@
 /** Environment-isolated, authenticated preview of the packed Web application. */
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { defaultWebDataDirectory } from "./data-paths.ts";
 import {
   hostRestartMode,
   type HostRestartOptions,
 } from "../../../tools/dev-desktop/host-restart.mjs";
+
+const exec = promisify(execFile);
+
+/** Apply the same native proxy policy as the shared Host and background Web, before Node starts. */
+export async function previewProxyEnvironment(
+  launcher: string,
+  environment: NodeJS.ProcessEnv,
+  run = async (command: string, args: string[], env: NodeJS.ProcessEnv) => {
+    const { stdout } = await exec(command, args, {
+      env,
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    return stdout;
+  },
+): Promise<NodeJS.ProcessEnv> {
+  const proxy = JSON.parse(await run(launcher, ["proxy-environment"], environment)) as Record<
+    string,
+    string
+  >;
+  return { ...environment, ...proxy };
+}
 
 /** Optional preview paths, port and comma-separated Harness ids. */
 export interface PreviewOptions extends HostRestartOptions {
@@ -56,6 +80,8 @@ export function previewLaunch(
   const env = Object.fromEntries(
     Object.entries(environment).filter(([key]) => {
       const name = key.toUpperCase();
+      // A deliberate Host setting, not inherited routing: the isolated Host must listen elsewhere.
+      if (name === "CODEXHOST_EXTERNAL_CLIENT_PORT") return true;
       return (
         !name.startsWith("CODEXHOST_") &&
         !["CODEX_CLI_PATH", "NODE_OPTIONS", "NODE_PATH"].includes(name)

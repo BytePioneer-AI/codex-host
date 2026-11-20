@@ -1,11 +1,4 @@
-/**
- * Composer Fast switch beside the Model trigger, matching Codex Desktop's Pi
- * Fast control: an outlined bolt when off, a filled bolt in the Model text
- * tone when on. The Harness advertises Fast as a separate Model ref on the
- * base Model, so toggling selects one ref or the other through the same
- * session selection RPC, keeping the current Thinking level. It never opens
- * the Model menu and is absent when the current Model has no Fast variant.
- */
+/** Composer speed control beside the Model trigger. */
 import { useState, useSyncExternalStore } from "react";
 import { IconWarningOutlineRegular, Toast, Tooltip } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
@@ -30,18 +23,19 @@ export function FastToggle({
     () => directory.getSnapshot(),
   );
   const [toast, setToast] = useState<{ seq: number; text: string } | null>(null);
-  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  const [anchor, setAnchor] = useState<HTMLButtonElement | HTMLSelectElement | null>(null);
   const { current } = state;
   const model = current === null ? undefined : catalogModelOf(state.groups, current);
-  const fastModel = model?.fastModel;
-  if (!available || current === null || model === undefined || fastModel === undefined) return null;
-  const enabled = current.model === fastModel;
-  const busy = state.pending !== null;
+  if (!available || current === null || model === undefined) return null;
+  const { fastModel, ultrafastModel } = model;
+  if (!fastModel && !ultrafastModel) return null;
+  const enabled = current.model === fastModel || current.model === ultrafastModel;
+  const disabled = locked || state.pending !== null;
 
-  const toggle = (): void => {
+  const choose = (modelId: string): void => {
     void select({
       provider: current.provider,
-      model: enabled ? model.id : fastModel,
+      model: modelId,
       ...(current.reasoningEffort === undefined
         ? {}
         : { reasoningEffort: current.reasoningEffort }),
@@ -57,37 +51,64 @@ export function FastToggle({
       }));
     });
   };
+  const bolt = (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+      <path
+        d={BOLT}
+        fill={enabled ? "currentColor" : "none"}
+        stroke={enabled ? "none" : "currentColor"}
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 
   return (
     <>
-      <Tooltip
-        portal
-        side="top"
-        maxWidth={300}
-        label={`${t(enabled ? "fast.on" : "fast.off")}\n${t("fast.description")}`}
-      >
-        <button
-          ref={setAnchor}
-          type="button"
-          className={css.toggle}
-          data-enabled={enabled ? "" : undefined}
-          aria-label="Fast"
-          aria-pressed={enabled}
-          disabled={locked || busy}
-          onClick={toggle}
+      {ultrafastModel ? (
+        <label className={`${css.toggle} ${css.speed}`} data-enabled={enabled ? "" : undefined}>
+          {bolt}
+          <span aria-hidden="true">
+            {current.model === ultrafastModel
+              ? "Ultrafast"
+              : enabled
+                ? "Fast"
+                : t("speed.standard")}
+          </span>
+          <select
+            ref={setAnchor}
+            className={css.speedSelect}
+            aria-label={t("speed.label")}
+            disabled={disabled}
+            value={current.model}
+            onChange={(event) => choose(event.currentTarget.value)}
+          >
+            <option value={model.id}>{t("speed.standard")}</option>
+            {fastModel && <option value={fastModel}>Fast</option>}
+            <option value={ultrafastModel}>Ultrafast</option>
+          </select>
+        </label>
+      ) : (
+        <Tooltip
+          portal
+          side="top"
+          maxWidth={300}
+          label={`${t(enabled ? "fast.on" : "fast.off")}\n${t("fast.description")}`}
         >
-          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-            <path
-              d={BOLT}
-              fill={enabled ? "currentColor" : "none"}
-              // Only the off state is outlined; a stroke would thicken the filled glyph.
-              stroke={enabled ? "none" : "currentColor"}
-              strokeWidth="1.6"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      </Tooltip>
+          <button
+            ref={setAnchor}
+            type="button"
+            className={css.toggle}
+            data-enabled={enabled ? "" : undefined}
+            aria-label="Fast"
+            aria-pressed={enabled}
+            disabled={disabled}
+            onClick={() => fastModel && choose(enabled ? model.id : fastModel)}
+          >
+            {bolt}
+          </button>
+        </Tooltip>
+      )}
       {toast !== null && (
         <Toast
           key={toast.seq}

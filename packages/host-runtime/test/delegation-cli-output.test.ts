@@ -21,7 +21,6 @@ describe("compact delegation output", () => {
           { id: "latest", turnId: "private-turn", text: "Latest update" },
           { id: "blank", turnId: "private-turn", text: "\n " },
         ],
-        nextCursor: "internal-bookmark",
         timedOut: status === "running",
       }),
     ).toEqual({
@@ -34,24 +33,7 @@ describe("compact delegation output", () => {
     });
   });
 
-  it("does not invent a pagination end when connected to an older Runtime", () => {
-    expect(() =>
-      compactDelegationOutput(
-        "thread read",
-        {
-          threadId: "thread",
-          harnessId: "pi",
-          status: "completed",
-          messages: [],
-          result: { availability: "unavailable" },
-          nextCursor: "bookmark",
-        },
-        "messages",
-      ),
-    ).toThrow("updated Host Runtime");
-  });
-
-  it("preserves failure details on message pages", () => {
+  it("preserves failure details on Turn ranges", () => {
     expect(
       compactDelegationOutput(
         "thread read",
@@ -60,9 +42,10 @@ describe("compact delegation output", () => {
           harnessId: "pi",
           status: "failed",
           result: { availability: "unavailable", message: "Model unavailable" },
-          messages: [],
-          hasMore: false,
-          nextCursor: "bookmark",
+          turns: [],
+          totalTurns: 0,
+          from: null,
+          to: null,
         },
         "messages",
       ),
@@ -70,11 +53,38 @@ describe("compact delegation output", () => {
       thread: "codex://threads/thread",
       harnessId: "pi",
       status: "failed",
-      messages: [],
-      hasMore: false,
-      nextCursor: "bookmark",
+      turns: [],
+      totalTurns: 0,
+      from: null,
+      to: null,
       error: "Model unavailable",
     });
+  });
+
+  it.each([
+    ["thread read", "result"],
+    ["thread read", "messages"],
+    ["thread wait", "result"],
+    ["thread wait", "messages"],
+  ] as const)("preserves empty pendingQuestions in %s --view %s", (command, view) => {
+    expect(
+      compactDelegationOutput(
+        command,
+        {
+          threadId: "thread",
+          harnessId: "pi",
+          status: "completed",
+          result: { availability: "unavailable" },
+          progress: [],
+          turns: [],
+          totalTurns: 0,
+          from: null,
+          to: null,
+          pendingQuestions: [],
+        },
+        view,
+      ),
+    ).toHaveProperty("pendingQuestions", []);
   });
 
   it("exposes discoverable Model IDs and native Thinking restrictions", () => {
@@ -111,6 +121,92 @@ describe("compact delegation output", () => {
     expect(
       compactDelegationOutput("harness inspect", { harnessId: "pi", inspection: unavailable }),
     ).toEqual({ harnessId: "pi", ...unavailable });
+  });
+
+  it("exposes pending Questions and the answer receipt without claiming success", () => {
+    const question = {
+      interactionId: "interaction-1",
+      turnId: "private-turn",
+      request: {
+        questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+      },
+    };
+    expect(
+      compactDelegationOutput("thread read", {
+        threadId: "child",
+        harnessId: "pi",
+        status: "running",
+        result: { availability: "pending" },
+        progress: [],
+        nextCursor: null,
+        pendingQuestions: [question],
+      }),
+    ).toEqual({
+      thread: "codex://threads/child",
+      harnessId: "pi",
+      status: "running",
+      result: { availability: "pending" },
+      pendingQuestions: [question],
+    });
+    expect(
+      compactDelegationOutput("thread answer", {
+        threadId: "child",
+        interactionId: "interaction-1",
+        turnId: "private-turn",
+        harnessId: "pi",
+        status: "running",
+        next: {},
+      }),
+    ).toEqual({
+      thread: "codex://threads/child",
+      interaction: "interaction-1",
+      turn: "private-turn",
+      harnessId: "pi",
+      status: "running",
+    });
+    expect(
+      compactDelegationOutput("thread watch", {
+        threadId: "child",
+        notifyThreadId: "parent",
+        state: "alreadyNeedsInput",
+        status: "running",
+        timeoutMs: 1_000,
+        pendingQuestions: [question],
+      }),
+    ).toEqual({
+      thread: "codex://threads/child",
+      notify: "codex://threads/parent",
+      state: "alreadyNeedsInput",
+      status: "running",
+      timeoutMs: 1_000,
+      pendingQuestions: [question],
+    });
+    expect(
+      compactDelegationOutput("thread watches", {
+        watches: [
+          {
+            threadId: "child",
+            notifyThreadId: "parent",
+            state: "pendingDelivery",
+            outcome: "needsInput",
+            turnId: "private-turn",
+            interactionId: "interaction-1",
+            registeredAt: "timestamp",
+          },
+        ],
+      }),
+    ).toEqual({
+      watches: [
+        {
+          thread: "codex://threads/child",
+          notify: "codex://threads/parent",
+          state: "pendingDelivery",
+          outcome: "needsInput",
+          turn: "private-turn",
+          interaction: "interaction-1",
+        },
+      ],
+    });
   });
 
   it("returns operational task links and acknowledges cancellation without claiming completion", () => {

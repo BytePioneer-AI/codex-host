@@ -111,7 +111,7 @@ export async function startControllerAttachmentServer(
                       code: -32094,
                       message:
                         input.action === "session"
-                          ? "Remote Thread snapshot exceeds the 16 MiB response limit; open this Thread in Codex Desktop. Paged remote snapshots are not supported."
+                          ? "Remote history reply exceeds the 16 MiB limit; update codexhost on this computer to use paged history, or open this chat in Codex Desktop."
                           : "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
                     },
                   }) + "\n",

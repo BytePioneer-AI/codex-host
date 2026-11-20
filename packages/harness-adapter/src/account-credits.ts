@@ -1,5 +1,7 @@
 import {
+  accountBalanceSnapshotSchema,
   accountCreditsSnapshotSchema,
+  type AccountBalanceSnapshot,
   type AccountCreditsSnapshot,
 } from "@codexhost/shared-contracts";
 
@@ -9,5 +11,11 @@ export function parseHarnessAccountCredits(value: unknown): AccountCreditsSnapsh
   const publicValue = { ...value } as Record<string, unknown>;
   delete publicValue.fetchedAt;
   const parsed = accountCreditsSnapshotSchema.safeParse(publicValue);
+  return parsed.success ? parsed.data : null;
+}
+
+/** A malformed Adapter balance is treated as unknown rather than failing the inspection. */
+export function parseHarnessAccountBalance(value: unknown): AccountBalanceSnapshot | null {
+  const parsed = accountBalanceSnapshotSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }

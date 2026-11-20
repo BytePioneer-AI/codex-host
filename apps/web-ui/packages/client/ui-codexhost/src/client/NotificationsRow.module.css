@@ -1,5 +1,6 @@
 .row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 16px 0;
@@ -7,12 +8,16 @@
 }
 
 .rowText {
-  flex: 1;
+  flex: 1 1 220px;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-right: 24px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
 }
 
 .title {
@@ -29,7 +34,7 @@
 
 .button {
   flex: none;
-  height: 36px;
+  min-height: 44px;
   padding: 0 14px;
   border: none;
   border-radius: var(--dsw-radius-md, 10px);
@@ -44,7 +49,30 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+.button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+@media (max-width: 600px) {
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .rowText {
+    flex: auto;
+  }
+
+  .actions {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+  }
 }

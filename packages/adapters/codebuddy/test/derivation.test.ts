@@ -66,6 +66,7 @@ const jsonl = (items: unknown[]) => items.map((row) => JSON.stringify(row)).join
 async function setup(
   options: {
     advertised?: boolean;
+    sourceRows?: Record<string, unknown>[];
     corrupt?: boolean;
     badRewind?: boolean;
     forkFailure?: boolean;
@@ -80,7 +81,11 @@ async function setup(
   const directory = path.join(environment.CODEBUDDY_CONFIG_DIR, "projects", "fixture");
   await mkdir(directory, { recursive: true });
   const file = (id: string) => path.join(directory, `${id}.jsonl`);
-  const original = rows.map((row) => ({ ...row, sessionId: "source", cwd }));
+  const original: Record<string, unknown>[] = (options.sourceRows ?? rows).map((row) => ({
+    ...row,
+    sessionId: "source",
+    cwd,
+  }));
   const contents = jsonl(original);
   await writeFile(file("source"), contents);
   const close = vi.fn(async () => {}),
@@ -132,7 +137,7 @@ async function setup(
           ...clones,
           {
             id: "fork-command",
-            parentId: "new-a2",
+            parentId: `new-${original.at(-1)?.id}`,
             type: "message",
             role: "user",
             content: "/fork",
@@ -234,6 +239,78 @@ describe("native CodeBuddy derivation", () => {
       await codeBuddyNativeHistory(fixture.cwd, derived.nativeRef, fixture.environment),
     ).toEqual(history);
   });
+
+  it.each(['{"prompt":"unfinished', '{"prompt":"discarded"}'])(
+    "forks the last Turn past a discarded aborted Agent call: %s",
+    async (argumentsText) => {
+      const fixture = await setup({
+        sourceRows: [
+          ...rows,
+          {
+            id: "discarded-agent",
+            parentId: "a2",
+            type: "function_call",
+            name: "Agent",
+            callId: "aborted-agent",
+            arguments: argumentsText,
+            status: "incomplete",
+            providerData: { isPartialAborted: true, discard: true },
+          },
+        ],
+      });
+      const derived = await fixture.run({
+        input: { ...fixture.input, checkpoint: { ...checkpoint, checkpointId: "u2" } },
+      });
+      const history = await codeBuddyNativeHistory(
+        fixture.cwd,
+        derived.nativeRef,
+        fixture.environment,
+      );
+      expect(nativeHistoryRows(history.contents).map((row) => row.id)).toEqual([
+        ...rows.map((row) => `new-${row.id}`),
+        "new-discarded-agent",
+      ]);
+      const snapshot = snapshotFromHistory(history.contents, derived.nativeRef, fixture.cwd);
+      expect(snapshot.turns[1]).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "new-u2" },
+        items: [{ item: { type: "agentMessage", text: "last" } }],
+        outcome: { status: "succeeded" },
+      });
+      expect(snapshot.turns[1]?.items).toHaveLength(1);
+      expect(await readFile(fixture.file("source"), "utf8")).toBe(fixture.contents);
+    },
+  );
+
+  it.each([
+    { status: "completed", providerData: { isPartialAborted: true, discard: true } },
+    { status: "incomplete", providerData: { isPartialAborted: true } },
+    { status: "incomplete", providerData: { discard: true } },
+    { status: "incomplete", providerData: {} },
+  ])(
+    "still rejects a retained unfinished Agent without discarded-abort evidence: %j",
+    async (state) => {
+      const fixture = await setup({
+        sourceRows: [
+          ...rows,
+          {
+            id: "pending-agent",
+            parentId: "a2",
+            type: "function_call",
+            name: "Agent",
+            callId: "pending-agent",
+            arguments: { prompt: "unfinished delegation" },
+            ...state,
+          },
+        ],
+      });
+      await expect(
+        fixture.run({
+          input: { ...fixture.input, checkpoint: { ...checkpoint, checkpointId: "u2" } },
+        }),
+      ).rejects.toThrow("Retained Agent delegation is incomplete");
+      expect(fixture.copy).not.toHaveBeenCalled();
+    },
+  );
 
   it("removes the owned copy on a failure after native Fork", async () => {
     const fixture = await setup({ corrupt: true });

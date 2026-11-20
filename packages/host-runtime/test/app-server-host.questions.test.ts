@@ -116,7 +116,8 @@ describe("shared multi-select Questions", () => {
     const t = await setup({ detachedOwner: true, multiple: false });
     Object.assign(t.session, { hasBackgroundWork: () => true });
     const nativeRef = t.session.state.nativeRef;
-    if (!nativeRef || typeof t.nativeRequest?.id !== "number")
+    const nativeRequestId = t.nativeRequest?.id;
+    if (!nativeRef || typeof nativeRequestId !== "number")
       throw new Error("Expected native question fixture");
     await t.finishReply();
     t.session.emitEvent({
@@ -131,9 +132,8 @@ describe("shared multi-select Questions", () => {
     await vi.waitFor(() =>
       expect(statuses().at(-1)).toMatchObject({ params: { status: { type: "active" } } }),
     );
-    const beforeAnswer = statuses().length;
     writeRequest(t.fixture.desktopInput, {
-      id: t.nativeRequest.id,
+      id: nativeRequestId,
       result: { answers: { platform: { answers: ["macOS"] } } },
     });
     await vi.waitFor(() => expect(t.session.interactionResponses).toHaveLength(1));
@@ -141,8 +141,9 @@ describe("shared multi-select Questions", () => {
       type: "question",
       answers: { platform: ["mac"] },
     });
-    await vi.waitFor(() => expect(statuses().length).toBeGreaterThan(beforeAnswer));
-    expect(statuses().at(-1)).toMatchObject({ params: { status: { type: "active" } } });
+    expect(await t.rpc("thread/read", { threadId: t.threadId })).toMatchObject({
+      result: { thread: { status: { type: "active" } } },
+    });
   });
 
   it("keeps an owned shared Question answerable after its Turn succeeds", async () => {

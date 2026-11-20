@@ -886,6 +886,7 @@ export class CodexTurnProjector {
   readonly #detached = new Set<HostItemId>();
   readonly #background = new Set<HostItemId>();
   #fileItemId: HostItemId | null = null;
+  #fileCompletionSent = false;
 
   constructor(input: {
     threadId: string;
@@ -1434,7 +1435,20 @@ export class CodexTurnProjector {
     );
     projected.durationMs = durationMs;
     if (itemFileChanges(projected.item) !== null) {
-      return { messages: this.#fileChangeUpdates(emittedAtMs) };
+      const messages = this.#fileChangeUpdates(emittedAtMs);
+      if (this.#completed && !this.#fileCompletionSent) {
+        this.#fileCompletionSent = true;
+        messages.push({
+          method: "item/completed",
+          emittedAtMs,
+          params: {
+            threadId: this.#threadId,
+            turnId: this.#turnId,
+            item: this.#projectItem(this.#fileSummary(), { status: "succeeded" }),
+          },
+        });
+      }
+      return { messages };
     }
     const completedItem = (item: JsonObject): JsonObject => ({
       method: "item/completed",
@@ -1526,6 +1540,7 @@ export class CodexTurnProjector {
     const lastVisible = lastWireItemId === undefined ? undefined : this.#items.get(lastWireItemId);
     const finalAnswer = inferredFinalAnswer(lastVisible, event.outcome.status === "succeeded");
     if (lastVisible && finalAnswer) lastVisible.item = finalAnswer;
+    if (this.#fileItemId) this.#fileCompletionSent = true;
     const turn: JsonObject = {
       id: this.#turnId,
       status: turnStatus(event.outcome),

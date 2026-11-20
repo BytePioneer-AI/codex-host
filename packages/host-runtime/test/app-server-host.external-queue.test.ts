@@ -405,6 +405,7 @@ describe("External Thread follow-up queue", () => {
         const session = fixture.adapter.sessions[0];
         if (!session) throw new Error("Fake Session was not opened");
         const execute = vi.spyOn(session, "execute");
+        if (outcome === "completed") Object.assign(session, { hasBackgroundWork: () => true });
         if (outcome === "completed") session.succeedTurn();
         else if (outcome === "failed")
           session.failTurn({ code: "internalError", message: "Fixture failure", retryable: false });
@@ -437,6 +438,89 @@ describe("External Thread follow-up queue", () => {
           await new Promise<void>((resolve) => setImmediate(resolve));
           expect(execute).not.toHaveBeenCalledWith(expect.objectContaining({ type: "turn.start" }));
         }
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it.each(["interrupted", "failed"])(
+    "keeps a late submission queued after an %s Turn when its Subagent ends",
+    async (outcome) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = await startPiTurn(fixture, threadId);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const delegationItemId = session.startSubagentDelegation({
+          subagentId: "background-agent-call",
+          nativeSubagentId: "native-background-agent",
+          description: "Inspect files",
+          background: true,
+          status: "running",
+        });
+        await fixture.collector.waitFor(
+          (message) =>
+            method(message, "thread/started") &&
+            (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+        );
+        session.completeItem(delegationItemId, { status: "succeeded" });
+        if (outcome === "failed") {
+          session.failTurn({
+            code: "nativeFailure",
+            message: "Fixture failure",
+            retryable: false,
+          });
+        } else {
+          writeRequest(fixture.desktopInput, {
+            id: 20,
+            method: "turn/interrupt",
+            params: { threadId, turnId },
+          });
+          await fixture.collector.waitFor((message) => requestId(message, 20));
+          session.completeCancellation();
+        }
+        const terminal = await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/completed", turnId),
+        );
+        expect((messageParams(terminal).turn as JsonObject).status).toBe(outcome);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        writeRequest(fixture.desktopInput, {
+          id: 21,
+          method: "thread/queue/add",
+          params: { threadId, input: text("late follow-up"), clientUserMessageId: "late" },
+        });
+        const added = await fixture.collector.waitFor((message) => requestId(message, 21));
+        expect(added).not.toHaveProperty("error");
+        const startsBeforeSubagentEnd = fixture.collector.messages.filter((message) =>
+          method(message, "turn/started"),
+        ).length;
+        session.emitSubagentState("native-background-agent", "completed", "Inspection complete");
+        await vi.waitFor(() => {
+          const parentStatus = fixture.collector.messages.findLast((message) => {
+            const params = messageParams(message);
+            return (
+              method(message, "thread/status/changed") &&
+              params.threadId === threadId &&
+              (params.status as JsonObject | undefined)?.type === "idle"
+            );
+          });
+          expect(parentStatus).toBeTruthy();
+        });
+        for (let index = 0; index < 5; index += 1) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(
+          fixture.collector.messages.filter((message) => method(message, "turn/started")),
+        ).toHaveLength(startsBeforeSubagentEnd);
+        writeRequest(fixture.desktopInput, {
+          id: 22,
+          method: "thread/queue/list",
+          params: { threadId },
+        });
+        const listed = await fixture.collector.waitFor((message) => requestId(message, 22));
+        expect((listed.result as JsonObject).data).toHaveLength(1);
       } finally {
         await stopFixture(fixture);
       }

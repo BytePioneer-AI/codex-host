@@ -5561,6 +5561,11 @@ export class AppServerHost {
     }
   }
 
+  #canStartQueuedExternalTurnAfterLastTurn(thread: ExternalThread): boolean {
+    const lastTurn = thread.turns.at(-1);
+    return thread.projectedTerminalTurnId === lastTurn?.id && lastTurn?.status === "completed";
+  }
+
   async #handleExternalQueueRequest(
     request: JsonRpcRequest,
     thread: ExternalThread,
@@ -5600,13 +5605,7 @@ export class AppServerHost {
             result: { queuedSubmission: nativeQueuedSubmission(queuedSubmission) },
           }),
         );
-        const lastTurn = thread.turns.at(-1);
-        if (
-          thread.projectedTerminalTurnId === lastTurn?.id &&
-          lastTurn?.status === "completed" &&
-          isRecord(thread.thread.status) &&
-          thread.thread.status.type === "idle"
-        )
+        if (this.#canStartQueuedExternalTurnAfterLastTurn(thread))
           void this.#startNextQueuedExternalTurn(thread);
         return;
       }
@@ -6404,8 +6403,8 @@ export class AppServerHost {
       const status = event.status === "pending" || event.status === "running" ? "active" : "idle";
       this.#trackRunningSubagent(thread.id, record.hostThreadId, status);
       await this.#setSubagentThreadStatus(record.hostThreadId, status);
-      if (!thread.running && !thread.activeTurnId && !this.#hasRunningSubagents(thread.id)) {
-        await this.#setThreadStatus(thread, { type: "idle" });
+      if (!thread.running && !thread.activeTurnId) {
+        await this.#refreshExternalThreadActivity(thread);
       }
       return;
     }
@@ -7110,6 +7109,7 @@ export class AppServerHost {
   }
 
   async #setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void> {
+    if (isRecord(thread.thread.status) && thread.thread.status.type === status.type) return;
     thread.thread.status = status;
     await this.#writer.json({
       method: "thread/status/changed",
@@ -7126,7 +7126,8 @@ export class AppServerHost {
         ? { type: "active", activeFlags: [] }
         : { type: "idle" },
     );
-    if (!busy) void this.#startNextQueuedExternalTurn(thread);
+    if (!busy && this.#canStartQueuedExternalTurnAfterLastTurn(thread))
+      void this.#startNextQueuedExternalTurn(thread);
   }
 
   #latestCompletedTurnId(thread: ExternalThread): HostTurnId | null {

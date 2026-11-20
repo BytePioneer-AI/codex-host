@@ -12,9 +12,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
 import {
   createFixture,
+  method,
+  messageParams,
   startPiThread,
   startPiTurn,
   stopFixture,
+  turnEvent,
   writeRequest,
 } from "./app-server-host-fixture.js";
 import { PINNED_THREAD_SECTION_ID as PINNED } from "../src/external-thread-pins.js";
@@ -213,6 +216,60 @@ it("publishes official delegation tree changes after persistence even though nat
   expect(await fixture.host.handleClientRequest("codexhost/thread/tree/read", {})).toEqual({
     result: { parents: { "official-child": "parent" } },
   });
+});
+
+it("keeps a parent active after its last Subagent ends while background work remains", async () => {
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  const parentThreadId = await startPiThread(fixture);
+  const turnId = await startPiTurn(fixture, parentThreadId);
+  const session = fixture.adapter.sessions[0];
+  if (!session) throw new Error("Missing fixture Session");
+  const delegationItemId = session.startSubagentDelegation({
+    subagentId: "background-agent-call",
+    nativeSubagentId: "native-background-agent",
+    description: "Inspect files",
+    background: true,
+    status: "running",
+  });
+  const childStarted = await fixture.collector.waitFor(
+    (message) =>
+      method(message, "thread/started") &&
+      ((message.params as JsonObject).thread as JsonObject | undefined)?.parentThreadId ===
+        parentThreadId,
+  );
+  const childThreadId = ((childStarted.params as JsonObject).thread as JsonObject).id as string;
+  session.completeItem(delegationItemId, { status: "succeeded" });
+  Object.assign(session, { hasBackgroundWork: () => true });
+  session.succeedTurn();
+  await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+  const statuses = (threadId: string) =>
+    fixture.collector.messages
+      .filter(
+        (message) =>
+          method(message, "thread/status/changed") && messageParams(message).threadId === threadId,
+      )
+      .map((message) => (messageParams(message).status as JsonObject | undefined)?.type);
+  await vi.waitFor(() => expect(statuses(parentThreadId).at(-1)).toBe("active"));
+  for (let index = 0; index < 5; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const parentIdleBeforeSubagentEnd = statuses(parentThreadId).filter(
+    (status) => status === "idle",
+  ).length;
+  const childIdleBeforeSubagentEnd = statuses(childThreadId).filter(
+    (status) => status === "idle",
+  ).length;
+  session.emitSubagentState("native-background-agent", "completed", "Inspection complete");
+  await vi.waitFor(() =>
+    expect(statuses(childThreadId).filter((status) => status === "idle").length).toBe(
+      childIdleBeforeSubagentEnd + 1,
+    ),
+  );
+  expect(statuses(parentThreadId).filter((status) => status === "idle").length).toBe(
+    parentIdleBeforeSubagentEnd,
+  );
+  expect(statuses(parentThreadId).at(-1)).toBe("active");
 });
 
 it("reads delegation parents on client and Desktop channels while native archive remains non-cascading", async () => {

@@ -925,7 +925,7 @@ export class AntigravitySession implements HarnessSession {
       } else {
         const nextSkip = command.permissionModeId === SKIP;
         if (nextSkip !== transport.skipPermissions) {
-          if (this.#active)
+          if (this.#active || this.hasBackgroundWork())
             return err("sessionBusy", "Changing Skip permissions requires an idle Session", true);
           const old = transport;
           const previous = this.#requested.permissionModeId;
@@ -1130,6 +1130,8 @@ export class AntigravitySession implements HarnessSession {
     } finally {
       this.#usage?.endTurn();
     }
+    if (turn.cancelled && outcome.status === "succeeded")
+      outcome = { ...outcome, status: "cancelled" };
     if (this.#isCurrent(turn)) this.#finish(turn, outcome, nativeTurnRef);
   }
   #isCurrent(turn: ActiveTurn): boolean {
@@ -1147,6 +1149,8 @@ export class AntigravitySession implements HarnessSession {
       return;
     this.#toolOwners.set(event.toolCallId, turn);
     turn.hasToolCalls = true;
+    if (event.status === "failed")
+      this.#closeInteractions("cancelled", turn, false, event.toolCallId);
     turn.tracker.handleToolEvent(event);
     if (event.status === "completed" || event.status === "failed") {
       turn.detachedToolCallIds.delete(event.toolCallId);
@@ -1408,9 +1412,15 @@ export class AntigravitySession implements HarnessSession {
     });
     return ok({ accepted: true });
   }
-  #closeInteractions(reason: "cancelled", owner?: ActiveTurn, preserveDetached = false): void {
+  #closeInteractions(
+    reason: "cancelled",
+    owner?: ActiveTurn,
+    preserveDetached = false,
+    toolCallId?: string,
+  ): void {
     for (const [id, pending] of this.#pending) {
       if (owner && pending.owner !== owner) continue;
+      if (toolCallId !== undefined && pending.toolCallId !== toolCallId) continue;
       if (
         preserveDetached &&
         pending.toolCallId !== undefined &&

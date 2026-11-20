@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { HostCommandExecutionItem, HostFileChangeItem } from "@codexhost/harness-adapter";
-import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import { hostItemIdSchema, hostTurnIdSchema, type JsonObject } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector } from "../src/index.js";
+import { CodexTurnProjector } from "../src/codex-ui-projector.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const command: HostCommandExecutionItem = {
@@ -24,38 +24,62 @@ function startedProjector(): CodexTurnProjector {
   return projector;
 }
 
+function itemCompletionsFor(messages: JsonObject[], itemId: string): JsonObject[] {
+  return messages.filter(({ method, params }) => {
+    if (method !== "item/completed") return false;
+    const item = (params as { item?: { id?: string } } | undefined)?.item;
+    return item?.id === itemId;
+  });
+}
+
 describe("Codex UI projector detached command Items", () => {
   it.each(["before", "after"] as const)(
     "keeps a tool-owned diff first reported %s Turn completion",
     (timing) => {
       const projector = startedProjector();
+      const messages: JsonObject[] = [];
+      const project = (event: Parameters<CodexTurnProjector["project"]>[0]) => {
+        const projection = projector.project(event);
+        messages.push(...projection.messages);
+        return projection;
+      };
       const diff: HostFileChangeItem = {
         type: "fileChange",
         itemId: hostItemIdSchema.parse("bash-1-diff"),
         sourceItemIds: [command.itemId],
         changes: [{ path: "a.ts", kind: "update", unifiedDiff: "-before\n+after" }],
       };
-      if (timing === "before") projector.project({ type: "item.started", turnId, item: diff });
-      projector.project({ type: "item.detached", turnId, itemId: command.itemId });
-      if (timing === "before")
-        projector.project({ type: "item.detached", turnId, itemId: diff.itemId });
+      if (timing === "before") project({ type: "item.started", turnId, item: diff });
+      project({ type: "item.detached", turnId, itemId: command.itemId });
+      if (timing === "before") project({ type: "item.detached", turnId, itemId: diff.itemId });
       expect(
-        projector.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
-          .completedTurn,
+        project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } }).completedTurn,
       ).toMatchObject({ status: "completed" });
-      if (timing === "after") projector.project({ type: "item.started", turnId, item: diff });
-      projector.project({
+      if (timing === "after") project({ type: "item.started", turnId, item: diff });
+      project({
         type: "item.completed",
         turnId,
         snapshot: { item: command, outcome: { status: "succeeded" } },
       });
       expect(projector.hasOpenDetachedItems).toBe(true);
-      projector.project({
+      project({
         type: "item.completed",
         turnId,
         snapshot: { item: diff, outcome: { status: "succeeded" } },
       });
       expect(projector.hasOpenDetachedItems).toBe(false);
+      expect(itemCompletionsFor(messages, diff.itemId)).toMatchObject([
+        {
+          params: {
+            item: {
+              id: diff.itemId,
+              type: "fileChange",
+              status: "completed",
+              changes: [{ path: "a.ts", diff: expect.stringContaining("+after") }],
+            },
+          },
+        },
+      ]);
       expect(() =>
         projector.project({
           type: "item.started",
@@ -65,6 +89,74 @@ describe("Codex UI projector detached command Items", () => {
       ).toThrow(/follows the Turn terminal/u);
     },
   );
+
+  it("updates an already completed file summary without repeating its completion", () => {
+    const projector = startedProjector();
+    const messages: JsonObject[] = [];
+    const project = (event: Parameters<CodexTurnProjector["project"]>[0]) => {
+      const projection = projector.project(event);
+      messages.push(...projection.messages);
+      return projection;
+    };
+    const firstDiff: HostFileChangeItem = {
+      type: "fileChange",
+      itemId: hostItemIdSchema.parse("bash-1-diff"),
+      sourceItemIds: [command.itemId],
+      changes: [{ path: "a.ts", kind: "update", unifiedDiff: "-a\n+a" }],
+    };
+    const secondCommand: HostCommandExecutionItem = {
+      ...command,
+      itemId: hostItemIdSchema.parse("bash-2"),
+    };
+    const secondDiff: HostFileChangeItem = {
+      type: "fileChange",
+      itemId: hostItemIdSchema.parse("bash-2-diff"),
+      sourceItemIds: [secondCommand.itemId],
+      changes: [{ path: "b.ts", kind: "update", unifiedDiff: "-b\n+b2" }],
+    };
+    project({ type: "item.detached", turnId, itemId: command.itemId });
+    project({ type: "item.started", turnId, item: firstDiff });
+    project({ type: "item.detached", turnId, itemId: firstDiff.itemId });
+    project({ type: "item.started", turnId, item: secondCommand });
+    project({ type: "item.detached", turnId, itemId: secondCommand.itemId });
+    const terminal = project({
+      type: "turn.completed",
+      turnId,
+      outcome: { status: "succeeded" },
+    });
+    project({ type: "item.started", turnId, item: secondDiff });
+    project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: command, outcome: { status: "succeeded" } },
+    });
+    project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: firstDiff, outcome: { status: "succeeded" } },
+    });
+    project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: secondCommand, outcome: { status: "succeeded" } },
+    });
+    project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: secondDiff, outcome: { status: "succeeded" } },
+    });
+    expect(terminal.completedTurn).toMatchObject({ status: "completed" });
+    expect(itemCompletionsFor(messages, firstDiff.itemId)).toHaveLength(1);
+    expect(itemCompletionsFor(messages, firstDiff.itemId)[0]).toMatchObject({
+      params: { item: { id: firstDiff.itemId, status: "completed" } },
+    });
+    expect(
+      messages.filter((message) => message.method === "item/fileChange/patchUpdated").at(-1),
+    ).toMatchObject({
+      params: { itemId: firstDiff.itemId, changes: [{ path: "a.ts" }, { path: "b.ts" }] },
+    });
+    expect(projector.hasOpenDetachedItems).toBe(false);
+  });
 
   it("rejects an unrelated file change after Turn completion", () => {
     const projector = startedProjector();

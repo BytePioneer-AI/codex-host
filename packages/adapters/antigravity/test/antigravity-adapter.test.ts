@@ -783,6 +783,51 @@ describe("Antigravity ACP Session", () => {
     ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
     expect(transports).toHaveLength(3);
   });
+  it("rejects a Skip permissions restart while background tools retain the old transport", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(session.hasBackgroundWork?.()).toBe(true);
+
+    expect(
+      await session.execute({
+        type: "permissionMode.select",
+        permissionModeId: mode("dangerously-skip-permissions"),
+      }),
+    ).toMatchObject({ ok: false, error: { code: "sessionBusy" } });
+    expect(transports).toHaveLength(1);
+    expect(transport.close).not.toHaveBeenCalled();
+
+    transport.eventHandler?.({
+      type: "tool.update",
+      toolCallId: "background-tool",
+      status: "completed",
+      rawOutput: "done",
+    });
+    await vi.waitFor(() => expect(session.hasBackgroundWork?.()).toBe(false));
+    expect(
+      (
+        await session.execute({
+          type: "permissionMode.select",
+          permissionModeId: mode("dangerously-skip-permissions"),
+        })
+      ).ok,
+    ).toBe(true);
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(transports).toHaveLength(2);
+  });
   it("restores the original connection after a failed Skip permissions restart", async () => {
     const transports: FakeTransport[] = [];
     const adapter = new AntigravityAdapter({
@@ -1161,6 +1206,93 @@ describe("ACP interaction round trips", () => {
         response: { type: "approval", actionId: "allow" },
       }),
     ).toMatchObject({ ok: false });
+  });
+
+  it("cancels only the pending interaction of a failed tool", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    for (const toolCallId of ["failing-tool", "other-tool"]) {
+      transport.handler?.onEvent({
+        type: "tool.call",
+        toolCallId,
+        name: "ask_question",
+        args: { questions: [{ question: "Continue?" }] },
+        status: "in_progress",
+      });
+    }
+    const questionSchema = {
+      type: "object",
+      required: ["answer"],
+      properties: {
+        answer: { type: "string", oneOf: [{ const: "yes", title: "Yes" }] },
+      },
+    } as const;
+    const failingReply = required(transport.handler).onElicitation({
+      mode: "form",
+      sessionId: required(transport.sessionId),
+      toolCallId: "failing-tool",
+      message: "Failing?",
+      requestedSchema: questionSchema,
+    });
+    const otherReply = required(transport.handler).onElicitation({
+      mode: "form",
+      sessionId: required(transport.sessionId),
+      toolCallId: "other-tool",
+      message: "Other?",
+      requestedSchema: questionSchema,
+    });
+    await vi.waitFor(() =>
+      expect(outputs.filter((output) => output.kind === "interaction")).toHaveLength(2),
+    );
+    const interactions = outputs
+      .filter((output) => output.kind === "interaction")
+      .flatMap((output) =>
+        output.kind === "interaction" ? [output.interaction.interactionId] : [],
+      );
+    const failingInteraction = required(interactions[0]);
+    const otherInteraction = required(interactions[1]);
+
+    transport.handler?.onEvent({
+      type: "tool.update",
+      toolCallId: "failing-tool",
+      status: "failed",
+      rawOutput: "failed",
+    });
+    await vi.waitFor(() =>
+      expect(events(outputs).some((event) => event.type === "item.completed")).toBe(true),
+    );
+    const closedIndex = events(outputs).findIndex(
+      (event) => event.type === "interaction.closed" && event.interactionId === failingInteraction,
+    );
+    const completedIndex = events(outputs).findIndex((event) => event.type === "item.completed");
+    expect(closedIndex).toBeGreaterThanOrEqual(0);
+    expect(closedIndex).toBeLessThan(completedIndex);
+    expect(
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: failingInteraction,
+        response: { type: "question", answers: { answer: ["yes"] } },
+      }),
+    ).toMatchObject({ ok: false });
+    await expect(failingReply).resolves.toEqual({ action: "cancel" });
+    expect(events(outputs)).toContainEqual({
+      type: "interaction.closed",
+      interactionId: failingInteraction,
+      turnId: "t1",
+      reason: "cancelled",
+    });
+
+    expect(
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: otherInteraction,
+        response: { type: "question", answers: { answer: ["yes"] } },
+      }),
+    ).toMatchObject({ ok: true });
+    await expect(otherReply).resolves.toEqual({ action: "accept", content: { answer: "yes" } });
   });
 
   it("keeps a completed Turn owner for a later permission callback", async () => {
@@ -1715,5 +1847,51 @@ describe("Antigravity idle background output episodes", () => {
       .filter((event) => event.type === "item.completed" && event.turnId === "t1")
       .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
     expect(settledTexts).toEqual(["late text", "late thought"]);
+  });
+
+  it("rechecks cancellation before finishing native turn accounting", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    const countGate = deferred<number>();
+    const readCount = vi
+      .spyOn(nativeBoundaries, "readNativeTurnCount")
+      .mockReturnValue(countGate.promise);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "unfinished-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await vi.waitFor(() => expect(readCount).toHaveBeenCalledOnce());
+
+    expect(await session.execute({ type: "turn.cancel", turnId: turnId("t1") })).toEqual({
+      ok: true,
+      value: { cancellationRequested: true },
+    });
+    countGate.resolve(1);
+    await completed(outputs);
+    expect(events(outputs)).not.toContainEqual(
+      expect.objectContaining({ type: "item.detached", turnId: "t1" }),
+    );
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        turnId: "t1",
+        snapshot: {
+          item: expect.objectContaining({ type: "commandExecution" }),
+          outcome: expect.objectContaining({ status: "cancelled" }),
+        },
+      }),
+    );
+    expect(events(outputs).find((event) => event.type === "turn.completed")).toMatchObject({
+      outcome: { status: "cancelled", checkpoint: { checkpointId: "turn-0" } },
+      nativeTurnRef: { nativeTurnKey: "turn-0" },
+    });
   });
 });

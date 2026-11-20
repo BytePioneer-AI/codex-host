@@ -43,6 +43,9 @@ const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
   "appearance",
   "tools",
   "workflow",
+  "usage-analytics",
+  "memory-knowledge",
+  "integrations",
 ];
 
 const EXTENSION_GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
@@ -107,6 +110,33 @@ function extensionDescription(
       : { en: description.en };
   const trimmed = resolveLocalizedExtensionText(localized, locale).trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function matchesSearchQuery(item: DesktopExtensionItem, normalizedQuery: string): boolean {
+  if (!normalizedQuery) return true;
+  const tokens = normalizedQuery.split(/\s+/u).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const fields: string[] = [item.id];
+  const manifest = item.manifest;
+  if (manifest) {
+    if (typeof manifest.name === "string") {
+      fields.push(manifest.name);
+    } else {
+      fields.push(manifest.name.en, manifest.name["zh-CN"]);
+    }
+    if (manifest.description) {
+      fields.push(manifest.description.en);
+      if (manifest.description["zh-CN"]) {
+        fields.push(manifest.description["zh-CN"]);
+      }
+    }
+  }
+  const haystack = fields.join("\n").toLowerCase();
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function shouldShowStatusBadge(state: DesktopExtensionStatus["state"]): boolean {
+  return state !== "disabled";
 }
 
 function statusTone(state: DesktopExtensionStatus["state"]): BannerTone | "neutral" {
@@ -272,6 +302,27 @@ export function createDesktopExtensionsSettingsPage(
       diagnosticsPanel.setAttribute("role", "status");
       diagnosticsPanel.hidden = true;
 
+      // Persistent filter + search toolbar so typing never loses focus across renders/polls.
+      const controlsBar = createEl(document, "div", "settings-extensions__toolbar");
+      controlsBar.hidden = true;
+      const categorySlot = createEl(document, "div", "settings-extensions__category-slot");
+      categorySlot.hidden = true;
+      const searchBox = createEl(document, "div", "settings-extensions__search");
+      const searchIcon = createEl(document, "span", "settings-extensions__search-icon");
+      searchIcon.append(createRendererSettingsIcon("search", 13));
+      const searchInput = createEl(document, "input", "settings-extensions__search-input");
+      searchInput.type = "search";
+      searchInput.placeholder = copy.searchPlaceholder;
+      searchInput.setAttribute("aria-label", copy.searchLabel);
+      const clearSearchButton = createEl(document, "button", "settings-extensions__search-clear");
+      clearSearchButton.type = "button";
+      clearSearchButton.title = copy.clearSearch;
+      clearSearchButton.setAttribute("aria-label", copy.clearSearch);
+      clearSearchButton.hidden = true;
+      clearSearchButton.append(createRendererSettingsIcon("close", 12));
+      searchBox.append(searchIcon, searchInput, clearSearchButton);
+      controlsBar.append(categorySlot, searchBox);
+
       const body = createEl(document, "div", "settings-extensions__body");
 
       // Emergency recovery card at the bottom of the page.
@@ -289,7 +340,7 @@ export function createDesktopExtensionsSettingsPage(
       recoveryButton.append(createRendererSettingsIcon("undo", 15), copy.recoveryButton);
       recoverySection.append(recoveryCopy, recoveryButton);
 
-      root.append(header, metaBar, banner, diagnosticsPanel, body, recoverySection);
+      root.append(header, metaBar, banner, diagnosticsPanel, controlsBar, body, recoverySection);
       context.content.append(root);
 
       let disposed = false;
@@ -301,6 +352,8 @@ export function createDesktopExtensionsSettingsPage(
       let pollTimer: ReturnType<typeof setTimeout> | undefined;
       let activeDialog: HTMLDialogElement | null = null;
       let selectedCategory: DesktopExtensionCategory | null = null;
+      let searchQuery = "";
+      const expandedIds = new Set<string>();
 
       const setFeedback = (next: FeedbackBanner | null): void => {
         if (!next) {
@@ -386,6 +439,33 @@ export function createDesktopExtensionsSettingsPage(
         body.replaceChildren(empty);
       };
 
+      const renderNoMatchesBox = (): void => {
+        const empty = createEl(
+          document,
+          "div",
+          "settings-remote__empty settings-extensions__empty settings-extensions__no-matches",
+        );
+        const copyBox = createEl(document, "div");
+        copyBox.append(createEl(document, "strong", "", copy.noMatchesTitle));
+        copyBox.append(createEl(document, "span", "", copy.noMatchesDescription));
+        const resetButton = createEl(
+          document,
+          "button",
+          "settings-command-button settings-command-button--secondary",
+          copy.clearFilters,
+        );
+        resetButton.type = "button";
+        resetButton.addEventListener("click", () => {
+          selectedCategory = null;
+          searchQuery = "";
+          searchInput.value = "";
+          clearSearchButton.hidden = true;
+          render();
+        });
+        empty.append(copyBox, resetButton);
+        body.replaceChildren(empty);
+      };
+
       const renderExtensionCard = (
         item: DesktopExtensionItem,
         allExtensions: readonly DesktopExtensionItem[],
@@ -398,40 +478,12 @@ export function createDesktopExtensionsSettingsPage(
         const head = createEl(document, "div", "settings-extensions-card__head");
         const identity = createEl(document, "div", "settings-extensions-card__identity");
 
+        // Row 1: bold title + compact category chips + active/attention status badge.
         const titleRow = createEl(document, "div", "settings-extensions-card__title");
         const displayName = extensionDisplayName(item, messages.locale);
         const nameEl = createEl(document, "h3", "", displayName);
+        nameEl.title = displayName;
         titleRow.append(nameEl);
-
-        if (item.manifest?.version) {
-          titleRow.append(
-            createEl(
-              document,
-              "span",
-              "settings-extensions-card__version",
-              `v${item.manifest.version}`,
-            ),
-          );
-        }
-
-        const badge = createEl(
-          document,
-          "span",
-          "settings-extensions-badge",
-          copy.states[item.status.state],
-        );
-        badge.dataset.state = item.status.state;
-        badge.dataset.tone = statusTone(item.status.state);
-        titleRow.append(badge);
-
-        const idRow = createEl(document, "div", "settings-extensions-card__id");
-        idRow.append(createEl(document, "code", "", item.id));
-        identity.append(titleRow, idRow);
-
-        const desc = extensionDescription(item, messages.locale);
-        if (desc) {
-          identity.append(createEl(document, "p", "settings-extensions-card__description", desc));
-        }
 
         if (item.manifest?.categories && item.manifest.categories.length > 0) {
           const categoriesRow = createEl(document, "div", "settings-extensions-categories");
@@ -445,7 +497,130 @@ export function createDesktopExtensionsSettingsPage(
             chip.dataset.category = category;
             categoriesRow.append(chip);
           }
-          identity.append(categoriesRow);
+          titleRow.append(categoriesRow);
+        }
+
+        if (shouldShowStatusBadge(item.status.state)) {
+          const badge = createEl(
+            document,
+            "span",
+            "settings-extensions-badge",
+            copy.states[item.status.state],
+          );
+          badge.dataset.state = item.status.state;
+          badge.dataset.tone = statusTone(item.status.state);
+          titleRow.append(badge);
+        }
+
+        identity.append(titleRow);
+
+        // Row 2: single-line truncated description.
+        const desc = extensionDescription(item, messages.locale);
+        if (desc) {
+          const descEl = createEl(document, "p", "settings-extensions-card__description", desc);
+          descEl.title = desc;
+          identity.append(descEl);
+        }
+
+        const controlColumn = createEl(document, "div", "settings-extensions-card__control");
+        const switchId = preferenceId(`desktop-ext-${item.id}`);
+        const errorId = preferenceId(`desktop-ext-error-${item.id}`);
+        const detailsId = preferenceId(`desktop-ext-details-${item.id}`);
+
+        const detailsToggle = createEl(document, "button", "settings-extensions-details-toggle");
+        detailsToggle.type = "button";
+        detailsToggle.setAttribute("aria-controls", detailsId);
+
+        const blocked = isToggleBlocked(item);
+        const toggle = createPreferenceSwitch(document, switchId, errorId);
+        toggle.checked = item.enabled;
+        toggle.setAttribute("aria-label", formatMessage(copy.toggleLabel, { name: displayName }));
+        toggle.disabled = mutating || blocked;
+        if (blocked) {
+          toggle.title = blockedToggleReason(item, copy);
+        }
+        toggle.addEventListener("change", () => {
+          const desired = toggle.checked;
+          if (mutating || blocked) {
+            toggle.checked = item.enabled;
+            return;
+          }
+          void toggleExtension(item, desired);
+        });
+        controlColumn.append(detailsToggle, toggle);
+        head.append(identity, controlColumn);
+        card.append(head);
+
+        // Attention states surface a concise single-row error inline below the main row.
+        if (extensionGroupOf(item.status.state) === "attention") {
+          let errorText: string | null = null;
+          let errorTone: "warning" | "danger" = "danger";
+          if (item.status.conflictWith) {
+            const other = describeOtherExtension(
+              item.status.conflictWith,
+              allExtensions,
+              messages.locale,
+            );
+            const shared = overlappingSlots(item, item.status.conflictWith, allExtensions);
+            errorText =
+              shared.length > 0
+                ? formatMessage(copy.conflictSlotDetails, {
+                    slots: shared.map((slot) => formatSlotLabel(slot, copy)).join(", "),
+                    other,
+                  })
+                : formatMessage(copy.conflictOccupiedBy, { other });
+            errorTone = "warning";
+          } else if (item.status.error) {
+            errorText = item.status.error;
+            errorTone = item.status.state === "incompatible" ? "warning" : "danger";
+          } else if (blocked) {
+            errorText = blockedToggleReason(item, copy);
+            errorTone = item.status.state === "incompatible" ? "warning" : "danger";
+          }
+
+          if (errorText) {
+            const detail = createEl(document, "div", "settings-extensions-card__detail");
+            detail.id = errorId;
+            detail.dataset.tone = errorTone;
+            detail.append(
+              createRendererSettingsIcon("alert", 13),
+              createEl(document, "span", "", errorText),
+            );
+            card.append(detail);
+          }
+        }
+
+        // Collapsible secondary metadata drawer: full description, ID, version, slots, hash.
+        const detailsPanel = createEl(document, "div", "settings-extensions-card__details");
+        detailsPanel.id = detailsId;
+        if (desc) {
+          detailsPanel.append(
+            createEl(document, "p", "settings-extensions-card__details-description", desc),
+          );
+        }
+
+        const metaList = createEl(document, "dl", "settings-extensions-card__meta-grid");
+        const appendMetaRow = (label: string, valueNode: HTMLElement): void => {
+          const row = createEl(document, "div", "settings-extensions-card__meta-row");
+          row.append(createEl(document, "dt", "", label));
+          const dd = createEl(document, "dd");
+          dd.append(valueNode);
+          row.append(dd);
+          metaList.append(row);
+        };
+
+        appendMetaRow(copy.detailId, createEl(document, "code", "", item.id));
+
+        if (item.manifest?.version) {
+          appendMetaRow(
+            copy.detailVersion,
+            createEl(
+              document,
+              "span",
+              "settings-extensions-card__version",
+              `v${item.manifest.version}`,
+            ),
+          );
         }
 
         if (item.manifest) {
@@ -472,68 +647,33 @@ export function createDesktopExtensionsSettingsPage(
               slotsRow.append(chip);
             }
           }
-          identity.append(slotsRow);
+          appendMetaRow(copy.detailSlots, slotsRow);
         }
 
-        const controlColumn = createEl(document, "div", "settings-extensions-card__control");
-        const switchId = preferenceId(`desktop-ext-${item.id}`);
-        const detailId = preferenceId(`desktop-ext-detail-${item.id}`);
-        const blocked = isToggleBlocked(item);
-        const toggle = createPreferenceSwitch(document, switchId, detailId);
-        toggle.checked = item.enabled;
-        toggle.setAttribute("aria-label", formatMessage(copy.toggleLabel, { name: displayName }));
-        toggle.disabled = mutating || blocked;
-        if (blocked) {
-          toggle.title = blockedToggleReason(item, copy);
+        if (item.status.hash) {
+          const hashCode = createEl(document, "code", "", item.status.hash);
+          hashCode.title = item.status.hash;
+          appendMetaRow(copy.detailHash, hashCode);
         }
-        toggle.addEventListener("change", () => {
-          const desired = toggle.checked;
-          if (mutating || blocked) {
-            toggle.checked = item.enabled;
-            return;
-          }
-          void toggleExtension(item, desired);
+
+        detailsPanel.append(metaList);
+        card.append(detailsPanel);
+
+        const syncExpandedState = (expanded: boolean): void => {
+          detailsToggle.setAttribute("aria-expanded", String(expanded));
+          detailsToggle.replaceChildren(
+            createEl(document, "span", "", copy.details),
+            createRendererSettingsIcon(expanded ? "chevron-up" : "chevron-down", 12),
+          );
+          detailsPanel.hidden = !expanded;
+        };
+        syncExpandedState(expandedIds.has(item.id));
+        detailsToggle.addEventListener("click", () => {
+          const next = !expandedIds.has(item.id);
+          if (next) expandedIds.add(item.id);
+          else expandedIds.delete(item.id);
+          syncExpandedState(next);
         });
-        controlColumn.append(toggle);
-        head.append(identity, controlColumn);
-        card.append(head);
-
-        // Diagnostic or conflict details for this extension.
-        let detailMessage: string | null = null;
-        let detailTone: "warning" | "danger" = "danger";
-        if (item.status.conflictWith) {
-          const other = describeOtherExtension(
-            item.status.conflictWith,
-            allExtensions,
-            messages.locale,
-          );
-          const shared = overlappingSlots(item, item.status.conflictWith, allExtensions);
-          detailMessage =
-            shared.length > 0
-              ? formatMessage(copy.conflictSlotDetails, {
-                  slots: shared.map((slot) => formatSlotLabel(slot, copy)).join(", "),
-                  other,
-                })
-              : formatMessage(copy.conflictOccupiedBy, { other });
-          detailTone = "warning";
-        } else if (item.status.error) {
-          detailMessage = item.status.error;
-          detailTone = item.status.state === "incompatible" ? "warning" : "danger";
-        } else if (blocked) {
-          detailMessage = blockedToggleReason(item, copy);
-          detailTone = item.status.state === "incompatible" ? "warning" : "danger";
-        }
-
-        if (detailMessage) {
-          const detail = createEl(document, "div", "settings-extensions-card__detail");
-          detail.id = detailId;
-          detail.dataset.tone = detailTone;
-          detail.append(
-            createRendererSettingsIcon("alert", 14),
-            createEl(document, "span", "", detailMessage),
-          );
-          card.append(detail);
-        }
 
         return card;
       };
@@ -544,15 +684,24 @@ export function createDesktopExtensionsSettingsPage(
         renderDiagnostics();
 
         if (unavailable) {
+          controlsBar.hidden = true;
+          categorySlot.hidden = true;
+          categorySlot.replaceChildren();
           renderEmptyBox(copy.unavailableTitle, copy.unavailableDescription);
           return;
         }
         if (!listing) {
+          controlsBar.hidden = true;
+          categorySlot.hidden = true;
+          categorySlot.replaceChildren();
           if (loading) renderLoading();
           else body.replaceChildren();
           return;
         }
         if (listing.extensions.length === 0) {
+          controlsBar.hidden = true;
+          categorySlot.hidden = true;
+          categorySlot.replaceChildren();
           renderEmptyBox(copy.emptyTitle, copy.emptyDescription, copy.emptyPathHint);
           return;
         }
@@ -570,7 +719,8 @@ export function createDesktopExtensionsSettingsPage(
           selectedCategory = null;
         }
 
-        const bodyChildren: HTMLElement[] = [];
+        controlsBar.hidden = false;
+        clearSearchButton.hidden = searchQuery.length === 0;
         if (availableCategories.length > 0) {
           const filterBar = createEl(document, "div", "settings-extensions__filters");
           filterBar.setAttribute("role", "group");
@@ -596,14 +746,25 @@ export function createDesktopExtensionsSettingsPage(
           for (const category of availableCategories) {
             addFilterPill(copy.categories[category], category);
           }
-          bodyChildren.push(filterBar);
+          categorySlot.hidden = false;
+          categorySlot.replaceChildren(filterBar);
+        } else {
+          categorySlot.hidden = true;
+          categorySlot.replaceChildren();
         }
 
-        const visibleExtensions = selectedCategory
-          ? listing.extensions.filter((item) =>
-              item.manifest?.categories?.includes(selectedCategory!),
-            )
-          : listing.extensions;
+        const normalizedQuery = searchQuery.trim().toLowerCase();
+        const visibleExtensions = listing.extensions.filter((item) => {
+          if (selectedCategory && !item.manifest?.categories?.includes(selectedCategory)) {
+            return false;
+          }
+          return matchesSearchQuery(item, normalizedQuery);
+        });
+
+        if (visibleExtensions.length === 0) {
+          renderNoMatchesBox();
+          return;
+        }
 
         const buckets: Record<ExtensionGroupId, DesktopExtensionItem[]> = {
           attention: [],
@@ -649,8 +810,7 @@ export function createDesktopExtensionsSettingsPage(
           groupsContainer.append(section);
         }
 
-        bodyChildren.push(groupsContainer);
-        body.replaceChildren(...bodyChildren);
+        body.replaceChildren(groupsContainer);
       };
 
       const clearPollTimer = (): void => {
@@ -996,6 +1156,19 @@ export function createDesktopExtensionsSettingsPage(
           void load({ silent: true });
         }
       };
+
+      searchInput.addEventListener("input", () => {
+        searchQuery = searchInput.value;
+        clearSearchButton.hidden = searchQuery.length === 0;
+        render();
+      });
+      clearSearchButton.addEventListener("click", () => {
+        searchQuery = "";
+        searchInput.value = "";
+        clearSearchButton.hidden = true;
+        render();
+        searchInput.focus?.();
+      });
 
       refreshButton.addEventListener("click", () => {
         if (!loading && !mutating) void load({ silent: false, keepFeedback: false });

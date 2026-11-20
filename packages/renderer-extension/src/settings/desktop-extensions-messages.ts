@@ -26,12 +26,23 @@ export interface DesktopExtensionsMessages {
   readonly emptyPathHint: string;
   readonly categoryAll: string;
   readonly categoryFilterLabel: string;
+  readonly searchPlaceholder: string;
+  readonly searchLabel: string;
+  readonly clearSearch: string;
+  readonly noMatchesTitle: string;
+  readonly noMatchesDescription: string;
+  readonly clearFilters: string;
   readonly categories: Readonly<Record<DesktopExtensionCategory, string>>;
   readonly groups: Readonly<{
     attention: string;
     enabled: string;
     disabled: string;
   }>;
+  readonly details: string;
+  readonly detailId: string;
+  readonly detailVersion: string;
+  readonly detailSlots: string;
+  readonly detailHash: string;
   readonly noExclusiveSlots: string;
   readonly slots: Readonly<Record<DesktopExtensionSlot, string>>;
   readonly states: Readonly<Record<DesktopExtensionStatus["state"], string>>;
@@ -83,6 +94,12 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   emptyPathHint: "$CODEXHOST_DATA_DIR/desktop-extensions/<id>/",
   categoryAll: "All",
   categoryFilterLabel: "Filter by category",
+  searchPlaceholder: "Search name, ID, or description…",
+  searchLabel: "Search Desktop extensions",
+  clearSearch: "Clear search",
+  noMatchesTitle: "No matching extensions",
+  noMatchesDescription: "Try another keyword or clear the active filters.",
+  clearFilters: "Clear filters",
   categories: Object.freeze({
     sidebar: "Sidebar",
     composer: "Composer",
@@ -90,12 +107,20 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
     appearance: "Appearance",
     tools: "Tools",
     workflow: "Workflow",
+    "usage-analytics": "Usage & Analytics",
+    "memory-knowledge": "Memory & Knowledge",
+    integrations: "Integrations",
   }),
   groups: Object.freeze({
     attention: "Needs Attention",
     enabled: "Enabled",
     disabled: "Disabled",
   }),
+  details: "Details",
+  detailId: "ID",
+  detailVersion: "Version",
+  detailSlots: "Slots",
+  detailHash: "Hash",
   noExclusiveSlots: "No exclusive slots",
   slots: Object.freeze({
     "sidebar.thread-layout": "Sidebar thread layout",
@@ -162,6 +187,12 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   emptyPathHint: "$CODEXHOST_DATA_DIR/desktop-extensions/<id>/",
   categoryAll: "全部",
   categoryFilterLabel: "按分类筛选",
+  searchPlaceholder: "搜索名称、ID 或描述…",
+  searchLabel: "搜索 Desktop 扩展",
+  clearSearch: "清除搜索",
+  noMatchesTitle: "未找到匹配的扩展",
+  noMatchesDescription: "请尝试其他关键词，或清除当前筛选条件。",
+  clearFilters: "清除筛选",
   categories: Object.freeze({
     sidebar: "侧栏",
     composer: "输入框",
@@ -169,12 +200,20 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
     appearance: "外观主题",
     tools: "效率工具",
     workflow: "多会话协作",
+    "usage-analytics": "用量与统计",
+    "memory-knowledge": "记忆与知识",
+    integrations: "外部集成",
   }),
   groups: Object.freeze({
     attention: "需要处理",
     enabled: "已启用",
     disabled: "未启用",
   }),
+  details: "详情",
+  detailId: "ID",
+  detailVersion: "版本",
+  detailSlots: "槽位",
+  detailHash: "Hash",
   noExclusiveSlots: "无独占槽位",
   slots: Object.freeze({
     "sidebar.thread-layout": "侧栏 Thread 布局",

@@ -29,6 +29,8 @@ class FakeElement {
   textContent = "";
   title = "";
   type = "";
+  value = "";
+  placeholder = "";
   checked = false;
   disabled = false;
   open = false;
@@ -107,6 +109,8 @@ class FakeElement {
     this.open = false;
     this.dispatch("close");
   }
+
+  focus(): void {}
 }
 
 class FakeDocument {
@@ -184,6 +188,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const SAMPLE_TREE_HASH = "a".repeat(64);
+
 function sampleList(
   overrides: Partial<DesktopExtensionsListResult> = {},
 ): DesktopExtensionsListResult {
@@ -195,7 +201,7 @@ function sampleList(
       {
         id: "sidebar-thread-tree",
         enabled: true,
-        status: { state: "running" },
+        status: { state: "running", hash: SAMPLE_TREE_HASH },
         manifest: {
           manifestVersion: 1,
           id: "sidebar-thread-tree",
@@ -332,18 +338,24 @@ describe("Desktop extensions settings page", () => {
 
     const treeCard = cards[2]!;
     expect(textOf(treeCard)).toContain("侧栏委派树");
-    expect(textOf(treeCard)).toContain("v0.1.0");
     expect(textOf(treeCard)).toContain("归组委派的 Thread");
+    expect(textOf(treeCard)).toContain("运行中");
     const treeCategoryChips = descendants(treeCard).filter((el) =>
       el.className.includes("settings-extensions-category-chip"),
     );
     expect(treeCategoryChips.map((chip) => textOf(chip))).toEqual(["侧栏", "多会话协作"]);
-    expect(textOf(treeCard)).toContain("侧栏 Thread 布局");
-    expect(textOf(treeCard)).toContain("侧栏 Thread 角标");
-    expect(textOf(treeCard)).toContain("运行中");
+    // Secondary metadata stays collapsed by default until Details is expanded.
+    expect(textOf(treeCard)).not.toContain("v0.1.0");
+    expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
+    expect(textOf(treeCard)).not.toContain("侧栏 Thread 布局");
+    expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
 
     const badgesCard = cards[3]!;
     expect(textOf(badgesCard)).toContain("Delegation Badges");
+    // Disabled rows omit redundant neutral status badges.
+    expect(
+      descendants(badgesCard).filter((el) => el.className.includes("settings-extensions-badge")),
+    ).toHaveLength(0);
     mounted.dispose();
 
     const enMount = mountPage("en", () => client);
@@ -610,6 +622,103 @@ describe("Desktop extensions settings page", () => {
     uncategorized.dispose();
   });
 
+  it("filters extensions live by Chinese/English name, ID, and description alongside category filters", async () => {
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => sampleList()),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const searchInput = descendants(mounted.content).find(
+      (el) => el.tagName === "input" && el.type === "search",
+    )!;
+    const clearSearchButton = descendants(mounted.content).find((el) =>
+      el.className.includes("settings-extensions__search-clear"),
+    )!;
+    const cardIds = () =>
+      descendants(mounted.content)
+        .filter((el) => el.tagName === "article" && Boolean(el.dataset.extensionId))
+        .map((el) => el.dataset.extensionId);
+
+    expect(clearSearchButton.hidden).toBe(true);
+
+    // Match English name while locale is zh-CN.
+    searchInput.value = "Thread Tree";
+    searchInput.dispatch("input");
+    expect(clearSearchButton.hidden).toBe(false);
+    expect(cardIds()).toEqual(["sidebar-thread-tree"]);
+
+    // Match Chinese description.
+    searchInput.value = "子 Thread 角标";
+    searchInput.dispatch("input");
+    expect(cardIds()).toEqual(["sidebar-delegation-badges"]);
+
+    // Match extension ID (including manifest-less invalid entries).
+    searchInput.value = "broken-extension";
+    searchInput.dispatch("input");
+    expect(cardIds()).toEqual(["broken-extension"]);
+
+    // Non-matching query shows empty-search state with reset action.
+    searchInput.value = "nonexistent-keyword";
+    searchInput.dispatch("input");
+    expect(cardIds()).toEqual([]);
+    expect(textOf(mounted.content)).toContain("未找到匹配的扩展");
+
+    const resetButton = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && textOf(el).includes("清除筛选"),
+    )!;
+    resetButton.dispatch("click");
+    expect(searchInput.value).toBe("");
+    expect(clearSearchButton.hidden).toBe(true);
+    expect(cardIds()).toHaveLength(4);
+
+    // Search input instance remains mounted across filtering so focus is preserved.
+    const sameInput = descendants(mounted.content).find(
+      (el) => el.tagName === "input" && el.type === "search",
+    )!;
+    expect(sameInput).toBe(searchInput);
+    mounted.dispose();
+  });
+
+  it("expands and collapses secondary extension details (full description, ID, version, slots, hash)", async () => {
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => sampleList()),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const treeCard = descendants(mounted.content).find(
+      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+    )!;
+    const toggleButton = descendants(treeCard).find((el) =>
+      el.className.includes("settings-extensions-details-toggle"),
+    )!;
+
+    expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
+    expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
+    expect(textOf(treeCard)).not.toContain("v0.1.0");
+    expect(textOf(treeCard)).not.toContain("侧栏 Thread 布局");
+    expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
+
+    // Expand details drawer.
+    toggleButton.dispatch("click");
+    expect(toggleButton.getAttribute("aria-expanded")).toBe("true");
+    expect(textOf(treeCard)).toContain("归组委派的 Thread");
+    expect(textOf(treeCard)).toContain("sidebar-thread-tree");
+    expect(textOf(treeCard)).toContain("v0.1.0");
+    expect(textOf(treeCard)).toContain("侧栏 Thread 布局");
+    expect(textOf(treeCard)).toContain("侧栏 Thread 角标");
+    expect(textOf(treeCard)).toContain(SAMPLE_TREE_HASH);
+
+    // Collapse details drawer again.
+    toggleButton.dispatch("click");
+    expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
+    expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
+    expect(textOf(treeCard)).not.toContain("v0.1.0");
+    expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
+    mounted.dispose();
+  });
+
   it("passes expectedRevision, blocks duplicate clicks while mutating, and updates state on save", async () => {
     const pendingDisable = deferred<DesktopExtensionMutationResult>();
     const listDesktopExtensions = vi
@@ -650,7 +759,9 @@ describe("Desktop extensions settings page", () => {
     });
 
     // All switches stay disabled while a mutation is in flight to prevent duplicate clicks.
-    const switchesWhileBusy = descendants(mounted.content).filter((el) => el.tagName === "input");
+    const switchesWhileBusy = descendants(mounted.content).filter(
+      (el) => el.tagName === "input" && el.type === "checkbox",
+    );
     expect(switchesWhileBusy.every((el) => el.disabled)).toBe(true);
     switchesWhileBusy[0]!.dispatch("change");
     expect(disableDesktopExtension).toHaveBeenCalledTimes(1);

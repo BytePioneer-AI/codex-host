@@ -140,9 +140,22 @@ export class ExternalTurnProjection {
       await this.#host.resolveDesktopApproval(event.interactionId, thread);
       await this.#host.resolveDesktopQuestion(event.interactionId, thread);
     }
+    // agy uses the same ACP prompt for slash commands and conversation. Only
+    // promote output backed by a new native user Turn, not local command text.
+    const conversationalCommand =
+      event.type === "turn.completed" &&
+      thread.clientCommand?.turn.id === event.turnId &&
+      thread.harnessId === "antigravity" &&
+      this.#host.manualCompactionTurns.get(thread) !== event.turnId &&
+      event.outcome.status === "succeeded" &&
+      event.nativeTurnRef !== undefined &&
+      [...projection.projector.foregroundWireItems().values()].some(
+        (item) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim(),
+      );
     const ephemeralTurn =
       event.type === "turn.completed" &&
-      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
+      (event.ephemeral === true ||
+        (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand));
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#host.persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -182,13 +195,16 @@ export class ExternalTurnProjection {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const completedAt = Math.floor(Date.now() / 1000);
-      if (ephemeralTurn) {
-        if (thread.clientCommand?.turn.id === event.turnId)
-          thread.clientCommand.turn = projection.projector.snapshotTurn(result.completedTurn);
-        thread.ephemeralTurnIds.delete(event.turnId);
+      const turn = projection.projector.snapshotTurn(result.completedTurn);
+      if (thread.ephemeralTurnIds.delete(event.turnId)) {
+        if (thread.clientCommand?.turn.id === event.turnId) {
+          // Settle an already visible command card without repeating the reply in it.
+          thread.clientCommand.turn = ephemeralTurn ? turn : { ...turn, items: [] };
+        }
         this.#host.manualCompactionTurns.delete(thread);
-      } else {
-        thread.turns.push(projection.projector.snapshotTurn(result.completedTurn));
+      }
+      if (!ephemeralTurn) {
+        thread.turns.push(turn);
         thread.projectedTerminalTurnId = event.turnId;
         thread.thread.updatedAt = completedAt;
         thread.thread.recencyAt = completedAt;

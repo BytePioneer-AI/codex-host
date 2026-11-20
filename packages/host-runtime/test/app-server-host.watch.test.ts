@@ -132,4 +132,66 @@ describe("watch delivery through native Codex resume", () => {
       await stopFixture(value.fixture);
     }
   });
+
+  it("retries watch delivery when an external Harness rejects turn.start with sessionBusy", async () => {
+    let api: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (registration) => {
+        api = registration;
+        return undefined;
+      },
+    });
+    await fixture.ready;
+    if (!api) throw new Error("Delegation API was not registered");
+    const started = await api.start({
+      harnessId: fixture.adapter.harnessId,
+      parentThreadId: "client:test",
+      cwd: process.cwd(),
+      task: "parent task",
+    });
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Missing external session");
+    session.succeedTurn();
+    const controlApi = api;
+    await vi.waitFor(async () =>
+      expect((await controlApi.read({ threadId: started.threadId, view: "result" })).status).toBe(
+        "completed",
+      ),
+    );
+    session.rejectNextTurn({
+      code: "sessionBusy",
+      message: "Antigravity Turn is already running",
+      retryable: true,
+    });
+
+    let childStatus: "running" | "completed" = "running";
+    const send = vi.spyOn(api, "send");
+    const service = new DelegationWatchService(
+      {
+        read: async ({ threadId }): Promise<DelegationThreadSnapshot> => ({
+          threadId,
+          harnessId: fixture.adapter.harnessId,
+          status: threadId === "child" ? childStatus : "completed",
+          turn: { turnId: `${threadId}-turn`, status: childStatus },
+          progress: [],
+          result: { availability: "pending" },
+        }),
+        send: (input) => send(input),
+      },
+      { pollIntervalMs: 15 },
+    );
+    try {
+      await service.watch({
+        threadId: "child",
+        notifyThreadId: started.threadId,
+        timeoutMs: 60_000,
+      });
+      childStatus = "completed";
+      await vi.waitFor(async () => expect((await service.watches()).watches).toEqual([]));
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      service.close();
+      await stopFixture(fixture);
+    }
+  });
 });

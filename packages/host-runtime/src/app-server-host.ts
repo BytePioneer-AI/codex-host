@@ -854,6 +854,7 @@ export class AppServerHost {
   #unregisterDelegationApi: (() => void) | undefined;
   #unsubscribeAccountState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
+  #threadIdleListeners = new Set<(threadId: string) => void>();
   /** Active reply guards by request ID; each records whether its request was answered. */
   readonly #replyGuards = new Map<unknown, Set<{ answered: boolean }>>();
   #pendingOfficialTurnStarts = new Map<
@@ -1185,6 +1186,12 @@ export class AppServerHost {
         executionHostId: (threadId) => {
           const thread = this.#externalRuntime.get(threadId);
           return thread ? this.#executionHosts.get(thread) : undefined;
+        },
+        onThreadIdle: (listener) => {
+          this.#threadIdleListeners.add(listener);
+          return () => {
+            this.#threadIdleListeners.delete(listener);
+          };
         },
       },
       options.externalOnly ? options.sharedThreads : undefined,
@@ -2391,7 +2398,12 @@ export class AppServerHost {
       if (delegation) {
         await this.#repository.setDelegationStatus(delegation.delegationId, status);
       }
+      this.#notifyThreadIdle(params.threadId);
     }
+  }
+
+  #notifyThreadIdle(threadId: string): void {
+    for (const listener of this.#threadIdleListeners) listener(threadId);
   }
 
   async #canHandleDelegationStart(input: DelegationStartInput): Promise<boolean> {
@@ -5306,7 +5318,7 @@ export class AppServerHost {
     requestedTurnId: string,
   ): Promise<void> {
     if (this.#externalThreadBusy(thread)) {
-      throw new Error("External Thread already has an active Turn");
+      throw new DelegationControlError("THREAD_BUSY", "External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
     const projection: ProjectedTurn = {
@@ -5339,6 +5351,9 @@ export class AppServerHost {
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       this.#signalActiveWorkChanged();
+      if (result.error.code === "sessionBusy") {
+        throw new DelegationControlError("THREAD_BUSY", result.error.message);
+      }
       throw new Error(result.error.message);
     }
     await this.#releaseInjectedText(thread, turnId, injected);
@@ -7032,6 +7047,7 @@ export class AppServerHost {
       emittedAtMs: Date.now(),
       params: { threadId: thread.id, status },
     });
+    if (status.type === "idle") this.#notifyThreadIdle(thread.id);
   }
 
   #latestCompletedTurnId(thread: ExternalThread): HostTurnId | null {

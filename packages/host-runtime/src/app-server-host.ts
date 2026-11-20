@@ -6172,7 +6172,9 @@ export class AppServerHost {
           (output) => this.#projectHarnessOutput(thread, output),
           (failure) => this.#diagnose(failure),
         );
-        if (!thread.activeTurnId && thread.projectedTurns.size === 0) {
+        // Completed Turn projections can remain for late background output;
+        // only active work should prevent the final status cleanup.
+        if (!thread.running && !thread.activeTurnId) {
           // The failure projection can re-register running Subagents from the
           // Item ledger while settling; retire them again so no stale entry
           // outlives the dead parent stream.

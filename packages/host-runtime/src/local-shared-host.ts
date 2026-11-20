@@ -14,6 +14,10 @@ import {
   CODEX_RUNTIME_REMOVED_MESSAGE,
   CodexRuntimeFilesRemovedError,
 } from "./codex-runtime/backend-files.js";
+import {
+  startDesktopOfficialBackendSpawner,
+  type DesktopOfficialBackendSpawnerDescriptor,
+} from "./codex-runtime/desktop-official-backend-spawner.js";
 
 /** Matches both npm payloads and the signed macOS app's Resources/MacOS split. */
 export function sharedHostLauncherPath(
@@ -48,7 +52,11 @@ export function sharedHostDataDirectory(
 
 async function connectStream(
   launch: HostServiceLaunch,
-  desktop?: { environment: NodeJS.ProcessEnv; arguments: string[] },
+  desktop?: {
+    environment: NodeJS.ProcessEnv;
+    arguments: string[];
+    officialSpawner?: DesktopOfficialBackendSpawnerDescriptor;
+  },
   endpoint = "/v1/desktop",
 ) {
   await ensureHostService(launch);
@@ -66,6 +74,7 @@ async function connectStream(
               ([key, value]) => isDesktopContextVariable(key) && value !== undefined,
             ),
           ),
+          ...(desktop.officialSpawner ? { officialSpawner: desktop.officialSpawner } : {}),
         }),
       ).toString("base64")
     : undefined;
@@ -138,6 +147,7 @@ export async function runLocalDesktopBridge(
           environment,
         })
       : undefined;
+  const officialSpawner = await startDesktopOfficialBackendSpawner();
   let stream: Duplex | undefined;
   try {
     stream = await connectStream(
@@ -150,7 +160,11 @@ export async function runLocalDesktopBridge(
         ),
         ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
       },
-      { environment: { ...environment, ...mcp?.environment }, arguments: arguments_ },
+      {
+        environment: { ...environment, ...mcp?.environment },
+        arguments: arguments_,
+        officialSpawner: officialSpawner.descriptor,
+      },
     );
     const connection = stream;
     const closed = new Promise<number>((resolve) => {
@@ -176,5 +190,6 @@ export async function runLocalDesktopBridge(
     stream?.unpipe(process.stdout);
     stream?.destroy();
     await mcp?.close();
+    await officialSpawner.detach();
   }
 }

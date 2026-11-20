@@ -170,7 +170,7 @@ it("returns an actionable failure when authenticated Desktop admission finds a r
   }
 });
 
-it.each([true, false])("forwards current Desktop browser access (%s)", async (enabled) => {
+it.each([true, false])("forwards Desktop browser access and the spawner (%s)", async (enabled) => {
   const pipe = path.join(tmpdir(), "codex-app-tools-synthetic.sock");
   const browserAccess = {
     BROWSER_USE_ACCESS_EXECUTOR_ID: "synthetic-executor",
@@ -212,12 +212,20 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
     diagnosticOutput: new PassThrough(),
     deferStart: true,
   });
-  const configured: NodeJS.ProcessEnv[] = [];
-  vi.spyOn(official, "configureStartup").mockImplementation(async ({ environment }) => {
-    configured.push(environment);
-    // Stop after admission; only the forwarded startup environment matters here.
-    throw new CodexRuntimeFilesRemovedError();
-  });
+  const configured: Array<{
+    environment: NodeJS.ProcessEnv;
+    officialSpawner?: { port: number; token: string };
+  }> = [];
+  vi.spyOn(official, "configureStartup").mockImplementation(
+    async ({ environment, officialSpawner }) => {
+      configured.push({
+        environment,
+        ...(officialSpawner ? { officialSpawner } : {}),
+      });
+      // Stop after admission; only the forwarded startup environment and spawner matter here.
+      throw new CodexRuntimeFilesRemovedError();
+    },
+  );
   const stdin = vi.spyOn(process.stdin, "pipe").mockImplementation((destination) => destination);
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   try {
@@ -236,14 +244,16 @@ it.each([true, false])("forwards current Desktop browser access (%s)", async (en
       ["app-server"],
     );
     expect(configured).toHaveLength(1);
-    expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
+    expect(configured[0]?.environment.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
     for (const [key, value] of Object.entries(browserAccess)) {
-      if (enabled) expect(configured[0]?.[key]).toBe(value);
-      else expect(configured[0]).not.toHaveProperty(key);
+      if (enabled) expect(configured[0]?.environment[key]).toBe(value);
+      else expect(configured[0]?.environment).not.toHaveProperty(key);
     }
-    expect(configured[0]).not.toHaveProperty("BROWSER_USE_ACCESS_UNRELATED");
-    expect(configured[0]).not.toHaveProperty("NODE_OPTIONS");
-    expect(configured[0]).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
+    expect(configured[0]?.environment).not.toHaveProperty("BROWSER_USE_ACCESS_UNRELATED");
+    expect(configured[0]?.environment).not.toHaveProperty("NODE_OPTIONS");
+    expect(configured[0]?.environment).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
+    expect(configured[0]?.officialSpawner?.port).toBeTypeOf("number");
+    expect(configured[0]?.officialSpawner?.token.length).toBeGreaterThan(0);
   } finally {
     stdin.mockRestore();
     stderr.mockRestore();

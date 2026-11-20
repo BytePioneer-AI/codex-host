@@ -16,6 +16,8 @@ type Hello = Extract<SidebarBrowserDirectServerMessage, { type: "direct-hello" }
 type Candidate = Extract<SidebarBrowserDirectClientMessage, { type: "direct-candidate" }>;
 type Stage = "initial" | "restart" | "rebuild";
 
+const NO_VIEWER_GRACE_MS = 30_000;
+
 type Attempt = {
   id: number;
   pc: RTCPeerConnection;
@@ -44,6 +46,8 @@ export class DirectSession {
   private readonly lifetime = new AbortController();
   private readonly backoff = new DirectBackoff(() => window.localStorage);
   private readonly listeners = new Set<(ready: DirectReady | undefined) => void>();
+  private readonly viewers = new Set<object>();
+  private noViewerTimer: ReturnType<typeof setTimeout> | undefined;
   private socket: WebSocket | undefined;
   private hello: Hello | undefined;
   private current: Attempt | undefined;
@@ -98,7 +102,23 @@ export class DirectSession {
       },
       { signal },
     );
-    this.resume();
+  }
+
+  /** Keep one page-level connection until the last visible viewer has been gone for 30s. */
+  setViewerVisible(viewer: object, visible: boolean): void {
+    if (this.lifetime.signal.aborted) return;
+    if (visible) {
+      const wake = this.viewers.size === 0 && this.noViewerTimer === undefined;
+      this.viewers.add(viewer);
+      clearTimeout(this.noViewerTimer);
+      this.noViewerTimer = undefined;
+      if (wake) this.resume();
+    } else if (this.viewers.delete(viewer) && this.viewers.size === 0) {
+      this.noViewerTimer = setTimeout(() => {
+        this.noViewerTimer = undefined;
+        this.closeSocket();
+      }, NO_VIEWER_GRACE_MS);
+    }
   }
 
   subscribe(listener: (ready: DirectReady | undefined) => void): () => void {
@@ -111,12 +131,19 @@ export class DirectSession {
 
   dispose(): void {
     this.lifetime.abort();
+    clearTimeout(this.noViewerTimer);
+    this.viewers.clear();
     this.closeSocket();
     this.listeners.clear();
   }
 
   private get active(): boolean {
-    return !this.lifetime.signal.aborted && !this.paused && document.visibilityState !== "hidden";
+    return (
+      !this.lifetime.signal.aborted &&
+      !this.paused &&
+      document.visibilityState !== "hidden" &&
+      (this.viewers.size > 0 || this.noViewerTimer !== undefined)
+    );
   }
 
   private resume = (): void => {

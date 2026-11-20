@@ -19,6 +19,7 @@ export function createRemotePage(
 ): BrowserPage {
   const presentation = new RemotePresentation((message) => {
     frame.send(message);
+    if (message.type === "visible") directSession.setViewerVisible(frame, message.visible);
   }, inputLabel);
   const frame = new RemoteFrame(options, key, presentation, directSession);
   return { frame, presentation };

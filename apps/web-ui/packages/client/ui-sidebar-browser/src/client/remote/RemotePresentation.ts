@@ -70,10 +70,10 @@ export class RemotePresentation implements BrowserPresentation {
     this.picture = undefined;
 
     const measure = (): void => {
+      if (this.canvas !== canvas) return;
       const bounds = root.getBoundingClientRect();
       const width = Math.round(bounds.width);
       const height = Math.round(bounds.height);
-      const visible = width > 0 && height > 0 && document.visibilityState === "visible";
       if (width > 0 && height > 0) {
         const previous = this.viewportMessage;
         if (previous?.width !== width || previous.height !== height) {
@@ -81,10 +81,12 @@ export class RemotePresentation implements BrowserPresentation {
           this.send(this.viewportMessage);
         }
       }
-      if (visible !== this.visibleValue) {
-        this.visibleValue = visible;
-        this.send({ type: "visible", visible });
-      }
+      this.setVisible(
+        width > 0 &&
+          height > 0 &&
+          document.visibilityState === "visible" &&
+          root.closest("[inert]") === null,
+      );
     };
     let pendingMeasure: ReturnType<typeof setTimeout> | undefined;
     const scheduleMeasure = (): void => {
@@ -93,6 +95,11 @@ export class RemotePresentation implements BrowserPresentation {
     };
     const resize = new ResizeObserver(scheduleMeasure);
     resize.observe(root);
+    // Inert tab sections mark a collapsed dock immediately, even while it still
+    // has its full size and is sliding out. Floating tabs can remain visible.
+    const visibility = new MutationObserver(measure);
+    for (let ancestor = root.parentElement; ancestor !== null; ancestor = ancestor.parentElement)
+      visibility.observe(ancestor, { attributeFilter: ["inert"] });
     window.addEventListener("resize", scheduleMeasure, { signal });
     document.addEventListener("visibilitychange", measure, { signal });
     measure();
@@ -101,13 +108,13 @@ export class RemotePresentation implements BrowserPresentation {
     return () => {
       lifetime.abort();
       resize.disconnect();
+      visibility.disconnect();
       clearTimeout(pendingMeasure);
       this.releaseKeys();
       root.remove();
-      if (this.canvas === canvas) this.canvas = undefined;
-      if (this.visibleValue) {
-        this.visibleValue = false;
-        this.send({ type: "visible", visible: false });
+      if (this.canvas === canvas) {
+        this.canvas = undefined;
+        this.setVisible(false);
       }
     };
   }
@@ -152,6 +159,13 @@ export class RemotePresentation implements BrowserPresentation {
   /** Forget the canvas; the frame closes the connection. */
   dispose(): void {
     this.canvas = undefined;
+    this.setVisible(false);
+  }
+
+  private setVisible(visible: boolean): void {
+    if (visible === this.visibleValue) return;
+    this.visibleValue = visible;
+    this.send({ type: "visible", visible });
   }
 
   private point(event: MouseEvent): { x: number; y: number } {

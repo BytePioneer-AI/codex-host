@@ -16,11 +16,13 @@ import ExternalLink from "lucide/dist/esm/icons/external-link.mjs";
 import Eye from "lucide/dist/esm/icons/eye.mjs";
 import EyeOff from "lucide/dist/esm/icons/eye-off.mjs";
 import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
+import FileArchive from "lucide/dist/esm/icons/file-archive.mjs";
 import FolderInput from "lucide/dist/esm/icons/folder-input.mjs";
 import GripVertical from "lucide/dist/esm/icons/grip-vertical.mjs";
 import Info from "lucide/dist/esm/icons/info.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
 import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
+import Link from "lucide/dist/esm/icons/link.mjs";
 import Network from "lucide/dist/esm/icons/network.mjs";
 import Play from "lucide/dist/esm/icons/play.mjs";
 import PlugZap from "lucide/dist/esm/icons/plug-zap.mjs";
@@ -29,6 +31,7 @@ import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
 import RotateCcw from "lucide/dist/esm/icons/rotate-ccw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
+import ShieldCheck from "lucide/dist/esm/icons/shield-check.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
@@ -38,6 +41,7 @@ import Terminal from "lucide/dist/esm/icons/terminal.mjs";
 import ScrollText from "lucide/dist/esm/icons/scroll-text.mjs";
 import Search from "lucide/dist/esm/icons/search.mjs";
 import CircleHelp from "lucide/dist/esm/icons/circle-question-mark.mjs";
+import Upload from "lucide/dist/esm/icons/upload.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import Users from "lucide/dist/esm/icons/users.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
@@ -86,6 +90,10 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "dashboard",
   "logs",
   "play",
+  "shield-check",
+  "upload",
+  "file-archive",
+  "link",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -143,6 +151,10 @@ const iconNodes = {
   dashboard: LayoutDashboard,
   logs: ScrollText,
   play: Play,
+  "shield-check": ShieldCheck,
+  upload: Upload,
+  "file-archive": FileArchive,
+  link: Link,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

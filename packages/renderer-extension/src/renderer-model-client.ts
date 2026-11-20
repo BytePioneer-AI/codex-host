@@ -3,14 +3,29 @@ import {
   DESKTOP_EXTENSIONS_ENABLE_METHOD,
   DESKTOP_EXTENSIONS_DISABLE_METHOD,
   DESKTOP_EXTENSIONS_RECOVER_METHOD,
+  DESKTOP_EXTENSIONS_CATALOG_METHOD,
+  DESKTOP_EXTENSIONS_INSTALL_METHOD,
+  DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
   desktopExtensionsListResultSchema,
   desktopExtensionMutationResultSchema,
   desktopExtensionSelectionParamsSchema,
   desktopExtensionsRecoveryParamsSchema,
+  desktopExtensionsCatalogParamsSchema,
+  desktopExtensionsCatalogResultSchema,
+  desktopExtensionsInstallParamsSchema,
+  desktopExtensionsInstallResultSchema,
+  desktopExtensionsUninstallParamsSchema,
+  desktopExtensionsUninstallResultSchema,
   type DesktopExtensionsListResult,
   type DesktopExtensionMutationResult,
   type DesktopExtensionSelectionParams,
   type DesktopExtensionsRecoveryParams,
+  type DesktopExtensionsCatalogParams,
+  type DesktopExtensionsCatalogResult,
+  type DesktopExtensionsInstallParams,
+  type DesktopExtensionsInstallResult,
+  type DesktopExtensionsUninstallParams,
+  type DesktopExtensionsUninstallResult,
   SKILLS_LIST_METHOD,
   SKILLS_CHANGED_METHOD,
   skillsListParamsSchema,
@@ -262,6 +277,15 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   listLoadedSessions?(): Promise<LoadedSession[]>;
   /** Use the local Host client, independent of the active Composer. */
   listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;
+  listDesktopExtensionCatalog?(
+    input?: DesktopExtensionsCatalogParams,
+  ): Promise<DesktopExtensionsCatalogResult>;
+  installDesktopExtension?(
+    input: DesktopExtensionsInstallParams,
+  ): Promise<DesktopExtensionsInstallResult>;
+  uninstallDesktopExtension?(
+    input: DesktopExtensionsUninstallParams,
+  ): Promise<DesktopExtensionsUninstallResult>;
   enableDesktopExtension?(
     input: DesktopExtensionSelectionParams,
   ): Promise<DesktopExtensionMutationResult>;
@@ -708,6 +732,36 @@ export function createRendererModelClient(
     async listDesktopExtensions(): Promise<DesktopExtensionsListResult> {
       return desktopExtensionsListResultSchema.parse(
         await manager.sendRequest(DESKTOP_EXTENSIONS_LIST_METHOD, {}),
+      );
+    },
+    async listDesktopExtensionCatalog(
+      input: DesktopExtensionsCatalogParams = {},
+    ): Promise<DesktopExtensionsCatalogResult> {
+      return desktopExtensionsCatalogResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_CATALOG_METHOD,
+          desktopExtensionsCatalogParamsSchema.parse(input),
+        ),
+      );
+    },
+    async installDesktopExtension(
+      input: DesktopExtensionsInstallParams,
+    ): Promise<DesktopExtensionsInstallResult> {
+      return desktopExtensionsInstallResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_INSTALL_METHOD,
+          desktopExtensionsInstallParamsSchema.parse(input),
+        ),
+      );
+    },
+    async uninstallDesktopExtension(
+      input: DesktopExtensionsUninstallParams,
+    ): Promise<DesktopExtensionsUninstallResult> {
+      return desktopExtensionsUninstallResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
+          desktopExtensionsUninstallParamsSchema.parse(input),
+        ),
       );
     },
     async enableDesktopExtension(

@@ -97,6 +97,65 @@ describe("Renderer fixed Model request client", () => {
     ]);
   });
 
+  it("validates Desktop extension catalog, install, and uninstall requests and responses", async () => {
+    const emptyList = {
+      configuration: { version: 1, revision: 1, enabled: [] },
+      desktopConnected: true,
+      diagnostics: [],
+      extensions: [],
+    };
+    const catalog = {
+      catalogUrl: "https://example.com/catalog.json",
+      source: "remote" as const,
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+      cached: false,
+      extensions: [],
+    };
+    const installResult = {
+      extensionId: "sidebar-thread-tree",
+      version: "0.2.0",
+      replaced: false,
+      installedPath: "/tmp/desktop-extensions/sidebar-thread-tree",
+      list: emptyList,
+    };
+    const uninstallResult = {
+      removedId: "sidebar-thread-tree",
+      list: emptyList,
+    };
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce(installResult)
+      .mockResolvedValueOnce(uninstallResult);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (
+      !client?.listDesktopExtensionCatalog ||
+      !client.installDesktopExtension ||
+      !client.uninstallDesktopExtension
+    ) {
+      throw new Error("Missing marketplace extension client methods");
+    }
+    await expect(client.listDesktopExtensionCatalog({ forceRefresh: true })).resolves.toEqual(
+      catalog,
+    );
+    await expect(
+      client.installDesktopExtension({
+        source: { type: "catalog", id: "sidebar-thread-tree" },
+      }),
+    ).resolves.toEqual(installResult);
+    await expect(client.uninstallDesktopExtension({ id: "sidebar-thread-tree" })).resolves.toEqual(
+      uninstallResult,
+    );
+    expect(sendRequest.mock.calls).toEqual([
+      ["codexhost/desktop/extensions/catalog", { forceRefresh: true }],
+      [
+        "codexhost/desktop/extensions/install",
+        { source: { type: "catalog", id: "sidebar-thread-tree" } },
+      ],
+      ["codexhost/desktop/extensions/uninstall", { id: "sidebar-thread-tree" }],
+    ]);
+  });
+
   it.each(["check", "update", "install"] as const)(
     "routes Harness installation %s through the fixed Host method",
     async (action) => {
@@ -460,8 +519,10 @@ describe("Renderer fixed Model request client", () => {
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "installDesktopExtension",
       "installation",
       "listCodexAccounts",
+      "listDesktopExtensionCatalog",
       "listDesktopExtensions",
       "listHarnessAccountSources",
       "listHarnessAccounts",
@@ -492,6 +553,7 @@ describe("Renderer fixed Model request client", () => {
       "subscribeHarnessPreferences",
       "subscribeSkillsChanged",
       "subscribeThreadUsage",
+      "uninstallDesktopExtension",
       "updateRemote",
       "watchThreadTree",
     ]);

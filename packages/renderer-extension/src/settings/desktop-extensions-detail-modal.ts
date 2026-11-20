@@ -1,223 +1,40 @@
+import type { DesktopExtensionCatalogEntry } from "@codexhost/shared-contracts";
 import {
-  resolveLocalizedExtensionText,
-  type DesktopExtensionSlot,
-  type DesktopExtensionStatus,
-  type DesktopExtensionsListResult,
-} from "@codexhost/shared-contracts";
-import type { DesktopExtensionsMessages } from "./desktop-extensions-messages.js";
+  blockedToggleReason,
+  catalogDescription,
+  catalogDisplayName,
+  createEl,
+  createTrustBadge,
+  extensionDescription,
+  extensionDisplayName,
+  formatMessage,
+  hasCatalogUpdate,
+  isToggleBlocked,
+  parseSafeRepositoryUrl,
+  resolveAttentionDetail,
+  resolveOptionalLocalizedText,
+  safeScreenshotUrls,
+  splitParagraphs,
+  statusTone,
+  type DesktopExtensionFeedback,
+  type DesktopExtensionItem,
+  type DesktopExtensionMutationAction,
+} from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
 
-export type DesktopExtensionItem = DesktopExtensionsListResult["extensions"][number];
-export type DesktopExtensionBannerTone = "info" | "success" | "warning" | "danger";
-export type DesktopExtensionGroupId = "attention" | "enabled" | "disabled";
-
-export interface DesktopExtensionFeedback {
-  readonly tone: DesktopExtensionBannerTone;
-  readonly text: string;
-  readonly retryable?: boolean;
-}
-
-export interface DesktopExtensionAttentionDetail {
-  readonly tone: "warning" | "danger";
-  readonly text: string;
-}
-
-const SAFE_SCREENSHOT_DATA_URL_PATTERN =
-  /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u;
-
-export function formatMessage(template: string, values: Readonly<Record<string, string>>): string {
-  return template.replace(/\{([a-zA-Z0-9_]+)\}/gu, (match, key: string) => values[key] ?? match);
-}
-
-export function createEl<K extends keyof HTMLElementTagNameMap>(
-  document: Document,
-  tag: K,
-  className = "",
-  text = "",
-): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text) element.textContent = text;
-  return element;
-}
-
-export function extensionGroupOf(state: DesktopExtensionStatus["state"]): DesktopExtensionGroupId {
-  switch (state) {
-    case "failed":
-    case "conflict":
-    case "invalid":
-    case "incompatible":
-      return "attention";
-    case "running":
-    case "waiting":
-      return "enabled";
-    case "disabled":
-      return "disabled";
-  }
-}
-
-export function statusTone(
-  state: DesktopExtensionStatus["state"],
-): DesktopExtensionBannerTone | "neutral" {
-  if (state === "running") return "success";
-  if (state === "waiting") return "info";
-  if (state === "conflict" || state === "incompatible") return "warning";
-  if (state === "failed" || state === "invalid") return "danger";
-  return "neutral";
-}
-
-function resolveOptionalLocalizedText(
-  value: { en: string; "zh-CN"?: string | undefined } | undefined,
-  locale: RendererSettingsMessages["locale"],
-): string | null {
-  if (!value) return null;
-  const localized =
-    value["zh-CN"] !== undefined ? { en: value.en, "zh-CN": value["zh-CN"] } : { en: value.en };
-  const trimmed = resolveLocalizedExtensionText(localized, locale).trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-export function extensionDisplayName(
-  item: DesktopExtensionItem,
-  locale: RendererSettingsMessages["locale"],
-): string {
-  return item.manifest ? resolveLocalizedExtensionText(item.manifest.name, locale) : item.id;
-}
-
-export function extensionDescription(
-  item: DesktopExtensionItem,
-  locale: RendererSettingsMessages["locale"],
-): string | null {
-  return resolveOptionalLocalizedText(item.manifest?.description, locale);
-}
-
-export function extensionDetailsParagraphs(
-  item: DesktopExtensionItem,
-  locale: RendererSettingsMessages["locale"],
-): string[] {
-  const raw =
-    resolveOptionalLocalizedText(item.manifest?.details, locale) ??
-    extensionDescription(item, locale);
-  if (!raw) return [];
-  return raw
-    .split(/\r?\n\s*\r?\n+/u)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 0);
-}
-
-export function parseSafeRepositoryUrl(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null;
-  } catch {
-    return null;
-  }
-}
-
-function safeScreenshotDataUrls(item: DesktopExtensionItem): readonly string[] {
-  const urls = item.screenshotDataUrls;
-  if (!urls || urls.length === 0) return [];
-  return urls.filter((url) => SAFE_SCREENSHOT_DATA_URL_PATTERN.test(url));
-}
-
-export function formatSlotLabel(
-  slot: DesktopExtensionSlot,
-  copy: DesktopExtensionsMessages,
-): string {
-  const localized = copy.slots[slot];
-  return localized ? `${localized} (${slot})` : slot;
-}
-
-export function describeOtherExtension(
-  conflictWithId: string,
-  extensions: readonly DesktopExtensionItem[],
-  locale: RendererSettingsMessages["locale"],
-): string {
-  const other = extensions.find((item) => item.id === conflictWithId);
-  const name = other?.manifest
-    ? resolveLocalizedExtensionText(other.manifest.name, locale)
-    : undefined;
-  return name && name !== conflictWithId ? `${name} (${conflictWithId})` : conflictWithId;
-}
-
-export function overlappingSlots(
-  target: DesktopExtensionItem,
-  conflictWithId: string,
-  extensions: readonly DesktopExtensionItem[],
-): readonly DesktopExtensionSlot[] {
-  const targetSlots = target.manifest?.slots ?? [];
-  if (targetSlots.length === 0) return [];
-  const otherSlots = extensions.find((item) => item.id === conflictWithId)?.manifest?.slots;
-  if (!otherSlots || otherSlots.length === 0) return targetSlots;
-  const shared = targetSlots.filter((slot) => otherSlots.includes(slot));
-  return shared.length > 0 ? shared : targetSlots;
-}
-
-export function isToggleBlocked(item: DesktopExtensionItem): boolean {
-  if (item.enabled) return false;
-  return (
-    item.status.state === "incompatible" ||
-    item.status.state === "invalid" ||
-    item.manifest === undefined
-  );
-}
-
-export function blockedToggleReason(
-  item: DesktopExtensionItem,
-  copy: DesktopExtensionsMessages,
-): string {
-  if (item.status.error) return item.status.error;
-  return item.status.state === "incompatible"
-    ? copy.toggleDisabledIncompatible
-    : copy.toggleDisabledInvalid;
-}
-
-export function resolveAttentionDetail(
-  item: DesktopExtensionItem,
-  allExtensions: readonly DesktopExtensionItem[],
-  locale: RendererSettingsMessages["locale"],
-  copy: DesktopExtensionsMessages,
-): DesktopExtensionAttentionDetail | null {
-  if (extensionGroupOf(item.status.state) !== "attention") return null;
-  if (item.status.conflictWith) {
-    const other = describeOtherExtension(item.status.conflictWith, allExtensions, locale);
-    const shared = overlappingSlots(item, item.status.conflictWith, allExtensions);
-    return {
-      tone: "warning",
-      text:
-        shared.length > 0
-          ? formatMessage(copy.conflictSlotDetails, {
-              slots: shared.map((slot) => formatSlotLabel(slot, copy)).join(", "),
-              other,
-            })
-          : formatMessage(copy.conflictOccupiedBy, { other }),
-    };
-  }
-  if (item.status.error) {
-    return {
-      tone: item.status.state === "incompatible" ? "warning" : "danger",
-      text: item.status.error,
-    };
-  }
-  if (isToggleBlocked(item)) {
-    return {
-      tone: item.status.state === "incompatible" ? "warning" : "danger",
-      text: blockedToggleReason(item, copy),
-    };
-  }
-  return null;
-}
+export * from "./desktop-extensions-shared.js";
 
 export interface DesktopExtensionDetailModalState {
   readonly extensions: readonly DesktopExtensionItem[];
+  readonly catalogExtensions: readonly DesktopExtensionCatalogEntry[];
   readonly unavailable: boolean;
+  readonly canInstall: boolean;
+  readonly canUninstall: boolean;
   readonly mutating: boolean;
   readonly activeMutationId: string | null;
+  readonly activeMutationAction: DesktopExtensionMutationAction | null;
   readonly feedback: DesktopExtensionFeedback | null;
 }
 
@@ -236,9 +53,11 @@ export function createDesktopExtensionDetailModal(options: {
   readonly signal: AbortSignal;
   readonly messages: RendererSettingsMessages;
   readonly onToggle: (item: DesktopExtensionItem, enable: boolean) => void;
+  readonly onInstall?: (entry: DesktopExtensionCatalogEntry, isUpdate: boolean) => void;
+  readonly onUninstall?: (item: DesktopExtensionItem) => void;
   readonly onClose?: () => void;
 }): DesktopExtensionDetailModalController {
-  const { document, host, signal, messages, onToggle, onClose } = options;
+  const { document, host, signal, messages, onToggle, onInstall, onUninstall, onClose } = options;
   const copy = messages.desktopExtensions;
 
   let dialog: HTMLDialogElement | null = null;
@@ -246,13 +65,16 @@ export function createDesktopExtensionDetailModal(options: {
   let activeScreenshotIndex: number | null = null;
   let renderedScreenshotsKey = "";
   let techExpanded = false;
-  let currentItem: DesktopExtensionItem | null = null;
-  let currentMutating = false;
+  let confirmingUninstall = false;
+  let currentItem: DesktopExtensionItem | undefined;
+  let currentCatalogEntry: DesktopExtensionCatalogEntry | undefined;
+  let currentState: DesktopExtensionDetailModalState | null = null;
 
-  // Persistent DOM nodes inside the open modal so 5s polls update in-place cleanly.
+  // Persistent DOM nodes inside the open modal so background polls update in-place cleanly.
+  let titleRow: HTMLDivElement | null = null;
   let titleEl: HTMLHeadingElement | null = null;
-  let statusBadge: HTMLSpanElement | null = null;
   let metaRow: HTMLDivElement | null = null;
+  let actionBar: HTMLDivElement | null = null;
   let modalToggle: HTMLInputElement | null = null;
   let feedbackBar: HTMLDivElement | null = null;
   let attentionBar: HTMLDivElement | null = null;
@@ -306,9 +128,14 @@ export function createDesktopExtensionDetailModal(options: {
     if (previewNextButton) previewNextButton.hidden = total <= 1;
   };
 
-  const renderScreenshots = (item: DesktopExtensionItem, displayName: string): void => {
+  const renderScreenshots = (
+    extensionId: string,
+    installed: DesktopExtensionItem | undefined,
+    catalogEntry: DesktopExtensionCatalogEntry | undefined,
+    displayName: string,
+  ): void => {
     if (!screenshotsSection || !galleryGrid) return;
-    const urls = safeScreenshotDataUrls(item);
+    const urls = safeScreenshotUrls(installed, catalogEntry);
     currentScreenshots = urls;
     currentDisplayName = displayName;
     if (urls.length === 0) {
@@ -321,7 +148,7 @@ export function createDesktopExtensionDetailModal(options: {
     }
 
     screenshotsSection.hidden = false;
-    const signature = `${item.id}\0${urls.join("\0")}`;
+    const signature = `${extensionId}\0${urls.join("\0")}`;
     if (signature === renderedScreenshotsKey) {
       syncPreviewStage();
       return;
@@ -364,15 +191,157 @@ export function createDesktopExtensionDetailModal(options: {
     syncPreviewStage();
   };
 
+  const renderActions = (
+    extensionId: string,
+    displayName: string,
+    installed: DesktopExtensionItem | undefined,
+    catalogEntry: DesktopExtensionCatalogEntry | undefined,
+    state: DesktopExtensionDetailModalState,
+  ): void => {
+    if (!actionBar || !modalToggle) return;
+    const updateAvailable = hasCatalogUpdate(installed, catalogEntry);
+    const isBusyThis = state.activeMutationId === extensionId;
+    const nodes: HTMLElement[] = [];
+
+    if (!installed && catalogEntry) {
+      const installButton = createEl(
+        document,
+        "button",
+        "settings-command-button",
+        isBusyThis && state.activeMutationAction === "install" ? copy.installing : copy.install,
+      );
+      installButton.type = "button";
+      installButton.dataset.action = "install";
+      installButton.disabled = state.mutating || !state.canInstall;
+      installButton.addEventListener("click", () => {
+        if (!installButton.disabled) onInstall?.(catalogEntry, false);
+      });
+      nodes.push(installButton);
+
+      if (catalogEntry.trustTier === "community") {
+        const note = createEl(
+          document,
+          "span",
+          "settings-extensions-detail-modal__community-note",
+          copy.communityNotice,
+        );
+        nodes.push(note);
+      }
+    } else if (installed) {
+      if (catalogEntry && updateAvailable) {
+        const updateButton = createEl(
+          document,
+          "button",
+          "settings-command-button",
+          isBusyThis && state.activeMutationAction === "update"
+            ? copy.updating
+            : formatMessage(copy.updateToVersion, { version: catalogEntry.version }),
+        );
+        updateButton.type = "button";
+        updateButton.dataset.action = "update";
+        updateButton.disabled = state.mutating || !state.canInstall;
+        updateButton.addEventListener("click", () => {
+          if (!updateButton.disabled) onInstall?.(catalogEntry, true);
+        });
+        nodes.push(updateButton);
+      }
+
+      const blocked = isToggleBlocked(installed);
+      modalToggle.checked = installed.enabled;
+      modalToggle.disabled = state.mutating || blocked;
+      modalToggle.setAttribute(
+        "aria-label",
+        formatMessage(copy.toggleLabel, { name: displayName }),
+      );
+      modalToggle.title = blocked ? blockedToggleReason(installed, copy) : "";
+      nodes.push(modalToggle);
+
+      if (state.canUninstall) {
+        if (confirmingUninstall) {
+          const confirmGroup = createEl(
+            document,
+            "div",
+            "settings-extensions-detail-modal__confirm",
+          );
+          const prompt = createEl(
+            document,
+            "span",
+            "settings-extensions-detail-modal__confirm-text",
+            copy.uninstallConfirmPrompt,
+          );
+          const confirmButton = createEl(
+            document,
+            "button",
+            "settings-command-button settings-command-button--secondary settings-command-button--danger",
+            isBusyThis && state.activeMutationAction === "uninstall"
+              ? copy.uninstalling
+              : copy.uninstallConfirm,
+          );
+          confirmButton.type = "button";
+          confirmButton.dataset.action = "confirm-uninstall";
+          confirmButton.disabled = state.mutating;
+          confirmButton.addEventListener("click", () => {
+            if (!confirmButton.disabled) onUninstall?.(installed);
+          });
+
+          const cancelButton = createEl(
+            document,
+            "button",
+            "settings-command-button settings-command-button--secondary",
+            copy.uninstallCancel,
+          );
+          cancelButton.type = "button";
+          cancelButton.dataset.action = "cancel-uninstall";
+          cancelButton.disabled = state.mutating;
+          cancelButton.addEventListener("click", () => {
+            if (state.mutating) return;
+            confirmingUninstall = false;
+            if (currentState)
+              renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
+          });
+
+          confirmGroup.append(prompt, confirmButton, cancelButton);
+          nodes.push(confirmGroup);
+        } else {
+          const uninstallButton = createEl(
+            document,
+            "button",
+            "settings-command-button settings-command-button--secondary settings-command-button--danger",
+          );
+          uninstallButton.type = "button";
+          uninstallButton.dataset.action = "uninstall";
+          uninstallButton.disabled = state.mutating;
+          uninstallButton.append(
+            createRendererSettingsIcon("trash", 13),
+            createEl(document, "span", "", copy.uninstall),
+          );
+          uninstallButton.addEventListener("click", () => {
+            if (state.mutating) return;
+            confirmingUninstall = true;
+            if (currentState)
+              renderContent(extensionId, currentItem, currentCatalogEntry, currentState);
+          });
+          nodes.push(uninstallButton);
+        }
+      }
+    }
+
+    actionBar.hidden = nodes.length === 0;
+    actionBar.replaceChildren(...nodes);
+  };
+
   const renderContent = (
-    item: DesktopExtensionItem,
+    extensionId: string,
+    installed: DesktopExtensionItem | undefined,
+    catalogEntry: DesktopExtensionCatalogEntry | undefined,
     state: DesktopExtensionDetailModalState,
   ): void => {
     if (
       !dialog ||
+      !titleRow ||
       !titleEl ||
-      !statusBadge ||
       !metaRow ||
+      !actionBar ||
       !modalToggle ||
       !feedbackBar ||
       !attentionBar ||
@@ -383,45 +352,96 @@ export function createDesktopExtensionDetailModal(options: {
       return;
     }
 
-    currentItem = item;
-    currentMutating = state.mutating;
+    currentItem = installed;
+    currentCatalogEntry = catalogEntry;
+    currentState = state;
+    if (!installed) {
+      confirmingUninstall = false;
+    }
 
-    const displayName = extensionDisplayName(item, messages.locale);
-    dialog.dataset.extensionId = item.id;
-    dialog.dataset.extensionState = item.status.state;
-    if (state.activeMutationId === item.id) dialog.dataset.busy = "true";
+    const displayName = installed?.manifest
+      ? extensionDisplayName(installed, messages.locale)
+      : catalogEntry
+        ? catalogDisplayName(catalogEntry, messages.locale)
+        : extensionId;
+    const updateAvailable = hasCatalogUpdate(installed, catalogEntry);
+
+    dialog.dataset.extensionId = extensionId;
+    if (installed) {
+      dialog.dataset.extensionState = installed.status.state;
+    } else {
+      delete dialog.dataset.extensionState;
+    }
+    if (state.activeMutationId === extensionId) dialog.dataset.busy = "true";
     else delete dialog.dataset.busy;
 
+    // Title row: bilingual title + trust tier badge + installed status badge + update chip.
     titleEl.textContent = displayName;
-    statusBadge.textContent = copy.states[item.status.state];
-    statusBadge.dataset.state = item.status.state;
-    statusBadge.dataset.tone = statusTone(item.status.state);
+    const titleNodes: HTMLElement[] = [titleEl];
+    if (catalogEntry) {
+      titleNodes.push(createTrustBadge(document, catalogEntry.trustTier, copy));
+    }
+    if (installed) {
+      const statusBadge = createEl(
+        document,
+        "span",
+        "settings-extensions-badge",
+        copy.states[installed.status.state],
+      );
+      statusBadge.dataset.state = installed.status.state;
+      statusBadge.dataset.tone = statusTone(installed.status.state);
+      titleNodes.push(statusBadge);
+    }
+    if (updateAvailable) {
+      const updateBadge = createEl(
+        document,
+        "span",
+        "settings-extensions-update-chip",
+        copy.updateAvailable,
+      );
+      titleNodes.push(updateBadge);
+    }
+    titleRow.replaceChildren(...titleNodes);
 
     // Header metadata: author, version, category chips, GitHub repository link.
     const metaNodes: HTMLElement[] = [];
-    if (item.manifest?.author) {
+    const author = installed?.manifest?.author ?? catalogEntry?.author;
+    if (author) {
       metaNodes.push(
         createEl(
           document,
           "span",
           "settings-extensions-detail-modal__author",
-          formatMessage(copy.authorBy, { author: item.manifest.author }),
+          formatMessage(copy.authorBy, { author }),
         ),
       );
     }
-    if (item.manifest?.version) {
+
+    const installedVersion = installed?.manifest?.version;
+    const catalogVersion = catalogEntry?.version;
+    if (installedVersion) {
+      const versionLabel =
+        updateAvailable && catalogVersion
+          ? `v${installedVersion} → v${catalogVersion}`
+          : `v${installedVersion}`;
+      metaNodes.push(
+        createEl(document, "span", "settings-extensions-detail-modal__version", versionLabel),
+      );
+    } else if (catalogVersion) {
       metaNodes.push(
         createEl(
           document,
           "span",
           "settings-extensions-detail-modal__version",
-          `v${item.manifest.version}`,
+          `v${catalogVersion}`,
         ),
       );
     }
-    if (item.manifest?.categories && item.manifest.categories.length > 0) {
+
+    const categories = installed?.manifest?.categories ?? catalogEntry?.categories;
+    if (categories && categories.length > 0) {
       const categoriesRow = createEl(document, "div", "settings-extensions-categories");
-      for (const category of item.manifest.categories) {
+      for (const category of categories) {
         const chip = createEl(
           document,
           "span",
@@ -433,7 +453,10 @@ export function createDesktopExtensionDetailModal(options: {
       }
       metaNodes.push(categoriesRow);
     }
-    const repositoryHref = parseSafeRepositoryUrl(item.manifest?.repository);
+
+    const repositoryHref = parseSafeRepositoryUrl(
+      installed?.manifest?.repository ?? catalogEntry?.repository,
+    );
     if (repositoryHref) {
       const repoLink = createEl(document, "a", "settings-extensions-detail-modal__repo");
       repoLink.href = repositoryHref;
@@ -450,14 +473,10 @@ export function createDesktopExtensionDetailModal(options: {
     metaRow.hidden = metaNodes.length === 0;
     metaRow.replaceChildren(...metaNodes);
 
-    // Header toggle switch.
-    const blocked = isToggleBlocked(item);
-    modalToggle.checked = item.enabled;
-    modalToggle.disabled = state.mutating || blocked;
-    modalToggle.setAttribute("aria-label", formatMessage(copy.toggleLabel, { name: displayName }));
-    modalToggle.title = blocked ? blockedToggleReason(item, copy) : "";
+    // Action bar (Install / Update / Toggle / Uninstall with inline confirmation).
+    renderActions(extensionId, displayName, installed, catalogEntry, state);
 
-    // Modal-scoped feedback banner (e.g. slot conflict / save result triggered inside modal).
+    // Modal-scoped feedback banner.
     if (state.feedback) {
       feedbackBar.hidden = false;
       feedbackBar.dataset.tone = state.feedback.tone;
@@ -473,7 +492,9 @@ export function createDesktopExtensionDetailModal(options: {
     }
 
     // Attention diagnostic banner inside modal body.
-    const attention = resolveAttentionDetail(item, state.extensions, messages.locale, copy);
+    const attention = installed
+      ? resolveAttentionDetail(installed, state.extensions, messages.locale, copy)
+      : null;
     if (attention) {
       attentionBar.hidden = false;
       attentionBar.dataset.tone = attention.tone;
@@ -488,7 +509,12 @@ export function createDesktopExtensionDetailModal(options: {
     }
 
     // Multi-paragraph bilingual details (fallback to description).
-    const paragraphs = extensionDetailsParagraphs(item, messages.locale);
+    const rawDetails =
+      resolveOptionalLocalizedText(installed?.manifest?.details, messages.locale) ??
+      resolveOptionalLocalizedText(catalogEntry?.details, messages.locale) ??
+      (installed ? extensionDescription(installed, messages.locale) : null) ??
+      (catalogEntry ? catalogDescription(catalogEntry, messages.locale) : null);
+    const paragraphs = splitParagraphs(rawDetails);
     if (paragraphs.length > 0) {
       descriptionSection.hidden = false;
       descriptionSection.replaceChildren(
@@ -502,9 +528,9 @@ export function createDesktopExtensionDetailModal(options: {
     }
 
     // Screenshots gallery + interactive large preview.
-    renderScreenshots(item, displayName);
+    renderScreenshots(extensionId, installed, catalogEntry, displayName);
 
-    // Subtle bottom technical details (ID, declared slots, hash, diagnostics).
+    // Subtle bottom collapsible technical details.
     techDetails.open = techExpanded;
     const techRows: HTMLElement[] = [];
     const appendTechRow = (label: string, valueNode: HTMLElement): void => {
@@ -516,11 +542,12 @@ export function createDesktopExtensionDetailModal(options: {
       techRows.push(row);
     };
 
-    appendTechRow(copy.detailId, createEl(document, "code", "", item.id));
+    appendTechRow(copy.detailId, createEl(document, "code", "", extensionId));
 
-    if (item.manifest) {
+    const slots = installed?.manifest?.slots ?? catalogEntry?.slots;
+    if (slots !== undefined) {
       const slotsRow = createEl(document, "div", "settings-extensions-slots");
-      if (item.manifest.slots.length === 0) {
+      if (slots.length === 0) {
         slotsRow.append(
           createEl(
             document,
@@ -530,7 +557,7 @@ export function createDesktopExtensionDetailModal(options: {
           ),
         );
       } else {
-        for (const slot of item.manifest.slots) {
+        for (const slot of slots) {
           const chip = createEl(
             document,
             "span",
@@ -545,10 +572,14 @@ export function createDesktopExtensionDetailModal(options: {
       appendTechRow(copy.detailSlots, slotsRow);
     }
 
-    if (item.status.hash) {
-      const hashCode = createEl(document, "code", "", item.status.hash);
-      hashCode.title = item.status.hash;
+    if (installed?.status.hash) {
+      const hashCode = createEl(document, "code", "", installed.status.hash);
+      hashCode.title = installed.status.hash;
       appendTechRow(copy.detailHash, hashCode);
+    } else if (!installed && catalogEntry?.sha256) {
+      const shaCode = createEl(document, "code", "", catalogEntry.sha256);
+      shaCode.title = catalogEntry.sha256;
+      appendTechRow(copy.detailSha256, shaCode);
     }
 
     if (attention) {
@@ -566,12 +597,16 @@ export function createDesktopExtensionDetailModal(options: {
     activeScreenshotIndex = null;
     renderedScreenshotsKey = "";
     techExpanded = false;
-    currentItem = null;
+    confirmingUninstall = false;
+    currentItem = undefined;
+    currentCatalogEntry = undefined;
+    currentState = null;
     currentScreenshots = [];
     currentDisplayName = "";
+    titleRow = null;
     titleEl = null;
-    statusBadge = null;
     metaRow = null;
+    actionBar = null;
     modalToggle = null;
     feedbackBar = null;
     attentionBar = null;
@@ -606,27 +641,15 @@ export function createDesktopExtensionDetailModal(options: {
 
     // Header
     const modalHeader = createEl(document, "div", "settings-extensions-detail-modal__header");
+    const headerTop = createEl(document, "div", "settings-extensions-detail-modal__header-top");
     const headerIdentity = createEl(document, "div", "settings-extensions-detail-modal__identity");
-    const titleRow = createEl(document, "div", "settings-extensions-detail-modal__title-row");
+    titleRow = createEl(document, "div", "settings-extensions-detail-modal__title-row");
     titleEl = createEl(document, "h2", "settings-extensions-detail-modal__title");
     titleEl.id = titleId;
-    statusBadge = createEl(document, "span", "settings-extensions-badge");
-    titleRow.append(titleEl, statusBadge);
+    titleRow.append(titleEl);
 
     metaRow = createEl(document, "div", "settings-extensions-detail-modal__meta");
     headerIdentity.append(titleRow, metaRow);
-
-    const headerActions = createEl(document, "div", "settings-extensions-detail-modal__actions");
-    modalToggle = createPreferenceSwitch(document, switchId, alertId);
-    modalToggle.addEventListener("change", () => {
-      if (!currentItem || !modalToggle) return;
-      const desired = modalToggle.checked;
-      if (currentMutating || isToggleBlocked(currentItem)) {
-        modalToggle.checked = currentItem.enabled;
-        return;
-      }
-      onToggle(currentItem, desired);
-    });
 
     const closeButton = createEl(
       document,
@@ -641,8 +664,21 @@ export function createDesktopExtensionDetailModal(options: {
       modal.close();
     });
 
-    headerActions.append(modalToggle, closeButton);
-    modalHeader.append(headerIdentity, headerActions);
+    headerTop.append(headerIdentity, closeButton);
+
+    actionBar = createEl(document, "div", "settings-extensions-detail-modal__action-bar");
+    modalToggle = createPreferenceSwitch(document, switchId, alertId);
+    modalToggle.addEventListener("change", () => {
+      if (!currentItem || !modalToggle) return;
+      const desired = modalToggle.checked;
+      if (currentState?.mutating || isToggleBlocked(currentItem)) {
+        modalToggle.checked = currentItem.enabled;
+        return;
+      }
+      onToggle(currentItem, desired);
+    });
+
+    modalHeader.append(headerTop, actionBar);
 
     // Body
     const modalBody = createEl(document, "div", "settings-extensions-detail-modal__body");
@@ -800,6 +836,17 @@ export function createDesktopExtensionDetailModal(options: {
     modal.showModal();
   };
 
+  const resolveEntries = (
+    extensionId: string,
+    state: DesktopExtensionDetailModalState,
+  ): {
+    installed: DesktopExtensionItem | undefined;
+    catalogEntry: DesktopExtensionCatalogEntry | undefined;
+  } => ({
+    installed: state.extensions.find((entry) => entry.id === extensionId),
+    catalogEntry: state.catalogExtensions.find((entry) => entry.id === extensionId),
+  });
+
   return {
     get extensionId() {
       return openExtensionId;
@@ -809,16 +856,17 @@ export function createDesktopExtensionDetailModal(options: {
     },
     open(extensionId, state) {
       if (signal.aborted || state.unavailable) return;
-      const item = state.extensions.find((entry) => entry.id === extensionId);
-      if (!item) return;
+      const { installed, catalogEntry } = resolveEntries(extensionId, state);
+      if (!installed && !catalogEntry) return;
       if (openExtensionId !== extensionId) {
         activeScreenshotIndex = null;
         renderedScreenshotsKey = "";
         techExpanded = false;
+        confirmingUninstall = false;
       }
       openExtensionId = extensionId;
       ensureDialog();
-      renderContent(item, state);
+      renderContent(extensionId, installed, catalogEntry, state);
     },
     sync(state) {
       if (!openExtensionId || !dialog) return;
@@ -826,12 +874,12 @@ export function createDesktopExtensionDetailModal(options: {
         dialog.close();
         return;
       }
-      const item = state.extensions.find((entry) => entry.id === openExtensionId);
-      if (!item) {
+      const { installed, catalogEntry } = resolveEntries(openExtensionId, state);
+      if (!installed && !catalogEntry) {
         dialog.close();
         return;
       }
-      renderContent(item, state);
+      renderContent(openExtensionId, installed, catalogEntry, state);
     },
     close() {
       dialog?.close();

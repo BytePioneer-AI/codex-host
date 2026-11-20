@@ -65,7 +65,7 @@ async function refreshCatalog(
     fetchedAt: new Date().toISOString(),
     cached: false,
     extensions: fallback,
-    error: "Desktop extension catalog unavailable; showing the built-in official entries",
+    error: "Desktop extension catalog unavailable",
   };
 }
 

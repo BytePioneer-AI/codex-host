@@ -27,8 +27,8 @@
 
 ## 5. 样板、边界与验收
 
-- [x] 5.1 在 `tools/check-boundaries.mjs` 中增加规则：`packages/desktop-extensions/**/src` 只能导入相对路径和 `@codexhost/shared-contracts`。新增 `tools/build-desktop-extension.mjs`（esbuild 打包单文件并写出 manifest）。新增样板 `packages/desktop-extensions/sidebar-delegation-badges`（移植 #926，声明 `sidebar.thread-badge`）和 `sidebar-thread-tree`（移植 #947，声明两个槽位，用 `dom.mark` 加 CSS 隐藏原生子行）。验证：在 `tools/check-boundaries.test.mjs` 的现有用例表中加入合法与违规导入；构建两个样板时生成的 manifest 能通过 1.1 的 schema；只为 #947 由快照计算树的逻辑补聚焦测试。
-- [x] 5.2 新增 `docs/architecture/desktop-ui-extensions.md`，写现状行为、目录与 manifest、API v1、槽位、回收承诺与边界、作者指南、兜底流程和 v2 预留；更新 `docs/index.md`，并在 CLAUDE.md 的代码布局中加入 `packages/desktop-extensions/`，同时更新 `harness-plugin-files` 的描述。验证：文档中的链接可达，描述与已实现的行为一致。
+- [x] 5.1 新增 `tools/build-desktop-extension.mjs`（esbuild 打包单文件并写出 manifest），用 #926 和 #947 的适配样板验证构建、导入约束和 v1 manifest。样板源码及其专用测试存于 `handoff/desktop-extensions-926-947`。
+- [x] 5.2 新增 `docs/architecture/desktop-ui-extensions.md`，写现状行为、目录与 manifest、API v1、槽位、回收承诺与边界、作者指南、兜底流程和 v2 预留；更新 `docs/index.md`，并更新 CLAUDE.md 中 `harness-plugin-files` 的描述。验证：文档中的链接可达，描述与已实现的行为一致。
 - [ ] 5.3 按 `codexhost-isolated-testing` 在独立数据目录的 Desktop 中验收以下流程：启用委派树样板后无需刷新即可生效 → 启用角标样板时被拒绝并提示冲突 → 禁用委派树后原生侧栏恢复 → 启用角标样板，Web 发起的子 Thread 显示为运行中 → 修改样板文件后完成热更新且只有一个实例 → 重载窗口后仍只有一个实例 → Controller 重启保留原实例，离线重载不运行扩展、重连后按最新选择恢复（方案 A）→ 让样板抛出异常，确认显示为失败且其他功能正常 → 执行"禁用全部并重载"。记录实际验证范围和跳过项；未实际运行的步骤不得标记为完成，也不用 `npm start` 代替验证。
 
 ### 5.3 验收记录

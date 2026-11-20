@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -74,6 +74,19 @@ async function syncCatalog() {
   expect(failed, markdown).toBe(false);
   return readFile(new URL("catalog.json", directory), "utf8");
 }
+
+it("syncs the empty registry template without fetching any packages", async () => {
+  const template = new URL("../../../registry/desktop-extensions/", import.meta.url);
+  for (const file of ["sources.json", "catalog.json"]) {
+    await copyFile(new URL(file, template), new URL(file, directory));
+  }
+  const fetch = vi.fn(() => {
+    throw new Error("Unexpected request for an empty registry");
+  });
+  vi.stubGlobal("fetch", fetch);
+  expect(JSON.parse(await syncCatalog())).toMatchObject({ schemaVersion: 1, extensions: [] });
+  expect(fetch).not.toHaveBeenCalled();
+});
 
 it("writes stargazers_count for both assets using a single authenticated repository request", async () => {
   vi.stubEnv("GITHUB_TOKEN", "test-token");

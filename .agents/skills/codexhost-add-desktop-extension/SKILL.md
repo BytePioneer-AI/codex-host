@@ -15,7 +15,7 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
 
 ## 1. 声明扩展元数据和槽位
 
-从 [`sidebar-delegation-badges`](../../../packages/desktop-extensions/sidebar-delegation-badges) 或 [`sidebar-thread-tree`](../../../packages/desktop-extensions/sidebar-thread-tree) 选一个样板。源码放在 `<source-dir>/src/index.ts`，可选样式为 `<source-dir>/src/desktop.css`。安装目录是 `$CODEXHOST_DATA_DIR/desktop-extensions/<id>/`，内有 `manifest.json`、`desktop.js`、可选 `desktop.css`。目录名与 `id` 一致；复制文件不等于启用。
+在扩展自己的仓库中准备源码目录 `<source-dir>`：在根放 `manifest.json`，入口放 `src/index.ts`，可选样式放 `src/desktop.css`。安装目录是 `$CODEXHOST_DATA_DIR/desktop-extensions/<id>/`，内有 `manifest.json`、`desktop.js`、可选 `desktop.css`。目录名与 `id` 一致；复制文件不等于启用。
 
 ```json
 {
@@ -24,8 +24,6 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
   "name": { "en": "Example Thread Tree", "zh-CN": "示例委派树" },
   "version": "0.1.0",
   "description": { "en": "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
-  "author": "codexhost",
-  "repository": "https://github.com/BytePioneer-AI/codex-host",
   "details": {
     "en": "Expand a parent Thread to see its delegated work.\n\nOnly local sidebar rows are affected.",
     "zh-CN": "展开父 Thread，查看委派的工作。\n\n仅影响本机侧栏行。"
@@ -66,6 +64,15 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
 
 纯后端跳过 `define`，直接看下方的 Node 入口。界面入口的构建产物为经典 JavaScript，不是 ESM 入口；脚本加载时同步调用一次 `define`。`activate` 可返回清理函数，也可以异步返回清理函数或 `void`。用下列原语实现，不接入私有 React 对象、通用 Host RPC 或原生进程。
 
+最小 TypeScript 入口（`src/index.ts`）：
+
+```ts
+import type { DesktopExtensionDefine } from "@codexhost/shared-contracts";
+
+declare const define: DesktopExtensionDefine;
+define({ activate() {} });
+```
+
 | v1 原语                                                            | 用法                                                                                                 |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `api.sidebar.observeRows(cb)`                                      | 观察行；跳过 `isLocal === false`、没有 `threadId` 的草稿行和已断开的行。返回取消函数。               |
@@ -100,14 +107,15 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
 
    ```bash
    : "${CODEXHOST_DATA_DIR:?请先设置独立的测试数据目录}"
+   : "${EXTENSION_SOURCE_DIR:?请先设置扩展源码目录}"
    npx tsc -b packages/harness-plugin-files
-   node tools/build-desktop-extension.mjs packages/desktop-extensions/sidebar-thread-tree \
+   node tools/build-desktop-extension.mjs "$EXTENSION_SOURCE_DIR" \
      "$CODEXHOST_DATA_DIR/desktop-extensions"
    ```
 
-   将样板路径替换为实际源码目录。此工具只构建界面入口和样式，并原样复制声明的 Logo 和截图。含后端或其他资源时，自行构建并按 manifest 的相对路径放入 ZIP，再通过 Console 安装。安装不启用新扩展；目录和文件须归当前用户所有，不允许同组或其他用户写入。
+   此工具只构建界面入口和样式，并原样复制声明的 Logo 和截图。含后端或其他资源时，自行构建并按 manifest 的相对路径放入 ZIP，再通过 Console 安装。安装不启用新扩展；目录和文件须归当前用户所有，不允许同组或其他用户写入。
 
-3. 在 Console 的扩展页启用。确认从等待进入运行中；重复构建一次确认热更新且没有旧实例；禁用后原生行恢复。验证远程行不变；使用同槽位样板验证冲突提示包含占用者。记录实际验证范围。
+3. 在 Console 的扩展页启用。确认从等待进入运行中；重复构建一次确认热更新且没有旧实例；禁用后原生行恢复。验证远程行不变；用另一个声明同一槽位的测试扩展验证冲突提示包含占用者。记录实际验证范围。
 4. 看不到扩展时，核对数据目录、目录名、manifest 与权限。等待状态时确认 Desktop 主窗口已建立界面控制；失败时先看状态原因和声明的文件，修复后重新构建。若 Desktop 无法操作，在独立的 **Console → 扩展** 选择「禁用全部扩展并重载 Desktop」；选择会立即保存，有在线 Controller 时才执行窗口重载。
 
 完成条件：报告构建产物位置、启停/热更新/冲突结果，以及未验证项。

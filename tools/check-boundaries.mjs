@@ -38,11 +38,6 @@ function packageRootFor(filePath) {
   return undefined;
 }
 
-function isDesktopExtensionSource(filePath, packagesDirectory) {
-  const root = resolve(packagesDirectory, "desktop-extensions");
-  return isInside(filePath, root) && relative(root, dirname(filePath)).split(sep).includes("src");
-}
-
 function moduleSpecifiers(sourceText, filePath) {
   const sourceFile = ts.createSourceFile(
     filePath,
@@ -104,21 +99,8 @@ export function findSourceBoundaryViolations({
   sharedContractsDirectory = sharedContractsRoot,
 }) {
   const violations = [];
-  const isExtension = isDesktopExtensionSource(filePath, packagesDirectory);
 
   for (const specifier of moduleSpecifiers(sourceText, filePath)) {
-    if (isExtension && specifier !== "@codexhost/shared-contracts") {
-      const isLocal =
-        specifier !== null &&
-        /^(\.\.?)[/]/u.test(specifier) &&
-        isInside(resolve(dirname(filePath), specifier), packageRoot);
-      if (!isLocal) {
-        violations.push(
-          `${filePath}: Desktop extensions can only import local paths and '@codexhost/shared-contracts', not ${specifier === null ? "a computed specifier" : `'${specifier}'`}`,
-        );
-        continue;
-      }
-    }
     if (specifier === null) continue;
     if (
       isInside(filePath, resolve(packagesDirectory, "host-runtime", "src")) &&
@@ -189,11 +171,7 @@ async function sourceFiles(directory) {
     if (entry.isDirectory()) {
       if (entry.name === "dist" || entry.name === "node_modules") continue;
       files.push(...(await sourceFiles(entryPath)));
-    } else if (
-      entry.isFile() &&
-      (/\.tsx?$/u.test(entry.name) ||
-        (isDesktopExtensionSource(entryPath, packagesRoot) && /\.[cm]?[jt]sx?$/u.test(entry.name)))
-    ) {
+    } else if (entry.isFile() && /\.tsx?$/u.test(entry.name)) {
       files.push(entryPath);
     }
   }

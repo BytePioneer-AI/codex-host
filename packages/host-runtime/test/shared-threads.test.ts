@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -68,9 +68,16 @@ function setup() {
     owner.output.end();
     rmSync(directory, { recursive: true, force: true });
   });
-  function front(delegateCreates: boolean, connect = async () => owner.connect()) {
+  function front(
+    delegateCreates: boolean,
+    connect = async () => owner.connect(),
+    mappingStoreDirectory?: string,
+  ) {
     const bridge = new SharedThreadBridge({ connect, delegateCreates, diagnose: () => undefined });
-    const fixture = createFixture({ sharedThreads: bridge });
+    const fixture = createFixture({
+      sharedThreads: bridge,
+      ...(mappingStoreDirectory ? { mappingStoreDirectory } : {}),
+    });
     const official = new JsonLineCollector(fixture.official.stdin);
     fixture.official.stdin.on("data", () => {
       for (const request of official.messages.splice(0)) {
@@ -285,6 +292,69 @@ describe("shared external Threads", () => {
     expect(await rpc(ssh, 23, "thread/list", {})).toMatchObject({ result: { data: [] } });
     expect(await rpc(desktop, 24, "thread/list", { archived: true })).toMatchObject({
       result: { data: [{ id: threadId }] },
+    });
+  });
+
+  it("does not revive an archived shared Thread from a pinned legacy copy after reconnecting", async () => {
+    const { front, directory } = setup();
+    const ssh = front(true);
+    const threadId = await startPiThread(ssh);
+    // A viewer's own Mapping Store can still hold a pre-sharing copy of the same Thread.
+    const legacyDirectory = mkdtempSync(path.join(directory, "legacy-"));
+    cpSync(path.join(directory, "threads"), path.join(legacyDirectory, "threads"), {
+      recursive: true,
+    });
+    const pinned = "01984de2-8f74-7c91-a3b2-5c5e937cf318";
+    mkdirSync(path.join(legacyDirectory, "sections"));
+    writeFileSync(
+      path.join(legacyDirectory, "sections", "placements.json"),
+      JSON.stringify({
+        formatVersion: 1,
+        placements: [
+          {
+            hostThreadId: threadId,
+            section: { id: pinned, name: "Pinned", appearance: null },
+            enteredAt: new Date().toISOString(),
+            beforeThreadId: null,
+          },
+        ],
+      }),
+    );
+    await rpc(ssh, 40, "thread/name/set", { threadId, name: "canonical title" });
+    await rpc(ssh, 41, "thread/archive", { threadId });
+    let viewer = front(true, undefined, legacyDirectory);
+    const pinnedList = { sectionId: pinned, sortKey: "section_position" };
+    for (let reconnect = 0; reconnect < 2; reconnect++) {
+      expect(await rpc(viewer, 42, "thread/list", {})).toMatchObject({ result: { data: [] } });
+      expect(await rpc(viewer, 43, "thread/list", pinnedList)).toMatchObject({
+        result: { data: [] },
+      });
+      expect(await rpc(viewer, 44, "thread/list", { archived: true })).toMatchObject({
+        result: { data: [{ id: threadId, name: "canonical title" }] },
+      });
+      expect(await rpc(viewer, 45, "codexhost/thread/catalog/read", {})).toMatchObject({
+        result: { threads: [] },
+      });
+      expect(
+        await rpc(viewer, 46, "codexhost/thread/catalog/read", { includeArchived: true }),
+      ).toMatchObject({
+        result: {
+          threads: [{ id: threadId, name: "canonical title" }],
+          archivedThreadIds: [threadId],
+        },
+      });
+      if (reconnect === 0) {
+        viewer.host.close();
+        await viewer.running;
+        viewer = front(true, undefined, legacyDirectory);
+      }
+    }
+    await rpc(viewer, 47, "thread/unarchive", { threadId });
+    expect(await rpc(viewer, 48, "thread/list", {})).toMatchObject({
+      result: { data: [{ id: threadId, name: "canonical title" }] },
+    });
+    expect(await rpc(viewer, 49, "thread/list", pinnedList)).toMatchObject({
+      result: { data: [] },
     });
   });
 

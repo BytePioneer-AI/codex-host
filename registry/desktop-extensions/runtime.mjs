@@ -468,6 +468,7 @@ var desktopExtensionCatalogEntrySchema = z4.strictObject({
   author: z4.string().trim().min(1).max(128),
   repository: desktopExtensionHttpUrlSchema,
   stars: z4.number().int().min(0).optional(),
+  downloads: z4.number().int().min(0).optional(),
   categories: categoriesSchema.optional(),
   trustTier: desktopExtensionTrustTierSchema.default("community"),
   screenshots: z4
@@ -704,6 +705,7 @@ export {
   compareExtensionVersions,
   desktopExtensionCatalogEntrySchema,
   desktopExtensionCatalogSchema,
+  desktopExtensionHttpUrlSchema,
   desktopExtensionIdSchema,
   desktopExtensionManifestSchema,
   desktopExtensionScreenshotMimeType,

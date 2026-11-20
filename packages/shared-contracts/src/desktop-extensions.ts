@@ -332,6 +332,7 @@ export const desktopExtensionCatalogEntrySchema = z.strictObject({
   author: z.string().trim().min(1).max(128),
   repository: desktopExtensionHttpUrlSchema,
   stars: z.number().int().min(0).optional(),
+  downloads: z.number().int().min(0).optional(),
   categories: categoriesSchema.optional(),
   trustTier: desktopExtensionTrustTierSchema.default("community"),
   screenshots: z

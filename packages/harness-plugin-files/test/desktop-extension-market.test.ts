@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { extensionZip, makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import seed from "../../../registry/desktop-extensions/catalog.json";
+import { reportDesktopExtensionInstall } from "../src/desktop-extension-installer.js";
 import {
   desktopExtensionsRoot,
   fetchDesktopExtensionCatalog,
@@ -299,12 +300,43 @@ it("reads a local override, caches for five minutes, refreshes on demand and fal
   });
 });
 
+it("reports a successful catalog install once without waiting for the response", async () => {
+  const zip = extensionZip();
+  const entry = {
+    ...seed.extensions[0],
+    id: "sample",
+    version: "1.0.0",
+    downloadUrl: "https://example.com/sample.zip",
+    sha256: createHash("sha256").update(zip).digest("hex"),
+  };
+  const catalog = path.join(dataDir, "catalog.json");
+  await writeFile(catalog, JSON.stringify({ ...seed, extensions: [entry] }));
+  const report = vi.fn(() => new Promise<Response>(() => {}));
+  vi.stubGlobal("fetch", (input: string | URL, init: RequestInit) => {
+    if (input === entry.downloadUrl) return new Response(new Uint8Array(zip));
+    expect(String(input)).toBe("https://stats.example/install/sample");
+    expect(init.method).toBe("POST");
+    return report();
+  });
+  await expect(
+    installFromCatalog({
+      extensionsRoot,
+      id: entry.id,
+      environment: {
+        CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: catalog,
+        CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "https://stats.example/",
+      },
+    }),
+  ).resolves.toMatchObject({ extensionId: "sample" });
+  expect(report).toHaveBeenCalledOnce();
+});
+
 it("uses the mirror on primary failure and refuses an archive with a different catalog ID", async () => {
   const zip = extensionZip();
   const initial = seed.extensions[0];
   if (!initial) throw new Error("Missing official seed");
   const entry = { ...initial, sha256: createHash("sha256").update(zip).digest("hex") };
-  vi.stubGlobal("fetch", async (url: string) => {
+  const fetch = vi.fn(async (url: string) => {
     if (url.startsWith("https://raw.githubusercontent.com/"))
       return new Response(null, { status: 404 });
     if (url.startsWith("https://cdn.jsdelivr.net/"))
@@ -312,11 +344,60 @@ it("uses the mirror on primary failure and refuses an archive with a different c
     if (url === entry.downloadUrl) return new Response(new Uint8Array(zip));
     throw new Error(`Unexpected request: ${url}`);
   });
+  vi.stubGlobal("fetch", fetch);
   expect(await fetchDesktopExtensionCatalog({ environment: {}, forceRefresh: true })).toMatchObject(
     { source: "remote", catalogUrl: expect.stringContaining("cdn.jsdelivr.net") },
   );
   await expect(
-    installFromCatalog({ extensionsRoot, environment: {}, id: entry.id }),
+    installFromCatalog({
+      extensionsRoot,
+      id: entry.id,
+      environment: { CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "https://stats.example/" },
+    }),
   ).rejects.toThrow("Manifest id or version");
+  expect(fetch.mock.calls.map(([url]) => String(url))).not.toContain(
+    `https://stats.example/install/${entry.id}`,
+  );
   expect((await listDesktopExtensions(dataDir)).extensions).toEqual([]);
+});
+
+it("posts only the encoded ID to the configured base URL and bounds the request time", async () => {
+  const fetch = vi.fn(async (_url: URL, _init: RequestInit) => Response.json({ downloads: 1 }));
+  vi.stubGlobal("fetch", fetch);
+  const timeout = vi.spyOn(AbortSignal, "timeout");
+  await reportDesktopExtensionInstall(
+    "sample/one",
+    "https://stats.example/base/?private=1#fragment",
+  );
+  expect(fetch).toHaveBeenCalledWith(new URL("https://stats.example/base/install/sample%2Fone"), {
+    method: "POST",
+    credentials: "omit",
+    redirect: "error",
+    signal: expect.any(AbortSignal),
+  });
+  expect(timeout).toHaveBeenCalledWith(2_000);
+});
+
+it.each([
+  ["network error", () => Promise.reject(new Error("offline"))],
+  ["HTTP failure", () => new Response("unavailable", { status: 503 })],
+])("silently ignores a stats %s", async (_label, fetch) => {
+  vi.stubGlobal("fetch", fetch);
+  await expect(
+    reportDesktopExtensionInstall("sample", "https://stats.example"),
+  ).resolves.toBeUndefined();
+});
+
+it("skips missing, invalid or credentialed stats URLs", async () => {
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  for (const url of [
+    undefined,
+    "not a URL",
+    "file:///tmp/stats",
+    "https://user:secret@stats.example",
+  ]) {
+    await reportDesktopExtensionInstall("sample", url);
+  }
+  expect(fetch).not.toHaveBeenCalled();
 });

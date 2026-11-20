@@ -11,9 +11,12 @@ const api = "https://api.github.com/repos/owner/repo";
 const releaseUrl = `${repository}/releases/download/v1`;
 const publishedAt = "2026-01-01T00:00:00.000Z";
 const ids = ["sample", "other"];
+const statsBase = "https://stats.example/counter/";
 let directory: URL;
 
 beforeEach(async () => {
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", undefined);
+  vi.stubEnv("STATS_URL", undefined);
   directory = pathToFileURL(
     (await mkdtemp(path.join(tmpdir(), "desktop-extension-registry-"))) + path.sep,
   );
@@ -39,8 +42,11 @@ afterEach(async () => {
 function mockGitHub(
   readMetadata: (headers: Headers) => Response,
   archive = (id: string) => extensionZip({ id }),
+  stats?: (init: RequestInit) => Response,
 ) {
-  vi.stubGlobal("fetch", async (url: URL, { headers }: RequestInit) => {
+  vi.stubGlobal("fetch", async (url: URL, init: RequestInit) => {
+    if (stats && url.href === `${statsBase}stats.json`) return stats(init);
+    const { headers } = init;
     const href = url.href.toLowerCase();
     if (href === api) return readMetadata(new Headers(headers));
     if (href === `${api}/releases/latest`)
@@ -89,6 +95,58 @@ it.each([
   const { extensions } = JSON.parse(await syncCatalog());
   expect(extensions).toHaveLength(2);
   for (const entry of extensions) expect(entry).not.toHaveProperty("stars");
+});
+
+it("fetches one anonymous stats snapshot and merges only valid counts for indexed IDs", async () => {
+  vi.stubEnv("STATS_URL", statsBase);
+  vi.stubEnv("GITHUB_TOKEN", "test-token");
+  let payload = { sample: 25, other: 0, unrelated: 100 };
+  const stats = vi.fn((init: RequestInit) => {
+    expect(init.method ?? "GET").toBe("GET");
+    expect(new Headers(init.headers).has("authorization")).toBe(false);
+    return Response.json({ generatedAt: publishedAt, downloads: payload });
+  });
+  mockGitHub(() => Response.json({}), undefined, stats);
+  const first = await syncCatalog();
+  expect(stats).toHaveBeenCalledOnce();
+  expect(JSON.parse(first).extensions).toMatchObject([
+    { id: "other", downloads: 0 },
+    { id: "sample", downloads: 25 },
+  ]);
+  const compact = JSON.stringify(JSON.parse(first));
+  await writeFile(new URL("catalog.json", directory), compact);
+  expect(await syncCatalog()).toBe(compact);
+
+  payload = { ...payload, sample: 26, other: -1 };
+  const { extensions } = JSON.parse(await syncCatalog());
+  expect(extensions[0]).not.toHaveProperty("downloads");
+  expect(extensions[1]).toMatchObject({ id: "sample", downloads: 26 });
+});
+
+it.each([
+  ["unconfigured", undefined],
+  ["HTTP failure", () => new Response(null, { status: 503 })],
+  [
+    "network error",
+    () => {
+      throw new Error("offline");
+    },
+  ],
+  ["invalid JSON", () => new Response("not JSON")],
+] as const)("omits download counts when stats are %s", async (_label, stats) => {
+  vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", statsBase);
+  mockGitHub(
+    () => Response.json({}),
+    undefined,
+    () => Response.json({ downloads: { sample: 12 } }),
+  );
+  expect(JSON.parse(await syncCatalog()).extensions[1]).toMatchObject({ downloads: 12 });
+
+  if (!stats) vi.stubEnv("CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL", undefined);
+  mockGitHub(() => Response.json({}), undefined, stats);
+  const { extensions } = JSON.parse(await syncCatalog());
+  expect(extensions).toHaveLength(2);
+  for (const entry of extensions) expect(entry).not.toHaveProperty("downloads");
 });
 
 it("indexes a backend-only package without executing its entry", async () => {

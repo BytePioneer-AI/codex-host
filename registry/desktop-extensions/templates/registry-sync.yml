@@ -53,6 +53,7 @@ jobs:
       - run: node validate-and-build-catalog.mjs
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          STATS_URL: ${{ vars.STATS_URL }}
       - if: always()
         run: if test -f safety-report.md; then cat safety-report.md >> "$GITHUB_STEP_SUMMARY"; fi
       - if: always()

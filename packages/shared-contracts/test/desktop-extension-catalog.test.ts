@@ -20,6 +20,7 @@ it("defaults to community and rejects invalid catalog metadata or ambiguous IDs"
   const parsed = desktopExtensionCatalogEntrySchema.parse(entry);
   expect(parsed.trustTier).toBe("community");
   expect(parsed).not.toHaveProperty("stars");
+  expect(parsed).not.toHaveProperty("downloads");
   for (const change of [
     { id: "../badge" },
     { name: { en: "Badge" } },
@@ -29,6 +30,10 @@ it("defaults to community and rejects invalid catalog metadata or ambiguous IDs"
     { repository: "javascript:alert(1)" },
     { stars: -1 },
     { stars: 1.5 },
+    { downloads: -1 },
+    { downloads: 1.5 },
+    { downloads: "42" },
+    { downloads: null },
     { categories: ["unknown"] },
     { slots: ["unknown"] },
     { downloadUrl: "https://example.com/?file=badge.zip" },
@@ -48,8 +53,13 @@ it("defaults to community and rejects invalid catalog metadata or ambiguous IDs"
   ).toBe(false);
 });
 
-it.each([0, 42])("accepts a star count of %i", (stars) => {
-  expect(desktopExtensionCatalogEntrySchema.parse({ ...entry, stars }).stars).toBe(stars);
+it.each([0, 42])("accepts star and download counts of %i", (count) => {
+  expect(
+    desktopExtensionCatalogEntrySchema.parse({ ...entry, stars: count, downloads: count }),
+  ).toMatchObject({
+    stars: count,
+    downloads: count,
+  });
 });
 
 it.each([

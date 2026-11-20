@@ -8,6 +8,7 @@ import {
   DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
   DESKTOP_EXTENSION_STYLE_MAX_BYTES,
   DESKTOP_EXTENSION_ZIP_MAX_BYTES,
+  desktopExtensionHttpUrlSchema,
   desktopExtensionIdSchema,
   desktopExtensionManifestSchema,
   type DesktopExtensionsInstallParams,
@@ -219,6 +220,26 @@ export async function installFromUrl({
   });
 }
 
+export async function reportDesktopExtensionInstall(id: string, statsUrl: string | undefined) {
+  try {
+    const { data } = desktopExtensionHttpUrlSchema.safeParse(statsUrl);
+    if (data === undefined) return;
+    const url = new URL(data);
+    url.pathname = `${url.pathname.replace(/\/+$/u, "")}/install/${encodeURIComponent(id)}`;
+    url.search = "";
+    url.hash = "";
+    const response = await fetch(url, {
+      method: "POST",
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.timeout(2_000),
+    });
+    await response.body?.cancel();
+  } catch {
+    // Best effort only: the install has already succeeded.
+  }
+}
+
 export async function installFromCatalog({
   extensionsRoot,
   id,
@@ -231,7 +252,15 @@ export async function installFromCatalog({
     entry.downloadUrl,
     DESKTOP_EXTENSION_ZIP_MAX_BYTES,
   );
-  return installFromZipBuffer({ extensionsRoot, zipBuffer, expectedSha256: entry.sha256 }, entry);
+  const installed = await installFromZipBuffer(
+    { extensionsRoot, zipBuffer, expectedSha256: entry.sha256 },
+    entry,
+  );
+  void reportDesktopExtensionInstall(
+    installed.extensionId,
+    (options.environment ?? process.env).CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL,
+  );
+  return installed;
 }
 
 export async function installDesktopExtension(

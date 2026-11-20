@@ -12,7 +12,8 @@ const { outputFiles } = await build({
         DESKTOP_EXTENSION_MANIFEST_MAX_BYTES, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
         DESKTOP_EXTENSION_STYLE_MAX_BYTES, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
         DESKTOP_EXTENSION_ZIP_MAX_BYTES, compareExtensionVersions, desktopExtensionCatalogSchema,
-        desktopExtensionCatalogEntrySchema, desktopExtensionIdSchema, desktopExtensionManifestSchema,
+        desktopExtensionCatalogEntrySchema, desktopExtensionHttpUrlSchema,
+        desktopExtensionIdSchema, desktopExtensionManifestSchema,
         desktopExtensionScreenshotMimeType, desktopExtensionZipUrlSchema,
         isGitHubDesktopExtensionZipballUrl
       } from './packages/shared-contracts/src/desktop-extensions.ts';

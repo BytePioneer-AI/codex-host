@@ -27,3 +27,11 @@
 4. 触发一次同步并确认 `catalog.json` 可从 `raw.githubusercontent.com/.../main/catalog.json` 公开读取。客户端以 jsDelivr 为备用，可用 `CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL` 指向测试索引。
 
 `sources.json` 每一项登记 `id`、公开的 `repository`、可选的精确 `asset` 文件名、可选 `trustTier`（默认 `community`）和 `minCodexHostVersion`。要下架扩展，审查后从清单移除；合并到 `main` 后会自动同步，已安装的副本由用户自行卸载。
+
+## 可选：用 Cloudflare 免费额度统计下载量
+
+1. 在 Cloudflare Free 账号下，进入本模板的 `worker/`，运行 `npx wrangler login` 和 `npx wrangler kv namespace create STATS_KV`，将返回的 Namespace ID 填入 `worker/wrangler.toml` 的 `id`。
+2. 在同一目录运行 `npx wrangler deploy`，用部署返回的 `https://…workers.dev/health` 检查是否返回 `{ "ok": true }`。Worker 没有运行时依赖，只在 KV 中保存按扩展 ID 聚合的计数。
+3. 在索引仓库 **Settings → Secrets and variables → Actions → Variables** 添加 `STATS_URL`，值为 Worker 的 HTTPS 根地址（不带 `/stats.json`）。在要上报的 codexhost Host／Console 进程中，将 `CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL` 指向同一地址。定时同步会把 `/stats.json` 中有效的非负整数合并到 `catalog.json` 的可选 `downloads` 字段；无数据或 Worker 不可用时省略该字段，不影响同步。启用前请确认读取该索引的客户端已支持 `downloads`，旧客户端的严格校验会拒绝带此字段的索引。
+
+只统计从索引成功完成的安装（含重装和更新）；客户端只发送扩展 ID，不发送账号、设备 ID 或请求体。Worker 仅接受小写字母、数字及单连字符分段的 ID，含 `.` 或 `_` 的扩展不会计数。该接口公开，KV 是最终一致的，并发和写入限额可能导致漏计，公开请求也可能抬高计数；这是下载量参考，不是精确或唯一用户统计。费用为零的前提是留在 Cloudflare Free 计划额度内。

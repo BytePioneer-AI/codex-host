@@ -12,6 +12,7 @@ import {
   compareExtensionVersions,
   desktopExtensionCatalogEntrySchema,
   desktopExtensionCatalogSchema,
+  desktopExtensionHttpUrlSchema,
   desktopExtensionIdSchema,
   desktopExtensionManifestSchema,
   desktopExtensionScreenshotMimeType,
@@ -57,6 +58,22 @@ const checks = [
   ["child_process", /\bchild_process\b/u],
 ];
 
+async function readResponseBytes(response, limit, label) {
+  const { body } = response;
+  if (!response.ok || !body || Number(response.headers.get("content-length")) > limit) {
+    await body?.cancel();
+    throw new Error(`${label} unavailable or too large (HTTP ${response.status})`);
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of body) {
+    size += chunk.byteLength;
+    if (size > limit) throw new Error(`${label} exceeds the size limit`);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, size);
+}
+
 async function download(input, limit, { headers, missingOk = false } = {}) {
   let url = new URL(input);
   const zipball = isGitHubDesktopExtensionZipballUrl(url);
@@ -82,18 +99,7 @@ async function download(input, limit, { headers, missingOk = false } = {}) {
       await body?.cancel();
       return undefined;
     }
-    if (!response.ok || !body || Number(response.headers.get("content-length")) > limit) {
-      await body?.cancel();
-      throw new Error(`GitHub download unavailable or too large (HTTP ${response.status})`);
-    }
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of body) {
-      size += chunk.byteLength;
-      if (size > limit) throw new Error("GitHub response exceeds the size limit");
-      chunks.push(chunk);
-    }
-    return Buffer.concat(chunks, size);
+    return readResponseBytes(response, limit, "GitHub download");
   }
   throw new Error("Too many GitHub asset redirects");
 }
@@ -146,6 +152,25 @@ async function readRepositoryStars(api, headers) {
   }
 }
 
+async function readDownloadCounts() {
+  try {
+    const { data } = desktopExtensionHttpUrlSchema.safeParse(
+      process.env.CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL?.trim() || process.env.STATS_URL,
+    );
+    if (data === undefined) return;
+    const url = new URL(data);
+    url.pathname = `${url.pathname.replace(/\/+$/u, "")}/stats.json`;
+    url.search = "";
+    url.hash = "";
+    const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(5_000) });
+    const bytes = await readResponseBytes(response, 1024 * 1024, "Download stats");
+    const { downloads } = JSON.parse(utf8.decode(bytes));
+    if (downloads && typeof downloads === "object" && !Array.isArray(downloads)) return downloads;
+  } catch {
+    // Optional data; missing counts must not prevent publishing the index.
+  }
+}
+
 async function selectPackage(source, { owner, repo, api, headers }) {
   const release = await loadGitHubJson(`${api}/releases/latest`, headers, true);
   if (release !== undefined) {
@@ -188,7 +213,7 @@ async function selectPackage(source, { owner, repo, api, headers }) {
   };
 }
 
-async function validateSource(source, previous, starsByRepository) {
+async function validateSource(source, previous, starsByRepository, downloads) {
   const [, owner, repositoryName] = github.exec(source.repository);
   const repo = repositoryName.replace(/\.git$/iu, "");
   const api = `https://api.github.com/repos/${owner}/${repo}`;
@@ -275,6 +300,7 @@ async function validateSource(source, previous, starsByRepository) {
     author: manifest.author,
     repository: manifest.repository ?? source.repository,
     stars: starsByRepository.get(repositoryKey),
+    downloads,
     categories: manifest.categories,
     slots: manifest.slots,
     trustTier: source.trustTier,
@@ -320,9 +346,18 @@ export async function buildCatalog({
         return undefined;
       });
     const existing = new Map(previous?.extensions.map((entry) => [entry.id, entry]));
+    const counts = checkOnly ? undefined : await readDownloadCounts();
     for (const source of [...sources].sort((a, b) => a.id.localeCompare(b.id, "en"))) {
       try {
-        const entry = await validateSource(source, existing.get(source.id), starsByRepository);
+        const count = counts && Object.hasOwn(counts, source.id) ? counts[source.id] : undefined;
+        const { data: downloads } =
+          desktopExtensionCatalogEntrySchema.shape.downloads.safeParse(count);
+        const entry = await validateSource(
+          source,
+          existing.get(source.id),
+          starsByRepository,
+          downloads,
+        );
         entries.push(entry);
         report.push(
           `- PASS — ${inline(entry.id)} ${inline(entry.version)} (${entry.trustTier}) · ${inline(source.repository)} · ${inline(entry.downloadUrl)} · SHA-256: ${entry.sha256}`,

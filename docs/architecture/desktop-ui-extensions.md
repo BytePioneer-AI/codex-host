@@ -51,6 +51,8 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 
 市场后端默认读取独立索引库的 `main/catalog.json`，GitHub Raw 不可用时尝试 jsDelivr；两者均不可用时返回两条内置官方元数据。进程内缓存 5 分钟；`CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL` 可改为 HTTP(S) 地址或本地绝对路径。详见[独立索引库模板](../../registry/desktop-extensions/README.md)。官方种子 ZIP 在索引库首次发布资产后可下载。
 
+索引条目可包含可选的 `downloads`（非负整数）。配置 `CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL` 后，Host／Console 只在从索引成功安装后异步向计数服务发送一次扩展 ID（含重装和更新），不发送账号或设备标识；上报失败不影响安装。索引定时合并计数，缺失时不补零。Worker 部署和免费额度限制见上面的索引库模板。
+
 本机 Host RPC 前缀为 `codexhost/desktop/extensions/`，Console 使用下表中的 HTTP 路径。两者共享包管理逻辑；Console 操作请求须通过现有同源检查并带 `X-Codexhost-Console: 1`。
 
 | RPC | Console | 请求 → 响应 |

@@ -255,6 +255,7 @@ const CATALOG_TREE: DesktopExtensionCatalogEntry = {
   },
   author: "codexhost",
   repository: "https://github.com/BytePioneer-AI/codex-host",
+  stars: 1200,
   categories: ["sidebar", "workflow", "tools"],
   trustTier: "official",
   screenshots: ["https://cdn.example.com/tree-preview.png", "javascript:alert(1)"],
@@ -287,6 +288,7 @@ const CATALOG_THEME: DesktopExtensionCatalogEntry = {
   details: { en: "Community theme tuned for dark mode.", "zh-CN": "社区维护的暗色主题配色。" },
   author: "alice-dev",
   repository: "https://github.com/alice-dev/nord-palette",
+  stars: 42,
   categories: ["appearance"],
   trustTier: "community",
   screenshots: ["https://cdn.example.com/nord-1.webp"],
@@ -411,7 +413,25 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     ).toHaveLength(0);
     expect(textOf(treeInstalledCard)).toContain("codexhost · v0.1.0");
     expect(textOf(treeInstalledCard)).toContain("可更新");
+    const installedStarLink = descendants(treeInstalledCard).find(
+      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+    )!;
+    expect(installedStarLink).toBeDefined();
+    expect(installedStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
+    expect(textOf(installedStarLink)).toBe("1.2k");
+    // Clicking the card star link stops propagation and does not open the detail modal.
+    installedStarLink.dispatchBubbling("click");
+    expect(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    ).toBeUndefined();
     expect(textOf(badgesInstalledCard)).not.toContain("可更新");
+    const badgesStarLink = descendants(badgesInstalledCard).find(
+      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+    )!;
+    expect(badgesStarLink).toBeDefined();
+    expect(textOf(badgesStarLink)).toBe("");
     expect(
       descendants(treeInstalledCard).filter((el) => el.className.includes("__icon")),
     ).toHaveLength(0);
@@ -468,6 +488,17 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       ),
     ).toBeDefined();
     expect(textOf(treeMarketCard)).toContain("codexhost · v0.2.0");
+    const treeMarketStarLink = descendants(treeMarketCard).find(
+      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+    )!;
+    expect(treeMarketStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
+    expect(textOf(treeMarketStarLink)).toBe("1.2k");
+    treeMarketStarLink.dispatchBubbling("click");
+    expect(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    ).toBeUndefined();
     expect(
       textOf(
         descendants(treeMarketCard).find(
@@ -623,6 +654,13 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     )!;
     expect(detailDialog.open).toBe(true);
     expect(textOf(detailDialog)).toContain("社区扩展，启用前建议先查看源码仓库");
+    const themeRepoLink = descendants(detailDialog).find(
+      (el) => el.tagName === "a" && el.className.includes("settings-extensions-detail-modal__repo"),
+    )!;
+    expect(themeRepoLink).toBeDefined();
+    expect(themeRepoLink.href).toBe("https://github.com/alice-dev/nord-palette");
+    expect(textOf(themeRepoLink)).toContain("GitHub 仓库");
+    expect(textOf(themeRepoLink)).toContain("42");
     expect(descendants(detailDialog).find((el) => el.tagName === "details")).toBeUndefined();
     expect(textOf(detailDialog)).not.toContain(HASH_C);
     expect(textOf(detailDialog)).not.toContain("nord-palette");
@@ -680,6 +718,10 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     const treeDialog = descendants(mounted.content).find(
       (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
     )!;
+    const treeRepoLink = descendants(treeDialog).find(
+      (el) => el.tagName === "a" && el.className.includes("settings-extensions-detail-modal__repo"),
+    )!;
+    expect(textOf(treeRepoLink)).toContain("1.2k");
     const treeImgs = descendants(treeDialog).filter(
       (el) =>
         el.tagName === "img" && !el.className.includes("settings-extensions-detail-modal__preview"),

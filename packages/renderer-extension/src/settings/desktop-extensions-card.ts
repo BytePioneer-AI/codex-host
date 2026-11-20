@@ -6,8 +6,11 @@ import type {
 import {
   contentLocaleMessages,
   createEl,
+  formatExtensionStarCount,
   formatMessage,
+  isValidExtensionStarCount,
   isWithinElement,
+  parseSafeRepositoryUrl,
   statusTone,
   type DesktopExtensionAttentionDetail,
   type DesktopExtensionContentLocale,
@@ -26,6 +29,8 @@ export interface DesktopExtensionCardOptions {
   readonly displayName: string;
   readonly author?: string | undefined;
   readonly version?: string | undefined;
+  readonly repository?: string | undefined;
+  readonly stars?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly statusState?: DesktopExtensionStatus["state"] | undefined;
   readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
@@ -62,6 +67,8 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     displayName,
     author,
     version,
+    repository,
+    stars,
     trustTier,
     statusState,
     updateHint,
@@ -156,33 +163,78 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     card.append(body);
   }
 
-  // Row 3: Borderless muted metadata line — "author · vX.Y.Z" (+ optional subtle update cue) on left,
+  // Row 3: Borderless muted metadata line — "author · vX.Y.Z" (+ optional subtle update cue & star link) on left,
   // plain middot-separated categories (up to 2) on right.
   const authorVersion = formatAuthorVersion(author, version);
+  const repositoryHref = parseSafeRepositoryUrl(repository);
+  const formattedStars = isValidExtensionStarCount(stars) ? formatExtensionStarCount(stars) : null;
   const categoryLabels = (categories ?? [])
     .slice(0, MAX_CARD_CATEGORIES)
     .map((category) => contentCopy.categories[category] ?? category);
   const categoriesText = categoryLabels.join(" · ");
 
-  if (authorVersion || updateHint || categoriesText) {
+  let starControl: HTMLElement | null = null;
+  if (authorVersion || updateHint || repositoryHref || formattedStars || categoriesText) {
     const metaRow = createEl(document, "div", "settings-extensions-card__meta");
-    const metaLeft = createEl(document, "span", "settings-extensions-card__meta-left");
-    if (authorVersion) {
-      metaLeft.append(createEl(document, "span", "", authorVersion));
-    }
-    if (updateHint) {
-      const updateCue = createEl(
+    const metaLeft = createEl(document, "div", "settings-extensions-card__meta-left");
+    if (authorVersion || updateHint) {
+      const authorVersionWrap = createEl(
         document,
         "span",
-        "settings-extensions-card__update-cue",
-        authorVersion ? ` · ${updateHint.label}` : updateHint.label,
+        "settings-extensions-card__author-version",
       );
-      updateCue.dataset.updateAvailable = "true";
-      updateCue.title = updateHint.title;
-      metaLeft.append(updateCue);
+      if (authorVersion) {
+        authorVersionWrap.append(createEl(document, "span", "", authorVersion));
+      }
+      if (updateHint) {
+        const updateCue = createEl(
+          document,
+          "span",
+          "settings-extensions-card__update-cue",
+          authorVersion ? ` · ${updateHint.label}` : updateHint.label,
+        );
+        updateCue.dataset.updateAvailable = "true";
+        updateCue.title = updateHint.title;
+        authorVersionWrap.append(updateCue);
+      }
+      if (authorVersion) {
+        authorVersionWrap.title = updateHint
+          ? `${authorVersion} · ${updateHint.title}`
+          : authorVersion;
+      }
+      metaLeft.append(authorVersionWrap);
     }
-    if (authorVersion) {
-      metaLeft.title = updateHint ? `${authorVersion} · ${updateHint.title}` : authorVersion;
+
+    if (repositoryHref) {
+      const starLink = createEl(
+        document,
+        "a",
+        "settings-extensions-card__star settings-extensions-card__star--link",
+      );
+      starLink.href = repositoryHref;
+      starLink.target = "_blank";
+      starLink.rel = "noopener noreferrer";
+      starLink.dataset.action = "open-repository";
+      const label = formattedStars
+        ? `${copy.githubRepository} · ${formattedStars}`
+        : copy.githubRepository;
+      starLink.title = label;
+      starLink.setAttribute("aria-label", label);
+      starLink.append(createRendererSettingsIcon("star", 11));
+      if (formattedStars) {
+        starLink.append(createEl(document, "span", "", formattedStars));
+      }
+      starLink.addEventListener("click", stopTrigger);
+      starLink.addEventListener("keydown", stopTrigger);
+      starControl = starLink;
+      metaLeft.append(starLink);
+    } else if (formattedStars) {
+      const starBadge = createEl(document, "span", "settings-extensions-card__star");
+      starBadge.append(
+        createRendererSettingsIcon("star", 11),
+        createEl(document, "span", "", formattedStars),
+      );
+      metaLeft.append(starBadge);
     }
 
     metaRow.append(metaLeft);
@@ -203,10 +255,12 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
 
   card.addEventListener("click", (event) => {
     if (isWithinElement(event.target, actionWrap)) return;
+    if (starControl && isWithinElement(event.target, starControl)) return;
     onOpenDetails();
   });
   card.addEventListener("keydown", (event) => {
     if (isWithinElement(event.target, actionWrap)) return;
+    if (starControl && isWithinElement(event.target, starControl)) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       onOpenDetails();

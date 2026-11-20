@@ -726,6 +726,8 @@ export function createDesktopExtensionsSettingsPage(
           displayName,
           author: item.manifest?.author ?? catalogEntry?.author,
           version: item.manifest?.version,
+          repository: item.manifest?.repository ?? catalogEntry?.repository,
+          stars: catalogEntry?.stars,
           trustTier: catalogEntry?.trustTier,
           statusState: item.status.state,
           updateHint,

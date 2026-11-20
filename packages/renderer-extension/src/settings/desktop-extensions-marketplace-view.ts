@@ -152,6 +152,8 @@ export function renderDesktopExtensionsMarketplaceGrid(
         displayName,
         author: entry.author,
         version: entry.version,
+        repository: entry.repository,
+        stars: entry.stars,
         trustTier: entry.trustTier,
         description: catalogDescription(entry, contentLocale),
         categories: entry.categories,

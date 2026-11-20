@@ -9,9 +9,11 @@ import {
   createTrustBadge,
   extensionDescription,
   extensionDisplayName,
+  formatExtensionStarCount,
   formatMessage,
   hasCatalogUpdate,
   isToggleBlocked,
+  isValidExtensionStarCount,
   parseSafeRepositoryUrl,
   resolveAttentionDetail,
   resolveOptionalLocalizedText,
@@ -458,6 +460,9 @@ export function createDesktopExtensionDetailModal(options: {
     const repositoryHref = parseSafeRepositoryUrl(
       installed?.manifest?.repository ?? catalogEntry?.repository,
     );
+    const formattedStars = isValidExtensionStarCount(catalogEntry?.stars)
+      ? formatExtensionStarCount(catalogEntry.stars)
+      : null;
     if (repositoryHref) {
       const repoLink = createEl(document, "a", "settings-extensions-detail-modal__repo");
       repoLink.href = repositoryHref;
@@ -467,8 +472,21 @@ export function createDesktopExtensionDetailModal(options: {
       repoLink.append(
         createRendererSettingsIcon("github", 13),
         createEl(document, "span", "", copy.githubRepository),
-        createRendererSettingsIcon("external-link", 11),
       );
+      if (formattedStars) {
+        const repoStars = createEl(
+          document,
+          "span",
+          "settings-extensions-detail-modal__repo-stars",
+        );
+        repoStars.append(
+          createEl(document, "span", "settings-extensions-detail-modal__repo-dot", "·"),
+          createRendererSettingsIcon("star", 11),
+          createEl(document, "span", "", formattedStars),
+        );
+        repoLink.append(repoStars);
+      }
+      repoLink.append(createRendererSettingsIcon("external-link", 11));
       metaNodes.push(repoLink);
     }
     metaRow.hidden = metaNodes.length === 0;

@@ -15,6 +15,7 @@ import {
   createDesktopExtensionsSettingsPage,
   type RendererDesktopExtensionsClient,
 } from "../../src/settings/desktop-extensions-page.js";
+import { formatExtensionStarCount } from "../../src/settings/desktop-extensions-shared.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createDefaultRendererSettingsPages } from "../../src/settings/pages.js";
 
@@ -341,6 +342,16 @@ afterEach(() => {
 });
 
 describe("Desktop extensions settings page", () => {
+  it("formats GitHub star counts cleanly without trailing .0", () => {
+    expect(formatExtensionStarCount(0)).toBe("0");
+    expect(formatExtensionStarCount(42)).toBe("42");
+    expect(formatExtensionStarCount(999)).toBe("999");
+    expect(formatExtensionStarCount(1_000)).toBe("1k");
+    expect(formatExtensionStarCount(1_200)).toBe("1.2k");
+    expect(formatExtensionStarCount(1_250)).toBe("1.3k");
+    expect(formatExtensionStarCount(10_000)).toBe("10k");
+  });
+
   it("registers desktop-extensions in default settings pages with bilingual labels", () => {
     const zhPage = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
       ({ id }) => id === "desktop-extensions",
@@ -862,6 +873,20 @@ describe("Desktop extensions settings page", () => {
     treeSwitch.dispatchBubbling("click");
     expect(findDetailDialog()).toBeUndefined();
 
+    // Unlisted local extension with repository renders a clickable star icon link without fake "0",
+    // and clicking it stops propagation instead of opening the detail modal.
+    const treeStarLink = descendants(treeCard).find(
+      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+    )!;
+    expect(treeStarLink).toBeDefined();
+    expect(treeStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
+    expect(treeStarLink.target).toBe("_blank");
+    expect(treeStarLink.rel).toBe("noopener noreferrer");
+    expect(textOf(treeStarLink)).toBe("");
+    expect(treeStarLink.getAttribute("aria-label")).toBe("GitHub 仓库");
+    treeStarLink.dispatchBubbling("click");
+    expect(findDetailDialog()).toBeUndefined();
+
     // Clicking the card row opens the centered detail modal.
     treeCard.dispatch("click");
     const dialog = findDetailDialog()!;
@@ -883,6 +908,11 @@ describe("Desktop extensions settings page", () => {
     expect(repoLink.target).toBe("_blank");
     expect(repoLink.rel).toBe("noopener noreferrer");
     expect(textOf(repoLink)).toContain("GitHub 仓库");
+    expect(
+      descendants(repoLink).find((el) =>
+        el.className.includes("settings-extensions-detail-modal__repo-stars"),
+      ),
+    ).toBeUndefined();
 
     // Multi-paragraph localized details.
     const paragraphs = descendants(dialog).filter((el) =>
@@ -995,6 +1025,8 @@ describe("Desktop extensions settings page", () => {
     const enTreeCard = descendants(enMount.content).find(
       (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
     )!;
+    // Unsafe repository protocol is blocked on the card star link as well.
+    expect(descendants(enTreeCard).filter((el) => el.tagName === "a")).toHaveLength(0);
     enTreeCard.dispatch("keydown", { key: " " });
     const enDialog = descendants(enMount.content).find(
       (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),

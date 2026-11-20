@@ -37,6 +37,7 @@ import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
+import { reconcileExternalTurnItemIds } from "./external-turn-item-ids.js";
 import {
   ExternalSessionReleaseError,
   ExternalThreadLifecycle,
@@ -652,7 +653,7 @@ export class ExternalThreadRuntime {
         !aligned.record.nativeSessionRef &&
         snapshot.value.turns.length === 0
           ? thread.turns
-          : aligned.turns;
+          : this.#reconcileHistoryTurns(thread, aligned.turns);
       thread.record = aligned.record;
       thread.turns = turns;
       thread.historyHydrated = true;
@@ -666,6 +667,25 @@ export class ExternalThreadRuntime {
     } catch {
       return { code: -32081, message: "External Thread history could not be persisted" };
     }
+  }
+
+  #reconcileHistoryTurns(thread: ExternalThread, turns: JsonObject[]): JsonObject[] {
+    const previous = thread.turns.map((turn) => {
+      const background = thread.projectedTurns
+        .get(turn.id as HostTurnId)
+        ?.projector.backgroundWireItems();
+      if (!background?.size || !Array.isArray(turn.items)) return turn;
+      // The background replay overlay owns reconciliation of post-Turn text.
+      // Settled background Items can also be present in the cached snapshot.
+      const backgroundIds = new Set<unknown>(background.keys());
+      for (const item of background.values()) backgroundIds.add(item.id);
+      const items = turn.items.filter(
+        (item) =>
+          !(item && typeof item === "object" && !Array.isArray(item) && backgroundIds.has(item.id)),
+      );
+      return { ...turn, items };
+    });
+    return reconcileExternalTurnItemIds(previous, turns);
   }
 
   async #reviveIdleSession(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
@@ -764,9 +784,10 @@ export class ExternalThreadRuntime {
         ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
         ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
       };
+      const turns = this.#reconcileHistoryTurns(thread, aligned.turns);
       thread.session = session;
       thread.record = aligned.record;
-      thread.turns = aligned.turns;
+      thread.turns = turns;
       thread.historyHydrated = true;
       thread.sessionUnavailable = false;
       thread.persistenceError = null;
@@ -781,7 +802,7 @@ export class ExternalThreadRuntime {
       thread.usageTurnId = null;
       thread.thread = externalThreadValue({
         record: aligned.record,
-        turns: aligned.turns,
+        turns,
         sessionId: thread.sessionId,
         running: thread.running,
       });

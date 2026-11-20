@@ -1,0 +1,8 @@
+{
+  "name": "@codexhost/desktop-extension-examples",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@codexhost/shared-contracts": "*"
+  }
+}

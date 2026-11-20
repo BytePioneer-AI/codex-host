@@ -945,15 +945,30 @@ fn browser_helper_fallback_does_not_guess_an_official_cli_from_path() {
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
+    assert_managed_remote_listener_session("ssh");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires the current user's logged-in macOS desktop and launchd"]
+fn managed_desktop_listener_detaches_and_reuses_a_matching_socket_owner() {
+    assert_managed_remote_listener_session("desktop");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn assert_managed_remote_listener_session(session: &str) {
     static NEXT_REMOTE_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
-    let directory = PathBuf::from("/tmp").join(format!(
-        "codexhost-remote-test-{}-{}",
-        process::id(),
-        NEXT_REMOTE_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
-    ));
+    let directory = std::env::var_os("CODEXHOST_TEST_SHORT_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(format!(
+            "r{}-{}",
+            process::id(),
+            NEXT_REMOTE_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed),
+        ));
     fs::create_dir(&directory).expect("create short remote listener fixture directory");
-    let codex_home = directory.join("home");
+    let codex_home = directory.clone();
     let socket = codex_home
         .join("app-server-control")
         .join("app-server-control.sock");
@@ -975,6 +990,7 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
         .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)
@@ -1038,28 +1054,43 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
 
     let original_socket = fs::metadata(&socket).expect("read original listener socket identity");
     let repeated_started = Instant::now();
-    let repeated = Command::new(shim_path())
-        .env_remove("CODEXHOST_LAUNCHER_PID")
-        .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
-        .args([
-            "-c",
-            "features.code_mode_host=true",
-            "app-server",
-            "--listen",
-            "unix://",
-        ])
-        .env_remove(HOST_NODE_PATH_ENV)
-        .env_remove(HOST_RUNTIME_PATH_ENV)
-        .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
-        .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
-        .env(CODEX_CLI_PATH_ENV, shim_path())
-        .env(REMOTE_SSH_MANAGED_ENV, "1")
-        .env("CODEX_HOME", &codex_home)
-        .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
-        .env("FAKE_CODEX_READY_PATH", &ready)
-        .stdin(Stdio::null())
-        .output()
-        .expect("repeat managed remote listener bootstrap");
+    let reconnect = || {
+        Command::new(shim_path())
+            .env_remove("CODEXHOST_LAUNCHER_PID")
+            .env_remove("CODEXHOST_LAUNCHER_EXECUTABLE")
+            .args([
+                "-c",
+                "features.code_mode_host=true",
+                "app-server",
+                "--listen",
+                "unix://",
+            ])
+            .env_remove(HOST_NODE_PATH_ENV)
+            .env_remove(HOST_RUNTIME_PATH_ENV)
+            .env_remove("CODEXHOST_REMOTE_LISTENER_CHILD")
+            .env(STOCK_CODEX_PATH_ENV, fake_codex_path())
+            .env(CODEX_CLI_PATH_ENV, shim_path())
+            .env(REMOTE_SSH_MANAGED_ENV, "1")
+            .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
+            .env("CODEX_HOME", &codex_home)
+            .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
+            .env("FAKE_CODEX_READY_PATH", &ready)
+            .stdin(Stdio::null())
+            .output()
+            .expect("repeat managed remote listener bootstrap")
+    };
+    let repeated = thread::scope(|scope| {
+        let first = scope.spawn(reconnect);
+        let second = scope.spawn(reconnect);
+        let first = first.join().expect("join first reconnect");
+        let second = second.join().expect("join second reconnect");
+        assert!(
+            second.status.success(),
+            "concurrent reconnect failed: {:?}",
+            second.stderr
+        );
+        first
+    });
     let repeated_elapsed = repeated_started.elapsed();
     let repeated_ready = fs::read_to_string(&ready).expect("read repeated listener identity");
     let repeated_value = |label: &str| {
@@ -1092,6 +1123,7 @@ fn managed_remote_listener_detaches_and_reuses_a_matching_socket_owner() {
         .env(STOCK_CODEX_PATH_ENV, &alternate_stock)
         .env(CODEX_CLI_PATH_ENV, shim_path())
         .env(REMOTE_SSH_MANAGED_ENV, "1")
+        .env("CODEXHOST_REMOTE_EXECUTION_SESSION", session)
         .env("CODEX_HOME", &codex_home)
         .env("FAKE_CODEX_UNIX_LISTENER_PATH", &socket)
         .env("FAKE_CODEX_READY_PATH", &ready)

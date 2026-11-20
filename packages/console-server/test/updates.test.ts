@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -214,7 +214,10 @@ describe("console updates", () => {
     if (!call) throw new Error("Updater was not spawned");
     const request = JSON.parse(await readFile(call[1], "utf8"));
     const status = JSON.parse(await readFile(request.status_path, "utf8"));
-    await writeFile(request.status_path, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+    // Match the real updater's atomic publication while readiness polling is active.
+    const readyStatus = `${request.status_path}.fixture-ready.tmp`;
+    await writeFile(readyStatus, JSON.stringify({ ...status, phase: "waiting-for-exit" }));
+    await rename(readyStatus, request.status_path);
     await expect(retry).resolves.toMatchObject({ status: { phase: "waiting-for-exit" } });
     await expect(updates.status()).resolves.toMatchObject({
       status: { phase: "waiting-for-exit", error: null },

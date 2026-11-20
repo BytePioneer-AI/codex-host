@@ -35,6 +35,15 @@ type RpcResult =
   | { ok: false; error: { code: string; message: string; details: object } };
 
 export class RpcRegistry {
+  private around?: (
+    method: string,
+    args: Record<string, unknown>,
+    next: () => Promise<unknown>,
+  ) => Promise<unknown>;
+  /** Session ownership routing; authentication has already been checked by the HTTP gateway. */
+  routeSessions(router: NonNullable<RpcRegistry["around"]>): void {
+    this.around = router;
+  }
   private readonly handlers = new Map<string, RpcHandler>();
   /** Methods answered by a generic fallback; recorded so the console can list what is still missing. */
   readonly unhandled = new Map<string, number>();
@@ -73,13 +82,15 @@ export class RpcRegistry {
         : {}
     ) as Record<string, unknown>;
     try {
-      const value = await handler(args ?? {}, {
-        method,
-        relay,
-        ...(sessionListTiming === undefined ? {} : { sessionListTiming }),
-        ...(auth === undefined ? {} : { auth }),
-        ...(afterResponse === undefined ? {} : { afterResponse }),
-      });
+      const next = async () =>
+        handler(args ?? {}, {
+          method,
+          relay,
+          ...(sessionListTiming === undefined ? {} : { sessionListTiming }),
+          ...(auth === undefined ? {} : { auth }),
+          ...(afterResponse === undefined ? {} : { afterResponse }),
+        });
+      const value = this.around ? await this.around(method, args ?? {}, next) : await next();
       return { ok: true, value: value === undefined ? null : value };
     } catch (error) {
       if (error instanceof RpcError) {
@@ -185,6 +196,15 @@ export type StreamFallback = (
 ) => boolean;
 
 export class StreamRegistry {
+  private sessionRouter?: (
+    endpoint: string,
+    args: Record<string, unknown>,
+    sink: StreamSink,
+    next: (sink: StreamSink) => Promise<void>,
+  ) => boolean | Promise<boolean>;
+  routeSessions(router: NonNullable<StreamRegistry["sessionRouter"]>): void {
+    this.sessionRouter = router;
+  }
   private readonly handlers = new Map<string, StreamHandler>();
   private fallback: StreamFallback | undefined;
   readonly unhandled = new Map<string, number>();
@@ -295,10 +315,20 @@ export class StreamRegistry {
           // Keep unknown streams open and silent: most DSH followers tolerate an idle stream better than an error.
           return;
         }
-        Promise.resolve(handler(args, sink)).catch((error: unknown) => {
-          console.error(`[mux] ${endpoint} failed`, error);
-          sink.fail("gateway/internal", error instanceof Error ? error.message : String(error));
-        });
+        Promise.resolve()
+          .then(async () => {
+            if (
+              await this.sessionRouter?.(endpoint, args, sink, async (forward) =>
+                handler(args, forward),
+              )
+            )
+              return;
+            await handler(args, sink);
+          })
+          .catch((error: unknown) => {
+            console.error(`[mux] ${endpoint} failed`, error);
+            sink.fail("gateway/internal", error instanceof Error ? error.message : String(error));
+          });
         return;
       }
       if (message.type === "item") {

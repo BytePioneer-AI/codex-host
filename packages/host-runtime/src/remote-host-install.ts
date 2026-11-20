@@ -30,11 +30,14 @@ export interface RemoteHostManifestV1 {
   shimPath: string;
   hostRuntimePath: string;
   dataDirectory: string;
+  sharedDataDirectory?: string;
+  executionSession?: "ssh" | "desktop";
   entrypointSha256?: string;
   profileBackupPath?: string;
 }
 
 export interface RemoteHostInstallOptions {
+  executionSession?: "ssh" | "desktop";
   home?: string;
   installRoot?: string;
   profilePath?: string;
@@ -42,6 +45,7 @@ export interface RemoteHostInstallOptions {
   nodePath?: string;
   shimPath?: string;
   hostRuntimePath?: string;
+  sharedDataDirectory?: string;
   platform?: NodeJS.Platform;
   environment?: NodeJS.ProcessEnv;
 }
@@ -241,7 +245,13 @@ function installManagedProfileBlock(contents: string, manifest: RemoteHostManife
     `export CODEXHOST_HOST_NODE_PATH=${shellQuote(manifest.nodePath)}`,
     `export CODEXHOST_HOST_RUNTIME_PATH=${shellQuote(manifest.hostRuntimePath)}`,
     `export CODEXHOST_DATA_DIR=${shellQuote(manifest.dataDirectory)}`,
+    ...(manifest.sharedDataDirectory
+      ? [`export CODEXHOST_SHARED_DATA_DIR=${shellQuote(manifest.sharedDataDirectory)}`]
+      : []),
     "export CODEXHOST_REMOTE_SSH_MANAGED='1'",
+    ...(manifest.executionSession
+      ? [`export CODEXHOST_REMOTE_EXECUTION_SESSION=${shellQuote(manifest.executionSession)}`]
+      : []),
   ];
   const block = [
     PROFILE_START,
@@ -317,9 +327,11 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "shimPath",
     "hostRuntimePath",
     "dataDirectory",
+    "sharedDataDirectory",
     "entrypointSha256",
     "claudeCommand", // Inert metadata accepted from older format-1 manifests.
     "profileBackupPath",
+    "executionSession",
   ]);
   const requiredPaths = [
     "wrapperPath",
@@ -330,9 +342,12 @@ async function readManifest(filePath: string): Promise<RemoteHostManifestV1 | nu
     "hostRuntimePath",
     "dataDirectory",
   ] as const;
-  const optionalPaths = ["claudeCommand", "profileBackupPath"] as const;
+  const optionalPaths = ["claudeCommand", "profileBackupPath", "sharedDataDirectory"] as const;
   if (
     manifest.format !== MANIFEST_FORMAT ||
+    (manifest.executionSession !== undefined &&
+      manifest.executionSession !== "ssh" &&
+      manifest.executionSession !== "desktop") ||
     Object.keys(manifest).some((key) => !allowed.has(key)) ||
     requiredPaths.some(
       (key) => typeof manifest[key] !== "string" || !path.isAbsolute(manifest[key]),
@@ -373,6 +388,13 @@ export async function installRemoteHost(
   const environment = options.environment ?? process.env;
   const paths = resolvePaths(options);
   const previousManifest = await readManifest(paths.manifestPath);
+  const executionSession = options.executionSession ?? previousManifest?.executionSession ?? "ssh";
+  if (executionSession !== "ssh" && executionSession !== "desktop") {
+    throw new Error("Remote execution session must be ssh or desktop");
+  }
+  if (executionSession === "desktop" && platform !== "darwin") {
+    throw new Error("Desktop execution session requires macOS");
+  }
   const previousManifestFile = previousManifest
     ? {
         contents: await readFile(paths.manifestPath),
@@ -429,6 +451,27 @@ export async function installRemoteHost(
   const shimPath = await executable(options.shimPath, "codexhost Shim");
   const hostRuntimePath = await existingFile(options.hostRuntimePath, "codexhost Host Runtime");
 
+  const nonempty = (value: string | undefined): string | undefined =>
+    value?.trim() ? value : undefined;
+  const sharedSelection =
+    options.sharedDataDirectory ??
+    nonempty(environment.CODEXHOST_SHARED_DATA_DIR) ??
+    (environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1"
+      ? nonempty(environment.CODEXHOST_DATA_DIR)
+      : undefined) ??
+    previousManifest?.sharedDataDirectory ??
+    path.join(paths.home, ".codexhost");
+  if (
+    typeof sharedSelection !== "string" ||
+    !sharedSelection.trim() ||
+    !path.isAbsolute(sharedSelection)
+  ) {
+    throw new Error("Shared Host data directory must be an absolute path");
+  }
+  const sharedDataDirectory = path.resolve(sharedSelection);
+  if (sharedDataDirectory === paths.dataDirectory) {
+    throw new Error("Shared Host data directory must differ from the SSH-only data directory");
+  }
   let manifest: RemoteHostManifestV1 = {
     format: MANIFEST_FORMAT,
     wrapperPath: paths.wrapperPath,
@@ -438,6 +481,8 @@ export async function installRemoteHost(
     shimPath,
     hostRuntimePath,
     dataDirectory: paths.dataDirectory,
+    sharedDataDirectory,
+    ...(executionSession === "desktop" ? { executionSession } : {}),
     ...(previousManifest?.profileBackupPath
       ? { profileBackupPath: previousManifest.profileBackupPath }
       : {}),

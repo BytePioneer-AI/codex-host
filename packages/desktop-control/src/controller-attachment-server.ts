@@ -2,13 +2,14 @@ import { createServer, type Server, type Socket } from "node:net";
 import {
   REMOTE_THREAD_REPLY_MAX_BYTES,
   REMOTE_THREAD_CONTROL_TIMEOUT_MS,
+  REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   remoteConnectionsRequestSchema,
   type RemoteConnectionsRequest,
   type RemoteConnectionsReply,
 } from "@codexhost/shared-contracts";
 import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
 
-const MAX_REQUEST_BYTES = 16 * 1024;
+const MAX_REQUEST_BYTES = REMOTE_CONTROLLER_REQUEST_MAX_BYTES;
 
 export interface ControllerAttachmentServer {
   close(): Promise<void>;
@@ -88,7 +89,9 @@ export async function startControllerAttachmentServer(
           return;
         }
         socket.setTimeout(
-          input.action === "read-thread" ? REMOTE_THREAD_CONTROL_TIMEOUT_MS : 30_000,
+          input.action === "read-thread" || input.action === "session"
+            ? REMOTE_THREAD_CONTROL_TIMEOUT_MS
+            : 30_000,
           () => socket.destroy(),
         );
         // The operation is not retried on connection loss: mutations may already have applied.
@@ -99,7 +102,7 @@ export async function startControllerAttachmentServer(
             (reply) => {
               const serialized = JSON.stringify(reply) + "\n";
               if (
-                input.action === "read-thread" &&
+                (input.action === "read-thread" || input.action === "session") &&
                 Buffer.byteLength(serialized) > REMOTE_THREAD_REPLY_MAX_BYTES
               ) {
                 socket.end(
@@ -107,7 +110,9 @@ export async function startControllerAttachmentServer(
                     error: {
                       code: -32094,
                       message:
-                        "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
+                        input.action === "session"
+                          ? "Remote Thread snapshot exceeds the 16 MiB response limit; open this Thread in Codex Desktop. Paged remote snapshots are not supported."
+                          : "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
                     },
                   }) + "\n",
                 );

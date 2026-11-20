@@ -1,3 +1,31 @@
+.hostBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 96px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+}
+.hostBadge > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hostDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #92949a;
+  flex-shrink: 0;
+}
+.hostBadge[data-state="connected"] .hostDot {
+  background: #16a34a;
+}
+.hostBadge[data-state="connecting"] .hostDot {
+  background: #d97706;
+}
+
 .projectRow,
 .sessionRow {
   --dsh-row-surface: var(--dsw-specific-sidebar-fill);

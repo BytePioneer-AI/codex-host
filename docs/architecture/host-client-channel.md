@@ -10,6 +10,8 @@ GUI、Web 和其他 App 的共享外部 Threads 由一个独立后台中的 `App
 
 原生命令／文件审批和提问可由 Web 回答。MCP 的空字段表单以确认审批呈现，保留 `message`、风险提示与工具参数，不投影为空问题列表；带 `codex_approval_kind: "mcp_tool_call"` 的请求只提供原生 `_meta.persist` 声明的会话／永久授权范围，普通空表单只提供单次允许与拒绝。审批响应在认领请求前校验 action、空 content 与授权范围，不自动批准，也不接受未声明的持久化权限。审批严格保留原生可选 decision；Web 使用代次限定的不透明请求 ID，服务端再映射到官方 ID，旧页面不能回答重启后复用编号的新请求。首次有效回应后删除待处理项，不自动重放结果未知的响应。未支持的原生权限授予请求不转换成通用允许／拒绝；Web 提问卡片没有密码输入契约，因此含 `isSecret` 的提问也不降级成明文字段。对 Web 不能回答的官方请求，有 Desktop 连接时交由 Desktop；没有 Desktop 连接时立即返回错误并投影原因，不让 Turn 悬挂。
 
+`request_user_input_async` 通过原生 `agentMessage {delivery: "async", questions: [{title, options?}]}` 发布，不是等待工具结果的 server request。客户端通道从实时 Item 与最近 5 轮快照恢复问题，每个问题保留原生 `questionItemId` 和索引，复用 Web 提问卡，支持选项及自由文本。Web 的“跳过”只撤下当前 Host 代次的问题投影，不发送原生输入或取消请求；Host 换代后，原生历史中的未答问题仍可恢复。答案按 Desktop 的 `<send_user_message_question_reply>` 用户消息格式提交：活动 Turn 用带 `expectedTurnId` 的 `turn/steer`，空闲时用 `turn/start`；不伪造工具响应。原生用户消息中已确认的答案会撤下问题卡，发送前再读取当前历史，多个 Web 响应在发送前认领同一问题。结果未知时不重发；明确的原生参数／状态拒绝保留问题供重试。该投影只保存在内存中，Host 换代后从当前快照窗口恢复，不扫描整份历史；原生协议没有跨 Desktop 与 Web 的原子异步答题接口，因此同时提交仍受原生用户输入语义约束。
+
 - `shared-contracts/client-channel` 定义浏览器安全的版本、游标、快照和交互契约。
 - `host-runtime` 提供本地认证 HTTP 通道，复用原请求分派、投影器、配置观察器和交互响应路径。
 - `desktop-control` 的公共 `HostClientChannel` 负责 Node 端发现、通知恢复和只读快照访问；命令不自动重试。

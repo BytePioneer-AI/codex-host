@@ -26,6 +26,15 @@ function fileScope(workspaceRoot: string): WorkspaceFileScope {
   return { sessionId: SessionId("s-test"), workspaceRoot };
 }
 
+/**
+ * A workspace path written the way harness links write Windows absolutes: a
+ * `/D:/`-style drive prefix over `/`-separated parts. Only meaningful on
+ * Windows, where the tests using it are gated.
+ */
+export function posixPrefixed(workspace: string, ...parts: string[]): string {
+  return `/${join(workspace, ...parts).replaceAll("\\", "/")}`;
+}
+
 export const signal = (): AbortSignal => new AbortController().signal;
 
 /** One temp workspace and the context serving it. */

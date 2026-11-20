@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FsVersion } from "@deepseek-ai/dsh-fs";
-import { failureOf, openWorkspace, signal, type Harness } from "./harness.ts";
+import { failureOf, openWorkspace, posixPrefixed, signal, type Harness } from "./harness.ts";
 
 let harness: Harness;
 let workspace: string;
@@ -34,6 +34,21 @@ describe("workspaceFiles.readBytes — the window", () => {
     expect(result.absolutePath.endsWith("ramp.bin")).toBe(true);
     expect(result.version.length).toBeGreaterThan(0);
   });
+
+  it.runIf(process.platform === "win32")(
+    "reads a Windows absolute path written with the `/D:/`-style prefix harness links carry",
+    async () => {
+      await writeFile(join(workspace, "ramp.bin"), RAMP);
+      const result = await endpoint().readBytes(
+        harness.scope,
+        posixPrefixed(workspace, "ramp.bin"),
+        { range: {} },
+        signal(),
+      );
+      expect(Buffer.from(result.data).equals(RAMP)).toBe(true);
+      expect(result.eof).toBe(true);
+    },
+  );
 
   it("cuts the requested window and reports that more follows", async () => {
     await writeFile(join(workspace, "ramp.bin"), RAMP);

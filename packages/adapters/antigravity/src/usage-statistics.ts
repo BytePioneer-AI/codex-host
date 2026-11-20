@@ -22,7 +22,7 @@ function count(value: unknown): number | null {
 }
 
 /** The home agy resolves `~/.gemini` against: `USERPROFILE` on Windows, `HOME` elsewhere. */
-function antigravityHome(environment: NodeJS.ProcessEnv): string {
+export function antigravityHome(environment: NodeJS.ProcessEnv): string {
   return (
     (process.platform === "win32" ? environment.USERPROFILE : environment.HOME) || os.homedir()
   );

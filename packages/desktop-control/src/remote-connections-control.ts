@@ -1,4 +1,5 @@
 import { createConnection } from "node:net";
+import { rendererRemoteSession } from "./renderer-remote-sessions.js";
 import {
   REMOTE_THREAD_REPLY_MAX_BYTES,
   REMOTE_THREAD_CONTROL_TIMEOUT_MS,
@@ -13,6 +14,8 @@ const MAX_REPLY_BYTES = 1024 * 1024;
 /** Fixed renderer API; user input is data, never executable JavaScript. */
 export function remoteConnectionsExpression(input: RemoteConnectionsRequest): string {
   const request = remoteConnectionsRequestSchema.parse(input);
+  if (request.action === "session")
+    return `(async () => { try { return {result:await (${rendererRemoteSession.toString()})(window,${JSON.stringify(request.operation)})}; } catch(error) {return {error:{code:-32090,message:String(error?.message ?? error)}};} })()`;
   return `(async () => {
     try {
       const api = window.__codexhostRendererBindingProbeV1;
@@ -33,7 +36,7 @@ export async function requestDesktopRemoteConnections(
   const request = remoteConnectionsRequestSchema.safeParse(input);
   if (!request.success)
     return { error: { code: -32602, message: "Invalid remote connection request" } };
-  const readThread = request.data.action === "read-thread";
+  const readThread = request.data.action === "read-thread" || request.data.action === "session";
   const maxReplyBytes = readThread ? REMOTE_THREAD_REPLY_MAX_BYTES : MAX_REPLY_BYTES;
   const deadline = timeoutMs ?? (readThread ? REMOTE_THREAD_CONTROL_TIMEOUT_MS : 30_000);
   const port = Number(environment.CODEXHOST_CONTROL_PORT);

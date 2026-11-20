@@ -1,4 +1,4 @@
-import { access, chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -1084,6 +1084,206 @@ if (${keepAlive}) {
         }
       },
     );
+
+    it.each([
+      ["missing", false],
+      ["present", true],
+    ] as const)(
+      "names both Conversations when agy resumes into a new one (store entry %s)",
+      async (_label, storeEntryExists) => {
+        const expectedId = "conv-expected";
+        const receivedId = "conv-stray";
+        const { command, cwd, cleanup } = await fakeStreamingAgy([
+          JSON.stringify({ event: "init", conversation_id: receivedId }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: receivedId, status: "SUCCESS", response: "stray reply" },
+          }),
+        ]);
+        const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-home-"));
+        const dbPath = path.join(
+          home,
+          ".gemini",
+          "antigravity-cli",
+          "conversations",
+          `${expectedId}.db`,
+        );
+        if (storeEntryExists) {
+          await mkdir(path.dirname(dbPath), { recursive: true });
+          await writeFile(dbPath, "");
+        }
+        const adapter = new AntigravityAdapter({
+          command,
+          environment: { ...process.env, HOME: home, USERPROFILE: home, CODEXHOST_DATA_DIR: cwd },
+        });
+        try {
+          const opened = await adapter.open({
+            kind: "resume",
+            cwd,
+            nativeRef: nativeSessionRefSchema.parse({
+              harnessId: "antigravity",
+              nativeSessionId: expectedId,
+              formatVersion: 1,
+            }),
+          });
+          if (!opened.ok) throw new Error(opened.error.message);
+          const session = opened.value;
+          const iterator = session.outputs[Symbol.asyncIterator]();
+          await session.execute({
+            type: "turn.start",
+            turnId: hostTurnIdSchema.parse("turn-resume-mismatch"),
+            input: [{ type: "text", text: "Continue this Conversation" }],
+          });
+          let event: HostEvent;
+          do {
+            event = await nextEvent(iterator);
+          } while (event.type !== "turn.completed");
+          expect(event).toMatchObject({
+            outcome: {
+              status: "failed",
+              error: {
+                code: "sessionNotFound",
+                retryable: false,
+                message: storeEntryExists
+                  ? `Antigravity resumed a different Conversation: expected ${expectedId}, agy started ${receivedId}`
+                  : expect.stringContaining(
+                      `Antigravity Conversation ${expectedId} no longer exists`,
+                    ),
+                diagnostic: `expected=${expectedId} received=${receivedId} store=${dbPath} storeEntry=${storeEntryExists ? "present" : "missing"}`,
+              },
+            },
+          });
+          if (
+            !storeEntryExists &&
+            event.type === "turn.completed" &&
+            event.outcome.status === "failed"
+          ) {
+            expect(event.outcome.error.message).toContain(`new Conversation ${receivedId}`);
+          }
+          expect(event).not.toHaveProperty("nativeTurnRef");
+          const snapshot = await session.readSnapshot();
+          if (!snapshot.ok) throw new Error(snapshot.error.message);
+          expect(snapshot.value.state?.nativeRef?.nativeSessionId).toBe(expectedId);
+        } finally {
+          await adapter.close();
+          await cleanup();
+          await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      },
+    );
+
+    it("seeds missing conversation db and injects prior history when resuming after store cleanup", async () => {
+      const expectedId = "47b97c55-8bf0-4ed6-82c4-db4150880fbc";
+      const home = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-recover-home-"));
+      const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-recover-bin-"));
+      const cwd = await mkdtemp(path.join(os.tmpdir(), "codexhost-agy-recover-cwd-"));
+      const stdinLogPath = path.join(directory, "stdin-log.jsonl");
+      const dbPath = path.join(
+        home,
+        ".gemini",
+        "antigravity-cli",
+        "conversations",
+        `${expectedId}.db`,
+      );
+      const scriptContent = `
+const fs = require("node:fs");
+const readline = require("node:readline");
+if (process.argv.includes("models")) {
+  process.stdout.write("gemini-3.7-flash-high\\tGemini 3.7 Flash High\\n");
+  process.exit(0);
+}
+const rl = readline.createInterface({ input: process.stdin });
+rl.once("line", (stdinData) => {
+  const hasConvFlag = process.argv.includes("--conversation");
+  const dbExists = fs.existsSync(${JSON.stringify(dbPath)});
+  fs.appendFileSync(${JSON.stringify(stdinLogPath)}, JSON.stringify({ hasConvFlag, dbExists, stdinData }) + "\\n");
+  const resolvedId = hasConvFlag && !dbExists ? "stray-id" : ${JSON.stringify(expectedId)};
+  process.stdout.write(JSON.stringify({ event: "init", conversation_id: resolvedId }) + "\\n");
+  process.stdout.write(JSON.stringify({
+    event: "result",
+    result: {
+      conversation_id: resolvedId,
+      status: "SUCCESS",
+      num_turns: hasConvFlag ? 2 : 1,
+      response: hasConvFlag ? "First turn answerSecond turn answer" : "First turn answer",
+    },
+  }) + "\\n");
+  process.exit(0);
+});
+`;
+      const jsPath = path.join(directory, "agy.cjs");
+      await writeFile(jsPath, scriptContent);
+      const command =
+        process.platform === "win32"
+          ? path.join(directory, "agy.cmd")
+          : path.join(directory, "agy");
+      if (process.platform === "win32") {
+        await writeFile(command, `@node "${jsPath}" %*\r\n`);
+      } else {
+        await writeFile(command, `#!/usr/bin/env node\n${scriptContent}`);
+        await chmod(command, 0o755);
+      }
+
+      const adapter = new AntigravityAdapter({
+        command,
+        environment: { ...process.env, HOME: home, USERPROFILE: home, CODEXHOST_DATA_DIR: cwd },
+      });
+      try {
+        const opened = await adapter.open({
+          kind: "create",
+          cwd,
+          environment: { HOME: home, USERPROFILE: home, CODEXHOST_DATA_DIR: cwd },
+        });
+        if (!opened.ok) throw new Error(opened.error.message);
+        const session = opened.value;
+        const iterator = session.outputs[Symbol.asyncIterator]();
+
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-recover-1"),
+          input: [{ type: "text", text: "First turn question" }],
+        });
+        let event1: HostEvent;
+        do {
+          event1 = await nextEvent(iterator);
+        } while (event1.type !== "turn.completed");
+        expect(event1).toMatchObject({ outcome: { status: "succeeded" } });
+
+        // Simulate missing native .db when Turn 2 starts
+        await rm(dbPath, { force: true });
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("turn-recover-2"),
+          input: [{ type: "text", text: "Second turn question" }],
+        });
+        let event2: HostEvent;
+        do {
+          event2 = await nextEvent(iterator);
+        } while (event2.type !== "turn.completed");
+        expect(event2).toMatchObject({ outcome: { status: "succeeded" } });
+
+        const runs = (await readFile(stdinLogPath, "utf8"))
+          .trim()
+          .split("\n")
+          .map(
+            (line) =>
+              JSON.parse(line) as { hasConvFlag: boolean; dbExists: boolean; stdinData: string },
+          );
+        expect(runs).toHaveLength(2);
+        expect(runs[1]?.hasConvFlag).toBe(true);
+        expect(runs[1]?.dbExists).toBe(true);
+        expect(runs[1]?.stdinData).toContain("<prior_conversation_history>");
+        expect(runs[1]?.stdinData).toContain("First turn question");
+        expect(runs[1]?.stdinData).toContain("First turn answer");
+        expect(runs[1]?.stdinData).toContain("Second turn question");
+        await session.close();
+      } finally {
+        await adapter.close();
+        for (const target of [home, directory, cwd]) {
+          await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+        }
+      }
+    });
 
     it.each(["conv-success", ""])(
       "does not turn a successful result for %s into an error based on its text",

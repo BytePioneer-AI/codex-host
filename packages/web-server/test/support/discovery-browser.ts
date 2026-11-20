@@ -26,6 +26,7 @@ export async function discoveryBrowser(t: TestContext, width = 1280, agents = fa
     { authenticated: true },
   );
   const page = await browser.newPage({
+    locale: "en-US",
     viewport: { width, height: 900 },
     isMobile: width < 600,
     hasTouch: width < 600,

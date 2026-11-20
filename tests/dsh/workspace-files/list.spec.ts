@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { failureOf, openWorkspace, signal, type Harness } from "./harness.ts";
+import { failureOf, openWorkspace, posixPrefixed, signal, type Harness } from "./harness.ts";
 
 let harness: Harness;
 let workspace: string;
@@ -45,6 +45,16 @@ describe("workspaceFiles.list — the happy path", () => {
     expect(listing.path).toBe("");
     expect(listing.entries).toEqual([]);
   });
+
+  it.runIf(process.platform === "win32")(
+    "accepts the workspace root written with the `/D:/`-style prefix harness links carry",
+    async () => {
+      await writeFile(join(workspace, "notes.txt"), "hello", "utf8");
+      const listing = await endpoint().list(harness.scope, posixPrefixed(workspace), signal());
+      expect(listing.path).toBe("");
+      expect(listing.entries).toEqual([{ name: "notes.txt", type: "file", size: 5 }]);
+    },
+  );
 
   it("reports a nested directory as its `/`-joined path relative to the root, decoded", async () => {
     await mkdir(join(workspace, "src", "my dir", "子目录"), { recursive: true });

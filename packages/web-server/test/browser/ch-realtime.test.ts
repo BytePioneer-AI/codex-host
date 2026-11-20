@@ -59,7 +59,7 @@ it(
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(url);
@@ -123,11 +123,12 @@ it(
     );
     const browser = await chromium.launch();
     t.after(() => browser.close());
-    const a = await browser.newPage({ viewport: { width: 1280, height: 900 } }),
+    const a = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: "en-US" }),
       b = await browser.newPage({
         viewport: { width: 390, height: 844 },
         isMobile: true,
         hasTouch: true,
+        locale: "en-US",
       });
     const errors: string[] = [];
     for (const page of [a, b]) page.on("pageerror", (error) => errors.push(error.message));

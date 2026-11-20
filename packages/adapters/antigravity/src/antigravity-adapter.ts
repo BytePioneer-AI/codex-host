@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, unlink } from "node:fs/promises";
+import { access, readFile, unlink } from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
@@ -73,8 +73,12 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { resolveAntigravityExecutable } from "./command.js";
-import { forkAntigravitySession } from "./fork.js";
-import { AntigravityHistory, antigravityHookDirectory } from "./history.js";
+import {
+  ensureNativeConversationDb,
+  forkAntigravitySession,
+  nativeConversationDbPath,
+} from "./fork.js";
+import { AntigravityHistory, antigravityHookDirectory, type AntigravityTurn } from "./history.js";
 import {
   antigravityAvailableThinkingOptions,
   antigravityModelArguments,
@@ -96,7 +100,7 @@ import { fetchAntigravityQuota, type AntigravityQuotaSnapshot } from "./quota.js
 import { AntigravityQuestionBridge } from "./question-bridge.js";
 import { AntigravitySubagents } from "./subagents.js";
 import { nativeSubagentIdSchema, readSubagentTranscript } from "./subagent-transcript.js";
-import { createAntigravityUsageStatistics } from "./usage-statistics.js";
+import { antigravityHome, createAntigravityUsageStatistics } from "./usage-statistics.js";
 import {
   antigravityToolErrorMessage,
   isAntigravityPermissionDenial,
@@ -317,6 +321,32 @@ export const ANTIGRAVITY_WORKSPACE_FILE_INSTRUCTION =
  */
 function antigravityWorkingDirectoryInstruction(cwd: string): string {
   return `[System Instruction: The project working directory is ${JSON.stringify(cwd)}. Run terminal commands and resolve relative file paths in this directory unless the task requires another one.]\n\n`;
+}
+
+export function formatRecoveredHistoryContext(turns: readonly AntigravityTurn[]): string {
+  if (turns.length === 0) return "";
+  const formattedTurns: string[] = [];
+  for (const [index, turn] of turns.entries()) {
+    const userText = turn.input
+      .map((part) => part.text.trim())
+      .filter(Boolean)
+      .join("\n\n");
+    const assistantText = turn.items
+      .flatMap(({ item }) =>
+        item.type === "agentMessage" && item.text.trim() ? [item.text.trim()] : [],
+      )
+      .join("\n\n");
+    if (!userText && !assistantText) continue;
+    const sections = [`Turn ${index + 1}:`];
+    if (userText) sections.push(`User:\n${userText}`);
+    if (assistantText) sections.push(`Assistant:\n${assistantText}`);
+    formattedTurns.push(sections.join("\n"));
+  }
+  if (formattedTurns.length === 0) return "";
+  return (
+    "[System Instruction: The native Antigravity trajectory database for this Conversation was reconstructed from CodexHost history. Use the prior Conversation history below as context for the current user message.]\n\n" +
+    `<prior_conversation_history>\n${formattedTurns.join("\n\n---\n\n")}\n</prior_conversation_history>\n\n`
+  );
 }
 
 export function formatAntigravityTurnPrompt(text: string, cwd?: string): string {
@@ -540,6 +570,41 @@ function normalizedProcessError(
   };
 }
 
+/**
+ * agy silently starts a new Conversation when `--conversation` names one it no longer has
+ * (for example after its `conversations/` store was cleaned outside CodexHost). Name both IDs
+ * and, when the original store entry is gone, say so instead of a bare mismatch.
+ */
+export async function antigravityResumeMismatchError(
+  expectedConversationId: string,
+  receivedConversationId: string,
+  homedir: string,
+): Promise<HarnessError> {
+  const dbPath = nativeConversationDbPath(expectedConversationId, homedir);
+  const missing = await access(dbPath).then(
+    () => false,
+    (error: unknown) => (error as NodeJS.ErrnoException | null)?.code === "ENOENT",
+  );
+  const diagnostic = `expected=${expectedConversationId} received=${receivedConversationId} store=${dbPath} storeEntry=${missing ? "missing" : "present"}`;
+  if (missing) {
+    return {
+      code: "sessionNotFound",
+      message:
+        `Antigravity Conversation ${expectedConversationId} no longer exists (${dbPath} is missing), ` +
+        `so agy started a new Conversation ${receivedConversationId} instead of resuming it. ` +
+        "Its native history was removed outside CodexHost; start a new Thread to continue.",
+      retryable: false,
+      diagnostic,
+    };
+  }
+  return {
+    code: "sessionNotFound",
+    message: `Antigravity resumed a different Conversation: expected ${expectedConversationId}, agy started ${receivedConversationId}`,
+    retryable: false,
+    diagnostic,
+  };
+}
+
 async function runBuffered(
   executable: string,
   arguments_: string[],
@@ -746,7 +811,8 @@ class AntigravitySession implements HarnessSession {
       };
     }
 
-    let questions: AntigravityQuestionBridge;
+    let questions: AntigravityQuestionBridge | undefined;
+    let includeRecoveredHistory = false;
     const hookDirectory = antigravityHookDirectory(this.#environment);
     // The Thread's Hook directory outlives each Turn, while the previous Turn's agy may still be
     // exiting and its bridge closing; the next bridge rewrites the directory after that cleanup,
@@ -781,12 +847,22 @@ class AntigravitySession implements HarnessSession {
     );
     try {
       questions = await this.#preparingQuestions;
+      if (!this.#closed && this.#nativeRef) {
+        const priorTurns = this.#history.snapshot();
+        const ensured = await ensureNativeConversationDb(
+          this.#nativeRef.nativeSessionId,
+          antigravityHome({ ...this.#environment, ...questions.environment }),
+          priorTurns.length > 0,
+        );
+        includeRecoveredHistory = ensured.emptySteps && priorTurns.length > 0;
+      }
     } catch (error) {
+      await questions?.dispose();
       return {
         ok: false,
         error: {
           code: "nativeFailure",
-          message: `Question bridge setup failed: ${errorMessage(error)}`,
+          message: `Antigravity Turn setup failed: ${errorMessage(error)}`,
           retryable: true,
         },
       };
@@ -807,7 +883,9 @@ class AntigravitySession implements HarnessSession {
       "--print-timeout",
       this.#printTimeout,
     ];
-    if (this.#nativeRef) arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
+    if (this.#nativeRef) {
+      arguments_.unshift("--conversation", this.#nativeRef.nativeSessionId);
+    }
     arguments_.push(...antigravityModelArguments(this.#model, this.#thinkingOptionId));
     arguments_.push("--dangerously-skip-permissions");
     arguments_.push("--add-dir", this.#cwd);
@@ -921,7 +999,11 @@ class AntigravitySession implements HarnessSession {
       });
     });
     try {
-      const turnPrompt = formatAntigravityTurnPrompt(text, this.#cwd);
+      const promptBody =
+        includeRecoveredHistory && !text.startsWith("/")
+          ? `${formatRecoveredHistoryContext(this.#history.snapshot())}${text}`
+          : text;
+      const turnPrompt = formatAntigravityTurnPrompt(promptBody, this.#cwd);
       if (child.stdin.writable) {
         child.stdin.write(
           `${JSON.stringify({ event: "user", message: { content: turnPrompt } })}\n`,
@@ -982,15 +1064,14 @@ class AntigravitySession implements HarnessSession {
     if (event.event === "init") {
       active.nativePermissionMode = event.init?.permission_mode ?? null;
       if (this.#nativeRef && this.#nativeRef.nativeSessionId !== event.conversation_id) {
-        this.#completeTurn(active, {
-          status: "failed",
-          error: {
-            code: "sessionNotFound",
-            message: "Antigravity resumed a different Conversation",
-            retryable: false,
-          },
-        });
+        // Stop agy before it records the prompt in the Conversation it just created.
         active.process.kill();
+        const error = await antigravityResumeMismatchError(
+          this.#nativeRef.nativeSessionId,
+          event.conversation_id,
+          antigravityHome(this.#environment),
+        );
+        this.#completeTurn(active, { status: "failed", error });
         return;
       }
       this.#nativeRef = nativeSessionRefSchema.parse({

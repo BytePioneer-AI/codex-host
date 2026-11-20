@@ -1,3 +1,4 @@
+import { canReorderLocalWorkspaces } from "./workspace-reorder.ts";
 /**
  * The workspace/session browsing region filling the sidebar shell's
  * `sidebar.workspaces` hole: section header (title + view options + add
@@ -441,14 +442,18 @@ function SessionTree({
   }, [current, currentGroup, setGroupExpanded, groupExpansion]);
   const parents = useMemo(() => {
     if (!nestWorkspaces) return new Map<string, WorkspaceId | undefined>();
-    const keysByPath = new Map(
-      workspaces.map((workspace) => [workspace.path, workspace.workspaceId]),
-    );
-    const paths = [...keysByPath.keys()];
+    const pathsByHost = new Map<string, Map<string, WorkspaceId>>();
+    for (const workspace of workspaces) {
+      const hostId = workspace.remote?.hostId ?? "local";
+      const paths = pathsByHost.get(hostId) ?? new Map<string, WorkspaceId>();
+      if (workspace.path) paths.set(workspace.path, workspace.workspaceId);
+      pathsByHost.set(hostId, paths);
+    }
     return new Map<string, WorkspaceId | undefined>(
       workspaces.map((workspace) => {
-        const path = owningParentFolder(workspace.path, paths);
-        return [workspace.workspaceId, path === undefined ? undefined : keysByPath.get(path)];
+        const keysByPath = pathsByHost.get(workspace.remote?.hostId ?? "local");
+        const path = owningParentFolder(workspace.path, [...(keysByPath?.keys() ?? [])]);
+        return [workspace.workspaceId, path === undefined ? undefined : keysByPath?.get(path)];
       }),
     );
   }, [nestWorkspaces, workspaces]);
@@ -517,8 +522,11 @@ function SessionTree({
     if (workspaceDropCommitted.current) return;
     workspaceDropCommitted.current = true;
     setWorkspaceDrag(null);
+    if (!canReorderLocalWorkspaces(workspaces, activeDrag.workspaceId, over.id)) return;
     const owner = parents.get(activeDrag.workspaceId);
-    const siblings = workspaces.filter((workspace) => parents.get(workspace.workspaceId) === owner);
+    const siblings = workspaces.filter(
+      (workspace) => !workspace.remote && parents.get(workspace.workspaceId) === owner,
+    );
     const rowIndex = siblings.findIndex((workspace) => workspace.workspaceId === over.id);
     if (rowIndex === -1) return;
     const anchor = over.half === "before" ? over.id : siblings[rowIndex + 1]?.workspaceId;
@@ -608,7 +616,9 @@ function SessionTree({
     const workspaceId = group.workspaceId;
     const children = childrenByParent.get(group.key) ?? [];
     const compatibleDrag =
-      workspaceDrag !== null && parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
+      workspaceDrag !== null &&
+      canReorderLocalWorkspaces(workspaces, workspaceDrag.workspaceId, workspaceId) &&
+      parents.get(workspaceDrag.workspaceId) === parents.get(group.key);
     const visible = sidebarWindow(
       group.sessions,
       sessionLimits[group.key] ?? GROUP_INITIAL_ROWS,
@@ -627,7 +637,7 @@ function SessionTree({
         ? workspaceDrag.over.half
         : null;
     const workspaceDragProps =
-      workspaceId === undefined
+      workspaceId === undefined || group.remote
         ? undefined
         : {
             start: () => {
@@ -818,6 +828,7 @@ function SessionTree({
                 <SessionNodeItem
                   key={node.id}
                   rowKey={workspaceId === undefined ? `recent:${node.id}` : undefined}
+                  showHost={!group.remote}
                   node={node}
                   currentId={current}
                   now={now}
@@ -831,7 +842,7 @@ function SessionTree({
                         }
                       : undefined
                   }
-                  drag={workspaceId === undefined ? undefined : dragProps}
+                  drag={workspaceId === undefined || group.remote ? undefined : dragProps}
                   t={t}
                 />
               );

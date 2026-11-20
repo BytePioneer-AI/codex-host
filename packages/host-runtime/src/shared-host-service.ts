@@ -113,7 +113,6 @@ export async function runSharedHostService(
   try {
     return await prepareDelegationRuntime({
       environment: env,
-      externalClients: environment.CODEXHOST_REMOTE_SSH_MANAGED !== "1",
       createHost: async (delegationEnvironment, _register, registry) => {
         const remote = createRemoteControlAppServerPlan({
           arguments: ["app-server"],
@@ -205,6 +204,10 @@ export async function runSharedHostService(
           channel = await startClientChannelServer({
             environment: env,
             owner: "service",
+            externalSession: (streams) => {
+              if (stopping) throw new Error("Shared Host is stopping");
+              return owner.createSession(streams);
+            },
             shutdown: {
               runningTasks: () =>
                 new Set([host, ...desktops].flatMap((owner) => owner.runningThreadIds())).size,

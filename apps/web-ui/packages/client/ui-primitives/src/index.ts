@@ -141,7 +141,7 @@ export type {
 export { CodeBlock } from "./markdown/CodeBlock.tsx";
 export type { CodeBlockProps } from "./markdown/CodeBlock.tsx";
 export { JsonBlock } from "./markdown/JsonBlock.tsx";
-export { MarkdownDelegateProvider } from "./markdown/MarkdownDelegate.tsx";
+export { MarkdownDelegateProvider, useMarkdownDelegate } from "./markdown/MarkdownDelegate.tsx";
 export type {
   MarkdownDelegate,
   MarkdownDelegateProviderProps,

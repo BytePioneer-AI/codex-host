@@ -39,6 +39,7 @@ import {
 import { SessionRowContent } from "./SessionRowContent.tsx";
 import { sessionStatuses, SessionStatusDots } from "./session-status.tsx";
 import css from "./Rows.module.css";
+import { HostBadge } from "./HostBadge.tsx";
 
 /** The standard locale seat, prop-passed from the browser root. */
 type RowTranslate = WorkspaceBrowserProps["t"];
@@ -152,8 +153,8 @@ export function ProjectRowItem({
   group,
   onToggle,
   onCreate,
-  actions,
-  drag,
+  actions: suppliedActions,
+  drag: suppliedDrag,
   home,
   newShortcut,
   t,
@@ -171,6 +172,8 @@ export function ProjectRowItem({
   t: RowTranslate;
 }) {
   const row = group;
+  const actions = group.remote ? undefined : suppliedActions;
+  const drag = group.remote ? undefined : suppliedDrag;
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
   const label = row.workspaceId === undefined ? t("group.ungrouped") : row.label;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -219,6 +222,7 @@ export function ProjectRowItem({
       <span className={css.projectText}>
         <span className={css.title}>{label}</span>
       </span>
+      {row.workspaceId !== undefined && <HostBadge host={row.remote} t={t} />}
       <span className={css.rowActions}>
         {actions !== undefined && (
           <Menu
@@ -257,26 +261,28 @@ export function ProjectRowItem({
             }
           />
         )}
-        <Tooltip
-          label={t("actions.newSession")}
-          shortcutKeys={newShortcut?.keys}
-          side="bottom"
-          align="end"
-          delayMs={500}
-        >
-          <button
-            type="button"
-            className={css.iconButton}
-            aria-keyshortcuts={newShortcut?.aria}
-            aria-label={t("actions.newSession.aria", { name: label })}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCreate();
-            }}
+        {!row.remote && (
+          <Tooltip
+            label={t("actions.newSession")}
+            shortcutKeys={newShortcut?.keys}
+            side="bottom"
+            align="end"
+            delayMs={500}
           >
-            <IconNewChatOutlineRegular />
-          </button>
-        </Tooltip>
+            <button
+              type="button"
+              className={css.iconButton}
+              aria-keyshortcuts={newShortcut?.aria}
+              aria-label={t("actions.newSession.aria", { name: label })}
+              onClick={(e) => {
+                e.stopPropagation();
+                onCreate();
+              }}
+            >
+              <IconNewChatOutlineRegular />
+            </button>
+          </Tooltip>
+        )}
       </span>
     </div>
   );
@@ -391,6 +397,7 @@ export function SearchResultItem({
       <span className={css.searchResultHeading}>
         <span className={css.slot} />
         <span className={css.searchResultTitle}>{result.title || t("session.untitled")}</span>
+        {result.remote && <HostBadge host={result.remote} t={t} />}
         {!result.archived && primaryStatus.state !== "idle" && (
           <span className={css.timeStatus} data-session-status={primaryStatus.state}>
             <SessionStatusDots statuses={statuses} />
@@ -454,11 +461,13 @@ export function SessionNodeItem({
   renderSlot,
   onReveal,
   drag,
+  showHost = true,
   t,
 }: {
   node: SessionNode;
   /** Distinguish the Recents projection from the same Session's project row. */
   rowKey?: string | undefined;
+  showHost?: boolean | undefined;
   currentId: string | undefined;
   now: number;
   onOpen: (id: SessionNode["id"]) => void;
@@ -597,6 +606,7 @@ export function SessionNodeItem({
               }
         }
       >
+        {showHost && row.remote && <HostBadge host={row.remote} t={t} />}
         <span className={css.trailing}>
           {/* A blank New Session row is a provisional placeholder: nothing has
           happened in it yet, so a "now" timestamp and the row verbs

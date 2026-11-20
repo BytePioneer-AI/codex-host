@@ -222,18 +222,25 @@ async function validateSource(source, previous, starsByRepository) {
       (previous.version === manifest.version && previous.sha256 !== sha256))
   )
     throw new Error("Package is a downgrade or changed ZIP bytes without a version bump");
-  if (!files.has(manifest.desktop.script))
-    throw new Error(
-      `Missing entry file ${manifest.desktop.script}. Commit the built JavaScript entry or publish a Release .zip.`,
-    );
-  const script = utf8.decode(
-    getResource(files, manifest.desktop.script, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES),
-  );
-  new Script(`(function(define) { "use strict";\n${script}\n})`);
-  if (manifest.desktop.style)
-    utf8.decode(getResource(files, manifest.desktop.style, DESKTOP_EXTENSION_STYLE_MAX_BYTES));
+  if (manifest.desktop) {
+    const { script, style } = manifest.desktop;
+    if (!files.has(script))
+      throw new Error(
+        `Missing entry file ${script}. Commit the built JavaScript entry or publish a Release .zip.`,
+      );
+    const source = utf8.decode(getResource(files, script, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES));
+    new Script(`(function(define) { "use strict";\n${source}\n})`);
+    if (style) utf8.decode(getResource(files, style, DESKTOP_EXTENSION_STYLE_MAX_BYTES));
+  }
+  if (manifest.backend)
+    utf8.decode(getResource(files, manifest.backend.script, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES));
   for (const [file, bytes] of files) {
-    if (file !== manifest.desktop.script && !/\.[cm]?[jt]sx?$/iu.test(file)) continue;
+    if (
+      file !== manifest.desktop?.script &&
+      file !== manifest.backend?.script &&
+      !/\.[cm]?[jt]sx?$/iu.test(file)
+    )
+      continue;
     const code = utf8.decode(bytes);
     const hits = checks.filter(([, pattern]) => pattern.test(code)).map(([label]) => label);
     if (hits.length) throw new Error(`Static scan flagged ${file}: ${hits.join(", ")}`);

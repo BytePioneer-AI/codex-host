@@ -8,6 +8,10 @@ import {
   readDesktopExtensionConfiguration,
 } from "@codexhost/harness-plugin-files";
 import {
+  DESKTOP_EXTENSIONS_ASSET_METHOD,
+  DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
+  DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD,
+  DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD,
   DESKTOP_EXTENSIONS_CATALOG_METHOD,
   DESKTOP_EXTENSIONS_DISABLE_METHOD,
   DESKTOP_EXTENSIONS_INSTALL_METHOD,
@@ -247,15 +251,106 @@ it("serves catalog and returns a fresh list after install, replacement and unins
   }
 });
 
+it("serves assets, persisted settings and registered backend methods over Host RPC", async () => {
+  const fixture = createFixture();
+  try {
+    await fixture.ready;
+    const web = (method: string, params: JsonObject) =>
+      fixture.host.handleClientRequest(method, params);
+    const id = "sample";
+    const install = (variant: string) =>
+      web(DESKTOP_EXTENSIONS_INSTALL_METHOD, {
+        source: {
+          type: "zip-base64",
+          fileName: "sample.zip",
+          contentBase64: extensionZip({
+            manifest: { desktop: undefined, backend: { script: "backend.mjs" } },
+            extras: [
+              { name: "assets/palette.json", data: "{}" },
+              { name: "variant.mjs", data: `export default ${JSON.stringify(variant)};` },
+              {
+                name: "backend.mjs",
+                data: `import variant from './variant.mjs';
+            export function activate(ctx) {
+              ctx.handle('read', async (input) => ({ input, variant, values: await ctx.readSettings() }));
+              ctx.handle('fail', () => { throw new Error('failed'); });
+              return async () => { await ctx.writeSettings({ ...await ctx.readSettings(), disposed: variant }); };
+            }`,
+              },
+            ],
+          }).toString("base64"),
+        },
+      });
+    const invoke = (method: string) =>
+      web(DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD, { id, method, params: [1] });
+    expect(await install("first")).toMatchObject({ result: { replaced: false } });
+    expect(await invoke("read")).toMatchObject({ error: { code: -32000 } });
+    writeRequest(fixture.desktopInput, {
+      id: 88,
+      method: DESKTOP_EXTENSIONS_ASSET_METHOD,
+      params: { id, path: "assets/palette.json" },
+    });
+    expect(await fixture.collector.waitFor((message) => message.id === 88)).toMatchObject({
+      result: { mimeType: "application/json", dataUrl: "data:application/json;base64,e30=" },
+    });
+    expect(
+      await web(DESKTOP_EXTENSIONS_ASSET_METHOD, { id, path: "../palette.json" }),
+    ).toMatchObject({ error: { code: -32602 } });
+    expect(await web(DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD, { id })).toEqual({
+      result: { values: {} },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD, { id, values: [] })).toMatchObject({
+      error: { code: -32602 },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD, { id, values: { blur: 5 } })).toEqual({
+      result: { values: { blur: 5 } },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_ENABLE_METHOD, { id, expectedRevision: 1 })).toMatchObject({
+      result: { state: "saved" },
+    });
+    expect(await invoke("read")).toEqual({
+      result: { result: { input: [1], variant: "first", values: { blur: 5 } } },
+    });
+    for (const method of ["fail", "missing"])
+      expect(await invoke(method)).toMatchObject({ error: { code: -32000 } });
+    // The backend entry bytes are identical; package replacement must still reload dependencies.
+    expect(await install("second")).toMatchObject({ result: { replaced: true } });
+    expect(await invoke("read")).toEqual({
+      result: { result: { input: [1], variant: "second", values: { blur: 5, disposed: "first" } } },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_RECOVER_METHOD, {})).toMatchObject({
+      result: { state: "saved" },
+    });
+    expect(await invoke("read")).toMatchObject({ error: { code: -32000 } });
+    expect(await web(DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD, { id })).toEqual({
+      result: { values: { blur: 5, disposed: "second" } },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_ENABLE_METHOD, { id, expectedRevision: 4 })).toMatchObject({
+      result: { state: "saved" },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_UNINSTALL_METHOD, { id })).toMatchObject({
+      result: { removedId: id },
+    });
+    expect(await invoke("read")).toMatchObject({ error: { code: -32000 } });
+  } finally {
+    await stopFixture(fixture);
+  }
+});
+
 it("does not expose Desktop extension management on an SSH-managed Host", async () => {
   const fixture = createFixture({ environment: { CODEXHOST_REMOTE_SSH_MANAGED: "1" } });
   try {
     await fixture.ready;
-    expect(
-      await fixture.host.handleClientRequest(DESKTOP_EXTENSIONS_RECOVER_METHOD, {}),
-    ).toMatchObject({
-      error: { code: -32601 },
-    });
+    for (const method of [
+      DESKTOP_EXTENSIONS_RECOVER_METHOD,
+      DESKTOP_EXTENSIONS_ASSET_METHOD,
+      DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD,
+      DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD,
+      DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
+    ])
+      expect(await fixture.host.handleClientRequest(method, {})).toMatchObject({
+        error: { code: -32601 },
+      });
     const { configuration } = await readDesktopExtensionConfiguration(
       path.join(fixture.mappingStoreDirectory, "desktop-extensions"),
     );

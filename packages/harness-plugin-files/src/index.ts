@@ -6,6 +6,7 @@ export {
 } from "./discovery.js";
 export { HarnessLaunchSettingsStore } from "./launch-settings.js";
 export {
+  desktopExtensionDirectory,
   desktopExtensionsRoot,
   desktopExtensionsStatusPath,
   discoverDesktopExtensions,
@@ -22,6 +23,12 @@ export {
   listDesktopExtensions,
   updateDesktopExtensionSelection,
 } from "./extension-management.js";
+export {
+  desktopExtensionDataDirectory,
+  readDesktopExtensionAsset,
+  readDesktopExtensionSettings,
+  writeDesktopExtensionSettings,
+} from "./desktop-extension-data.js";
 export { fetchDesktopExtensionCatalog } from "./desktop-extension-catalog.js";
 export { DesktopExtensionPackageError } from "./desktop-extension-download.js";
 export {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir, realpath } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   DESKTOP_EXTENSION_LIMIT,
@@ -20,8 +20,9 @@ export type DesktopExtensionInstallation = { id: string } & (
       state: "valid";
       manifest: DesktopExtensionManifest;
       hash: string;
-      script: string;
+      script?: string;
       style?: string;
+      backend?: { directory: string; scriptPath: string; hash: string; installation: string };
       screenshotDataUrls?: string[];
     }
   | { state: "invalid" | "incompatible"; error: string }
@@ -56,11 +57,13 @@ export async function privateExtensionDirectory(directory: string): Promise<stri
   return realpath(directory);
 }
 
-export async function readExtensionResource(
-  root: string,
-  relative: string,
-  max: number,
-): Promise<Buffer> {
+export async function desktopExtensionDirectory(dataDir: string, id: string): Promise<string> {
+  desktopExtensionIdSchema.parse(id);
+  const root = await privateExtensionDirectory(desktopExtensionsRoot(dataDir));
+  return privateExtensionDirectory(path.join(root, id));
+}
+
+async function checkedExtensionResource(root: string, relative: string): Promise<string> {
   const resource = await pluginResourcePath(root, relative);
   // Check every traversed directory, not only the resource's mode. A writable
   // intermediate directory would let another user replace an owned file.
@@ -72,7 +75,32 @@ export async function readExtensionResource(
     }
   }
   await privateEntry(resource, false);
-  return readPluginFile(resource, max);
+  return resource;
+}
+
+export async function readExtensionResource(
+  root: string,
+  relative: string,
+  max: number,
+): Promise<Buffer> {
+  return readPluginFile(await checkedExtensionResource(root, relative), max);
+}
+
+export async function readDesktopExtensionBackend(directory: string, script: string) {
+  try {
+    const scriptPath = await checkedExtensionResource(directory, script);
+    const bytes = await readPluginFile(scriptPath, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES);
+    const { dev, ino } = await stat(directory, { bigint: true });
+    return {
+      directory,
+      scriptPath,
+      hash: createHash("sha256").update(bytes).digest("hex"),
+      installation: `${dev}:${ino}`,
+    };
+  } catch (error) {
+    if (!extensionFileMissing(error)) throw error;
+    throw new Error(`Missing backend entry file ${script}`, { cause: error });
+  }
 }
 
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -132,15 +160,20 @@ async function discover(
       throw new Error("Manifest id must match the directory name");
     const parsed = parseDesktopExtensionManifest(data);
     if (parsed.state !== "valid") return { id, ...parsed };
-    const { desktop } = parsed.manifest;
-    const [script, style] = await Promise.all([
-      readExtensionResource(directory, desktop.script, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES),
-      desktop.style
+    const { desktop, backend } = parsed.manifest;
+    const [script, style, backendEntry] = await Promise.all([
+      desktop
+        ? readExtensionResource(directory, desktop.script, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES)
+        : undefined,
+      desktop?.style
         ? readExtensionResource(directory, desktop.style, DESKTOP_EXTENSION_STYLE_MAX_BYTES)
         : undefined,
+      backend ? readDesktopExtensionBackend(directory, backend.script) : undefined,
     ]);
     const zero = Buffer.from([0]);
-    const hash = createHash("sha256").update(bytes).update(zero).update(script).update(zero);
+    const hash = createHash("sha256").update(bytes).update(zero);
+    if (script) hash.update(script);
+    hash.update(zero);
     if (style) hash.update(style);
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const item: DesktopExtensionInstallation = {
@@ -148,8 +181,9 @@ async function discover(
       state: "valid",
       manifest: parsed.manifest,
       hash: hash.digest("hex"),
-      script: decoder.decode(script),
+      ...(script ? { script: decoder.decode(script) } : {}),
       ...(style ? { style: decoder.decode(style) } : {}),
+      ...(backendEntry ? { backend: backendEntry } : {}),
     };
     const screenshots = [];
     let screenshotBytes = 0;

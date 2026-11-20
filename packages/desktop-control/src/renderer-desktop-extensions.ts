@@ -50,8 +50,9 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function application(item: Installed): Application {
+function application(item: Installed): Application | undefined {
   const { id, hash, manifest, script, style } = item;
+  if (script === undefined) return undefined;
   const reference = JSON.stringify({ id, hash, slots: manifest.slots });
   const factory = `(function (define) { "use strict";\n${script}\n})`;
   let expression: string;
@@ -295,6 +296,7 @@ export class RendererDesktopExtensions {
     let remaining = DESKTOP_EXTENSION_SNAPSHOT_MAX_BYTES - 512;
     for (const id of active) {
       const item = application(valid.get(id)!);
+      if (!item) continue;
       const bytes = Buffer.byteLength(item.expression) + 2;
       if (bytes > remaining)
         statuses.set(id, {

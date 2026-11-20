@@ -1,15 +1,15 @@
 ---
 name: codexhost-add-desktop-extension
-description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用 v1 宿主 API 为本机侧栏增加角标、布局或导航；不用于接入 Harness、编写 Web 插件或改变 Thread 行为。
+description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏、全皮肤、静态资源、声明式设置与可选 Node 后端。不用于接入 Harness、编写 Web 插件或改变 Thread 行为。
 ---
 
-# 新增 codexhost Desktop UI 扩展
+# 新增 codexhost Desktop 扩展
 
-目标：交付一个能独立安装、热启停、完整卸载的可信 UI 扩展。路径以仓库根目录为基准；字段、签名以 [`packages/shared-contracts/src/desktop-extensions.ts`](../../../packages/shared-contracts/src/desktop-extensions.ts) 为准。
+目标：交付一个能独立安装、热启停、完整卸载的可信扩展。路径以仓库根目录为基准；字段、签名以 [`packages/shared-contracts/src/desktop-extensions.ts`](../../../packages/shared-contracts/src/desktop-extensions.ts) 为准。
 
 | 需求                                                        | 改动位置                                          |
 | ----------------------------------------------------------- | ------------------------------------------------- |
-| 可选的 Desktop 本机侧栏角标、归组、展示与导航               | Desktop UI 扩展，默认只改扩展自己的目录           |
+| 本机侧栏、全皮肤或带设置的 Desktop 工具                       | Desktop 扩展，默认只改扩展自己的目录              |
 | 接入 Agent Harness，提供 Session 执行、历史、模型或账号能力 | [Harness 插件](../codexhost-add-harness/SKILL.md) |
 | 改变 Thread 归属、执行、持久化，或增加通用宿主原语          | 在主干设计公共能力，不在扩展里绕过 API            |
 
@@ -58,13 +58,13 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 | `memory-knowledge` | 记忆、笔记或知识检索与展示 |
 | `integrations` | 外部工具、服务或工作空间的集成 |
 
-`sidebar.thread-badge` 用于角标与计数；`sidebar.thread-layout` 用于改变行布局。只声明实际使用的槽位，没有就用 `[]`。扩展必须取得全部声明的槽位才会激活；同一槽位只归一个扩展，启用冲突时管理入口会指出占用者。没有样式时省略 `desktop.style`。
+`sidebar.thread-badge` 用于角标与计数，`sidebar.thread-layout` 用于改变行布局，`appearance.theme` 用于整套皮肤（同一时间只能启用一套）。只声明实际使用的槽位；纯工具或后端可省略 `slots` 或填 `[]`。扩展必须取得全部声明的槽位才会激活。没有样式时省略 `desktop.style`；纯后端可省略 `desktop`，但至少声明 `desktop` 或 `backend` 之一。
 
 完成条件：manifest 通过 v1 schema；名称和描述均有中英文文案；标签与用途相符，目录名、入口和槽位与实际产物一致；声明的截图全部能通过打包校验。
 
-## 2. 实现 `define({ activate(api) })`
+## 2. 实现所声明的入口
 
-构建产物为经典 JavaScript，不是 ESM 入口；脚本加载时同步调用一次 `define`。`activate` 可返回清理函数，也可以异步返回清理函数或 `void`。用下列原语实现，不接入私有 React 对象、通用 Host RPC 或原生进程。
+纯后端跳过 `define`，直接看下方的 Node 入口。界面入口的构建产物为经典 JavaScript，不是 ESM 入口；脚本加载时同步调用一次 `define`。`activate` 可返回清理函数，也可以异步返回清理函数或 `void`。用下列原语实现，不接入私有 React 对象、通用 Host RPC 或原生进程。
 
 | v1 原语                                                            | 用法                                                                                                 |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
@@ -83,6 +83,16 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 
 完成条件：远程行不受影响；禁用时原生行恢复，扩展节点、监听器、订阅和定时器均被回收。
 
+### 全皮肤、设置与 Node 入口
+
+- **静态资源**：把壁纸、字体等放在包内，如 `assets/wallpaper.webp`。通过 Host `asset` RPC 传相对路径并读取 `dataUrl`；原样打包，不需要 `assets` manifest 字段。不要把 SVG 内容挂成 HTML。
+- **设置**：在 `settingsSchema` 声明唯一标识符 `key`、双语 `label` 和字段类型（`boolean`、`string`、`number`、`range`、`select`）；例如用 `range` 表达壁纸模糊度。保存时提交整份 JSON 对象。默认值是 UI 元数据，不会自动写入。Host 在安装目录之外持久化，覆盖安装和卸载都保留设置。
+- **Node 入口**：声明 `"backend": { "script": "backend.mjs" }`，将构建好的 JS 与依赖一起打包。导出 `activate(ctx)` 或 `default.activate(ctx)`；在激活时用 `ctx.handle` 登记方法，用 `ctx.readSettings` / `ctx.writeSettings` 访问配置。返回清理函数或 `{ dispose() }` 以释放资源。后端只在启用且取得槽位时加载，运行在本机用户权限的独立子进程中，不是沙箱。
+
+字段、大小限制和四个 [Host RPC](../../../docs/architecture/desktop-ui-extensions.md#资源设置与后端-rpc) 以契约为准；不要假定已有 Renderer 资源/设置/调用 API。
+
+完成条件：资源可从实际安装包读取；改写设置后覆盖安装仍可读回；已登记的方法可调用，禁用后不可调用，重载前完成旧实例清理。
+
 ## 3. 构建、隔离验收与恢复
 
 1. 用 [隔离实测 Skill](../codexhost-isolated-testing/SKILL.md) 选取单独的数据目录，在同一工作树以该目录运行 Desktop 和 Console。先确认允许启动测试 Desktop，且不会占用正在使用的端口或数据目录。
@@ -95,7 +105,7 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
      "$CODEXHOST_DATA_DIR/desktop-extensions"
    ```
 
-   将样板路径替换为实际源码目录。工具把产物写到扩展根下的 `<id>/`，不改 `enabled.json`。目录和文件须归当前用户所有，不允许同组或其他用户写入。
+   将样板路径替换为实际源码目录。此工具只构建界面入口、样式和截图。含后端或其他资源时，自行构建并按 manifest 的相对路径放入 ZIP，再通过 Console 安装。安装不启用新扩展；目录和文件须归当前用户所有，不允许同组或其他用户写入。
 
 3. 在 Console 的扩展页启用。确认从等待进入运行中；重复构建一次确认热更新且没有旧实例；禁用后原生行恢复。验证远程行不变；使用同槽位样板验证冲突提示包含占用者。记录实际验证范围。
 4. 看不到扩展时，核对数据目录、目录名、manifest 与权限。等待状态时确认 Desktop 主窗口已建立界面控制；失败时先看状态原因和声明的文件，修复后重新构建。若 Desktop 无法操作，在独立的 **Console → 扩展** 选择「禁用全部扩展并重载 Desktop」；选择会立即保存，有在线 Controller 时才执行窗口重载。
@@ -104,7 +114,7 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 
 ## 4. 通过 GitHub 分发
 
-将 `manifest.json` 和它声明的 `desktop.script`（构建好的入口 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把 manifest 声明的样式和截图也提交到对应路径。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
+将 `manifest.json` 和声明的 `desktop.script` / `backend.script`（构建好的 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把样式、截图及其他静态资源也提交到对应路径。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
 
 完成条件：确认选中的 GitHub 目录同时包含 manifest 和声明的入口 JS，安装时不需要构建。
 

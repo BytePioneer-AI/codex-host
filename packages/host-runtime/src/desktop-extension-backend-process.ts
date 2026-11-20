@@ -1,0 +1,241 @@
+import { spawn, type Serializable } from "node:child_process";
+import {
+  readDesktopExtensionSettings,
+  writeDesktopExtensionSettings,
+} from "@codexhost/harness-plugin-files";
+import type { DesktopExtensionBackendContext } from "@codexhost/shared-contracts";
+
+type Entry = Pick<DesktopExtensionBackendContext, "extensionId" | "extensionDir" | "dataDir"> & {
+  url: string;
+};
+type Command =
+  | { op: "activate"; entry: Entry }
+  | { op: "invoke"; method: string; params: unknown }
+  | { op: "dispose" };
+type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string };
+type Settings = { op: "read" } | { op: "write"; values: Record<string, unknown> };
+
+type BackendExports = { activate?: (context: DesktopExtensionBackendContext) => unknown };
+
+// Self-contained child entry point: the release Host ships as a single ESM bundle.
+function backendChild(
+  importEntry: (url: string) => Promise<BackendExports & { default?: BackendExports }>,
+) {
+  const pendingSettings = new Map<
+    number,
+    { resolve(value: Record<string, unknown>): void; reject(error: Error): void }
+  >();
+  const handlers = new Map<string, (params: unknown) => unknown>();
+  let settingsId = 0;
+  let dispose: (() => unknown) | undefined;
+  const send = (message: Serializable) => process.send!(message);
+  const settings = (command: Settings) =>
+    new Promise<Record<string, unknown>>((resolve, reject) => {
+      const id = ++settingsId;
+      pendingSettings.set(id, { resolve, reject });
+      try {
+        send({ settings: { ...command, id } });
+      } catch (error) {
+        pendingSettings.delete(id);
+        reject(error);
+      }
+    });
+  const run = async (command: Command): Promise<unknown> => {
+    if (command.op === "activate") {
+      const { url, ...identity } = command.entry;
+      const module = await importEntry(url);
+      const owner = typeof module.activate === "function" ? module : module.default;
+      if (typeof owner?.activate !== "function")
+        throw new Error("Expected an activate(ctx) export");
+      let registering = true;
+      const context: DesktopExtensionBackendContext = {
+        ...identity,
+        readSettings: () => settings({ op: "read" }),
+        writeSettings: (values) => settings({ op: "write", values }),
+        handle: (method, handler) => {
+          if (!registering) throw new Error("Register handlers during activate(ctx)");
+          if (
+            typeof method !== "string" ||
+            !method.trim() ||
+            method.trim().length > 128 ||
+            typeof handler !== "function"
+          )
+            throw new Error("Invalid backend method or handler");
+          const name = method.trim();
+          if (handlers.has(name)) throw new Error(`Duplicate backend method: ${name}`);
+          handlers.set(name, handler);
+        },
+      };
+      try {
+        const result = await owner.activate(context);
+        if (typeof result === "function") dispose = () => result();
+        else if (
+          result &&
+          typeof result === "object" &&
+          "dispose" in result &&
+          typeof result.dispose === "function"
+        )
+          dispose = result.dispose.bind(result);
+        return [...handlers.keys()];
+      } finally {
+        registering = false;
+      }
+    }
+    if (command.op === "dispose") {
+      handlers.clear();
+      await dispose?.();
+      return null;
+    }
+    const handler = handlers.get(command.method);
+    if (!handler) throw new Error("Backend method is not registered");
+    return (await handler(command.params)) ?? null;
+  };
+  process.on("disconnect", () => process.exit());
+  process.on("message", async (message: ({ id: number } & Command) | { reply: Reply }) => {
+    if ("reply" in message) {
+      const reply = message.reply;
+      const pending = pendingSettings.get(reply.id);
+      if (!pending) return;
+      pendingSettings.delete(reply.id);
+      if (reply.ok) pending.resolve(reply.value as Record<string, unknown>);
+      else pending.reject(new Error(reply.error));
+      return;
+    }
+    try {
+      const value = await run(message);
+      send({ id: message.id, ok: true, value });
+    } catch (error) {
+      send({
+        id: message.id,
+        ok: false,
+        error: (error instanceof Error ? error.message : "Backend threw a non-Error value").slice(
+          0,
+          512,
+        ),
+      });
+    }
+  });
+}
+
+export class DesktopExtensionBackendProcess {
+  readonly #child;
+  readonly #closed: Promise<void>;
+  readonly #pending = new Map<number, (reply: Reply) => void>();
+  readonly #settings = new Set<Promise<unknown>>();
+  #nextId = 0;
+  #stopping = false;
+  methods = new Set<string>();
+
+  constructor(dataDir: string, id: string, diagnose: (message: string) => void) {
+    this.#child = spawn(
+      process.execPath,
+      [
+        "--unhandled-rejections=strict",
+        "--max-old-space-size=128",
+        "--input-type=module",
+        "--eval",
+        `(${backendChild.toString()})(url => import(url))`,
+      ],
+      {
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+        serialization: "advanced",
+        env: { ...process.env, NODE_OPTIONS: undefined },
+        windowsHide: true,
+      },
+    );
+    this.#closed = new Promise((resolve) => this.#child.once("close", () => resolve()));
+    const failed = (message: string) => {
+      this.methods.clear();
+      for (const [id, finish] of this.#pending) finish({ id, ok: false, error: message });
+      if (!this.#stopping) diagnose(message);
+    };
+    this.#child.on("error", (error) => failed(error.message));
+    this.#child.on("exit", (code, signal) => failed(`Backend exited (${signal ?? code})`));
+    this.#child.on("message", (message: Reply | { settings: Settings & { id: number } }) => {
+      if (!message || typeof message !== "object") return;
+      if (!("settings" in message)) {
+        this.#pending.get(message.id)?.(message);
+        return;
+      }
+      const request = message.settings;
+      if (!request || !["read", "write"].includes(request.op)) return;
+      const task = (
+        request.op === "read"
+          ? readDesktopExtensionSettings({ dataDir, id })
+          : writeDesktopExtensionSettings({ dataDir, id, values: request.values })
+      )
+        .then(
+          (value) => this.#sendSettingsReply({ id: request.id, ok: true, value }),
+          () =>
+            this.#sendSettingsReply({
+              id: request.id,
+              ok: false,
+              error: "Could not read or save backend settings",
+            }),
+        )
+        .finally(() => this.#settings.delete(task));
+      this.#settings.add(task);
+    });
+  }
+
+  #sendSettingsReply(reply: Reply) {
+    if (this.#child.connected) this.#child.send({ reply }, () => undefined);
+  }
+
+  async activate(entry: Entry) {
+    const methods = await this.#request({ op: "activate", entry }, 5_000);
+    if (!Array.isArray(methods) || !methods.every((method) => typeof method === "string"))
+      throw new Error("Invalid backend activation response");
+    if (this.#child.connected) this.methods = new Set(methods);
+  }
+
+  invoke(method: string, params: unknown): Promise<unknown> {
+    if (this.#stopping || !this.methods.has(method))
+      throw new Error("Backend method is not registered");
+    if (this.#pending.size >= 32) throw new Error("Too many pending backend calls");
+    return this.#request({ op: "invoke", method, params }, 10_000);
+  }
+
+  async stop(): Promise<void> {
+    this.#stopping = true;
+    try {
+      if (this.#child.connected) await this.#request({ op: "dispose" }, 1_000);
+    } finally {
+      await this.terminate();
+    }
+  }
+
+  async terminate(): Promise<void> {
+    this.#stopping = true;
+    this.#child.kill("SIGKILL");
+    await this.#closed;
+    await Promise.allSettled(this.#settings);
+  }
+
+  #request(command: Command, timeout: number): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const id = ++this.#nextId;
+      const finish = (reply: Reply) => {
+        clearTimeout(timer);
+        this.#pending.delete(id);
+        if (reply.ok) resolve(reply.value);
+        else reject(new Error(reply.error));
+      };
+      const timer = setTimeout(() => {
+        this.methods.clear();
+        this.#child.kill("SIGKILL");
+        finish({ id, ok: false, error: `Backend ${command.op} timed out` });
+      }, timeout);
+      this.#pending.set(id, finish);
+      try {
+        this.#child.send({ ...command, id }, (error) => {
+          if (error) finish({ id, ok: false, error: error.message });
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        this.#pending.delete(id);
+        reject(error);
+      }
+    });
+  }
+}

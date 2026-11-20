@@ -163,6 +163,23 @@ it("observes package replacements and uninstalls without polling or reloading De
   expect(target.reloads).toBe(0);
 });
 
+it("never injects a backend-only package into the renderer snapshot", async () => {
+  await install("badge", "define({activate(){}})");
+  await installFromZipBuffer({
+    extensionsRoot: root,
+    zipBuffer: extensionZip({
+      manifest: { desktop: undefined, backend: { script: "backend.mjs" } },
+      extras: [{ name: "backend.mjs", data: "export function activate() {}" }],
+    }),
+  });
+  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: ["badge", "sample"] }));
+  const renderer = fakeRenderer();
+  const extensions = controller();
+  extensions.attach("target", renderer);
+  await extensions.refresh();
+  expect(Object.keys(renderer.state)).toEqual(["badge"]);
+});
+
 function controller() {
   const result = new RendererDesktopExtensions(directory, (error) => {
     throw error;

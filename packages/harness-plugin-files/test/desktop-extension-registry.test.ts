@@ -36,7 +36,10 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-function mockGitHub(readMetadata: (headers: Headers) => Response) {
+function mockGitHub(
+  readMetadata: (headers: Headers) => Response,
+  archive = (id: string) => extensionZip({ id }),
+) {
   vi.stubGlobal("fetch", async (url: URL, { headers }: RequestInit) => {
     const href = url.href.toLowerCase();
     if (href === api) return readMetadata(new Headers(headers));
@@ -49,8 +52,7 @@ function mockGitHub(readMetadata: (headers: Headers) => Response) {
         })),
       });
     for (const id of ids) {
-      if (href === `${releaseUrl}/${id}.zip`)
-        return new Response(new Uint8Array(extensionZip({ id })));
+      if (href === `${releaseUrl}/${id}.zip`) return new Response(new Uint8Array(archive(id)));
     }
     throw new Error(`Unexpected request: ${url.href}`);
   });
@@ -87,6 +89,28 @@ it.each([
   const { extensions } = JSON.parse(await syncCatalog());
   expect(extensions).toHaveLength(2);
   for (const entry of extensions) expect(entry).not.toHaveProperty("stars");
+});
+
+it("indexes a backend-only package without executing its entry", async () => {
+  mockGitHub(
+    () => Response.json({}),
+    (id) =>
+      extensionZip({
+        id,
+        manifest: {
+          slots: ["appearance.theme"],
+          desktop: undefined,
+          backend: { script: "backend.mjs" },
+        },
+        extras: [
+          { name: "backend.mjs", data: 'throw new Error("must not execute in the registry");' },
+        ],
+      }),
+  );
+  expect(JSON.parse(await syncCatalog()).extensions).toMatchObject([
+    { id: "other", slots: ["appearance.theme"] },
+    { id: "sample", slots: ["appearance.theme"] },
+  ]);
 });
 
 it("leaves identical catalog content in place and publishes a star-only change", async () => {

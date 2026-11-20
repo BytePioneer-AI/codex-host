@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { installedPluginIdSchema, pluginRelativeResourceSchema } from "./harness-plugins.js";
+import { jsonObjectSchema, jsonValueSchema } from "./json-value.js";
 import type { ThreadTreeSnapshot } from "./thread-tree-watch.js";
 
 export const DESKTOP_EXTENSION_API_VERSION = 1;
@@ -17,8 +18,15 @@ export const DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES = 512 * 1024;
 export const DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES = 8 * 1024 * 1024;
 export const DESKTOP_EXTENSION_SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
 
+export const DESKTOP_EXTENSION_ASSET_MAX_BYTES = 16 * 1024 * 1024;
+export const DESKTOP_EXTENSION_SETTINGS_MAX_BYTES = 1024 * 1024;
+
 export const desktopExtensionIdSchema = installedPluginIdSchema;
-export const desktopExtensionSlotSchema = z.enum(["sidebar.thread-layout", "sidebar.thread-badge"]);
+export const desktopExtensionSlotSchema = z.enum([
+  "sidebar.thread-layout",
+  "sidebar.thread-badge",
+  "appearance.theme",
+]);
 export type DesktopExtensionSlot = z.infer<typeof desktopExtensionSlotSchema>;
 
 export const desktopExtensionCategorySchema = z.enum([
@@ -50,10 +58,35 @@ export function desktopExtensionScreenshotMimeType(resource: string) {
   }
 }
 
+export function desktopExtensionAssetMimeType(resource: string) {
+  switch (resource.match(/\.([^./]+)$/u)?.[1]?.toLowerCase()) {
+    case "gif":
+      return "image/gif";
+    case "svg":
+      return "image/svg+xml";
+    case "woff2":
+      return "font/woff2";
+    case "json":
+      return "application/json";
+    case "css":
+      return "text/css";
+    default:
+      return desktopExtensionScreenshotMimeType(resource);
+  }
+}
+
+const hasPortableSegments = (resource: string) =>
+  resource.split("/").every((segment) => !/[. ]$/u.test(segment));
+
+export const desktopExtensionAssetPathSchema = pluginRelativeResourceSchema.refine(
+  (resource) =>
+    hasPortableSegments(resource) && desktopExtensionAssetMimeType(resource) !== undefined,
+  "Expected a relative Desktop extension asset path with a supported suffix",
+);
+
 const screenshotPathSchema = pluginRelativeResourceSchema.refine(
   (resource) =>
-    desktopExtensionScreenshotMimeType(resource) !== undefined &&
-    resource.split("/").every((segment) => !/[. ]$/u.test(segment)),
+    desktopExtensionScreenshotMimeType(resource) !== undefined && hasPortableSegments(resource),
   "Screenshots must be relative .png, .jpg, .jpeg, or .webp paths with no segments ending in a dot or space",
 );
 
@@ -82,6 +115,69 @@ const slotsSchema = z
   .array(desktopExtensionSlotSchema)
   .max(desktopExtensionSlotSchema.options.length)
   .refine((slots) => new Set(slots).size === slots.length, "Duplicate slots");
+
+const settingField = {
+  key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u),
+  label: desktopExtensionLocalizedTextSchema,
+  description: desktopExtensionLocalizedTextSchema.optional(),
+};
+const numericSetting = {
+  ...settingField,
+  step: z.number().positive().optional(),
+  default: z.number().optional(),
+};
+const settingOption = z.strictObject({
+  value: z.string(),
+  label: desktopExtensionLocalizedTextSchema,
+});
+export const desktopExtensionSettingFieldSchema = z
+  .discriminatedUnion("type", [
+    z.strictObject({
+      ...settingField,
+      type: z.literal("boolean"),
+      default: z.boolean().optional(),
+    }),
+    z.strictObject({
+      ...settingField,
+      type: z.literal("string"),
+      placeholder: desktopExtensionLocalizedTextSchema.optional(),
+      default: z.string().optional(),
+    }),
+    z.strictObject({
+      ...numericSetting,
+      type: z.literal("number"),
+      min: z.number().optional(),
+      max: z.number().optional(),
+    }),
+    z.strictObject({
+      ...numericSetting,
+      type: z.literal("range"),
+      min: z.number(),
+      max: z.number(),
+    }),
+    z.strictObject({
+      ...settingField,
+      type: z.literal("select"),
+      options: z.array(settingOption).min(1),
+      default: z.string().optional(),
+    }),
+  ])
+  .superRefine((field, ctx) => {
+    const issue = (path: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [path], message });
+    if (field.type === "number" || field.type === "range") {
+      const { min = -Infinity, max = Infinity, default: value } = field;
+      if (min > max) issue("max", "Must be at least min");
+      if (value !== undefined && (value < min || value > max))
+        issue("default", "Must be within min and max");
+    } else if (field.type === "select") {
+      const values = new Set(field.options.map(({ value }) => value));
+      if (values.size !== field.options.length) issue("options", "Duplicate option values");
+      if (field.default !== undefined && !values.has(field.default))
+        issue("default", "Must match an option value");
+    }
+  });
+export type DesktopExtensionSettingField = z.infer<typeof desktopExtensionSettingFieldSchema>;
 
 const manifestHeader = z
   .object({
@@ -113,14 +209,31 @@ export const desktopExtensionManifestSchema = manifestHeader
         "Duplicate screenshots",
       )
       .optional(),
-    desktop: z.strictObject({
-      script: pluginRelativeResourceSchema,
-      style: pluginRelativeResourceSchema.optional(),
-    }),
-    slots: slotsSchema,
+    desktop: z
+      .strictObject({
+        script: pluginRelativeResourceSchema,
+        style: pluginRelativeResourceSchema.optional(),
+      })
+      .optional(),
+    backend: z
+      .strictObject({ script: pluginRelativeResourceSchema.refine(hasPortableSegments) })
+      .optional(),
+    slots: slotsSchema.default(() => []),
+    settingsSchema: z
+      .array(desktopExtensionSettingFieldSchema)
+      .max(32)
+      .refine(
+        (fields) => new Set(fields.map(({ key }) => key)).size === fields.length,
+        "Duplicate setting keys",
+      )
+      .optional(),
     categories: categoriesSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (manifest) => manifest.desktop !== undefined || manifest.backend !== undefined,
+    "Expected at least one desktop or backend entry",
+  );
 export type DesktopExtensionManifest = z.infer<typeof desktopExtensionManifestSchema>;
 
 export function resolveLocalizedExtensionText(
@@ -139,12 +252,6 @@ export type DesktopExtensionManifestResult =
 export function parseDesktopExtensionManifest(value: unknown): DesktopExtensionManifestResult {
   const header = manifestHeader.safeParse(value);
   if (!header.success) return { state: "invalid", error: z.prettifyError(header.error) };
-  if (Object.hasOwn(header.data, "backend")) {
-    return {
-      state: "incompatible",
-      error: "This version only supports Desktop UI extensions (no backend)",
-    };
-  }
   if (header.data.desktopApi > DESKTOP_EXTENSION_API_VERSION) {
     return {
       state: "incompatible",
@@ -281,9 +388,9 @@ export function compareExtensionVersions(a: string, b: string): number {
 
 export function resolveDesktopExtensionSlots(
   enabledOrder: readonly string[],
-  manifests: Iterable<Pick<DesktopExtensionManifest, "id" | "slots">>,
+  manifests: Iterable<{ id: string; slots?: readonly DesktopExtensionSlot[] }>,
 ): { active: string[]; conflicts: Map<string, string> } {
-  const byId = new Map(Array.from(manifests, ({ id, slots }) => [id, slots]));
+  const byId = new Map(Array.from(manifests, ({ id, slots = [] }) => [id, slots]));
   const owners = new Map<DesktopExtensionSlot, string>();
   const conflicts = new Map<string, string>();
   const active: string[] = [];
@@ -299,6 +406,46 @@ export function resolveDesktopExtensionSlots(
     active.push(id);
   }
   return { active, conflicts };
+}
+
+export const DESKTOP_EXTENSIONS_ASSET_METHOD = "codexhost/desktop/extensions/asset";
+export const DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD = "codexhost/desktop/extensions/settings/get";
+export const DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD = "codexhost/desktop/extensions/settings/set";
+export const DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD =
+  "codexhost/desktop/extensions/backend/invoke";
+
+const extensionIdParams = { id: desktopExtensionIdSchema };
+export const desktopExtensionsAssetParamsSchema = z.strictObject({
+  ...extensionIdParams,
+  path: desktopExtensionAssetPathSchema,
+});
+export const desktopExtensionsAssetResultSchema = z.strictObject({
+  mimeType: z.string(),
+  dataUrl: z.string(),
+});
+export const desktopExtensionsSettingsGetParamsSchema = z.strictObject(extensionIdParams);
+export const desktopExtensionsSettingsSetParamsSchema = z.strictObject({
+  ...extensionIdParams,
+  values: jsonObjectSchema,
+});
+export const desktopExtensionsSettingsResultSchema = z.strictObject({ values: jsonObjectSchema });
+export const desktopExtensionBackendMethodSchema = z.string().trim().min(1).max(128);
+export const desktopExtensionsBackendInvokeParamsSchema = z.strictObject({
+  ...extensionIdParams,
+  method: desktopExtensionBackendMethodSchema,
+  params: jsonValueSchema.optional(),
+});
+export const desktopExtensionsBackendInvokeResultSchema = z.strictObject({
+  result: jsonValueSchema,
+});
+
+export interface DesktopExtensionBackendContext {
+  readonly extensionId: string;
+  readonly extensionDir: string;
+  readonly dataDir: string;
+  readSettings(): Promise<Record<string, unknown>>;
+  writeSettings(values: Record<string, unknown>): Promise<Record<string, unknown>>;
+  handle(method: string, handler: (params: unknown) => unknown | Promise<unknown>): void;
 }
 
 export interface DesktopSidebarRow {

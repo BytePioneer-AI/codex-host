@@ -47,6 +47,7 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { handleCredentialImports } from "./credential-imports.js";
+import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
 import { handleDesktopExtensionRequest } from "./desktop-extension-requests.js";
 import { errorMessage, rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
@@ -70,6 +71,7 @@ export interface DesktopControlRequestHost {
   waitForPlugins(): Promise<void>;
   diagnose(error: unknown): void;
   readonly environment: NodeJS.ProcessEnv;
+  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
   readonly preferences: HarnessPreferencesStore;
   readonly displaySettings: HarnessDisplaySettingsStore;
   readonly launchSettings: HarnessLaunchSettingsStore;
@@ -111,7 +113,12 @@ export class DesktopControlRequests {
     if (isDesktopExtensionManagementMethod(method)) {
       this.#host.dispatchReply(request, async () => {
         await this.#host.writeJson(
-          await handleDesktopExtensionRequest(method, request, this.#host.environment),
+          await handleDesktopExtensionRequest(
+            method,
+            request,
+            this.#host.environment,
+            this.#host.desktopExtensionBackends,
+          ),
         );
       });
       return true;

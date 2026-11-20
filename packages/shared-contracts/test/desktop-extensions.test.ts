@@ -1,6 +1,14 @@
 import { expect, test } from "vitest";
 import {
   desktopExtensionListItemSchema,
+  desktopExtensionSettingFieldSchema,
+  desktopExtensionsAssetParamsSchema,
+  desktopExtensionsAssetResultSchema,
+  desktopExtensionsSettingsGetParamsSchema,
+  desktopExtensionsSettingsSetParamsSchema,
+  desktopExtensionsSettingsResultSchema,
+  desktopExtensionsBackendInvokeParamsSchema,
+  desktopExtensionsBackendInvokeResultSchema,
   parseDesktopExtensionManifest,
   resolveDesktopExtensionSlots,
   resolveLocalizedExtensionText,
@@ -50,7 +58,13 @@ test.each([
   [{ categories: ["sidebar", "sidebar"] }, "invalid"],
   [{ categories: ["sidebar.thread-layout"] }, "invalid"],
   [{ unexpected: true }, "invalid"],
-  [{ backend: "backend.mjs" }, "incompatible"],
+  [{ backend: "backend.mjs" }, "invalid"],
+  [{ backend: { script: "../backend.mjs" } }, "invalid"],
+  [{ desktop: undefined, backend: { script: "logic/backend.mjs" } }, "valid"],
+  [{ desktop: undefined }, "invalid"],
+  [{ slots: [] }, "valid"],
+  [{ slots: undefined }, "valid"],
+  [{ slots: ["appearance.theme"] }, "valid"],
   [{ name: bilingualName, desktopApi: 2, futureField: true }, "incompatible"],
   [{ slots: ["composer"] }, "invalid"],
   [{ desktop: { script: "../desktop.js" } }, "invalid"],
@@ -149,6 +163,103 @@ test.each([
   ]);
   expect(result.active).toEqual(active);
   expect(result.conflicts.get(loser)).toBe(owner);
+});
+
+test("resolves full skins exclusively without excluding slotless extensions", () => {
+  expect(
+    resolveDesktopExtensionSlots(
+      ["skin", "tool", "second", "settings"],
+      [
+        { id: "skin", slots: ["appearance.theme"] },
+        { id: "second", slots: ["appearance.theme"] },
+        { id: "tool" },
+        { id: "settings", slots: [] },
+      ],
+    ),
+  ).toEqual({ active: ["skin", "tool", "settings"], conflicts: new Map([["second", "skin"]]) });
+});
+
+test("accepts all setting field types and normalizes omitted slots", () => {
+  const label = bilingualName;
+  const settingsSchema = [
+    { key: "visible", type: "boolean", label, default: false },
+    { key: "title", type: "string", label, placeholder: label, default: "" },
+    { key: "count", type: "number", label, min: 0, default: 0 },
+    { key: "blur", type: "range", label, min: 0, max: 10, step: 0.5 },
+    { key: "mode", type: "select", label, options: [{ value: "dim", label }], default: "dim" },
+  ];
+  expect(
+    parseDesktopExtensionManifest({ ...manifest, slots: undefined, settingsSchema }),
+  ).toMatchObject({
+    state: "valid",
+    manifest: { slots: [], settingsSchema },
+  });
+  expect(
+    parseDesktopExtensionManifest({
+      ...manifest,
+      settingsSchema: [settingsSchema[0], settingsSchema[0]],
+    }).state,
+  ).toBe("invalid");
+  expect(
+    parseDesktopExtensionManifest({
+      ...manifest,
+      settingsSchema: Array.from({ length: 33 }, (_, i) => ({
+        type: "boolean",
+        label,
+        key: `f${i}`,
+      })),
+    }).state,
+  ).toBe("invalid");
+});
+
+test.each([
+  { type: "boolean", key: "not-an-identifier" },
+  { type: "string", default: false },
+  { type: "range", min: 2 },
+  { type: "range", min: 2, max: 1, default: 0 },
+  { type: "number", step: 0 },
+  { type: "select", options: [{ value: "dim", label: bilingualName }], default: "light" },
+])("rejects invalid setting field %j", (patch) => {
+  expect(
+    desktopExtensionSettingFieldSchema.safeParse({ key: "value", label: bilingualName, ...patch })
+      .success,
+  ).toBe(false);
+});
+
+test("validates asset, settings and backend RPCs as JSON wire contracts", () => {
+  const id = "theme";
+  expect(
+    desktopExtensionsAssetParamsSchema.safeParse({ id, path: "images/paper.png" }).success,
+  ).toBe(true);
+  expect(desktopExtensionsAssetParamsSchema.safeParse({ id, path: "../secret.json" }).success).toBe(
+    false,
+  );
+  expect(
+    desktopExtensionsAssetResultSchema.safeParse({
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,YQ==",
+    }).success,
+  ).toBe(true);
+  expect(desktopExtensionsSettingsGetParamsSchema.safeParse({ id }).success).toBe(true);
+  for (const schema of [
+    desktopExtensionsSettingsResultSchema,
+    desktopExtensionsSettingsSetParamsSchema,
+  ]) {
+    const input = schema === desktopExtensionsSettingsResultSchema ? {} : { id };
+    expect(schema.safeParse({ ...input, values: { nested: { array: [1, null] } } }).success).toBe(
+      true,
+    );
+    expect(schema.safeParse({ ...input, values: [] }).success).toBe(false);
+    expect(schema.safeParse({ ...input, values: { nan: NaN } }).success).toBe(false);
+  }
+  expect(
+    desktopExtensionsBackendInvokeParamsSchema.safeParse({ id, method: "refresh" }).success,
+  ).toBe(true);
+  expect(desktopExtensionsBackendInvokeParamsSchema.safeParse({ id, method: " " }).success).toBe(
+    false,
+  );
+  expect(desktopExtensionsBackendInvokeResultSchema.safeParse({ result: null }).success).toBe(true);
+  expect(desktopExtensionsBackendInvokeResultSchema.safeParse({}).success).toBe(false);
 });
 
 test("rejects snapshots with dangling edges", () => {

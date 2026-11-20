@@ -1,6 +1,6 @@
 # Desktop 界面扩展（v1）
 
-Desktop 界面扩展是可选的受信任代码。它们只在通过 codexhost 启动、已建立界面控制的 Codex Desktop **主窗口**运行。扩展不预装，发现时不执行；在 [Console 的扩展页](../operations/codexhost-console.md)启用后才加载。Web、其他 Desktop 窗口和远程 Host 的侧栏行不是 v1 的扩展目标。
+Desktop 扩展是可选的受信任代码。界面入口只在通过 codexhost 启动、已建立界面控制的 Codex Desktop **主窗口**运行；可选的 Node 后端运行于本机 Host 启动的独立子进程。扩展不预装，发现和安装不执行入口；在 [Console 的扩展页](../operations/codexhost-console.md)启用后才会加载。Web、其他 Desktop 窗口和远程 Host 的侧栏行不是 v1 的界面扩展目标。
 
 启用、禁用和更新文件不重启 Desktop、不重载窗口。Controller 比较 manifest、脚本和样式的内容 hash；只改时间戳不重新激活，内容变化时先回收旧实例再启动新实例。文件监听用于加速，Controller 也会重新扫描（周期兜底为 30 秒）。窗口重载时，如果 Controller 在线，就按最新启用集合恢复；如果 Controller 离线，重载后的窗口不加载扩展，直到 Controller 重新连上并按最新配置对账。对于尚未重载的窗口，Controller 重新连接时保留 hash 未变且仍在运行的实例。
 
@@ -39,7 +39,7 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 }
 ```
 
-- `id` 最长 128 字符，匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`。`desktop.style` 可省略。未知字段或槽位无效；更高的 `desktopApi` 或出现 `backend` 时报告不兼容。
+- `id` 最长 128 字符，匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`。`desktop` 和 `backend` 至少声明一个，可以同时声明；`desktop.style` 可省略。未知字段或槽位无效；更高的 `desktopApi` 报告不兼容。
 - 新扩展必须为 `name` 和 `description` 提供 `en` 和 `zh-CN` 文案。兼容旧 manifest：`name` 可用纯字符串；`description` 可省略或只提供 `en`。名称去掉首尾空白后须为 1–128 字符，描述每种语言最多 4096 字符。列表接口保留双语对象；`resolveLocalizedExtensionText(value, locale)` 在 `zh-CN` 时优先取中文，缺少中文或使用其他语言时取英文，字符串则原样返回。
 - `categories` 是可选多选标签，省略或 `[]` 均表示未分类。可选值为 `sidebar`（侧栏）、`composer`（输入区）、`conversation`（会话）、`appearance`（外观）、`tools`（工具）、`workflow`（工作流）、`usage-analytics`（用量分析）、`memory-knowledge`（记忆与知识）、`integrations`（外部集成）。未知或重复标签使 manifest 无效。标签不授予 API 能力，不参与槽位占用。
 - `author`、`repository` 和 `details` 是可选展示字段。作者名去掉首尾空白后为 1–128 字符；仓库链接限 HTTP(S)、至多 2048 字符，推荐 GitHub HTTPS 链接；详细介绍支持多段落，`en` 必填、`zh-CN` 可选，每种语言最多 16384 字符。
@@ -61,7 +61,7 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 
 - 安装来源：`{ type: "catalog", id }`、`{ type: "url", url, expectedSha256? }` 或 `{ type: "zip-base64", fileName, contentBase64 }`。URL 支持 HTTP(S) `.zip`、GitHub zipball，以及公开 GitHub 仓库主页（优先取最新稳定 Release 的 ZIP 资产，没有则取默认分支的源码 zipball）。`/tree/<ref>[/<subdir>]` 直接取指定 ref 的 zipball，安装所选目录；ref 内的 `/` 写作 `%2F`。从索引安装会校验 SHA-256、manifest ID 和版本。上传文件名仅用于元数据，不用作磁盘路径。
 - ZIP 防内存耗尽护栏：压缩 ≤ 64 MiB、展开 ≤ 256 MiB，最多 10,000 个条目；大文件另检查异常压缩比。`manifest.json` 应位于 ZIP 根目录、唯一顶层目录或 `tree` 选中的仓库子目录。必须包含 manifest 声明的入口 JS；包管理不构建或执行脚本，安装后仍须显式启用。
-- 更新调用同一个 `install`，按 manifest ID 覆盖，保留已有启用选择。卸载移除安装目录和 `enabled.json` 中的选择。两者都通过原子写入 `enabled.json` 触发 Desktop Controller 对账，不重载窗口。响应中的 `list` 是最新磁盘快照，Controller 尚未完成激活时状态可以是 `waiting`。
+- 更新调用同一个 `install`，按 manifest ID 覆盖，保留已有启用选择。卸载移除安装目录和 `enabled.json` 中的选择，不删除独立设置。两者都通过原子写入 `enabled.json` 触发对账，不重载窗口。响应中的 `list` 是最新磁盘快照，`status` 仍反映 Desktop 界面入口，不报告 Node 后端激活结果。
 - UI 可用 `compareExtensionVersions(catalogVersion, installedVersion) > 0` 判断是否有新版本。不识别的版本格式不提示更新。不自动更新本机安装；`trustTier` 和 `minCodexHostVersion` 是索引展示元数据，不是权限或兼容性证明。
 
 ## Desktop API v1
@@ -79,9 +79,28 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 | `dom.mark(element, name)`、`dom.unmark(element, name)` | 给元素登记或移除 `data-cx-<id>-<name>` 标记；`name` 匹配 `[a-z][a-z0-9-]{0,31}`。                                                                                               |
 | `track(teardown)`                                      | 登记额外的同步清理函数，例如停止定时器。                                                                                                                                        |
 
+## 资源、设置与后端 RPC
+
+以下方法使用 `codexhost/desktop/extensions/` 前缀。它们通过本机 Host 的 Desktop RPC 和已认证的本机 Web Client Channel 提供；SSH 管理的 Host 不开放这些方法。Renderer 扩展 API 和设置界面不在此契约内。
+
+| 方法后缀 | 请求 → 响应 |
+| --- | --- |
+| `asset` | `{ id, path }` → `{ mimeType, dataUrl }` |
+| `settings/get` | `{ id }` → `{ values }` |
+| `settings/set` | `{ id, values }` → `{ values }` |
+| `backend/invoke` | `{ id, method, params? }` → `{ result }` |
+
+- **资源**：可以把壁纸、字体等放在 `assets/`，无需在 manifest 登记。传入相对安装目录的 `/` 分隔路径，禁止绝对路径、`..` 或经符号链接越界。支持 `.png`、`.jpg`、`.jpeg`、`.webp`、`.gif`、`.svg`、`.woff2`、`.json`、`.css`，每文件最多 16 MiB。结果为 `data:<mime>;base64,...`；SVG 用于图片，不内联 SVG 标记或将其作为页面打开。
+- **声明式设置**：`settingsSchema` 最多 32 项。每项有唯一的 `key`（`[A-Za-z_][A-Za-z0-9_]*`）、`type`、双语 `label`、可选双语 `description`。五类字段为 `boolean`、`string`（可选双语 `placeholder`）、`number`、`range`（必填 `min`、`max`）、`select`（`options: [{ value, label }]`）。都可声明相应类型的 `default`；详情见共享契约。
+- **持久化**：资源和设置允许对已安装但未启用的扩展读取；设置也可在启用前写入。`values` 是 JSON 对象；`set` 原子替换整份对象，不合并、不应用默认值、不按 `settingsSchema` 过滤，也不推送变更事件。设置最多 1 MiB，保存到 `$CODEXHOST_DATA_DIR/desktop-extension-data/<id>/settings.json`；初始返回 `{}`。覆盖安装、卸载都保留它，重新安装同 ID 可恢复配置；需要清理时先卸载，再手动删除该扩展的数据目录。
+- **Node 入口**：如 `"backend": { "script": "backend.mjs" }`。入口必须在扩展目录内、至多 2 MiB，由扩展自行提供运行依赖。导出 `activate(ctx)` 或 `default.activate(ctx)`；通过 `ctx.handle(method, handler)` 在激活期间登记方法。`ctx.extensionId`、`ctx.extensionDir`、`ctx.dataDir` 提供身份与路径；`ctx.readSettings()` / `ctx.writeSettings(values)` 复用独立设置存储。可返回清理函数或 `{ dispose() }`，支持异步。
+- **生命周期**：Host 启动、启停、覆盖安装、卸载和恢复时对账；Console 独立写入的启用配置也会被轮询发现。覆盖安装或入口变化时先清理旧实例，再用新子进程和带内容 hash 的入口 URL 加载。手动编辑代码时，修改入口或 manifest 可触发重载；仅编辑依赖文件请重新打包安装。只允许对已启用、已取得槽位且激活成功的扩展调用已登记方法。参数和结果均为 JSON，`undefined` 返回为 `null`；无效参数为 `-32602`，加载/运行失败或方法不可用时返回 `-32000`。激活、调用和清理都有超时；异常和子进程退出不会终止 Host。失败的实例可通过禁用再启用或更新重试。
+
+**进程隔离不是权限沙箱。** 后端以本机用户权限执行；启用或覆盖安装已启用的扩展前，应信任包括 Node 入口在内的全部代码和依赖。后端失败记录在 Host 诊断日志中，不等同于 Renderer 状态。
+
 ## 槽位与回收
 
-`sidebar.thread-badge` 用于装饰 Thread 行（角标、计数等），`sidebar.thread-layout` 用于改变 Thread 行呈现。扩展必须在 manifest 声明占用的槽位，全部获得后才能生效。Console 在启用前拒绝冲突并列出占用者；手动编辑产生冲突时，`enabled` 中靠前的扩展优先。
+`sidebar.thread-badge` 用于装饰 Thread 行（角标、计数等），`sidebar.thread-layout` 用于改变 Thread 行呈现，`appearance.theme` 用于整套皮肤，同一时间只分配给一个扩展。只声明实际使用的槽位；没有槽位就省略或写 `[]`。扩展全部取得所声明槽位后才能生效。Console 在启用前拒绝冲突并列出占用者；手动编辑产生冲突时，`enabled` 中靠前的扩展优先。
 
 卸载时，宿主停止交付回调并取消待完成的导航，给扩展最多 1 秒自行清理，然后触发 `api.signal`、停止观察与订阅、执行 `track` 清理、移除受管挂载和样式表、恢复受管标记。不提供清理函数也能回收这些资源。激活异常或 30 秒内五次桥回调异常会标记为 `failed` 并回收当前实例，不改启用选择；更新文件或重载窗口可再试。Console 结合 `diagnostics/desktop-extensions-v1.json` 显示状态，Controller 不在线时显示等待 Desktop。
 
@@ -108,4 +127,4 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 
 如果扩展使 Desktop 无法操作，在 Console 执行「禁用全部扩展并重载」。Console 原子写入空的启用列表和新的恢复令牌；在线 Controller 移除未来文档快照，尽力回收当前实例，再重载窗口。该路径不依赖 Host 或 Desktop 界面响应。若 Controller 离线，选择仍会保存；若 Controller 看到该令牌时已有更新的非空启用列表，则只记录该令牌，不重载。
 
-v1 不提供扩展后端、Web 扩展支持、多窗口或远程 Host 行扩展。`backend`、`desktopApi: 2` 和 `codexhost/extension/<id>/*` 仅为后续版本预留；v1 不加载后端、不注册这些方法。
+v1 不支持 Web 界面扩展、多窗口或远程 Host 行扩展。`desktopApi: 2` 和 `codexhost/extension/<id>/*` 尚未定义。

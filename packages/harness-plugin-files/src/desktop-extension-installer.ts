@@ -27,6 +27,7 @@ import {
   extensionFileMissing,
   isDesktopExtensionTransactionEntry,
   privateExtensionDirectory,
+  readDesktopExtensionBackend,
   readDesktopExtensionScreenshot,
   readExtensionResource,
 } from "./extension-discovery.js";
@@ -130,24 +131,27 @@ export async function installFromZipBuffer(
         const manifest = desktopExtensionManifestSchema.parse(JSON.parse(utf8.decode(bytes)));
         if (expected && (manifest.id !== expected.id || manifest.version !== expected.version))
           throw new Error("Manifest id or version does not match the catalog entry");
-        const { script, style } = manifest.desktop;
-        const scriptBytes = await readExtensionResource(
-          staging,
-          script,
-          DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
-        ).catch((error: unknown) => {
-          if (!extensionFileMissing(error)) throw error;
-          throw new Error(
-            `Missing entry file ${script}. Commit the built JavaScript entry or publish a Release .zip.`,
-            { cause: error },
-          );
-        });
-        const source = utf8.decode(scriptBytes);
-        new Script(`(function(define) { "use strict";\n${source}\n})`);
-        if (style)
-          utf8.decode(
-            await readExtensionResource(staging, style, DESKTOP_EXTENSION_STYLE_MAX_BYTES),
-          );
+        if (manifest.desktop) {
+          const { script, style } = manifest.desktop;
+          const scriptBytes = await readExtensionResource(
+            staging,
+            script,
+            DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
+          ).catch((error: unknown) => {
+            if (!extensionFileMissing(error)) throw error;
+            throw new Error(
+              `Missing entry file ${script}. Commit the built JavaScript entry or publish a Release .zip.`,
+              { cause: error },
+            );
+          });
+          const source = utf8.decode(scriptBytes);
+          new Script(`(function(define) { "use strict";\n${source}\n})`);
+          if (style)
+            utf8.decode(
+              await readExtensionResource(staging, style, DESKTOP_EXTENSION_STYLE_MAX_BYTES),
+            );
+        }
+        if (manifest.backend) await readDesktopExtensionBackend(staging, manifest.backend.script);
         for (const screenshot of manifest.screenshots ?? [])
           await readDesktopExtensionScreenshot(staging, screenshot);
         return manifest;

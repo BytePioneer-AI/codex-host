@@ -285,6 +285,8 @@ import {
   type ExternalThreadStatus,
   type ProjectedTurn,
 } from "./external-turn-projection.js";
+import { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import { codexhostDataDirectory } from "./external-clients.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
@@ -391,6 +393,7 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
+  desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
   /** Shared service's live Desktop connection count, not native client subscriptions. */
@@ -872,6 +875,7 @@ export class AppServerHost {
   readonly clientEvents = new ClientChannelEvents();
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
+  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
   readonly #threadTree: ThreadTree;
@@ -1244,7 +1248,17 @@ export class AppServerHost {
       publishExternalQueue: (threadId) => this.#publishExternalQueue(threadId),
       startNextQueuedExternalTurn: (thread) => this.#startNextQueuedExternalTurn(thread),
     });
+    const desktopEnvironment = options.environment ?? process.env;
+    this.desktopExtensionBackends =
+      desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
+        ? undefined
+        : (options.desktopExtensionBackends ??
+          new DesktopExtensionBackendManager(
+            codexhostDataDirectory(desktopEnvironment),
+            (message) => this.#diagnose(message),
+          ));
     this.#desktopControl = new DesktopControlRequests({
+      desktopExtensionBackends: this.desktopExtensionBackends,
       writeJson: (value) => this.#writer.json(value),
       dispatchReply: (request, run, threadId) => this.#dispatchDesktopReply(request, run, threadId),
       waitForPlugins: () => this.#waitForPlugins(),
@@ -1516,6 +1530,8 @@ export class AppServerHost {
           .catch((closeError: unknown) => this.#diagnose(closeError));
       }
     }
+    if (!this.#closeRequested && !this.#options.desktopExtensionBackends)
+      this.desktopExtensionBackends?.start();
     // Load statistics plugins before native subscription negotiation; Session plugins continue
     // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
@@ -1538,6 +1554,7 @@ export class AppServerHost {
       this.#treeWatch.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
+      if (!this.#options.desktopExtensionBackends) await this.desktopExtensionBackends?.close();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
       await this.#desktopRequests.drain();

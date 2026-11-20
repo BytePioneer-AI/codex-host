@@ -3,13 +3,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
-import { encodeHarnessPluginRoute, harnessPluginRouteSchema } from "@codexhost/shared-contracts";
+import {
+  encodeHarnessPluginRoute,
+  harnessPluginRouteSchema,
+  hostThreadIdSchema,
+} from "@codexhost/shared-contracts";
 import {
   AntigravityAdapter,
   type AntigravityAcpTransportLike,
 } from "@codexhost/adapter-antigravity";
 import { createExternalThreadRecordInput } from "../src/external-thread-repository.js";
-import { createFixture, stopFixture } from "./app-server-host-fixture.js";
+import { createFixture, startExternalThread, stopFixture } from "./app-server-host-fixture.js";
 
 function protoField(field: number, value: string | Buffer): Buffer {
   const body = typeof value === "string" ? Buffer.from(value) : value;
@@ -220,4 +224,62 @@ it("reads cold agy history from SQLite and connects ACP only for the first write
     await stopFixture(fixture);
   }
   expect(close).toHaveBeenCalledOnce();
+});
+
+it("returns and saves the confirmed Model on the first selection in a cold agy Thread", async () => {
+  const harnessId = "antigravity";
+  const previous = "gemini-4-neon";
+  const selected = "gemini-4-carbon";
+  const nativeSessionId = "11111111-1111-4111-8111-111111111111";
+  const configOptions = (currentValue: string) => [
+    {
+      id: "model",
+      category: "model",
+      name: "Model",
+      currentValue,
+      options: [
+        { value: previous, name: "Neon" },
+        { value: selected, name: "Carbon" },
+      ],
+    },
+  ];
+  const adapter = new AntigravityAdapter({
+    createTransport: (): AntigravityAcpTransportLike => ({
+      sessionId: nativeSessionId,
+      isClosed: false,
+      skipPermissions: false,
+      initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+      openSession: async () => ({
+        opened: { sessionId: nativeSessionId, configOptions: configOptions(previous) },
+      }),
+      setSessionEventHandler: () => {},
+      setMode: async () => {},
+      setConfigOption: async (_id, value) => configOptions(value),
+      prompt: async () => {
+        throw new Error("Model selection must not send a prompt");
+      },
+      cancel: async () => {},
+      closeSession: async () => {},
+      close: async () => {},
+    }),
+  });
+  const fixture = createFixture({ additionalAdapters: new Map([[harnessId, adapter]]) });
+  const route = (id: string) =>
+    encodeHarnessPluginRoute(harnessPluginRouteSchema.parse({ harnessId, model: { id } }));
+  try {
+    const threadId = await startExternalThread(fixture, route(previous), 1, {
+      cwd: fixture.mappingStoreDirectory,
+    });
+    const reply = await fixture.host.handleClientRequest("codexhost/thread/model/select", {
+      threadId,
+      model: { id: selected },
+    });
+    const record = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect({ reply, record }).toMatchObject({
+      reply: { result: { effectiveModel: { id: selected } } },
+      record: { transportModelId: route(selected) },
+    });
+  } finally {
+    await stopFixture(fixture);
+  }
 });

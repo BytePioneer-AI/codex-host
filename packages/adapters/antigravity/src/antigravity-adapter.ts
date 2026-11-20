@@ -338,6 +338,7 @@ export class AntigravitySession implements HarnessSession {
   #faulted = false;
   #closing: Promise<void> | undefined;
   #configuring = false;
+  #deferStatePublication = false;
   #historyOperation = false;
 
   constructor(options: SessionOptions) {
@@ -383,6 +384,7 @@ export class AntigravitySession implements HarnessSession {
     this.#channel.emit({ kind: "event", event });
   }
   #publishState(): void {
+    if (this.#deferStatePublication) return;
     this.#emit({ type: "session.state.changed", state: { ...this.#state } });
   }
 
@@ -853,9 +855,13 @@ export class AntigravitySession implements HarnessSession {
       if (this.#options.unattended && command.permissionModeId !== SKIP)
         return err("invalidRequest", "Unattended execution requires Skip permissions");
     }
+    const openingFromCold = !this.#transport;
+    const stateBeforeColdModelSelect =
+      openingFromCold && command.type === "model.select" ? this.#state : undefined;
+    // A cold Model selection publishes one state, after opening and applying the selection.
+    this.#deferStatePublication = stateBeforeColdModelSelect !== undefined;
     this.#configuring = true;
     try {
-      const openingFromCold = !this.#transport;
       const previousPermissionMode = this.#requested.permissionModeId;
       if (openingFromCold && command.type === "permissionMode.select") {
         this.#requested.permissionModeId = command.permissionModeId;
@@ -931,6 +937,10 @@ export class AntigravitySession implements HarnessSession {
       return ok({ completed: true });
     } finally {
       this.#configuring = false;
+      this.#deferStatePublication = false;
+      if (stateBeforeColdModelSelect && this.#state !== stateBeforeColdModelSelect) {
+        this.#publishState();
+      }
     }
   }
   async #runTurn(turn: ActiveTurn, command: TurnStartCommand): Promise<void> {

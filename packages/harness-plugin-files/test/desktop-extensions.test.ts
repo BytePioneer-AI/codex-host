@@ -105,20 +105,24 @@ const png = Buffer.from(
 );
 
 it("lists verified local screenshots in manifest order through the management schema", async () => {
-  const screenshots = ["images/sidebar.PNG", "images/status.jpeg", "images/preview.webp"];
   const jpeg = Buffer.from([0xff, 0xd8, 0xff]);
   const webp = Buffer.from("RIFF\0\0\0\0WEBP");
+  const previews = [
+    ["images/sidebar.PNG", png],
+    ["images/status.jpeg", jpeg],
+    ["images/preview.webp", webp],
+  ] as const;
   const details = { en: "Overview\n\nUsage", "zh-CN": "概览\n\n用法" };
   const metadata = {
     author: "codexhost",
     repository: "https://github.com/BytePioneer-AI/codex-host",
     details,
-    screenshots,
+    screenshots: previews.map(([file]) => file),
   };
   const script = await install("gallery", metadata);
   await mkdir(path.join(path.dirname(script), "images"));
-  for (const [index, bytes] of [png, jpeg, webp].entries()) {
-    await writeFile(path.join(path.dirname(script), screenshots[index]!), bytes);
+  for (const [file, bytes] of previews) {
+    await writeFile(path.join(path.dirname(script), file), bytes);
   }
   const list = desktopExtensionsListResultSchema.parse(await listDesktopExtensions(directory));
   expect(list.diagnostics).toEqual([]);

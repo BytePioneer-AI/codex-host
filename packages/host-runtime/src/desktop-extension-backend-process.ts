@@ -7,6 +7,8 @@ import type { DesktopExtensionBackendContext } from "@codexhost/shared-contracts
 
 type Entry = Pick<DesktopExtensionBackendContext, "extensionId" | "extensionDir" | "dataDir"> & {
   url: string;
+  hash: string;
+  installation: string;
 };
 type Command =
   | { op: "activate"; entry: Entry }
@@ -19,6 +21,7 @@ type BackendExports = { activate?: (context: DesktopExtensionBackendContext) => 
 
 const MAX_IPC_BYTES = 2 * 1024 * 1024;
 const MAX_SETTINGS_IN_FLIGHT = 4;
+export const BACKEND_ENTRY_CHANGED = "Backend entry changed since discovery";
 const IPC_ERRORS = {
   invalidJson: "Backend IPC message is not JSON-serializable",
   tooLarge: "Backend IPC message exceeds 2 MiB",
@@ -38,6 +41,7 @@ function backendChild(
   maxIpcBytes: number,
   maxSettingsInFlight: number,
   errors: typeof IPC_ERRORS,
+  entryChanged: string,
 ) {
   const pendingSettings = new Map<
     number,
@@ -82,16 +86,59 @@ function backendChild(
         reject(error);
       }
     });
+  const loadEntry = async ({ url, hash, installation, extensionDir }: Entry) => {
+    const { registerHooks } = process.getBuiltinModule("node:module");
+    const { createHash } = process.getBuiltinModule("node:crypto");
+    const { statSync } = process.getBuiltinModule("node:fs");
+    let checked = false;
+    // Hash the loader's exact entry bytes before evaluation, without a second file open.
+    const hook = registerHooks({
+      load(resolved, context, nextLoad) {
+        if (checked) return nextLoad(resolved, context);
+        if (resolved !== url) throw new Error(entryChanged);
+        const result = nextLoad(resolved, context);
+        const bytes = result.source;
+        const info = statSync(extensionDir, { bigint: true, throwIfNoEntry: false });
+        if (
+          bytes == null ||
+          !info ||
+          `${info.dev}:${info.ino}` !== installation ||
+          createHash("sha256")
+            .update(bytes instanceof ArrayBuffer ? Buffer.from(bytes) : bytes)
+            .digest("hex") !== hash
+        )
+          throw new Error(entryChanged);
+        checked = true;
+        return result;
+      },
+    });
+    try {
+      return await importEntry(url);
+    } catch (error) {
+      if (
+        !checked &&
+        error instanceof Error &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ERR_MODULE_NOT_FOUND")
+      )
+        throw new Error(entryChanged);
+      throw error;
+    } finally {
+      hook.deregister();
+    }
+  };
   const run = async (command: Command): Promise<unknown> => {
     if (command.op === "activate") {
-      const { url, ...identity } = command.entry;
-      const module = await importEntry(url);
+      const { extensionId, extensionDir, dataDir } = command.entry;
+      const module = await loadEntry(command.entry);
       const owner = typeof module.activate === "function" ? module : module.default;
       if (typeof owner?.activate !== "function")
         throw new Error("Expected an activate(ctx) export");
       let registering = true;
       const context: DesktopExtensionBackendContext = {
-        ...identity,
+        extensionId,
+        extensionDir,
+        dataDir,
         readSettings: () => settings({ op: "read" }),
         writeSettings: (values) => settings({ op: "write", values }),
         handle: (method, handler) => {
@@ -133,8 +180,8 @@ function backendChild(
     return (await handler(command.params)) ?? null;
   };
   process.on("disconnect", () => process.exit());
-  process.on("message", async (message: ({ id: number } & Command) | { reply: Reply }) => {
-    if ("reply" in message) {
+  process.on("message", async (message: string | { reply: Reply }) => {
+    if (typeof message !== "string") {
       const reply = message.reply;
       const pending = pendingSettings.get(reply.id);
       if (!pending) return;
@@ -143,16 +190,17 @@ function backendChild(
       else pending.reject(new Error(reply.error));
       return;
     }
+    const command: Command & { id: number } = JSON.parse(message);
     try {
-      const value = await run(message);
-      send({ id: message.id, ok: true, value });
+      const value = await run(command);
+      send({ id: command.id, ok: true, value });
     } catch (error) {
       if (!process.connected) return;
       const details =
         error instanceof Error && typeof error.message === "string"
           ? error.message
           : "Backend threw a non-Error value";
-      send({ id: message.id, ok: false, error: details.slice(0, 512) });
+      send({ id: command.id, ok: false, error: details.slice(0, 512) });
     }
   });
 }
@@ -174,7 +222,7 @@ export class DesktopExtensionBackendProcess {
         "--max-old-space-size=128",
         "--input-type=module",
         "--eval",
-        `(${backendChild.toString()})(url => import(url), ${MAX_IPC_BYTES}, ${MAX_SETTINGS_IN_FLIGHT}, ${JSON.stringify(IPC_ERRORS)})`,
+        `(${backendChild.toString()})(url => import(url), ${MAX_IPC_BYTES}, ${MAX_SETTINGS_IN_FLIGHT}, ${JSON.stringify(IPC_ERRORS)}, ${JSON.stringify(BACKEND_ENTRY_CHANGED)})`,
       ],
       {
         stdio: ["ignore", "ignore", "ignore", "ipc"],
@@ -270,6 +318,14 @@ export class DesktopExtensionBackendProcess {
   #request(command: Command, timeout: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = ++this.#nextId;
+      let text: string;
+      try {
+        text = JSON.stringify({ ...command, id });
+      } catch {
+        throw new TypeError(IPC_ERRORS.invalidJson);
+      }
+      if (Buffer.byteLength(text) > MAX_IPC_BYTES) throw new RangeError(IPC_ERRORS.tooLarge);
+      // Send the exact JSON checked above rather than reserializing the input.
       const finish = (reply: Reply) => {
         clearTimeout(timer);
         this.#pending.delete(id);
@@ -283,7 +339,7 @@ export class DesktopExtensionBackendProcess {
       }, timeout);
       this.#pending.set(id, finish);
       try {
-        this.#child.send({ ...command, id }, (error) => {
+        this.#child.send(text, (error) => {
           if (error) finish({ id, ok: false, error: error.message });
         });
       } catch (error) {

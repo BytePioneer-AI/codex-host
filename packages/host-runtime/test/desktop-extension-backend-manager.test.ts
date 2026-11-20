@@ -148,3 +148,44 @@ it("rejects over-limit or invalid IPC without interrupting either backend", asyn
   await expect(manager.invoke("sample", "settings")).resolves.toEqual({ ready: true });
   expect(diagnostics).toEqual([]);
 });
+
+it("rejects an oversized invoke before the backend handler runs", async () => {
+  await install(
+    "sample",
+    `export function activate(ctx) {
+      let calls = 0;
+      ctx.handle('count', () => ++calls);
+    }`,
+  );
+  await select(["sample"]);
+  await manager.reconcile();
+  await expect(manager.invoke("sample", "count", "é".repeat(1024 * 1024))).rejects.toThrow(
+    "Backend IPC message exceeds 2 MiB",
+  );
+  await expect(manager.invoke("sample", "count")).resolves.toBe(1);
+});
+
+it("does not load a script that changes after the scan and rescans on the next invocation", async () => {
+  const settings = () => readDesktopExtensionSettings({ dataDir, id: "sample" });
+  const finalSource = `export async function activate(ctx) {
+    await ctx.writeSettings({ loaded: 'final' });
+    ctx.handle('version', () => 'final');
+  }`;
+  const { installedPath } = await install(
+    "sample",
+    `import { writeFile } from 'node:fs/promises';
+    export function activate(ctx) {
+      ctx.handle('version', () => 'original');
+      return async () => writeFile(new URL(import.meta.url), ${JSON.stringify(finalSource)});
+    }`,
+  );
+  await select(["sample"]);
+  await manager.reconcile();
+  await expect(manager.invoke("sample", "version")).resolves.toBe("original");
+  await writeFile(path.join(installedPath, "backend.mjs"), "export function activate() {};");
+  // Disposal replaces the scanned entry before the next backend loads it.
+  await manager.reconcile();
+  expect(await settings()).toEqual({});
+  await expect(manager.invoke("sample", "version")).resolves.toBe("final");
+  expect(await settings()).toEqual({ loaded: "final" });
+});

@@ -6,7 +6,10 @@ import {
   readDesktopExtensionSnapshot,
 } from "@codexhost/harness-plugin-files";
 import { resolveDesktopExtensionSlots } from "@codexhost/shared-contracts";
-import { DesktopExtensionBackendProcess } from "./desktop-extension-backend-process.js";
+import {
+  BACKEND_ENTRY_CHANGED,
+  DesktopExtensionBackendProcess,
+} from "./desktop-extension-backend-process.js";
 import { errorMessage } from "./desktop-rpc.js";
 
 export class DesktopExtensionBackendManager {
@@ -133,10 +136,18 @@ export class DesktopExtensionBackendManager {
             extensionDir: entry.directory,
             dataDir,
             url: `${pathToFileURL(entry.scriptPath).href}?v=${entry.hash}`,
+            hash: entry.hash,
+            installation: entry.installation,
           });
           instance.process = backend;
         } catch (error) {
-          this.#report(`${id} activate`, error);
+          if (error instanceof Error && error.message === BACKEND_ENTRY_CHANGED) {
+            // The next poll or invocation must take a fresh snapshot, even at the same revision.
+            this.#instances.delete(id);
+            this.#lastConfiguration = undefined;
+          } else {
+            this.#report(`${id} activate`, error);
+          }
           await backend?.terminate();
         }
       }),

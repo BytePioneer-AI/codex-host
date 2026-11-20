@@ -112,7 +112,8 @@ it("publishes full snapshots for delegation, Turn, multi-select and pin changes"
     (snapshot) => snapshot.nodes[hostThreadIdSchema.parse("official-child")]?.status === "waiting",
   );
   const turnId = await startPiTurn(fixture, child);
-  const session = fixture.adapter.sessions[0]!;
+  const session = fixture.adapter.sessions[0];
+  if (!session) throw new Error("Missing fixture Session");
   const status = (wanted: string) => (snapshot: typeof initial.snapshot) =>
     snapshot.nodes[hostThreadIdSchema.parse(child)]?.status === wanted;
   await next(status("running"));

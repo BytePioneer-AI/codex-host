@@ -418,7 +418,9 @@ it("projects the shared owner's Turn state without forwarding owner subscription
       input: [{ type: "text", text: "A shared Turn" }],
     });
     await next("running");
-    adapter.sessions[0]!.succeedTurn();
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Missing shared Session");
+    session.succeedTurn();
     await next("idle");
     bridge.close();
     await next("unknown");

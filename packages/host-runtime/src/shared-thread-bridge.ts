@@ -5,6 +5,11 @@ import type { JsonObject, JsonRpcRequest } from "@codexhost/protocol-core";
 import { classifyCreateRequestRoute } from "./app-server-host.js";
 import {
   threadOwnershipListResultSchema,
+  THREAD_TREE_SNAPSHOT_METHOD,
+  THREAD_TREE_UNWATCH_METHOD,
+  THREAD_TREE_WATCH_METHOD,
+  threadTreeWatchResultSchema,
+  type ThreadTreeSnapshot,
   LOADED_SESSIONS_METHOD,
   IDLE_RELEASE_SETTINGS_METHOD,
   USAGE_STATISTICS_METHOD,
@@ -58,6 +63,10 @@ export class SharedThreadBridge {
   setLocalOwnershipProbe(probe: (threadId: string) => Promise<boolean>): void {
     this.#localProbe = probe;
   }
+
+  #treeListener: ((snapshot: ThreadTreeSnapshot | null) => void) | undefined;
+  #treeAttempt: { peer: SharedThreadPeer; id?: string; revision?: number } | undefined;
+  #treeDiagnosed = false;
 
   #peer: SharedThreadPeer | null = null;
   #connecting: Promise<SharedThreadPeer | null> | null = null;
@@ -113,6 +122,17 @@ export class SharedThreadBridge {
           if (typeof message.method === "string" && message.method.startsWith("thread/")) {
             this.#invalidateLists();
           }
+          if (message.method === THREAD_TREE_SNAPSHOT_METHOD) {
+            const result = threadTreeWatchResultSchema.safeParse(message.params);
+            const attempt = this.#treeAttempt;
+            if (
+              result.success &&
+              attempt?.peer === peer &&
+              attempt.id === result.data.subscriptionId
+            )
+              this.#acceptTree(attempt, result.data.snapshot);
+            return;
+          }
           const params = object(message.params) ? message.params : {};
           if (
             object(params.thread) &&
@@ -125,8 +145,14 @@ export class SharedThreadBridge {
         });
         void peer.closed.then(() => {
           if (this.#peer === peer) this.#peer = null;
+          if (this.#treeAttempt?.peer === peer) {
+            this.#treeAttempt = undefined;
+            this.#treeListener?.(null);
+            this.#diagnoseTree(new Error("Shared Thread tree owner disconnected"));
+          }
           this.#invalidateLists();
         });
+        this.#startTree(peer);
         // History is read through thread/list. Replaying it as thread/started makes each
         // downstream viewer rebuild its catalog once per historical Thread.
         return peer;
@@ -140,6 +166,68 @@ export class SharedThreadBridge {
         this.#connecting = null;
       });
     return this.#connecting;
+  }
+
+  knowsTreeOwner(id: string): boolean {
+    return this.#known.has(id);
+  }
+
+  watchTree(listener: (snapshot: ThreadTreeSnapshot | null) => void): () => void {
+    this.#treeListener = listener;
+    void this.#connect().then(
+      (peer) => {
+        if (peer) this.#startTree(peer);
+        else if (this.#treeListener === listener)
+          this.#diagnoseTree(new Error("Shared Thread tree owner unavailable"));
+      },
+      (error) => this.#diagnoseTree(error),
+    );
+    return () => {
+      if (this.#treeListener !== listener) return;
+      this.#treeListener = undefined;
+      const attempt = this.#treeAttempt;
+      this.#treeAttempt = undefined;
+      if (attempt?.id)
+        void attempt.peer
+          .request(THREAD_TREE_UNWATCH_METHOD, { subscriptionId: attempt.id })
+          .catch(() => undefined);
+    };
+  }
+
+  #diagnoseTree(error: unknown): void {
+    if (this.#treeDiagnosed) return;
+    this.#treeDiagnosed = true;
+    this.options.diagnose(error);
+  }
+
+  #startTree(peer: SharedThreadPeer): void {
+    if (!this.#treeListener || this.#treeAttempt?.peer === peer) return;
+    const attempt: { peer: SharedThreadPeer; id?: string; revision?: number } = { peer };
+    this.#treeAttempt = attempt;
+    void peer
+      .request(THREAD_TREE_WATCH_METHOD, {})
+      .then((response) => {
+        const result = threadTreeWatchResultSchema.parse(response.result);
+        if (this.#treeAttempt !== attempt) {
+          return peer.request(THREAD_TREE_UNWATCH_METHOD, {
+            subscriptionId: result.subscriptionId,
+          });
+        }
+        attempt.id = result.subscriptionId;
+        this.#acceptTree(attempt, result.snapshot);
+      })
+      .catch((error: unknown) => {
+        if (this.#treeAttempt === attempt) this.#diagnoseTree(error);
+      });
+  }
+
+  #acceptTree(attempt: { revision?: number }, snapshot: ThreadTreeSnapshot): void {
+    if (attempt.revision !== undefined && snapshot.revision <= attempt.revision) return;
+    attempt.revision = snapshot.revision;
+    for (const [id, node] of Object.entries(snapshot.nodes)) {
+      if (node.harnessId !== "codex") this.#known.add(id);
+    }
+    this.#treeListener?.(snapshot);
   }
 
   async ownership(threadIds: string[]): Promise<Map<string, string>> {

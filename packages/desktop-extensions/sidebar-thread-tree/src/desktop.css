@@ -1,0 +1,365 @@
+/*
+ * Chrome for the delegated-children tree codexhost adds to Codex Desktop's sidebar.
+ *
+ * It follows the Web sidebar tree: the icon of a row with children turns into a chevron on
+ * hover and while expanded, a collapsed row carries a one-line summary inside its own block, and
+ * expanded children hang from rounded elbow guides 24px per level. Colors come from Desktop's
+ * tokens through var(--token, fallback). Row metrics (height, radius, icon and title columns) are
+ * measured from the native rows at runtime and passed in as --cxh-* custom properties.
+ *
+ * Native elements only respond to host-managed markers (data-cx-sidebar-thread-tree-*).
+ */
+
+/* Hidden native listitems whose Thread is already shown inside a tree above them. */
+[data-cx-sidebar-thread-tree-hidden] {
+  display: none !important;
+}
+
+/* Chevron shared by the native-row toggle and codexhost rows. */
+.cxh-tree-chevron {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary, color-mix(in srgb, currentColor 75%, transparent));
+  pointer-events: none;
+}
+
+.cxh-tree-chevron::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateX(-1px) rotate(-45deg);
+}
+
+[aria-expanded="true"] > .cxh-tree-chevron {
+  display: flex;
+}
+
+[aria-expanded="true"] > .cxh-tree-chevron::before {
+  transform: translateY(-1px) rotate(45deg);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(.cxh-tree-toggle, button.cxh-tree-identity):hover > .cxh-tree-chevron {
+    display: flex;
+  }
+
+  .cxh-tree-toggle:hover + [data-codexhost-sidebar-agent-icon],
+  button.cxh-tree-identity:hover > :not(.cxh-tree-chevron) {
+    visibility: hidden;
+  }
+}
+
+:is(.cxh-tree-toggle, button.cxh-tree-identity):focus-visible > .cxh-tree-chevron {
+  display: flex;
+}
+
+.cxh-tree-toggle:is(:focus-visible, [aria-expanded="true"]) + [data-codexhost-sidebar-agent-icon],
+button.cxh-tree-identity:is(:focus-visible, [aria-expanded="true"]) > :not(.cxh-tree-chevron) {
+  visibility: hidden;
+}
+
+:is(.cxh-tree-toggle, button.cxh-tree-identity):focus-visible {
+  outline: 2px solid var(--color-ring, Highlight);
+  outline-offset: 2px;
+}
+
+/*
+ * Toggle laid exactly over the Agent icon of a native row, out of flow, so the icon and the
+ * title never move. The hit area reaches past the icon as the Web identity button's does.
+ */
+.cxh-tree-toggle {
+  all: unset;
+  box-sizing: border-box;
+  position: absolute;
+  z-index: 1;
+  width: 14px;
+  height: 20px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.cxh-tree-toggle::after,
+button.cxh-tree-identity::after {
+  content: "";
+  position: absolute;
+  inset: -6px -4px -6px -8px;
+}
+
+/* A collapsed row and its summary read as one block, as in the Web sidebar. */
+[data-cx-sidebar-thread-tree-root-collapsed] [data-app-action-sidebar-thread-row] {
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+}
+
+[data-cx-sidebar-thread-tree-root-collapsed]:has(> .cxh-tree-summary-line:hover)
+  [data-app-action-sidebar-thread-row] {
+  background-color: var(
+    --color-background-secondary-ghost-hover,
+    color-mix(in srgb, currentColor 10%, transparent)
+  );
+}
+
+.cxh-tree-summary-line {
+  box-sizing: border-box;
+  padding-block: 0 2px;
+  padding-inline-end: var(--cxh-row-pad-end, 5px);
+  border-end-start-radius: var(--cxh-row-radius, 10px);
+  border-end-end-radius: var(--cxh-row-radius, 10px);
+  corner-shape: var(--codex-corner-shape, round);
+  cursor: var(--cursor-interaction, pointer);
+}
+
+[data-cx-sidebar-thread-tree-root-collapsed]:has(
+    [data-app-action-sidebar-thread-row]:is(
+      :hover,
+      [data-app-action-sidebar-thread-active="true"],
+      [data-app-action-sidebar-thread-selected="true"]
+    )
+  )
+  > .cxh-tree-summary-line,
+.cxh-tree-summary-line:hover,
+.cxh-tree-branch:has(> .cxh-tree-row:is(:hover, [aria-current="page"])) > .cxh-tree-summary-line {
+  background: var(
+    --color-background-secondary-ghost-hover,
+    color-mix(in srgb, currentColor 10%, transparent)
+  );
+}
+
+.cxh-tree-branch:has(> .cxh-tree-summary-line) > .cxh-tree-row {
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.cxh-tree-branch:has(> .cxh-tree-summary-line:hover) > .cxh-tree-row {
+  background: var(
+    --color-background-secondary-ghost-hover,
+    color-mix(in srgb, currentColor 10%, transparent)
+  );
+}
+
+.cxh-tree-summary {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  width: calc(100% - var(--cxh-summary-start, 46px) - var(--cxh-indent, 0px));
+  min-width: 0;
+  margin-inline-start: calc(var(--cxh-summary-start, 46px) + var(--cxh-indent, 0px));
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: var(--color-text-tertiary, color-mix(in srgb, currentColor 60%, transparent));
+  font-size: 11px;
+  line-height: 18px;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cxh-tree-summary:hover {
+    background: color-mix(in srgb, var(--color-text-primary, currentColor) 4%, transparent);
+  }
+}
+
+.cxh-tree-summary:focus-visible {
+  outline: 2px solid var(--color-ring, Highlight);
+  outline-offset: -2px;
+}
+
+.cxh-tree-summary [data-activity="running"] {
+  color: color-mix(in srgb, var(--color-text-accent, #0285ff), var(--color-text-success, #00a240));
+}
+
+.cxh-tree-summary [data-activity="pending"] {
+  color: var(--color-text-warning, #e25507);
+}
+
+/* Codexhost rows: the same metrics as the native rows of their list. */
+.cxh-tree-row {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--cxh-row-h, 30px);
+  padding-inline-start: calc(var(--cxh-icon-left, 32px) + var(--cxh-indent, 0px));
+  padding-inline-end: var(--cxh-row-pad-end, 5px);
+  border-radius: var(--cxh-row-radius, 10px);
+  corner-shape: var(--codex-corner-shape, round);
+  color: var(--cxh-title-color, inherit);
+  font-size: var(--cxh-title-size, 14px);
+  line-height: var(--cxh-title-line, 20px);
+  font-weight: var(--cxh-title-weight, inherit);
+  cursor: var(--cursor-interaction, pointer);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.cxh-tree-row:hover,
+.cxh-tree-row[aria-current="page"] {
+  background: var(
+    --color-background-secondary-ghost-hover,
+    color-mix(in srgb, currentColor 10%, transparent)
+  );
+}
+
+.cxh-tree-row:focus-visible {
+  outline: 2px solid var(--color-ring, Highlight);
+  outline-offset: -2px;
+}
+
+.cxh-tree-identity {
+  all: unset;
+  box-sizing: border-box;
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 20px;
+  margin-inline-end: var(--cxh-title-gap, 8px);
+  border-radius: 4px;
+}
+
+button.cxh-tree-identity {
+  cursor: pointer;
+}
+
+.cxh-tree-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cxh-tree-status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-inline-start: var(--cxh-title-gap, 8px);
+  color: var(--color-text-tertiary, color-mix(in srgb, currentColor 60%, transparent));
+}
+
+.cxh-tree-status[data-status="running"] > svg {
+  width: 14px;
+  height: 14px;
+  animation: cxh-tree-spin 1s linear infinite;
+}
+
+.cxh-tree-status[data-status="pending"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--color-text-warning, #e25507);
+}
+
+.cxh-tree-status[data-status="unknown"]::before {
+  content: "";
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  border: 1.25px dashed
+    var(--color-text-tertiary, color-mix(in srgb, currentColor 60%, transparent));
+}
+
+/* Rounded elbow guides, ported from the Web sidebar tree. */
+.cxh-tree-branch {
+  position: relative;
+  min-width: 0;
+  --cxh-icon-cy: calc(var(--cxh-row-h, 30px) / 2);
+}
+
+.cxh-tree-children {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cxh-gap, 0px);
+  margin-top: var(--cxh-gap, 0px);
+  --cxh-guide-parent-gap: 12px;
+  --cxh-guide-start: calc(
+    var(--cxh-guide-parent-gap) - (var(--cxh-row-h, 30px) - 14px) / 2 - var(--cxh-gap, 0px)
+  );
+  --cxh-guide-axis: calc(var(--cxh-icon-left, 32px) + var(--cxh-guide-indent, 0px) + 7px + 0.5px);
+}
+
+.cxh-tree-children .cxh-tree-children {
+  --cxh-guide-parent-gap: 10px;
+}
+
+.cxh-tree-children[data-guide]::before,
+.cxh-tree-children[data-guide] > .cxh-tree-branch::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: var(--cxh-guide-axis);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.cxh-tree-children[data-guide]::before {
+  top: var(--cxh-guide-start);
+  height: max(0px, calc(-1 * var(--cxh-guide-start)));
+  width: 1px;
+  background: var(
+    --color-border-heavy,
+    var(--color-border, color-mix(in srgb, currentColor 18%, transparent))
+  );
+}
+
+/* The stem and the elbow share one mask so the translucent token is painted once. */
+.cxh-tree-children[data-guide] > .cxh-tree-branch::before {
+  --cxh-stem-start: 0px;
+  --cxh-stem-end: 0px;
+  top: 0;
+  bottom: calc(-1 * var(--cxh-gap, 0px));
+  width: calc(24px - 7px - 6.5px);
+  background: var(
+    --color-border-heavy,
+    var(--color-border, color-mix(in srgb, currentColor 18%, transparent))
+  );
+  mask:
+    linear-gradient(transparent var(--cxh-stem-start), black 0) 0 0 / 1px
+      calc(100% - var(--cxh-stem-end)) no-repeat,
+    url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 0V1Q.5 3.3 2.5 4.5L10.5 7.5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
+      0 calc(var(--cxh-icon-cy) - 8px) / 100% 8px no-repeat;
+}
+
+.cxh-tree-children[data-guide] > .cxh-tree-branch:first-child::before {
+  --cxh-stem-start: max(0px, var(--cxh-guide-start));
+}
+
+.cxh-tree-children[data-guide] > .cxh-tree-branch:last-child::before {
+  --cxh-stem-end: 8px;
+  bottom: calc(100% - var(--cxh-icon-cy));
+}
+
+/* A tree drawn in place of a member's row hides that native row. */
+[data-cx-sidebar-thread-tree-anchor] > :not(.cxh-tree-virtual) {
+  display: none !important;
+}
+
+:is([data-cx-sidebar-thread-tree-root-collapsed], [data-cx-sidebar-thread-tree-root-expanded])
+  > .cxh-tree-children {
+  margin-top: var(--cxh-gap, 0px);
+}
+
+@keyframes cxh-tree-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cxh-tree-status[data-status="running"] > svg {
+    animation: none;
+  }
+}

@@ -16,12 +16,14 @@ import {
 import {
   createControllerStatusPublisher,
   createRendererStatusReporter,
+  defaultControllerStatusPath,
   type DesktopControllerStatusDocument,
 } from "./controller-status.js";
 import {
   installRendererCdpControlSession,
   type RendererCdpControlSession,
 } from "./renderer-cdp-control-session.js";
+import { RendererDesktopExtensions } from "./renderer-desktop-extensions.js";
 
 export interface DesktopControllerOptions {
   rendererCdpEndpoint: string;
@@ -44,6 +46,7 @@ export interface DesktopControllerDependencies {
     enabledAgents?: readonly string[];
     timeoutMs: number;
     signal?: AbortSignal;
+    desktopExtensions?: RendererDesktopExtensions;
   }): Promise<RendererCdpControlSession>;
   startAttachmentServer(
     options: StartControllerAttachmentServerOptions,
@@ -242,6 +245,15 @@ export async function runDesktopController(
   dependencies: DesktopControllerDependencies = defaultDependencies,
 ): Promise<void> {
   const now = dependencies.now ?? Date.now;
+  const desktopExtensions =
+    dependencies === defaultDependencies
+      ? new RendererDesktopExtensions(
+          path.dirname(path.dirname(defaultControllerStatusPath())),
+          (error) => {
+            process.stderr.write(`codexhost Desktop extensions: ${String(error)}\n`);
+          },
+        )
+      : undefined;
   let session: RendererCdpControlSession | undefined;
   let nextRecoveryAt = 0;
   let recoveryDelayMs = RECOVERY_RETRY_INITIAL_MS;
@@ -272,6 +284,7 @@ export async function runDesktopController(
         // External Agents are discovered from each target Host after installation.
         timeoutMs: PRODUCTION_INSTALL_TIMEOUT_MS,
         signal,
+        ...(desktopExtensions ? { desktopExtensions } : {}),
       },
       dependencies,
     );
@@ -393,6 +406,7 @@ export async function runDesktopController(
       });
     }
   } finally {
+    desktopExtensions?.close();
     await attachmentServer?.close();
     // Closing the session below releases an evaluation still waiting on the Renderer.
     await settleWithin(operation, SHUTDOWN_OPERATION_WAIT_MS);

@@ -556,7 +556,7 @@ const server = createWebServer((request, response) => {
           .end("cross-origin request rejected");
         return;
       }
-      await serveChClientGateway(chHost, request, response);
+      await serveChClientGateway(chHost, request, response, requestAuth !== undefined);
       return;
     }
     if (request.method === "POST" && pathname.startsWith("/api/")) {

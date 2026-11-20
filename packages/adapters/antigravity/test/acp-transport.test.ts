@@ -454,14 +454,13 @@ describe("native ACP stdio transport", () => {
     const prompt = ClientSideConnection.prototype.prompt;
     // Keep the real SDK dispatching wire messages, but hold its prompt result
     // until the callback reply so prompt()'s cleanup cannot mask the race.
-    const { promise, resolve } = Promise.withResolvers<void>();
-    using _sdkPrompt = vi
-      .spyOn(ClientSideConnection.prototype, "prompt")
-      .mockImplementation(async function (this: ClientSideConnection, params) {
-        const response = await prompt.call(this, params);
-        await promise;
-        return response;
-      });
+    const { promise, resolve } = Promise.withResolvers<undefined>();
+    using sdkPrompt = vi.spyOn(ClientSideConnection.prototype, "prompt");
+    sdkPrompt.mockImplementation(async function (this: ClientSideConnection, params) {
+      const response = await prompt.call(this, params);
+      await promise;
+      return response;
+    });
     const pending = value.prompt([], { ...handler(), onPermission });
     try {
       await vi.waitFor(async () =>
@@ -469,7 +468,7 @@ describe("native ACP stdio transport", () => {
       );
       expect(onPermission).not.toHaveBeenCalled();
     } finally {
-      resolve();
+      resolve(undefined);
       await pending;
     }
     expect((await pending).stopReason).toBe("end_turn");

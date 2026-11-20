@@ -1,0 +1,10 @@
+{
+  "name": "codexhost-extensions-registry",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}

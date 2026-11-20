@@ -16,6 +16,7 @@ export interface RendererSettingsPageMountContext {
     operation: (signal: AbortSignal) => Promise<T>,
     handlers: RendererSettingsAsyncHandlers<T>,
   ): Promise<void>;
+  navigateToPage?(pageId: string): boolean;
 }
 
 export interface RendererSettingsPageDefinition {

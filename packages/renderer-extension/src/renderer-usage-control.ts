@@ -153,6 +153,10 @@ export function formatRendererLatency(
     : `${decimal(milliseconds / 1_000, 1)}${chinese ? " 秒" : "s"}`;
 }
 
+export function clampPercent(value: number): number {
+  return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
+}
+
 export function formatRendererTokenCount(value: number): string {
   const sign = value < 0 ? "-" : "";
   const absolute = Math.abs(value);
@@ -163,7 +167,8 @@ export function formatRendererTokenCount(value: number): string {
 }
 
 export function formatRendererContextSummary(usedTokens: number, windowTokens: number): string {
-  return `${decimal((usedTokens / windowTokens) * 100, 1)}% / ${formatRendererTokenCount(windowTokens)}`;
+  const percent = windowTokens > 0 ? (usedTokens / windowTokens) * 100 : 0;
+  return `${decimal(clampPercent(percent), 1)}% / ${formatRendererTokenCount(windowTokens)}`;
 }
 
 export function formatRendererCreditsPercent(value: number): string {
@@ -188,7 +193,7 @@ export function createRendererUsageRing(
   const trackColor = options.trackColor ?? "color-mix(in srgb, currentColor 18%, transparent)";
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
-  const clamped = Math.min(100, Math.max(0, percent));
+  const clamped = clampPercent(percent);
   const offset = circumference * (1 - clamped / 100);
   const center = size / 2;
 
@@ -387,17 +392,14 @@ function renderDetails(
   popover.append(heading);
 
   if (usage?.contextUsagePercent !== undefined) {
-    addContextRow(
-      popover,
-      messages.context,
-      usage.contextUsagePercent,
-      `${decimal(usage.contextUsagePercent, 1)}%`,
-    );
+    const clamped = clampPercent(usage.contextUsagePercent);
+    addContextRow(popover, messages.context, clamped, `${decimal(clamped, 1)}%`);
   } else if (usage?.contextUsedTokens !== undefined && usage.contextWindowTokens !== undefined) {
-    const contextPercent =
+    const rawPercent =
       usage.contextWindowTokens > 0
         ? (usage.contextUsedTokens / usage.contextWindowTokens) * 100
         : null;
+    const contextPercent = rawPercent !== null ? clampPercent(rawPercent) : null;
     addContextRow(
       popover,
       messages.context,
@@ -733,8 +735,12 @@ export function renderRendererUsageControl(
     );
   }
   const compactSummary = summary.join(" · ") || messages.usage;
+  const clampedContextPercent =
+    contextPercent !== undefined ? clampPercent(contextPercent) : undefined;
   const accessibleSummary = `${messages.threadUsage}: ${compactSummary}${
-    contextPercent !== undefined ? `; ${messages.context} ${decimal(contextPercent, 1)}%` : ""
+    clampedContextPercent !== undefined
+      ? `; ${messages.context} ${decimal(clampedContextPercent, 1)}%`
+      : ""
   }`;
   applyRendererTriggerChipSqueezeRoot(control.root, rendererUsageTriggerMaxWidth(), "40px");
   applyRendererTriggerChipSqueezeTrigger(control.trigger);

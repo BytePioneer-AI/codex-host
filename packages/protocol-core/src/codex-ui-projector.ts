@@ -33,7 +33,11 @@ import {
 import { createTwoFilesPatch } from "diff";
 import path from "node:path";
 import { summarizeFileChanges } from "./file-change-summary.js";
-import { isFileMutatingTool, projectFileOperations } from "./file-operation-projection.js";
+import {
+  compactToolName,
+  isFileMutatingTool,
+  projectFileOperations,
+} from "./file-operation-projection.js";
 
 import {
   projectCodexApprovalRequest,
@@ -123,30 +127,124 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const NESTED_WRAPPERS = ["input", "arguments", "params", "parameters"] as const;
+
+function lookupField(record: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const key of keys) {
+    if (key in record && record[key] !== undefined) return record[key];
+  }
+  const lower = new Map<string, unknown>();
+  for (const [key, field] of Object.entries(record)) {
+    if (field === undefined) continue;
+    const folded = key.toLowerCase();
+    if (!lower.has(folded)) lower.set(folded, field);
+  }
+  for (const key of keys) {
+    const match = lower.get(key.toLowerCase());
+    if (match !== undefined) return match;
+  }
+  return undefined;
+}
+
 function nestedString(
   value: unknown,
   keys: readonly string[],
   preserveText = false,
 ): string | undefined {
   if (!isRecord(value)) return undefined;
-  for (const key of keys) {
-    const field = value[key];
-    if (typeof field === "string" && (preserveText || field.trim().length > 0))
-      return preserveText ? field : field.trim();
+  const direct = lookupField(value, keys);
+  if (typeof direct === "string" && (preserveText || direct.trim().length > 0)) {
+    return preserveText ? direct : direct.trim();
   }
-  for (const wrapper of ["input", "arguments", "params"] as const) {
+  for (const wrapper of NESTED_WRAPPERS) {
     const nested = nestedString(value[wrapper], keys, preserveText);
     if (nested !== undefined) return nested;
   }
   return undefined;
 }
 
-function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
-  const workdir = nestedString(args, ["workdir"]);
-  if (workdir === undefined) return defaultCwd;
+function nestedArray(value: unknown, keys: readonly string[]): unknown[] | undefined {
+  if (!isRecord(value)) return undefined;
+  const direct = lookupField(value, keys);
+  if (Array.isArray(direct)) return direct;
+  for (const wrapper of NESTED_WRAPPERS) {
+    const nested = nestedArray(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function nestedBoolean(value: unknown, keys: readonly string[]): boolean | undefined {
+  if (!isRecord(value)) return undefined;
+  const direct = lookupField(value, keys);
+  if (typeof direct === "boolean") return direct;
+  if (typeof direct === "string") {
+    const normalized = direct.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  for (const wrapper of NESTED_WRAPPERS) {
+    const nested = nestedBoolean(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+function nestedNumber(value: unknown, keys: readonly string[]): number | undefined {
+  if (!isRecord(value)) return undefined;
+  const direct = lookupField(value, keys);
+  const parsed =
+    typeof direct === "number" ? direct : typeof direct === "string" ? Number(direct) : Number.NaN;
+  if (Number.isInteger(parsed)) return parsed;
+  for (const wrapper of NESTED_WRAPPERS) {
+    const nested = nestedNumber(value[wrapper], keys);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+}
+
+const COMMAND_KEYS = ["command", "cmd", "script", "commandLine", "command_line"] as const;
+const FILE_PATH_KEYS = [
+  "path",
+  "file_path",
+  "filePath",
+  "file",
+  "filename",
+  "target",
+  "uri",
+  "targetFile",
+  "target_file",
+  "absolutePath",
+  "absolute_path",
+  "directoryPath",
+  "directory_path",
+  "searchPath",
+  "search_path",
+  "searchDirectory",
+  "search_directory",
+] as const;
+const PATTERN_KEYS = ["pattern", "glob", "glob_pattern", "query", "regex"] as const;
+
+function pathModuleFor(base: string, target?: string): typeof path.posix | typeof path.win32 {
   const windows = /^(?:[a-z]:[/\\]|\\\\)/iu;
-  const paths = windows.test(defaultCwd) || windows.test(workdir) ? path.win32 : path.posix;
-  return paths.resolve(defaultCwd, workdir);
+  return windows.test(base) || (target !== undefined && windows.test(target))
+    ? path.win32
+    : path.posix;
+}
+
+function resolveToolPath(cwd: string, target: string): string {
+  const paths = pathModuleFor(cwd, target);
+  return paths.isAbsolute(target) ? target : paths.resolve(cwd, target);
+}
+
+function toolWorkingDirectory(args: JsonValue, defaultCwd: string): string {
+  const workdir = nestedString(args, ["workdir", "workingDirectory", "cwd"]);
+  if (workdir === undefined) return defaultCwd;
+  return pathModuleFor(defaultCwd, workdir).resolve(defaultCwd, workdir);
+}
+
+function hasNonTextToolOutput(item: Extract<HostItem, { type: "toolExecution" }>): boolean {
+  return item.output?.content.some((content) => content.type !== "text") ?? false;
 }
 
 function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): string | null {
@@ -161,6 +259,168 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
   return text.length > 0 ? text : null;
 }
 
+export type CodexCommandActionRead = {
+  type: "read";
+  command: string;
+  name: string;
+  path: string;
+};
+
+export type CodexCommandActionSearch = {
+  type: "search";
+  command: string;
+  query: string | null;
+  path: string | null;
+};
+
+export type CodexCommandActionListFiles = {
+  type: "listFiles";
+  command: string;
+  path: string | null;
+};
+
+export type CodexCommandActionUnknown = {
+  type: "unknown";
+  command: string;
+};
+
+export type CodexCommandAction =
+  | CodexCommandActionRead
+  | CodexCommandActionSearch
+  | CodexCommandActionListFiles
+  | CodexCommandActionUnknown;
+
+function stripOuterQuotes(value: string): string {
+  return value.replace(/^["']|["']$/gu, "");
+}
+
+export function parseCommandActions(command: string, cwd: string): CodexCommandAction[] {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return [];
+  if (/[|;&<>`]|\$\(/u.test(trimmed)) return [];
+
+  if (trimmed.startsWith("read ")) {
+    const raw = stripOuterQuotes(trimmed.slice(5).trim());
+    if (raw.length > 0) {
+      const paths = pathModuleFor(cwd, raw);
+      return [
+        { type: "read", command, name: paths.basename(raw), path: resolveToolPath(cwd, raw) },
+      ];
+    }
+  }
+
+  const catMatch = /^cat(?:\s+-[a-zA-Z]+)*\s+([^\s|;&]+)$/u.exec(trimmed);
+  if (catMatch?.[1]) {
+    const raw = stripOuterQuotes(catMatch[1]);
+    if (raw.length > 0 && !raw.startsWith("-")) {
+      const paths = pathModuleFor(cwd, raw);
+      return [
+        { type: "read", command, name: paths.basename(raw), path: resolveToolPath(cwd, raw) },
+      ];
+    }
+  }
+
+  const isSedInPlace = /\s(?:-[a-zA-Z]*i|--in-place)\b/u.test(trimmed);
+  const sedMatch = isSedInPlace
+    ? null
+    : /^sed(?:\s+-[a-zA-Z0-9]+|\s+'[^']*'|\s+"[^"]*")*\s+([^\s|;&]+)$/u.exec(trimmed);
+  if (sedMatch?.[1]) {
+    const raw = stripOuterQuotes(sedMatch[1]);
+    if (raw.length > 0 && !raw.startsWith("-")) {
+      const paths = pathModuleFor(cwd, raw);
+      return [
+        { type: "read", command, name: paths.basename(raw), path: resolveToolPath(cwd, raw) },
+      ];
+    }
+  }
+
+  const headTailMatch = /^(?:head|tail)(?:\s+-[a-zA-Z0-9]+)*\s+([^\s|;&]+)$/u.exec(trimmed);
+  if (headTailMatch?.[1]) {
+    const raw = stripOuterQuotes(headTailMatch[1]);
+    if (raw.length > 0 && !raw.startsWith("-")) {
+      const paths = pathModuleFor(cwd, raw);
+      return [
+        { type: "read", command, name: paths.basename(raw), path: resolveToolPath(cwd, raw) },
+      ];
+    }
+  }
+
+  const searchMatch = /^(?:grep|rg)\s+(?:-[a-zA-Z0-9]+\s+)*['"]?([^'"]+)['"]?\s+([^\s|;&]+)$/u.exec(
+    trimmed,
+  );
+  if (searchMatch?.[1] && searchMatch[2]) {
+    const raw = stripOuterQuotes(searchMatch[2]);
+    return [
+      {
+        type: "search",
+        command,
+        query: searchMatch[1],
+        path: resolveToolPath(cwd, raw),
+      },
+    ];
+  }
+
+  const lsMatch = /^ls(?:\s+-[a-zA-Z0-9]+)*(?:\s+([^\s|;&]+))?\s*$/u.exec(trimmed);
+  if (lsMatch) {
+    const raw = lsMatch[1] ? stripOuterQuotes(lsMatch[1]) : "";
+    return [
+      {
+        type: "listFiles",
+        command,
+        path: raw.length > 0 ? resolveToolPath(cwd, raw) : cwd,
+      },
+    ];
+  }
+
+  return [];
+}
+
+export function toolCommandActions(
+  toolName: string,
+  args: JsonValue,
+  command: string,
+  cwd: string,
+): CodexCommandAction[] {
+  const lower = compactToolName(toolName);
+  const filePath = nestedString(args, FILE_PATH_KEYS);
+  const pattern = nestedString(args, PATTERN_KEYS);
+
+  if (["read", "readfile", "fileread", "view", "viewfile"].includes(lower) && filePath) {
+    const paths = pathModuleFor(cwd, filePath);
+    return [
+      {
+        type: "read",
+        command,
+        name: paths.basename(filePath),
+        path: resolveToolPath(cwd, filePath),
+      },
+    ];
+  }
+
+  if (["grep", "grepsearch", "search", "searchweb"].includes(lower)) {
+    return [
+      {
+        type: "search",
+        command,
+        query: pattern ?? null,
+        path: filePath ? resolveToolPath(cwd, filePath) : null,
+      },
+    ];
+  }
+
+  if (["glob", "find", "findfiles", "findbyname", "listdir", "listdirectory"].includes(lower)) {
+    return [
+      {
+        type: "listFiles",
+        command,
+        path: filePath ? resolveToolPath(cwd, filePath) : null,
+      },
+    ];
+  }
+
+  return parseCommandActions(command, cwd);
+}
+
 /**
  * Codex Desktop only renders a detailed, expandable card for Command Execution.
  * Generic `dynamicToolCall` items show the tool name with no path, pattern, or
@@ -168,44 +428,48 @@ function toolOutputText(item: Extract<HostItem, { type: "toolExecution" }>): str
  * can be reconstructed from the native arguments.
  */
 export function toolCommandLine(toolName: string, args: JsonValue): string | undefined {
-  const lower = toolName.toLowerCase().replaceAll(/[_-]/g, "");
-  const command = nestedString(args, ["command", "cmd", "script", "commandLine", "command_line"]);
+  const lower = compactToolName(toolName);
+  const command = nestedString(args, COMMAND_KEYS);
   if (
     command &&
-    ["bash", "exec", "terminal", "run", "shell", "powershell", "pwsh", "command"].includes(lower)
+    [
+      "bash",
+      "exec",
+      "terminal",
+      "run",
+      "shell",
+      "powershell",
+      "pwsh",
+      "command",
+      "runcommand",
+    ].includes(lower)
   ) {
     return command;
   }
-  const filePath = nestedString(args, [
-    "path",
-    "file_path",
-    "filePath",
-    "file",
-    "filename",
-    "target",
-    "uri",
-  ]);
-  const pattern = nestedString(args, ["pattern", "glob", "glob_pattern", "query", "regex"]);
-  if (["read", "readfile", "fileread", "view"].includes(lower)) {
+  const filePath = nestedString(args, FILE_PATH_KEYS);
+  const pattern = nestedString(args, PATTERN_KEYS);
+  if (["read", "readfile", "fileread", "view", "viewfile"].includes(lower)) {
     return filePath ? `read ${filePath}` : undefined;
   }
-  if (["glob", "find", "findfiles"].includes(lower)) {
+  if (["glob", "find", "findfiles", "findbyname", "listdir", "listdirectory"].includes(lower)) {
     const target = pattern ?? filePath;
     return target ? `glob ${target}` : undefined;
   }
-  if (["grep", "grepsearch"].includes(lower)) {
+  if (["grep", "grepsearch", "search", "searchweb"].includes(lower)) {
     if (!pattern) return undefined;
+    if (lower === "searchweb") return `search ${pattern}`;
     return filePath ? `grep ${pattern} ${filePath}` : `grep ${pattern}`;
+  }
+  if (lower === "callmcptool") {
+    const server = nestedString(args, ["serverName", "server"]);
+    const tool = nestedString(args, ["toolName", "tool"]);
+    return `mcp ${server ?? "server"} ${tool ?? "tool"}`;
   }
   return undefined;
 }
 
-function compactToolName(toolName: string): string {
-  return toolName.toLowerCase().replaceAll(/[_-]/g, "");
-}
-
 function isWriteTool(toolName: string): boolean {
-  return ["write", "writefile", "filewrite", "create", "createfile"].includes(
+  return ["write", "writefile", "filewrite", "create", "createfile", "writetofile"].includes(
     compactToolName(toolName),
   );
 }
@@ -216,22 +480,107 @@ function simpleUnifiedDiff(
   newText: string,
   kind: "add" | "update",
 ): string {
-  return createTwoFilesPatch(
-    kind === "add" ? "/dev/null" : `a/${displayedPath}`,
-    `b/${displayedPath}`,
-    oldText,
-    newText,
-  );
+  const cleanPath = displayedPath.replace(/^\/+/u, "");
+  const aPath = kind === "add" ? "/dev/null" : `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+  const gitHeader = `diff --git a/${cleanPath} ${bPath}`;
+  const patch = createTwoFilesPatch(aPath, bPath, oldText, newText);
+  const patchLines = patch.split("\n");
+  return patchLines[0]?.startsWith("===")
+    ? [gitHeader, ...patchLines.slice(1)].join("\n")
+    : `${gitHeader}\n${patch}`;
+}
+
+interface ParameterReplacement {
+  oldText: string | undefined;
+  newText: string | undefined;
+  startLine: number;
+}
+
+function replacementStartLine(value: unknown): number {
+  const parsed = nestedNumber(value, ["startLine", "start_line"]);
+  return parsed !== undefined && parsed > 0 ? parsed : 1;
+}
+
+function replacementChunks(value: unknown): ParameterReplacement[] {
+  const chunks = nestedArray(value, ["replacementChunks", "replacement_chunks"]);
+  if (!chunks) return [];
+  return chunks.flatMap((chunk) => {
+    if (!isRecord(chunk)) return [];
+    return [
+      {
+        oldText: nestedString(chunk, ["targetContent", "target_content", "target"], true),
+        newText: nestedString(
+          chunk,
+          ["replacementContent", "replacement_content", "replacement"],
+          true,
+        ),
+        startLine: replacementStartLine(chunk),
+      },
+    ];
+  });
+}
+
+function textLines(text: string | undefined): string[] {
+  if (text === undefined || text.length === 0) return [];
+  const lines = text.split(/\r?\n/u);
+  if (text.endsWith("\n") && lines.length > 1 && lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function simpleFragmentDiff(
+  displayedPath: string,
+  replacements: readonly ParameterReplacement[],
+): string | null {
+  const cleanPath = displayedPath.replace(/^\/+/u, "");
+  const aPath = `a/${cleanPath}`;
+  const bPath = `b/${cleanPath}`;
+  const hunks: string[] = [];
+  for (const { oldText, newText, startLine } of replacements) {
+    if (oldText === undefined || newText === undefined) continue;
+    if (oldText === newText) continue;
+    const oldLines = textLines(oldText);
+    const newLines = textLines(newText);
+    hunks.push(
+      `@@ -${oldLines.length === 0 ? 0 : startLine},${oldLines.length} +${
+        newLines.length === 0 ? 0 : startLine
+      },${newLines.length} @@`,
+      ...oldLines.map((line) => `-${line}`),
+      ...newLines.map((line) => `+${line}`),
+    );
+  }
+  if (hunks.length === 0) return null;
+  return [`diff --git ${aPath} ${bPath}`, `--- ${aPath}`, `+++ ${bPath}`, ...hunks, ""].join("\n");
 }
 
 export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileChange[] | null {
   if (!isFileMutatingTool(toolName)) return null;
-  const displayedPath = nestedString(args, ["path", "file_path", "filePath", "file"]);
+  const displayedPath = nestedString(args, [
+    "path",
+    "file_path",
+    "filePath",
+    "file",
+    "targetFile",
+    "target_file",
+    "absolutePath",
+    "absolute_path",
+  ]);
   if (!displayedPath) return null;
   if (isWriteTool(toolName)) {
+    if (nestedBoolean(args, ["overwrite"]) === true) return null;
     const content = nestedString(
       args,
-      ["content", "new_string", "newString", "newText", "file_text", "text", "new"],
+      [
+        "content",
+        "codeContent",
+        "code_content",
+        "new_string",
+        "newString",
+        "newText",
+        "file_text",
+        "text",
+        "new",
+      ],
       true,
     );
     if (content === undefined) return null;
@@ -244,23 +593,54 @@ export function fileChangeFromTool(toolName: string, args: JsonValue): HostFileC
       },
     ];
   }
+  const chunks = replacementChunks(args);
+  if (chunks.length > 0) {
+    const unifiedDiff = simpleFragmentDiff(displayedPath, chunks);
+    if (!unifiedDiff) return null;
+    return [{ path: displayedPath, kind: "update", diffScope: "fragment", unifiedDiff }];
+  }
   const oldText = nestedString(
     args,
-    ["old_string", "oldString", "oldText", "old_text", "old"],
+    [
+      "old_string",
+      "oldString",
+      "oldText",
+      "old_text",
+      "old",
+      "targetContent",
+      "target_content",
+      "target",
+    ],
     true,
   );
   const newText = nestedString(
     args,
-    ["new_string", "newString", "newText", "new_text", "content", "new"],
+    [
+      "new_string",
+      "newString",
+      "newText",
+      "new_text",
+      "content",
+      "new",
+      "replacementContent",
+      "replacement_content",
+      "replacement",
+    ],
     true,
   );
   if (oldText === undefined || newText === undefined) return null;
+  const startLine = replacementStartLine(args);
+  const unifiedDiff =
+    startLine > 1
+      ? simpleFragmentDiff(displayedPath, [{ oldText, newText, startLine }])
+      : simpleUnifiedDiff(displayedPath, oldText, newText, "update");
+  if (!unifiedDiff) return null;
   return [
     {
       path: displayedPath,
       kind: "update",
       diffScope: "fragment",
-      unifiedDiff: simpleUnifiedDiff(displayedPath, oldText, newText, "update"),
+      unifiedDiff,
     },
   ];
 }
@@ -602,23 +982,26 @@ function projectItem(
         processId: null,
         source: "agent",
         status: itemStatus(outcome),
-        commandActions: [],
+        commandActions: parseCommandActions(item.command, item.cwd ?? defaultCwd),
         aggregatedOutput: includeCommandOutput ? (item.output ?? null) : null,
         exitCode: item.exitCode ?? null,
         durationMs: item.durationMs ?? null,
       };
     case "toolExecution": {
-      const command = toolCommandLine(item.toolName, item.arguments);
+      const command = hasNonTextToolOutput(item)
+        ? undefined
+        : toolCommandLine(item.toolName, item.arguments);
       if (command) {
+        const cwd = toolWorkingDirectory(item.arguments, defaultCwd);
         return {
           id: item.itemId,
           type: "commandExecution",
           command,
-          cwd: toolWorkingDirectory(item.arguments, defaultCwd),
+          cwd,
           processId: null,
           source: "agent",
           status: itemStatus(outcome),
-          commandActions: [],
+          commandActions: toolCommandActions(item.toolName, item.arguments, command, cwd),
           aggregatedOutput: includeCommandOutput ? toolOutputText(item) : null,
           exitCode: null,
           durationMs: item.durationMs ?? null,
@@ -777,7 +1160,6 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     }
     if (item.type === "toolExecution") {
       if (isTodoTool(item.toolName) || todoPlanFromTool(item.toolName, item.arguments)) return [];
-      if (isFileMutatingTool(item.toolName)) return [];
     }
     if (item.type === "reasoning" && !reasoningDisplayText(item.text)) return [];
     const mediaItem = item.type === "agentMessage" ? projectAgentMessageMedia(item, cwd) : item;
@@ -1205,7 +1587,6 @@ export class CodexTurnProjector {
       if (changes) {
         return { messages: this.#fileChangeUpdates(startedAtMs) };
       }
-      if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
     }
     if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
     // Its wire type depends on the outcome (see presentedItem), so only its
@@ -1273,7 +1654,11 @@ export class CodexTurnProjector {
         },
       });
     } else if (event.update.type === "output.replace") {
-      if (next.type === "toolExecution" && toolCommandLine(next.toolName, next.arguments)) {
+      if (
+        next.type === "toolExecution" &&
+        !hasNonTextToolOutput(next) &&
+        toolCommandLine(next.toolName, next.arguments)
+      ) {
         const text = toolOutputText(next);
         if (text) {
           const previousText =

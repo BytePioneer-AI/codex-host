@@ -433,6 +433,7 @@ describe("tool lifecycle and file changes", () => {
     const file = tools.completedSnapshots().find(({ item }) => item.type === "fileChange");
     if (file?.item.type !== "fileChange") throw new Error("missing file change");
     expect(file.item).toMatchObject({ type: "fileChange", changes: [{ path: "src/a.ts", kind }] });
+    expect(file.item.changes[0]?.unifiedDiff).toContain("diff --git a/src/a.ts b/src/a.ts");
     expect(applyPatch(oldText ?? "", file.item.changes[0]?.unifiedDiff ?? "")).toBe(newText ?? "");
     expect(events.filter(({ type }) => type === "item.completed")).toHaveLength(2);
   });
@@ -628,6 +629,21 @@ describe("history replay", () => {
     });
     expect(result[0]?.items[0]?.outcome.status).toBe("cancelled");
     expect(result[0]?.outcome.status).toBe("unknown");
+  });
+  it("records startedAtMs and completedAtMs from replayed step timestamps", () => {
+    const timed = projectReplayedEventsToTurns({
+      nativeSessionId: "timed",
+      cwd: "/repo",
+      events: [
+        { type: "user.text", text: "hi", timestampMs: 1_000 },
+        { type: "agent.thought", text: "hmm", timestampMs: 2_500 },
+        { type: "agent.text", text: "done", timestampMs: 4_200 },
+        { type: "user.text", text: "in-flight", timestampMs: 5_000 },
+      ],
+    });
+    expect(timed[0]).toMatchObject({ startedAtMs: 1_000, completedAtMs: 4_200 });
+    expect(timed[1]?.startedAtMs).toBe(5_000);
+    expect(timed[1]?.completedAtMs).toBeUndefined();
   });
 });
 

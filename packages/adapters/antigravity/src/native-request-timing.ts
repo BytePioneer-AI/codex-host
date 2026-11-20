@@ -133,6 +133,24 @@ function requestMetadata(
   };
 }
 
+export function decodeStepTimingMs(
+  metadataBytes: unknown,
+): { createdAtMs?: number; settledAtMs?: number } | undefined {
+  if (!(metadataBytes instanceof Uint8Array) || metadataBytes.length > MAX_METADATA_BYTES)
+    return undefined;
+  const fields = readProtoFields(metadataBytes);
+  if (!fields) return undefined;
+  const created = nanoseconds(message(fields, 1));
+  const finished = nanoseconds(message(fields, 7));
+  const viewable = nanoseconds(message(fields, 6));
+  const settled = finished ?? viewable ?? created;
+  if (created === null && settled === null) return undefined;
+  return {
+    ...(created !== null ? { createdAtMs: Number(created / NANOSECONDS_PER_MS) } : {}),
+    ...(settled !== null ? { settledAtMs: Number(settled / NANOSECONDS_PER_MS) } : {}),
+  };
+}
+
 /** Null means storage is unavailable; missing entries have no verified request-level facts. */
 export async function readAntigravityRequestMetadata(
   nativeSessionId: string,

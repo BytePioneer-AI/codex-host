@@ -365,4 +365,55 @@ describe("external Harness file summaries", () => {
       { item: { id: "failed", status: "failed", error: { message: "not found" } } },
     ]);
   });
+
+  it("extracts Antigravity file changes with git diff headers and respects Overwrite", () => {
+    const writeChange = fileChangeFromTool("default_api:write_to_file", {
+      TargetFile: "src/main.ts",
+      CodeContent: "console.log('hello');\n",
+    });
+    expect(writeChange).toHaveLength(1);
+    expect(writeChange?.[0]).toMatchObject({
+      path: "src/main.ts",
+      kind: "add",
+      diffScope: "fragment",
+    });
+    expect(writeChange?.[0]?.unifiedDiff).toContain("diff --git a/src/main.ts b/src/main.ts");
+    expect(writeChange?.[0]?.unifiedDiff).toContain("+console.log('hello');");
+
+    expect(
+      fileChangeFromTool("write_to_file", {
+        TargetFile: "src/main.ts",
+        Overwrite: true,
+        CodeContent: "replacement",
+      }),
+    ).toBeNull();
+
+    const multiReplace = fileChangeFromTool("multi_replace_file_content", {
+      TargetFile: "src/main.ts",
+      ReplacementChunks: [
+        { StartLine: 2, TargetContent: "const first = 1;", ReplacementContent: "const first = 2;" },
+        {
+          StartLine: 8,
+          TargetContent: "const second = 3;",
+          ReplacementContent: "const second = 4;",
+        },
+      ],
+    });
+    expect(multiReplace).toHaveLength(1);
+    expect(multiReplace?.[0]).toMatchObject({
+      path: "src/main.ts",
+      kind: "update",
+      diffScope: "fragment",
+    });
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("diff --git a/src/main.ts b/src/main.ts");
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("@@ -2,1 +2,1 @@");
+    expect(multiReplace?.[0]?.unifiedDiff).toContain("@@ -8,1 +8,1 @@");
+    const before = "header\nconst first = 1;\na\nb\nc\nd\ne\nconst second = 3;\nfooter\n";
+    expect(applyPatch(before, multiReplace?.[0]?.unifiedDiff ?? "")).toBe(
+      "header\nconst first = 2;\na\nb\nc\nd\ne\nconst second = 4;\nfooter\n",
+    );
+
+    const summary = summarizeFileChanges([change("a\n", "b\n"), change("b\n", "c\n")], "/repo");
+    expect(summary[0]?.unifiedDiff).toMatch(/^diff --git a\/a\.txt b\/a\.txt\n/u);
+  });
 });

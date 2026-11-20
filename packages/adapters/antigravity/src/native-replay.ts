@@ -1,6 +1,7 @@
 import type { AntigravityAcpEvent } from "./acp-types.js";
 import { nativeConversationDbPath } from "./fork.js";
 import { readProtoFields, type ProtoField } from "./native-protobuf.js";
+import { decodeStepTimingMs } from "./native-request-timing.js";
 
 const USER_INPUT = 14;
 const PLANNER_RESPONSE = 15;
@@ -51,16 +52,30 @@ export async function readNativeHistory(
   const events: AntigravityAcpEvent[] = [];
   const pendingCalls = new Set<string>();
   let turnCount = 0;
-  const append = (type: "agent.text" | "agent.thought", text: string) => {
-    if (text) events.push({ type, text: events.at(-1)?.type === type ? `\n\n${text}` : text });
+  const append = (type: "agent.text" | "agent.thought", text: string, timestampMs?: number) => {
+    if (!text) return;
+    const prev = events.at(-1);
+    if (prev?.type === type) {
+      events.push({
+        type,
+        text: `\n\n${text}`,
+        ...(timestampMs !== undefined ? { timestampMs } : {}),
+      });
+    } else {
+      events.push({ type, text, ...(timestampMs !== undefined ? { timestampMs } : {}) });
+    }
   };
   try {
     db.exec("BEGIN");
     if (db.prepare("PRAGMA user_version").get()?.user_version !== 1)
       throw new Error("Unsupported Antigravity history database version");
+    const hasMetadata = db
+      .prepare("PRAGMA table_info(steps)")
+      .all()
+      .some((column) => column.name === "metadata");
     for (const row of db
       .prepare(
-        `SELECT step_type, status, step_payload FROM steps
+        `SELECT step_type, status, step_payload${hasMetadata ? ", metadata" : ""} FROM steps
        WHERE step_type IN (${USER_INPUT}, ${PLANNER_RESPONSE}, ${ERROR_MESSAGE}, ${GENERIC_TOOL})
        ORDER BY idx`,
       )
@@ -68,6 +83,7 @@ export async function readNativeHistory(
       if (row.step_type === USER_INPUT) turnCount++;
       if (IN_FLIGHT.has(Number(row.status))) continue;
       const step = message(row.step_payload);
+      const timing = hasMetadata ? decodeStepTimingMs(row.metadata) : undefined;
       const number =
         row.step_type === USER_INPUT
           ? 19
@@ -84,12 +100,18 @@ export async function readNativeHistory(
           );
           const text = items.join("") || textField(body, 2) || textField(body, 1);
           pendingCalls.clear();
-          if (text) events.push({ type: "user.text", text });
+          if (text)
+            events.push({
+              type: "user.text",
+              text,
+              ...(timing?.createdAtMs !== undefined ? { timestampMs: timing.createdAtMs } : {}),
+            });
           break;
         }
         case PLANNER_RESPONSE: {
-          append("agent.thought", textField(body, 3));
-          append("agent.text", textField(body, 1));
+          const settledAtMs = timing?.settledAtMs;
+          append("agent.thought", textField(body, 3), settledAtMs);
+          append("agent.text", textField(body, 1), settledAtMs);
           for (const field of body) {
             if (field.number !== 7 || field.wire !== 2) continue;
             const call = message(field.value);
@@ -102,13 +124,14 @@ export async function readNativeHistory(
               toolCallId,
               name,
               args: argsValue(textField(call, 3)),
+              ...(settledAtMs !== undefined ? { timestampMs: settledAtMs } : {}),
             });
           }
           break;
         }
         case ERROR_MESSAGE: {
           const warning = textField(nested(body, 3), 2);
-          if (warning) append("agent.text", `⚠ ${warning}`);
+          if (warning) append("agent.text", `⚠ ${warning}`, timing?.settledAtMs);
           break;
         }
         case GENERIC_TOOL: {
@@ -127,6 +150,7 @@ export async function readNativeHistory(
             toolCallId,
             status,
             ...(output ? { rawOutput: output } : {}),
+            ...(timing?.settledAtMs !== undefined ? { timestampMs: timing.settledAtMs } : {}),
           });
           break;
         }

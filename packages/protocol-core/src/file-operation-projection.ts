@@ -1,6 +1,15 @@
 import type { HostItem, HostItemOutcome } from "@codexhost/harness-adapter";
 import type { JsonObject } from "@codexhost/shared-contracts";
 
+export function compactToolName(toolName: string): string {
+  const baseName = toolName.includes(":")
+    ? toolName.slice(toolName.lastIndexOf(":") + 1)
+    : toolName.includes(".")
+      ? toolName.slice(toolName.lastIndexOf(".") + 1)
+      : toolName;
+  return baseName.toLowerCase().replaceAll(/[_-]/g, "");
+}
+
 export function isFileMutatingTool(toolName: string): boolean {
   return [
     "edit",
@@ -10,13 +19,17 @@ export function isFileMutatingTool(toolName: string): boolean {
     "searchreplace",
     "applypatch",
     "replace",
+    "replacecontent",
+    "replacefilecontent",
     "multiedit",
+    "multireplacefilecontent",
     "write",
     "writefile",
     "filewrite",
+    "writetofile",
     "create",
     "createfile",
-  ].includes(toolName.toLowerCase().replaceAll(/[_-]/g, ""));
+  ].includes(compactToolName(toolName));
 }
 
 interface FileOperationEntry {

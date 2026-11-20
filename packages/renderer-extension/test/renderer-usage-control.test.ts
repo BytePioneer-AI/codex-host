@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  clampPercent,
   formatRendererContextSummary,
   formatRendererCacheHitRate,
   formatRendererCost,
@@ -70,6 +71,16 @@ describe("Renderer Usage token-count formatting", () => {
 describe("Renderer Usage context-summary formatting", () => {
   it("shows the used percentage and the context window", () => {
     expect(formatRendererContextSummary(15_000, 934_500)).toBe("1.6% / 934.5K");
+  });
+
+  it("clamps context percentage to 100% and handles invalid windows safely", () => {
+    expect(formatRendererContextSummary(1_200_000, 1_000_000)).toBe("100% / 1M");
+    expect(formatRendererContextSummary(1_000, 0)).toBe("0% / 0");
+    expect(clampPercent(50)).toBe(50);
+    expect(clampPercent(-10)).toBe(0);
+    expect(clampPercent(150)).toBe(100);
+    expect(clampPercent(Number.NaN)).toBe(0);
+    expect(clampPercent(Number.POSITIVE_INFINITY)).toBe(0);
   });
 });
 

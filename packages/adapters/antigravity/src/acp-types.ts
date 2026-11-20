@@ -99,9 +99,9 @@ export interface AntigravityAcpSessionOpenResult {
 }
 
 export type AntigravityAcpEvent =
-  | { type: "user.text"; text: string }
-  | { type: "agent.text"; text: string }
-  | { type: "agent.thought"; text: string }
+  | { type: "user.text"; text: string; timestampMs?: number }
+  | { type: "agent.text"; text: string; timestampMs?: number }
+  | { type: "agent.thought"; text: string; timestampMs?: number }
   | {
       type: "tool.call";
       toolCallId: string;
@@ -114,6 +114,7 @@ export type AntigravityAcpEvent =
       rawOutput?: unknown;
       locations?: Array<{ path: string }>;
       content?: unknown;
+      timestampMs?: number;
     }
   | {
       type: "tool.update";
@@ -127,6 +128,7 @@ export type AntigravityAcpEvent =
       rawOutput?: unknown;
       locations?: Array<{ path: string }>;
       content?: unknown;
+      timestampMs?: number;
     }
   | { type: "usage.context"; used: number; size: number }
   | { type: "config.update"; configOptions: AntigravityAcpConfigOption[] }

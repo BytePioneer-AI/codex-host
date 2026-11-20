@@ -11,7 +11,7 @@ import {
   textField,
   userStep,
 } from "./support/native-history-fixture.js";
-import { bytes } from "./support/native-timing-fixture.js";
+import { bytes, nanoseconds } from "./support/native-timing-fixture.js";
 
 const nativeRef = nativeSessionRefSchema.parse({
   harnessId: "antigravity",
@@ -207,4 +207,32 @@ describe("native session history", () => {
       });
     },
   );
+
+  it("extracts turn startedAtMs and completedAtMs when steps.metadata timestamps exist", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      userStep(db, 0, "Timed prompt");
+      answerStep(db, 1, "Timed reply");
+      db.exec("ALTER TABLE steps ADD COLUMN metadata BLOB");
+      db.prepare("UPDATE steps SET metadata = ? WHERE idx = 0").run(
+        bytes(1, nanoseconds(1_700_000_000_000n * 1_000_000n)),
+      );
+      db.prepare("UPDATE steps SET metadata = ? WHERE idx = 1").run(
+        Buffer.concat([
+          bytes(1, nanoseconds(1_700_000_001_000n * 1_000_000n)),
+          bytes(7, nanoseconds(1_700_000_005_500n * 1_000_000n)),
+        ]),
+      );
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns[0]).toMatchObject({
+        startedAtMs: 1_700_000_000_000,
+        completedAtMs: 1_700_000_005_500,
+      });
+    } finally {
+      db.close();
+    }
+  });
 });

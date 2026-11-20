@@ -501,15 +501,21 @@ export class AntigravityToolTracker {
       const oldText = text(diff.oldText);
       const newText = text(diff.newText);
       const kind = diff.oldText == null ? "add" : diff.newText == null ? "delete" : "update";
-      const patch = createTwoFilesPatch(
-        kind === "add" ? "/dev/null" : path,
-        kind === "delete" ? "/dev/null" : path,
+      const cleanPath = path.replace(/^\/+/u, "");
+      const rawPatch = createTwoFilesPatch(
+        kind === "add" ? "/dev/null" : `a/${cleanPath}`,
+        kind === "delete" ? "/dev/null" : `b/${cleanPath}`,
         oldText,
         newText,
         undefined,
         undefined,
         { context: 3 },
       );
+      const gitHeader = `diff --git a/${cleanPath} b/${cleanPath}`;
+      const patchLines = rawPatch.split("\n");
+      const patch = patchLines[0]?.startsWith("===")
+        ? [gitHeader, ...patchLines.slice(1)].join("\n")
+        : `${gitHeader}\n${rawPatch}`;
       return [
         {
           path,
@@ -594,15 +600,27 @@ export function projectReplayedEventsToTurns(params: {
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
   const usedTurnKeys = new Set(params.knownTurnRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
-  let active: { turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
+  let active:
+    { turn: HostTurnSnapshot; tracker: AntigravityToolTracker; endMs?: number } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
   let sequence = 0;
-  const begin = () => {
-    active?.tracker.finishPending({
+  const finalizeTurn = (entry: typeof active) => {
+    if (!entry) return;
+    entry.tracker.finishPending({
       status: "cancelled",
       reason: "No terminal tool status in native history",
     });
+    if (
+      entry.turn.startedAtMs !== undefined &&
+      entry.endMs !== undefined &&
+      entry.endMs >= entry.turn.startedAtMs
+    ) {
+      entry.turn.completedAtMs = entry.endMs;
+    }
+  };
+  const begin = () => {
+    finalizeTurn(active);
     const index = turns.length;
     const turnId = hostTurnIdSchema.parse(`turn-${index}`);
     let nativeTurnKey = params.knownTurnRefs?.[index]?.nativeTurnKey;
@@ -652,14 +670,28 @@ export function projectReplayedEventsToTurns(params: {
   };
   for (const event of params.events) {
     if (event.type === "user.text") {
-      const { turn } = !active || !userRun ? begin() : active;
+      const current = !active || !userRun ? begin() : active;
+      const { turn } = current;
+      if (event.timestampMs !== undefined) {
+        turn.startedAtMs =
+          turn.startedAtMs === undefined
+            ? event.timestampMs
+            : Math.min(turn.startedAtMs, event.timestampMs);
+      }
       const previous = turn.input[0];
       if (previous) previous.text += event.text;
       else turn.input.push({ type: "text", text: event.text });
       userRun = true;
       textItem = undefined;
     } else if (event.type === "agent.text" || event.type === "agent.thought") {
-      const { turn } = active ?? begin();
+      const current = active ?? begin();
+      const { turn } = current;
+      if (event.timestampMs !== undefined) {
+        current.endMs =
+          current.endMs === undefined
+            ? event.timestampMs
+            : Math.max(current.endMs, event.timestampMs);
+      }
       userRun = false;
       const type = event.type === "agent.text" ? "agentMessage" : "reasoning";
       if (textItem?.item.type === type) textItem.item.text += event.text;
@@ -675,16 +707,19 @@ export function projectReplayedEventsToTurns(params: {
         turn.items.push(textItem);
       }
     } else if (event.type === "tool.call" || event.type === "tool.update") {
-      const { tracker } = active ?? begin();
+      const current = active ?? begin();
+      if (event.timestampMs !== undefined) {
+        current.endMs =
+          current.endMs === undefined
+            ? event.timestampMs
+            : Math.max(current.endMs, event.timestampMs);
+      }
       userRun = false;
       textItem = undefined;
-      tracker.handleToolEvent(event);
+      current.tracker.handleToolEvent(event);
     }
   }
-  active?.tracker.finishPending({
-    status: "cancelled",
-    reason: "No terminal tool status in native history",
-  });
+  finalizeTurn(active);
   return turns;
 }
 

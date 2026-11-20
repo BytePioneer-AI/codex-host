@@ -36,4 +36,4 @@
 
 ## Impact
 
-涉及 `shared-contracts`（扩展与订阅契约）、`harness-plugin-files`（扩展文件发现与启用配置）、`desktop-control`（注入对账与状态文件）、`renderer-extension`（扩展宿主与 Console 页面）、`host-runtime`（Thread 树订阅、扩展管理 RPC）、`web-server`（设置请求权限边界）、`console-server`（独立扩展管理入口），新增 `packages/desktop-extensions/*` 样板与构建工具，并更新 `tools/check-boundaries.mjs`、`docs/`、`CLAUDE.md` 的代码布局。不改 Rust、Harness Adapter、Mapping Store 格式或官方 Codex 流量归属。
+涉及 `shared-contracts`（扩展与订阅契约）、`harness-plugin-files`（扩展文件发现与启用配置）、`desktop-control`（注入对账与状态文件）、`renderer-extension`（扩展宿主与 Console 页面）、`host-runtime`（Thread 树订阅、扩展管理 RPC）、`web-server`（设置请求权限边界）、`console-server`（独立扩展管理入口），提供扩展构建工具并更新相关文档。用于验证平台的 #926 和 #947 适配源码保存在 `handoff/desktop-extensions-926-947`，不随主干分发。不改 Rust、Harness Adapter、Mapping Store 格式或官方 Codex 流量归属。

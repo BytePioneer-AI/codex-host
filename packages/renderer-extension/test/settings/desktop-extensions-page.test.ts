@@ -1723,6 +1723,73 @@ describe("Desktop extensions settings page", () => {
     restored.dispose();
   });
 
+  it("opens the Create plugin modal with a copyable AI prompt and registry submission links", async () => {
+    const client = {
+      listDesktopExtensions: vi.fn(async () => sampleList()),
+    };
+    const mounted = mountPage("zh-CN", () => client);
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const createButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "open-create",
+      ),
+    );
+    expect(textOf(createButton)).toBe("制作插件");
+    createButton.dispatch("click");
+
+    const createDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-create-dialog"),
+      ),
+    );
+    expect(createDialog.open).toBe(true);
+    const promptTextarea = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "textarea" && el.dataset.createField === "prompt",
+      ),
+    );
+    expect(promptTextarea.value).toContain("codexhost-add-desktop-extension/SKILL.md");
+    expect(promptTextarea.value).toContain("BytePioneer-AI/codexhost-extensions-registry");
+
+    const skillLink = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "a" && el.dataset.createLink === "skill",
+      ),
+    );
+    expect(skillLink.href).toBe(
+      "https://github.com/BytePioneer-AI/codex-host/blob/main/.agents/skills/codexhost-add-desktop-extension/SKILL.md",
+    );
+    expect(skillLink.target).toBe("_blank");
+    expect(skillLink.rel).toBe("noopener noreferrer");
+
+    const submitLink = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "a" && el.dataset.createLink === "submit",
+      ),
+    );
+    expect(submitLink.href).toBe(
+      "https://github.com/BytePioneer-AI/codexhost-extensions-registry/issues/new/choose",
+    );
+    expect(submitLink.target).toBe("_blank");
+    expect(submitLink.rel).toBe("noopener noreferrer");
+
+    const copyPromptButton = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "button" && el.dataset.action === "copy-create-prompt",
+      ),
+    );
+    copyPromptButton.dispatch("click");
+    await vi.waitFor(() =>
+      expect(mounted.document.clipboardWriteText).toHaveBeenCalledWith(promptTextarea.value),
+    );
+    expect(textOf(copyPromptButton)).toBe("已复制");
+
+    createDialog.close();
+    mounted.dispose();
+  });
+
   it("shows an unavailable state when the Host does not support Desktop extension RPCs", async () => {
     const mounted = mountPage("en", () => ({
       listDesktopExtensions: vi.fn(async () => {

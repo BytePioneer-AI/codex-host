@@ -30,12 +30,12 @@
   - `console-server/`: local codexhost console that works without Codex Desktop (diagnostics, updates, Harness launch settings)
   - `shared-contracts/`: browser-safe types and runtime schemas
   - `renderer-extension/`: injected browser UI and Desktop extension host
-  - `desktop-extensions/`: optional Desktop UI extension examples; see [Desktop UI extensions](docs/architecture/desktop-ui-extensions.md) when authoring or testing one
 
 ### Build and Release
 
 - `scripts/release/`: release preparation, packaging, and publishing
 - `tools/`: development utilities and technical Gates
+- `registry/desktop-extensions/`: standalone index template for independently distributed [Desktop UI extensions](docs/architecture/desktop-ui-extensions.md)
 
 ## Boundary Rules
 

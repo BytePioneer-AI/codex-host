@@ -71,8 +71,11 @@ async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
   return { viewer, attach, paint, changeContent: () => editableChanged() };
 }
 
-const header = (frame: Buffer) => decodeSidebarBrowserFrameHeader(Uint8Array.from(frame).buffer);
-const sequence = (frame: Buffer): number => header(frame).sequence;
+function header(frame: Buffer | undefined) {
+  assert.ok(frame, "Expected a browser frame");
+  return decodeSidebarBrowserFrameHeader(Uint8Array.from(frame).buffer);
+}
+const sequence = (frame: Buffer | undefined): number => header(frame).sequence;
 const pictures = (frames: Buffer[]) =>
   frames.map((frame) => frame[SIDEBAR_BROWSER_FRAME_HEADER_BYTES]);
 
@@ -84,15 +87,15 @@ it("pipelines two pictures, accepts cumulative ACKs and sends only the newest wa
   assert.deepEqual(pictures(viewer.frames), [undefined, 1]);
 
   const [first, second] = viewer.frames.map(sequence);
-  assert.ok(first! < second!);
-  viewer.receive({ type: "ack", sequence: second! + 1 }); // Not sent to this viewer.
+  assert.ok(first !== undefined && second !== undefined && first < second);
+  viewer.receive({ type: "ack", sequence: second + 1 }); // Not sent to this viewer.
   assert.equal(viewer.frames.length, 2);
   viewer.receive({ type: "ack", sequence: second });
   await paint(4);
   await paint(5);
   viewer.receive({ type: "ack", sequence: first }); // Already cumulatively acknowledged.
   assert.deepEqual(pictures(viewer.frames), [undefined, 1, 3, 4]);
-  const last = sequence(viewer.frames[3]!);
+  const last = sequence(viewer.frames[3]);
 
   viewer.disconnect();
   const reconnected = await attach();
@@ -102,14 +105,13 @@ it("pipelines two pictures, accepts cumulative ACKs and sends only the newest wa
   assert.deepEqual(pictures(reconnected.frames), [undefined, 6]);
   reconnected.receive({ type: "ack", sequence: last });
   assert.equal(reconnected.frames.length, 2);
-  reconnected.receive({ type: "ack", sequence: sequence(reconnected.frames[0]!) });
+  reconnected.receive({ type: "ack", sequence: sequence(reconnected.frames[0]) });
   assert.deepEqual(pictures(reconnected.frames), [undefined, 6, 7]);
 });
 
 it("bounds outstanding bytes without starving an oversized picture", async (t) => {
   const { viewer, paint } = await openTab(t);
-  const ackLatest = () =>
-    viewer.receive({ type: "ack", sequence: sequence(viewer.frames.at(-1)!) });
+  const ackLatest = () => viewer.receive({ type: "ack", sequence: sequence(viewer.frames.at(-1)) });
   ackLatest();
   await paint(1, 300 * 1024);
   await paint(2, 300 * 1024);
@@ -125,21 +127,22 @@ it("bounds outstanding bytes without starving an oversized picture", async (t) =
 });
 
 it("keeps editable areas valid while streaming during scans", { timeout: 3000 }, async (t) => {
-  const regions = [{ x: 15, y: 20, width: 40, height: 25 }];
+  const region = { x: 15, y: 20, width: 40, height: 25 };
+  const regions = [region];
   const nextScan = () => ({
-    started: Promise.withResolvers<void>(),
+    started: Promise.withResolvers<undefined>(),
     result: Promise.withResolvers<{ regions: typeof regions; width: number; height: number }>(),
   });
   let scan = nextScan();
   const main = {
     evaluate: () => {
-      scan.started.resolve();
+      scan.started.resolve(undefined);
       return scan.result.promise;
     },
   } as unknown as Frame;
   const { viewer, paint, changeContent } = await openTab(t, () => [main]);
   const latestEditable = () => viewer.messages.findLast((message) => message.type === "editable");
-  const latestFrame = () => header(viewer.frames.at(-1)!);
+  const latestFrame = () => header(viewer.frames.at(-1));
   const ackLatest = () => viewer.receive({ type: "ack", sequence: latestFrame().sequence });
   const finishScan = async (result: typeof regions) => {
     scan.result.resolve({ regions: result, width: 1000, height: 800 });
@@ -163,7 +166,7 @@ it("keeps editable areas valid while streaming during scans", { timeout: 3000 },
   await scan.started.promise;
   assert.deepEqual(latestEditable(), metadata, "a pending content scan must not clear hit areas");
   changeContent(); // Another mutation during the scan queues a refresh without invalidating it.
-  const moved = [{ ...regions[0]!, x: 35 }];
+  const moved = [{ ...region, x: 35 }];
   await finishScan(moved);
   assert.deepEqual(latestEditable(), { ...metadata, regions: moved });
   await paint(3);

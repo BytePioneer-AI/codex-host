@@ -46,7 +46,7 @@ async function refreshCatalog(
     try {
       const data = path.isAbsolute(catalogUrl)
         ? await readLocalCatalog(catalogUrl)
-        : await downloadExtensionBytes(catalogUrl, MAX_BYTES, "application/json");
+        : await downloadExtensionBytes(catalogUrl, MAX_BYTES, { accept: "application/json" });
       const { extensions } = desktopExtensionCatalogSchema.parse(JSON.parse(data.toString("utf8")));
       return {
         catalogUrl,

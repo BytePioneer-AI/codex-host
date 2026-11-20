@@ -100,4 +100,12 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 3. 在 Console 的扩展页启用。确认从等待进入运行中；重复构建一次确认热更新且没有旧实例；禁用后原生行恢复。验证远程行不变；使用同槽位样板验证冲突提示包含占用者。记录实际验证范围。
 4. 看不到扩展时，核对数据目录、目录名、manifest 与权限。等待状态时确认 Desktop 主窗口已建立界面控制；失败时先看状态原因和声明的文件，修复后重新构建。若 Desktop 无法操作，在独立的 **Console → 扩展** 选择「禁用全部扩展并重载 Desktop」；选择会立即保存，有在线 Controller 时才执行窗口重载。
 
-完成条件：报告构建产物位置、启停/热更新/冲突结果，以及未验证项。更多约束见 [Desktop 界面扩展](../../../docs/architecture/desktop-ui-extensions.md)。
+完成条件：报告构建产物位置、启停/热更新/冲突结果，以及未验证项。
+
+## 4. 通过 GitHub 分发
+
+将 `manifest.json` 和它声明的 `desktop.script`（构建好的入口 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把 manifest 声明的样式和截图也提交到对应路径。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
+
+完成条件：确认选中的 GitHub 目录同时包含 manifest 和声明的入口 JS，安装时不需要构建。
+
+更多约束见 [Desktop 界面扩展](../../../docs/architecture/desktop-ui-extensions.md)。

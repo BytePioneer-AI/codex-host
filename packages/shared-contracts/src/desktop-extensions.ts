@@ -4,7 +4,8 @@ import type { ThreadTreeSnapshot } from "./thread-tree-watch.js";
 
 export const DESKTOP_EXTENSION_API_VERSION = 1;
 export const DESKTOP_EXTENSION_LIMIT = 64;
-export const DESKTOP_EXTENSION_ZIP_MAX_BYTES = 5 * 1024 * 1024;
+// Memory guard for buffered ZIP downloads and uploads, not a package size target.
+export const DESKTOP_EXTENSION_ZIP_MAX_BYTES = 64 * 1024 * 1024;
 export const DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH =
   4 * Math.ceil(DESKTOP_EXTENSION_ZIP_MAX_BYTES / 3);
 export const DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 128 * 1024;
@@ -196,10 +197,24 @@ export type DesktopExtensionsDiagnostic = z.infer<typeof desktopExtensionsDiagno
 export const desktopExtensionTrustTierSchema = z.enum(["official", "community"]);
 export type DesktopExtensionTrustTier = z.infer<typeof desktopExtensionTrustTierSchema>;
 
-export const desktopExtensionZipUrlSchema = desktopExtensionHttpUrlSchema.refine(
-  (url) => /\.zip$/iu.test(new URL(url).pathname),
-  "Expected a .zip download URL",
-);
+export function isGitHubDesktopExtensionZipballUrl(url: URL): boolean {
+  return (
+    url.origin === "https://api.github.com" &&
+    /^\/repos\/[\w-]+\/[\w.-]+\/zipball(?:\/[^/]+)?\/?$/u.test(url.pathname)
+  );
+}
+
+export const desktopExtensionZipUrlSchema = desktopExtensionHttpUrlSchema.refine((input) => {
+  const url = new URL(input);
+  return (
+    /\.zip$/iu.test(url.pathname) ||
+    isGitHubDesktopExtensionZipballUrl(url) ||
+    (url.origin === "https://github.com" &&
+      /^\/[\w-]+\/[\w.-]+\/zipball(?:\/.+)?\/?$/u.test(url.pathname)) ||
+    (url.origin === "https://codeload.github.com" &&
+      /^\/[\w-]+\/[\w.-]+\/(?:zip|zipball|legacy\.zip)\/.+$/u.test(url.pathname))
+  );
+}, "Expected a .zip download URL or a GitHub zipball URL");
 
 export const desktopExtensionCatalogEntrySchema = z.strictObject({
   id: desktopExtensionIdSchema,

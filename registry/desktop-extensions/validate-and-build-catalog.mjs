@@ -15,10 +15,15 @@ import {
   desktopExtensionManifestSchema,
   desktopExtensionScreenshotMimeType,
   desktopExtensionZipUrlSchema,
+  isGitHubDesktopExtensionZipballUrl,
   readDesktopExtensionZip,
 } from "./runtime.mjs";
 
 const github = /^https:\/\/github\.com\/([\w-]+)\/([\w-][\w.-]*)\/?$/u;
+const githubHeaders = {
+  accept: "application/vnd.github+json",
+  "user-agent": "codexhost-desktop-extension-registry",
+};
 const safeAssetName = /^[\w.-]+\.zip$/iu;
 const sourcesSchema = z
   .strictObject({
@@ -51,20 +56,30 @@ const checks = [
   ["child_process", /\bchild_process\b/u],
 ];
 
-async function download(input, limit, headers) {
+async function download(input, limit, { headers, missingOk = false } = {}) {
   let url = new URL(input);
+  const zipball = isGitHubDesktopExtensionZipballUrl(url);
   const signal = AbortSignal.timeout(15_000);
   for (let redirects = 0; redirects <= 4; redirects++) {
     const response = await fetch(url, { headers, signal, redirect: "manual" });
     const body = response.body;
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       await body?.cancel();
-      if (headers || !response.headers.get("location"))
+      const location = response.headers.get("location");
+      if (!location || (headers && !zipball))
         throw new Error("Unexpected GitHub API or asset redirect");
-      url = new URL(response.headers.get("location"), url);
-      if (!assetOrigins.has(url.origin) || url.username || url.password)
-        throw new Error("Untrusted GitHub asset redirect");
+      url = new URL(location, url);
+      if (
+        !(zipball ? url.origin === "https://codeload.github.com" : assetOrigins.has(url.origin)) ||
+        url.username ||
+        url.password
+      )
+        throw new Error("Untrusted GitHub archive or asset redirect");
       continue;
+    }
+    if (missingOk && response.status === 404) {
+      await body?.cancel();
+      return undefined;
     }
     if (!response.ok || !body || Number(response.headers.get("content-length")) > limit) {
       await body?.cancel();
@@ -113,38 +128,69 @@ function validateScreenshot(bytes, path) {
   if (!valid) throw new Error(`Screenshot type does not match ${path}`);
 }
 
-async function validateSource(source, previous) {
-  const [, owner, repo] = github.exec(source.repository);
-  const headers = { accept: "application/vnd.github+json" };
-  if (process.env.GH_TOKEN) headers.authorization = `Bearer ${process.env.GH_TOKEN}`;
-  const release = JSON.parse(
-    utf8.decode(
-      await download(
-        `https://api.github.com/repos/${owner}/${repo}/releases/latest`,
-        1024 * 1024,
-        headers,
-      ),
-    ),
-  );
-  if (
-    release.draft ||
-    release.prerelease ||
-    !release.published_at ||
-    !Array.isArray(release.assets)
-  )
-    throw new Error("Expected a public stable Release");
-  const zipAssets = release.assets.filter(
-    ({ name }) => safeAssetName.test(name) && (!source.asset || name === source.asset),
-  );
-  if (zipAssets.length !== 1)
-    throw new Error(
-      "Expected exactly one matching Release .zip asset; set sources[].asset to disambiguate",
+async function selectPackage(source, owner, repo, headers) {
+  const api = `https://api.github.com/repos/${owner}/${repo}`;
+  const loadJson = async (path, missingOk = false) => {
+    const bytes = await download(`${api}/${path}`, 1024 * 1024, { headers, missingOk });
+    return bytes === undefined ? undefined : JSON.parse(utf8.decode(bytes));
+  };
+  const release = await loadJson("releases/latest", true);
+  if (release !== undefined) {
+    if (
+      release.draft ||
+      release.prerelease ||
+      !release.published_at ||
+      !Array.isArray(release.assets)
+    )
+      throw new Error("Expected a public stable Release");
+    const zipAssets = release.assets.filter(
+      ({ name }) =>
+        typeof name === "string" &&
+        safeAssetName.test(name) &&
+        (!source.asset || name === source.asset),
     );
-  const [asset] = zipAssets;
-  const downloadUrl = desktopExtensionZipUrlSchema.parse(assetUrl(asset, owner, repo));
-  const zip = await download(downloadUrl, DESKTOP_EXTENSION_ZIP_MAX_BYTES);
+    if (zipAssets.length > 1)
+      throw new Error("Multiple Release .zip assets; set sources[].asset to disambiguate");
+    const [asset] = zipAssets;
+    if (asset)
+      return {
+        downloadUrl: assetUrl(asset, owner, repo),
+        asset,
+        release,
+        date: release.published_at,
+      };
+  }
+  if (source.asset) throw new Error(`Expected Release .zip asset ${source.asset}`);
+
+  // Pin the catalog to the commit we validate, not a moving default branch.
+  const [head] = await loadJson("commits?per_page=1");
+  const sha = z
+    .string()
+    .regex(/^[a-f0-9]{40}$/u)
+    .parse(head?.sha);
+  return {
+    downloadUrl: `${api}/zipball/${sha}`,
+    sha,
+    date: z.iso.datetime().parse(head?.commit?.committer?.date),
+  };
+}
+
+async function validateSource(source, previous) {
+  const [, owner, repositoryName] = github.exec(source.repository);
+  const repo = repositoryName.replace(/\.git$/iu, "");
+  const headers = { ...githubHeaders };
+  if (process.env.GH_TOKEN) headers.authorization = `Bearer ${process.env.GH_TOKEN}`;
+  const selected = await selectPackage(source, owner, repo, headers);
+  const { asset, release, date } = selected;
+  const downloadUrl = desktopExtensionZipUrlSchema.parse(selected.downloadUrl);
+  // The catalog URL must work for unauthenticated users, even when metadata uses GH_TOKEN.
+  const zip = await download(
+    downloadUrl,
+    DESKTOP_EXTENSION_ZIP_MAX_BYTES,
+    asset ? {} : { headers: githubHeaders },
+  );
   const sha256 = digest(zip);
-  if (asset.digest != null && asset.digest !== `sha256:${sha256}`)
+  if (asset?.digest != null && asset.digest !== `sha256:${sha256}`)
     throw new Error("Release SHA-256 does not match GitHub's digest");
   const files = readDesktopExtensionZip(zip);
   const manifest = desktopExtensionManifestSchema.parse(
@@ -160,7 +206,11 @@ async function validateSource(source, previous) {
     (compareExtensionVersions(manifest.version, previous.version) < 0 ||
       (previous.version === manifest.version && previous.sha256 !== sha256))
   )
-    throw new Error("Release is a downgrade or changed ZIP bytes without a version bump");
+    throw new Error("Package is a downgrade or changed ZIP bytes without a version bump");
+  if (!files.has(manifest.desktop.script))
+    throw new Error(
+      `Missing entry file ${manifest.desktop.script}. Commit the built JavaScript entry or publish a Release .zip.`,
+    );
   const script = utf8.decode(
     getResource(files, manifest.desktop.script, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES),
   );
@@ -177,12 +227,17 @@ async function validateSource(source, previous) {
   for (const path of manifest.screenshots ?? []) {
     const bytes = getResource(files, path, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES);
     validateScreenshot(bytes, path);
-    const matches = release.assets.filter(({ name }) => name === path.split("/").at(-1));
-    if (matches.length !== 1)
-      throw new Error(`Also attach ${path} to the Release as an individual image asset`);
-    const url = assetUrl(matches[0], owner, repo);
+    let url;
+    if (release) {
+      const matches = release.assets.filter(({ name }) => name === path.split("/").at(-1));
+      if (matches.length !== 1)
+        throw new Error(`Also attach ${path} to the Release as an individual image asset`);
+      url = assetUrl(matches[0], owner, repo);
+    } else {
+      url = `https://raw.githubusercontent.com/${owner}/${repo}/${selected.sha}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    }
     if (!bytes.equals(await download(url, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES)))
-      throw new Error(`Release screenshot differs from ZIP: ${path}`);
+      throw new Error(`Published screenshot differs from ZIP: ${path}`);
     screenshots.push(url);
   }
   return desktopExtensionCatalogEntrySchema.parse({
@@ -199,14 +254,14 @@ async function validateSource(source, previous) {
     screenshots: screenshots.length ? screenshots : undefined,
     downloadUrl,
     sha256,
-    publishedAt: previous?.publishedAt ?? release.published_at,
-    updatedAt: release.published_at,
+    publishedAt: previous?.publishedAt ?? date,
+    updatedAt: date,
     minCodexHostVersion: source.minCodexHostVersion,
   });
 }
 
 function inline(text) {
-  // GitHub job summaries and report artifacts contain untrusted release metadata.
+  // GitHub job summaries and report artifacts contain untrusted metadata.
   return String(text)
     .replace(/[\r\n]+/gu, " ")
     .replace(/[&<>`|\[\]()]/gu, (character) => `&#${character.charCodeAt(0)};`)

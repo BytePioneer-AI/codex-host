@@ -1,15 +1,16 @@
 # codexhost Desktop 扩展索引
 
-这是可独立部署的市场元数据仓库，不负责构建第三方代码。`sources.json` 是审核过的来源清单；`catalog.json` 是客户端读取的生成结果。作者使用 Issue Form **只提交公开 GitHub 仓库 URL**；管理员从其最新稳定 Release 的 ZIP manifest 读取扩展 ID，以 `community` 身份把来源加入 PR。首次上架的目标是人工花 10 秒查看 Actions 安检报告再点 Merge：确认仓库、作者、ID、档位与包都符合预期；遇到警告、可疑代码或不熟悉的发布者，应进一步审查而不是盲点 Merge。`official` 只由维护者赋予自己管理的来源。
+这是可独立部署的市场元数据仓库，不负责构建第三方代码。`sources.json` 是审核过的来源清单；`catalog.json` 是客户端读取的生成结果。作者使用 Issue Form **只提交公开 GitHub 仓库 URL**；管理员从 Release ZIP 或默认分支的 `manifest.json` 读取扩展 ID，以 `community` 身份把来源加入 PR。首次上架的目标是人工花 10 秒查看 Actions 安检报告再点 Merge：确认仓库、作者、ID、档位与包都符合预期；遇到警告、可疑代码或不熟悉的发布者，应进一步审查而不是盲点 Merge。`official` 只由维护者赋予自己管理的来源。
 
-合并后，每 6 小时自动检查已登记来源的最新稳定 Release，也可以手动运行 `Desktop extension registry`。只有所有来源通过校验才更新索引；任何失败都保留上一份有效索引，维护者可从运行记录下载 `safety-report.md` 定位失败的来源。此流程只更新索引，**不会自动在用户设备上更新或启用扩展**。SHA-256 校验下载完整性，不证明代码可信；静态检查不是代码审计或沙箱。
+合并后，每 6 小时自动检查已登记来源，也可以手动运行 `Desktop extension registry`。优先使用最新稳定 Release 的 ZIP 资产；没有 Release 或没有 ZIP 资产时，验证默认分支的源码 zipball，并将索引的下载链接固定到已校验的 commit。若配置了 `sources[].asset`，则要求该 Release 资产存在，不回退。只有所有来源通过校验才更新索引；任何失败都保留上一份有效索引，维护者可从运行记录下载 `safety-report.md` 定位失败的来源。此流程只更新索引，**不会自动在用户设备上更新或启用扩展**。SHA-256 校验下载完整性，不证明代码可信；静态检查不是代码审计或沙箱。
 
 ## 作者发布要求
 
-- 在 GitHub 发布公开稳定 Release，上传构建好的 `.zip` **资产**；自动生成的 Source code ZIP 不算。包根目录（或唯一的顶层目录下）须有 `manifest.json`，声明的 `desktop.script`、可选样式与截图须随包发布。
-- `name` 和 `description` 必须有非空 `en` 和 `zh-CN`；`details` 若提供也须双语；`author` 必填。发布新包时递增 manifest `version`，不要替换旧版本的 ZIP。
-- 如果 manifest 声明截图，另将同一张图片作为 Release 资产上传，资产名使用路径的最后一段。每张 ≤ 512 KiB，最多 4 张，必须是 PNG、JPEG 或 WebP。校验器比较 ZIP 与单独资产字节，市场使用单独资产的 URL。
-- ZIP 仅支持 STORE/DEFLATE；压缩 ≤ 5 MiB，展开 ≤ 10 MiB，最多 50 个条目，不允许链接、特殊文件、越界或冲突路径。CI 校验 Release 资产及 SHA-256（GitHub 提供 digest 时对照），按 Desktop v1 契约校验 manifest，并静态阻拦 `eval`、`new Function`、`child_process` 等模式。扩展代码不会在 CI 中执行。
+- **默认分支源码**：在公开仓库根目录提交 `manifest.json`、`desktop.script` 声明的构建后 JS，以及声明的样式和截图。不需要手动打包 Release；校验器不负责编译 `.ts`。索引只接受仓库主页；用户直接安装时也可以使用 `/tree/<ref>/<subdir>` 链接。
+- **Release ZIP**：在公开稳定 Release 上传构建好的 `.zip` 资产。包根目录或唯一的顶层目录下须有 `manifest.json` 和声明的入口 JS、样式、截图。Release 有多个 ZIP 资产时在 `sources[].asset` 指定文件名。
+- `name` 和 `description` 必须有非空 `en` 和 `zh-CN`；`details` 若提供也须双语；`author` 必填。ZIP 字节变化时须递增 manifest `version`；源码模式下，即使只改变仓库中的文档，也会改变 zipball。
+- 截图每张 ≤ 512 KiB，最多 4 张，只接受 PNG、JPEG 或 WebP。Release 模式另上传同一图片作为单独资产，资产名为路径的最后一段；源码模式使用固定到同一 commit 的 Raw URL。校验器比对公开图片 URL 和 ZIP 中的字节。
+- ZIP 仅支持 STORE/DEFLATE；不允许链接、特殊文件、越界或冲突路径，并有防解压炸弹和内存耗尽的护栏。CI 记录 ZIP 的 SHA-256（GitHub 提供 Release 资产 digest 时对照），按 Desktop v1 契约校验 manifest，并静态阻拦 `eval`、`new Function`、`child_process` 等模式。扩展代码不会在 CI 中执行。
 
 ## 迁移到独立仓库
 

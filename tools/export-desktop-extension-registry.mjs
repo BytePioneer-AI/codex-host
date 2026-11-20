@@ -13,7 +13,8 @@ const { outputFiles } = await build({
         DESKTOP_EXTENSION_STYLE_MAX_BYTES, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
         DESKTOP_EXTENSION_ZIP_MAX_BYTES, compareExtensionVersions, desktopExtensionCatalogSchema,
         desktopExtensionCatalogEntrySchema, desktopExtensionIdSchema, desktopExtensionManifestSchema,
-        desktopExtensionScreenshotMimeType, desktopExtensionZipUrlSchema
+        desktopExtensionScreenshotMimeType, desktopExtensionZipUrlSchema,
+        isGitHubDesktopExtensionZipballUrl
       } from './packages/shared-contracts/src/desktop-extensions.ts';
       export { readDesktopExtensionZip } from './packages/harness-plugin-files/src/desktop-extension-zip.ts';
     `,

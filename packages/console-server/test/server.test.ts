@@ -139,7 +139,7 @@ it("ignores Pi extensions when listing Desktop extensions and diagnoses broken c
   });
 });
 
-it("serves the market offline and accepts bounded ZIP uploads only on the guarded install route", async () => {
+it("serves the market offline and accepts ZIP uploads above 5 MiB only on the guarded install route", async () => {
   const file = path.join(directory, "catalog.json");
   await writeFile(
     file,
@@ -152,27 +152,27 @@ it("serves the market offline and accepts bounded ZIP uploads only on the guarde
     catalogUrl: file,
     extensions: [],
   });
-  const upload = {
+  const upload = (size: number) => ({
     source: {
       type: "zip-base64",
       fileName: "sample.zip",
       contentBase64: extensionZip({
-        extras: [{ name: "extra.txt", data: Buffer.alloc(17 * 1024) }],
+        extras: [{ name: "asset.bin", data: Buffer.alloc(size) }],
       }).toString("base64"),
     },
-  };
+  });
   const post = (action: string, body: unknown, headers: Record<string, string> = CHANGE) =>
     fetch(`${endpoint}/${action}`, { method: "POST", headers, body: JSON.stringify(body) });
-  expect((await post("install", upload, {})).status).toBe(403);
+  expect((await post("install", upload(0), {})).status).toBe(403);
   expect((await post("uninstall", { id: "sample" }, {})).status).toBe(403);
-  const installed = await post("install", upload);
+  const installed = await post("install", upload(6 * 1024 * 1024));
   expect(installed.status).toBe(200);
   expect(await installed.json()).toMatchObject({
     extensionId: "sample",
     replaced: false,
     list: { extensions: [{ id: "sample", enabled: false }] },
   });
-  expect((await post("uninstall", upload)).status).toBe(400);
+  expect((await post("uninstall", upload(17 * 1024))).status).toBe(400);
   const removed = await post("uninstall", { id: "sample" });
   expect(removed.status).toBe(200);
   expect(await removed.json()).toMatchObject({ removedId: "sample", list: { extensions: [] } });

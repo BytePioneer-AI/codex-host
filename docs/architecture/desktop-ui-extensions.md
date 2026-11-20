@@ -59,8 +59,8 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 | `install` | `POST /api/extensions/install` | `{ source }` → `{ extensionId, version, replaced, installedPath, list }` |
 | `uninstall` | `POST /api/extensions/uninstall` | `{ id }` → `{ removedId, list }` |
 
-- 安装来源：`{ type: "catalog", id }`、`{ type: "url", url, expectedSha256? }` 或 `{ type: "zip-base64", fileName, contentBase64 }`。URL 支持 HTTP(S) `.zip` 或公开 GitHub 仓库主页（从最新稳定 Release 选 ZIP 资产）。目录安装强制校验 SHA-256、manifest ID 和版本。文件名仅用于上传元数据，不用作磁盘路径。
-- ZIP 限制：压缩 ≤ 5 MiB、展开 ≤ 10 MiB、最多 50 个条目。manifest 位于 ZIP 根目录或唯一顶层目录内。包管理不会执行脚本；安装后仍须显式启用。
+- 安装来源：`{ type: "catalog", id }`、`{ type: "url", url, expectedSha256? }` 或 `{ type: "zip-base64", fileName, contentBase64 }`。URL 支持 HTTP(S) `.zip`、GitHub zipball，以及公开 GitHub 仓库主页（优先取最新稳定 Release 的 ZIP 资产，没有则取默认分支的源码 zipball）。`/tree/<ref>[/<subdir>]` 直接取指定 ref 的 zipball，安装所选目录；ref 内的 `/` 写作 `%2F`。从索引安装会校验 SHA-256、manifest ID 和版本。上传文件名仅用于元数据，不用作磁盘路径。
+- ZIP 防内存耗尽护栏：压缩 ≤ 64 MiB、展开 ≤ 256 MiB，最多 10,000 个条目；大文件另检查异常压缩比。`manifest.json` 应位于 ZIP 根目录、唯一顶层目录或 `tree` 选中的仓库子目录。必须包含 manifest 声明的入口 JS；包管理不构建或执行脚本，安装后仍须显式启用。
 - 更新调用同一个 `install`，按 manifest ID 覆盖，保留已有启用选择。卸载移除安装目录和 `enabled.json` 中的选择。两者都通过原子写入 `enabled.json` 触发 Desktop Controller 对账，不重载窗口。响应中的 `list` 是最新磁盘快照，Controller 尚未完成激活时状态可以是 `waiting`。
 - UI 可用 `compareExtensionVersions(catalogVersion, installedVersion) > 0` 判断是否有新版本。不识别的版本格式不提示更新。不自动更新本机安装；`trustTier` 和 `minCodexHostVersion` 是索引展示元数据，不是权限或兼容性证明。
 

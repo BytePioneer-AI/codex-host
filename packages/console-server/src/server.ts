@@ -34,6 +34,7 @@ import { webConnectionRequest, WEB_CONNECTION_METHODS } from "./web-client.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
+const MAX_EXTENSION_INSTALL_BODY_BYTES = DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH + MAX_BODY_BYTES;
 const INSPECT_CACHE_MS = 2_000;
 
 export interface ConsoleServerOptions {
@@ -355,9 +356,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       try {
         body = await readJsonBody(
           request,
-          route === INSTALL
-            ? DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH + MAX_BODY_BYTES
-            : MAX_BODY_BYTES,
+          route === INSTALL ? MAX_EXTENSION_INSTALL_BODY_BYTES : MAX_BODY_BYTES,
         );
       } catch (error) {
         if (!request.complete) response.setHeader("connection", "close");

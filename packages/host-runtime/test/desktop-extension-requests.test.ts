@@ -196,7 +196,13 @@ it("serves catalog and returns a fresh list after install, replacement and unins
           source: {
             type: "zip-base64",
             fileName: "sample.zip",
-            contentBase64: extensionZip({ version }).toString("base64"),
+            contentBase64: extensionZip({
+              version,
+              extras:
+                version === "1.0.0"
+                  ? [{ name: "asset.bin", data: Buffer.alloc(6 * 1024 * 1024) }]
+                  : [],
+            }).toString("base64"),
           },
         },
       });

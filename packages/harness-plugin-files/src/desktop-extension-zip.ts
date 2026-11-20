@@ -1,7 +1,9 @@
 import { crc32, inflateRawSync } from "node:zlib";
 import { DESKTOP_EXTENSION_ZIP_MAX_BYTES } from "@codexhost/shared-contracts";
-const MAX_UNPACKED_BYTES = 10 * 1024 * 1024;
-const MAX_ENTRIES = 50;
+const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
+const MAX_ENTRIES = 10_000;
+const EXPANSION_RATIO = 200;
+const EXPANSION_FLOOR_BYTES = 16 * 1024 * 1024;
 const END = 0x06054b50;
 const CENTRAL = 0x02014b50;
 const LOCAL = 0x04034b50;
@@ -21,7 +23,7 @@ function safeName(name: string, directory: boolean) {
         part !== "." &&
         part !== ".." &&
         !/[. ]$/u.test(part) &&
-        !/[\x00-\x1f\x7f<>:"|?*]/u.test(part) &&
+        !/[\x00-\x1f\x7f\\<>:"|?*]/u.test(part) &&
         !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]) *(?:\.|$)/iu.test(part),
     ),
     "unsafe entry path",
@@ -30,8 +32,9 @@ function safeName(name: string, directory: boolean) {
 }
 
 /** Read and validate the complete archive in memory before touching the filesystem. */
-export function readDesktopExtensionZip(zip: Buffer): Map<string, Buffer> {
-  check(zip.length <= DESKTOP_EXTENSION_ZIP_MAX_BYTES, "archive exceeds 5 MiB");
+export function readDesktopExtensionZip(zip: Buffer, subpath?: string): Map<string, Buffer> {
+  check(zip.length <= DESKTOP_EXTENSION_ZIP_MAX_BYTES, "archive exceeds the safety size limit");
+  const subdirectory = subpath === undefined ? undefined : safeName(subpath, false);
   const u16 = (offset: number) => zip.readUInt16LE(offset);
   const u32 = (offset: number) => zip.readUInt32LE(offset);
   let end = zip.length - 22;
@@ -42,7 +45,7 @@ export function readDesktopExtensionZip(zip: Buffer): Map<string, Buffer> {
   const start = u32(end + 16);
   check(u16(end + 4) === 0 && u16(end + 6) === 0 && u16(end + 8) === count, "multi-disk archive");
   check(start + u32(end + 12) === end, "invalid central directory bounds (ZIP64 is unsupported)");
-  check(count > 0 && count <= MAX_ENTRIES, "expected 1–50 entries");
+  check(count > 0 && count <= MAX_ENTRIES, `expected 1–${MAX_ENTRIES} entries`);
 
   const files = new Map<string, Buffer>();
   const paths = new Map<string, { name: string; directory: boolean; explicit: boolean }>();
@@ -121,13 +124,13 @@ export function readDesktopExtensionZip(zip: Buffer): Map<string, Buffer> {
         "local entry sizes or CRC disagree",
       );
     }
-    check(
-      ranges.every((range) => local >= range.end || localEnd <= range.start),
-      "overlapping local entries",
-    );
     ranges.push({ start: local, end: localEnd });
     total += size;
-    check(total <= MAX_UNPACKED_BYTES, "unpacked data exceeds 10 MiB");
+    check(total <= MAX_UNPACKED_BYTES, "unpacked data exceeds the safety size limit");
+    check(
+      size <= Math.max(EXPANSION_FLOOR_BYTES, compressed * EXPANSION_RATIO),
+      "entry exceeds the safety compression ratio",
+    );
     check(!directory || size === 0, "directory contains file data");
     const input = zip.subarray(data, data + compressed);
     const bytes =
@@ -137,11 +140,24 @@ export function readDesktopExtensionZip(zip: Buffer): Map<string, Buffer> {
     central = next;
   }
   check(central === end, "incorrect central directory size");
-  if (files.has("manifest.json")) return files;
-  const [wrapper, ...other] = new Set([...paths.values()].map(({ name }) => name.split("/")[0]));
+  ranges.sort((a, b) => a.start - b.start);
   check(
-    wrapper && !other.length && files.has(`${wrapper}/manifest.json`),
-    "missing manifest.json at the root or inside a single top-level directory",
+    ranges.every(({ start }, index) => index === 0 || ranges[index - 1]!.end <= start),
+    "overlapping local entries",
   );
-  return new Map([...files].map(([name, bytes]) => [name.slice(wrapper.length + 1), bytes]));
+
+  if (subdirectory === undefined && files.has("manifest.json")) return files;
+  const roots = [...paths.values()].filter(({ name }) => !name.includes("/"));
+  const [wrapper] = roots;
+  const prefix = wrapper && `${wrapper.name}/${subdirectory ? `${subdirectory}/` : ""}`;
+  check(
+    roots.length === 1 && wrapper?.directory && prefix && files.has(`${prefix}manifest.json`),
+    subdirectory
+      ? `missing manifest.json in repository subdirectory ${subdirectory}`
+      : "missing manifest.json at the root or inside a single top-level directory",
+  );
+  const selected = new Map<string, Buffer>();
+  for (const [name, bytes] of files)
+    if (name.startsWith(prefix)) selected.set(name.slice(prefix.length), bytes);
+  return selected;
 }

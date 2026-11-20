@@ -18,7 +18,7 @@ import { fetchDesktopExtensionCatalog, type CatalogOptions } from "./desktop-ext
 import {
   DesktopExtensionPackageError,
   downloadExtensionBytes,
-  resolveDesktopExtensionDownloadUrl,
+  resolveDesktopExtensionDownload,
 } from "./desktop-extension-download.js";
 import { readDesktopExtensionZip } from "./desktop-extension-zip.js";
 import { withDesktopExtensionConfiguration } from "./extension-configuration.js";
@@ -37,6 +37,7 @@ type ZipOptions = {
   extensionsRoot: string;
   zipBuffer: Buffer;
   expectedSha256?: string | undefined;
+  subpath?: string | undefined;
 };
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -94,11 +95,9 @@ async function withInstallationBackup<T>(
 }
 
 export async function installFromZipBuffer(
-  { extensionsRoot, zipBuffer, expectedSha256 }: ZipOptions,
+  { extensionsRoot, zipBuffer, expectedSha256, subpath }: ZipOptions,
   expected?: { id: string; version: string },
 ): Promise<InstallResult> {
-  if (zipBuffer.length > DESKTOP_EXTENSION_ZIP_MAX_BYTES)
-    throw new DesktopExtensionPackageError("Desktop extension ZIP exceeds 5 MiB");
   if (
     expectedSha256 !== undefined &&
     createHash("sha256").update(zipBuffer).digest("hex") !== expectedSha256
@@ -106,7 +105,7 @@ export async function installFromZipBuffer(
     throw new DesktopExtensionPackageError("Desktop extension ZIP SHA-256 mismatch");
   let files: Map<string, Buffer>;
   try {
-    files = readDesktopExtensionZip(zipBuffer);
+    files = readDesktopExtensionZip(zipBuffer, subpath);
   } catch (error) {
     throw new DesktopExtensionPackageError(error instanceof Error ? error.message : "Invalid ZIP", {
       cause: error,
@@ -132,9 +131,18 @@ export async function installFromZipBuffer(
         if (expected && (manifest.id !== expected.id || manifest.version !== expected.version))
           throw new Error("Manifest id or version does not match the catalog entry");
         const { script, style } = manifest.desktop;
-        const source = utf8.decode(
-          await readExtensionResource(staging, script, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES),
-        );
+        const scriptBytes = await readExtensionResource(
+          staging,
+          script,
+          DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
+        ).catch((error: unknown) => {
+          if (!extensionFileMissing(error)) throw error;
+          throw new Error(
+            `Missing entry file ${script}. Commit the built JavaScript entry or publish a Release .zip.`,
+            { cause: error },
+          );
+        });
+        const source = utf8.decode(scriptBytes);
         new Script(`(function(define) { "use strict";\n${source}\n})`);
         if (style)
           utf8.decode(
@@ -146,7 +154,7 @@ export async function installFromZipBuffer(
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Invalid manifest or resources";
         throw new DesktopExtensionPackageError(
-          `Invalid extension package: ${reason.slice(0, 512)}`,
+          `Invalid extension package: ${reason.slice(0, 768)}`,
           { cause: error },
         );
       }
@@ -197,9 +205,14 @@ export async function installFromUrl({
   url: string;
   expectedSha256?: string | undefined;
 }) {
-  const downloadUrl = await resolveDesktopExtensionDownloadUrl(url);
-  const zipBuffer = await downloadExtensionBytes(downloadUrl, DESKTOP_EXTENSION_ZIP_MAX_BYTES);
-  return installFromZipBuffer({ extensionsRoot, zipBuffer, expectedSha256 });
+  const download = await resolveDesktopExtensionDownload(url);
+  const zipBuffer = await downloadExtensionBytes(download.url, DESKTOP_EXTENSION_ZIP_MAX_BYTES);
+  return installFromZipBuffer({
+    extensionsRoot,
+    zipBuffer,
+    expectedSha256,
+    subpath: download.subpath,
+  });
 }
 
 export async function installFromCatalog({

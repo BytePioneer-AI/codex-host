@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
+import { extensionZip, makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import seed from "../../../registry/desktop-extensions/catalog.json";
 import {
   desktopExtensionsRoot,
@@ -72,16 +72,18 @@ it.each([
   expect(await readdir(dataDir)).toEqual([]);
 });
 
-it("rejects symlinks, oversized archives, excessive entries, expanded data and a bad digest", async () => {
+it("rejects symlinks, excessive entries, extreme compression and a bad digest", async () => {
   for (const [archive, message] of [
     [extensionZip({ extras: [{ name: "symlink", mode: 0xa000, data: "desktop.js" }] }), "symlink"],
-    [Buffer.alloc(5 * 1024 * 1024 + 1), "5 MiB"],
-    [extensionZip({ extras: Array.from({ length: 49 }, (_, i) => ({ name: `f${i}` })) }), "1–50"],
+    [
+      extensionZip({ extras: Array.from({ length: 10_000 }, (_, i) => ({ name: `f${i}` })) }),
+      "1–10000",
+    ],
     [
       extensionZip({
-        extras: [{ name: "large", data: Buffer.alloc(10 * 1024 * 1024), deflate: true }],
+        extras: [{ name: "large", data: Buffer.alloc(17 * 1024 * 1024), deflate: true }],
       }),
-      "10 MiB",
+      "safety compression ratio",
     ],
   ] as const)
     await expect(installFromZipBuffer({ extensionsRoot, zipBuffer: archive })).rejects.toThrow(
@@ -111,27 +113,159 @@ it("rolls back an update if writing the new configuration fails after the direct
   expect((await readdir(extensionsRoot)).sort()).toEqual(["enabled.json", "sample"]);
 });
 
-it("resolves GitHub Releases without using the source zipball", async () => {
-  const repository = "https://github.com/owner/repo/";
+const githubApi = "https://api.github.com/repos/owner/repo";
+const githubRequest = {
+  headers: {
+    accept: "application/vnd.github+json",
+    "user-agent": expect.any(String),
+  },
+  redirect: "follow",
+};
+
+it("prefers the GitHub Release ZIP asset over the source zipball", async () => {
   const asset = "https://github.com/owner/repo/releases/download/v1/extension.zip";
-  let release: Response;
   vi.stubGlobal("fetch", async (url: string) => {
-    if (url === "https://api.github.com/repos/owner/repo/releases/latest") return release;
+    if (url === `${githubApi}/releases/latest`)
+      return Response.json({ assets: [{ name: "extension.zip", browser_download_url: asset }] });
     if (url === asset) return new Response(new Uint8Array(extensionZip()));
     throw new Error(`Unexpected request: ${url}`);
   });
-  release = new Response(null, { status: 404 });
-  await expect(installFromUrl({ extensionsRoot, url: repository })).rejects.toThrow(
-    "no public stable Release",
-  );
-  release = Response.json({ zipball_url: asset, assets: [] });
-  await expect(installFromUrl({ extensionsRoot, url: repository })).rejects.toThrow(
-    "no .zip asset",
-  );
-  release = Response.json({ assets: [{ name: "extension.zip", browser_download_url: asset }] });
-  expect(await installFromUrl({ extensionsRoot, url: repository })).toMatchObject({
+  expect(
+    await installFromUrl({ extensionsRoot, url: "https://github.com/owner/repo/" }),
+  ).toMatchObject({
     extensionId: "sample",
   });
+});
+
+it.each([
+  ["https://github.com/owner/repo", () => new Response(null, { status: 404 })],
+  [
+    "https://github.com/owner/repo.git/",
+    () => Response.json({ assets: [{ name: "preview.png" }] }),
+  ],
+] as const)(
+  "installs from the default-branch zipball for %s without a Release ZIP",
+  async (url, release) => {
+    const fetch = vi.fn(async (input: string) => {
+      if (input === `${githubApi}/releases/latest`) return release();
+      if (input === `${githubApi}/zipball`)
+        return new Response(new Uint8Array(extensionZip({ wrapper: "owner-repo-sha" })));
+      throw new Error(`Unexpected request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetch);
+    expect(await installFromUrl({ extensionsRoot, url })).toMatchObject({ extensionId: "sample" });
+    expect(fetch).toHaveBeenCalledWith(
+      `${githubApi}/releases/latest`,
+      expect.objectContaining(githubRequest),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      `${githubApi}/zipball`,
+      expect.objectContaining(githubRequest),
+    );
+  },
+);
+
+it("installs only the selected GitHub tree subdirectory and handles an encoded ref", async () => {
+  const wrapper = "owner-repo-sha";
+  const directory = `${wrapper}/packages/my extension`;
+  const zip = extensionZip({
+    wrapper: directory,
+    extras: [
+      { name: `${wrapper}/manifest.json`, data: "not the selected manifest" },
+      { name: `${directory}-other/desktop.js` },
+      { name: `${directory}/assets/note.txt`, data: "selected resource" },
+    ],
+  });
+  vi.stubGlobal("fetch", async (url: string) => {
+    expect(url).toBe(`${githubApi}/zipball/feature%2Fsidebar`);
+    return new Response(new Uint8Array(zip));
+  });
+  const { installedPath } = await installFromUrl({
+    extensionsRoot,
+    url: "https://github.com/owner/repo/tree/feature%2Fsidebar/packages/my%20extension/",
+  });
+  expect((await readdir(installedPath)).sort()).toEqual(["assets", "desktop.js", "manifest.json"]);
+  expect(await readFile(path.join(installedPath, "assets/note.txt"), "utf8")).toBe(
+    "selected resource",
+  );
+});
+
+it.each([
+  ["https://github.com/owner/repo/tree/v1.0.0", `${githubApi}/zipball/v1.0.0`],
+  [
+    "https://codeload.github.com/owner/repo/zip/refs/heads/main",
+    "https://codeload.github.com/owner/repo/zip/refs/heads/main",
+  ],
+])("downloads %s directly without doing a Release lookup", async (url, expectedUrl) => {
+  vi.stubGlobal("fetch", async (input: string) => {
+    expect(input).toBe(expectedUrl);
+    return new Response(new Uint8Array(extensionZip({ wrapper: "owner-repo-sha" })));
+  });
+  expect(await installFromUrl({ extensionsRoot, url })).toMatchObject({ extensionId: "sample" });
+});
+
+it.each(["plugins/../extension", "plugins/%2E%2E/extension", "extension%00"])(
+  "rejects unsafe GitHub tree subdirectory %s before downloading",
+  async (subpath) => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      installFromUrl({ extensionsRoot, url: `https://github.com/owner/repo/tree/main/${subpath}` }),
+    ).rejects.toThrow("Invalid GitHub tree ref or subdirectory");
+    expect(fetch).not.toHaveBeenCalled();
+  },
+);
+
+it("validates paths and file types outside the selected subdirectory", async () => {
+  const wrapper = "owner-repo-sha";
+  for (const [extra, error] of [
+    [{ name: `${wrapper}/elsewhere/../outside` }, "unsafe entry path"],
+    [{ name: `${wrapper}/elsewhere/symlink`, mode: 0xa000 }, "symlink"],
+  ] as const) {
+    const zip = extensionZip({ wrapper: `${wrapper}/extension`, extras: [extra] });
+    await expect(
+      installFromZipBuffer({ extensionsRoot, zipBuffer: zip, subpath: "extension" }),
+    ).rejects.toThrow(error);
+  }
+  expect(await readdir(dataDir)).toEqual([]);
+});
+
+it("reports a missing manifest and suggests how to publish a missing entry file", async () => {
+  const url = "https://github.com/owner/repo/tree/main";
+  let zip = makeZip([{ name: "owner-repo-sha/README.md" }]);
+  vi.stubGlobal("fetch", async () => new Response(new Uint8Array(zip)));
+  await expect(installFromUrl({ extensionsRoot, url })).rejects.toThrow("missing manifest.json");
+  zip = extensionZip({
+    wrapper: "owner-repo-sha",
+    manifest: { desktop: { script: "dist/entry.js" } },
+    extras: [{ name: "owner-repo-sha/src/index.ts" }],
+  });
+  await expect(installFromUrl({ extensionsRoot, url })).rejects.toThrow(
+    "Missing entry file dist/entry.js. Commit the built JavaScript entry or publish a Release .zip.",
+  );
+  expect(await readdir(extensionsRoot)).toEqual([]);
+});
+
+it("downloads and installs a ZIP above 5 MiB with more than 10 MiB of extracted resources", async () => {
+  const zip = extensionZip({
+    extras: [
+      { name: "asset.bin", data: Buffer.alloc(6 * 1024 * 1024) },
+      { name: "compressed.bin", data: Buffer.alloc(6 * 1024 * 1024), deflate: true },
+    ],
+  });
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(new Uint8Array(zip), {
+        headers: { "content-length": String(zip.length) },
+      }),
+  );
+  const { installedPath } = await installFromUrl({
+    extensionsRoot,
+    url: "https://example.com/sample.zip",
+  });
+  expect((await readFile(path.join(installedPath, "asset.bin"))).length).toBe(6 * 1024 * 1024);
+  expect((await readFile(path.join(installedPath, "compressed.bin"))).length).toBe(6 * 1024 * 1024);
 });
 
 it("reads a local override, caches for five minutes, refreshes on demand and falls back to official entries", async () => {

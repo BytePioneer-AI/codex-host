@@ -164,7 +164,7 @@ var harnessPluginConfigurationSchema = z2
 // packages/shared-contracts/src/desktop-extensions.ts
 var DESKTOP_EXTENSION_API_VERSION = 1;
 var DESKTOP_EXTENSION_LIMIT = 64;
-var DESKTOP_EXTENSION_ZIP_MAX_BYTES = 5 * 1024 * 1024;
+var DESKTOP_EXTENSION_ZIP_MAX_BYTES = 64 * 1024 * 1024;
 var DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH = 4 * Math.ceil(DESKTOP_EXTENSION_ZIP_MAX_BYTES / 3);
 var DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 128 * 1024;
 var DESKTOP_EXTENSION_SCRIPT_MAX_BYTES = 2 * 1024 * 1024;
@@ -297,10 +297,23 @@ var desktopExtensionsDiagnosticSchema = z3.strictObject({
   extensions: z3.record(z3.string(), desktopExtensionStatusSchema),
 });
 var desktopExtensionTrustTierSchema = z3.enum(["official", "community"]);
-var desktopExtensionZipUrlSchema = desktopExtensionHttpUrlSchema.refine(
-  (url) => /\.zip$/iu.test(new URL(url).pathname),
-  "Expected a .zip download URL",
-);
+function isGitHubDesktopExtensionZipballUrl(url) {
+  return (
+    url.origin === "https://api.github.com" &&
+    /^\/repos\/[\w-]+\/[\w.-]+\/zipball(?:\/[^/]+)?\/?$/u.test(url.pathname)
+  );
+}
+var desktopExtensionZipUrlSchema = desktopExtensionHttpUrlSchema.refine((input) => {
+  const url = new URL(input);
+  return (
+    /\.zip$/iu.test(url.pathname) ||
+    isGitHubDesktopExtensionZipballUrl(url) ||
+    (url.origin === "https://github.com" &&
+      /^\/[\w-]+\/[\w.-]+\/zipball(?:\/.+)?\/?$/u.test(url.pathname)) ||
+    (url.origin === "https://codeload.github.com" &&
+      /^\/[\w-]+\/[\w.-]+\/(?:zip|zipball|legacy\.zip)\/.+$/u.test(url.pathname))
+  );
+}, "Expected a .zip download URL or a GitHub zipball URL");
 var desktopExtensionCatalogEntrySchema = z3.strictObject({
   id: desktopExtensionIdSchema,
   version: z3.string().trim().min(1).max(128),
@@ -360,8 +373,10 @@ function compareExtensionVersions(a, b) {
 
 // packages/harness-plugin-files/src/desktop-extension-zip.ts
 import { crc32, inflateRawSync } from "node:zlib";
-var MAX_UNPACKED_BYTES = 10 * 1024 * 1024;
-var MAX_ENTRIES = 50;
+var MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
+var MAX_ENTRIES = 1e4;
+var EXPANSION_RATIO = 200;
+var EXPANSION_FLOOR_BYTES = 16 * 1024 * 1024;
 var END = 101010256;
 var CENTRAL = 33639248;
 var LOCAL = 67324752;
@@ -379,15 +394,16 @@ function safeName(name, directory) {
         part !== "." &&
         part !== ".." &&
         !/[. ]$/u.test(part) &&
-        !/[\x00-\x1f\x7f<>:"|?*]/u.test(part) &&
+        !/[\x00-\x1f\x7f\\<>:"|?*]/u.test(part) &&
         !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]) *(?:\.|$)/iu.test(part),
     ),
     "unsafe entry path",
   );
   return parts.join("/");
 }
-function readDesktopExtensionZip(zip) {
-  check(zip.length <= DESKTOP_EXTENSION_ZIP_MAX_BYTES, "archive exceeds 5 MiB");
+function readDesktopExtensionZip(zip, subpath) {
+  check(zip.length <= DESKTOP_EXTENSION_ZIP_MAX_BYTES, "archive exceeds the safety size limit");
+  const subdirectory = subpath === void 0 ? void 0 : safeName(subpath, false);
   const u16 = (offset) => zip.readUInt16LE(offset);
   const u32 = (offset) => zip.readUInt32LE(offset);
   let end = zip.length - 22;
@@ -398,7 +414,7 @@ function readDesktopExtensionZip(zip) {
   const start = u32(end + 16);
   check(u16(end + 4) === 0 && u16(end + 6) === 0 && u16(end + 8) === count, "multi-disk archive");
   check(start + u32(end + 12) === end, "invalid central directory bounds (ZIP64 is unsupported)");
-  check(count > 0 && count <= MAX_ENTRIES, "expected 1\u201350 entries");
+  check(count > 0 && count <= MAX_ENTRIES, `expected 1\u2013${MAX_ENTRIES} entries`);
   const files = /* @__PURE__ */ new Map();
   const paths = /* @__PURE__ */ new Map();
   const ranges = [];
@@ -473,13 +489,13 @@ function readDesktopExtensionZip(zip) {
         "local entry sizes or CRC disagree",
       );
     }
-    check(
-      ranges.every((range) => local >= range.end || localEnd <= range.start),
-      "overlapping local entries",
-    );
     ranges.push({ start: local, end: localEnd });
     total += size;
-    check(total <= MAX_UNPACKED_BYTES, "unpacked data exceeds 10 MiB");
+    check(total <= MAX_UNPACKED_BYTES, "unpacked data exceeds the safety size limit");
+    check(
+      size <= Math.max(EXPANSION_FLOOR_BYTES, compressed * EXPANSION_RATIO),
+      "entry exceeds the safety compression ratio",
+    );
     check(!directory || size === 0, "directory contains file data");
     const input = zip.subarray(data, data + compressed);
     const bytes =
@@ -489,13 +505,25 @@ function readDesktopExtensionZip(zip) {
     central = next;
   }
   check(central === end, "incorrect central directory size");
-  if (files.has("manifest.json")) return files;
-  const [wrapper, ...other] = new Set([...paths.values()].map(({ name }) => name.split("/")[0]));
+  ranges.sort((a, b) => a.start - b.start);
   check(
-    wrapper && !other.length && files.has(`${wrapper}/manifest.json`),
-    "missing manifest.json at the root or inside a single top-level directory",
+    ranges.every(({ start: start2 }, index) => index === 0 || ranges[index - 1].end <= start2),
+    "overlapping local entries",
   );
-  return new Map([...files].map(([name, bytes]) => [name.slice(wrapper.length + 1), bytes]));
+  if (subdirectory === void 0 && files.has("manifest.json")) return files;
+  const roots = [...paths.values()].filter(({ name }) => !name.includes("/"));
+  const [wrapper] = roots;
+  const prefix = wrapper && `${wrapper.name}/${subdirectory ? `${subdirectory}/` : ""}`;
+  check(
+    roots.length === 1 && wrapper?.directory && prefix && files.has(`${prefix}manifest.json`),
+    subdirectory
+      ? `missing manifest.json in repository subdirectory ${subdirectory}`
+      : "missing manifest.json at the root or inside a single top-level directory",
+  );
+  const selected = /* @__PURE__ */ new Map();
+  for (const [name, bytes] of files)
+    if (name.startsWith(prefix)) selected.set(name.slice(prefix.length), bytes);
+  return selected;
 }
 export {
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
@@ -510,5 +538,6 @@ export {
   desktopExtensionManifestSchema,
   desktopExtensionScreenshotMimeType,
   desktopExtensionZipUrlSchema,
+  isGitHubDesktopExtensionZipballUrl,
   readDesktopExtensionZip,
 };

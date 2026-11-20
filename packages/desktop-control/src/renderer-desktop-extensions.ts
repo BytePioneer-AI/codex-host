@@ -13,8 +13,8 @@ import {
 import {
   desktopExtensionsRoot,
   desktopExtensionsStatusPath,
-  discoverDesktopExtensions,
-  readDesktopExtensionConfiguration,
+  isDesktopExtensionTransactionEntry,
+  readDesktopExtensionSnapshot,
   type DesktopExtensionInstallation,
 } from "@codexhost/harness-plugin-files";
 
@@ -177,7 +177,10 @@ export class RendererDesktopExtensions {
 
   #ensureWatch(): void {
     if (this.#watchingRoot || this.#closed) return;
-    const onChange = (event: string) => {
+    const onChange = (event: string, filename: string | null) => {
+      // A read snapshot takes the same lock as installers; it isn't a package change.
+      if (filename && isDesktopExtensionTransactionEntry(filename.split(path.sep, 1)[0] ?? ""))
+        return;
       if (event === "rename" && this.#watchingRoot) {
         this.#watch?.close();
         this.#watch = undefined;
@@ -257,10 +260,10 @@ export class RendererDesktopExtensions {
         /* No completed recovery to remember. */
       }
     }
-    const [{ configuration }, discovery] = await Promise.all([
-      readDesktopExtensionConfiguration(this.#root),
-      discoverDesktopExtensions(this.#root),
-    ]);
+    const {
+      selection: { configuration },
+      discovery,
+    } = await readDesktopExtensionSnapshot(this.#root);
     if (this.#target !== target || this.#closed) return;
     target.enabled = configuration.enabled.length > 0;
     const token = configuration.reloadToken;
@@ -295,7 +298,8 @@ export class RendererDesktopExtensions {
     );
     let remaining = DESKTOP_EXTENSION_SNAPSHOT_MAX_BYTES - 512;
     for (const id of active) {
-      const item = application(valid.get(id)!);
+      const installed = valid.get(id);
+      const item = installed && application(installed);
       if (!item) continue;
       const bytes = Buffer.byteLength(item.expression) + 2;
       if (bytes > remaining)
@@ -309,8 +313,10 @@ export class RendererDesktopExtensions {
         desired.push(item);
       }
     }
-    for (const [id, conflictWith] of conflicts)
-      statuses.set(id, { state: "conflict", conflictWith, hash: valid.get(id)!.hash });
+    for (const [id, conflictWith] of conflicts) {
+      const item = valid.get(id);
+      if (item) statuses.set(id, { state: "conflict", conflictWith, hash: item.hash });
+    }
     for (const id of configuration.enabled)
       if (!valid.has(id) && !statuses.has(id))
         statuses.set(id, {
@@ -338,13 +344,13 @@ export class RendererDesktopExtensions {
       );
     }
     const observed = await this.#readRenderer(target).catch(() => null);
-    for (const item of desired)
+    for (const item of desired) {
+      const status = observed?.[item.id];
       statuses.set(
         item.id,
-        observed?.[item.id]?.hash === item.hash
-          ? observed[item.id]!
-          : { state: "waiting", hash: item.hash },
+        status?.hash === item.hash ? status : { state: "waiting", hash: item.hash },
       );
+    }
     for (const [id, status] of Object.entries(observed ?? {}))
       if (!statuses.has(id) && status.state === "disabled" && status.error)
         statuses.set(id, status);
@@ -393,8 +399,8 @@ export class RendererDesktopExtensions {
             item.state === "disabled"
           )
             continue;
-          if (observed && Object.hasOwn(observed, id) && observed[id]?.hash === item.hash)
-            target.extensions[id] = observed[id]!;
+          const status = observed && Object.hasOwn(observed, id) ? observed[id] : undefined;
+          if (status && status.hash === item.hash) target.extensions[id] = status;
           else if (item.state !== "failed")
             target.extensions[id] = { state: "waiting", ...(item.hash ? { hash: item.hash } : {}) };
         }

@@ -115,3 +115,36 @@ it("isolates activation, handler, disposal and uncaught async errors from the Ho
   expect(diagnostics).toContainEqual(expect.stringContaining("dispose failed"));
   expect(await manager.invoke("conflict", "ping")).toBe(false);
 });
+
+it("rejects over-limit or invalid IPC without interrupting either backend", async () => {
+  await install(
+    "sample",
+    `export function activate(ctx) {
+      ctx.handle('large', () => 'é'.repeat(1024 * 1024));
+      ctx.handle('circular', () => { const value = {}; value.self = value; return value; });
+      ctx.handle('settings-write', () => ctx.writeSettings({ value: 'é'.repeat(1024 * 1024) }));
+      ctx.handle('settings-burst', async () => {
+        const results = await Promise.allSettled(Array.from({ length: 5 }, () => ctx.readSettings()));
+        const failures = results.filter(result => result.status === 'rejected');
+        if (failures.length !== 1) throw new Error('Expected exactly one rejected settings request');
+        throw failures[0].reason;
+      });
+      ctx.handle('settings', () => ctx.writeSettings({ ready: true }));
+    }`,
+  );
+  await install("other", `export function activate(ctx) { ctx.handle('ping', () => 'pong'); }`);
+  await select(["sample", "other"]);
+  await manager.reconcile();
+
+  for (const [method, reason] of [
+    ["large", "Backend IPC message exceeds 2 MiB"],
+    ["circular", "Backend IPC message is not JSON-serializable"],
+    ["settings-write", "Backend IPC message exceeds 2 MiB"],
+    ["settings-burst", "Too many pending backend settings requests (limit: 4)"],
+  ] as const) {
+    await expect(manager.invoke("sample", method)).rejects.toThrow(reason);
+    await expect(manager.invoke("other", "ping")).resolves.toBe("pong");
+  }
+  await expect(manager.invoke("sample", "settings")).resolves.toEqual({ ready: true });
+  expect(diagnostics).toEqual([]);
+});

@@ -9,8 +9,8 @@ import {
   desktopExtensionIdSchema,
   jsonObjectSchema,
 } from "@codexhost/shared-contracts";
+import { withDesktopExtensionInstallationDirectory } from "./extension-configuration.js";
 import {
-  desktopExtensionDirectory,
   extensionFileMissing,
   privateExtensionDirectory,
   readExtensionResource,
@@ -26,9 +26,11 @@ export async function readDesktopExtensionAsset({
   assetPath: string;
 }) {
   const resource = desktopExtensionAssetPathSchema.parse(assetPath);
-  const mimeType = desktopExtensionAssetMimeType(resource)!;
-  const directory = await desktopExtensionDirectory(dataDir, id);
-  const bytes = await readExtensionResource(directory, resource, DESKTOP_EXTENSION_ASSET_MAX_BYTES);
+  const mimeType = desktopExtensionAssetMimeType(resource);
+  if (!mimeType) throw new Error("Unsupported Desktop extension asset type");
+  const bytes = await withDesktopExtensionInstallationDirectory(dataDir, id, (directory) =>
+    readExtensionResource(directory, resource, DESKTOP_EXTENSION_ASSET_MAX_BYTES),
+  );
   return { mimeType, dataUrl: `data:${mimeType};base64,${bytes.toString("base64")}` };
 }
 

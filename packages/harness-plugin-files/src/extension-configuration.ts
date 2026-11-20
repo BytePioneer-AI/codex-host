@@ -5,16 +5,28 @@ import lockfile from "proper-lockfile";
 import {
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
   desktopExtensionConfigurationSchema,
+  desktopExtensionIdSchema,
   type DesktopExtensionConfiguration,
 } from "@codexhost/shared-contracts";
 import {
   DESKTOP_EXTENSION_CONFIGURATION_LOCK,
+  desktopExtensionsRoot,
   extensionFileMissing,
   privateExtensionDirectory,
   readExtensionResource,
 } from "./extension-discovery.js";
 
 const CONFIG_FILE = "enabled.json";
+
+export function missingDesktopExtensionConfiguration(error: unknown) {
+  const configuration: DesktopExtensionConfiguration = { version: 1, revision: 0, enabled: [] };
+  return extensionFileMissing(error)
+    ? { configuration }
+    : {
+        configuration,
+        diagnostic: `Invalid extension configuration: ${error instanceof Error ? error.message : String(error)}`,
+      };
+}
 
 export async function readDesktopExtensionConfiguration(
   root: string,
@@ -30,12 +42,7 @@ export async function readDesktopExtensionConfiguration(
       configuration: desktopExtensionConfigurationSchema.parse(JSON.parse(bytes.toString("utf8"))),
     };
   } catch (error) {
-    const configuration: DesktopExtensionConfiguration = { version: 1, revision: 0, enabled: [] };
-    if (extensionFileMissing(error)) return { configuration };
-    return {
-      configuration,
-      diagnostic: `Invalid extension configuration: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    return missingDesktopExtensionConfiguration(error);
   }
 }
 
@@ -74,17 +81,9 @@ export async function withDesktopExtensionConfiguration<T>(
 ): Promise<T> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const directory = await privateExtensionDirectory(root);
-  let compromised: Error | undefined;
-  const release = await lockfile.lock(directory, {
-    lockfilePath: path.join(directory, DESKTOP_EXTENSION_CONFIGURATION_LOCK),
-    retries: { retries: 24, minTimeout: 50, maxTimeout: 500 },
-    onCompromised(error) {
-      compromised = error;
-    },
-  });
-  try {
+  return withDesktopExtensionDirectoryLock(directory, async (assertLocked) => {
     const { configuration } = await readDesktopExtensionConfiguration(directory);
-    return await operation({
+    return operation({
       directory,
       configuration,
       async save(update) {
@@ -96,7 +95,7 @@ export async function withDesktopExtensionConfiguration<T>(
         const temporary = path.join(directory, `.enabled-${randomUUID()}.tmp`);
         try {
           await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600, flag: "wx" });
-          if (compromised) throw compromised;
+          assertLocked();
           await rename(temporary, path.join(directory, CONFIG_FILE));
         } catch (error) {
           await rm(temporary, { force: true }).catch(() => undefined);
@@ -105,7 +104,46 @@ export async function withDesktopExtensionConfiguration<T>(
         return next;
       },
     });
+  });
+}
+
+/** Hold the same cross-process lock while reading a configuration and its package files. */
+export async function withDesktopExtensionDirectoryLock<T>(
+  directory: string,
+  operation: (assertLocked: () => void) => Promise<T>,
+): Promise<T> {
+  let compromised: Error | undefined;
+  const release = await lockfile.lock(directory, {
+    lockfilePath: path.join(directory, DESKTOP_EXTENSION_CONFIGURATION_LOCK),
+    retries: { retries: 24, minTimeout: 50, maxTimeout: 500 },
+    onCompromised(error) {
+      compromised = error;
+    },
+  });
+  const assertLocked = () => {
+    if (compromised) throw compromised;
+  };
+  try {
+    const result = await operation(assertLocked);
+    assertLocked();
+    return result;
   } finally {
     if (!compromised) await release();
   }
+}
+
+export async function withDesktopExtensionInstallationDirectory<T>(
+  dataDir: string,
+  id: string,
+  read: (directory: string) => Promise<T>,
+): Promise<T> {
+  desktopExtensionIdSchema.parse(id);
+  const root = await privateExtensionDirectory(desktopExtensionsRoot(dataDir));
+  return withDesktopExtensionDirectoryLock(root, async () =>
+    read(await privateExtensionDirectory(path.join(root, id))),
+  );
+}
+
+export function desktopExtensionDirectory(dataDir: string, id: string): Promise<string> {
+  return withDesktopExtensionInstallationDirectory(dataDir, id, async (directory) => directory);
 }

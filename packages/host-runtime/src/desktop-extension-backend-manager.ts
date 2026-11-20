@@ -2,8 +2,8 @@ import { pathToFileURL } from "node:url";
 import {
   desktopExtensionDataDirectory,
   desktopExtensionsRoot,
-  discoverDesktopExtensions,
   readDesktopExtensionConfiguration,
+  readDesktopExtensionSnapshot,
 } from "@codexhost/harness-plugin-files";
 import { resolveDesktopExtensionSlots } from "@codexhost/shared-contracts";
 import { DesktopExtensionBackendProcess } from "./desktop-extension-backend-process.js";
@@ -71,18 +71,17 @@ export class DesktopExtensionBackendManager {
 
   async #sync(force: boolean): Promise<void> {
     if (this.#closed) return;
-    const { configuration } = await readDesktopExtensionConfiguration(this.#root);
-    const selection = JSON.stringify(configuration);
-    if (!force && selection === this.#lastConfiguration && Date.now() - this.#lastScan < 30_000)
-      return;
-    this.#lastConfiguration = selection;
+    if (!force && Date.now() - this.#lastScan < 30_000) {
+      const { configuration } = await readDesktopExtensionConfiguration(this.#root);
+      if (JSON.stringify(configuration) === this.#lastConfiguration) return;
+    }
+    const {
+      selection: { configuration },
+      discovery,
+    } = await readDesktopExtensionSnapshot(this.#root, { skipScanIfNoneEnabled: true });
+    this.#lastConfiguration = JSON.stringify(configuration);
     this.#lastScan = Date.now();
-    const valid =
-      configuration.enabled.length === 0
-        ? []
-        : (await discoverDesktopExtensions(this.#root)).extensions.flatMap((entry) =>
-            entry.state === "valid" ? [entry] : [],
-          );
+    const valid = discovery.extensions.flatMap((entry) => (entry.state === "valid" ? [entry] : []));
     const { active } = resolveDesktopExtensionSlots(
       configuration.enabled,
       valid.map(({ manifest }) => manifest),

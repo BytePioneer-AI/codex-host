@@ -43,6 +43,7 @@ import {
   type DesktopExtensionManagementMethod,
 } from "@codexhost/shared-contracts";
 import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import { backendIpcErrorMessage } from "./desktop-extension-backend-process.js";
 import { rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 
@@ -94,8 +95,12 @@ export async function handleDesktopExtensionRequest(
         const { id, method, params } = input.data;
         const result = await backends.invoke(id, method, params);
         return reply(desktopExtensionsBackendInvokeResultSchema.parse({ result }));
-      } catch {
-        return rpcError(request, -32000, "Desktop extension backend could not complete the call");
+      } catch (error) {
+        return rpcError(
+          request,
+          -32000,
+          backendIpcErrorMessage(error) ?? "Desktop extension backend could not complete the call",
+        );
       }
     }
     if (method === DESKTOP_EXTENSIONS_CATALOG_METHOD) {

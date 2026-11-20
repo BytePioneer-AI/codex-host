@@ -183,15 +183,11 @@ export async function installFromZipBuffer(
               `At most ${DESKTOP_EXTENSION_LIMIT} extensions are supported`,
             );
         }
+        // Commit the revision (not a new selection) before touching the live package.
+        // Readers take this same lock, so they cannot scan during the directory swap.
+        await save({ enabled: configuration.enabled });
         return withInstallationBackup(installedPath, async (replaced) => {
           await rename(staging, installedPath);
-          try {
-            // The Controller watches enabled.json. Preserve selection, and do not request a window reload.
-            await save({ enabled: configuration.enabled });
-          } catch (error) {
-            await rename(installedPath, staging);
-            throw error;
-          }
           return { extensionId: id, version, replaced, installedPath };
         });
       },

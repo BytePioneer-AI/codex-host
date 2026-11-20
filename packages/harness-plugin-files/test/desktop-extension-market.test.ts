@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -17,6 +18,20 @@ import {
   updateDesktopExtensionSelection,
 } from "../src/index.js";
 
+const fsHooks = vi.hoisted(() => ({
+  beforeRename: undefined as ((destination: string) => Promise<void>) | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof FsPromises>();
+  return {
+    ...fs,
+    async rename(source: string, destination: string) {
+      await fsHooks.beforeRename?.(destination);
+      return fs.rename(source, destination);
+    },
+  };
+});
+
 let dataDir: string;
 let extensionsRoot: string;
 beforeEach(async () => {
@@ -24,6 +39,7 @@ beforeEach(async () => {
   extensionsRoot = desktopExtensionsRoot(dataDir);
 });
 afterEach(async () => {
+  fsHooks.beforeRename = undefined;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   await rm(dataDir, { recursive: true, force: true });
@@ -100,17 +116,43 @@ it("rejects symlinks, excessive entries, extreme compression and a bad digest", 
   expect(await readdir(dataDir)).toEqual([]);
 });
 
-it("rolls back an update if writing the new configuration fails after the directory swap", async () => {
-  await installFromZipBuffer({ extensionsRoot, zipBuffer: extensionZip() });
-  const manifest = path.join(extensionsRoot, "sample", "manifest.json");
+it("keeps the enabled package visible when a concurrent scan races a failed configuration commit", async () => {
+  const { installedPath } = await installFromZipBuffer({
+    extensionsRoot,
+    zipBuffer: extensionZip(),
+  });
+  await updateDesktopExtensionSelection(dataDir, {
+    action: "enable",
+    id: "sample",
+    expectedRevision: 1,
+  });
+  const manifest = path.join(installedPath, "manifest.json");
   const before = await readFile(manifest, "utf8");
-  // The real filesystem refuses the atomic configuration rename over a directory.
-  await rm(path.join(extensionsRoot, "enabled.json"));
-  await mkdir(path.join(extensionsRoot, "enabled.json"));
-  await expect(
+  const commit = Promise.withResolvers<undefined>();
+  const resume = Promise.withResolvers<undefined>();
+  fsHooks.beforeRename = async (destination) => {
+    if (path.basename(destination) !== "enabled.json") return;
+    commit.resolve(undefined);
+    await resume.promise;
+    throw new Error("injected enabled.json commit failure");
+  };
+  const failed = expect(
     installFromZipBuffer({ extensionsRoot, zipBuffer: extensionZip({ version: "2.0.0" }) }),
-  ).rejects.toThrow(/EISDIR|EPERM|EEXIST/u);
-  expect(await readFile(manifest, "utf8")).toBe(before);
+  ).rejects.toThrow("injected enabled.json commit failure");
+  await commit.promise;
+  const scan = listDesktopExtensions(dataDir);
+  try {
+    // A running backend can still access files directly while the commit is pending.
+    expect(await readFile(manifest, "utf8")).toBe(before);
+  } finally {
+    resume.resolve(undefined);
+    await failed;
+    await scan;
+  }
+  expect(await scan).toMatchObject({
+    configuration: { enabled: ["sample"], revision: 2 },
+    extensions: [{ id: "sample", enabled: true, manifest: { version: "1.0.0" } }],
+  });
   expect((await readdir(extensionsRoot)).sort()).toEqual(["enabled.json", "sample"]);
 });
 
@@ -362,7 +404,9 @@ it("uses the mirror on primary failure and refuses an archive with a different c
 });
 
 it("posts only the encoded ID to the configured base URL and bounds the request time", async () => {
-  const fetch = vi.fn(async (_url: URL, _init: RequestInit) => Response.json({ downloads: 1 }));
+  const fetch = vi.fn<(_url: URL, _init: RequestInit) => Promise<Response>>(async () =>
+    Response.json({ downloads: 1 }),
+  );
   vi.stubGlobal("fetch", fetch);
   const timeout = vi.spyOn(AbortSignal, "timeout");
   await reportDesktopExtensionInstall(

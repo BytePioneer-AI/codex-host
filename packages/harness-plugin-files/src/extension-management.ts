@@ -12,13 +12,17 @@ import {
 } from "@codexhost/shared-contracts";
 import {
   DesktopExtensionRevisionConflict,
+  missingDesktopExtensionConfiguration,
   readDesktopExtensionConfiguration,
+  withDesktopExtensionDirectoryLock,
   writeDesktopExtensionConfiguration,
 } from "./extension-configuration.js";
 import {
   desktopExtensionsRoot,
   desktopExtensionsStatusPath,
-  discoverDesktopExtensions,
+  discoverDesktopExtensions as scanDesktopExtensions,
+  extensionFileMissing,
+  privateExtensionDirectory,
 } from "./extension-discovery.js";
 
 const MAX_STATUS_AGE_MS = 15_000;
@@ -31,13 +35,49 @@ class DesktopExtensionSlotConflict extends Error {
   }
 }
 
+export async function readDesktopExtensionSnapshot(
+  root: string,
+  { skipScanIfNoneEnabled = false } = {},
+) {
+  let directory: string;
+  try {
+    directory = await privateExtensionDirectory(root);
+  } catch (error) {
+    return {
+      selection: missingDesktopExtensionConfiguration(error),
+      discovery: {
+        extensions: [],
+        ...(!extensionFileMissing(error) && {
+          diagnostic: error instanceof Error ? error.message : String(error),
+        }),
+      },
+    };
+  }
+  return withDesktopExtensionDirectoryLock(directory, async () => {
+    const selection = await readDesktopExtensionConfiguration(directory);
+    const discovery =
+      skipScanIfNoneEnabled && !selection.configuration.enabled.length
+        ? { extensions: [] }
+        : await scanDesktopExtensions(directory);
+    return { selection, discovery };
+  });
+}
+
+export async function discoverDesktopExtensions(root: string) {
+  return (await readDesktopExtensionSnapshot(root)).discovery;
+}
+
 export async function listDesktopExtensions(
   dataDirectory: string,
 ): Promise<DesktopExtensionsListResult> {
-  const root = desktopExtensionsRoot(dataDirectory);
-  const [discovery, { configuration, diagnostic }, status] = await Promise.all([
-    discoverDesktopExtensions(root),
-    readDesktopExtensionConfiguration(root),
+  const [
+    {
+      discovery,
+      selection: { configuration, diagnostic },
+    },
+    status,
+  ] = await Promise.all([
+    readDesktopExtensionSnapshot(desktopExtensionsRoot(dataDirectory)),
     readStatus(dataDirectory),
   ]);
   const { conflicts } = resolveDesktopExtensionSlots(
@@ -101,7 +141,7 @@ export async function updateDesktopExtensionSelection(
         if (change.action === "recover") return { enabled: [], reloadToken: randomUUID() };
         if (change.action === "disable")
           return { enabled: enabled.filter((id) => id !== change.id) };
-        const { extensions } = await discoverDesktopExtensions(root);
+        const { extensions } = await scanDesktopExtensions(root);
         const item = extensions.find((item) => item.id === change.id);
         if (!item || item.state !== "valid")
           throw new DesktopExtensionSelectionError(item?.error ?? "Extension not found");

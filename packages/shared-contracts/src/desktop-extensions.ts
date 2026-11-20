@@ -395,9 +395,9 @@ export function resolveDesktopExtensionSlots(
   for (const id of new Set(enabledOrder)) {
     const slots = byId.get(id);
     if (!slots) continue;
-    const occupied = slots.find((slot) => owners.has(slot));
-    if (occupied) {
-      conflicts.set(id, owners.get(occupied)!);
+    const conflictWith = slots.map((slot) => owners.get(slot)).find((owner) => owner !== undefined);
+    if (conflictWith !== undefined) {
+      conflicts.set(id, conflictWith);
       continue;
     }
     for (const slot of slots) owners.set(slot, id);
@@ -477,8 +477,10 @@ export interface DesktopExtensionApiV1 {
 
 export type DesktopExtensionDispose = () => void | Promise<void>;
 export interface DesktopExtensionDefinitionV1 {
+  /* eslint-disable @typescript-eslint/no-invalid-void-type -- Preserve inferred void and Promise<void> for extensions without a disposer. */
   activate(
     api: DesktopExtensionApiV1,
   ): void | DesktopExtensionDispose | Promise<void | DesktopExtensionDispose>;
+  /* eslint-enable @typescript-eslint/no-invalid-void-type */
 }
 export type DesktopExtensionDefine = (definition: DesktopExtensionDefinitionV1) => void;

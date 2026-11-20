@@ -1,4 +1,4 @@
-import { spawn, type Serializable } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   readDesktopExtensionSettings,
   writeDesktopExtensionSettings,
@@ -17,9 +17,27 @@ type Settings = { op: "read" } | { op: "write"; values: Record<string, unknown> 
 
 type BackendExports = { activate?: (context: DesktopExtensionBackendContext) => unknown };
 
+const MAX_IPC_BYTES = 2 * 1024 * 1024;
+const MAX_SETTINGS_IN_FLIGHT = 4;
+const IPC_ERRORS = {
+  invalidJson: "Backend IPC message is not JSON-serializable",
+  tooLarge: "Backend IPC message exceeds 2 MiB",
+  settingsLimit: `Too many pending backend settings requests (limit: ${MAX_SETTINGS_IN_FLIGHT})`,
+};
+
+/** Return only Host-defined IPC errors, not arbitrary extension error details. */
+export function backendIpcErrorMessage(error: unknown): string | undefined {
+  return error instanceof Error
+    ? Object.values(IPC_ERRORS).find((message) => message === error.message)
+    : undefined;
+}
+
 // Self-contained child entry point: the release Host ships as a single ESM bundle.
 function backendChild(
   importEntry: (url: string) => Promise<BackendExports & { default?: BackendExports }>,
+  maxIpcBytes: number,
+  maxSettingsInFlight: number,
+  errors: typeof IPC_ERRORS,
 ) {
   const pendingSettings = new Map<
     number,
@@ -28,9 +46,33 @@ function backendChild(
   const handlers = new Map<string, (params: unknown) => unknown>();
   let settingsId = 0;
   let dispose: (() => unknown) | undefined;
-  const send = (message: Serializable) => process.send!(message);
+  const send = (message: Reply | { settings: Settings & { id: number } }) => {
+    let text: string;
+    try {
+      text = JSON.stringify(message, (_key, value: unknown) => {
+        if (
+          value === undefined ||
+          typeof value === "function" ||
+          typeof value === "symbol" ||
+          (typeof value === "number" && !Number.isFinite(value))
+        )
+          throw new TypeError("Not a JSON value");
+        return value;
+      });
+    } catch {
+      throw new TypeError(errors.invalidJson);
+    }
+    if (Buffer.byteLength(text) > maxIpcBytes) throw new RangeError(errors.tooLarge);
+    // Send the checked JSON, not the original object (getters/toJSON may change it).
+    if (!process.send || !process.connected) throw new Error("Backend IPC channel is closed");
+    process.send(text, undefined, undefined, () => undefined);
+  };
   const settings = (command: Settings) =>
     new Promise<Record<string, unknown>>((resolve, reject) => {
+      if (pendingSettings.size >= maxSettingsInFlight) {
+        reject(new Error(errors.settingsLimit));
+        return;
+      }
       const id = ++settingsId;
       pendingSettings.set(id, { resolve, reject });
       try {
@@ -105,14 +147,12 @@ function backendChild(
       const value = await run(message);
       send({ id: message.id, ok: true, value });
     } catch (error) {
-      send({
-        id: message.id,
-        ok: false,
-        error: (error instanceof Error ? error.message : "Backend threw a non-Error value").slice(
-          0,
-          512,
-        ),
-      });
+      if (!process.connected) return;
+      const details =
+        error instanceof Error && typeof error.message === "string"
+          ? error.message
+          : "Backend threw a non-Error value";
+      send({ id: message.id, ok: false, error: details.slice(0, 512) });
     }
   });
 }
@@ -134,7 +174,7 @@ export class DesktopExtensionBackendProcess {
         "--max-old-space-size=128",
         "--input-type=module",
         "--eval",
-        `(${backendChild.toString()})(url => import(url))`,
+        `(${backendChild.toString()})(url => import(url), ${MAX_IPC_BYTES}, ${MAX_SETTINGS_IN_FLIGHT}, ${JSON.stringify(IPC_ERRORS)})`,
       ],
       {
         stdio: ["ignore", "ignore", "ignore", "ipc"],
@@ -151,7 +191,14 @@ export class DesktopExtensionBackendProcess {
     };
     this.#child.on("error", (error) => failed(error.message));
     this.#child.on("exit", (code, signal) => failed(`Backend exited (${signal ?? code})`));
-    this.#child.on("message", (message: Reply | { settings: Settings & { id: number } }) => {
+    this.#child.on("message", (text: unknown) => {
+      if (typeof text !== "string" || Buffer.byteLength(text) > MAX_IPC_BYTES) return;
+      let message: Reply | { settings: Settings & { id: number } };
+      try {
+        message = JSON.parse(text);
+      } catch {
+        return;
+      }
       if (!message || typeof message !== "object") return;
       if (!("settings" in message)) {
         this.#pending.get(message.id)?.(message);
@@ -159,6 +206,14 @@ export class DesktopExtensionBackendProcess {
       }
       const request = message.settings;
       if (!request || !["read", "write"].includes(request.op)) return;
+      if (this.#settings.size >= MAX_SETTINGS_IN_FLIGHT) {
+        this.#sendSettingsReply({
+          id: request.id,
+          ok: false,
+          error: IPC_ERRORS.settingsLimit,
+        });
+        return;
+      }
       const task = (
         request.op === "read"
           ? readDesktopExtensionSettings({ dataDir, id })

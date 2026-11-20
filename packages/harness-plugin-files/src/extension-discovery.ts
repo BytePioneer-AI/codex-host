@@ -57,12 +57,6 @@ export async function privateExtensionDirectory(directory: string): Promise<stri
   return realpath(directory);
 }
 
-export async function desktopExtensionDirectory(dataDir: string, id: string): Promise<string> {
-  desktopExtensionIdSchema.parse(id);
-  const root = await privateExtensionDirectory(desktopExtensionsRoot(dataDir));
-  return privateExtensionDirectory(path.join(root, id));
-}
-
 async function checkedExtensionResource(root: string, relative: string): Promise<string> {
   const resource = await pluginResourcePath(root, relative);
   // Check every traversed directory, not only the resource's mode. A writable

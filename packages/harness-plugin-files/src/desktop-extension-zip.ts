@@ -141,10 +141,11 @@ export function readDesktopExtensionZip(zip: Buffer, subpath?: string): Map<stri
   }
   check(central === end, "incorrect central directory size");
   ranges.sort((a, b) => a.start - b.start);
-  check(
-    ranges.every(({ start }, index) => index === 0 || ranges[index - 1]!.end <= start),
-    "overlapping local entries",
-  );
+  let previousEnd = 0;
+  for (const { start, end } of ranges) {
+    check(previousEnd <= start, "overlapping local entries");
+    previousEnd = end;
+  }
 
   if (subdirectory === undefined && files.has("manifest.json")) return files;
   const roots = [...paths.values()].filter(({ name }) => !name.includes("/"));

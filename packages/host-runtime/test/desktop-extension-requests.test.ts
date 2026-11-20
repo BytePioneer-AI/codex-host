@@ -274,6 +274,7 @@ it("serves assets, persisted settings and registered backend methods over Host R
             export function activate(ctx) {
               ctx.handle('read', async (input) => ({ input, variant, values: await ctx.readSettings() }));
               ctx.handle('fail', () => { throw new Error('failed'); });
+              ctx.handle('large', () => 'é'.repeat(1024 * 1024));
               return async () => { await ctx.writeSettings({ ...await ctx.readSettings(), disposed: variant }); };
             }`,
               },
@@ -312,7 +313,12 @@ it("serves assets, persisted settings and registered backend methods over Host R
       result: { result: { input: [1], variant: "first", values: { blur: 5 } } },
     });
     for (const method of ["fail", "missing"])
-      expect(await invoke(method)).toMatchObject({ error: { code: -32000 } });
+      expect(await invoke(method)).toMatchObject({
+        error: { code: -32000, message: "Desktop extension backend could not complete the call" },
+      });
+    expect(await invoke("large")).toMatchObject({
+      error: { code: -32000, message: "Backend IPC message exceeds 2 MiB" },
+    });
     // The backend entry bytes are identical; package replacement must still reload dependencies.
     expect(await install("second")).toMatchObject({ result: { replaced: true } });
     expect(await invoke("read")).toEqual({

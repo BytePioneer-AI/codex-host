@@ -77,8 +77,8 @@ export class ThreadTreeWatch {
 
   constructor(
     private readonly options: {
-      tree: ThreadTree;
-      repository: ExternalThreadRepository;
+      tree: Pick<ThreadTree, "read">;
+      repository: Pick<ExternalThreadRepository, "listSummaries">;
       events: ClientChannelEvents;
       shared?: SharedThreadBridge | undefined;
       externalOnly?: boolean | undefined;
@@ -117,8 +117,9 @@ export class ThreadTreeWatch {
           ...(typeof turn.id === "string" ? { turnId: turn.id } : {}),
         });
       } else if (method === "turn/completed" && (!before.turnId || before.turnId === turn.id)) {
-        const { turnId: _, ...rest } = before;
-        this.#official.set(id, { ...rest, status: "idle" });
+        const next: OfficialNode = { ...before, status: "idle" };
+        delete next.turnId;
+        this.#official.set(id, next);
         for (const [requestId, threadId] of this.#interactions)
           if (threadId === id) this.#interactions.delete(requestId);
       } else if (method === "thread/closed") {
@@ -154,6 +155,7 @@ export class ThreadTreeWatch {
   resetOfficial(): void {
     this.#officialGeneration++;
     this.#official.clear();
+    this.#read.clear();
     this.#interactions.clear();
     this.changed();
   }
@@ -331,18 +333,18 @@ export class ThreadTreeWatch {
   }
 
   async #readInitial(ids: string[]): Promise<void> {
+    const generation = this.#officialGeneration;
     const batch = ids.slice(0, INITIAL_READ_LIMIT);
     const count = Math.max(0, INITIAL_READ_CONCURRENCY - this.#readsInFlight);
     await Promise.all(
       Array.from({ length: Math.min(count, batch.length) }, async () => {
         this.#readsInFlight++;
         try {
-          while (this.#subscriptions.size) {
+          while (this.#subscriptions.size && generation === this.#officialGeneration) {
             const id = batch.shift();
             if (!id) break;
             if (this.#read.has(id) || this.#official.get(id)?.status !== undefined) continue;
             this.#read.add(id);
-            const generation = this.#officialGeneration;
             const thread = await this.options.readOfficial(id).then(
               (reply) =>
                 object(reply.result) && object(reply.result.thread) ? reply.result.thread : null,
@@ -361,6 +363,8 @@ export class ThreadTreeWatch {
           }
         } finally {
           this.#readsInFlight--;
+          // A scan after reconnect may have found all read slots still occupied.
+          if (generation !== this.#officialGeneration) this.changed();
         }
       }),
     );

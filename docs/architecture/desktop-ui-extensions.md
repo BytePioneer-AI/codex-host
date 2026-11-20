@@ -47,6 +47,23 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 - `screenshots` 可选，最多 4 个不重复的相对路径（以 `/` 分隔；路径段不得以点或空格结尾）。只接受 `.png`、`.jpg`、`.jpeg`、`.webp`（扩展名不区分大小写），文件签名必须与扩展名匹配，每张最多 512 KiB，每扩展合计最多 2 MiB。缺失、越界、超限或类型不符会将扩展标为无效，并报告具体截图及原因。有效扩展的 `screenshotDataUrls` 按 `manifest.screenshots` 顺序返回，可直接作为 `<img src>`，不需要文件 URL 或额外网络请求。每次管理列表最多包含 8 MiB 原始截图（base64 编码前），按扩展目录名排序分配；剩余预算不足时省略该扩展的整组预览，给出列表诊断，不影响扩展状态。截图字节不参与热更新 hash 或注入快照。
 - 文件上限：manifest 128 KiB、脚本 2 MiB、样式 256 KiB。最多发现 64 个扩展，单次注入的快照最多 8 MiB。
 
+## 市场与包管理
+
+市场后端默认读取独立索引库的 `main/catalog.json`，GitHub Raw 不可用时尝试 jsDelivr；两者均不可用时返回两条内置官方元数据。进程内缓存 5 分钟；`CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL` 可改为 HTTP(S) 地址或本地绝对路径。详见[独立索引库模板](../../registry/desktop-extensions/README.md)。官方种子 ZIP 在索引库首次发布资产后可下载。
+
+本机 Host RPC 前缀为 `codexhost/desktop/extensions/`，Console 使用下表中的 HTTP 路径。两者共享包管理逻辑；Console 操作请求须通过现有同源检查并带 `X-Codexhost-Console: 1`。
+
+| RPC | Console | 请求 → 响应 |
+| --- | --- | --- |
+| `catalog` | `GET /api/extensions/catalog?forceRefresh=true` | `{ forceRefresh?: boolean }` → `{ catalogUrl, source: "remote" \| "fallback", fetchedAt, cached, extensions, error? }` |
+| `install` | `POST /api/extensions/install` | `{ source }` → `{ extensionId, version, replaced, installedPath, list }` |
+| `uninstall` | `POST /api/extensions/uninstall` | `{ id }` → `{ removedId, list }` |
+
+- 安装来源：`{ type: "catalog", id }`、`{ type: "url", url, expectedSha256? }` 或 `{ type: "zip-base64", fileName, contentBase64 }`。URL 支持 HTTP(S) `.zip` 或公开 GitHub 仓库主页（从最新稳定 Release 选 ZIP 资产）。目录安装强制校验 SHA-256、manifest ID 和版本。文件名仅用于上传元数据，不用作磁盘路径。
+- ZIP 限制：压缩 ≤ 5 MiB、展开 ≤ 10 MiB、最多 50 个条目。manifest 位于 ZIP 根目录或唯一顶层目录内。包管理不会执行脚本；安装后仍须显式启用。
+- 更新调用同一个 `install`，按 manifest ID 覆盖，保留已有启用选择。卸载移除安装目录和 `enabled.json` 中的选择。两者都通过原子写入 `enabled.json` 触发 Desktop Controller 对账，不重载窗口。响应中的 `list` 是最新磁盘快照，Controller 尚未完成激活时状态可以是 `waiting`。
+- UI 可用 `compareExtensionVersions(catalogVersion, installedVersion) > 0` 判断是否有新版本。不识别的版本格式不提示更新。不自动更新本机安装；`trustTier` 和 `minCodexHostVersion` 是索引展示元数据，不是权限或兼容性证明。
+
 ## Desktop API v1
 
 脚本是一个经典 JavaScript 文件，不是 ESM 入口。加载时同步调用一次 `define({ activate(api) { … } })`。`activate` 可返回清理函数，也可返回解析为清理函数或 `void` 的 Promise。激活超时为 5 秒。TypeScript 类型见 [`shared-contracts`](../../packages/shared-contracts/src/desktop-extensions.ts)。

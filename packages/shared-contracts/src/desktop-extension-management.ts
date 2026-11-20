@@ -2,7 +2,11 @@ import { z } from "zod";
 import {
   DESKTOP_EXTENSION_SCREENSHOT_LIMIT,
   DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
+  DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH,
+  desktopExtensionCatalogSchema,
   desktopExtensionConfigurationSchema,
+  desktopExtensionHashSchema,
+  desktopExtensionHttpUrlSchema,
   desktopExtensionIdSchema,
   desktopExtensionManifestSchema,
   desktopExtensionStatusSchema,
@@ -11,6 +15,9 @@ import {
 export const DESKTOP_EXTENSIONS_LIST_METHOD = "codexhost/desktop/extensions/list";
 export const DESKTOP_EXTENSIONS_ENABLE_METHOD = "codexhost/desktop/extensions/enable";
 export const DESKTOP_EXTENSIONS_DISABLE_METHOD = "codexhost/desktop/extensions/disable";
+export const DESKTOP_EXTENSIONS_CATALOG_METHOD = "codexhost/desktop/extensions/catalog";
+export const DESKTOP_EXTENSIONS_INSTALL_METHOD = "codexhost/desktop/extensions/install";
+export const DESKTOP_EXTENSIONS_UNINSTALL_METHOD = "codexhost/desktop/extensions/uninstall";
 export const DESKTOP_EXTENSIONS_RECOVER_METHOD =
   "codexhost/desktop/extensions/disable-all-and-reload";
 
@@ -19,6 +26,9 @@ export const DESKTOP_EXTENSION_MANAGEMENT_METHODS = [
   DESKTOP_EXTENSIONS_ENABLE_METHOD,
   DESKTOP_EXTENSIONS_DISABLE_METHOD,
   DESKTOP_EXTENSIONS_RECOVER_METHOD,
+  DESKTOP_EXTENSIONS_CATALOG_METHOD,
+  DESKTOP_EXTENSIONS_INSTALL_METHOD,
+  DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
 ] as const;
 
 export type DesktopExtensionManagementMethod =
@@ -67,6 +77,65 @@ export const desktopExtensionsListResultSchema = z.strictObject({
   diagnostics: z.array(z.string()),
   extensions: z.array(desktopExtensionListItemSchema),
 });
+
+export const desktopExtensionsCatalogParamsSchema = z.strictObject({
+  forceRefresh: z.boolean().optional(),
+});
+export const desktopExtensionsCatalogResultSchema = z.strictObject({
+  catalogUrl: z.string(),
+  source: z.enum(["remote", "fallback"]),
+  fetchedAt: z.string(),
+  cached: z.boolean(),
+  extensions: desktopExtensionCatalogSchema.shape.extensions,
+  error: z.string().optional(),
+});
+export const desktopExtensionsInstallParamsSchema = z.strictObject({
+  source: z.discriminatedUnion("type", [
+    z.strictObject({ type: z.literal("catalog"), id: desktopExtensionIdSchema }),
+    z.strictObject({
+      type: z.literal("url"),
+      url: desktopExtensionHttpUrlSchema,
+      expectedSha256: desktopExtensionHashSchema.optional(),
+    }),
+    z.strictObject({
+      type: z.literal("zip-base64"),
+      fileName: z.string().trim().min(1).max(255),
+      contentBase64: z
+        .string()
+        .min(4)
+        .max(DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH)
+        .refine(
+          (value) => value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/u.test(value),
+          "Expected standard padded base64",
+        ),
+    }),
+  ]),
+});
+export const desktopExtensionsInstallResultSchema = z.strictObject({
+  extensionId: desktopExtensionIdSchema,
+  version: z.string().min(1),
+  replaced: z.boolean(),
+  installedPath: z.string(),
+  list: desktopExtensionsListResultSchema,
+});
+export const desktopExtensionsUninstallParamsSchema = z.strictObject({
+  id: desktopExtensionIdSchema,
+});
+export const desktopExtensionsUninstallResultSchema = z.strictObject({
+  removedId: desktopExtensionIdSchema,
+  list: desktopExtensionsListResultSchema,
+});
+
+export type DesktopExtensionsCatalogParams = z.infer<typeof desktopExtensionsCatalogParamsSchema>;
+export type DesktopExtensionsCatalogResult = z.infer<typeof desktopExtensionsCatalogResultSchema>;
+export type DesktopExtensionsInstallParams = z.infer<typeof desktopExtensionsInstallParamsSchema>;
+export type DesktopExtensionsInstallResult = z.infer<typeof desktopExtensionsInstallResultSchema>;
+export type DesktopExtensionsUninstallParams = z.infer<
+  typeof desktopExtensionsUninstallParamsSchema
+>;
+export type DesktopExtensionsUninstallResult = z.infer<
+  typeof desktopExtensionsUninstallResultSchema
+>;
 
 export const desktopExtensionMutationResultSchema = z.discriminatedUnion("state", [
   z.strictObject({ state: z.literal("saved"), configuration: desktopExtensionConfigurationSchema }),

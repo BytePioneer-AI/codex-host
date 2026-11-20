@@ -5,12 +5,15 @@ import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import {
   desktopExtensionsStatusPath,
+  installFromZipBuffer,
+  uninstallDesktopExtension,
   writeDesktopExtensionConfiguration,
 } from "@codexhost/harness-plugin-files";
 import {
   desktopExtensionsDiagnosticSchema,
   type DesktopExtensionStatus,
 } from "@codexhost/shared-contracts";
+import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import { RendererDesktopExtensions } from "../src/renderer-desktop-extensions.js";
 import { createRendererCdpControlSession } from "../src/renderer-cdp-control-session.js";
 
@@ -135,6 +138,30 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
     },
   };
 }
+
+it("observes package replacements and uninstalls without polling or reloading Desktop", async () => {
+  await installFromZipBuffer({ extensionsRoot: root, zipBuffer: extensionZip() });
+  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: ["sample"] }));
+  const target = fakeRenderer();
+  const extensions = controller();
+  extensions.attach("target", target);
+  await extensions.refresh();
+  const original = target.state.sample;
+  expect(original).toMatchObject({ state: "running", hash: expect.any(String) });
+  const originalHash = original?.hash;
+  if (!originalHash) throw new Error("Extension is not running");
+  await installFromZipBuffer({
+    extensionsRoot: root,
+    zipBuffer: extensionZip({ version: "2.0.0" }),
+  });
+  await expect
+    .poll(() => target.state.sample)
+    .toMatchObject({ state: "running", hash: expect.not.stringMatching(originalHash) });
+  await uninstallDesktopExtension({ dataDir: directory, id: "sample" });
+  await expect.poll(() => target.state).toEqual({});
+  expect(target.pages.size).toBe(0);
+  expect(target.reloads).toBe(0);
+});
 
 function controller() {
   const result = new RendererDesktopExtensions(directory, (error) => {

@@ -4,6 +4,9 @@ import type { ThreadTreeSnapshot } from "./thread-tree-watch.js";
 
 export const DESKTOP_EXTENSION_API_VERSION = 1;
 export const DESKTOP_EXTENSION_LIMIT = 64;
+export const DESKTOP_EXTENSION_ZIP_MAX_BYTES = 5 * 1024 * 1024;
+export const DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH =
+  4 * Math.ceil(DESKTOP_EXTENSION_ZIP_MAX_BYTES / 3);
 export const DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 128 * 1024;
 export const DESKTOP_EXTENSION_SCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 export const DESKTOP_EXTENSION_STYLE_MAX_BYTES = 256 * 1024;
@@ -53,18 +56,37 @@ const screenshotPathSchema = pluginRelativeResourceSchema.refine(
   "Screenshots must be relative .png, .jpg, .jpeg, or .webp paths with no segments ending in a dot or space",
 );
 
-const repositorySchema = z
+export const desktopExtensionHttpUrlSchema = z
   .string()
   .trim()
   .max(2048)
-  .regex(/^https?:\/\/[^/?#\\\s]+/iu, "Repository must be an HTTP(S) URL")
-  .pipe(z.url({ protocol: /^https?$/u }));
+  .regex(/^https?:\/\/[^/?#\\\s]+/iu, "Expected an HTTP(S) URL")
+  .pipe(z.url({ protocol: /^https?$/u }))
+  .refine((value) => {
+    const { username, password } = new URL(value);
+    return !username && !password && !/[\\\s]/u.test(value);
+  }, "URL must not contain credentials, backslashes, or whitespace");
+
+function localizedText(text: z.ZodString) {
+  return z.strictObject({ en: text, "zh-CN": text });
+}
+
+export const desktopExtensionLocalizedTextSchema = localizedText(z.string().trim().min(1));
+
+const categoriesSchema = z
+  .array(desktopExtensionCategorySchema)
+  .max(desktopExtensionCategorySchema.options.length)
+  .refine((categories) => new Set(categories).size === categories.length, "Duplicate categories");
+const slotsSchema = z
+  .array(desktopExtensionSlotSchema)
+  .max(desktopExtensionSlotSchema.options.length)
+  .refine((slots) => new Set(slots).size === slots.length, "Duplicate slots");
 
 const manifestHeader = z
   .object({
     manifestVersion: z.int().positive(),
     id: desktopExtensionIdSchema,
-    name: z.union([extensionName, z.strictObject({ en: extensionName, "zh-CN": extensionName })]),
+    name: z.union([extensionName, localizedText(extensionName)]),
     version: z.string().min(1).max(128),
     desktopApi: z.int().positive(),
   })
@@ -78,7 +100,7 @@ export const desktopExtensionManifestSchema = manifestHeader
       .strictObject({ en: z.string().max(4096), "zh-CN": z.string().max(4096).optional() })
       .optional(),
     author: z.string().trim().min(1).max(128).optional(),
-    repository: repositorySchema.optional(),
+    repository: desktopExtensionHttpUrlSchema.optional(),
     details: z
       .strictObject({ en: z.string().max(16384), "zh-CN": z.string().max(16384).optional() })
       .optional(),
@@ -94,18 +116,8 @@ export const desktopExtensionManifestSchema = manifestHeader
       script: pluginRelativeResourceSchema,
       style: pluginRelativeResourceSchema.optional(),
     }),
-    slots: z
-      .array(desktopExtensionSlotSchema)
-      .max(desktopExtensionSlotSchema.options.length)
-      .refine((slots) => new Set(slots).size === slots.length, "Duplicate slots"),
-    categories: z
-      .array(desktopExtensionCategorySchema)
-      .max(desktopExtensionCategorySchema.options.length)
-      .refine(
-        (categories) => new Set(categories).size === categories.length,
-        "Duplicate categories",
-      )
-      .optional(),
+    slots: slotsSchema,
+    categories: categoriesSchema.optional(),
   })
   .strict();
 export type DesktopExtensionManifest = z.infer<typeof desktopExtensionManifestSchema>;
@@ -180,6 +192,76 @@ export const desktopExtensionsDiagnosticSchema = z.strictObject({
   extensions: z.record(z.string(), desktopExtensionStatusSchema),
 });
 export type DesktopExtensionsDiagnostic = z.infer<typeof desktopExtensionsDiagnosticSchema>;
+
+export const desktopExtensionTrustTierSchema = z.enum(["official", "community"]);
+export type DesktopExtensionTrustTier = z.infer<typeof desktopExtensionTrustTierSchema>;
+
+export const desktopExtensionZipUrlSchema = desktopExtensionHttpUrlSchema.refine(
+  (url) => /\.zip$/iu.test(new URL(url).pathname),
+  "Expected a .zip download URL",
+);
+
+export const desktopExtensionCatalogEntrySchema = z.strictObject({
+  id: desktopExtensionIdSchema,
+  version: z.string().trim().min(1).max(128),
+  name: desktopExtensionLocalizedTextSchema.extend({ en: extensionName, "zh-CN": extensionName }),
+  description: localizedText(z.string().trim().min(1).max(4096)),
+  details: localizedText(z.string().trim().min(1).max(16384)).optional(),
+  author: z.string().trim().min(1).max(128),
+  repository: desktopExtensionHttpUrlSchema,
+  categories: categoriesSchema.optional(),
+  trustTier: desktopExtensionTrustTierSchema.default("community"),
+  screenshots: z
+    .array(desktopExtensionHttpUrlSchema)
+    .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
+    .optional(),
+  downloadUrl: desktopExtensionZipUrlSchema,
+  sha256: desktopExtensionHashSchema,
+  slots: slotsSchema.optional(),
+  publishedAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+  minCodexHostVersion: z.string().optional(),
+});
+export const desktopExtensionCatalogSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  generatedAt: z.string(),
+  extensions: z
+    .array(desktopExtensionCatalogEntrySchema)
+    .refine(
+      (entries) => new Set(entries.map(({ id }) => id)).size === entries.length,
+      "Duplicate extension IDs",
+    ),
+});
+export type DesktopExtensionCatalogEntry = z.infer<typeof desktopExtensionCatalogEntrySchema>;
+export type DesktopExtensionCatalog = z.infer<typeof desktopExtensionCatalogSchema>;
+
+const semver =
+  /^v?(0|[1-9]\d*)(?:\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?)?(?:-([\da-z-]+(?:\.[\da-z-]+)*))?(?:\+[\da-z-]+(?:\.[\da-z-]+)*)?$/iu;
+const order = <T extends string | bigint>(a: T, b: T) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Compare numeric versions and SemVer prereleases; unknown formats don't signal an update. */
+export function compareExtensionVersions(a: string, b: string): number {
+  const left = semver.exec(a.trim());
+  const right = semver.exec(b.trim());
+  if (!left || !right) return 0;
+  for (const index of [1, 2, 3]) {
+    const result = order(BigInt(left[index] ?? "0"), BigInt(right[index] ?? "0"));
+    if (result) return result;
+  }
+  const preA = left[4]?.split(".");
+  const preB = right[4]?.split(".");
+  if (!preA || !preB) return order(BigInt(!preA), BigInt(!preB));
+  for (const [index, x] of preA.entries()) {
+    const y = preB[index];
+    if (y === undefined) return 1;
+    const numX = /^\d+$/u.test(x);
+    const numY = /^\d+$/u.test(y);
+    const result =
+      numX && numY ? order(BigInt(x), BigInt(y)) : numX !== numY ? (numX ? -1 : 1) : order(x, y);
+    if (result) return result;
+  }
+  return order(BigInt(preA.length), BigInt(preB.length));
+}
 
 export function resolveDesktopExtensionSlots(
   enabledOrder: readonly string[],

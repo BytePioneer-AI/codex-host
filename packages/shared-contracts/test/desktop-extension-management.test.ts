@@ -5,11 +5,13 @@ import {
   DESKTOP_EXTENSION_MANAGEMENT_METHODS,
   desktopExtensionMutationResultSchema,
   desktopExtensionSelectionParamsSchema,
+  desktopExtensionsInstallParamsSchema,
   desktopExtensionsListParamsSchema,
+  desktopExtensionsUninstallParamsSchema,
   desktopExtensionsRecoveryParamsSchema,
 } from "../src/desktop-extension-management.js";
 
-it("allows only the four named Desktop extension operations on the client channel", () => {
+it("allows only the named Desktop extension operations on the client channel", () => {
   for (const method of DESKTOP_EXTENSION_MANAGEMENT_METHODS) {
     expect(CLIENT_CHANNEL_METHODS).toContain(method);
     expect(CONSOLE_HOST_METHODS).not.toContain(method);
@@ -42,6 +44,24 @@ it("does not accept arbitrary paths, targets or code as management parameters", 
   expect(
     desktopExtensionSelectionParamsSchema.safeParse({ id: "foo", expectedRevision: -1 }).success,
   ).toBe(false);
+});
+
+it("restricts install sources to catalog IDs, HTTP(S) URLs, or bounded base64", () => {
+  const parse = (source: unknown) =>
+    desktopExtensionsInstallParamsSchema.safeParse({ source }).success;
+  expect(parse({ type: "catalog", id: "sample" })).toBe(true);
+  expect(
+    parse({ type: "url", url: "https://example.com/sample.zip", expectedSha256: "a".repeat(64) }),
+  ).toBe(true);
+  expect(parse({ type: "url", url: "file:///tmp/sample.zip" })).toBe(false);
+  expect(parse({ type: "url", url: "http://user:secret@example.com/sample.zip" })).toBe(false);
+  expect(
+    parse({ type: "url", url: "https://example.com/sample.zip", expectedSha256: "A".repeat(64) }),
+  ).toBe(false);
+  expect(parse({ type: "zip-base64", fileName: "sample.zip", contentBase64: "UEs=" })).toBe(true);
+  expect(parse({ type: "zip-base64", fileName: "sample.zip", contentBase64: "UE!=" })).toBe(false);
+  expect(parse({ type: "path", path: "/tmp/sample.zip" })).toBe(false);
+  expect(desktopExtensionsUninstallParamsSchema.safeParse({ id: "../sample" }).success).toBe(false);
 });
 
 it("returns a typed slot owner and revision conflicts without a configuration write", () => {

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "id": "sidebar-delegation-badges",
+      "repository": "https://github.com/BytePioneer-AI/codexhost-extensions-registry",
+      "asset": "sidebar-delegation-badges.zip",
+      "trustTier": "official"
+    },
+    {
+      "id": "sidebar-thread-tree",
+      "repository": "https://github.com/BytePioneer-AI/codexhost-extensions-registry",
+      "asset": "sidebar-thread-tree.zip",
+      "trustTier": "official"
+    }
+  ]
+}

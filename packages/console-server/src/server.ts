@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
-import { isConsoleHostMethod, type ConsoleAnnouncement } from "@codexhost/shared-contracts";
+import {
+  DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH,
+  isConsoleHostMethod,
+  type ConsoleAnnouncement,
+} from "@codexhost/shared-contracts";
 import { readAnnouncement } from "./announcement.js";
 import { allowedChange, allowedHost, CONSOLE_REQUEST_HEADER } from "./request-guard.js";
 import {
@@ -20,7 +24,7 @@ import {
 } from "./installation.js";
 import { buildDiagnosticReport, issueUrl, serializeDiagnosticReport } from "./diagnostic-report.js";
 import { ConsoleHarnessError, type ConsoleHarnesses } from "./harnesses.js";
-import { extensionsRoute } from "./extensions.js";
+import { INSTALL, extensionsRoute } from "./extensions.js";
 import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
@@ -95,13 +99,16 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 class RequestBodyError extends Error {}
 
 /** Bounded JSON object body; an empty body is `{}`. */
-async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJsonBody(
+  request: IncomingMessage,
+  limit = MAX_BODY_BYTES,
+): Promise<Record<string, unknown>> {
   let size = 0;
   const chunks: Buffer[] = [];
-  for await (const chunk of request) {
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     const buffer = chunk as Buffer;
     size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new RequestBodyError("Request body is too large");
+    if (size > limit) throw new RequestBodyError("Request body is too large");
     chunks.push(buffer);
   }
   if (size === 0) return {};
@@ -346,14 +353,26 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
         return;
       }
       try {
-        body = await readJsonBody(request);
+        body = await readJsonBody(
+          request,
+          route === INSTALL
+            ? DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH + MAX_BODY_BYTES
+            : MAX_BODY_BYTES,
+        );
       } catch (error) {
+        if (!request.complete) response.setHeader("connection", "close");
         sendJson(response, 400, { error: (error as Error).message });
         return;
       }
     }
 
-    const extensions = await extensionsRoute(route, body, options.paths.dataDirectory);
+    const extensions = await extensionsRoute(
+      route,
+      body,
+      options.paths.dataDirectory,
+      url.searchParams,
+      options.environment,
+    );
     if (extensions) {
       sendJson(response, extensions.status, extensions.body);
       return;

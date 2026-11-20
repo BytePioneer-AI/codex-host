@@ -55,6 +55,23 @@ export async function writeDesktopExtensionConfiguration(
     | Pick<DesktopExtensionConfiguration, "enabled" | "reloadToken">
     | Promise<Pick<DesktopExtensionConfiguration, "enabled" | "reloadToken">>,
 ): Promise<DesktopExtensionConfiguration> {
+  return withDesktopExtensionConfiguration(root, async ({ configuration, save }) => {
+    if (expectedRevision !== undefined && expectedRevision !== configuration.revision)
+      throw new DesktopExtensionRevisionConflict(configuration.revision);
+    return save(await update(configuration));
+  });
+}
+
+export async function withDesktopExtensionConfiguration<T>(
+  root: string,
+  operation: (locked: {
+    directory: string;
+    configuration: DesktopExtensionConfiguration;
+    save(
+      update: Pick<DesktopExtensionConfiguration, "enabled" | "reloadToken">,
+    ): Promise<DesktopExtensionConfiguration>;
+  }) => Promise<T>,
+): Promise<T> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const directory = await privateExtensionDirectory(root);
   let compromised: Error | undefined;
@@ -67,22 +84,27 @@ export async function writeDesktopExtensionConfiguration(
   });
   try {
     const { configuration } = await readDesktopExtensionConfiguration(directory);
-    if (expectedRevision !== undefined && expectedRevision !== configuration.revision)
-      throw new DesktopExtensionRevisionConflict(configuration.revision);
-    const next = desktopExtensionConfigurationSchema.parse({
-      ...configuration,
-      ...(await update(configuration)),
-      revision: configuration.revision + 1,
+    return await operation({
+      directory,
+      configuration,
+      async save(update) {
+        const next = desktopExtensionConfigurationSchema.parse({
+          ...configuration,
+          ...update,
+          revision: configuration.revision + 1,
+        });
+        const temporary = path.join(directory, `.enabled-${randomUUID()}.tmp`);
+        try {
+          await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600, flag: "wx" });
+          if (compromised) throw compromised;
+          await rename(temporary, path.join(directory, CONFIG_FILE));
+        } catch (error) {
+          await rm(temporary, { force: true }).catch(() => undefined);
+          throw error;
+        }
+        return next;
+      },
     });
-    const temporary = path.join(directory, `.enabled-${randomUUID()}.tmp`);
-    try {
-      await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600, flag: "wx" });
-      if (compromised) throw compromised;
-      await rename(temporary, path.join(directory, CONFIG_FILE));
-    } finally {
-      await rm(temporary, { force: true });
-    }
-    return next;
   } finally {
     if (!compromised) await release();
   }

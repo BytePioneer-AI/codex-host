@@ -22,6 +22,15 @@ export {
   listDesktopExtensions,
   updateDesktopExtensionSelection,
 } from "./extension-management.js";
+export { fetchDesktopExtensionCatalog } from "./desktop-extension-catalog.js";
+export { DesktopExtensionPackageError } from "./desktop-extension-download.js";
+export {
+  installDesktopExtension,
+  installFromCatalog,
+  installFromUrl,
+  installFromZipBuffer,
+  uninstallDesktopExtension,
+} from "./desktop-extension-installer.js";
 export { HarnessPreferencesStore, HarnessPreferenceConflict } from "./preferences.js";
 export {
   pluginResourcePath,

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import type { ConsoleHarnesses } from "../src/harnesses.js";
 import { HostUnavailableError, type ConsoleHostClient } from "../src/host-client.js";
 import type { InspectDocument } from "../src/installation.js";
@@ -87,6 +88,7 @@ async function start(
     codexRunning?: boolean;
     launch?: () => void;
     host?: ConsoleHostClient;
+    environment?: NodeJS.ProcessEnv;
     service?: (command: string, args: string[], environment: NodeJS.ProcessEnv) => Promise<void>;
   } = {},
 ) {
@@ -105,6 +107,7 @@ async function start(
     harnesses: fakeHarnesses(),
     pageScript: "window.consoleLoaded = true;\n",
     host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
+    ...(options.environment ? { environment: options.environment } : {}),
     inspect: async () => inspectDocument(options.codexRunning ?? false),
     launch: options.launch ?? vi.fn(),
     service: options.service ?? vi.fn(async () => {}),
@@ -134,6 +137,45 @@ it("ignores Pi extensions when listing Desktop extensions and diagnoses broken c
     configuration: fresh.configuration,
     diagnostics: [expect.stringMatching(/^Invalid extension configuration:/u)],
   });
+});
+
+it("serves the market offline and accepts bounded ZIP uploads only on the guarded install route", async () => {
+  const file = path.join(directory, "catalog.json");
+  await writeFile(
+    file,
+    JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), extensions: [] }),
+  );
+  const { base } = await start({ environment: { CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: file } });
+  const endpoint = `${base}/api/extensions`;
+  expect(await (await fetch(`${endpoint}/catalog?forceRefresh=true`)).json()).toMatchObject({
+    source: "remote",
+    catalogUrl: file,
+    extensions: [],
+  });
+  const upload = {
+    source: {
+      type: "zip-base64",
+      fileName: "sample.zip",
+      contentBase64: extensionZip({
+        extras: [{ name: "extra.txt", data: Buffer.alloc(17 * 1024) }],
+      }).toString("base64"),
+    },
+  };
+  const post = (action: string, body: unknown, headers: Record<string, string> = CHANGE) =>
+    fetch(`${endpoint}/${action}`, { method: "POST", headers, body: JSON.stringify(body) });
+  expect((await post("install", upload, {})).status).toBe(403);
+  expect((await post("uninstall", { id: "sample" }, {})).status).toBe(403);
+  const installed = await post("install", upload);
+  expect(installed.status).toBe(200);
+  expect(await installed.json()).toMatchObject({
+    extensionId: "sample",
+    replaced: false,
+    list: { extensions: [{ id: "sample", enabled: false }] },
+  });
+  expect((await post("uninstall", upload)).status).toBe(400);
+  const removed = await post("uninstall", { id: "sample" });
+  expect(removed.status).toBe(200);
+  expect(await removed.json()).toMatchObject({ removedId: "sample", list: { extensions: [] } });
 });
 
 it("manages Desktop extensions offline and protects all selection changes", async () => {

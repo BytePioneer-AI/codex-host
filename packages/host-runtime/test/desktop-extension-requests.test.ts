@@ -1,12 +1,19 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   discoverDesktopExtensions,
   readDesktopExtensionConfiguration,
 } from "@codexhost/harness-plugin-files";
 import {
+  DESKTOP_EXTENSIONS_CATALOG_METHOD,
   DESKTOP_EXTENSIONS_DISABLE_METHOD,
+  DESKTOP_EXTENSIONS_INSTALL_METHOD,
+  DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
+  desktopExtensionsInstallResultSchema,
+  desktopExtensionsUninstallResultSchema,
   DESKTOP_EXTENSIONS_ENABLE_METHOD,
   DESKTOP_EXTENSIONS_LIST_METHOD,
   DESKTOP_EXTENSIONS_RECOVER_METHOD,
@@ -155,6 +162,82 @@ it("shares Desktop and client-channel selection, status and recovery without exe
     expect(recovered).toEqual({ result: { state: "saved", configuration } });
   } finally {
     await stopFixture(fixture);
+  }
+});
+
+it("serves catalog and returns a fresh list after install, replacement and uninstall", async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "desktop-market-rpc-"));
+  const catalogUrl = path.join(scratch, "catalog.json");
+  const fixture = createFixture({
+    environment: { CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: catalogUrl },
+  });
+  try {
+    await fixture.ready;
+    await writeFile(
+      catalogUrl,
+      JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), extensions: [] }),
+    );
+    const web = (method: string, params: JsonObject) =>
+      fixture.host.handleClientRequest(method, params);
+    expect(await web(DESKTOP_EXTENSIONS_CATALOG_METHOD, {})).toMatchObject({
+      result: { catalogUrl, source: "remote", cached: false, extensions: [] },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_CATALOG_METHOD, { forceRefresh: "true" })).toMatchObject({
+      error: { code: -32602 },
+    });
+    expect(await web(DESKTOP_EXTENSIONS_UNINSTALL_METHOD, { id: "../sample" })).toMatchObject({
+      error: { code: -32602 },
+    });
+    const install = async (id: number, version: string) => {
+      writeRequest(fixture.desktopInput, {
+        id,
+        method: DESKTOP_EXTENSIONS_INSTALL_METHOD,
+        params: {
+          source: {
+            type: "zip-base64",
+            fileName: "sample.zip",
+            contentBase64: extensionZip({ version }).toString("base64"),
+          },
+        },
+      });
+      const response = await fixture.collector.waitFor((message) => message.id === id);
+      return desktopExtensionsInstallResultSchema.parse(response.result);
+    };
+    const installed = await install(1, "1.0.0");
+    expect(installed).toMatchObject({
+      replaced: false,
+      list: { extensions: [{ id: "sample", enabled: false }] },
+    });
+    expect(
+      await web(DESKTOP_EXTENSIONS_ENABLE_METHOD, {
+        id: "sample",
+        expectedRevision: installed.list.configuration.revision,
+      }),
+    ).toMatchObject({ result: { state: "saved" } });
+    expect(await install(2, "2.0.0")).toMatchObject({
+      replaced: true,
+      list: {
+        configuration: { enabled: ["sample"], revision: 3 },
+        extensions: [
+          {
+            id: "sample",
+            enabled: true,
+            manifest: { version: "2.0.0" },
+            status: { state: "waiting" },
+          },
+        ],
+      },
+    });
+    const removed = await web(DESKTOP_EXTENSIONS_UNINSTALL_METHOD, { id: "sample" });
+    expect(
+      desktopExtensionsUninstallResultSchema.parse("result" in removed ? removed.result : null),
+    ).toMatchObject({
+      removedId: "sample",
+      list: { configuration: { enabled: [], revision: 4 }, extensions: [] },
+    });
+  } finally {
+    await stopFixture(fixture);
+    await rm(scratch, { recursive: true, force: true });
   }
 });
 

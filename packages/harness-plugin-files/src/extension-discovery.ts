@@ -109,6 +109,10 @@ export async function readDesktopExtensionScreenshot(root: string, relative: str
   }
 }
 
+export function isDesktopExtensionTransactionEntry(name: string): boolean {
+  return name === DESKTOP_EXTENSION_CONFIGURATION_LOCK || /^\.(?:staging|backup)-/u.test(name);
+}
+
 async function discover(
   root: string,
   id: string,
@@ -177,7 +181,7 @@ export async function discoverDesktopExtensions(configuredRoot: string): Promise
     const names = (await readdir(root, { withFileTypes: true }))
       .filter(
         (entry) =>
-          entry.name !== DESKTOP_EXTENSION_CONFIGURATION_LOCK &&
+          !isDesktopExtensionTransactionEntry(entry.name) &&
           (entry.isDirectory() || entry.isSymbolicLink()),
       )
       .map((entry) => entry.name)

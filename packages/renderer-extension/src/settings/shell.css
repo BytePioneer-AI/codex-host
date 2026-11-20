@@ -3470,23 +3470,25 @@
   }
 }
 
-.settings-extensions-detail-dialog {
+dialog.settings-account-dialog.settings-extensions-detail-dialog {
   width: min(640px, calc(100vw - 40px));
   max-height: min(82vh, calc(100vh - 48px));
   margin: auto;
   padding: 0;
   overflow: hidden;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
   border-radius: 14px;
   box-shadow: 0 20px 52px rgb(0 0 0 / 28%);
 }
 
-.settings-extensions-detail-dialog[open] {
+dialog.settings-account-dialog.settings-extensions-detail-dialog[open] {
   display: flex;
   flex-direction: column;
   animation: settings-extensions-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.settings-extensions-detail-dialog::backdrop {
+dialog.settings-account-dialog.settings-extensions-detail-dialog::backdrop {
   background: light-dark(rgb(15 23 42 / 32%), rgb(0 0 0 / 52%));
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
@@ -3644,7 +3646,7 @@
   display: grid;
   gap: 12px;
   padding: 18px 18px 14px 20px;
-  background: var(--settings-surface);
+  background: var(--settings-panel);
   border-bottom: 1px solid var(--settings-divider);
 }
 
@@ -3690,20 +3692,22 @@
   font-weight: 500;
 }
 
-.settings-extensions-import-dialog {
+dialog.settings-account-dialog.settings-extensions-import-dialog {
   width: min(500px, calc(100vw - 40px));
   margin: auto;
   padding: 0;
   overflow: hidden;
+  background: var(--settings-panel);
+  border: 1px solid var(--settings-border);
   border-radius: 14px;
   box-shadow: 0 20px 52px rgb(0 0 0 / 28%);
 }
 
-.settings-extensions-import-dialog[open] {
+dialog.settings-account-dialog.settings-extensions-import-dialog[open] {
   animation: settings-extensions-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.settings-extensions-import-dialog::backdrop {
+dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
   background: light-dark(rgb(15 23 42 / 32%), rgb(0 0 0 / 52%));
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
@@ -3721,7 +3725,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 16px 18px 14px 20px;
-  background: var(--settings-surface);
+  background: var(--settings-panel);
   border-bottom: 1px solid var(--settings-divider);
 }
 
@@ -3731,7 +3735,7 @@
   min-width: 0;
 }
 
-.settings-extensions-import-modal__title {
+.settings-extensions-import-dialog .settings-extensions-import-modal__title {
   margin: 0;
   color: var(--settings-text);
   font-size: 15px;
@@ -3743,6 +3747,12 @@
   display: grid;
   gap: 14px;
   padding: 16px 20px;
+}
+
+.settings-extensions-import-modal__body > .settings-extensions-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
 }
 
 .settings-extensions-import-modal__panel {
@@ -4204,10 +4214,10 @@
       background-color 140ms ease;
   }
 
-  .settings-extensions-detail-dialog[open],
-  .settings-extensions-import-dialog[open],
-  .settings-extensions-detail-dialog::backdrop,
-  .settings-extensions-import-dialog::backdrop {
+  dialog.settings-account-dialog.settings-extensions-detail-dialog[open],
+  dialog.settings-account-dialog.settings-extensions-import-dialog[open],
+  dialog.settings-account-dialog.settings-extensions-detail-dialog::backdrop,
+  dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
     animation: none;
   }
 }

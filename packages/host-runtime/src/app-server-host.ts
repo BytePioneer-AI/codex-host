@@ -5394,7 +5394,29 @@ export class AppServerHost {
       }
       consumedEnd.set(live.type, aligned);
     }
-    return { ...turn, items: [...items, ...remaining.values()] };
+    const merged = [...items, ...remaining.values()];
+    if (turn.status === "completed") {
+      const last = merged.at(-1);
+      if (
+        last &&
+        last.type === "agentMessage" &&
+        last.phase == null &&
+        typeof last.text === "string" &&
+        last.text.trim().length > 0 &&
+        background.has(last.id as HostItemId)
+      ) {
+        return {
+          ...turn,
+          items: merged.map((item, index) => {
+            if (index === merged.length - 1) return { ...item, phase: "final_answer" };
+            return item.type === "agentMessage" && item.phase === "final_answer"
+              ? { ...item, phase: null }
+              : item;
+          }),
+        };
+      }
+    }
+    return { ...turn, items: merged };
   }
 
   #externalThreadBusy(thread: ExternalThread): boolean {

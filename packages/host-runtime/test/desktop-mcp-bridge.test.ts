@@ -32,7 +32,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
-async function setup() {
+async function setup(options: { detachedSessionTimeoutMs?: number } = {}) {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "desktop-mcp-test-")));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const events = path.join(root, "events.jsonl");
@@ -44,6 +44,7 @@ async function setup() {
       HOME: root,
       BROWSER_USE_ACCESS_PIPE_PATH: "synthetic-desktop-pipe",
     },
+    ...options,
   });
   if (!created) throw new Error("Missing fixture bridge");
   const bridge = created;
@@ -586,6 +587,43 @@ it("releases the remote session when the stdio client receives EOF", async () =>
   await vi.waitFor(() => expect(() => process.kill(Number(content.pid), 0)).toThrow(), {
     timeout: 6_000,
   });
+}, 20_000);
+
+it("reaps a session whose client died without DELETE and keeps connected idle sessions", async () => {
+  const f = await setup({ detachedSessionTimeoutMs: 500 });
+  const connected = await f.connect();
+  const kept = jsonObjectSchema.parse(
+    (await connected.client.callTool({ name: "echo", arguments: {} })).structuredContent,
+  );
+  const child = spawn(process.execPath, f.clientArguments(), { stdio: "pipe" });
+  child.stderr.on("data", () => {});
+  cleanup.push(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  });
+  const messages = new JsonLineCollector(child.stdout.pipe(new PassThrough()));
+  child.stdin.write(JSON.stringify(initializationRequest) + "\n");
+  await messages.waitFor((message) => message.id === 0, 10_000);
+  child.stdin.write(
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n",
+  );
+  child.stdin.write(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "echo", arguments: {} },
+    }) + "\n",
+  );
+  const reply = await messages.waitFor((message) => message.id === 1, 10_000);
+  const abandoned = jsonObjectSchema.parse(jsonObjectSchema.parse(reply.result).structuredContent);
+  // A killed client cannot run its cleanup, so the bridge sees only its connections closing.
+  child.kill("SIGKILL");
+  await vi.waitFor(() => expect(() => process.kill(Number(abandoned.pid), 0)).toThrow(), {
+    timeout: 6_000,
+  });
+  expect(
+    (await connected.client.callTool({ name: "echo", arguments: {} })).structuredContent,
+  ).toMatchObject({ pid: kept.pid, calls: 2 });
 }, 20_000);
 
 it("stops an owned tool that ignores EOF and termination", async () => {

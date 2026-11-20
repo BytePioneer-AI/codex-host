@@ -28,6 +28,8 @@ import {
 } from "./desktop-context-environment.js";
 
 const MAX_MCP_REQUEST_BYTES = 16 * 1024 * 1024;
+// A live client keeps its standalone SSE stream open and reconnects it within seconds.
+const DETACHED_SESSION_TIMEOUT_MS = 30_000;
 
 interface Profile {
   id: string;
@@ -51,8 +53,12 @@ class DesktopMcpSession {
   #standaloneReady = false;
   #closing?: Promise<void>;
   #starting?: Promise<void>;
+  readonly #detachedTimeoutMs: number;
+  #connections = 0;
+  #detached?: NodeJS.Timeout;
 
-  constructor(profile: Profile, remove: () => void) {
+  constructor(profile: Profile, remove: () => void, detachedTimeoutMs: number) {
+    this.#detachedTimeoutMs = detachedTimeoutMs;
     this.#stdio = new StdioClientTransport({
       command: process.execPath,
       args: [
@@ -117,6 +123,26 @@ class DesktopMcpSession {
     return this.#starting;
   }
 
+  /**
+   * Counts one open HTTP exchange; the returned release ends it. A session left without any
+   * exchange (no standalone stream, no request in flight) past the timeout is abandoned, as a
+   * killed client never sends DELETE.
+   */
+  attach(): () => void {
+    this.#connections += 1;
+    clearTimeout(this.#detached);
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      this.#connections -= 1;
+      if (this.#connections > 0 || this.#closing) return;
+      this.#detached = setTimeout(() => {
+        void this.close().catch(() => undefined);
+      }, this.#detachedTimeoutMs).unref();
+    };
+  }
+
   async handle(request: Request, body?: unknown): Promise<Response> {
     const response = await this.http.handleRequest(request, { parsedBody: body });
     if (request.method === "GET" && response.status === 200) {
@@ -162,6 +188,7 @@ class DesktopMcpSession {
   }
 
   close(): Promise<void> {
+    clearTimeout(this.#detached);
     this.#closing ??= Promise.resolve().then(async () => {
       await this.#starting?.catch(() => undefined);
       await this.http.close();
@@ -193,6 +220,7 @@ export async function createDesktopMcpBridge(options: {
   runtimePath: string;
   environment: NodeJS.ProcessEnv;
   native?: { executable: string; arguments: readonly string[] };
+  detachedSessionTimeoutMs?: number;
 }): Promise<DesktopMcpBridge | undefined> {
   let executable: string;
   try {
@@ -319,13 +347,18 @@ export async function createDesktopMcpBridge(options: {
         response.writeHead(id === undefined ? 400 : 404).end();
         return;
       }
-      const created = new DesktopMcpSession(profile, () => {
-        sessions.delete(created);
-      });
+      const created = new DesktopMcpSession(
+        profile,
+        () => {
+          sessions.delete(created);
+        },
+        options.detachedSessionTimeoutMs ?? DETACHED_SESSION_TIMEOUT_MS,
+      );
       sessions.add(created);
       session = created;
-      await session.start();
     }
+    response.once("close", session.attach());
+    if (initializing) await session.start();
     if (controller.signal.aborted) {
       if (initializing) await session.close();
       return;

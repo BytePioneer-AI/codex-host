@@ -1,10 +1,34 @@
 //! A managed Desktop also passes its environment to native tool helpers. Their
 //! private app-servers must not become another owner of the Host Runtime.
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use codexhost_platform::ProcessSnapshot;
+#[cfg(any(target_os = "macos", test))]
+use std::{ffi::OsStr, ffi::OsString, path::Path};
 
-pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DesktopCaller {
+    #[cfg(any(target_os = "macos", test))]
+    Main,
+    Helper,
+    #[cfg(any(target_os = "macos", test))]
+    NonDesktop,
+    Unknown,
+}
+
+impl DesktopCaller {
+    pub(crate) fn is_non_desktop(&self) -> bool {
+        #[cfg(any(target_os = "macos", test))]
+        return *self == Self::NonDesktop;
+        #[cfg(not(any(target_os = "macos", test)))]
+        false
+    }
+}
+
+pub(crate) fn classify_desktop_caller(
+    _stock_codex_path: &std::path::Path,
+    _arguments: &[std::ffi::OsString],
+) -> DesktopCaller {
     #[cfg(target_os = "windows")]
     {
         let Some(launcher_id) = std::env::var(super::LAUNCHER_PID_ENV)
@@ -12,43 +36,40 @@ pub(crate) fn is_desktop_helper(_stock_codex_path: &std::path::Path) -> bool {
             .and_then(|value| value.parse::<u32>().ok())
             .filter(|id| *id != 0)
         else {
-            return false;
+            return DesktopCaller::Unknown;
         };
-        is_helper_descendant(std::process::id(), launcher_id, |id| {
+        if is_helper_descendant(std::process::id(), launcher_id, |id| {
             codexhost_platform::process_snapshot(id).ok()
-        })
+        }) {
+            DesktopCaller::Helper
+        } else {
+            DesktopCaller::Unknown
+        }
     }
     #[cfg(target_os = "macos")]
     {
-        is_macos_desktop_helper(_stock_codex_path).unwrap_or(false)
+        let launcher_managed = std::env::var(super::LAUNCHER_PID_ENV)
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .is_some_and(|id| id != 0)
+            && std::env::var_os("CODEXHOST_LAUNCHER_EXECUTABLE").is_some();
+        let installation = macos_desktop_installation(_stock_codex_path);
+        classify_macos_caller(
+            std::process::id(),
+            installation.as_ref().map(|desktop| {
+                (
+                    desktop.desktop_executable.as_path(),
+                    desktop.install_root.as_path(),
+                )
+            }),
+            launcher_managed,
+            _arguments,
+            std::env::var_os(super::INTERNAL_ORIGINATOR_OVERRIDE_ENV).as_deref(),
+            |id| codexhost_platform::process_snapshot(id).ok(),
+        )
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    false
-}
-
-/// Returns whether the Shim's direct parent is positively known not to be Codex Desktop.
-///
-/// Only a caller whose official CLI belongs to a validated Desktop bundle can be classified.
-/// Unknown layouts keep the caller on the Host Runtime path and its existing ownership checks.
-pub(crate) fn is_known_non_desktop_caller(_stock_codex_path: &std::path::Path) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use codexhost_platform::process_snapshot;
-
-        let Some(installation) = macos_desktop_installation(_stock_codex_path) else {
-            return false;
-        };
-        let Ok(shim) = process_snapshot(std::process::id()) else {
-            return false;
-        };
-        if shim.parent_id <= 1 {
-            return false;
-        }
-        process_snapshot(shim.parent_id)
-            .is_ok_and(|parent| parent.executable != installation.desktop_executable)
-    }
-    #[cfg(not(target_os = "macos"))]
-    false
+    DesktopCaller::Unknown
 }
 
 #[cfg(target_os = "macos")]
@@ -68,38 +89,90 @@ fn macos_desktop_installation(
         })
 }
 
-#[cfg(target_os = "macos")]
-fn is_macos_desktop_helper(stock_codex_path: &std::path::Path) -> Option<bool> {
-    use codexhost_platform::process_snapshot;
+/// The Desktop local app-server's stdio builder adds the codex-app-tools override
+/// after its base flags and other config overrides. The startup probe shares the
+/// base flags, and plugin helpers can also run app-server over stdio.
+#[cfg(any(target_os = "macos", test))]
+fn has_local_app_server_signature(arguments: &[OsString]) -> bool {
+    let [config, code_mode, subcommand, analytics, overrides @ ..] = arguments else {
+        return false;
+    };
+    const APP_TOOLS: &str = "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=";
+    config == "-c"
+        && code_mode == "features.code_mode_host=true"
+        && subcommand == "app-server"
+        && analytics == "--analytics-default-enabled"
+        && overrides.len().is_multiple_of(2)
+        && overrides.chunks_exact(2).all(|pair| pair[0] == "-c")
+        && matches!(
+            overrides
+                .last()
+                .and_then(|value| value.to_str())
+                .and_then(|value| value.strip_prefix(APP_TOOLS)),
+            Some("true" | "false")
+        )
+}
 
-    // Launcher metadata marks a codexhost-managed Desktop tree. The Launcher may
-    // exit, or its PID may be reused, while that Desktop and its native helpers
-    // keep running with the inherited environment, so its liveness cannot decide
-    // the role. LaunchServices reparents Desktop to launchd, so the Launcher is
-    // never an ancestor either. The validated Desktop ancestry decides: a direct
-    // Desktop -> Shim invocation stays Host, deeper descendants are helpers.
-    std::env::var(super::LAUNCHER_PID_ENV)
-        .ok()?
-        .parse::<u32>()
-        .ok()
-        .filter(|id| *id != 0)?;
-    std::env::var_os("CODEXHOST_LAUNCHER_EXECUTABLE")?;
-    let installation = macos_desktop_installation(stock_codex_path)?;
-    let mut child = process_snapshot(std::process::id()).ok()?;
+#[cfg(any(target_os = "macos", test))]
+fn classify_macos_caller(
+    shim_id: u32,
+    desktop: Option<(&Path, &Path)>,
+    launcher_managed: bool,
+    arguments: &[OsString],
+    originator: Option<&OsStr>,
+    mut inspect: impl FnMut(u32) -> Option<ProcessSnapshot>,
+) -> DesktopCaller {
+    let marked = launcher_managed && has_local_app_server_signature(arguments);
+    let mut fallback = if marked {
+        // A marked indirect invocation must not enter the lease path if its
+        // ancestry cannot be verified, even when no previous lease exists.
+        DesktopCaller::Helper
+    } else {
+        DesktopCaller::Unknown
+    };
+    let Some((desktop_executable, bundle)) = desktop else {
+        return fallback;
+    };
+    let Some(mut child) = inspect(shim_id) else {
+        return fallback;
+    };
+    // LaunchServices reparents Desktop to launchd; Launcher metadata can mark
+    // the tree as managed but its PID does not establish ancestry.
     for depth in 1..=32 {
         if child.parent_id <= 1 || child.parent_id == child.id {
-            return None;
+            break;
         }
-        let parent = process_snapshot(child.parent_id).ok()?;
+        let Some(parent) = inspect(child.parent_id) else {
+            break;
+        };
         if parent.started_at_micros > child.started_at_micros {
-            return None; // Parent PID was reused.
+            break; // Parent PID was reused.
         }
-        if parent.executable == installation.desktop_executable {
-            return Some(depth > 1);
+        if parent.executable == desktop_executable {
+            return if depth == 1
+                || (depth == 2
+                    && marked
+                    && originator == Some(OsStr::new(super::DESKTOP_ORIGINATOR))
+                    && child.executable.starts_with(bundle))
+            {
+                DesktopCaller::Main
+            } else {
+                DesktopCaller::Helper
+            };
+        }
+        if depth == 1 && !marked {
+            fallback = if launcher_managed && parent.executable.starts_with(bundle) {
+                DesktopCaller::Helper
+            } else {
+                DesktopCaller::NonDesktop
+            };
+        }
+        if !launcher_managed {
+            break;
         }
         child = parent;
     }
-    None
+    fallback
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -143,6 +216,114 @@ mod tests {
             process_group_id: 0,
             executable: std::path::PathBuf::from("fixture"),
             started_at_micros: u64::from(id),
+        }
+    }
+
+    const BUNDLE: &str = "/Applications/ChatGPT.app";
+    const DESKTOP: &str = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT";
+    const UTILITY: &str = "/Applications/ChatGPT.app/Contents/Frameworks/Codex (Aperitif)";
+    const MAIN_ARGS: &[&str] = &[
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    ];
+
+    fn macos_caller(
+        chain: &[(u32, u32, &str)],
+        arguments: &[&str],
+        originator: Option<&str>,
+    ) -> DesktopCaller {
+        classify_macos_caller(
+            40,
+            Some((Path::new(DESKTOP), Path::new(BUNDLE))),
+            true,
+            &arguments.iter().map(OsString::from).collect::<Vec<_>>(),
+            originator.map(OsStr::new),
+            |id| {
+                let &(_, parent_id, executable) = chain.iter().find(|entry| entry.0 == id)?;
+                Some(ProcessSnapshot {
+                    executable: executable.into(),
+                    ..snapshot(id, parent_id)
+                })
+            },
+        )
+    }
+
+    #[test]
+    fn macos_desktop_direct_app_server_remains_main() {
+        assert_eq!(
+            macos_caller(
+                &[(40, 10, "/shim"), (10, 1, DESKTOP)],
+                &["app-server"],
+                None
+            ),
+            DesktopCaller::Main
+        );
+    }
+
+    #[test]
+    fn macos_local_app_server_through_bundled_utility_is_main() {
+        let chain = [(40, 20, "/shim"), (20, 10, UTILITY), (10, 1, DESKTOP)];
+        assert_eq!(
+            macos_caller(&chain, MAIN_ARGS, Some("Codex Desktop")),
+            DesktopCaller::Main
+        );
+        let mut disabled = MAIN_ARGS.to_vec();
+        *disabled.last_mut().unwrap() =
+            "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=false";
+        assert_eq!(
+            macos_caller(&chain, &disabled, Some("Codex Desktop")),
+            DesktopCaller::Main
+        );
+    }
+
+    #[test]
+    fn macos_browser_and_computer_use_app_servers_remain_helpers() {
+        let chain = [(40, 20, "/shim"), (20, 10, UTILITY), (10, 1, DESKTOP)];
+        assert_eq!(
+            macos_caller(&chain, &["app-server", "--listen", "stdio://"], None),
+            DesktopCaller::Helper
+        );
+        assert_eq!(
+            macos_caller(&chain, MAIN_ARGS, Some("codex_computer_use")),
+            DesktopCaller::Helper
+        );
+        assert_eq!(macos_caller(&chain, MAIN_ARGS, None), DesktopCaller::Helper);
+        assert_eq!(
+            macos_caller(&chain, &MAIN_ARGS[..4], Some("Codex Desktop")),
+            DesktopCaller::Helper
+        );
+    }
+
+    #[test]
+    fn macos_main_app_server_args_do_not_authorize_an_unverified_chain() {
+        for chain in [
+            &[
+                (40, 20, "/shim"),
+                (20, 10, "/other.app/utility"),
+                (10, 1, DESKTOP),
+            ][..],
+            &[(40, 20, "/shim"), (20, 10, UTILITY)][..],
+            &[
+                (40, 20, "/shim"),
+                (20, 10, UTILITY),
+                (10, 1, "/other.app/main"),
+            ][..],
+            &[(40, 20, "/shim"), (20, 70, UTILITY), (70, 1, DESKTOP)][..],
+            &[
+                (40, 20, "/shim"),
+                (20, 15, UTILITY),
+                (15, 10, UTILITY),
+                (10, 1, DESKTOP),
+            ][..],
+        ] {
+            assert_eq!(
+                macos_caller(chain, MAIN_ARGS, Some("Codex Desktop")),
+                DesktopCaller::Helper
+            );
         }
     }
 

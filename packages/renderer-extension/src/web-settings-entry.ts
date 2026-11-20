@@ -21,6 +21,7 @@ import {
   type RendererSettingsMessages,
 } from "./settings/localization.js";
 import { createDefaultRendererSettingsPages } from "./settings/pages.js";
+import type { RendererConnectionDiagnostics } from "./settings/connections-page.js";
 import settingsCss from "./settings/shell.css";
 import tailwindCss from "./settings/tailwind.css";
 import { webRequestManager } from "./web-request-manager.js";
@@ -32,6 +33,13 @@ const WEB_LAYOUT_CSS = `.settings-page { background: transparent; overflow: visi
 interface WebSettingsMountOptions {
   locale: string;
   colorScheme: "light" | "dark";
+}
+
+let sharedConnectionDiagnostics: RendererConnectionDiagnostics | null = null;
+
+function getWebConnectionDiagnostics(client: RendererModelClient): RendererConnectionDiagnostics {
+  sharedConnectionDiagnostics ??= createConsoleConnectionDiagnostics(client);
+  return sharedConnectionDiagnostics;
 }
 
 /** The GUI's idle release group (switch, timeout, loaded sessions) as its own Web section. */
@@ -68,7 +76,6 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
     () => modelClient,
     { migrateLegacy: false },
   );
-  const diagnostics = createConsoleConnectionDiagnostics(modelClient);
   const updateClient = {
     checkUpdate: () => modelClient.checkUpdate(),
     startUpdate: () => modelClient.startUpdate(),
@@ -78,7 +85,7 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
     ...createDefaultRendererSettingsPages(
       messages,
       () => updateClient,
-      () => diagnostics,
+      () => getWebConnectionDiagnostics(modelClient),
       () => modelClient,
       () => null,
       null,

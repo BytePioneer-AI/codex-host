@@ -57,6 +57,7 @@ import {
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from "./shortcuts.ts";
 import { UiWorkspaceService } from "./navigation.ts";
 import { registerRecentNavigation } from "./recent-navigation.ts";
+import { registerWorkspacePreferences } from "./workspace-preferences.ts";
 import { createWorkspaceViewStore } from "./stores.ts";
 import { WorkspaceBrowser } from "./rows/WorkspaceBrowser.tsx";
 import {
@@ -76,6 +77,11 @@ import { RenameSessionMenuItem, SessionRenameDialog } from "./session-actions/Re
 import { RowActionToast } from "./session-actions/RowActionToast.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { en, zh, type WorkspaceKey } from "./locales.ts";
+import {
+  isLocalThreadTreeMember,
+  runningSubagentsInThreadSubtree,
+  runningThreadSubtree,
+} from "./thread-tree-catalog.ts";
 
 export { ReferenceSessionMenuItem } from "./session-actions/ReferenceSession.tsx";
 export type { StartSessionOptions, UiWorkspace } from "./navigation.ts";
@@ -180,7 +186,8 @@ export function apply(ctx: Context): void {
     viewInstance.actions,
     notify,
   );
-  registerRecentNavigation(ctx, uiWorkspace);
+  const workspacePreferences = registerWorkspacePreferences(ctx);
+  registerRecentNavigation(ctx, uiWorkspace, workspacePreferences);
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } });
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-workspace: dictionaries");
   const shortcutControls = createWorkspaceShortcutControls();
@@ -266,6 +273,19 @@ export function apply(ctx: Context): void {
     // The Host's refusal for running work is the one case that asks first:
     // the confirmation names that work and offers to stop it.
     archiveSession: (sessionId) => {
+      const list = sessions.list.getSnapshot();
+      const summary = list.byId[sessionId];
+      const runningThreads = runningThreadSubtree(list, sessionId);
+      const subagents = runningSubagentsInThreadSubtree(list, sessionId);
+      if (isLocalThreadTreeMember(summary) && (runningThreads.length > 0 || subagents.length > 0)) {
+        archiveRequest.set({
+          sessionId,
+          displayTitle: summary?.displayTitle ?? sessionId,
+          activity: subagents.length === 0 ? [] : [{ kind: "subagent", items: subagents }],
+          runningThreads,
+        });
+        return;
+      }
       uiWorkspace
         .archiveSession(sessionId)
         .then(() => {
@@ -355,6 +375,9 @@ export function apply(ctx: Context): void {
       uiWorkspace.startSession(workspaceId);
     },
     open: openSession,
+    markCompletionsRead: (sessionIds) => {
+      ctx.get("uiSession")?.markCompletionsRead(sessionIds);
+    },
     searchSessions,
     refreshSessions: () => {
       void sessions.refresh();
@@ -385,7 +408,10 @@ export function apply(ctx: Context): void {
     closeAddWorkspace: shortcutControls.closeAdd,
     setDirectoryBusy: shortcutControls.directoryBusy,
     dismissForkError: shortcutControls.dismissForkError,
+    setThreadTreeCollapseStyle: (style) =>
+      workspacePreferences.set("threadTreeCollapseStyle", style),
     hooks: {
+      workspacePreferences,
       directoryFlow: browserFlowSource,
       hostInfo,
       workspaceShortcuts: shortcutControls.state,

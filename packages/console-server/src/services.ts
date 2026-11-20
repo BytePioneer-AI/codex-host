@@ -7,6 +7,7 @@ import type { ConsoleInstallation, LaunchCommand } from "./installation.js";
 export function serviceCommand(
   installation: ConsoleInstallation,
   action: "stop" | "web",
+  options: { connectDevices?: boolean } = {},
 ): LaunchCommand {
   if (!installation.launcherExecutable) throw new Error("codexhost Launcher was not found");
   const resource = (packaged: string, source: string): string => {
@@ -19,6 +20,7 @@ export function serviceCommand(
     command: installation.launcherExecutable,
     args: [
       action,
+      ...(options.connectDevices ? ["--connect-devices"] : []),
       "--node",
       process.execPath,
       "--host-runtime",

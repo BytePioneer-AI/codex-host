@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type {
   HostEvent,
   HostSubagentDelegationItem,
@@ -76,6 +77,7 @@ export function gotgenesRecord(value: unknown): GotgenesRecord | null {
       role: value.type,
       status,
       background: value.isBackground === true,
+      ...subagentConfiguration(value),
       ...(text(value.modelName) ? { model: value.modelName } : {}),
       ...(result ? { resultSummary: result.slice(0, 2048) } : {}),
     },
@@ -233,7 +235,7 @@ export class GotgenesSubagents {
       this.observe([
         {
           ...prior,
-          child: { ...prior.child, ...(parsed.child.model ? { model: parsed.child.model } : {}) },
+          child: { ...prior.child, ...subagentConfiguration(parsed.child) },
         },
       ]);
     }

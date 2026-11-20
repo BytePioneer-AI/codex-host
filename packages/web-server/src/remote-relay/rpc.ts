@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { localAccessTokens } from "../access-token-rpc.ts";
+import { managedAccessTokens } from "../access-token-rpc.ts";
 import type { AccessTokenStore } from "../access-tokens.ts";
 import type { RpcRegistry } from "../transport.ts";
 import {
@@ -12,11 +12,10 @@ import type { RemoteRelay } from "./state.ts";
 export function registerRelayRpc(
   rpc: RpcRegistry,
   tokens: AccessTokenStore | undefined,
-  port: () => number,
   relay: RemoteRelay,
 ): void {
-  rpc.register("codexhost/relaySet", (args, context) => {
-    localAccessTokens(tokens, context.auth, port());
+  rpc.register("codexhost/relaySet", (args) => {
+    managedAccessTokens(tokens);
     const { enabled, name, invite, kind, host } = z
       .object({
         enabled: z.boolean(),

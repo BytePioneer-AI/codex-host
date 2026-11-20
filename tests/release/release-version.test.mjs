@@ -81,30 +81,39 @@ describe("release version preparation", () => {
     );
   });
 
-  it("updates the product and Cargo workspace versions and reports the matching tag", async () => {
-    const root = await createRepositoryFixture();
-    try {
-      const prepared = await prepareReleaseVersion({ root, version: "0.2.0-beta.1" });
-      expect(prepared).toEqual({
-        changedFiles: ["package.json", "package-lock.json", "Cargo.toml", "Cargo.lock"],
-        tag: "v0.2.0-beta.1",
-        version: "0.2.0-beta.1",
-      });
+  it(
+    "updates the product and Cargo workspace versions idempotently and reports the matching tag",
+    { timeout: 20_000 },
+    async () => {
+      const root = await createRepositoryFixture();
+      try {
+        const prepared = await prepareReleaseVersion({ root, version: "0.2.0-beta.1" });
+        expect(prepared).toEqual({
+          changedFiles: ["package.json", "package-lock.json", "Cargo.toml", "Cargo.lock"],
+          tag: "v0.2.0-beta.1",
+          version: "0.2.0-beta.1",
+        });
 
-      const manifest = await readJson(path.join(root, "package.json"));
-      const lockfile = await readJson(path.join(root, "package-lock.json"));
-      const cargoManifest = await readFile(path.join(root, "Cargo.toml"), "utf8");
-      const cargoLock = await readFile(path.join(root, "Cargo.lock"), "utf8");
-      expect(manifest.version).toBe("0.2.0-beta.1");
-      expect(lockfile.version).toBe("0.2.0-beta.1");
-      expect(lockfile.packages[""].version).toBe("0.2.0-beta.1");
-      expect(lockfile.packages["packages/example"].version).toBe("0.0.0");
-      expect(cargoManifest).toContain('version = "0.2.0-beta.1"');
-      expect(cargoLock).toContain('version = "0.2.0-beta.1"');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+        const manifest = await readJson(path.join(root, "package.json"));
+        const lockfile = await readJson(path.join(root, "package-lock.json"));
+        const cargoManifest = await readFile(path.join(root, "Cargo.toml"), "utf8");
+        const cargoLock = await readFile(path.join(root, "Cargo.lock"), "utf8");
+        expect(manifest.version).toBe("0.2.0-beta.1");
+        expect(lockfile.version).toBe("0.2.0-beta.1");
+        expect(lockfile.packages[""].version).toBe("0.2.0-beta.1");
+        expect(lockfile.packages["packages/example"].version).toBe("0.0.0");
+        expect(cargoManifest).toContain('version = "0.2.0-beta.1"');
+        expect(cargoLock).toContain('version = "0.2.0-beta.1"');
+        await expect(prepareReleaseVersion({ root, version: "0.2.0-beta.1" })).resolves.toEqual({
+          changedFiles: [],
+          tag: "v0.2.0-beta.1",
+          version: "0.2.0-beta.1",
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("only replaces the version in the Cargo workspace package section", () => {
     const source = `[workspace]\nmembers = []\n\n[workspace.package]\nversion = "0.0.0"\n\n[profile.release]\ncodegen-units = 1\n`;
@@ -121,20 +130,6 @@ describe("release version preparation", () => {
     expect(updateCargoLockWorkspaceVersions(source, new Set(["codexhost-example"]), "1.2.3")).toBe(
       `version = 4\n\n[[package]]\nname = "codexhost-example"\nversion = "1.2.3"\n\n[[package]]\nname = "third-party"\nversion = "0.0.0"\nsource = "registry+https://example.invalid"\n`,
     );
-  });
-
-  it("is idempotent when the requested version is already prepared", async () => {
-    const root = await createRepositoryFixture();
-    try {
-      await prepareReleaseVersion({ root, version: "0.2.0" });
-      await expect(prepareReleaseVersion({ root, version: "0.2.0" })).resolves.toEqual({
-        changedFiles: [],
-        tag: "v0.2.0",
-        version: "0.2.0",
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
   });
 
   it("refuses to update a lockfile for a different root package", async () => {

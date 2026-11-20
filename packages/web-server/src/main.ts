@@ -28,6 +28,7 @@ import {
   takeNpmEntrypoint,
 } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
+import { downloadWorkspaceFile, openWorkspaceFile } from "./workspace-file-actions.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
 import { AccessTokenStore } from "./access-tokens.ts";
@@ -56,6 +57,7 @@ import { ChSessions } from "./ch-sessions.ts";
 import { WebHarnessDisplaySettings } from "./harness-display-settings.ts";
 import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
+import { RemoteSessions } from "./remote-sessions.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
 import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
 import { createOfficeEngine } from "./office-engine.ts";
@@ -256,7 +258,7 @@ const displaySettings: WebHarnessDisplaySettings = new WebHarnessDisplaySettings
 );
 const preferences: WebHarnessPreferences = new WebHarnessPreferences(chHost, events);
 const images = new WebImages(data);
-const files = new WebFiles(data);
+const files = new WebFiles(data, images);
 const sessions = new ChSessions(
   chHost,
   workspaces,
@@ -266,6 +268,7 @@ const sessions = new ChSessions(
   displayEntries,
   preferences,
   enabledHarnesses,
+  (path, action) => openWorkspaceFile(launcher, path, action),
 );
 // The right Sidebar's DSH backend runs in this process; a failure disables the
 // panel without taking Web down.
@@ -385,6 +388,8 @@ workspaces.register(rpc, streams);
 sessions.register(rpc, streams);
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
+const remoteSessions = new RemoteSessions(events, undefined, workspaces);
+remoteSessions.install(rpc, streams);
 preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
@@ -433,16 +438,13 @@ registerAccessTokenRpc(rpc, accessTokens, {
 });
 registerBackgroundControls(rpc, accessTokens, {
   background: background !== undefined,
-  port: () => listeningPort,
   data,
   launcher,
   npmEntrypoint,
   shutdown,
 });
 registerMisc(rpc, { events });
-registerUiExtensionRpc(rpc, extensions, {
-  port: () => (server.address() as { port: number }).port,
-});
+registerUiExtensionRpc(rpc, extensions);
 registerVoiceStatus(rpc, chHost);
 
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
@@ -480,8 +482,8 @@ async function readBody(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<string | undefined> {
-  // 32 MiB of image bytes plus base64/JSON overhead. Reject before parsing or saving.
-  const limit = 48 * 1024 * 1024;
+  // 50 MiB of image bytes plus base64/JSON overhead. Reject before parsing or saving.
+  const limit = 72 * 1024 * 1024;
   const reject = () => {
     response
       .writeHead(413, { "content-type": "text/plain", "cache-control": "no-store" })
@@ -518,6 +520,15 @@ const server = createWebServer((request, response) => {
       const admission = await auth.gate(request, response, pathname);
       if (admission.handled) return;
       requestAuth = admission.auth;
+    }
+    if (
+      pathname === "/api/workspace-file/download" &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      await downloadWorkspaceFile(request, response, new URL(url, "http://localhost"), (id) =>
+        sessions.fileWorkspaceRoot(id),
+      );
+      return;
     }
     if (pathname === "/api/file" && (request.method === "GET" || request.method === "HEAD")) {
       const path = new URL(url, "http://localhost").searchParams.get("path");
@@ -564,7 +575,7 @@ const server = createWebServer((request, response) => {
         return;
       }
       if (pathname === "/api/session/uploadFileBinary") {
-        await serveFileUpload(sessions, request, response);
+        await serveFileUpload(sessions, request, response, trust.relaySockets.has(request.socket));
         return;
       }
       const body = await readBody(request, response);
@@ -697,7 +708,7 @@ const server = createWebServer((request, response) => {
 });
 
 const relay = new RemoteRelay(data, accessTokens !== undefined, server, trust);
-registerRelayRpc(rpc, accessTokens, () => listeningPort, relay);
+registerRelayRpc(rpc, accessTokens, relay);
 if (serviceOptions.relayEnabled) relay.start();
 
 const wss = createBrowserWebSocketServer();
@@ -810,6 +821,7 @@ async function shutdown(exitCode = 0): Promise<void> {
   await extensions.cleanup(true);
   pushNotifications?.close();
   await sessions.close();
+  remoteSessions.close();
   await preferences?.close();
   displaySettings.close();
   process.exit(exitCode);

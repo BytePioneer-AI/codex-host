@@ -87,6 +87,9 @@ export class ConnectionController {
   private running = false;
   private immediateRetry = false;
   private networkAvailable = true;
+  private pageVisible = true;
+  private hiddenAt: number | undefined;
+  private readyDeadline: number | undefined;
   private lastState: ConnectionState | undefined;
   private readonly config: Required<ConnectionRecoveryConfig>;
 
@@ -110,6 +113,7 @@ export class ConnectionController {
     this.running = false;
     this.current?.abort();
     this.current = null;
+    this.readyDeadline = undefined;
     this.retryDelay?.abort();
     this.retryDelay = null;
   }
@@ -125,10 +129,40 @@ export class ConnectionController {
     this.retryDelay?.abort(MANUAL_RECONNECT);
   }
 
-  /** Check an established carrier or recover an absent one, without interrupting ongoing recovery. */
+  /** Keep live subscriptions, but park new attempts while the page is hidden. */
+  setPageVisible(visible: boolean): void {
+    if (this.pageVisible === visible) return;
+    this.pageVisible = visible;
+    if (!visible) {
+      this.hiddenAt = Date.now();
+      this.retryDelay?.abort();
+      return;
+    }
+    const hiddenMs = this.hiddenAt === undefined ? 0 : Date.now() - this.hiddenAt;
+    this.hiddenAt = undefined;
+    if (!this.running) return;
+    console.info("[connection] foreground", { hiddenMs, state: this.lastState ?? "initial" });
+    if (!this.networkAvailable) return;
+    if (this.readyDeadline !== undefined && Date.now() >= this.readyDeadline) {
+      // Suspended timers cannot enforce the handshake deadline until the page resumes.
+      console.info("[connection] expiring suspended handshake");
+      this.reconnect();
+    } else if (this.retryDelay !== null) {
+      this.immediateRetry = true;
+      this.retryDelay.abort();
+    }
+  }
+
+  /** Check the established carrier without interrupting a current handshake or retry. */
   revalidate(): void {
-    // An in-flight attempt or its backoff already owns recovery.
-    if (!this.running || this.lastState === undefined || this.lastState === "connecting") return;
+    if (
+      !this.running ||
+      !this.pageVisible ||
+      !this.networkAvailable ||
+      this.lastState === undefined ||
+      this.lastState === "connecting"
+    )
+      return;
     let probing = false;
     if (this.lastState === "connected") {
       this.callSink(() => {
@@ -166,7 +200,7 @@ export class ConnectionController {
 
   /** Re-read retry inputs after a potentially reentrant state sink. */
   private isRetryInterrupted(immediate: boolean): boolean {
-    return this.immediateRetry || (!this.networkAvailable && !immediate);
+    return !this.pageVisible || this.immediateRetry || (!this.networkAvailable && !immediate);
   }
 
   /** Read through a method: stop() flips the flag across awaits, so narrowing from the loop condition must not stick. */
@@ -182,10 +216,10 @@ export class ConnectionController {
   private async loop(): Promise<void> {
     let retry = false;
     while (this.running) {
-      if (!this.networkAvailable && !this.immediateRetry) {
+      if (!this.pageVisible || (!this.networkAvailable && !this.immediateRetry)) {
         const retryDelay = new AbortController();
         this.retryDelay = retryDelay;
-        this.emitState("disconnected");
+        this.emitState(this.networkAvailable ? "connecting" : "disconnected");
         await waitForAbort(retryDelay.signal);
         if (this.retryDelay === retryDelay) this.retryDelay = null;
         if (!this.isRunning()) return;
@@ -222,6 +256,8 @@ export class ConnectionController {
       const gen = ++this.generation;
       const ac = new AbortController();
       this.current = ac;
+      const started = Date.now();
+      this.readyDeadline = started + this.config.generationReadyTimeoutMs;
 
       let sourceReady = false;
       let resolveReady!: (host: ConnectionHostInfo) => void;
@@ -237,6 +273,7 @@ export class ConnectionController {
       const reportReady = (host: ConnectionHostInfo): void => {
         if (sourceReady || gen !== this.generation || !this.isGenerationActive(ac)) return;
         sourceReady = true;
+        this.readyDeadline = undefined;
         resolveReady(host);
       };
 
@@ -270,6 +307,10 @@ export class ConnectionController {
         const host = await Promise.race([waitForReady(ready, this.config, ac.signal), sourceLost]);
         if (ac.signal.aborted) throw new Error("generation aborted during readiness handshake");
         this.attempt = 0;
+        console.info("[connection] generation ready", {
+          generation: gen,
+          handshakeMs: Date.now() - started,
+        });
         this.emitState("connected");
         // A state sink may synchronously stop this controller.
         if (this.isGenerationActive(ac)) {
@@ -278,10 +319,12 @@ export class ConnectionController {
           });
         }
       } catch (error) {
+        this.readyDeadline = undefined;
         if (!ac.signal.aborted) ac.abort(error);
       }
 
       await failed;
+      if (this.current === ac) this.current = null;
       if (!this.isRunning()) return;
       if (manualAttempt) this.attempt = 0;
       retry = true;

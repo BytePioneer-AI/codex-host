@@ -34,6 +34,40 @@
   cursor: default;
 }
 
+.toggle.speed {
+  position: relative;
+  width: auto;
+  gap: 4px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.speed:focus-within {
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+@media (forced-colors: active) {
+  .speed:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+.speedSelect {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.speedSelect:disabled {
+  cursor: default;
+}
+
 @media (max-width: 600px), (pointer: coarse) {
   .toggle {
     width: 36px;

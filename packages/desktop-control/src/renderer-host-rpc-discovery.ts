@@ -7,6 +7,17 @@
  */
 
 export interface RendererHostRpc {
+  getConversation?(threadId: string): Promise<unknown>;
+  replyWithCommandExecutionApprovalDecision?(
+    threadId: string,
+    requestId: string | number,
+    decision: string,
+  ): Promise<unknown>;
+  replyWithFileChangeApprovalDecision?(
+    threadId: string,
+    requestId: string | number,
+    decision: string,
+  ): Promise<unknown>;
   sendRequest(method: string, params: unknown, options?: unknown): Promise<unknown>;
   clearPrewarmedThreads(): Promise<unknown>;
 }

@@ -21,7 +21,7 @@ Registry 对每个来源请求一条记录，只有该记录实际返回给调�
 - cwd 和排序；
 - 每个独立来源的原生续读位置或结束标记。
 
-调用方可以改变 `limit`，不能改变 cwd、排序或列表来源。格式错误、版本不支持、查询或注册集合不匹配时返回 `INVALID_ARGUMENT`，应不带 cursor 重新开始。复合 cursor 不能用于 `--parent`、catalog 或退化为单注册后的列表。单注册及 catalog 的 cursor 校验仍由原有来源负责。
+调用方可以改变 `limit`，不能改变 cwd、排序或列表来源。格式错误、版本不支持、查询或注册集合不匹配时返回 `INVALID_ARGUMENT`，应不带 cursor 重新开始。Registry 的复合 cursor 不能用于 `--parent`、catalog 或退化为单注册后的列表。父 Thread 的列表由所属注册校验 cursor；SSH 注册合并旧 SSH 与 shared 子 Thread 时，使用绑定该注册、父 Thread、cwd 和排序的复合 cursor，不接受 Registry 全局列表的 cursor。单注册及 catalog 的 cursor 校验仍由原有来源负责。
 
 正常非空来源每页最多发出“活跃来源数 + 返回条数 - 1”次一条记录请求；候选内存为 O(来源数)，归并比较为 O(来源数 × 返回条数)。空但未结束的来源页会继续读取，每个来源每次请求最多读取 256 页；无进展、超出页大小或超出请求界限的来源返回错误，不静默丢弃数据。
 

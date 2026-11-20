@@ -2,14 +2,14 @@
   position: relative;
   isolation: isolate;
   display: inline-flex;
-  flex: 0 0 142px;
+  flex: 0 0 auto;
+  width: max-content;
   align-items: center;
-  gap: 6px;
   box-sizing: border-box;
   min-width: 0;
-  max-width: calc(100% - 24px);
+  max-width: min(164px, calc(100% - 24px));
   min-height: 44px;
-  padding: 0 8px;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -17,8 +17,41 @@
   font-size: 13px;
   font-weight: 500;
   line-height: 20px;
-  text-align: start;
+}
+
+.select,
+.close {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
+}
+
+.select {
+  flex: 1;
+  gap: 6px;
+  box-sizing: border-box;
+  min-width: 44px;
+  align-self: stretch;
+  padding-inline-start: 8px;
+  text-align: start;
+}
+
+.close {
+  flex: 0 0 44px;
+  justify-content: center;
+  width: 44px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.close:active {
+  color: var(--dsw-alias-label-primary);
 }
 
 /* Only the 32px material samples the backdrop; identity and text stay sharp. */
@@ -37,6 +70,16 @@
   pointer-events: none;
 }
 
+.shortcut[data-active]::before {
+  border-width: 1px;
+  border-color: color-mix(in srgb, var(--dsw-alias-label-primary) 34%, var(--dsw-alias-border-l2));
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-bg-module-platform) 90%,
+    var(--dsw-alias-label-primary)
+  );
+}
+
 .shortcut:active::before {
   background: var(--dsw-alias-button-ghost-active-fill);
 }
@@ -48,12 +91,22 @@
     backdrop-filter: blur(8px) saturate(115%);
   }
 
+  .shortcut[data-active]::before {
+    background: color-mix(
+      in srgb,
+      color-mix(in srgb, var(--dsw-alias-bg-module-platform) 90%, var(--dsw-alias-label-primary))
+        82%,
+      transparent
+    );
+  }
+
   .shortcut:active::before {
     background: color-mix(in srgb, var(--dsw-alias-button-ghost-active-fill) 82%, transparent);
   }
 }
 
-.shortcut:focus-visible {
+.select:focus-visible,
+.close:focus-visible {
   outline: 2px solid var(--dsw-alias-label-primary);
   outline-offset: -2px;
 }
@@ -83,12 +136,18 @@
 }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
-  .shortcut::before {
+  .shortcut::before,
+  .shortcut[data-active]::before {
     border-color: var(--dsw-alias-label-secondary);
     background: var(--dsw-alias-bg-module-platform);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     box-shadow: none;
+  }
+
+  .shortcut[data-active]::before {
+    border-width: 1px;
+    border-color: var(--dsw-alias-label-primary);
   }
 
   .shortcut:active::before {
@@ -109,15 +168,29 @@
     box-shadow: none;
   }
 
+  .shortcut[data-active],
   .shortcut:active {
     color: HighlightText;
   }
 
+  .shortcut[data-active]::before,
   .shortcut:active::before {
+    border-color: Highlight;
     background: Highlight;
   }
 
-  .shortcut:focus-visible {
+  .close,
+  .close:active {
+    color: inherit;
+  }
+
+  .select:focus-visible,
+  .close:focus-visible {
     outline-color: Highlight;
+  }
+
+  .shortcut[data-active] .select:focus-visible,
+  .shortcut[data-active] .close:focus-visible {
+    outline-color: HighlightText;
   }
 }

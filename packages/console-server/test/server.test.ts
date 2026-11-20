@@ -368,9 +368,16 @@ describe("console server", () => {
       true,
     );
     expect(service.mock.calls[0]?.[1][0]).toBe("web");
+    expect(service.mock.calls[0]?.[1]).not.toContain("--connect-devices");
+    await fetch(`${base}/api/web/open`, {
+      method: "POST",
+      headers: { ...CHANGE, "content-type": "application/json" },
+      body: JSON.stringify({ connectDevices: true }),
+    });
+    expect(service.mock.calls[1]?.[1]).toContain("--connect-devices");
     const stopped = await fetch(`${base}/api/stop`, { method: "POST", headers: CHANGE });
     expect(await stopped.json()).toEqual({ stopped: true });
-    expect(service.mock.calls[1]?.[1][0]).toBe("stop");
+    expect(service.mock.calls[2]?.[1][0]).toBe("stop");
     await vi.waitFor(() => expect(onExit).toHaveBeenCalledOnce());
   });
 

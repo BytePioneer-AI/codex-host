@@ -29,24 +29,22 @@ export function parseGrokAvailableCommands(value: unknown): GrokAvailableCommand
   });
 }
 
-/** Grok reports skills with their `SKILL.md` path and a qualified name. */
-function isGrokSkill(command: GrokAvailableCommand): boolean {
-  const path = command.meta?.path;
-  return (
-    (typeof path === "string" && /(^|[\\/])SKILL\.md$/u.test(path)) ||
-    typeof command.meta?.qualifiedName === "string"
-  );
-}
-
 /**
- * Live Composer entries for Grok's advertised commands, workflows and skills.
+ * Live Composer entries for Grok's advertised commands and workflows.
  * Approval, hook, feedback and loop commands are removed by the common live
  * command exclusions when the catalog is merged.
  */
 export function grokLiveCommands(native: readonly GrokAvailableCommand[]): LiveHarnessCommand[] {
-  return native.map((command) => ({
-    name: command.name,
-    description: command.description,
-    kind: isGrokSkill(command) ? "skill" : "command",
-  }));
+  return native
+    .filter(({ meta }) => {
+      const path = meta?.path;
+      return !(
+        (typeof path === "string" && /(^|[\\/])SKILL\.md$/u.test(path)) ||
+        typeof meta?.qualifiedName === "string"
+      );
+    })
+    .map((command) => ({
+      name: command.name,
+      description: command.description,
+    }));
 }

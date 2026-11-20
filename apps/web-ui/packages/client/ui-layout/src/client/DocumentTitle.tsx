@@ -1,36 +1,10 @@
-/** Browser title selection follows the active main panel without subscribing the frame. */
+/** Keep the browser title independent of the active session or panel. */
 import { useEffect } from "react";
-import type { PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 
-/** Props for the browser title projection. */
-export type DocumentTitleProps = Pick<PropsRuntime<"root">, "useSessions" | "usePanelInfo"> & {
-  /** Build-configured or localized product title. */
-  productTitle: string;
-};
-
-/**
- * Project the selected durable session title into the browser title and
- * restore the build-selected product title when unmounted.
- * @param props - Selected session title projection.
- * @returns No rendered content.
- */
-export function DocumentTitle({
-  useSessions,
-  usePanelInfo,
-  productTitle,
-}: DocumentTitleProps): null {
-  const showSessionTitle = usePanelInfo((info) => info.activePanelId === null);
-  const title = useSessions((state) => {
-    const current = Object.values(state.byId).find(
-      (session) => (session.retainedBy.mainView ?? 0) > 0,
-    )?.id;
-    return !showSessionTitle || current === undefined ? undefined : state.byId[current]?.title;
-  });
+/** Project the build-configured or localized product title into the browser tab. */
+export function DocumentTitle({ productTitle }: { productTitle: string }): null {
   useEffect(() => {
-    document.title = title === undefined ? productTitle : `${title} — ${productTitle}`;
-    return () => {
-      document.title = productTitle;
-    };
-  }, [productTitle, title]);
+    document.title = productTitle;
+  }, [productTitle]);
   return null;
 }

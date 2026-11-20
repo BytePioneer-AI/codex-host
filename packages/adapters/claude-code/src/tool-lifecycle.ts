@@ -4,18 +4,18 @@ import type {
   HostEvent,
   HostItem,
   HostItemOutcome,
-  HostToolExecutionItem,
   HostToolOutput,
 } from "@codexhost/harness-adapter";
 import type { HostItemId, HostTurnId, JsonValue } from "@codexhost/shared-contracts";
 
+import { claudeToolItem, type ClaudeToolItem } from "./claude-tool-item.js";
 import { projectClaudeFileChange } from "./file-change.js";
 import { claudeTranscriptItemId } from "./item-identity.js";
 import { isClaudeTaskTool, type ClaudeTaskTracker } from "./task-tracker.js";
 import type { ClaudeTurnEvent } from "./transport.js";
 
 interface ActiveTool {
-  item: HostCommandExecutionItem | HostToolExecutionItem;
+  item: HostCommandExecutionItem | ClaudeToolItem;
   nativeName: string;
   nativeArguments: JsonValue;
   startedAtMs: number;
@@ -38,6 +38,8 @@ export interface ClaudeToolLifecycleOptions {
   cwd: string;
   outputLimit: number;
   taskTracker: ClaudeTaskTracker;
+  /** The configured MCP server names the Session reported, if any. */
+  mcpServers?: () => readonly string[];
   /** The Turn's message/thinking Item key; Tool Items share it for history parity. */
   nativeTurnKey: string;
   newItemId(): HostItemId;
@@ -89,6 +91,7 @@ export class ClaudeToolLifecycle {
   readonly #onDetached: (command: ClaudeDetachedCommand) => void;
   readonly #outputLimit: number;
   readonly #taskTracker: ClaudeTaskTracker;
+  readonly #mcpServers: () => readonly string[];
   readonly #nativeTurnKey: string;
   readonly #tools = new Map<string, ActiveTool>();
   #toolOrdinal = 0;
@@ -100,6 +103,7 @@ export class ClaudeToolLifecycle {
     this.#onDetached = options.onDetached;
     this.#outputLimit = options.outputLimit;
     this.#taskTracker = options.taskTracker;
+    this.#mcpServers = options.mcpServers ?? (() => []);
     this.#nativeTurnKey = options.nativeTurnKey;
   }
 
@@ -114,19 +118,16 @@ export class ClaudeToolLifecycle {
     // addresses the same Renderer Item.
     const itemId = claudeTranscriptItemId(this.#nativeTurnKey, "tool", (this.#toolOrdinal += 1));
     const command = event.toolName === "Bash" ? stringField(event.arguments, "command") : undefined;
-    const item: HostCommandExecutionItem | HostToolExecutionItem = command
+    const item: HostCommandExecutionItem | ClaudeToolItem = command
       ? {
           type: "commandExecution",
           itemId,
           command,
           cwd: this.#cwd,
         }
-      : {
-          type: "toolExecution",
-          itemId,
-          toolName: isClaudeTaskTool(event.toolName) ? "Todo" : event.toolName,
-          arguments: isClaudeTaskTool(event.toolName) ? {} : event.arguments,
-        };
+      : isClaudeTaskTool(event.toolName)
+        ? { type: "toolExecution", itemId, toolName: "Todo", arguments: {} }
+        : claudeToolItem(itemId, event.toolName, event.arguments, this.#mcpServers());
     this.#tools.set(event.callId, {
       item,
       nativeName: event.toolName,
@@ -183,6 +184,8 @@ export class ClaudeToolLifecycle {
           : {}),
         durationMs,
       };
+    } else if (tool.item.type === "webSearch") {
+      tool.item = { ...tool.item, ...(output ? { output } : {}) };
     } else {
       tool.item = { ...tool.item, ...(output ? { output } : {}), durationMs };
     }
@@ -224,7 +227,11 @@ export class ClaudeToolLifecycle {
     for (const [callId, tool] of this.#tools) {
       this.#tools.delete(callId);
       const durationMs = Math.max(tool.elapsedMs, Date.now() - tool.startedAtMs, 0);
-      this.#completeItem(turnId, { ...tool.item, durationMs }, outcome);
+      this.#completeItem(
+        turnId,
+        tool.item.type === "webSearch" ? tool.item : { ...tool.item, durationMs },
+        outcome,
+      );
     }
   }
 

@@ -672,6 +672,68 @@ describe("CodeBuddy native history and output projection", () => {
       "unknown",
     );
   });
+  it.each(['{"command":"unfinished', '{"command":"never executed"}'])(
+    "recovers past discarded aborted Tool arguments: %s",
+    (argumentsText) => {
+      const discarded = {
+        type: "function_call",
+        id: "discarded-call",
+        parentId: "user",
+        callId: "aborted-call",
+        name: "Bash",
+        arguments: argumentsText,
+        status: "incomplete",
+        providerData: { isPartialAborted: true, discard: true },
+      };
+      const history = lines([
+        user,
+        discarded,
+        { ...user, id: "next-user", parentId: discarded.id, content: "continue" },
+        { ...assistant, parentId: "next-user" },
+      ]);
+      const snapshot = snapshotFromHistory(history, ref, process.cwd());
+      expect(snapshot.turns[0]).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "user" },
+        items: [],
+        outcome: { status: "unknown" },
+      });
+      expect(snapshot.turns[1]).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "next-user" },
+        input: [{ type: "text", text: "continue" }],
+        items: [{ item: { type: "agentMessage", text: "ok" } }],
+        outcome: { status: "succeeded" },
+      });
+      // Projection must not remove the node needed to traverse the native parent chain.
+      expect(nativeHistoryRows(history).map((row) => row.id)).toEqual([
+        "user",
+        "discarded-call",
+        "next-user",
+        "answer",
+      ]);
+    },
+  );
+  it.each([
+    { status: "completed", providerData: { isPartialAborted: true, discard: true } },
+    { status: "incomplete", providerData: { isPartialAborted: true } },
+    { status: "incomplete", providerData: { discard: true } },
+    { status: "incomplete", providerData: {} },
+  ])("still rejects malformed Tool arguments without discarded-abort evidence: %j", (state) => {
+    const history = lines([
+      user,
+      {
+        type: "function_call",
+        id: "call",
+        parentId: "user",
+        callId: "call-1",
+        name: "Bash",
+        arguments: '{"command":"unfinished',
+        ...state,
+      },
+    ]);
+    expect(() => snapshotFromHistory(history, ref, process.cwd())).toThrow(
+      "Invalid native Tool arguments",
+    );
+  });
   it("replays a Tool result that precedes its call and drops one without any call", () => {
     const call = {
       type: "function_call",

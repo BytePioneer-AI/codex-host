@@ -84,7 +84,7 @@ export class CursorTransport {
     }
   }
 
-  /** Start/authenticate the owned process without touching any native session. */
+  /** Start the owned process with existing native authentication, without touching any session. */
   prepare(): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("Cursor session closed"));
     return (this.#preparation ??= this.#prepare());
@@ -159,8 +159,8 @@ export class CursorTransport {
       if (init.protocolVersion !== 1)
         throw new Error("Cursor does not support the required ACP session protocol");
       this.#canLoad = init.agentCapabilities?.loadSession === true;
-      // This reuses an existing native login. The adapter never launches login or reads credentials.
-      await this.#bounded(this.#connection.authenticate({ methodId: "cursor_login" }));
+      // ACP startup reads existing credentials. Calling authenticate(cursor_login) can open a browser;
+      // leave missing authentication to the native session request instead of starting a login flow.
       if (this.#closed) throw new Error("Cursor session closed");
     } catch (error) {
       await this.close();

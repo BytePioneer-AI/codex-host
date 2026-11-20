@@ -7,9 +7,39 @@ const nonNegativeSafeIntegerSchema = z.number().int().safe().nonnegative();
 const finiteNonNegativeNumberSchema = z.number().finite().nonnegative();
 const cacheHitRatePercentSchema = z.number().finite().min(0).max(100);
 
-/** Latest reliable display measurements; no execution state or request ledger. */
+const usageOutputTimingSchema = z
+  .object({
+    version: z.union([z.literal(3), z.literal(4)]).optional(),
+    requestId: z.string().min(1),
+    turnId: z.string().min(1).max(1024),
+    outputTokens: nonNegativeSafeIntegerSchema,
+    startedAtMs: nonNegativeSafeIntegerSchema,
+    completedAtMs: nonNegativeSafeIntegerSchema,
+  })
+  .strict()
+  .refine((value) => value.completedAtMs > value.startedAtMs);
+export type UsageOutputTiming = z.infer<typeof usageOutputTimingSchema>;
+
+/** Request IDs are session-scoped; concurrent observers must not count one request twice. */
+export function mergeUsageOutputTimings(
+  left: readonly UsageOutputTiming[] = [],
+  right: readonly UsageOutputTiming[] = [],
+): UsageOutputTiming[] {
+  const requests = new Map<string, UsageOutputTiming>();
+  for (const value of [...left, ...right]) {
+    const previous = requests.get(value.requestId);
+    if (!previous || value.completedAtMs < previous.completedAtMs)
+      requests.set(value.requestId, value);
+  }
+  return [...requests.values()].sort((a, b) =>
+    a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0,
+  );
+}
+
+/** Reliable display measurements and completed output intervals, never execution/billing state. */
 const usageMeasurementSchema = z
   .object({
+    version: z.union([z.literal(2), z.literal(3), z.literal(4)]).optional(),
     value: finiteNonNegativeNumberSchema,
     turnId: z.string().min(1).max(1024),
     at: nonNegativeSafeIntegerSchema,
@@ -17,7 +47,16 @@ const usageMeasurementSchema = z
   .strict();
 export const usageMeasurementsSchema = z
   .object({
-    outputTokensPerSecond: usageMeasurementSchema.optional(),
+    // Older intervals can omit hidden thinking time; do not restore them into averages.
+    outputTimings: z
+      .array(usageOutputTimingSchema)
+      .transform((values) => values.filter((value) => value.version === 4))
+      .optional(),
+    // Retain independent TTFT facts when dropping incompatible speed measurements.
+    outputTokensPerSecond: usageMeasurementSchema
+      .refine((value) => value.version === 4)
+      .optional()
+      .catch(undefined),
     timeToFirstOutputMs: usageMeasurementSchema
       .extend({ value: nonNegativeSafeIntegerSchema })
       .optional(),
@@ -55,6 +94,7 @@ export const threadUsageSnapshotSchema = z
     cacheWriteInputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokens: nonNegativeSafeIntegerSchema.optional(),
     outputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
+    sessionOutputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
     apiOutputTokensPerSecond: finiteNonNegativeNumberSchema.optional(),
     reasoningOutputTokens: nonNegativeSafeIntegerSchema.optional(),
     totalTokens: nonNegativeSafeIntegerSchema.optional(),
@@ -196,6 +236,18 @@ export const accountCreditsSnapshotSchema = z
 export type AccountResetCredits = z.infer<typeof accountResetCreditsSchema>;
 export type AccountCreditsSnapshot = z.infer<typeof accountCreditsSnapshotSchema>;
 
+/** Remaining prepaid funds, distinct from a percentage-based quota or allowance. */
+export const accountBalanceSnapshotSchema = z
+  .object({
+    amount: z.number().finite().nonnegative(),
+    /** ISO 4217 code as reported by the Provider, for example `CNY`. */
+    currency: z.string().trim().min(1).max(8),
+    /** Native label when the Harness exposes several Billing Sources. */
+    label: z.string().trim().min(1).max(128).optional(),
+  })
+  .strict();
+export type AccountBalanceSnapshot = z.infer<typeof accountBalanceSnapshotSchema>;
+
 export const threadUsageInspectionParamsSchema = z
   .object({
     threadId: hostThreadIdSchema,
@@ -210,7 +262,10 @@ export const threadUsageInspectionSchema = z
     threadId: hostThreadIdSchema,
     usage: threadUsageSnapshotSchema.nullable(),
     accountCredits: accountCreditsSnapshotSchema.optional(),
-    /** Whether this source can provide cached account quota independently of usage. */
+    /** Prepaid funds for the Thread's Billing Source; shown only when no percentage quota exists. */
+    accountBalance: accountBalanceSnapshotSchema.optional(),
+    /** Whether this source can provide cached account quota (credits or a prepaid balance)
+     * independently of usage. */
     accountCreditsSupported: z.boolean().optional(),
   })
   .strict();

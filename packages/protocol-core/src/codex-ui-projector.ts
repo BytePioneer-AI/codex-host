@@ -8,9 +8,11 @@ import type {
   HostItemUpdate,
   HostQuestionInteraction,
   HostTextInput,
+  HostToolOutput,
   HostTurnSnapshot,
   HistoricalTurnOutcome,
   InteractionClosedEvent,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
   ItemDetachedEvent,
   ItemStartedEvent,
@@ -51,6 +53,7 @@ export type ProjectableHostEvent =
   | ItemUpdatedEvent
   | ItemCompletedEvent
   | ItemDetachedEvent
+  | ItemBackgroundStartedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent;
 
@@ -83,6 +86,8 @@ interface ProjectedItem {
   reasoningPartStarted: boolean;
   streamedCommandOutput: boolean;
   wireStarted: boolean;
+  /** Holds its place in the Turn's Item order before its wire Item starts. */
+  orderReserved?: boolean;
   startedAtMs?: number;
   durationMs?: number;
 }
@@ -92,18 +97,20 @@ function resolvedItemDurationMs(
   startedAtMs: number,
   completedAtMs: number,
 ): number {
-  if (
-    (item.type === "commandExecution" || item.type === "toolExecution") &&
-    item.durationMs !== undefined
-  ) {
-    return item.durationMs;
-  }
+  if (hasDuration(item) && item.durationMs !== undefined) return item.durationMs;
   return Math.max(0, completedAtMs - startedAtMs);
 }
 
+function hasDuration(
+  item: HostItem,
+): item is Extract<HostItem, { type: "commandExecution" | "toolExecution" | "mcpToolCall" }> {
+  return (
+    item.type === "commandExecution" || item.type === "toolExecution" || item.type === "mcpToolCall"
+  );
+}
+
 function withResolvedDuration(item: HostItem, durationMs: number): HostItem {
-  if (item.type !== "commandExecution" && item.type !== "toolExecution") return item;
-  return { ...item, durationMs };
+  return hasDuration(item) ? { ...item, durationMs } : item;
 }
 
 type ProjectedInteraction =
@@ -428,6 +435,82 @@ function planStatus(value: unknown): CodexPlanStepStatus {
   return "pending";
 }
 
+/**
+ * The reason a presented Item ended without one of its own, so a card that has
+ * no output field can still say why it failed.
+ */
+function outcomeReason(outcome: HostItemOutcome): string {
+  return outcome.status === "failed"
+    ? outcome.error.message
+    : outcome.status === "cancelled"
+      ? (outcome.reason ?? "")
+      : "";
+}
+
+/**
+ * Codex's web search Item has no status, so a search that did not succeed keeps
+ * the generic tool card with its native error instead. The generic card carries
+ * no outcome error, so a search that produced no output keeps the reason it
+ * failed as its output rather than showing a failure without one.
+ */
+function presentedItem(item: HostItem, outcome: HostItemOutcome | null): HostItem {
+  if (item.type !== "webSearch" || !outcome || outcome.status === "succeeded") return item;
+  const reason = item.output ? "" : outcomeReason(outcome);
+  const output =
+    item.output ??
+    (reason.trim() === "" ? undefined : { content: [{ type: "text" as const, text: reason }] });
+  return {
+    type: "toolExecution",
+    itemId: item.itemId,
+    toolName: "web_search",
+    arguments: { query: item.query },
+    ...(output ? { output } : {}),
+  };
+}
+
+/** MCP content blocks for Codex's MCP tool result. */
+function mcpResultContent(output: HostToolOutput | undefined): JsonValue[] {
+  return (output?.content ?? []).map((content) =>
+    content.type === "text"
+      ? { type: "text", text: content.text }
+      : { type: "image", data: content.base64Data, mimeType: content.mimeType },
+  );
+}
+
+function projectMcpToolCall(
+  item: Extract<HostItem, { type: "mcpToolCall" }>,
+  outcome: HostItemOutcome | null,
+): JsonObject {
+  const status = itemStatus(outcome);
+  const outputText = item.output?.content
+    .flatMap((content) => (content.type === "text" ? [content.text] : []))
+    .join("");
+  const failure =
+    outcome?.status === "failed"
+      ? outcome.error.message
+      : outcome?.status === "cancelled"
+        ? (outcome.reason ?? "Cancelled")
+        : "";
+  return {
+    id: item.itemId,
+    type: "mcpToolCall",
+    server: item.server,
+    tool: item.tool,
+    status,
+    arguments: item.arguments,
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result:
+      status === "completed"
+        ? { content: mcpResultContent(item.output), structuredContent: null, _meta: null }
+        : null,
+    error: status === "failed" ? { message: outputText || failure } : null,
+    durationMs: item.durationMs ?? null,
+  };
+}
+
 function toolContentItems(item: Extract<HostItem, { type: "toolExecution" }>): JsonValue[] | null {
   if (!item.output) return null;
   return item.output.content.map((content) =>
@@ -556,6 +639,16 @@ function projectItem(
         durationMs: item.durationMs ?? null,
       };
     }
+    case "mcpToolCall":
+      return projectMcpToolCall(item, outcome);
+    case "webSearch":
+      return {
+        id: item.itemId,
+        type: "webSearch",
+        query: item.query,
+        action: { type: "search", query: item.query, queries: null },
+        results: null,
+      };
     case "fileChange":
       return {
         id: item.itemId,
@@ -676,7 +769,9 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
           additionalDetails: null,
         }
       : null;
-  const projectEntry = ({ item, outcome }: HostItemSnapshot): JsonObject[] => {
+  const projectEntry = (entry: HostItemSnapshot): JsonObject[] => {
+    const { outcome } = entry;
+    const item = presentedItem(entry.item, outcome);
     if (itemFileChanges(item) !== null) {
       return files?.itemId === item.itemId
         ? [projectItem(files, { status: "succeeded" }, cwd)]
@@ -713,6 +808,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
   const turn = {
     id: turnId,
     status: historicalStatus(snapshot.outcome),
+    ...(snapshot.outcome.status === "unknown" ? { codexhostTurnOutcome: snapshot.outcome } : {}),
     items: [
       {
         id: `${turnId}-user`,
@@ -787,6 +883,7 @@ export class CodexTurnProjector {
   #started = false;
   /** Items allowed to outlive the Turn terminal; they settle later on this Turn. */
   readonly #detached = new Set<HostItemId>();
+  readonly #background = new Set<HostItemId>();
   #fileItemId: HostItemId | null = null;
 
   constructor(input: {
@@ -829,6 +926,26 @@ export class CodexTurnProjector {
       const projected = this.#items.get(itemId);
       if (!projected || projected.outcome) continue;
       items.set(itemId, projectItem(projected.item, null, this.#cwd, true, this.#threadId));
+    }
+    return items;
+  }
+
+  backgroundWireItems(): ReadonlyMap<HostItemId, JsonObject> {
+    const items = new Map<HostItemId, JsonObject>();
+    for (const itemId of this.#wireItemOrder) {
+      if (!this.#background.has(itemId)) continue;
+      const projected = this.#items.get(itemId);
+      if (projected) items.set(itemId, this.#projectItem(projected.item, projected.outcome));
+    }
+    return items;
+  }
+
+  foregroundWireItems(): ReadonlyMap<HostItemId, JsonObject> {
+    const items = new Map<HostItemId, JsonObject>();
+    for (const itemId of this.#wireItemOrder) {
+      if (this.#background.has(itemId)) continue;
+      const projected = this.#items.get(itemId);
+      if (projected) items.set(itemId, this.#projectItem(projected.item, projected.outcome));
     }
     return items;
   }
@@ -942,6 +1059,7 @@ export class CodexTurnProjector {
     if (
       this.#completed &&
       !(
+        event.type === "item.background.started" ||
         (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
         (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId))
       )
@@ -949,6 +1067,16 @@ export class CodexTurnProjector {
       throw new Error("Host output follows the Turn terminal event");
     }
     switch (event.type) {
+      case "item.background.started":
+        if (!this.#completed) throw new Error("Host foreground output must use item.started");
+        if (event.item.type !== "agentMessage" && event.item.type !== "reasoning")
+          throw new Error("Only a text Item can start after its Turn completes");
+        {
+          const started = this.#startItem({ ...event, type: "item.started" }, emittedAtMs, true);
+          this.#detached.add(event.item.itemId);
+          this.#background.add(event.item.itemId);
+          return started;
+        }
       case "item.detached":
         if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
           throw new Error("Only a command Item can outlive its Turn");
@@ -1073,9 +1201,17 @@ export class CodexTurnProjector {
     };
   }
 
-  #startItem(event: ItemStartedEvent, startedAtMs: number): CodexTurnProjection {
+  #startItem(
+    event: ItemStartedEvent,
+    startedAtMs: number,
+    background = false,
+  ): CodexTurnProjection {
     this.#requireStarted();
-    if (this.#items.has(event.item.itemId)) throw new Error("Host Item started more than once");
+    const existing = this.#items.get(event.item.itemId);
+    if (existing)
+      throw new Error(
+        `Host Item started more than once (${event.item.itemId}: existing ${existing.item.type}, incoming ${event.item.type})`,
+      );
     const projected: ProjectedItem = {
       item: { ...event.item },
       ...(event.item.type === "agentMessage"
@@ -1087,6 +1223,7 @@ export class CodexTurnProjector {
       wireStarted: false,
       startedAtMs,
     };
+    if (background && projected.media) projected.media.flush();
     this.#items.set(event.item.itemId, projected);
     if (
       (event.item.type === "agentMessage" || event.item.type === "reasoning") &&
@@ -1110,6 +1247,13 @@ export class CodexTurnProjector {
       if (isFileMutatingTool(event.item.toolName)) return { messages: [] };
     }
     if (event.item.type === "fileChange") return { messages: this.#fileChangeUpdates(startedAtMs) };
+    // Its wire type depends on the outcome (see presentedItem), so only its
+    // place in the Turn is taken now.
+    if (event.item.type === "webSearch") {
+      projected.orderReserved = true;
+      this.#wireItemOrder.push(event.item.itemId);
+      return { messages: [] };
+    }
     const startedItem =
       event.item.type === "reasoning" ? { ...event.item, text: "" } : this.#mediaItem(event.item);
     const messages = [this.#startWireItem(projected, startedItem, startedAtMs)];
@@ -1134,7 +1278,10 @@ export class CodexTurnProjector {
       if (event.update.text.length === 0) return { messages };
       if (next.type === "agentMessage") {
         const before = this.#mediaItem(previous);
-        const delta = this.#agentMedia(event.itemId).append(event.update.text);
+        const media = this.#agentMedia(event.itemId);
+        const delta =
+          media.append(event.update.text) +
+          (this.#background.has(event.itemId) ? media.flush() : "");
         if (!delta) return { messages };
         if (!projected.wireStarted)
           messages.push(this.#startWireItem(projected, before, emittedAtMs));
@@ -1239,11 +1386,19 @@ export class CodexTurnProjector {
       mediaMessages.push(this.#agentDelta(projected.item.itemId, delta, emittedAtMs));
     }
     projected.item = { ...event.snapshot.item };
+    if (projected.item.type === "agentMessage" && this.#background.has(projected.item.itemId)) {
+      projected.media = createAgentMedia(projected.item.text, this.#cwd);
+      projected.media.flush();
+    }
     projected.outcome = event.snapshot.outcome;
     const startedAtMs = projected.startedAtMs;
     if (startedAtMs === undefined) throw new Error("Codex Item completed without a start time");
     const durationMs = resolvedItemDurationMs(projected.item, startedAtMs, emittedAtMs);
-    projected.item = withResolvedDuration(projected.item, durationMs);
+    // Keep the presented form so snapshots and reads match the live wire Item.
+    projected.item = withResolvedDuration(
+      presentedItem(projected.item, projected.outcome),
+      durationMs,
+    );
     projected.durationMs = durationMs;
     if (itemFileChanges(projected.item) !== null) {
       return { messages: this.#fileChangeUpdates(emittedAtMs) };
@@ -1260,6 +1415,14 @@ export class CodexTurnProjector {
       },
     });
     if (!projected.wireStarted) {
+      if (event.snapshot.item.type === "webSearch") {
+        return {
+          messages: [
+            this.#startWireItem(projected, projected.item, startedAtMs),
+            completedItem(this.#projectItem(projected.item, projected.outcome)),
+          ],
+        };
+      }
       if (projected.item.type === "toolExecution") {
         if (isTodoTool(projected.item.toolName)) {
           const plan =
@@ -1440,7 +1603,7 @@ export class CodexTurnProjector {
     if (projected.wireStarted) throw new Error("Codex Item started more than once");
     projected.wireStarted = true;
     projected.startedAtMs = startedAtMs;
-    this.#wireItemOrder.push(item.itemId);
+    if (!projected.orderReserved) this.#wireItemOrder.push(item.itemId);
     return {
       method: "item/started",
       emittedAtMs: startedAtMs,

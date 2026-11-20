@@ -23,6 +23,10 @@ import type { WorkspaceFileParams } from "@deepseek-ai/dsh-api-workspace-files/c
 import { TextPreview } from "./TextPreview.tsx";
 import type { TextPreviewInjected } from "./TextPreview.tsx";
 import { TextTitle } from "./TextTitle.tsx";
+import {
+  OpenOriginalFileMenuItem,
+  type OpenOriginalFileInjected,
+} from "./OpenOriginalFileMenuItem.tsx";
 import { TEXTPREVIEW_ID, textDefinition } from "./definition.ts";
 import { textFace } from "./face.ts";
 import { createReadPage } from "./rpc.ts";
@@ -95,6 +99,7 @@ export const inject = [
   "sidebarRightTabs",
   "remote",
   "remote.workspaceFiles",
+  "remote.session",
   "configForms",
   "resources",
 ];
@@ -116,6 +121,26 @@ export function apply(ctx: ClientContext): void {
     "ui-sidebar-documentpreview: text type",
   );
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-sidebar-documentpreview: dictionaries");
+
+  const openExternal = async (path: string, signal?: AbortSignal): Promise<void> => {
+    const result = await ctx.remote.session.openWorkspacePath({ path }, signal);
+    if (!result.ok) throw new Error(result.error.message);
+  };
+  ctx.effect(
+    () =>
+      ctx.slots.inject("sidebar.right.tab.menu.item", () =>
+        ctx.slots.register(
+          {
+            name: "sidebar.right.tab.menu.item",
+            id: "document-preview-open-original",
+            locale: NS,
+            inject: (): OpenOriginalFileInjected => ({ openExternal }),
+          },
+          OpenOriginalFileMenuItem,
+        ),
+      ),
+    "ui-sidebar-documentpreview: open original file menu item",
+  );
 
   const store = createTextStore();
   const face = textFace(
@@ -149,6 +174,7 @@ export function apply(ctx: ClientContext): void {
             },
             inject: (sessionId, actions): TextPreviewInjected => ({
               ...face(sessionId, actions),
+              openExternal,
               hooks: { documentPreviews: source },
             }),
           },

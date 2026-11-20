@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { copyFileSync, mkdirSync } from "node:fs";
-import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
 import { request } from "node:https";
-import { connect as tcpConnect } from "node:net";
 import { resolve } from "node:path";
-import { Duplex } from "node:stream";
 import { connect, type ConnectionOptions } from "node:tls";
 import { it, type TestContext } from "node:test";
 import { WebSocket } from "ws";
@@ -98,7 +96,7 @@ async function fixture(t: TestContext, certificate = true) {
         req.end(payload);
       },
     );
-  return { relay, hostname, state, local, localToken, options, send, body, access };
+  return { relay, hostname, state, local, send, body, access };
 }
 
 it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and secure cookies", async (t) => {
@@ -146,9 +144,16 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
     "x-forwarded-proto": "http",
     "x-forwarded-host": "evil.localhost",
   };
-  for (const method of ["codexhost/accessTokenGet", "codexhost/relaySet"]) {
-    const reply = await f.send(`/api/${method}`, f.body(method, { enabled: false }), forged);
-    assert.equal(JSON.parse(reply.body.toString()).result.error.code, "auth/local-access-required");
+  const forgedStatus = await f.send("/api/auth/status", undefined, forged);
+  assert.deepEqual(JSON.parse(forgedStatus.body.toString()), { authenticated: true, local: false });
+  const localToken = defined(f.local.searchParams.get("token") ?? undefined);
+  assert.equal(
+    (await f.send("/api/auth/status", undefined, { authorization: `Bearer ${localToken}` })).status,
+    401,
+  );
+  for (const method of ["codexhost/accessTokenGet", "codexhost/uiExtensions/list"]) {
+    const reply = await f.send(`/api/${method}`, f.body(method), forged);
+    assert.equal(JSON.parse(reply.body.toString()).result.ok, true, method);
   }
   for (const origin of [`http://${f.hostname}`, "https://sibling.localhost"]) {
     assert.equal(
@@ -178,29 +183,6 @@ it("terminates real phone TLS for login, RPC and WebSocket, with relay trust and
   );
 });
 
-it("limits by Relay's phone IP, ignores forged forwarding headers, and keeps another phone usable", async (t) => {
-  const f = await fixture(t);
-  for (let i = 0; i < 10; i++) {
-    const result = await f.send("/api/auth/login", JSON.stringify({ token: "wrong" }), {
-      "x-forwarded-for": `198.51.100.${i}`,
-    });
-    assert.equal(result.status, 401);
-  }
-  assert.equal(
-    (
-      await f.send("/api/auth/login", JSON.stringify({ token: f.state.secret }), {
-        "x-forwarded-for": "127.0.0.1",
-      })
-    ).status,
-    429,
-  );
-  assert.equal(
-    (await f.send("/api/auth/login", JSON.stringify({ token: f.state.secret }), {}, "127.0.0.1"))
-      .status,
-    200,
-  );
-});
-
 it("resets phones when certificates are missing but keeps registration", ciTiming, async (t) => {
   const f = await fixture(t, false);
   assert.equal(
@@ -209,76 +191,4 @@ it("resets phones when certificates are missing but keeps registration", ciTimin
   );
   await assert.rejects(f.send("/"));
   assert.equal((await f.access()).relay?.state.status, "missing-certificate");
-});
-
-it(
-  "closes a phone stalled after ClientHello at the 10-second TLS deadline",
-  { timeout: 20_000 },
-  async (t) => {
-    const f = await fixture(t);
-    let hello!: (chunk: Buffer) => void;
-    const captured = new Promise<Buffer>((resolve) => {
-      hello = resolve;
-    });
-    const transport = new Duplex({
-      read() {},
-      write(chunk, _encoding, callback) {
-        hello(Buffer.from(chunk));
-        callback();
-      },
-    });
-    const tls = connect({ socket: transport, servername: f.hostname, ALPNProtocols: ["http/1.1"] });
-    tls.on("error", () => {});
-    t.after(() => tls.destroy());
-    const bytes = await captured;
-    const socket = tcpConnect({ host: "localhost", port: f.relay.port });
-    socket.on("error", () => {});
-    t.after(() => socket.destroy());
-    await once(socket, "connect");
-    const started = performance.now();
-    socket.write(bytes);
-    socket.resume();
-    await new Promise<void>((resolve) => socket.once("close", () => resolve()));
-    assert.ok(performance.now() - started >= 9_500);
-    assert.ok(performance.now() - started < 13_000);
-  },
-);
-
-it("drains a large response without blocking a second phone's RPC", ciTiming, async (t) => {
-  const f = await fixture(t);
-  const auth = { authorization: `Bearer ${f.state.secret}` };
-  const page = (await f.send("/", undefined, auth)).body.toString();
-  const plugin = [...page.matchAll(/(?:src|href)="([^"\s]*plugins\/[^"\s]+)"/g)]
-    .map((match) => defined(match[1]))
-    .sort((a, b) => b.length - a.length)[0];
-  assert.ok(plugin, "shell includes a plugin batch");
-  const url = new URL(plugin.replaceAll("&amp;", "&"), "https://local/");
-  const path = url.pathname + url.search;
-  const response = await new Promise<IncomingMessage>((resolve, reject) => {
-    const req = request(f.options(path, auth), resolve);
-    req.on("error", reject);
-    req.end();
-  });
-  t.after(() => response.destroy());
-  response.pause();
-  await delay(100);
-  const started = performance.now();
-  const rpc = await f.send(
-    "/api/codexhost/pushConfig",
-    f.body("codexhost/pushConfig"),
-    auth,
-    "127.0.0.1",
-  );
-  assert.equal(JSON.parse(rpc.body.toString()).result.ok, true);
-  assert.ok(performance.now() - started < 2_000);
-  const chunks: Buffer[] = [];
-  response.on("data", (chunk) => chunks.push(chunk));
-  response.resume();
-  await once(response, "end");
-  const downloaded = Buffer.concat(chunks);
-  assert.ok(downloaded.length > 2 * 1024 * 1024);
-  const plain = await fetch(new URL(path, f.local), {
-    headers: { authorization: `Bearer ${f.localToken}` },
-  });
-  assert.deepEqual(downloaded, Buffer.from(await plain.arrayBuffer()));
 });

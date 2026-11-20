@@ -35,7 +35,7 @@ import type { ViewTab } from "./views.ts";
 /** Browser-owned draft attachment that has not crossed the durable Host boundary. */
 export type ComposerAttachment = ComposerImageAttachment | ComposerFileAttachment;
 
-/** Browser-owned image, base64-encoded into the prompt at send time. */
+/** Browser-owned image with a local preview and a background upload. */
 export interface ComposerImageAttachment {
   kind: "image";
   id: DraftAttachmentId;
@@ -54,7 +54,7 @@ export interface ComposerFileAttachment {
   file: File;
 }
 
-/** Upload lifecycle of one picked file draft (files upload on pick, not on send). */
+/** Upload lifecycle of one picked image or file draft. */
 export type DraftFileUpload =
   | { readonly status: "uploading"; readonly loaded: number; readonly total?: number }
   | {
@@ -62,7 +62,7 @@ export type DraftFileUpload =
       readonly receiptId: FileUploadReceiptId;
       readonly file: FileAttachmentRef;
     }
-  | { readonly status: "error"; readonly message: string };
+  | { readonly status: "error"; readonly message: string; readonly transport: boolean };
 
 /** Per-draft upload states keyed by draft attachment id. */
 export type DraftFileUploads = Readonly<Record<string, DraftFileUpload>>;
@@ -81,7 +81,7 @@ export interface ComposerAttachmentsOwnerProps {
   onAddFiles: (files: readonly File[], directories?: ReadonlySet<File>) => void;
   /** Remove one draft attachment through the Conversation service. */
   onRemoveAttachment: (id: DraftAttachmentId) => void;
-  /** Current per-draft upload states for file-kind attachments. */
+  /** Current per-draft upload states for all attachments. */
   uploads: DraftFileUploads;
   /** Restart one failed file upload. */
   onRetryFile: (id: DraftAttachmentId) => void;
@@ -472,7 +472,7 @@ export interface ComposerBarInjected {
      * and the primary Send button use while the addressed agent is busy.
      */
     busyEnter: ObservableSnapshot<BusyEnterBehavior>;
-    /** Live per-draft upload states for file-kind drafts. */
+    /** Live per-draft upload states for image and file drafts. */
     fileUploads: ObservableSnapshot<DraftFileUploads>;
     notices: ObservableSnapshot<InputNotice | null>;
     lexicon: ObservableSnapshot<ReadonlyMap<"/" | "@" | "#", readonly string[]>>;

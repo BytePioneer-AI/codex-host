@@ -53,4 +53,4 @@ description: 审计或修正读起来像“推理过程泄漏”的注释与文�
 
 2. **自有者优先修复**：先改生成物的来源，再重新生成；先改源码 JSDoc，再同步引用它的文档。
 3. **删除前列出命题**：枚举每段文字的主体、动作、条件、时序、否定保证与后果，避免过度修正：不要把义务改成许可、把假设写成已交付、删掉仍为真的事实或丢掉来源。
-4. **验证**：重新运行探针，只应剩下保留项；对触及的面运行 `npm run lint`、`npm run format:check`；涉及文档链接时核对 `docs/index.md`。
+4. **验证**：重新运行探针，只应剩下保留项；只对改动文件运行 `npx prettier --check <changed-files>`，触及 `eslint-disable` 等抑制注释或代码字符串时再对改动代码文件运行 `npx eslint <changed-files>`（不在本地跑全仓 `npm run lint` 或 `npm run format:check`）；涉及文档链接时核对 `docs/index.md`。

@@ -2,7 +2,7 @@ diff --git a/dist/exceljs.js b/dist/exceljs.js
 index ab2c9d6e576d8069d77d787b863dfe09c7659890..99213b8606d02b8948ce6ce44a5a7dcfc203d854 100644
 --- a/dist/exceljs.js
 +++ b/dist/exceljs.js
-@@ -4636,24 +4636,37 @@ module.exports = async function* (iterable) {
+@@ -4636,24 +4636,38 @@ module.exports = async function* (iterable) {
    if (iterable.pipe && !iterable[Symbol.asyncIterator]) {
      iterable = iterable.pipe(new PassThrough());
    }
@@ -10,6 +10,7 @@ index ab2c9d6e576d8069d77d787b863dfe09c7659890..99213b8606d02b8948ce6ce44a5a7dcf
 +  const saxesParser = new SaxesParser({xmlns: true});
 +  // Xforms use canonical names; OOXML producers may choose different prefixes.
 +  const prefixes = new Map([
++    ['http://schemas.openxmlformats.org/officeDocument/2006/extended-properties', ''],
 +    ['http://schemas.openxmlformats.org/spreadsheetml/2006/main', ''],
 +    ['http://purl.oclc.org/ooxml/spreadsheetml/main', ''],
 +    ['http://schemas.openxmlformats.org/package/2006/relationships', ''],
@@ -399,7 +400,7 @@ diff --git a/lib/utils/parse-sax.js b/lib/utils/parse-sax.js
 index 14c682a731b5e51f999859a03ce4dd4e0bfcbb26..65c0f2b7ddd5c4e0c3a283f74c37a2fd22728aad 100644
 --- a/lib/utils/parse-sax.js
 +++ b/lib/utils/parse-sax.js
-@@ -8,15 +8,37 @@ module.exports = async function* (iterable) {
+@@ -8,15 +8,38 @@ module.exports = async function* (iterable) {
    if (iterable.pipe && !iterable[Symbol.asyncIterator]) {
      iterable = iterable.pipe(new PassThrough());
    }
@@ -407,6 +408,7 @@ index 14c682a731b5e51f999859a03ce4dd4e0bfcbb26..65c0f2b7ddd5c4e0c3a283f74c37a2fd
 +  const saxesParser = new SaxesParser({xmlns: true});
 +  // Xforms use canonical names; OOXML producers may choose different prefixes.
 +  const prefixes = new Map([
++    ['http://schemas.openxmlformats.org/officeDocument/2006/extended-properties', ''],
 +    ['http://schemas.openxmlformats.org/spreadsheetml/2006/main', ''],
 +    ['http://purl.oclc.org/ooxml/spreadsheetml/main', ''],
 +    ['http://schemas.openxmlformats.org/package/2006/relationships', ''],

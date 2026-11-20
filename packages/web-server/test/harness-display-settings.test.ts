@@ -179,8 +179,15 @@ it("an unsupported old Host reads the existing file while a transport failure do
   assert.deepEqual(await f.service.entries(), initial);
   await flush();
   const before = calls;
-  t.mock.timers.tick(3000);
-  await flush();
+  // The initial legacy refresh includes real filesystem I/O. Microtask flushing
+  // alone cannot make it idle; wait for an observable retry while advancing the
+  // mocked interval, and still fail if no polling occurs within the deadline.
+  const deadline = Date.now() + 5000;
+  while (calls === before && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    t.mock.timers.tick(3000);
+    await flush();
+  }
   assert.ok(calls > before);
   f.host.connection(false);
   f.host.request = async () => {

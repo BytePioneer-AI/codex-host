@@ -16,6 +16,7 @@
  * tokens (`/plan。`) stay plain even for a loaded name.
  */
 import type { ReactNode } from "react";
+import { skillReferences } from "@codexhost/shared-contracts";
 import clsx from "clsx";
 import { ReferenceIconRegular } from "./ReferenceIcon.tsx";
 import css from "./user-text.module.css";
@@ -39,7 +40,7 @@ interface DecorationRange {
   readonly end: number;
   /** Matched source text (hover title). */
   readonly label: string;
-  readonly kind: "session" | "harness" | "plain";
+  readonly kind: "session" | "harness" | "plain" | "skill";
   /** Pre-resolved display text (wire folds); derived from label when absent. */
   readonly display?: string;
 }
@@ -70,7 +71,13 @@ export function projectUserText(
   slashKind: "skill" | "command" = "skill",
   references?: UserTextReferences,
 ): ReactNode {
-  const ranges: DecorationRange[] = [];
+  const ranges: DecorationRange[] = skillReferences(text).map((ref) => ({
+    start: ref.start,
+    end: ref.end,
+    label: ref.text,
+    kind: "skill",
+    display: ref.name,
+  }));
   for (const mention of text.matchAll(HARNESS_WIRE_RE)) {
     ranges.push({
       start: mention.index,
@@ -138,15 +145,17 @@ export function projectUserText(
     const { start: tokenStart, end, label, kind } = range;
     if (tokenStart > cursor) pushPlain(cursor, tokenStart);
     const referenceKind =
-      kind === "harness"
-        ? "harness"
-        : kind === "session"
-          ? "session"
-          : label.startsWith("@")
-            ? label.replace(/^@"|"$/gu, "").endsWith("/")
-              ? "folder"
-              : "file"
-            : undefined;
+      kind === "skill"
+        ? "skill"
+        : kind === "harness"
+          ? "harness"
+          : kind === "session"
+            ? "session"
+            : label.startsWith("@")
+              ? label.replace(/^@"|"$/gu, "").endsWith("/")
+                ? "folder"
+                : "file"
+              : undefined;
     const displayLabel =
       range.display ??
       (referenceKind === undefined

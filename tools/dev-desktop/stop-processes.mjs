@@ -74,6 +74,14 @@ function executable(command, name) {
   return { file, rest: command.slice(match[0].length) };
 }
 
+/** The SSH client's managed listener; its process title replaces the command line. */
+export function isRemoteAppServerListener(candidate) {
+  return (
+    typeof candidate?.command === "string" &&
+    candidate.command.trim() === "codexhost remote app-server listener"
+  );
+}
+
 export function launcherProcess(candidate) {
   return typeof candidate?.command === "string" ? executable(candidate.command, "codexhost") : null;
 }

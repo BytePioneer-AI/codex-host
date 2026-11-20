@@ -3,10 +3,13 @@ import { notifySubscribers, type ObservableSnapshot } from "@deepseek-ai/dsh-cli
 import type { LlmAttemptId, StreamChunk } from "@deepseek-ai/dsh-llm";
 import type { SessionEvent } from "@deepseek-ai/dsh-session/types";
 
-/** Client-only live chunk presentation; `seq` orders the transient row between durable Session seqs. */
+/** Client-only live chunk presentation between durable Session events. */
 export interface AssistantLiveChunkEvent {
   readonly type: "assistant/live-chunk";
+  /** Numeric render anchor, which multiple chunks can share. */
   readonly seq: number;
+  /** One-based chunk order within the current event window. */
+  readonly order: number;
   readonly time: number;
   readonly data: {
     readonly attemptId: LlmAttemptId;

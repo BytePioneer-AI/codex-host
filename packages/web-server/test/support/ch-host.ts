@@ -6,7 +6,10 @@ import { runInNewContext } from "node:vm";
 import { WebSocketServer } from "ws";
 import type { ChHostClient, ChPinChange, ChProjectSnapshot } from "../../src/ch-host-client.ts";
 import type { ChThread } from "../../src/ch-thread-view.ts";
-import { decodeHarnessPluginRoute } from "@codexhost/shared-contracts";
+import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  decodeHarnessPluginRoute,
+} from "@codexhost/shared-contracts";
 
 export class FakeChHost implements ChHostClient {
   readonly requests: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -104,6 +107,9 @@ export class FakeChHost implements ChHostClient {
     let value: unknown;
     const row = this.threads.get(String(params.threadId));
     switch (method) {
+      case "codexhost/thread/tree/read":
+        value = { parents: {} };
+        break;
       case "codexhost/workspace/read":
         value = { ...structuredClone(this.projectSnapshot), pinned: [...this.pinnedIds] };
         break;
@@ -150,6 +156,13 @@ export class FakeChHost implements ChHostClient {
             (thread) => this.archivedIds.has(thread.id) === Boolean(params.archived),
           ),
           nextCursor: null,
+        };
+        break;
+      case THREAD_ARCHIVE_CONFIRM_METHOD:
+        value = {
+          confirmed:
+            this.threadOwnership(String(params.threadId)).owner === "codex" &&
+            this.archivedIds.has(String(params.threadId)),
         };
         break;
       case "thread/archive":

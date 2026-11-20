@@ -28,6 +28,7 @@ import { ClientEventLog, eventRetentionDays } from "./external-client-events.js"
 import { cliCredentialsPath } from "./cli-credentials.js";
 import { externalClientMcp } from "./external-client-mcp.js";
 import { externalClientEventStream, externalClientRouter } from "./external-client-routes.js";
+import { HostInventory } from "./host-inventory.js";
 import { FileThreadRefsStore } from "./thread-refs.js";
 import { ExternalAccessSupervisor, externalAccessPaths } from "./external-client-access.js";
 import {
@@ -81,7 +82,12 @@ import { createHostWebOpener } from "./web-opener.js";
 import { createHostUpdateCoordinator, type HostUpdateCoordinator } from "./update-coordinator.js";
 import { ModelPriceCatalog, defaultModelPriceDirectory } from "./model-prices.js";
 import { UsageStatistics } from "./usage-statistics.js";
-import { runLocalDesktopBridge } from "./local-shared-host.js";
+import {
+  runLocalDesktopBridge,
+  connectLocalSharedExternalHost,
+  sharedHostLauncherPath,
+  sharedHostDataDirectory,
+} from "./local-shared-host.js";
 
 const STOCK_CODEX_PATH_ENV = "CODEXHOST_STOCK_CODEX_PATH";
 export const MANAGED_REMOTE_APP_SERVER_PROCESS_TITLE = "codexhost remote app-server listener";
@@ -127,6 +133,28 @@ export function resolveHostRuntimePaths(input: {
     packaged,
     maintenance: packaged ?? input.environment.CODEXHOST_HOST_RUNTIME_PATH,
   };
+}
+
+/** New SSH external Threads always require the independent owner, including source launches. */
+export function createRemoteSharedExternalBridge(
+  runtime: string | undefined,
+  environment: NodeJS.ProcessEnv,
+  stockCodex: string,
+): SharedThreadBridge {
+  return new SharedThreadBridge({
+    connect: async () => {
+      if (!runtime) throw new Error("Shared external Host runtime path is unavailable");
+      return connectLocalSharedExternalHost({
+        launcher: sharedHostLauncherPath(runtime, environment),
+        runtime,
+        stockCodex,
+        dataDirectory: sharedHostDataDirectory(environment),
+        ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
+      });
+    },
+    delegateCreates: true,
+    diagnose: (error) => process.stderr.write(`codexhost shared external Host: ${String(error)}\n`),
+  });
 }
 
 function requiredRuntimeConfiguration(environment: NodeJS.ProcessEnv): {
@@ -175,8 +203,6 @@ export function delegationCliEnvironment(
 export async function prepareDelegationRuntime(input: {
   environment: NodeJS.ProcessEnv;
   hostRuntimePath?: string;
-  /** Only the local Runtime serves external clients; a managed remote Host does not. */
-  externalClients?: boolean;
   createHost(
     environment: NodeJS.ProcessEnv,
     onDelegationApi: (api: DelegationControlRegistration) => (() => void) | undefined,
@@ -204,20 +230,29 @@ export async function prepareDelegationRuntime(input: {
     clientEvents: events,
   });
   const token = randomBytes(32).toString("hex");
-  const server = await startDelegationControlServer({ token, api: registry, watchApi: registry });
-  const externalServer = input.externalClients
-    ? await startExternalClients(input.environment, registry, events).then(
-        (started) => {
-          if (started)
-            process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
-          return started;
-        },
-        (error: unknown) => {
-          process.stderr.write(`codexhost external clients: ${String(error)}\n`);
-          return undefined;
-        },
-      )
-    : undefined;
+  const inventory = new HostInventory(input.environment);
+  const server = await startDelegationControlServer({
+    token,
+    api: registry,
+    watchApi: registry,
+    inventory,
+  });
+  const externalServer = await startExternalClients(
+    input.environment,
+    registry,
+    events,
+    inventory,
+  ).then(
+    (started) => {
+      if (started)
+        process.stderr.write(`codexhost external clients: listening on ${started.endpoint}\n`);
+      return started;
+    },
+    (error: unknown) => {
+      process.stderr.write(`codexhost external clients: ${String(error)}\n`);
+      return undefined;
+    },
+  );
   const environment = {
     ...input.environment,
     ...delegationCliEnvironment(input.environment, input.hostRuntimePath),
@@ -250,13 +285,14 @@ async function startExternalClients(
   environment: NodeJS.ProcessEnv,
   registry: DelegationControlRegistry,
   events: ClientEventLog,
+  inventory: HostInventory,
 ): Promise<ExternalClientServer | undefined> {
   const port = externalClientPort(environment);
   if (port === undefined) return undefined;
   const cliToken = `chc_${randomBytes(32).toString("base64url")}`;
   const clients = new ExternalClientRegistry(defaultExternalClientsPath(environment), cliToken);
   const oauth = new ExternalClientOAuthStore(defaultExternalClientOAuthPath(environment));
-  const route = externalClientRouter({ api: registry, watchApi: registry, events });
+  const route = externalClientRouter({ api: registry, watchApi: registry, events, inventory });
   const diagnose = (message: string) =>
     process.stderr.write(`codexhost external clients: ${message}\n`);
   const start = (options: {
@@ -418,7 +454,6 @@ export async function runHostRuntime(input: {
     return prepareDelegationRuntime({
       environment,
       ...(hostRuntimePath ? { hostRuntimePath } : {}),
-      externalClients: true,
       createHost: async (delegationEnvironment, onDelegationApi, registry) => {
         const official = await prepareLocalCodex({
           stockCodexPath,
@@ -578,6 +613,11 @@ export async function runHostRuntime(input: {
         desktopOutput: sharedOwner.output,
         diagnosticOutput: process.stderr,
         externalOnly: true,
+        sharedThreads: createRemoteSharedExternalBridge(
+          maintenanceRuntimePath,
+          delegationEnvironment,
+          stockCodexPath,
+        ),
         ...installedHarnessPluginOptions(delegationEnvironment, true, input.hostRuntimeUrl),
         mappingStore,
         closeMappingStoreOnExit: false,

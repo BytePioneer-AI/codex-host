@@ -16,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   clientThreadPinsSchema,
   type ClientThreadSnapshot,
   type ClientWorkspaceSnapshot,
@@ -52,6 +53,8 @@ export interface ChProjectSnapshot {
 
 const exec = promisify(execFile);
 const METHODS = new Set([
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
@@ -67,6 +70,7 @@ const METHODS = new Set([
   "thread/resume",
   "thread/fork",
   "thread/name/set",
+  "codexhost/thread/title/generate",
   "thread/archive",
   "thread/unarchive",
   "turn/start",
@@ -89,6 +93,8 @@ const METHODS = new Set([
   "codexhost/thread/thinking/select",
   "codexhost/thread/permission-mode/select",
   "codexhost/thread/commands/inspect",
+  "codexhost/harness/commands/inspect",
+  "codexhost/skills/list",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
   "codexhost/harness/session-import/sources",

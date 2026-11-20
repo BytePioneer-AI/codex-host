@@ -8,6 +8,7 @@ import {
 import {
   THREAD_MANUAL_COMPACTION_STARTED_METHOD,
   type HostInteractionId,
+  type HostItemId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 
@@ -61,6 +62,7 @@ export interface ExternalTurnProjectionHost {
   readonly queue: Pick<ExternalThreadQueue, "pause">;
   /** Turns started by an explicit /compact command, announced when compaction begins. */
   readonly manualCompactionTurns: WeakMap<ExternalThread, HostTurnId>;
+  foldSettledItem(turn: JsonObject, projector: CodexTurnProjector, itemId: HostItemId): JsonObject;
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
@@ -113,6 +115,7 @@ export class ExternalTurnProjection {
         promise: Promise.resolve(),
         resolve: () => undefined,
       });
+      if (thread.clientCommand) thread.clientCommand.subsequentTurnId ??= event.turnId;
       // Real native work is no longer a disposable draft, even when it was
       // initiated by the Harness rather than a Desktop submission.
       if (thread.unsubmittedPrewarm && (await this.#host.submitPrewarm(thread))) {
@@ -137,9 +140,22 @@ export class ExternalTurnProjection {
       await this.#host.resolveDesktopApproval(event.interactionId, thread);
       await this.#host.resolveDesktopQuestion(event.interactionId, thread);
     }
+    // agy uses the same ACP prompt for slash commands and conversation. Only
+    // promote output backed by a new native user Turn, not local command text.
+    const conversationalCommand =
+      event.type === "turn.completed" &&
+      thread.clientCommand?.turn.id === event.turnId &&
+      thread.harnessId === "antigravity" &&
+      this.#host.manualCompactionTurns.get(thread) !== event.turnId &&
+      event.outcome.status === "succeeded" &&
+      event.nativeTurnRef !== undefined &&
+      [...projection.projector.foregroundWireItems().values()].some(
+        (item) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim(),
+      );
     const ephemeralTurn =
       event.type === "turn.completed" &&
-      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
+      (event.ephemeral === true ||
+        (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand));
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#host.persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -159,20 +175,36 @@ export class ExternalTurnProjection {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
+    if (
+      event.type === "item.background.started" ||
+      (projection.projector.completed &&
+        (event.type === "item.updated" || event.type === "item.completed"))
+    ) {
+      const updatedAt = Math.floor(Date.now() / 1000);
+      thread.thread.updatedAt = updatedAt;
+      thread.thread.recencyAt = updatedAt;
+    }
     if (event.type === "turn.started") {
+      if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
+        thread.clientCommand.subsequentTurnId ??= event.turnId;
+      // A successor Turn ends the attribution window of every earlier Turn.
+      this.#dropSettledTurnProjections(thread, event.turnId);
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const completedAt = Math.floor(Date.now() / 1000);
-      if (ephemeralTurn) {
-        if (thread.clientCommand?.turn.id === event.turnId)
-          thread.clientCommand.turn = projection.projector.snapshotTurn(result.completedTurn);
-        thread.ephemeralTurnIds.delete(event.turnId);
+      const turn = projection.projector.snapshotTurn(result.completedTurn);
+      if (thread.ephemeralTurnIds.delete(event.turnId)) {
+        if (thread.clientCommand?.turn.id === event.turnId) {
+          // Settle an already visible command card without repeating the reply in it.
+          thread.clientCommand.turn = ephemeralTurn ? turn : { ...turn, items: [] };
+        }
         this.#host.manualCompactionTurns.delete(thread);
-      } else {
-        thread.turns.push(projection.projector.snapshotTurn(result.completedTurn));
+      }
+      if (!ephemeralTurn) {
+        thread.turns.push(turn);
         thread.projectedTerminalTurnId = event.turnId;
         thread.thread.updatedAt = completedAt;
         thread.thread.recencyAt = completedAt;
@@ -180,8 +212,10 @@ export class ExternalTurnProjection {
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
-      // Detached Items (native background commands) settle on this Turn later.
-      if (!projection.projector.hasOpenDetachedItems) thread.projectedTurns.delete(event.turnId);
+      // Detached Items (native background commands) and idle background output
+      // settle on the completed Turn later; keep its projector so late events
+      // still project instead of failing on a missing Turn.
+      this.#dropSettledTurnProjections(thread, event.turnId);
       thread.responseGates.delete(event.turnId);
       thread.pendingSteerProjections.clear();
       this.#host.signalActiveWorkChanged();
@@ -211,12 +245,23 @@ export class ExternalTurnProjection {
         params: { threadId: thread.id, turnId: event.turnId },
       });
     }
-    if (
-      event.type === "item.completed" &&
-      projection.projector.completed &&
-      !projection.projector.hasOpenDetachedItems
-    ) {
-      thread.projectedTurns.delete(event.turnId);
+    if (event.type === "item.completed" && projection.projector.completed) {
+      const index = thread.turns.findIndex((turn) => turn.id === event.turnId);
+      const existing = thread.turns[index];
+      if (existing) {
+        // A stale cache may still contain native-only Items from an earlier read.
+        thread.turns[index] = this.#host.foldSettledItem(
+          existing,
+          projection.projector,
+          event.snapshot.item.itemId,
+        );
+        thread.historyHydrated = false;
+      }
+      if (
+        !projection.projector.hasOpenDetachedItems &&
+        event.turnId !== thread.projectedTerminalTurnId
+      )
+        thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#host.writeJson(message);
     if (event.type === "turn.completed") {
@@ -237,6 +282,15 @@ export class ExternalTurnProjection {
             await this.#host.publishExternalQueue(thread.id);
         }
       }
+    }
+  }
+
+  /** Keep only Turn projections that can still receive output: the active one,
+   * plus completed Turns whose detached or background Items have not settled. */
+  #dropSettledTurnProjections(thread: ExternalThread, keep: HostTurnId): void {
+    for (const [id, { projector }] of thread.projectedTurns) {
+      if (id !== keep && projector.completed && !projector.hasOpenDetachedItems)
+        thread.projectedTurns.delete(id);
     }
   }
 }

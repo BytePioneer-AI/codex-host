@@ -1,3 +1,4 @@
+import { subagentConfiguration } from "@codexhost/harness-adapter";
 import type {
   HarnessError,
   HostEvent,
@@ -55,6 +56,7 @@ export class OmpSubagentLifecycle {
       subagentId: event.nativeSubagentId,
       nativeSubagentId: event.nativeSubagentId,
       description: event.description,
+      ...subagentConfiguration(event),
       ...(event.role ? { role: event.role } : {}),
       background: event.background,
       status: "running",
@@ -81,6 +83,7 @@ export class OmpSubagentLifecycle {
     if (!current) throw new Error("Omp Subagent delegation has no Agent state");
     const subagent: HostSubagentState = {
       ...current,
+      ...subagentConfiguration(event),
       status: event.status === "interrupted" ? "interrupted" : event.status,
       ...(event.description ? { description: event.description } : {}),
       ...(event.resultSummary ? { resultSummary: event.resultSummary } : {}),

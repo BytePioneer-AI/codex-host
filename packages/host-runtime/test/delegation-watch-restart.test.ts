@@ -1,7 +1,9 @@
+import { parseThreadWatchNotice } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DelegationControlError,
+  type DelegationPendingQuestion,
   type DelegationThreadSnapshot,
   type DelegationThreadStatus,
   type ThreadSendInput,
@@ -28,7 +30,10 @@ function memoryStore(): DelegationWatchStore & { records: Map<string, PersistedW
 }
 
 /** A fake Runtime whose Threads are driven by the test; `offline` models sessions not yet registered. */
-function runtime(threads: Record<string, { status: DelegationThreadStatus; turnId?: string }>) {
+function runtime(
+  threads: Record<string, { status: DelegationThreadStatus; turnId?: string; title?: string }>,
+  pending: Record<string, DelegationPendingQuestion[]> = {},
+) {
   const sent: ThreadSendInput[] = [];
   const state = { offline: false };
   const read = vi.fn(async ({ threadId }: { threadId: string }) => {
@@ -43,10 +48,11 @@ function runtime(threads: Record<string, { status: DelegationThreadStatus; turnI
       threadId,
       harnessId: "pi",
       status: thread.status,
+      ...(thread.title ? { title: thread.title } : {}),
       turn: { turnId: thread.turnId ?? `turn-${threadId}`, status: thread.status },
       progress: [],
       result: { availability: "pending" },
-      nextCursor: null,
+      ...(pending[threadId] ? { pendingQuestions: pending[threadId] } : {}),
     } as DelegationThreadSnapshot;
   });
   const send = vi.fn(async (input: ThreadSendInput) => {
@@ -83,6 +89,80 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     vi.useRealTimers();
   });
 
+  it("removes a superseded watching record from memory and storage even during observation", async () => {
+    const store = memoryStore();
+    const pending: Record<string, DelegationPendingQuestion[]> = {};
+    const fake = runtime(
+      { child: { status: "running" }, parent: { status: "running" }, other: { status: "running" } },
+      pending,
+    );
+    const watches = service(fake, store);
+    try {
+      const input = { threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 };
+      await watches.watch(input);
+      const oldId = [...store.records.keys()][0];
+      if (!oldId) throw new Error("Missing stored watch");
+      await watches.watch({ ...input, notifyThreadId: "other" });
+      const observing = Promise.withResolvers<DelegationThreadSnapshot>();
+      fake.read.mockImplementationOnce(() => observing.promise);
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      pending.child = [
+        { kind: "requestUserInput", interactionId: "question", turnId: "turn-child", request: {} },
+      ];
+      await expect(watches.watch(input)).resolves.toMatchObject({
+        state: "alreadyNeedsInput",
+        pendingQuestions: pending.child,
+      });
+      expect(store.records.has(oldId)).toBe(false);
+      expect([...store.records.values()]).toMatchObject([
+        { notifyThreadId: "other", state: "watching" },
+      ]);
+      await expect(watches.watches()).resolves.toMatchObject({
+        watches: [{ notifyThreadId: "other", state: "watching" }],
+      });
+      observing.resolve(await fake.read({ threadId: "child" }));
+      await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+      expect(fake.sent.map(({ threadId }) => threadId)).toEqual(["other"]);
+      expect(store.records.size).toBe(0);
+      await expect(watches.watches()).resolves.toEqual({ watches: [] });
+    } finally {
+      watches.close();
+    }
+  });
+
+  it("preserves pendingDelivery when a repeated watch reports alreadyNeedsInput", async () => {
+    const store = memoryStore();
+    const pending: Record<string, DelegationPendingQuestion[]> = {};
+    const fake = runtime({ child: { status: "running" }, parent: { status: "running" } }, pending);
+    const watches = service(fake, store);
+    try {
+      const input = { threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 };
+      await watches.watch(input);
+      pending.child = [
+        {
+          kind: "requestUserInputAsync",
+          interactionId: "question",
+          turnId: "turn-child",
+          request: {},
+        },
+      ];
+      fake.send.mockRejectedValueOnce(new DelegationControlError("THREAD_BUSY", "busy"));
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      const records = [...store.records.values()];
+      expect(records).toMatchObject([{ state: "pendingDelivery", outcome: "needsInput" }]);
+      await expect(watches.watch(input)).resolves.toMatchObject({ state: "alreadyNeedsInput" });
+      expect([...store.records.values()]).toEqual(records);
+      await expect(watches.watches()).resolves.toMatchObject({
+        watches: [{ state: "pendingDelivery" }],
+      });
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(fake.sent).toHaveLength(1);
+      expect(store.records.size).toBe(0);
+    } finally {
+      watches.close();
+    }
+  });
+
   it("stores a watch while it is pending and removes it once delivered", async () => {
     const store = memoryStore();
     const fake = runtime({ child: { status: "running" }, parent: { status: "completed" } });
@@ -116,10 +196,47 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     after.update("child", { status: "completed" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
-    expect(after.sent[0]?.message).toContain("codex://threads/child: completed (Turn turn-child).");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      { threadId: "child", label: "child", outcome: "completed" },
+    ]);
     expect(before.sent).toEqual([]);
     expect(store.records.size).toBe(0);
   });
+
+  it.each([
+    { title: "审查最近PR · 委派", label: "审查最近PR · 委派" },
+    { title: "summary-row · " + "🐙".repeat(50), label: "summary-row · " + "🐙".repeat(20) + "…" },
+    { title: undefined, label: "child" },
+  ])(
+    "preserves the saved title and shortens only the restored notification ($title)",
+    async ({ title, label }) => {
+      const store = memoryStore();
+      const before = runtime({
+        child: { status: "running", ...(title ? { title } : {}) },
+        parent: { status: "running" },
+      });
+      before.send.mockRejectedValue(new DelegationControlError("THREAD_BUSY", "busy"));
+      const first = service(before, store);
+      await first.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+      before.update("child", { status: "completed" });
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      const [record] = [...store.records.values()];
+      expect(record).toMatchObject({ state: "pendingDelivery", outcome: "completed" });
+      if (title) expect(record).toHaveProperty("title", title);
+      else expect(record).not.toHaveProperty("title");
+      expect((await first.watches()).watches[0]).not.toHaveProperty("title");
+      first.close();
+
+      // No title is available from the new Runtime; delivery must use the stored record.
+      const after = runtime({ child: { status: "completed" }, parent: { status: "completed" } });
+      service(after, store);
+      await vi.advanceTimersByTimeAsync(POLL_MS);
+      expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+        { threadId: "child", label, outcome: "completed" },
+      ]);
+      expect(store.records.size).toBe(0);
+    },
+  );
 
   it("reports a Thread that is terminal right after a restart as interrupted, even past its deadline", async () => {
     const store = memoryStore();
@@ -137,8 +254,14 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     });
     service(after, store);
     await vi.advanceTimersByTimeAsync(POLL_MS);
-    expect(after.sent[0]?.message).toContain("codex://threads/child: interrupted (Turn turn-2).");
-    expect(after.sent[0]?.message).toContain("afterwards it read as failed");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "interrupted",
+        note: "The Host Runtime restarted while this Thread was running; afterwards it read as failed, so the work most likely did not finish. Read it, then continue it or start it again.",
+      },
+    ]);
   });
 
   it("reports the Turn a restart cut off as interrupted even when it comes back under a new id", async () => {
@@ -161,11 +284,14 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     service(after, store);
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
-    expect(after.sent[0]?.message).toContain("codex://threads/child: interrupted (Turn 909565f8).");
-    expect(after.sent[0]?.message).toContain(
-      "Host Runtime restarted while this Thread was running",
-    );
-    expect(after.sent[0]?.message).toContain("read as completed");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "interrupted",
+        note: "The Host Runtime restarted while this Thread was running; afterwards it read as completed, so the work most likely did not finish. Read it, then continue it or start it again.",
+      },
+    ]);
   });
 
   it("reports a Thread that cannot be reopened after a restart as interrupted, not notFound", async () => {
@@ -184,8 +310,14 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     expect(after.sent).toEqual([]);
     await vi.advanceTimersByTimeAsync(2 * POLL_MS);
     expect(after.sent).toHaveLength(1);
-    expect(after.sent[0]?.message).toContain("codex://threads/child: interrupted.");
-    expect(after.sent[0]?.message).toContain("could not be opened again");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "interrupted",
+        note: "The Host Runtime restarted while this Thread was running, and the Thread could not be opened again (Thread was not found).",
+      },
+    ]);
   });
 
   it("keeps the restart explanation when the Runtime restarts again before delivery", async () => {
@@ -212,8 +344,14 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     const third = runtime({ child: { status: "completed" }, parent: { status: "completed" } });
     service(third, store);
     await vi.advanceTimersByTimeAsync(POLL_MS);
-    expect(third.sent[0]?.message).toContain("interrupted");
-    expect(third.sent[0]?.message).toContain("Host Runtime restarted");
+    expect(parseThreadWatchNotice(third.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "interrupted",
+        note: "The Host Runtime restarted while this Thread was running; afterwards it read as completed, so the work most likely did not finish. Read it, then continue it or start it again.",
+      },
+    ]);
   });
 
   it("reports timedOut when the deadline passed during downtime and the Thread still runs", async () => {
@@ -229,7 +367,14 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     const after = runtime({ child: { status: "running" }, parent: { status: "completed" } });
     service(after, store);
     await vi.advanceTimersByTimeAsync(POLL_MS);
-    expect(after.sent[0]?.message).toContain("has not reached a terminal state after 10 s");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "timedOut",
+        note: "Not stopped after 10 s; run 'codexhost thread watch' again to keep waiting.",
+      },
+    ]);
   });
 
   it("does not count reads before the sessions register again toward unreadable", async () => {
@@ -255,7 +400,9 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     after.update("child", { status: "completed", turnId: "turn-2" });
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
-    expect(after.sent[0]?.message).toContain("completed (Turn turn-2)");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      { threadId: "child", label: "child", outcome: "completed" },
+    ]);
   });
 
   it("starts the unreadable window once the restore grace ends", async () => {
@@ -279,7 +426,14 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     });
     await vi.advanceTimersByTimeAsync(3 * POLL_MS);
     expect(after.sent).toHaveLength(1);
-    expect(after.sent[0]?.message).toContain("could not be read for 60 s");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      {
+        threadId: "child",
+        label: "child",
+        outcome: "unreadable",
+        note: "Could not be read for 60 s, so its state is unknown (gone).",
+      },
+    ]);
     await expect(second.watches()).resolves.toEqual({ watches: [] });
   });
 
@@ -302,7 +456,9 @@ describe("DelegationWatchService across a Host Runtime restart", () => {
     service(after, store);
     await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(after.sent).toHaveLength(1);
-    expect(after.sent[0]?.message).toContain("codex://threads/child: completed");
+    expect(parseThreadWatchNotice(after.sent[0]?.message ?? "")).toEqual([
+      { threadId: "child", label: "child", outcome: "completed" },
+    ]);
     expect(store.records.size).toBe(0);
   });
 

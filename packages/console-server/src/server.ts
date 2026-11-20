@@ -387,7 +387,9 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       return;
     }
     if (route === "POST /api/web/open") {
-      const command = serviceCommand(options.installation, "web");
+      const command = serviceCommand(options.installation, "web", {
+        connectDevices: body.connectDevices === true,
+      });
       await service(command.command, command.args, serviceEnvironment());
       sendJson(response, 200, { opened: true });
       return;

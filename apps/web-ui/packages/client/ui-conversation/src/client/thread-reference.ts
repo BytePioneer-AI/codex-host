@@ -1,4 +1,4 @@
-/** Local CH Thread references shared by messages, sidebar drag, menu, and Composer. */
+/** Native Thread references shared by messages, sidebar drag, menu, and Composer. */
 export const THREAD_REFERENCE_MIME = "application/x-codexhost-thread-reference";
 export const THREAD_REFERENCE_SOURCE = "codexhost-thread";
 
@@ -8,7 +8,7 @@ export const THREAD_LINK_PATTERN =
 
 export interface ThreadReference {
   threadId: string;
-  hostId: "local";
+  hostId: string;
   title: string;
 }
 
@@ -16,12 +16,18 @@ export function threadReferenceOf(session: {
   id: string;
   blank: boolean;
   title?: string | undefined;
-  projectionValues?: { threadReference?: { hostId: string } | null } | undefined;
+  projectionValues?: { threadReference?: { hostId: string; threadId?: string } | null } | undefined;
 }): ThreadReference | undefined {
-  if (session.blank || session.projectionValues?.threadReference?.hostId !== "local") return;
+  const reference = session.projectionValues?.threadReference;
+  if (session.blank || !reference?.hostId) return;
+  if (
+    reference.hostId !== "local" &&
+    (!/^remote-(?:ssh(?:-|:)|control:)/u.test(reference.hostId) || !reference.threadId)
+  )
+    return;
   return {
-    threadId: session.id,
-    hostId: "local",
+    threadId: reference.threadId ?? session.id,
+    hostId: reference.hostId,
     title:
       session.title?.replace(/[\s\u0000-\u001f\u007f]+/gu, " ").trim() || session.id.slice(0, 8),
   };
@@ -32,19 +38,30 @@ export function threadReferenceUri(reference: ThreadReference): string {
     /[!'()*]/gu,
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   );
-  return `thread://${id}?hostId=local`;
+  return `thread://${id}?hostId=${encodeURIComponent(reference.hostId)}`;
 }
 
-/** Local Thread identities accepted from explicit message links, never inferred from titles. */
+/** Web Session identity for an explicit native Thread link, never inferred from titles. */
 export function localThreadId(href: string): string | undefined {
   if (href.trim() !== href) return;
   const match =
     /^codex:\/\/threads\/([^/?#\s<>]+)$/u.exec(href) ??
-    /^thread:\/\/([^/?#\s<>]+)\?hostId=local$/u.exec(href);
+    /^thread:\/\/([^/?#\s<>]+)\?hostId=([^&#\s]+)$/u.exec(href);
   if (match?.[1] === undefined) return;
   try {
     const id = decodeURIComponent(match[1]);
-    return id && !/[\u0000-\u001f\u007f]/u.test(id) ? id : undefined;
+    const hostId = decodeURIComponent(match[2] ?? "local");
+    if (!id || !hostId || /[\u0000-\u001f\u007f]/u.test(id + hostId)) return;
+    if (hostId === "local") return id;
+    if (!/^remote-(?:ssh(?:-|:)|control:)/u.test(hostId)) return;
+    const bytes = new TextEncoder().encode(JSON.stringify([hostId, id]));
+    return (
+      "web-remote:" +
+      btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""))
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replace(/=+$/u, "")
+    );
   } catch {
     return undefined;
   }
@@ -70,7 +87,9 @@ export function parseThreadReferenceDrag(text: string): ThreadReference | undefi
     if (
       typeof threadId !== "string" ||
       !threadId ||
-      hostId !== "local" ||
+      typeof hostId !== "string" ||
+      !hostId ||
+      (hostId !== "local" && !/^remote-(?:ssh(?:-|:)|control:)/u.test(hostId)) ||
       typeof title !== "string"
     )
       return;
@@ -78,7 +97,7 @@ export function parseThreadReferenceDrag(text: string): ThreadReference | undefi
       id: threadId,
       blank: false,
       title,
-      projectionValues: { threadReference: { hostId } },
+      projectionValues: { threadReference: { hostId, threadId } },
     });
   } catch {
     return;

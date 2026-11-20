@@ -15,6 +15,17 @@ import type { RendererConnectionGeneration } from "./renderer-connection-generat
 /** A main-process AppServerManager reached through its Renderer RPC client. It
  * exposes only Host requests and notifications, never native manager internals. */
 export interface RendererHostRpcManager {
+  getConversation?(threadId: string): Promise<unknown>;
+  replyWithCommandExecutionApprovalDecision?(
+    threadId: string,
+    requestId: string | number,
+    decision: string,
+  ): Promise<unknown>;
+  replyWithFileChangeApprovalDecision?(
+    threadId: string,
+    requestId: string | number,
+    decision: string,
+  ): Promise<unknown>;
   readonly kind: "main-process-rpc";
   getHostId(): string;
   sendRequest(method: string, params: unknown, options?: unknown): Promise<unknown>;

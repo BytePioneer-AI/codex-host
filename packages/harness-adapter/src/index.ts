@@ -5,7 +5,7 @@ export type {
   HarnessCredentialExport,
   HarnessCredentialImports,
 } from "./credential-imports.js";
-export { parseHarnessAccountCredits } from "./account-credits.js";
+export { parseHarnessAccountBalance, parseHarnessAccountCredits } from "./account-credits.js";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
@@ -82,11 +82,14 @@ export type {
   HostTextInput,
   HostTextQuestion,
   HostToolExecutionItem,
+  HostMcpToolCallItem,
+  HostWebSearchItem,
   HostToolOutput,
   HostTurnSnapshot,
   InteractionClosedEvent,
   InteractionRespondAccepted,
   InteractionRespondCommand,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
   ItemDetachedEvent,
   ItemStartedEvent,
@@ -133,3 +136,11 @@ export {
   type LiveCommandExclusions,
   type LiveHarnessCommand,
 } from "./live-command-catalog.js";
+
+export {
+  subagentConfiguration,
+  inheritSubagentConfiguration,
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "./subagent-configuration.js";

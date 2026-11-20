@@ -19,10 +19,12 @@ import clsx from "clsx";
 import {
   IconPlusOutlineMedium,
   IconWarningOutlineRegular,
+  ResponseAnnotationChip,
   shouldAutoFocusTextInput,
   Toast,
   Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
+import type { ResponseAnnotationLabels } from "@deepseek-ai/dsh-client-ui-primitives";
 // Type-only: the `plan` projection key merge (the TodoDock posture — the
 // composer reads a host-computed value; the domain owns the key).
 import type {} from "@deepseek-ai/dsh-plan-mode/client";
@@ -33,6 +35,7 @@ import type {} from "@deepseek-ai/dsh-goal/client";
 // api-remotes import already places it in every client program.
 import type { Translate } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ComposerBarProps } from "../contract/slots.ts";
+import type { DraftResponseAnnotation } from "../contract/input.ts";
 import { DraftEditor } from "../input/editor/DraftEditor.tsx";
 import {
   focusDraftEditor,
@@ -49,6 +52,9 @@ import { observeControlRow, type ControlRowLayout } from "./control-row-layout.t
 import css from "./InputBar.module.css";
 
 export type InputBarProps = ComposerBarProps;
+
+/** Stable empty value: a session without attached annotations shares one frozen array. */
+const EMPTY_ANNOTATIONS: readonly DraftResponseAnnotation[] = [];
 
 export const InputBar = memo(function InputBar({
   useSession,
@@ -80,6 +86,18 @@ export const InputBar = memo(function InputBar({
   accessory,
 }: InputBarProps) {
   const input = useInput((s) => s);
+  const responseAnnotations = input?.responseAnnotations ?? EMPTY_ANNOTATIONS;
+  const annotationLabels = useMemo<ResponseAnnotationLabels>(
+    () => ({
+      label: (index) => t("annotation.label", { index }),
+      railLabel: (index) => t("annotation.chipLabel", { index }),
+      railTitle: (index, excerpt) => t("annotation.title", { index, excerpt }),
+      remove: (index) => t("annotation.remove", { index }),
+      selectedText: t("annotation.selectedText"),
+      userComment: t("annotation.userComment"),
+    }),
+    [t],
+  );
   const notice = useNotices((s) => s);
   const busyEnter = useBusyEnter((s) => s);
   const stopKeys = useStopShortcut((keys) => keys);
@@ -114,12 +132,12 @@ export const InputBar = memo(function InputBar({
         : resolveDraftAttachments(input.attachmentIds),
     [resolveDraftAttachments, input?.attachmentIds],
   );
-  const empty = draft.trim() === "" && attachments.length === 0;
+  // Attached annotations are content on their own: the user may send only the
+  // selections, and Desktop sends the same block with an empty request body.
+  const empty = draft.trim() === "" && attachments.length === 0 && responseAnnotations.length === 0;
   const uploads = useFileUploads((snapshot) => snapshot);
-  // Send waits for every picked file: uploading and failed drafts both hold
-  // the gate (a failed upload is retried or removed, never silently dropped).
-  const uploadsPending = attachments.some(
-    (attachment) => attachment.kind === "file" && uploads[attachment.id]?.status !== "ready",
+  const uploadsFailed = attachments.some(
+    (attachment) => uploads[attachment.id]?.status === "error",
   );
   // Transient error banner (machine notices, image-intake rejections, and
   // prompt failures): the seq keys the Toast so an identical repeated message
@@ -324,7 +342,7 @@ export const InputBar = memo(function InputBar({
     steeringAvailable,
     busyEnter,
     intakeFiles,
-    uploadsPending,
+    uploadsFailed,
     showToast,
     t,
     canAcceptDrop,
@@ -338,7 +356,7 @@ export const InputBar = memo(function InputBar({
     steeringAvailable,
     busyEnter,
     intakeFiles,
-    uploadsPending,
+    uploadsFailed,
     showToast,
     t,
     canAcceptDrop,
@@ -383,7 +401,7 @@ export const InputBar = memo(function InputBar({
   // owner-blocked; an actionable draft gets the busy Send action, delivered
   // through the same mode plain Enter resolves to. The label names that mode
   // only when the click would deliver a plain message right now — an enabled
-  // button (no pending upload) over a non-empty draft that is neither a
+  // button over a non-empty draft that is neither a
   // claimed command nor a `/` line headed for adjudication — so it never
   // describes a delivery the click cannot or does not perform; every other
   // state keeps plain Send. A continuable child keeps Send primary and
@@ -393,10 +411,7 @@ export const InputBar = memo(function InputBar({
   // Disabled native buttons may omit mouseleave; their tooltip must close from state.
   const primaryDisabled = primaryStops
     ? stop === undefined
-    : (primaryAction === undefined ? empty : primaryAction.disabled) ||
-      disabled ||
-      machineBusy ||
-      uploadsPending;
+    : (primaryAction === undefined ? empty : primaryAction.disabled) || disabled || machineBusy;
   const interruptible = running && continuable;
   const primarySubmitMode = resolveSubmitMode(busyEnter, running, "enter", steeringAvailable);
   const plainMessageDraft =
@@ -407,7 +422,7 @@ export const InputBar = memo(function InputBar({
         running &&
         steeringAvailable &&
         !disabled &&
-        !uploadsPending &&
+        !uploadsFailed &&
         plainMessageDraft
       ? t(primarySubmitMode === "steer" ? "input.send.steer" : "input.send.queue")
       : t("input.send");
@@ -416,14 +431,16 @@ export const InputBar = memo(function InputBar({
       stop?.();
       return;
     }
+    if (uploadsFailed) {
+      showToast(t("file.retryOrRemove"));
+      return;
+    }
     if (primaryAction !== undefined) {
       if (!primaryDisabled) primaryAction.run();
       return;
     }
     if (keyboard === undefined) return; // absent machine: the button is disabled
-    /* v8 ignore next -- defensive: the primary button is disabled for empty, disabled, and pending-upload states. */
-    if (!empty && !disabled && !machineBusy && !uploadsPending)
-      keyboard.submit(primarySubmitMode, "click");
+    if (!empty && !disabled && !machineBusy) keyboard.submit(primarySubmitMode, "click");
   };
 
   // Claim ghost hint: rendered by CSS as generated content after the last
@@ -502,6 +519,21 @@ export const InputBar = memo(function InputBar({
           <div className={css.overlayAnchor}>{renderSlot("conversation.input.overlay", {})}</div>
         )}
         {accessory !== undefined && <div className={css.accessory}>{accessory}</div>}
+        {responseAnnotations.length === 0 ? null : (
+          <div className={css.annotations} data-composer-annotations>
+            {responseAnnotations.map((annotation, index) => (
+              <ResponseAnnotationChip
+                key={annotation.id}
+                index={index + 1}
+                annotation={annotation}
+                labels={annotationLabels}
+                onRemove={() => {
+                  inputActions?.removeResponseAnnotation(annotation.id);
+                }}
+              />
+            ))}
+          </div>
+        )}
         {input === undefined || sessionId === undefined ? null : (
           <div className={css.inlineNotices}>{renderSlot("conversation.input.notice", {})}</div>
         )}

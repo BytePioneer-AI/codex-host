@@ -6,6 +6,7 @@ import { it, type TestContext } from "node:test";
 import * as acme from "acme-client";
 import {
   AcmeRound,
+  acmeDirectory,
   certificateKey,
   classifyFailure,
   issueCertificate,
@@ -21,6 +22,9 @@ import { RelayTls } from "../src/remote-relay/tls.ts";
 import { RequestTrust } from "../src/request-trust.ts";
 import { acmeServer, type AcmeRequest } from "./support/acme-server.ts";
 import { credentials, delay, relayData, until } from "./support/relay.ts";
+import { environment } from "./support/pebble.ts";
+import { certificateRelay } from "./support/certificate-relay.ts";
+import { defaultCertificateDirectory } from "@codexhost/remote-relay/protocol";
 
 it("allows slower dual-stack ACME connections without disabling IPv6", () => {
   assert.equal(acme.axios.defaults.httpsAgent.options.autoSelectFamilyAttemptTimeout, 2_000);
@@ -458,3 +462,126 @@ for (const type of ["caa", "serverInternal"]) {
     assert.equal(f.read().detail, "order refused");
   });
 }
+
+it("selects environment, relay directory, then the legacy default in that order", (t) => {
+  environment(t, { CODEXHOST_RELAY_ACME_DIRECTORY: "https://override.invalid/dir" });
+  assert.equal(acmeDirectory("https://relay-ca.invalid/dir"), "https://override.invalid/dir");
+  delete process.env.CODEXHOST_RELAY_ACME_DIRECTORY;
+  assert.equal(acmeDirectory("https://relay-ca.invalid/dir"), "https://relay-ca.invalid/dir");
+  assert.equal(acmeDirectory(), defaultCertificateDirectory);
+});
+
+it("the environment override stays direct despite relay credentials and notices", async (t) => {
+  const ca = await acmeServer(t, ({ reply }) => {
+    reply(503, { detail: "direct override" });
+    return true;
+  });
+  const f = fixture(t);
+  f.manager.start(hostname, host, {
+    hostname,
+    token: "unused-token",
+    certificateAuthority: { directory: "https://must-not-connect.invalid/dir" },
+  });
+  await until(() => !f.manager.state.issuing);
+  assert.equal(ca.requests.length, 1);
+  assert.equal(f.read().directory, ca.directory);
+  f.manager.certificateAuthority({ directory: "https://another.invalid/dir" });
+  assert.equal(f.manager.state.issuing, false);
+  assert.equal(ca.requests.length, 1);
+});
+
+it("a directory change bypasses the old backoff and pause and uses the relay", async (t) => {
+  const ca = await acmeServer(t, ({ reply }) => {
+    reply(503, { detail: "new authority" });
+    return true;
+  });
+  const relay = await certificateRelay(t, ca.directory);
+  environment(t, { CODEXHOST_RELAY_ACME_DIRECTORY: undefined });
+  const f = fixture(t);
+  const oldDirectory = "https://old-ca.invalid/dir";
+  f.data.writeJson(
+    `remote-relay/endpoints/${encodeURIComponent(relay.host)}/certificate-state.json`,
+    f.record({ directory: oldDirectory, paused: true, retryAt: notAfter, failures: 7 }),
+  );
+  f.manager.start(hostname, relay.host, {
+    hostname,
+    token: relay.token,
+    certificateAuthority: { directory: oldDirectory },
+  });
+  assert.equal(f.manager.state.issuing, false);
+  f.manager.certificateAuthority({ directory: ca.directory });
+  assert.equal(f.manager.state.issuing, true);
+  await until(() => !f.manager.state.issuing);
+  const record = f.data.readJson<CertificateRecord>(
+    `remote-relay/endpoints/${encodeURIComponent(relay.host)}/certificate-state.json`,
+    {} as CertificateRecord,
+  );
+  assert.equal(record.directory, ca.directory);
+  assert.equal(record.failures, 1);
+  assert.equal(record.validationFailures, 0);
+  assert.equal(record.paused, false);
+  assert.equal(ca.requests.length, 1);
+  assert.equal(relay.targets.length, 1);
+});
+
+it("a change keeps a usable certificate until its renewal time", (t) => {
+  environment(t, { CODEXHOST_RELAY_ACME_DIRECTORY: undefined });
+  const f = fixture(t);
+  f.seed();
+  f.manager.start(hostname, host, {
+    hostname,
+    token: "token",
+    certificateAuthority: { directory: "https://old-ca.invalid/dir" },
+  });
+  assert.equal(f.tls.available, true);
+  f.manager.certificateAuthority({ directory: "https://new-ca.invalid/dir" });
+  assert.equal(f.manager.state.issuing, false);
+  assert.equal(f.tls.available, true);
+  assert.equal(f.manager.state.expiresAt, new Date(notAfter).toISOString());
+  assert.equal(existsSync(f.data.path(stateFile)), false);
+});
+
+it("the same directory does not interrupt an active round; a different one aborts it", async (t) => {
+  let waiting: AcmeRequest | undefined;
+  const ca = await acmeServer(t, (request) => {
+    if (request.path === "/dir") {
+      waiting = request;
+      return true;
+    }
+    return false;
+  });
+  const relay = await certificateRelay(t, ca.directory);
+  environment(t, { CODEXHOST_RELAY_ACME_DIRECTORY: undefined });
+  const f = fixture(t);
+  f.manager.start(hostname, relay.host, {
+    hostname,
+    token: relay.token,
+    certificateAuthority: { directory: ca.directory },
+  });
+  await until(() => waiting !== undefined);
+  const original = readFileSync(
+    f.data.path(`remote-relay/endpoints/${encodeURIComponent(relay.host)}/certificate-state.json`),
+  );
+  f.manager.certificateAuthority({ directory: ca.directory });
+  await delay(30);
+  assert.equal(ca.requests.length, 1);
+  assert.equal(waiting?.request.socket.destroyed, false);
+  assert.equal(f.manager.state.issuing, true);
+  assert.deepEqual(
+    readFileSync(
+      f.data.path(
+        `remote-relay/endpoints/${encodeURIComponent(relay.host)}/certificate-state.json`,
+      ),
+    ),
+    original,
+  );
+  f.seed();
+  writeFileSync(
+    f.data.path(`remote-relay/endpoints/${encodeURIComponent(relay.host)}/certificate.pem`),
+    credentials.cert,
+  );
+  f.manager.certificateAuthority({ directory: "https://new-ca.invalid/dir" });
+  await until(() => waiting?.request.socket.destroyed === true);
+  assert.equal(f.manager.state.issuing, false);
+  assert.equal(f.manager.state.failure, undefined);
+});

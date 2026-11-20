@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import type { HostCommand } from "@codexhost/harness-adapter";
 import {
   createFixture,
   requestId,
@@ -79,7 +81,7 @@ describe("External Harness image input", () => {
     },
   );
 
-  it("rejects an unstored inline image before starting a text-only Turn", async () => {
+  it("stores an inline annotation image for an external first Turn", async () => {
     const fixture = createFixture();
     try {
       const threadId = await startPiThread(fixture);
@@ -97,9 +99,70 @@ describe("External Harness image input", () => {
           ],
         },
       });
-      await expect(
-        fixture.collector.waitFor((message) => requestId(message, 40)),
-      ).resolves.toMatchObject({ error: { code: -32602 } });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 40));
+      expect(response).not.toHaveProperty("error");
+      const commands: HostCommand[] = execute.mock.calls.map(([value]) => value);
+      const command = commands.find((value) => value.type === "turn.start");
+      if (!command || command.type !== "turn.start" || command.input[0]?.type !== "text") {
+        throw new Error("Missing external Turn input");
+      }
+      const saved = /## [^\n]+: ([^\n]+)\nImage attachment: true/u.exec(command.input[0].text)?.[1];
+      if (!saved) throw new Error("Missing saved image path");
+      expect(await readFile(saved, "utf8")).toBe("hello");
+      expect(command.input[0].text).toContain("Check this image");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("preserves the same stored image when a queued annotation is steered", async () => {
+    const fixture = createFixture();
+    fixture.adapter.supportsSteer = true;
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId);
+      const input = [
+        { type: "text", text: "Check this annotation" },
+        { type: "image", url: "data:image/png;base64,aGVsbG8=" },
+      ];
+      writeRequest(fixture.desktopInput, {
+        id: 50,
+        method: "thread/queue/add",
+        params: { threadId, clientUserMessageId: "annotation", input },
+      });
+      const queued = await fixture.collector.waitFor((message) => requestId(message, 50));
+      expect(queued).not.toHaveProperty("error");
+      writeRequest(fixture.desktopInput, {
+        id: 51,
+        method: "turn/steer",
+        params: { threadId, expectedTurnId: turnId, clientUserMessageId: "annotation", input },
+      });
+      const steered = await fixture.collector.waitFor((message) => requestId(message, 51));
+      expect(steered).not.toHaveProperty("error");
+      const sent = fixture.adapter.sessions[0]?.steers[0]?.input[0];
+      if (!sent || sent.type !== "text") throw new Error("Missing steered input");
+      const saved = /## [^\n]+: ([^\n]+)\nImage attachment: true/u.exec(sent.text)?.[1];
+      if (!saved) throw new Error("Missing saved image path");
+      expect(await readFile(saved, "utf8")).toBe("hello");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("rejects an unsupported inline URL without starting the Turn", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      writeRequest(fixture.desktopInput, {
+        id: 60,
+        method: "turn/start",
+        params: { threadId, input: [{ type: "image", url: "https://example.com/image.png" }] },
+      });
+      const response = await fixture.collector.waitFor((message) => requestId(message, 60));
+      expect(response).toMatchObject({ error: { code: -32602 } });
       expect(execute).not.toHaveBeenCalled();
     } finally {
       await stopFixture(fixture);

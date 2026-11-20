@@ -2,7 +2,7 @@
  * The rename action: a `sidebar.workspaces.session.menu.item` row that raises
  * the rename request, and the `shell.overlay` dialog entry that answers it.
  * The dialog lives outside the row menu because the row unmounts with the
- * menu; the browser raises the same request from a title double-click.
+ * menu; keyboard commands raise the same request.
  */
 import { useRef, useState } from "react";
 import {

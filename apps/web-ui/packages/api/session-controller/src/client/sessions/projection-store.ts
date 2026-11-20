@@ -243,9 +243,17 @@ export class ProjectionValueStore {
     }
   }
 
-  /** Discard one Host generation's values and watermarks while preserving subscribed faces. */
-  clear(): void {
-    for (const key of this.rows.keys()) {
+  /**
+   * Discard one Host generation's values and watermarks while preserving subscribed faces.
+   * @param displayKeys - read-only display keys whose last value stays visible, demoted to
+   *   a cached row (no watermark, yields to any new frame) until the new baseline replaces it.
+   */
+  clear(displayKeys?: ReadonlySet<string>): void {
+    for (const [key, row] of [...this.rows]) {
+      if (displayKeys?.has(key) === true) {
+        this.rows.set(key, { kind: "cached", value: row.value });
+        continue;
+      }
       this.rows.delete(key);
       this.changed(key);
     }

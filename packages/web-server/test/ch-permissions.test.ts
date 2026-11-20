@@ -12,15 +12,46 @@ import {
   HARNESS_PREFERENCES_PATCH_METHOD,
 } from "@codexhost/shared-contracts";
 import { ChSessions } from "../src/ch-sessions.ts";
+import { draftPermissionMode } from "../src/draft-configuration.ts";
 import { WebHarnessPreferences } from "../src/harness-preferences.ts";
 import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost } from "./support/ch-host.ts";
+import { nativeCodex } from "./support/native-codex.ts";
+
+const permissionInspection = {
+  status: "ready",
+  permissionModes: {
+    modes: [{ id: "read-only" }, { id: "workspace-write" }],
+    defaultModeId: "read-only",
+  },
+};
+
+it("defaults Codex drafts to advertised full access and preserves valid preferences", () => {
+  const inspection = {
+    ...permissionInspection,
+    permissionModes: {
+      modes: [{ id: ":workspace" }, { id: ":danger-full-access" }],
+      defaultModeId: ":workspace",
+    },
+  };
+  assert.equal(draftPermissionMode("codex", inspection), ":danger-full-access");
+  assert.equal(draftPermissionMode("codex", inspection, ":workspace"), ":workspace");
+  assert.equal(draftPermissionMode("codex", inspection, "removed-mode"), ":danger-full-access");
+  assert.equal(draftPermissionMode("codex", permissionInspection), undefined);
+  assert.equal(draftPermissionMode("codex", permissionInspection, "removed-mode"), undefined);
+  assert.equal(draftPermissionMode("codex", { status: "error" }), undefined);
+});
+
+it("keeps Adapter catalog defaults for external Harness drafts", () => {
+  assert.equal(draftPermissionMode("fake", permissionInspection), "read-only");
+  assert.equal(draftPermissionMode("fake", permissionInspection, "removed-mode"), "read-only");
+});
 
 function setup(t: TestContext, preferencesAvailable = true) {
   const root = mkdtempSync(join(tmpdir(), "ch-permissions-"));
-  const host = new FakeChHost();
+  const host = nativeCodex(new FakeChHost());
   host.inspection.permissionModes = {
     modes: [
       { id: "read-only", label: "Read only" },
@@ -90,6 +121,29 @@ function setup(t: TestContext, preferencesAvailable = true) {
   };
   return { root, host, store, preferences, sessions, call, controls };
 }
+
+for (const preferred of [undefined, "removed-mode", ":workspace"])
+  it(`submits the displayed Codex permission on creation and Harness switch with preference ${preferred}`, async (t) => {
+    const f = setup(t);
+    if (preferred) await f.preferences.remember("codex", { permissionModeId: preferred });
+    const { sessionId } = await f.call<{ sessionId: string }>("session/create", {
+      request: { cwd: f.root },
+    });
+    const expected = preferred === ":workspace" ? preferred : ":danger-full-access";
+    assert.equal((await f.controls(sessionId)).permissions.currentValue, expected);
+    for (const provider of ["fake", "codex"])
+      await f.call("session/selectModel", {
+        request: { sessionId, provider, model: provider === "codex" ? "gpt-5.4" : "native" },
+      });
+    assert.equal((await f.controls(sessionId)).permissions.currentValue, expected);
+    await f.call("session/prompt", {
+      request: { sessionId, content: [{ type: "text", text: "isolated Codex prompt" }] },
+    });
+    const start = f.host.requests.find(({ method }) => method === "thread/start");
+    assert.ok(start);
+    assert.equal(start.params.permissions, expected);
+    assert.equal((await f.controls(sessionId)).permissions.currentValue, expected);
+  });
 
 for (const preferred of [undefined, "removed-mode", "danger-full-access"])
   it(`submits the displayed permission after switching Harness with preference ${preferred}`, async (t) => {

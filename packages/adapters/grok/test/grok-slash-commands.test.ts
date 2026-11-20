@@ -8,7 +8,7 @@ import {
 } from "../src/grok-slash-commands.js";
 
 describe("Grok advertised commands", () => {
-  it("marks skills, keeps workflows and drops UI, trust, loop and goal commands", () => {
+  it("excludes native skills, keeps workflows and drops UI, trust, loop and goal commands", () => {
     const native = parseGrokAvailableCommands([
       { name: "compact", description: "Compact", input: { hint: "focus" } },
       { name: "always-approve", description: "Approve all" },
@@ -27,6 +27,9 @@ describe("Grok advertised commands", () => {
         description: "Review",
         _meta: { scope: "user", path: "/u/.grok/skills/code-review/SKILL.md" },
       },
+      { name: "qualified-skill", _meta: { qualifiedName: "project:qualified-skill" } },
+      { name: "windows-skill", _meta: { path: "C:\\skills\\guide\\SKILL.md" } },
+      { name: "skill-like-command", _meta: { path: "/commands/guide.md" } },
       { name: "", description: "ignored" },
       "bad",
     ]);
@@ -36,10 +39,10 @@ describe("Grok advertised commands", () => {
       grokLiveCommands(native),
     );
     expect(catalog.commands.map(({ invocation, kind }) => [invocation, kind])).toEqual([
-      ["/compact", "command"],
-      ["/context", "command"],
-      ["/deep-research", "command"],
-      ["/code-review", "skill"],
+      ["/compact", undefined],
+      ["/context", undefined],
+      ["/deep-research", undefined],
+      ["/skill-like-command", undefined],
     ]);
   });
 });

@@ -18,6 +18,37 @@ const projector = () =>
 
 describe("CodexTurnProjector failure recovery", () => {
   it.each([false, true])(
+    "rejects duplicate starts with Item identity and types (completed: %s)",
+    (completed) => {
+      const ui = projector();
+      const itemId = hostItemIdSchema.parse("tool-call");
+      const item = {
+        type: "toolExecution" as const,
+        itemId,
+        toolName: "Read",
+        arguments: { prompt: "private input" },
+      };
+      ui.project({ type: "turn.started", turnId });
+      ui.project({ type: "item.started", turnId, item });
+      if (completed)
+        ui.project({
+          type: "item.completed",
+          turnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        });
+      expect(() =>
+        ui.project({
+          type: "item.started",
+          turnId,
+          item: { type: "reasoning", itemId, text: "private reasoning" },
+        }),
+      ).toThrow(
+        "Host Item started more than once (tool-call: existing toolExecution, incoming reasoning)",
+      );
+    },
+  );
+
+  it.each([false, true])(
     "closes pending Questions and Items before failing (attached: %s)",
     (attached) => {
       const ui = projector();

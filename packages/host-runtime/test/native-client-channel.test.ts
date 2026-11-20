@@ -16,6 +16,12 @@ const thread: JsonObject = {
   turns: [],
 };
 
+const rolloutPath = "/synthetic/session with spaces/rollout-native-thread.jsonl";
+const emptyRolloutError = {
+  code: -32603,
+  message: `failed to read thread: thread-store internal error: failed to read session metadata ${rolloutPath}: rollout at ${rolloutPath} is empty`,
+};
+
 function snapshotChannel() {
   const events = new ClientChannelEvents();
   const calls: string[] = [];
@@ -147,6 +153,61 @@ it("normalizes only the initial turns page, not other methods or an older-page c
     await channel.request("thread/turns/list", { threadId: "native-thread", cursor: "older" }),
   ).toEqual(reply);
   expect(await channel.request("thread/read", { threadId: "native-thread" })).toEqual(reply);
+});
+
+it("waits for native session metadata instead of failing the first snapshot on an empty rollout", async () => {
+  const { channel, request } = snapshotChannel();
+  const implementation = request.getMockImplementation();
+  if (!implementation) throw new Error("Missing native fixture");
+  let reads = 0;
+  request.mockImplementation(async (method) => {
+    if (method === "thread/read" && ++reads === 1) return { error: emptyRolloutError };
+    return implementation(method);
+  });
+
+  const snapshot = await channel.snapshot("native-thread", {});
+  expect(snapshot.thread.id).toBe(thread.id);
+  expect(reads).toBe(2);
+  expect(request.mock.calls.map(([method]) => method)).toEqual([
+    "thread/resume",
+    "thread/read",
+    "thread/read",
+    "thread/turns/list",
+  ]);
+});
+
+it("bounds empty-rollout retries and preserves a persistent native read error", async () => {
+  const { channel, request } = snapshotChannel();
+  request.mockResolvedValue({ error: emptyRolloutError });
+  expect(await channel.request("thread/read", { threadId: "native-thread" })).toEqual({
+    error: emptyRolloutError,
+  });
+  expect(request).toHaveBeenCalledTimes(5);
+});
+
+it.each([
+  { ...emptyRolloutError, code: -32600 },
+  { code: -32603, message: "failed to read thread: permission denied" },
+  { code: -32093, message: "Timeout" },
+  {
+    code: -32603,
+    message: emptyRolloutError.message.replace("is empty", "has invalid session metadata"),
+  },
+])("does not retry unrelated native read errors: %j", async (error) => {
+  const { channel, request } = snapshotChannel();
+  request.mockResolvedValue({ error });
+  expect(await channel.request("thread/read", { threadId: "native-thread" })).toEqual({ error });
+  expect(request).toHaveBeenCalledTimes(1);
+});
+
+it("does not carry a pending metadata read retry into a new Host generation", async () => {
+  const { channel, request } = snapshotChannel();
+  request.mockResolvedValue({ error: emptyRolloutError });
+  const reading = channel.request("thread/read", { threadId: "native-thread" });
+  await Promise.resolve();
+  channel.resetGeneration();
+  expect(await reading).toMatchObject({ error: { code: -32094 } });
+  expect(request).toHaveBeenCalledTimes(1);
 });
 
 it("serves client inspection and snapshots from confirmed configuration without repeated resume", async () => {

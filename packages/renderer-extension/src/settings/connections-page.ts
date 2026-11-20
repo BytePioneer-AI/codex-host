@@ -7,23 +7,32 @@ import type {
 
 import {
   getSharedAgentGroupPreferenceStore,
+  type AgentGroupEntry,
   type AgentGroupPreferenceStore,
   type AgentGroupSection,
 } from "../agent-group-preference.js";
 import type { ExternalRendererAgent, RendererAgentAvailability } from "../agent-selection-state.js";
-import { createRendererAgentIcon, rendererAgentLabel } from "../renderer-agent-icon.js";
-import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
+import { rendererAgentLabel } from "../renderer-agent-icon.js";
 import type { RemoteConnectionsControl } from "../remote-connections-control.js";
+import type { RendererAdapterStatus } from "../versioned-renderer-adapter.js";
+import {
+  connectionStatusLabel,
+  connectionStatusTone,
+  createConnectionIdentityIcon,
+  createConnectionRowView,
+  reconcileElementChildren,
+  type ConnectionListItem,
+  type ConnectionRowGroupController,
+  type ConnectionRowView,
+} from "./connection-row.js";
+import { createConnectionUpdates } from "./connection-updates.js";
+import { createConnectionVersions } from "./connection-versions.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
-import { createRendererSettingsIcon } from "./icons.js";
-import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { harnessInstallStore } from "./harness-install-store.js";
 import { harnessHasInstallCommands } from "./harness-installation-guides.js";
 import { createHarnessInstallationPanel } from "./harness-installation-panel.js";
-import { harnessInstallStore } from "./harness-install-store.js";
-import { createConnectionVersions } from "./connection-versions.js";
-import { createConnectionUpdates } from "./connection-updates.js";
-import type { HarnessVersionPanel } from "./harness-version-panel.js";
-import { harnessVersionLabel } from "./harness-version-messages.js";
+import { createHarnessLaunchControls } from "./harness-launch-controls.js";
+import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export const CODEXHOST_GITHUB_ISSUES_NEW_URL =
@@ -66,54 +75,6 @@ export interface RendererConnectionDiagnostics {
     path: string | null,
   ): Promise<HarnessLaunchSettings>;
   subscribe(listener: () => void): () => void;
-}
-
-type ConnectionAvailability =
-  RendererAgentAvailability | RendererAdapterStatus["state"] | "updating";
-type ConnectionTone = "ready" | "checking" | "setup" | "failed";
-
-interface ConnectionListItem {
-  readonly key: string;
-  readonly name: string;
-  readonly availability: ConnectionAvailability;
-  readonly error: CodexhostError | null;
-  readonly agentSnapshot?: RendererConnectionAgentSnapshot;
-  readonly openWebUi?: () => Promise<void>;
-  readonly install?: () => void;
-  readonly installError?: string;
-  readonly version?: HarnessVersionPanel;
-}
-
-function connectionStatusLabel(
-  availability: ConnectionAvailability,
-  messages: RendererSettingsMessages,
-  hasError = false,
-): string {
-  if (availability === "updating") return messages.connectionStatusUpdating;
-  if (hasError && availability !== "notInstalled") return messages.connectionStatusError;
-  if (availability === "ready") return messages.connectionStatusReady;
-  if (availability === "checking") return messages.connectionStatusChecking;
-  if (availability === "notInstalled") return messages.connectionStatusNotInstalled;
-  if (availability === "unavailable" || availability === "error") {
-    return availability === "error"
-      ? messages.connectionStatusError
-      : messages.connectionStatusUnavailable;
-  }
-  return availability === "installing"
-    ? messages.connectionStatusInstalling
-    : messages.connectionStatusUnsupported;
-}
-
-function connectionStatusTone(
-  availability: ConnectionAvailability,
-  hasError = false,
-): ConnectionTone {
-  if (availability === "updating") return "checking";
-  if (hasError && availability !== "notInstalled") return "failed";
-  if (availability === "ready") return "ready";
-  if (availability === "checking" || availability === "installing") return "checking";
-  if (availability === "notInstalled") return "setup";
-  return "failed";
 }
 
 function diagnosticText(
@@ -209,7 +170,7 @@ function configureHostScroller(
   tabs: HTMLElement,
   left: HTMLButtonElement,
   right: HTMLButtonElement,
-): () => void {
+): { update(): void; dispose(): void } {
   const maxScrollLeft = (): number =>
     Math.max(0, (tabs.scrollWidth || 0) - (tabs.clientWidth || 0));
   const updateButtons = (): void => {
@@ -243,184 +204,21 @@ function configureHostScroller(
   tabs.addEventListener("wheel", onWheel, { passive: false });
   const ownerWindow = document.defaultView;
   ownerWindow?.addEventListener("resize", updateButtons);
-  ownerWindow?.setTimeout(updateButtons, 0);
-  updateButtons();
-  return () => {
-    left.removeEventListener("click", onLeft);
-    right.removeEventListener("click", onRight);
-    tabs.removeEventListener("scroll", updateButtons);
-    tabs.removeEventListener("wheel", onWheel);
-    ownerWindow?.removeEventListener("resize", updateButtons);
+  const refreshLayout = (): void => {
+    ownerWindow?.setTimeout(updateButtons, 0);
+    updateButtons();
   };
-}
-
-function createConnectionIdentityIcon(
-  document: Document,
-  item: ConnectionListItem,
-  size: number,
-): HTMLElement {
-  const container = document.createElement("span");
-  container.className = item.agentSnapshot
-    ? "settings-connection-row__mark settings-connection-row__mark--logo"
-    : "settings-connection-row__mark";
-  container.setAttribute("aria-hidden", "true");
-  if (item.agentSnapshot) {
-    container.append(
-      createRendererAgentIcon(item.agentSnapshot.agent, size, document, item.agentSnapshot.plugin),
-    );
-  } else {
-    container.textContent = "CH";
-  }
-  return container;
-}
-
-interface ConnectionRowGroupController {
-  readonly disabled: boolean;
-  readonly section: AgentGroupSection;
-  readonly moveLabel: string;
-  readonly dragHandleTitle: string;
-  toggleSection(): void;
-  onDragStart(event: DragEvent): void;
-  onDragOver(event: DragEvent): void;
-  onDragLeave(event: DragEvent): void;
-  onDrop(event: DragEvent): void;
-  onDragEnd(event: DragEvent): void;
-}
-
-function createConnectionRow(
-  document: Document,
-  item: ConnectionListItem,
-  messages: RendererSettingsMessages,
-  selected: boolean,
-  select: () => void,
-  group: ConnectionRowGroupController | null = null,
-): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "settings-connection-row";
-  row.dataset.connectionItem = item.key;
-  row.dataset.connectionSelected = String(selected);
-  row.tabIndex = selected ? 0 : -1;
-  row.setAttribute("role", "row");
-
-  const identity = document.createElement("div");
-  identity.className = "settings-connection-row__identity";
-  identity.setAttribute("role", "cell");
-  if (group) {
-    const handle = document.createElement("span");
-    handle.className = "settings-connection-row__handle";
-    handle.setAttribute("aria-hidden", "true");
-    handle.title = group.dragHandleTitle;
-    handle.append(createRendererSettingsIcon("grip-vertical", 15));
-    identity.append(handle);
-  }
-  const label = document.createElement("strong");
-  label.textContent = item.name;
-  identity.append(createConnectionIdentityIcon(document, item, 19), label);
-
-  const status = document.createElement("span");
-  status.className = "settings-connection-row__status";
-  status.dataset.connectionTone = connectionStatusTone(item.availability, item.error !== null);
-  status.setAttribute("role", "cell");
-  status.textContent =
-    item.error?.code === "authenticationRequired"
-      ? messages.connectionLoginRequired
-      : item.error?.code === "configurationRequired"
-        ? messages.connectionConfigurationRequired
-        : connectionStatusLabel(item.availability, messages, item.error !== null);
-
-  const version = item.version;
-  const action = document.createElement("div");
-  action.className = "settings-connection-row__action";
-  action.setAttribute("role", "cell");
-  if (item.agentSnapshot?.availability === "notInstalled" && item.install) {
-    const install = document.createElement("button");
-    install.type = "button";
-    install.className = "settings-connection-install-link";
-    install.addEventListener("click", (event) => {
-      event.stopPropagation();
-      select();
-      item.install?.();
-    });
-    install.disabled = item.availability === "installing" || item.availability === "checking";
-    const installLabel = messages.connectionInstall;
-    install.setAttribute("aria-label", `${installLabel}: ${item.name}`);
-    install.title = installLabel;
-    install.append(createRendererSettingsIcon("download", 17));
-    action.append(install);
-  } else if (item.error) {
-    const viewError = document.createElement("button");
-    viewError.type = "button";
-    viewError.className = "settings-connection-view-error";
-    viewError.textContent = messages.connectionViewError;
-    viewError.addEventListener("click", (event) => {
-      event.stopPropagation();
-      select();
-    });
-    action.append(viewError);
-  }
-  if (version?.state?.updateAvailable && !version.updating) {
-    const available = document.createElement("span");
-    available.className = "settings-connection-version-available";
-    available.textContent = messages.harnessVersionAvailable;
-    available.title = `${messages.harnessVersionCurrent}: ${version.state.currentVersion ?? "—"}\n${messages.harnessVersionLatest}: ${harnessVersionLabel(version.state, messages.harnessVersion)}`;
-    action.append(available);
-  }
-  if (version?.state?.updateAvailable && version.state.canUpdate) {
-    const update = document.createElement("button");
-    update.type = "button";
-    update.className = "settings-connection-install-link";
-    update.dataset.connectionAction = "update";
-    update.disabled = version.updating;
-    update.title = messages.harnessVersionUpdate;
-    update.setAttribute("aria-label", `${messages.harnessVersionUpdate}: ${item.name}`);
-    update.append(createRendererSettingsIcon("download", 17));
-    update.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (update.disabled) return;
-      void version.update();
-      select();
-    });
-    action.append(update);
-  }
-  if (group) {
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.disabled = group.disabled;
-    toggle.className = "settings-connection-row__group-toggle";
-    toggle.title = group.moveLabel;
-    toggle.setAttribute("aria-label", group.moveLabel);
-    toggle.append(
-      createRendererSettingsIcon(group.section === "main" ? "chevron-down" : "chevron-up", 15),
-    );
-    toggle.addEventListener("click", (event) => {
-      event.stopPropagation();
-      group.toggleSection();
-    });
-    action.append(toggle);
-  }
-
-  row.addEventListener("click", (event) => {
-    const target = event.target as Element | null;
-    if (target?.closest?.("a")) return;
-    select();
-  });
-  row.addEventListener("keydown", (event) => {
-    if ((event.target as Element | null)?.closest?.("button, a")) return;
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    select();
-  });
-  if (group) {
-    row.draggable = !group.disabled;
-    row.dataset.connectionGroupSection = group.section;
-    row.addEventListener("dragstart", group.onDragStart);
-    row.addEventListener("dragover", group.onDragOver);
-    row.addEventListener("dragleave", group.onDragLeave);
-    row.addEventListener("drop", group.onDrop);
-    row.addEventListener("dragend", group.onDragEnd);
-  }
-  row.append(identity, status, action);
-  return row;
+  refreshLayout();
+  return {
+    update: refreshLayout,
+    dispose() {
+      left.removeEventListener("click", onLeft);
+      right.removeEventListener("click", onRight);
+      tabs.removeEventListener("scroll", updateButtons);
+      tabs.removeEventListener("wheel", onWheel);
+      ownerWindow?.removeEventListener("resize", updateButtons);
+    },
+  };
 }
 
 function createInspectorHeader(
@@ -462,6 +260,41 @@ function createInspectorHeader(
           : connectionStatusLabel(item.availability, messages, item.error !== null);
   header.append(identity, status);
   return header;
+}
+
+function inspectorRenderSignature(
+  hostId: string,
+  item: ConnectionListItem,
+  messages: RendererSettingsMessages,
+  diagnostics: RendererConnectionDiagnostics | null,
+): string {
+  const plugin = item.agentSnapshot?.plugin as
+    | (HarnessPluginDescriptor & { icon?: unknown; iconStyle?: unknown; installation?: unknown })
+    | undefined;
+  const notice = plugin?.notice ? (plugin.notice[messages.locale] ?? plugin.notice.en) : "";
+  const websiteUrl = plugin?.links?.website ?? plugin?.links?.documentation ?? "";
+  const hasLaunchControls =
+    hostId === "local" &&
+    Boolean(item.agentSnapshot?.agent) &&
+    Boolean(plugin?.launchCommand) &&
+    Boolean(diagnostics?.getLaunchSettings && diagnostics?.setLaunchSettings);
+  return JSON.stringify([
+    hostId,
+    item.key,
+    item.name,
+    item.availability,
+    item.agentSnapshot?.availability ?? null,
+    String(plugin?.icon ?? ""),
+    String(plugin?.iconStyle ?? ""),
+    websiteUrl,
+    notice,
+    item.installError ?? "",
+    Boolean(item.install),
+    plugin?.installation ?? null,
+    Boolean(item.openWebUi),
+    hasLaunchControls,
+    item.error ? diagnosticText(hostId, item) : "",
+  ]);
 }
 
 function renderConnectionInspector(
@@ -688,15 +521,10 @@ export function requestConnectionsPageFocus(agentKey: string): void {
   pendingFocusAgent = agentKey;
 }
 
-function createGroupDivider(
-  document: Document,
-  messages: RendererSettingsMessages,
-  count: number,
-): HTMLElement {
+function createGroupDivider(document: Document): HTMLElement {
   const divider = document.createElement("div");
   divider.className = "settings-connection-group-divider";
   divider.setAttribute("role", "presentation");
-  divider.textContent = `${messages.connectionGroupMoreLabel} (${count})`;
   return divider;
 }
 
@@ -762,19 +590,22 @@ export function createConnectionsSettingsPage(
 
       let pending = false;
       let selectedHostId: string | null = null;
+      let renderedHostId: string | null = null;
       let selectedItemKey: string | null = null;
       // Background availability updates must not discard a path draft or an in-flight save.
       let launchControls: { hostId: string; itemKey: string; element: HTMLElement | null } | null =
         null;
+      let renderedInspector: { signature: string; versionElement: HTMLElement | null } | null =
+        null;
       const hostNames = new Map<string, string>();
+      const knownNotInstalled = new Map<string, boolean>();
       let latestSnapshot: RendererConnectionSnapshot | null = null;
-      let disposeHostScroller = (): void => undefined;
       let disposed = false;
       let renderQueued = false;
       let renderFrame: number | null = null;
 
       // Inspections arrive per Harness. Render their latest state once per
-      // frame rather than rebuilding every row for each notification.
+      // frame rather than updating rows on every notification.
       const scheduleRender = (): void => {
         if (disposed || context.signal.aborted || renderQueued) return;
         renderQueued = true;
@@ -806,7 +637,111 @@ export function createConnectionsSettingsPage(
         scheduleRender,
       );
       const installs = diagnostics ? harnessInstallStore(diagnostics) : null;
-      const updates = createConnectionUpdates(document, messages, context.signal, scheduleRender);
+      const updates = createConnectionUpdates(
+        document,
+        messages,
+        context.signal,
+        scheduleRender,
+        diagnostics,
+      );
+
+      const panelId = "codexhost-settings-connection-host-panel";
+      const empty = document.createElement("div");
+      empty.className = "settings-empty";
+      empty.textContent = messages.connectionNoRuntime;
+
+      const layout = document.createElement("div");
+      layout.className = "settings-connections-layout";
+      const list = document.createElement("section");
+      list.className = "settings-connection-list";
+      const hostStrip = document.createElement("div");
+      hostStrip.className = "settings-connection-host-strip";
+      const scrollLeft = createHostScrollButton(document, "left", messages);
+      const tabs = document.createElement("div");
+      tabs.className = "settings-connection-host-tabs";
+      tabs.setAttribute("role", "tablist");
+      tabs.setAttribute("aria-label", messages.connectionHosts);
+      const scrollRight = createHostScrollButton(document, "right", messages);
+      hostStrip.append(scrollLeft, tabs, scrollRight);
+
+      const updateControls = updates.createControls("local", []);
+      const hostHeader = document.createElement("div");
+      hostHeader.className = "settings-connection-host-header";
+      hostHeader.append(hostStrip, updateControls.button);
+
+      const tableHeader = document.createElement("div");
+      tableHeader.className = "settings-connection-table-header";
+      tableHeader.setAttribute("role", "row");
+      const componentHeading = document.createElement("span");
+      componentHeading.textContent = messages.connectionComponent;
+      componentHeading.setAttribute("role", "columnheader");
+      const statusHeading = document.createElement("span");
+      statusHeading.textContent = messages.connectionStatus;
+      statusHeading.setAttribute("role", "columnheader");
+      const actionHeading = document.createElement("span");
+      actionHeading.setAttribute("aria-hidden", "true");
+      tableHeader.append(componentHeading, statusHeading, actionHeading);
+
+      const rows = document.createElement("div");
+      rows.className = "settings-connection-rows";
+      rows.id = panelId;
+      rows.setAttribute("role", "rowgroup");
+      list.append(hostHeader, updateControls.result, tableHeader, rows);
+
+      const inspector = document.createElement("aside");
+      inspector.className = "settings-connection-inspector";
+      inspector.setAttribute("aria-live", "polite");
+      layout.append(list, inspector);
+
+      const hostScroller = configureHostScroller(
+        document,
+        hostStrip,
+        tabs,
+        scrollLeft,
+        scrollRight,
+      );
+      const hostTabElements = new Map<string, HTMLButtonElement>();
+      const hostRowViews = new Map<string, Map<string, ConnectionRowView>>();
+
+      const groupDivider = createGroupDivider(document);
+      const moreHint = createGroupMoreHint(document, messages);
+      const moreZone = document.createElement("div");
+      moreZone.className = "settings-connection-group-more";
+      moreZone.setAttribute("role", "presentation");
+      const resetButton = createGroupResetButton(document, messages, () => {
+        groupPreference.resetToDefault();
+      });
+
+      let draggingAgent: ExternalRendererAgent | null = null;
+      let currentCatalog: { id: string; name: string }[] = [];
+      let currentMainEntries: readonly AgentGroupEntry[] = [];
+      let currentMoreEntries: readonly AgentGroupEntry[] = [];
+      let currentHostRows = new Map<string, ConnectionRowView>();
+
+      const clearDropIndicators = (): void => {
+        for (const view of currentHostRows.values()) {
+          view.element.dataset.connectionDropIndicator = "";
+        }
+        moreZone.dataset.connectionDragOver = "false";
+      };
+
+      moreZone.addEventListener("dragover", (event) => {
+        if (!draggingAgent) return;
+        event.preventDefault();
+        moreZone.dataset.connectionDragOver = "true";
+      });
+      moreZone.addEventListener("dragleave", () => {
+        moreZone.dataset.connectionDragOver = "false";
+      });
+      moreZone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        moreZone.dataset.connectionDragOver = "false";
+        if (!draggingAgent) return;
+        groupPreference.moveAgent(draggingAgent, "more", null, currentCatalog);
+        draggingAgent = null;
+        clearDropIndicators();
+      });
+
       const runRefresh = (): void => {
         if (pending || !diagnostics) return;
         pending = true;
@@ -819,6 +754,7 @@ export function createConnectionsSettingsPage(
           success() {
             installs?.clearErrors();
             pending = false;
+            renderedInspector = null;
             refresh.disabled = false;
             refresh.replaceChildren(
               createRendererSettingsIcon("diagnose", 16),
@@ -828,6 +764,7 @@ export function createConnectionsSettingsPage(
           },
           failure(error) {
             pending = false;
+            renderedInspector = null;
             refresh.disabled = false;
             refresh.replaceChildren(
               createRendererSettingsIcon("diagnose", 16),
@@ -854,6 +791,35 @@ export function createConnectionsSettingsPage(
         });
       };
 
+      const syncSelectedInspector = (hostId: string, item: ConnectionListItem): void => {
+        const currentDiagnostics = getDiagnostics();
+        const signature = inspectorRenderSignature(hostId, item, messages, currentDiagnostics);
+        const versionElement = item.version?.element ?? null;
+        if (
+          renderedInspector?.signature === signature &&
+          renderedInspector.versionElement === versionElement
+        ) {
+          return;
+        }
+        const existing =
+          launchControls?.hostId === hostId && launchControls.itemKey === item.key
+            ? launchControls.element
+            : null;
+        const element = renderConnectionInspector(
+          document,
+          inspector,
+          item,
+          hostId,
+          messages,
+          currentDiagnostics,
+          existing,
+          runRefresh,
+        );
+        launchControls = { hostId, itemKey: item.key, element };
+        if (versionElement) inspector.append(versionElement);
+        renderedInspector = { signature, versionElement };
+      };
+
       const render = (snapshot: RendererConnectionSnapshot | null): void => {
         const syncStatus = groupPreference.syncStatus();
         const groupDisabled = syncStatus === "loading" || syncStatus === "saving";
@@ -865,15 +831,10 @@ export function createConnectionsSettingsPage(
               ? messages.connectionGroupSaving
               : messages.connectionGroupLoading;
         latestSnapshot = snapshot;
-        disposeHostScroller();
-        disposeHostScroller = () => undefined;
-        // Build the replacement off-DOM so installation status updates never
-        // temporarily collapse the page and clamp its scroll position.
         if (!snapshot) {
-          const empty = document.createElement("div");
-          empty.className = "settings-empty";
-          empty.textContent = messages.connectionNoRuntime;
-          content.replaceChildren(empty);
+          renderedHostId = null;
+          renderedInspector = null;
+          reconcileElementChildren(content, [empty]);
           return;
         }
         const selectedHost =
@@ -886,86 +847,83 @@ export function createConnectionsSettingsPage(
         if (!selectedHost) return;
         selectedHostId = selectedHost.hostId;
 
-        const layout = document.createElement("div");
-        layout.className = "settings-connections-layout";
-        const list = document.createElement("section");
-        list.className = "settings-connection-list";
-        const hostStrip = document.createElement("div");
-        hostStrip.className = "settings-connection-host-strip";
-        const scrollLeft = createHostScrollButton(document, "left", messages);
-        const tabs = document.createElement("div");
-        tabs.className = "settings-connection-host-tabs";
-        tabs.setAttribute("role", "tablist");
-        tabs.setAttribute("aria-label", messages.connectionHosts);
-        const scrollRight = createHostScrollButton(document, "right", messages);
-        const panelId = "codexhost-settings-connection-host-panel";
+        const layoutFirstMount = content.children[0] !== layout;
+        reconcileElementChildren(content, [layout]);
 
-        snapshot.hosts.forEach((host, index) => {
-          const tab = document.createElement("button");
-          tab.type = "button";
-          tab.className = "settings-connection-host-tab";
-          tab.dataset.connectionHostTab = host.hostId;
-          tab.dataset.connectionHostActive = String(host.active);
-          tab.setAttribute("role", "tab");
-          tab.setAttribute("aria-controls", panelId);
-          tab.setAttribute("aria-selected", String(host.hostId === selectedHost.hostId));
-          tab.tabIndex = host.hostId === selectedHost.hostId ? 0 : -1;
+        let tabsChanged = tabs.children.length !== snapshot.hosts.length;
+        const nextTabs = snapshot.hosts.map((host) => {
+          let tab = hostTabElements.get(host.hostId);
+          if (!tab) {
+            tab = document.createElement("button");
+            tab.type = "button";
+            tab.className = "settings-connection-host-tab";
+            tab.dataset.connectionHostTab = host.hostId;
+            tab.setAttribute("role", "tab");
+            tab.setAttribute("aria-controls", panelId);
+            tab.addEventListener("click", () => {
+              selectedHostId = host.hostId;
+              render(latestSnapshot);
+            });
+            tab.addEventListener("keydown", (event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const hosts = latestSnapshot?.hosts ?? [];
+              const index = hosts.findIndex((candidate) => candidate.hostId === host.hostId);
+              if (index < 0) return;
+              const direction = event.key === "ArrowRight" ? 1 : -1;
+              const next = hosts[(index + direction + hosts.length) % hosts.length];
+              if (!next) return;
+              selectedHostId = next.hostId;
+              render(latestSnapshot);
+              hostTabElements.get(next.hostId)?.focus();
+            });
+            hostTabElements.set(host.hostId, tab);
+            tabsChanged = true;
+          }
+          const isSelected = host.hostId === selectedHost.hostId;
+          const activeValue = String(host.active);
+          if (tab.dataset.connectionHostActive !== activeValue) {
+            tab.dataset.connectionHostActive = activeValue;
+          }
+          const selectedValue = String(isSelected);
+          if (tab.getAttribute("aria-selected") !== selectedValue) {
+            tab.setAttribute("aria-selected", selectedValue);
+          }
+          const nextTabIndex = isSelected ? 0 : -1;
+          if (tab.tabIndex !== nextTabIndex) {
+            tab.tabIndex = nextTabIndex;
+          }
           const hostName = hostNames.get(host.hostId) || connectionHostName(host.hostId, messages);
-          tab.textContent = hostName;
-          tab.title = host.active ? `${hostName} · ${messages.connectionActiveHost}` : hostName;
-          tab.addEventListener("click", () => {
-            selectedHostId = host.hostId;
-            render(latestSnapshot);
-          });
-          tab.addEventListener("keydown", (event) => {
-            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-            event.preventDefault();
-            const direction = event.key === "ArrowRight" ? 1 : -1;
-            const next =
-              snapshot.hosts[(index + direction + snapshot.hosts.length) % snapshot.hosts.length];
-            if (!next) return;
-            selectedHostId = next.hostId;
-            render(latestSnapshot);
-            const nextTab = [
-              ...content.querySelectorAll<HTMLButtonElement>("[data-connection-host-tab]"),
-            ].find((candidate) => candidate.dataset.connectionHostTab === next.hostId);
-            nextTab?.focus();
-          });
-          tabs.append(tab);
+          if (tab.textContent !== hostName) {
+            tab.textContent = hostName;
+            tabsChanged = true;
+          }
+          const tabTitle = host.active
+            ? `${hostName} · ${messages.connectionActiveHost}`
+            : hostName;
+          if (tab.title !== tabTitle) {
+            tab.title = tabTitle;
+          }
+          return tab;
         });
-        hostStrip.append(scrollLeft, tabs, scrollRight);
+        reconcileElementChildren(tabs, nextTabs);
 
-        const tableHeader = document.createElement("div");
-        tableHeader.className = "settings-connection-table-header";
-        tableHeader.setAttribute("role", "row");
-        const componentHeading = document.createElement("span");
-        componentHeading.textContent = messages.connectionComponent;
-        componentHeading.setAttribute("role", "columnheader");
-        const statusHeading = document.createElement("span");
-        statusHeading.textContent = messages.connectionStatus;
-        statusHeading.setAttribute("role", "columnheader");
-        const actionHeading = document.createElement("span");
-        actionHeading.setAttribute("aria-hidden", "true");
-        tableHeader.append(componentHeading, statusHeading, actionHeading);
+        if (rows.dataset.connectionHost !== selectedHost.hostId) {
+          rows.dataset.connectionHost = selectedHost.hostId;
+        }
 
-        const rows = document.createElement("div");
-        rows.className = "settings-connection-rows";
-        rows.id = panelId;
-        rows.dataset.connectionHost = selectedHost.hostId;
-        rows.setAttribute("role", "rowgroup");
-        const inspector = document.createElement("aside");
-        inspector.className = "settings-connection-inspector";
-        inspector.setAttribute("aria-live", "polite");
         const items = connectionItems(snapshot, selectedHost, messages, diagnostics).map(
           (item): ConnectionListItem => {
             const agent = item.agentSnapshot?.agent;
             if (!agent) return item;
             const state = installs?.get(selectedHost.hostId, agent);
             const availability = state?.status ?? item.availability;
+            const updating = versions.isUpdating(selectedHost.hostId, agent);
             const version =
-              item.agentSnapshot?.availability !== "notInstalled" &&
-              availability !== "installing" &&
-              availability !== "checking"
+              updating ||
+              (item.agentSnapshot?.availability !== "notInstalled" &&
+                availability !== "installing" &&
+                availability !== "checking")
                 ? versions.get(selectedHost.hostId, agent)
                 : undefined;
             return {
@@ -997,87 +955,92 @@ export function createConnectionsSettingsPage(
             items[0]?.key ??
             null;
         }
-        const rowElements = new Map<string, HTMLElement>();
+
+        let hostRows = hostRowViews.get(selectedHost.hostId);
+        if (!hostRows) {
+          hostRows = new Map();
+          hostRowViews.set(selectedHost.hostId, hostRows);
+        }
+        currentHostRows = hostRows;
+
         const selectItem = (item: ConnectionListItem): void => {
           selectedItemKey = item.key;
-          for (const [key, row] of rowElements) {
-            const selected = key === item.key;
-            row.dataset.connectionSelected = String(selected);
-            row.tabIndex = selected ? 0 : -1;
+          for (const [key, view] of currentHostRows) {
+            view.setSelected(key === item.key);
           }
-          const existing =
-            launchControls?.hostId === selectedHost.hostId && launchControls.itemKey === item.key
-              ? launchControls.element
-              : null;
-          const element = renderConnectionInspector(
-            document,
-            inspector,
-            item,
-            selectedHost.hostId,
-            messages,
-            getDiagnostics(),
-            existing,
-            runRefresh,
-          );
-          launchControls = { hostId: selectedHost.hostId, itemKey: item.key, element };
-          if (item.version) inspector.append(item.version.element);
+          syncSelectedInspector(selectedHost.hostId, item);
         };
 
-        const pinnedItem = items.find((item) => item.key === "renderer-adapter");
-        if (pinnedItem) {
-          const row = createConnectionRow(
-            document,
+        const ensureRowView = (key: string, groupable: boolean): ConnectionRowView => {
+          let view = hostRows.get(key);
+          if (!view) {
+            view = createConnectionRowView(document, messages, groupable);
+            hostRows.set(key, view);
+          }
+          return view;
+        };
+
+        const activeKeys = new Set<string>();
+        const nextRowChildren: HTMLElement[] = [];
+
+        const pinnedItems = items.filter((item) => item.agentSnapshot === undefined);
+        for (const pinnedItem of pinnedItems) {
+          activeKeys.add(pinnedItem.key);
+          const view = ensureRowView(pinnedItem.key, false);
+          view.update(
             pinnedItem,
-            messages,
             pinnedItem.key === selectedItemKey,
             () => selectItem(pinnedItem),
+            null,
           );
-          rowElements.set(pinnedItem.key, row);
-          rows.append(row);
+          nextRowChildren.push(view.element);
         }
 
         // Only real, switchable external Agents participate in the
-        // Main / More grouping — the Renderer adapter above stays pinned.
+        // Main / More grouping — pinned entries above stay at the top.
         const groupableItems = items.filter(
           (item): item is ConnectionListItem & { agentSnapshot: RendererConnectionAgentSnapshot } =>
             item.agentSnapshot !== undefined,
         );
         const agentByKey = new Map(groupableItems.map((item) => [item.key, item]));
-        const catalog = groupableItems.map((item) => ({ id: item.key, name: item.name }));
+        currentCatalog = groupableItems.map((item) => ({ id: item.key, name: item.name }));
+
+        // Preserve each Harness's last settled installation state while a refresh
+        // temporarily reports "checking", avoiding Main <-> More layout jumps.
+        const notInstalledAgents = new Set<ExternalRendererAgent>();
+        for (const item of groupableItems) {
+          const agent = item.agentSnapshot.agent;
+          const stateKey = `${selectedHost.hostId}:${agent}`;
+          if (item.agentSnapshot.availability !== "checking") {
+            knownNotInstalled.set(stateKey, item.agentSnapshot.availability === "notInstalled");
+          }
+          const isNotInstalled =
+            item.agentSnapshot.availability === "checking"
+              ? (knownNotInstalled.get(stateKey) ?? false)
+              : item.agentSnapshot.availability === "notInstalled";
+          if (isNotInstalled) notInstalledAgents.add(agent);
+        }
+
         const preferenceOrder = groupPreference
-          .list(
-            new Set(
-              groupableItems
-                .filter((item) => item.agentSnapshot.availability === "notInstalled")
-                .map((item) => item.agentSnapshot.agent),
-            ),
-            catalog,
-          )
+          .list(notInstalledAgents, currentCatalog)
           .filter((entry) => agentByKey.has(entry.agent));
-        const mainEntries = preferenceOrder.filter((entry) => entry.section === "main");
-        const moreEntries = preferenceOrder.filter((entry) => entry.section === "more");
+        currentMainEntries = preferenceOrder.filter((entry) => entry.section === "main");
+        currentMoreEntries = preferenceOrder.filter((entry) => entry.section === "more");
+
         const nextInSection = (
           section: AgentGroupSection,
           agent: ExternalRendererAgent,
         ): ExternalRendererAgent | null => {
-          const list = section === "main" ? mainEntries : moreEntries;
-          const index = list.findIndex((entry) => entry.agent === agent);
-          return index >= 0 ? (list[index + 1]?.agent ?? null) : null;
+          const sectionEntries = section === "main" ? currentMainEntries : currentMoreEntries;
+          const index = sectionEntries.findIndex((entry) => entry.agent === agent);
+          return index >= 0 ? (sectionEntries[index + 1]?.agent ?? null) : null;
         };
 
-        let draggingAgent: ExternalRendererAgent | null = null;
-        // Assigned below only when there is at least one groupable Agent to
-        // show a More zone for; guarded everywhere it's read.
-        let moreZone: HTMLElement | null = null;
-        const clearDropIndicators = (): void => {
-          for (const row of rowElements.values()) row.dataset.connectionDropIndicator = "";
-          if (moreZone) moreZone.dataset.connectionDragOver = "false";
-        };
         const dropTargetSection = (
           agent: ExternalRendererAgent,
           event: DragEvent,
         ): { before: boolean; beforeAgent: ExternalRendererAgent | null } => {
-          const row = rowElements.get(agent);
+          const row = currentHostRows.get(agent)?.element;
           const rect =
             row && typeof row.getBoundingClientRect === "function"
               ? row.getBoundingClientRect()
@@ -1086,6 +1049,7 @@ export function createConnectionsSettingsPage(
           const section = (row?.dataset.connectionGroupSection ?? "main") as AgentGroupSection;
           return { before, beforeAgent: before ? agent : nextInSection(section, agent) };
         };
+
         const createGroupController = (
           agent: ExternalRendererAgent,
           section: AgentGroupSection,
@@ -1098,7 +1062,12 @@ export function createConnectionsSettingsPage(
               : messages.connectionGroupMoveToMain,
           dragHandleTitle: messages.connectionGroupDragHandle,
           toggleSection() {
-            groupPreference.moveAgent(agent, section === "main" ? "more" : "main", null, catalog);
+            groupPreference.moveAgent(
+              agent,
+              section === "main" ? "more" : "main",
+              null,
+              currentCatalog,
+            );
           },
           onDragStart(event) {
             if (groupDisabled) {
@@ -1108,134 +1077,117 @@ export function createConnectionsSettingsPage(
             draggingAgent = agent;
             event.dataTransfer?.setData("text/plain", agent);
             if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-            const row = rowElements.get(agent);
+            const row = currentHostRows.get(agent)?.element;
             if (row) row.dataset.connectionDragging = "true";
           },
           onDragOver(event) {
             if (!draggingAgent || draggingAgent === agent) return;
             event.preventDefault();
-            const row = rowElements.get(agent);
+            const row = currentHostRows.get(agent)?.element;
             if (!row) return;
             const { before } = dropTargetSection(agent, event);
             clearDropIndicators();
             row.dataset.connectionDropIndicator = before ? "before" : "after";
           },
           onDragLeave() {
-            const row = rowElements.get(agent);
+            const row = currentHostRows.get(agent)?.element;
             if (row) row.dataset.connectionDropIndicator = "";
           },
           onDrop(event) {
             event.preventDefault();
             if (!draggingAgent) return;
             const { beforeAgent } = dropTargetSection(agent, event);
-            groupPreference.moveAgent(draggingAgent, section, beforeAgent, catalog);
+            groupPreference.moveAgent(draggingAgent, section, beforeAgent, currentCatalog);
             draggingAgent = null;
             clearDropIndicators();
           },
           onDragEnd() {
             draggingAgent = null;
-            const row = rowElements.get(agent);
+            const row = currentHostRows.get(agent)?.element;
             if (row) row.dataset.connectionDragging = "false";
             clearDropIndicators();
+            scheduleRender();
           },
         });
 
-        const appendGroupRow = (agent: ExternalRendererAgent, section: AgentGroupSection): void => {
-          const item = agentByKey.get(agent);
-          if (!item) return;
-          const row = createConnectionRow(
-            document,
+        for (const entry of currentMainEntries) {
+          const item = agentByKey.get(entry.agent);
+          if (!item) continue;
+          activeKeys.add(item.key);
+          const view = ensureRowView(item.key, true);
+          view.update(
             item,
-            messages,
             item.key === selectedItemKey,
             () => selectItem(item),
-            createGroupController(agent, section),
+            createGroupController(entry.agent, "main"),
           );
-          rowElements.set(item.key, row);
-          rows.append(row);
-        };
-
-        for (const entry of mainEntries) appendGroupRow(entry.agent, "main");
+          nextRowChildren.push(view.element);
+        }
 
         if (groupableItems.length > 0) {
-          rows.append(createGroupDivider(document, messages, moreEntries.length));
-          const zone = document.createElement("div");
-          moreZone = zone;
-          zone.className = "settings-connection-group-more";
-          zone.setAttribute("role", "presentation");
-          zone.addEventListener("dragover", (event) => {
-            if (!draggingAgent) return;
-            event.preventDefault();
-            zone.dataset.connectionDragOver = "true";
-          });
-          zone.addEventListener("dragleave", () => {
-            zone.dataset.connectionDragOver = "false";
-          });
-          zone.addEventListener("drop", (event) => {
-            event.preventDefault();
-            zone.dataset.connectionDragOver = "false";
-            if (!draggingAgent) return;
-            groupPreference.moveAgent(draggingAgent, "more", null, catalog);
-            draggingAgent = null;
-            clearDropIndicators();
-          });
-          if (moreEntries.length === 0) {
-            zone.append(createGroupMoreHint(document, messages));
+          const dividerText = `${messages.connectionGroupMoreLabel} (${currentMoreEntries.length})`;
+          if (groupDivider.textContent !== dividerText) {
+            groupDivider.textContent = dividerText;
+          }
+          nextRowChildren.push(groupDivider);
+
+          const nextMoreChildren: HTMLElement[] = [];
+          if (currentMoreEntries.length === 0) {
+            nextMoreChildren.push(moreHint);
           } else {
-            for (const entry of moreEntries) {
+            for (const entry of currentMoreEntries) {
               const item = agentByKey.get(entry.agent);
               if (!item) continue;
-              const row = createConnectionRow(
-                document,
+              activeKeys.add(item.key);
+              const view = ensureRowView(item.key, true);
+              view.update(
                 item,
-                messages,
                 item.key === selectedItemKey,
                 () => selectItem(item),
                 createGroupController(entry.agent, "more"),
               );
-              rowElements.set(item.key, row);
-              zone.append(row);
+              nextMoreChildren.push(view.element);
             }
           }
-          rows.append(zone);
+          if (!draggingAgent || renderedHostId !== selectedHost.hostId) {
+            reconcileElementChildren(moreZone, nextMoreChildren);
+          }
+          nextRowChildren.push(moreZone);
 
-          const reset = createGroupResetButton(document, messages, () => {
-            groupPreference.resetToDefault();
-          });
-          reset.disabled = groupDisabled;
-          rows.append(reset);
+          resetButton.disabled = groupDisabled;
+          nextRowChildren.push(resetButton);
+        }
+
+        for (const key of hostRows.keys()) {
+          if (!activeKeys.has(key)) hostRows.delete(key);
+        }
+        if (!draggingAgent || renderedHostId !== selectedHost.hostId) {
+          reconcileElementChildren(rows, nextRowChildren);
         }
 
         const selectedItem = items.find((item) => item.key === selectedItemKey) ?? items[0];
         if (selectedItem) selectItem(selectedItem);
-        const updateControls = updates.createControls(
+
+        updateControls.update(
           selectedHost.hostId,
           items.flatMap((item) => (item.version ? [item.version] : [])),
         );
-        const hostHeader = document.createElement("div");
-        hostHeader.className = "settings-connection-host-header";
-        hostHeader.append(hostStrip, updateControls.button);
-        list.append(hostHeader, updateControls.result, tableHeader, rows);
-        layout.append(list, inspector);
-        content.replaceChildren(layout);
-        disposeHostScroller = configureHostScroller(
-          document,
-          hostStrip,
-          tabs,
-          scrollLeft,
-          scrollRight,
-        );
-        // Only move the horizontal Host strip; scrollIntoView also scrolls
-        // ancestor containers and pulls the page back to the top on every update.
-        const selectedTab = [...tabs.children].find(
-          (child) => child.getAttribute("aria-selected") === "true",
-        ) as HTMLElement | undefined;
-        if (selectedTab) {
-          const left = selectedTab.offsetLeft;
-          const right = left + selectedTab.offsetWidth;
-          if (left < tabs.scrollLeft) tabs.scrollLeft = left;
-          else if (right > tabs.scrollLeft + tabs.clientWidth) {
-            tabs.scrollLeft = right - tabs.clientWidth;
+
+        if (layoutFirstMount || tabsChanged) {
+          hostScroller.update();
+        }
+        if (renderedHostId !== selectedHost.hostId) {
+          renderedHostId = selectedHost.hostId;
+          // Only move the horizontal Host strip when the selected Host changes;
+          // scrollIntoView also scrolls ancestor containers and pulls the page to the top.
+          const selectedTab = hostTabElements.get(selectedHost.hostId);
+          if (selectedTab) {
+            const left = selectedTab.offsetLeft;
+            const right = left + selectedTab.offsetWidth;
+            if (left < tabs.scrollLeft) tabs.scrollLeft = left;
+            else if (right > tabs.scrollLeft + tabs.clientWidth) {
+              tabs.scrollLeft = right - tabs.clientWidth;
+            }
           }
         }
       };
@@ -1262,7 +1214,7 @@ export function createConnectionsSettingsPage(
         refresh.disabled = true;
         return () => {
           cancelRender();
-          disposeHostScroller();
+          hostScroller.dispose();
           unsubscribeGroup();
         };
       }
@@ -1271,7 +1223,7 @@ export function createConnectionsSettingsPage(
       const unsubscribeInstalls = installs?.subscribe(scheduleRender);
       return () => {
         cancelRender();
-        disposeHostScroller();
+        hostScroller.dispose();
         unsubscribeInstalls?.();
         unsubscribe();
         unsubscribeGroup();

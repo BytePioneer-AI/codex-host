@@ -6308,6 +6308,40 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "turn.autonomous.completed") {
+      if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+        await this.#notifyExternalThreadStarted(thread.thread);
+      }
+      const turn = await this.#externalRuntime.appendAutonomousTurn(thread, event.snapshot);
+      if (!turn) {
+        // A concurrent native-history read may already have installed this Turn.
+        this.clientEvents.changed(thread.id, "turn/completed");
+        return;
+      }
+      const threadId = thread.id;
+      const turnId = hostTurnIdSchema.parse(turn.id);
+      const items = Array.isArray(turn.items) ? turn.items : [];
+      await this.#writer.json({
+        method: "turn/started",
+        params: {
+          threadId,
+          turn: {
+            ...turn,
+            items: items.filter((item) => isRecord(item) && item.type === "userMessage"),
+            status: "inProgress",
+            completedAt: null,
+            durationMs: null,
+          },
+        },
+      });
+      for (const item of items) {
+        if (isRecord(item) && item.type === "userMessage") continue;
+        await this.#writer.json({ method: "item/started", params: { threadId, turnId, item } });
+        await this.#writer.json({ method: "item/completed", params: { threadId, turnId, item } });
+      }
+      await this.#writer.json({ method: "turn/completed", params: { threadId, turn } });
+      return;
+    }
     if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
       event = {

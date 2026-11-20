@@ -1027,4 +1027,131 @@ describe("Host runtime idle background output on a completed Turn", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("appends a committed autonomous Turn without touching the previous final answer", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      await completePiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const [before] = await readHistoryTurns(fixture, threadId, 3);
+      const [first] = session.persistedSnapshot().turns;
+      if (!first) throw new Error("Missing persisted user Turn");
+      const wake = {
+        nativeTurnRef: { ...first.nativeTurnRef, nativeTurnKey: "wake-12" },
+        input: [],
+        items: [
+          {
+            item: {
+              type: "subagentDelegation" as const,
+              itemId: hostItemIdSchema.parse("wake-child"),
+              operation: "spawn" as const,
+              subagents: [
+                {
+                  subagentId: "native-wake-child",
+                  nativeSubagentId: "native-wake-child",
+                  description: "Check timer",
+                  background: false,
+                  status: "completed" as const,
+                },
+              ],
+            },
+            outcome: { status: "succeeded" as const },
+          },
+          {
+            item: {
+              type: "agentMessage" as const,
+              itemId: hostItemIdSchema.parse("wake-reply"),
+              text: "Timer expired",
+            },
+            outcome: { status: "succeeded" as const },
+          },
+        ],
+        outcome: { status: "unknown" as const, reason: "Native stop reason is not recorded" },
+      };
+      const originalRead = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        const result = await originalRead();
+        if (result.ok) result.value.turns.splice(1, 0, wake);
+        return result;
+      };
+      session.emitEvent({ type: "turn.autonomous.completed", snapshot: wake });
+      const item = await fixture.collector.waitFor((message) =>
+        itemCompleted(message, "wake-reply"),
+      );
+      const id = (item.params as { turnId: string }).turnId;
+      const live = await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", id),
+      );
+      const projected = (live.params as { turn: JsonObject }).turn;
+      expect(projected.items).toMatchObject([
+        {
+          id: "wake-child",
+          type: "collabAgentToolCall",
+          senderThreadId: threadId,
+          receiverThreadIds: [expect.stringMatching(/^[\da-f-]{36}$/u)],
+        },
+        { id: "wake-reply", type: "agentMessage", text: "Timer expired", phase: "final_answer" },
+      ]);
+      // A read before a duplicate notification already knows this native Turn.
+      expect(await readHistoryTurns(fixture, threadId, 4)).toEqual([before, projected]);
+      session.emitEvent({ type: "turn.autonomous.completed", snapshot: wake });
+      await completePiTurn(fixture, threadId, 5);
+      expect((await readHistoryTurns(fixture, threadId, 6)).slice(0, 2)).toEqual([
+        before,
+        projected,
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps the earlier final_answer when a detached idle message settles", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+
+      const beforeItems = await readHistoryItems(fixture, threadId, 3);
+      const initialAnswer = beforeItems.find((item) => item.type === "agentMessage");
+      expect(initialAnswer).toMatchObject({ phase: "final_answer" });
+
+      const bgId = hostItemIdSchema.parse("bg-final-reply");
+      session.emitEvent({
+        type: "item.background.started",
+        turnId,
+        item: { type: "agentMessage", itemId: bgId, text: "" },
+      });
+      session.emitEvent({
+        type: "item.updated",
+        turnId,
+        itemId: bgId,
+        update: { type: "text.append", text: "background task finished" },
+      });
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "agentMessage", itemId: bgId, text: "background task finished" },
+          outcome: { status: "succeeded" },
+        },
+      });
+      await fixture.collector.waitFor((message) => itemCompleted(message, bgId));
+
+      const afterItems = await readHistoryItems(fixture, threadId, 4);
+      const agentMessages = afterItems.filter((item) => item.type === "agentMessage");
+      expect(agentMessages).toHaveLength(2);
+      expect(agentMessages[0]).toMatchObject({ id: initialAnswer?.id, phase: "final_answer" });
+      expect(agentMessages[1]).toMatchObject({
+        id: bgId,
+        text: "background task finished",
+        phase: null,
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

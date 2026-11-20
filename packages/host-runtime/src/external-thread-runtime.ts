@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   HarnessAdapter,
   HarnessModelRef,
@@ -5,6 +6,7 @@ import type {
   HarnessSession,
   HarnessSessionState,
   HostThreadSnapshot,
+  HostTurnSnapshot,
   HostUsage,
   TurnCompletedEvent,
 } from "@codexhost/harness-adapter";
@@ -21,6 +23,7 @@ import {
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
+  hostTurnIdSchema,
   type HarnessId,
   type HarnessPermissionModeId,
   type HarnessThinkingOptionId,
@@ -37,6 +40,7 @@ import { DELEGATION_THREAD_ID_ENV } from "./delegation-types.js";
 import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
+import { projectExternalTurn } from "./external-subagent-threads.js";
 import {
   ExternalSessionReleaseError,
   ExternalThreadLifecycle,
@@ -107,7 +111,7 @@ export type ExternalThreadResolution =
   | { kind: "external"; thread: ExternalThread; historyFresh: boolean }
   | { kind: "error"; error: ExternalThreadRpcError };
 
-function nativeTurnKey(turn: HostThreadSnapshot["turns"][number]): string {
+function nativeTurnKey(turn: { nativeTurnRef: HostTurnSnapshot["nativeTurnRef"] }): string {
   const ref = turn.nativeTurnRef;
   return `${ref.harnessId}\u0000${ref.nativeSessionId}\u0000${ref.nativeTurnKey}\u0000${ref.formatVersion}`;
 }
@@ -227,6 +231,9 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
+  // Only completed snapshots mutate this ledger; never hold this gate while
+  // closing a Session (close drains its outputs).
+  readonly #historyWrites = new DesktopRequestQueue();
   readonly #onWorkspace: ((cwd: string) => void) | undefined;
 
   constructor(input: {
@@ -626,6 +633,7 @@ export class ExternalThreadRuntime {
       const revived = await this.#reviveIdleSession(thread);
       if (revived) return revived;
     }
+    let recordAtRead = thread.record;
     let snapshot = await thread.session.readSnapshot();
     if (!snapshot.ok) {
       // A faulted/closed Session stays registered until we drop it; revive in place so
@@ -637,35 +645,43 @@ export class ExternalThreadRuntime {
       ) {
         const revived = await this.#reviveIdleSession(thread);
         if (revived) return revived;
+        recordAtRead = thread.record;
         snapshot = await thread.session.readSnapshot();
         if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
       } else {
         return mapExternalThreadHarnessError(snapshot.error, "read");
       }
     }
-    try {
-      const aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
-      // Before native identity exists, an empty Snapshot cannot reconcile the
-      // failed or cancelled Turns retained only in this loaded Host Thread.
-      const turns =
-        aligned.record.state === "creating" &&
-        !aligned.record.nativeSessionRef &&
-        snapshot.value.turns.length === 0
-          ? thread.turns
-          : aligned.turns;
-      thread.record = aligned.record;
-      thread.turns = turns;
-      thread.historyHydrated = true;
-      thread.thread = externalThreadValue({
-        record: aligned.record,
-        turns,
-        sessionId: thread.sessionId,
-        running: thread.running,
-      });
-      return null;
-    } catch {
-      return { code: -32081, message: "External Thread history could not be persisted" };
-    }
+    const read = snapshot.value;
+    let failureResult: ExternalThreadRpcError | null = null;
+    await this.#historyWrites.run(thread.id, async () => {
+      try {
+        // A completed native Turn may have been appended while reading. Do not
+        // replace that newer ledger with an older snapshot.
+        if (thread.record.turnMappings !== recordAtRead.turnMappings) return;
+        const aligned = await this.#repository.alignSnapshot(thread.record, read);
+        // Before native identity exists, an empty Snapshot cannot reconcile the
+        // failed or cancelled Turns retained only in this loaded Host Thread.
+        const turns =
+          aligned.record.state === "creating" &&
+          !aligned.record.nativeSessionRef &&
+          read.turns.length === 0
+            ? thread.turns
+            : aligned.turns;
+        thread.record = aligned.record;
+        thread.turns = turns;
+        thread.historyHydrated = true;
+        thread.thread = externalThreadValue({
+          record: aligned.record,
+          turns,
+          sessionId: thread.sessionId,
+          running: thread.running,
+        });
+      } catch {
+        failureResult = { code: -32081, message: "External Thread history could not be persisted" };
+      }
+    });
+    return failureResult;
   }
 
   async #reviveIdleSession(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
@@ -874,23 +890,57 @@ export class ExternalThreadRuntime {
     }
   }
 
+  async appendAutonomousTurn(
+    thread: ExternalThread,
+    snapshot: HostTurnSnapshot,
+  ): Promise<JsonObject | undefined> {
+    let turn: JsonObject | undefined;
+    await this.#historyWrites.run(thread.id, async () => {
+      const key = nativeTurnKey(snapshot);
+      const existing = thread.record.turnMappings.find((mapping) => nativeTurnKey(mapping) === key);
+      if (existing && thread.turns.some(({ id }) => id === existing.hostTurnId)) return;
+      const turnId = existing?.hostTurnId ?? hostTurnIdSchema.parse(randomUUID());
+      thread.record = await this.#repository.persistTurn(
+        thread.record,
+        turnId,
+        snapshot.nativeTurnRef,
+        snapshot.checkpoint,
+      );
+      const record = thread.record;
+      const projected = await projectExternalTurn(record, turnId, snapshot, (child) =>
+        this.#repository.materializeSubagent(record, child),
+      );
+      thread.turns.push(projected);
+      const updatedAt = Math.floor(Date.now() / 1000);
+      thread.thread.updatedAt = updatedAt;
+      thread.thread.recencyAt = updatedAt;
+      if (!thread.activeTurnId) thread.projectedTerminalTurnId = turnId;
+      if (thread.clientCommand) thread.clientCommand.subsequentTurnId ??= turnId;
+      turn = projected;
+    });
+    return turn;
+  }
+
   async persistTerminalIdentity(
     thread: ExternalThread,
     event: TurnCompletedEvent,
   ): Promise<Error | null> {
-    if (!event.nativeTurnRef) {
+    const nativeTurnRef = event.nativeTurnRef;
+    if (!nativeTurnRef) {
       await this.persistUsageMeasurements(thread);
       return event.outcome.status === "succeeded"
         ? new Error("Successful external Turn has no Native Turn identity")
         : null;
     }
     try {
-      thread.record = await this.#repository.persistTurn(
-        thread.record,
-        event.turnId,
-        event.nativeTurnRef,
-        event.outcome.checkpoint,
-      );
+      await this.#historyWrites.run(thread.id, async () => {
+        thread.record = await this.#repository.persistTurn(
+          thread.record,
+          event.turnId,
+          nativeTurnRef,
+          event.outcome.checkpoint,
+        );
+      });
       thread.persistenceError = null;
       await this.persistUsageMeasurements(thread);
       return null;

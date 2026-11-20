@@ -38,6 +38,7 @@ import {
 import { createTwoFilesPatch } from "diff";
 
 import type { AntigravityAcpConfigOption, AntigravityAcpEvent } from "./acp-types.js";
+import type { NativeReplayEvent } from "./native-replay.js";
 import { ANTIGRAVITY_COMMAND_CATALOG } from "./slash-commands.js";
 import {
   compactToolName,
@@ -588,29 +589,36 @@ export class AntigravityToolTracker {
 export function projectReplayedEventsToTurns(params: {
   nativeSessionId: string;
   cwd: string;
-  events: readonly AntigravityAcpEvent[];
+  events: readonly NativeReplayEvent[];
   knownTurnRefs?: readonly NativeTurnRef[];
   outputLimit?: number;
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
-  const usedTurnKeys = new Set(params.knownTurnRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
-  let active: { turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
+  const knownUserRefs = params.knownTurnRefs?.filter(
+    ({ nativeTurnKey }) => !nativeTurnKey.startsWith("wake-"),
+  );
+  const usedTurnKeys = new Set(knownUserRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
+  let userIndex = 0;
+  let active:
+    { turnId: HostTurnId; turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
   let sequence = 0;
-  const begin = () => {
+  const begin = (wakeStep?: number) => {
     active?.tracker.finishPending({
       status: "cancelled",
       reason: "No terminal tool status in native history",
     });
-    const index = turns.length;
-    const turnId = hostTurnIdSchema.parse(`turn-${index}`);
-    let nativeTurnKey = params.knownTurnRefs?.[index]?.nativeTurnKey;
-    if (nativeTurnKey === undefined) {
-      let n = index;
-      nativeTurnKey = `turn-${n}`;
-      while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
-      usedTurnKeys.add(nativeTurnKey);
+    const checkpointId = wakeStep === undefined ? `turn-${userIndex}` : `wake-${wakeStep}`;
+    const turnId = hostTurnIdSchema.parse(checkpointId);
+    let nativeTurnKey = checkpointId;
+    if (wakeStep === undefined) {
+      let n = userIndex++;
+      nativeTurnKey = knownUserRefs?.[n]?.nativeTurnKey ?? `turn-${n}`;
+      if (!knownUserRefs?.[n]) {
+        while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
+        usedTurnKeys.add(nativeTurnKey);
+      }
     }
     const turn: HostTurnSnapshot = {
       nativeTurnRef: nativeTurnRefSchema.parse({
@@ -622,7 +630,7 @@ export function projectReplayedEventsToTurns(params: {
       checkpoint: nativeCheckpointRefSchema.parse({
         harnessId: "antigravity",
         nativeSessionId: params.nativeSessionId,
-        checkpointId: `turn-${index}`,
+        checkpointId,
         formatVersion: 1,
       }),
       input: [],
@@ -647,11 +655,14 @@ export function projectReplayedEventsToTurns(params: {
       },
     });
     textItem = undefined;
-    active = { turn, tracker };
+    active = { turnId, turn, tracker };
     return active;
   };
   for (const event of params.events) {
-    if (event.type === "user.text") {
+    if (event.type === "history.autonomous") {
+      begin(event.stepIndex);
+      userRun = false;
+    } else if (event.type === "user.text") {
       const { turn } = !active || !userRun ? begin() : active;
       const previous = turn.input[0];
       if (previous) previous.text += event.text;
@@ -659,7 +670,7 @@ export function projectReplayedEventsToTurns(params: {
       userRun = true;
       textItem = undefined;
     } else if (event.type === "agent.text" || event.type === "agent.thought") {
-      const { turn } = active ?? begin();
+      const { turn, turnId } = active ?? begin();
       userRun = false;
       const type = event.type === "agent.text" ? "agentMessage" : "reasoning";
       if (textItem?.item.type === type) textItem.item.text += event.text;
@@ -667,7 +678,7 @@ export function projectReplayedEventsToTurns(params: {
         textItem = {
           item: {
             type,
-            itemId: hostItemIdSchema.parse(`turn-${turns.length - 1}-item-${sequence++}`),
+            itemId: hostItemIdSchema.parse(`${turnId}-item-${sequence++}`),
             text: event.text,
           },
           outcome: succeeded,

@@ -6,10 +6,11 @@ import type {
 import {
   nativeConversationDbPath,
   openDerivedAntigravitySession,
+  readDerivationBoundaries,
   validNativeSessionRef,
   type NativeDerivationOptions,
 } from "./fork.js";
-import { nativeHistoryError, readNativeTurnCount } from "./native-turn-boundaries.js";
+import { nativeHistoryError } from "./native-turn-boundaries.js";
 import { antigravityHome } from "./usage-statistics.js";
 
 export interface RollbackAntigravityLastTurnOptions extends NativeDerivationOptions {
@@ -38,13 +39,14 @@ export async function rollbackAntigravityLastTurn(
       },
     };
   try {
-    const count = await readNativeTurnCount(
+    const boundaries = await readDerivationBoundaries(
       nativeConversationDbPath(
         input.sourceRef.nativeSessionId,
         antigravityHome({ ...options.adapterEnvironment, ...input.environment }),
       ),
     );
-    if (count === 0)
+    const last = boundaries.at(-1);
+    if (!last)
       return {
         ok: false,
         error: {
@@ -65,7 +67,7 @@ export async function rollbackAntigravityLastTurn(
         ...(input.permissionModeId ? { permissionModeId: input.permissionModeId } : {}),
       },
       input.sourceRef,
-      count - 1,
+      { cutoff: boundaries.length === 1 ? 0 : last.idx },
     );
   } catch (error) {
     return { ok: false, error: nativeHistoryError(error) };

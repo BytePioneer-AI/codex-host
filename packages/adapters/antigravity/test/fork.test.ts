@@ -14,6 +14,9 @@ import {
   nativeConversationDbPath,
 } from "../src/fork.js";
 import { readNativeTurnCount } from "../src/native-turn-boundaries.js";
+import { readNativeHistory } from "../src/native-replay.js";
+import { rollbackAntigravityLastTurn } from "../src/rollback.js";
+import { answerStep, systemStep, userStep } from "./support/native-history-fixture.js";
 const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
@@ -93,6 +96,48 @@ describe("native SQLite Fork", () => {
       expect(await readdir(nativeBrainDirPath(id, f.home))).toEqual(["artifact.md"]);
     },
   );
+  it("forks on either side of a wake and rolls it back without losing the preceding user Turn", async () => {
+    const f = await fixture();
+    const db = new DatabaseSync(f.file);
+    try {
+      db.exec(
+        "PRAGMA user_version = 1; DROP TABLE steps; CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB)",
+      );
+      userStep(db, 0, "hello", "prompt");
+      answerStep(db, 1, "hello there", "prompt");
+      systemStep(db, 2, "wake");
+      answerStep(db, 3, "wake answer", "wake");
+    } finally {
+      db.close();
+    }
+    const prefix = (id: string) => readNativeHistory(id, f.home).then(({ events }) => events);
+    const source = await prefix(f.sourceRef.nativeSessionId);
+    for (const checkpointId of ["turn-0", "wake-2"]) {
+      const result = await forkAntigravitySession({
+        ...f.options,
+        input: {
+          kind: "fork",
+          cwd: f.home,
+          sourceRef: f.sourceRef,
+          checkpoint: { ...f.sourceRef, checkpointId },
+        },
+      });
+      assert(result.ok && result.value.initialState.nativeRef);
+      expect(await prefix(result.value.initialState.nativeRef.nativeSessionId)).toEqual(
+        checkpointId === "turn-0" ? source.slice(0, 2) : source,
+      );
+    }
+    const rolledBack = await rollbackAntigravityLastTurn({
+      ...f.options,
+      input: { kind: "rollbackLastTurn", cwd: f.home, sourceRef: f.sourceRef },
+    });
+    assert(rolledBack.ok && rolledBack.value.initialState.nativeRef);
+    expect(await prefix(rolledBack.value.initialState.nativeRef.nativeSessionId)).toEqual(
+      source.slice(0, 2),
+    );
+    expect(await prefix(f.sourceRef.nativeSessionId)).toEqual(source);
+  });
+
   it.each([
     "turn-3",
     "turn--1",

@@ -15,6 +15,15 @@ import { AntigravityAcpTransport } from "../src/acp-transport.js";
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import { resolveAntigravityExecutable } from "../src/command.js";
 import type { AntigravityAcpEvent, AntigravityActivePromptHandler } from "../src/acp-types.js";
+import {
+  answerStep,
+  createNativeHistoryDatabase,
+  runField,
+  systemStep,
+  textField,
+  userStep,
+} from "./support/native-history-fixture.js";
+import { bytes } from "./support/native-timing-fixture.js";
 
 const fixture = vi.hoisted(() => ({
   children: [] as ChildProcessWithoutNullStreams[],
@@ -315,6 +324,20 @@ describe("native ACP stdio transport", () => {
       environment: { HOME: home, USERPROFILE: home, AGY_TEST_SCENARIO: "same-write-tail" },
     });
     try {
+      const db = await createNativeHistoryDatabase(home, "native");
+      try {
+        userStep(db, 0, "hello", "user");
+        answerStep(db, 1, "answer", "user");
+        systemStep(db, 2, "wake");
+        db.prepare("INSERT INTO steps VALUES (3, 15, 3, ?)").run(
+          Buffer.concat([
+            runField("wake"),
+            bytes(20, Buffer.concat([textField(3, "T1"), textField(1, "A1")])),
+          ]),
+        );
+      } finally {
+        db.close();
+      }
       const opened = await adapter.open({ kind: "create", cwd: home });
       if (!opened.ok) throw new Error(opened.error.message);
       const events: HostEvent[] = [];
@@ -331,24 +354,31 @@ describe("native ACP stdio transport", () => {
         }),
       ).toMatchObject({ ok: true });
       await vi.waitFor(() =>
-        expect(events.filter((event) => event.type === "item.updated")).toHaveLength(3),
+        expect(events.filter((event) => event.type === "turn.autonomous.completed")).toHaveLength(
+          1,
+        ),
       );
       const completedIndex = events.findIndex((event) => event.type === "turn.completed");
       expect(completedIndex).toBeGreaterThanOrEqual(0);
-      expect(
-        events.slice(0, completedIndex).filter((event) => event.type === "item.updated"),
-      ).toMatchObject([{ update: { text: "answer" } }]);
-      expect(
-        events
-          .slice(completedIndex + 1)
-          .filter((event) => event.type === "item.background.started"),
-      ).toMatchObject([
-        { turnId, item: { type: "reasoning" } },
-        { turnId, item: { type: "agentMessage" } },
+      expect(events.filter((event) => event.type === "item.updated")).toMatchObject([
+        { update: { text: "answer" } },
       ]);
-      expect(
-        events.slice(completedIndex + 1).filter((event) => event.type === "item.updated"),
-      ).toMatchObject([{ update: { text: "T1" } }, { update: { text: "A1" } }]);
+      expect(events.slice(completedIndex + 1)).toContainEqual(
+        expect.objectContaining({
+          type: "turn.autonomous.completed",
+          snapshot: expect.objectContaining({
+            input: [],
+            items: [
+              expect.objectContaining({
+                item: expect.objectContaining({ type: "reasoning", text: "T1" }),
+              }),
+              expect.objectContaining({
+                item: expect.objectContaining({ type: "agentMessage", text: "A1" }),
+              }),
+            ],
+          }),
+        }),
+      );
     } finally {
       await adapter.close();
       await rm(home, { recursive: true, force: true });

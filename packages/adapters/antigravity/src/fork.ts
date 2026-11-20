@@ -20,7 +20,8 @@ import {
   minimalTrajectoryMetadataBlob,
   rewriteTrajectoryMetadataCascadeId,
 } from "./native-trajectory-metadata.js";
-import { nativeHistoryError, readNativeTurnCount } from "./native-turn-boundaries.js";
+import { nativeConversationDbPath, nativeHistoryError } from "./native-turn-boundaries.js";
+import { decodeNativeHistory } from "./native-replay.js";
 import { antigravityHome } from "./usage-statistics.js";
 
 export {
@@ -28,9 +29,7 @@ export {
   minimalTrajectoryMetadataBlob,
 } from "./native-trajectory-metadata.js";
 
-export function nativeConversationDbPath(id: string, home = os.homedir()): string {
-  return path.join(home, ".gemini", "antigravity-cli", "conversations", `${id}.db`);
-}
+export { nativeConversationDbPath } from "./native-turn-boundaries.js";
 export function nativeConversationSummariesDbPath(home = os.homedir()): string {
   return path.join(home, ".gemini", "antigravity-cli", "conversation_summaries.db");
 }
@@ -53,7 +52,7 @@ export function validNativeSessionRef(ref: NativeSessionRef, harnessId: HarnessI
 export async function cloneNativeConversationDb(
   sourceId: string,
   derivedId: string,
-  retainedTurnsCountOrHome?: number | string,
+  retainedTurnsCountOrHome?: number | string | { cutoff: number | undefined },
   homeOption = os.homedir(),
 ): Promise<boolean> {
   if (![sourceId, derivedId].every((id) => /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/u.test(id)))
@@ -77,6 +76,20 @@ export async function cloneNativeConversationDb(
       (!Number.isSafeInteger(retained) || retained < 0 || retained > count)
     )
       throw new Error("Invalid retained native Turn count");
+    const cutoff =
+      typeof retainedTurnsCountOrHome === "object"
+        ? retainedTurnsCountOrHome.cutoff
+        : retained !== undefined && retained < count
+          ? retained === 0
+            ? 0
+            : Number(
+                source
+                  .prepare(
+                    "SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx LIMIT 1 OFFSET ?",
+                  )
+                  .get(retained)?.idx,
+              )
+          : undefined;
     await mkdir(path.dirname(targetPath), { recursive: true });
     const reservation = await open(targetPath, "wx");
     owned = true;
@@ -97,11 +110,7 @@ export async function cloneNativeConversationDb(
       target
         .prepare("INSERT OR REPLACE INTO trajectory_metadata_blob (id, data) VALUES ('main', ?)")
         .run(blob);
-      if (retained !== undefined && retained < count) {
-        const boundary = target
-          .prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx LIMIT 1 OFFSET ?")
-          .get(retained);
-        const cutoff = retained === 0 ? 0 : Number(boundary?.idx);
+      if (cutoff !== undefined) {
         target.prepare("DELETE FROM steps WHERE idx >= ?").run(cutoff);
         for (const table of [
           "gen_metadata",
@@ -250,7 +259,7 @@ export async function openDerivedAntigravitySession(
   options: NativeDerivationOptions,
   input: ResumeSessionInput,
   sourceRef: NativeSessionRef,
-  retained: number,
+  retained: { cutoff: number | undefined },
 ): Promise<HarnessResult<HarnessSession>> {
   const environment = { ...options.adapterEnvironment, ...input.environment };
   const home = antigravityHome(environment);
@@ -325,17 +334,17 @@ export async function forkAntigravitySession(
         retryable: true,
       },
     };
-  const match = /^turn-(0|[1-9]\d*)$/u.exec(checkpoint.data.checkpointId);
+  const match = /^(?:turn|wake)-(?:0|[1-9]\d*)$/u.exec(checkpoint.data.checkpointId);
   if (!match) return checkpointError();
   try {
-    const count = await readNativeTurnCount(
+    const boundaries = await readDerivationBoundaries(
       nativeConversationDbPath(
         input.sourceRef.nativeSessionId,
         antigravityHome({ ...options.adapterEnvironment, ...input.environment }),
       ),
     );
-    const index = Number(match[1]);
-    if (!Number.isSafeInteger(index) || index >= count) return checkpointError();
+    const index = boundaries.findIndex(({ checkpointId }) => checkpointId === match[0]);
+    if (index < 0) return checkpointError();
     return openDerivedAntigravitySession(
       options,
       {
@@ -345,12 +354,36 @@ export async function forkAntigravitySession(
         ...(input.environment ? { environment: input.environment } : {}),
       },
       input.sourceRef,
-      index + 1,
+      { cutoff: boundaries[index + 1]?.idx },
     );
   } catch (error) {
     return { ok: false, error: nativeHistoryError(error) };
   }
 }
+export async function readDerivationBoundaries(dbPath: string) {
+  await access(dbPath);
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    db.exec("BEGIN");
+    const users = db.prepare("SELECT idx FROM steps WHERE step_type = 14 ORDER BY idx").all();
+    const boundaries = users.map((row, index) => ({
+      idx: Number(row.idx),
+      checkpointId: `turn-${index}`,
+    }));
+    if (db.prepare("SELECT 1 FROM steps WHERE step_type = 101 LIMIT 1").get()) {
+      for (const event of decodeNativeHistory(db).events) {
+        if (event.type === "history.autonomous")
+          boundaries.push({ idx: event.stepIndex, checkpointId: `wake-${event.stepIndex}` });
+      }
+      boundaries.sort((a, b) => a.idx - b.idx);
+    }
+    return boundaries;
+  } finally {
+    db.close();
+  }
+}
+
 function checkpointError(): HarnessResult<never> {
   return {
     ok: false,

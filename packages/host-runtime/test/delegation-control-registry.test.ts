@@ -151,6 +151,25 @@ describe("DelegationControlRegistry", () => {
     await registry.listHarnesses();
     expect(native.listHarnesses).toHaveBeenCalledOnce();
   });
+
+  it("uses the shared catalog when multiple sessions observe its parent Thread", async () => {
+    const registry = new DelegationControlRegistry();
+    const owner = registration("native-parent");
+    const observer = registration("native-parent");
+    registry.register(observer);
+    registry.register(owner, { harnessCatalog: true });
+    await registry.start({
+      harnessId: "pi",
+      task: "review",
+      cwd: "/synthetic",
+      parentThreadId: "native-parent",
+    });
+    await registry.read({ threadId: "native-parent", view: "result" });
+    expect(owner.start).toHaveBeenCalledOnce();
+    expect(owner.read).toHaveBeenCalledOnce();
+    expect(observer.start).not.toHaveBeenCalled();
+    registry.close();
+  });
   it("rejects conflicting or non-boolean send options before choosing a session", async () => {
     const registry = new DelegationControlRegistry();
     const target = registration("target");

@@ -325,6 +325,9 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       );
     }
     const matches = await this.#matching((registration) => registration.canHandleStart(input));
+    // Several attached clients can observe the catalog's same shared native Thread.
+    if (matches.length > 1 && this.#harnessCatalog && matches.includes(this.#harnessCatalog))
+      return this.#harnessCatalog;
     return only(
       matches,
       input.parentThreadId
@@ -337,6 +340,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     const registrations = [...this.#registrations];
     const matches = await this.#matching((registration) => registration.ownsThread(threadId));
     if (matches.length === 1) return matches[0] as DelegationControlRegistration;
+    if (matches.length > 1 && this.#harnessCatalog && matches.includes(this.#harnessCatalog))
+      return this.#harnessCatalog;
     if (matches.length > 1) {
       throw new DelegationControlError(
         "PARENT_THREAD_AMBIGUOUS",

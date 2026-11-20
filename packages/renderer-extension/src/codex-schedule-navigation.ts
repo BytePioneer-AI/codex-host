@@ -16,6 +16,22 @@ function isNavigationBus(value: unknown): value is NativeNavigationBus {
   );
 }
 
+/** Opens a local Thread through the same native route as the Desktop sidebar. */
+export async function openCodexThread(
+  threadId: string,
+  signal: AbortSignal,
+  ownerWindow: Window = window,
+): Promise<void> {
+  signal.throwIfAborted();
+  const bus = await loadCodexNativeServices(ownerWindow, isNavigationBus);
+  signal.throwIfAborted();
+  if (!bus) throw new Error("Codex navigation is unavailable");
+  bus.dispatchHostMessage({
+    type: "navigate-to-route",
+    path: `/local/${encodeURIComponent(threadId)}`,
+  });
+}
+
 function hasArrived(ownerWindow: Window): boolean {
   const paths = ["/automations", "/scheduled"];
   const pages = ownerWindow.document.querySelectorAll('[data-app-shell-active-page="true"]');

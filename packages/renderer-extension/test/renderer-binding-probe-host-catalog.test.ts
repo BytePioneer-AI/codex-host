@@ -19,7 +19,7 @@ import {
   type RendererModelControlView,
 } from "../src/renderer-model-picker.js";
 import type { RendererRequestOptions } from "../src/renderer-request-sender.js";
-import type { installRendererSidebarAgentIcons } from "../src/renderer-sidebar-agent-icons.js";
+import type * as RendererSidebarAgentIcons from "../src/renderer-sidebar-agent-icons.js";
 import type { RendererConnectionDiagnostics } from "../src/settings/connections-page.js";
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
@@ -34,7 +34,8 @@ const testState = vi.hoisted(() => ({
   selectThinking: null as null | ((thinkingOptionId: string) => void),
   getConnectionDiagnostics: null as null | (() => RendererConnectionDiagnostics | null),
   getSessionImportClient: null as null | ((hostId?: string) => RendererSessionImportClient | null),
-  sidebarOptions: null as null | Parameters<typeof installRendererSidebarAgentIcons>[0],
+  sidebarOptions: null as
+    null | Parameters<typeof RendererSidebarAgentIcons.installRendererSidebarAgentIcons>[0],
   sidebarRefresh: vi.fn(),
   documentListeners: new Map<string, EventListener>(),
   modelTarget: ["conversation", "thread-a"] as readonly unknown[] | null,
@@ -114,10 +115,11 @@ vi.mock("../src/versioned-renderer-adapter.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/renderer-sidebar-agent-icons.js", () => ({
+vi.mock("../src/renderer-sidebar-agent-icons.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof RendererSidebarAgentIcons>()),
   SIDEBAR_THREAD_ROW_SELECTOR: "[data-app-action-sidebar-thread-row]",
   installRendererSidebarAgentIcons: (
-    options: Parameters<typeof installRendererSidebarAgentIcons>[0],
+    options: Parameters<typeof RendererSidebarAgentIcons.installRendererSidebarAgentIcons>[0],
   ) => {
     testState.sidebarOptions = options;
     return { refresh: testState.sidebarRefresh, dispose: vi.fn() };
@@ -343,7 +345,7 @@ describe("Renderer binding native draft routing", () => {
 
     const applyAgent = vi.fn(() => true);
     probe.setAdapter(
-      { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
       undefined,
       applyAgent,
     );

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   CdpClient,
   CdpConnectionClosedError,
@@ -18,6 +19,7 @@ import {
 } from "./renderer-loaded-modules.js";
 import { installNativeRpcRemoteControlDirect } from "./renderer-native-rpc-install.js";
 import { installRendererRpcSteeringDirect } from "./renderer-rpc-steering.js";
+import type { RendererDesktopExtensions } from "./renderer-desktop-extensions.js";
 
 export interface ProductionRendererStatus {
   version: 2;
@@ -59,6 +61,7 @@ export interface InstallRendererCdpControlOptions {
   enabledAgents?: readonly string[];
   pollIntervalMs?: number;
   timeoutMs?: number;
+  desktopExtensions?: RendererDesktopExtensions;
   signal?: AbortSignal;
 }
 
@@ -257,6 +260,12 @@ async function waitForBinding(
   throw new Error(`Production Renderer binding did not become ready${detail}`);
 }
 
+/** Reconnecting CDP must not dispose an already installed instance of this bundle. */
+function reconnectableRendererSource(source: string): string {
+  const hash = JSON.stringify(createHash("sha256").update(source).digest("hex"));
+  return `if (window.top === window && (window.__codexhostControllerBundleHash !== ${hash} || !window.__codexhostRendererBindingProbeV1)) {\n${source}\nwindow.__codexhostControllerBundleHash = ${hash};\n}`;
+}
+
 async function installTarget(
   target: CdpTarget,
   rendererSource: string,
@@ -264,24 +273,51 @@ async function installTarget(
   timeoutMs: number,
   pollIntervalMs: number,
   operations: RendererCdpControlOperations,
+  extensions?: RendererDesktopExtensions,
+  replacingSession = false,
 ): Promise<{
   renderer: RendererCdpClient;
   snapshot: RendererCdpControlSnapshot;
-  disposeModules(): void;
+  attachExtensions(): void;
+  disposeModules(): Promise<void> | undefined;
 }> {
   const renderer = await operations.connect(target.webSocketDebuggerUrl);
   let disposeModules: (() => void) | undefined;
+  let detach: (() => Promise<void>) | undefined;
+  const attachExtensions = () => {
+    detach ??= extensions?.attach(target.id, renderer);
+  };
   try {
-    disposeModules = await installRendererLoadedModules(renderer);
+    disposeModules = await installRendererLoadedModules(
+      renderer,
+      extensions ? () => extensions.hint() : undefined,
+    );
     await renderer.command("Page.enable");
-    await renderer.command("Page.addScriptToEvaluateOnNewDocument", { source: rendererSource });
-    await evaluateSource(renderer, rendererSource);
+    const source = extensions ? reconnectableRendererSource(rendererSource) : rendererSource;
+    await renderer.command("Page.addScriptToEvaluateOnNewDocument", { source });
+    // Attach before waiting for the binding: emergency reload must also work
+    // when neither the Renderer bridge nor the Host is usable.
+    if (!replacingSession) attachExtensions();
+    await evaluateSource(renderer, source);
     const draftPrewarmPolicy = await operations.installDraftPrewarmPolicy(renderer);
     const binding = await waitForBinding(renderer, enabledAgents, timeoutMs, pollIntervalMs);
-    return { renderer, snapshot: { target, draftPrewarmPolicy, binding }, disposeModules };
+    extensions?.hint();
+    return {
+      renderer,
+      snapshot: { target, draftPrewarmPolicy, binding },
+      attachExtensions,
+      disposeModules: () => {
+        disposeModules?.();
+        return detach?.();
+      },
+    };
   } catch (error) {
     disposeModules?.();
-    renderer.close();
+    try {
+      await detach?.();
+    } finally {
+      renderer.close();
+    }
     throw error;
   }
 }
@@ -298,7 +334,8 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
     private readonly pollIntervalMs: number,
     private readonly operations: RendererCdpControlOperations,
     private currentSnapshot: RendererCdpControlSnapshot,
-    private disposeModules: () => void,
+    private disposeModules: () => Promise<void> | undefined,
+    private readonly extensions?: RendererDesktopExtensions,
   ) {}
 
   get snapshot(): RendererCdpControlSnapshot {
@@ -314,53 +351,54 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
       this.pollIntervalMs,
       this.currentSnapshot.target.id,
     );
-    if (target.id !== this.currentSnapshot.target.id) {
-      const replacement = await installTarget(
-        target,
-        this.rendererSource,
-        this.enabledAgents,
-        this.timeoutMs,
-        this.pollIntervalMs,
-        this.operations,
-      );
-      this.disposeModules();
-      this.renderer.close();
-      this.renderer = replacement.renderer;
-      this.disposeModules = replacement.disposeModules;
-      this.currentSnapshot = replacement.snapshot;
-      return this.currentSnapshot;
+    if (target.id === this.currentSnapshot.target.id) {
+      try {
+        const existing = await readBinding(this.renderer);
+        if (existing === null) await evaluateSource(this.renderer, this.rendererSource);
+        // A Host switch can temporarily leave the Adapter installing. Reconcile
+        // native owners before validating readiness; that is not a lost CDP page.
+        const draftPrewarmPolicy = await this.operations.installDraftPrewarmPolicy(this.renderer);
+        const binding = await waitForBinding(
+          this.renderer,
+          this.enabledAgents,
+          this.timeoutMs,
+          this.pollIntervalMs,
+        );
+        this.currentSnapshot = { target, draftPrewarmPolicy, binding };
+        this.extensions?.ensureInstalled();
+        return this.currentSnapshot;
+      } catch {
+        // Keep the previous session until a replacement is ready.
+      }
     }
 
+    const replacement = await installTarget(
+      target,
+      this.rendererSource,
+      this.enabledAgents,
+      this.timeoutMs,
+      this.pollIntervalMs,
+      this.operations,
+      this.extensions,
+      true,
+    );
     try {
-      const existing = await readBinding(this.renderer);
-      if (existing === null) await evaluateSource(this.renderer, this.rendererSource);
-      // A Host switch can temporarily leave the Adapter installing. Reconcile
-      // native owners before validating readiness; that is not a lost CDP page.
-      const draftPrewarmPolicy = await this.operations.installDraftPrewarmPolicy(this.renderer);
-      const binding = await waitForBinding(
-        this.renderer,
-        this.enabledAgents,
-        this.timeoutMs,
-        this.pollIntervalMs,
-      );
-      this.currentSnapshot = { target, draftPrewarmPolicy, binding };
-      return this.currentSnapshot;
-    } catch {
-      const replacement = await installTarget(
-        target,
-        this.rendererSource,
-        this.enabledAgents,
-        this.timeoutMs,
-        this.pollIntervalMs,
-        this.operations,
-      );
-      this.disposeModules();
-      this.renderer.close();
-      this.renderer = replacement.renderer;
-      this.disposeModules = replacement.disposeModules;
-      this.currentSnapshot = replacement.snapshot;
-      return this.currentSnapshot;
+      if (!this.#closed) {
+        await this.disposeModules();
+        this.renderer.close();
+      }
+      if (this.#closed) throw new Error("Renderer CDP Control Session is closed");
+      // Retire the old extension snapshot before registering on the new session.
+      replacement.attachExtensions();
+    } catch (error) {
+      replacement.disposeModules();
+      replacement.renderer.close();
+      throw error;
     }
+    this.renderer = replacement.renderer;
+    this.disposeModules = replacement.disposeModules;
+    this.currentSnapshot = replacement.snapshot;
+    return this.currentSnapshot;
   }
 
   async activateDesktop(): Promise<number> {
@@ -377,8 +415,14 @@ class InstalledRendererCdpControlSession implements RendererCdpControlSession {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.disposeModules();
-    this.renderer.close();
+    const renderer = this.renderer;
+    const detached = this.disposeModules();
+    if (detached)
+      void detached.then(
+        () => renderer.close(),
+        () => renderer.close(),
+      );
+    else renderer.close();
   }
 }
 
@@ -415,6 +459,7 @@ export async function createRendererCdpControlSession(
     timeoutMs,
     pollIntervalMs,
     operations,
+    options.desktopExtensions,
   );
   return new InstalledRendererCdpControlSession(
     installed.renderer,
@@ -426,6 +471,7 @@ export async function createRendererCdpControlSession(
     operations,
     installed.snapshot,
     installed.disposeModules,
+    options.desktopExtensions,
   );
 }
 

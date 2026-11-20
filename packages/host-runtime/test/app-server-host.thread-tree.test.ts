@@ -1,4 +1,11 @@
-import { harnessIdSchema, hostThreadIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostThreadIdSchema,
+  threadTreeWatchResultSchema,
+  THREAD_TREE_WATCH_METHOD,
+  THREAD_TREE_SNAPSHOT_METHOD,
+} from "@codexhost/shared-contracts";
+import { limitTreeParents } from "../src/thread-tree-watch.js";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { afterEach, expect, it, vi } from "vitest";
@@ -6,12 +13,13 @@ import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-sco
 import {
   createFixture,
   startPiThread,
+  startPiTurn,
   stopFixture,
   writeRequest,
 } from "./app-server-host-fixture.js";
 import { PINNED_THREAD_SECTION_ID as PINNED } from "../src/external-thread-pins.js";
 
-function nativePins(pinned: string[] = []) {
+function nativePins(pinned: string[] = [], states: Record<string, JsonObject> = {}) {
   return vi
     .spyOn(OfficialRuntimeClient.prototype, "request")
     .mockImplementation(async (method, params) => {
@@ -23,7 +31,15 @@ function nativePins(pinned: string[] = []) {
         return { result: { data: pinned.map((id) => ({ id })), nextCursor: null } };
       const id = String(params.threadId);
       if (method === "thread/read")
-        return { result: { thread: { id, section: pinned.includes(id) ? { id: PINNED } : null } } };
+        return {
+          result: {
+            thread: {
+              id,
+              section: pinned.includes(id) ? { id: PINNED } : null,
+              ...(states[id] ? { status: states[id] } : {}),
+            },
+          },
+        };
       if (method === "thread/section/move") {
         const index = pinned.indexOf(id);
         if (index >= 0) pinned.splice(index, 1);
@@ -37,6 +53,107 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0)) await close();
+});
+
+it("bounds nodes without emitting dangling relationships", () => {
+  const edges = Object.fromEntries(
+    Array.from({ length: 5000 }, (_, index) => [`child-${index}`, "parent"]),
+  );
+  const bounded = limitTreeParents(edges);
+  expect(bounded.ids.size).toBe(5000);
+  expect(Object.keys(bounded.parents)).toHaveLength(4999);
+  expect(bounded.truncated).toBe(true);
+});
+
+it("publishes full snapshots for delegation, Turn, multi-select and pin changes", async () => {
+  const fixture = createFixture();
+  cleanup.push(() => stopFixture(fixture));
+  const child = await startPiThread(fixture);
+  const pinned: string[] = [];
+  const native = nativePins(pinned, {
+    parent: { type: "systemError" },
+    "official-child": { type: "active", activeFlags: ["waitingOnUserInput"] },
+  });
+  const addChild = async (id: string) => {
+    await fixture.mappingStore.createDelegation({
+      delegationId: hostThreadIdSchema.parse(`delegation-${id}`),
+      parentHostThreadId: hostThreadIdSchema.parse("parent"),
+      childHostThreadId: hostThreadIdSchema.parse(id),
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: harnessIdSchema.parse(id === child ? "pi" : "codex"),
+      taskDigest: "a".repeat(64),
+    });
+    fixture.host.clientEvents.changed(id, "codexhost/thread/tree/changed");
+  };
+  await addChild(child);
+  writeRequest(fixture.desktopInput, { id: 930, method: THREAD_TREE_WATCH_METHOD, params: {} });
+  const initial = threadTreeWatchResultSchema.parse(
+    (await fixture.collector.waitFor((m) => m.id === 930)).result,
+  );
+  expect(initial.snapshot).toMatchObject({
+    parents: { [child]: "parent" },
+    nodes: { [child]: { status: "idle" }, parent: { status: "unknown", harnessId: "codex" } },
+  });
+  let revision = initial.snapshot.revision;
+  async function next(check: (snapshot: typeof initial.snapshot) => boolean) {
+    const update = await fixture.collector.waitFor((m) => {
+      if (m.method !== THREAD_TREE_SNAPSHOT_METHOD) return false;
+      const result = threadTreeWatchResultSchema.parse(m.params);
+      return (
+        result.subscriptionId === initial.subscriptionId &&
+        result.snapshot.revision > revision &&
+        check(result.snapshot)
+      );
+    }, 1000);
+    revision = threadTreeWatchResultSchema.parse(update.params).snapshot.revision;
+  }
+  await addChild("official-child");
+  await next(
+    (snapshot) => snapshot.nodes[hostThreadIdSchema.parse("official-child")]?.status === "waiting",
+  );
+  const turnId = await startPiTurn(fixture, child);
+  const session = fixture.adapter.sessions[0];
+  if (!session) throw new Error("Missing fixture Session");
+  const status = (wanted: string) => (snapshot: typeof initial.snapshot) =>
+    snapshot.nodes[hostThreadIdSchema.parse(child)]?.status === wanted;
+  await next(status("running"));
+  const interactionId = session.askQuestion({
+    id: "pick",
+    type: "choice",
+    prompt: "Pick",
+    multiple: true,
+    optional: false,
+    allowOther: false,
+    options: [
+      { value: "a", label: "A" },
+      { value: "b", label: "B" },
+    ],
+  });
+  await next(status("waiting"));
+  writeRequest(fixture.desktopInput, {
+    id: 931,
+    method: "codexhost/thread/question/respond",
+    params: { threadId: child, turnId, interactionId, answers: { pick: ["a", "b"] } },
+  });
+  expect(await fixture.collector.waitFor((m) => m.id === 931)).toHaveProperty("result");
+  session.succeedTurn();
+  await next(status("idle"));
+  await fixture.host.handleClientRequest("codexhost/thread/pins/set", {
+    threadId: child,
+    pinned: true,
+  });
+  await next((snapshot) => !Object.hasOwn(snapshot.parents, child));
+  expect(
+    native.mock.calls.filter(
+      ([method, params]) => method === "thread/read" && params.threadId === "parent",
+    ),
+  ).toHaveLength(1);
+  fixture.desktopInput.end();
+  await fixture.running;
+  const count = fixture.collector.messages.length;
+  fixture.host.clientEvents.changed(child, "codexhost/thread/tree/changed");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(fixture.collector.messages).toHaveLength(count);
 });
 
 it("publishes official delegation tree changes after persistence even though native creation happens first", async () => {

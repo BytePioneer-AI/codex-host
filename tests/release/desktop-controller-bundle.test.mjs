@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -59,6 +60,9 @@ describe("Desktop Controller release Bundle", () => {
       expect(source).not.toContain('process.stdout.write("ready\\n")');
       expect(source).not.toContain("tools/renderer-binding");
       expect(source).not.toContain("@anthropic-ai/");
+      const usage = spawnSync(process.execPath, [outputPath, "--help"], { encoding: "utf8" });
+      expect(usage.stderr).toMatch(/unknown Desktop Controller option/u);
+      expect(usage.status).toBe(1);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

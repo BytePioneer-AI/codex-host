@@ -75,6 +75,87 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("parses a Desktop extension slot conflict without treating it as a successful save", async () => {
+    const listing = {
+      configuration: { version: 1, revision: 7, enabled: ["layout"] },
+      desktopConnected: false,
+      diagnostics: [],
+      extensions: [],
+    };
+    const conflict = { state: "slot-conflict", conflictWith: "layout" };
+    const sendRequest = vi.fn().mockResolvedValueOnce(listing).mockResolvedValueOnce(conflict);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listDesktopExtensions || !client.enableDesktopExtension)
+      throw new Error("Missing extension client");
+    await expect(client.listDesktopExtensions()).resolves.toEqual(listing);
+    await expect(
+      client.enableDesktopExtension({ id: "badge", expectedRevision: 7 }),
+    ).resolves.toEqual(conflict);
+    expect(sendRequest.mock.calls).toEqual([
+      ["codexhost/desktop/extensions/list", {}],
+      ["codexhost/desktop/extensions/enable", { id: "badge", expectedRevision: 7 }],
+    ]);
+  });
+
+  it("validates Desktop extension catalog, install, and uninstall requests and responses", async () => {
+    const emptyList = {
+      configuration: { version: 1, revision: 1, enabled: [] },
+      desktopConnected: true,
+      diagnostics: [],
+      extensions: [],
+    };
+    const catalog = {
+      catalogUrl: "https://example.com/catalog.json",
+      source: "remote" as const,
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+      cached: false,
+      extensions: [],
+    };
+    const installResult = {
+      extensionId: "sidebar-thread-tree",
+      version: "0.2.0",
+      replaced: false,
+      installedPath: "/tmp/desktop-extensions/sidebar-thread-tree",
+      list: emptyList,
+    };
+    const uninstallResult = {
+      removedId: "sidebar-thread-tree",
+      list: emptyList,
+    };
+    const sendRequest = vi
+      .fn()
+      .mockResolvedValueOnce(catalog)
+      .mockResolvedValueOnce(installResult)
+      .mockResolvedValueOnce(uninstallResult);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (
+      !client?.listDesktopExtensionCatalog ||
+      !client.installDesktopExtension ||
+      !client.uninstallDesktopExtension
+    ) {
+      throw new Error("Missing marketplace extension client methods");
+    }
+    await expect(client.listDesktopExtensionCatalog({ forceRefresh: true })).resolves.toEqual(
+      catalog,
+    );
+    await expect(
+      client.installDesktopExtension({
+        source: { type: "catalog", id: "sidebar-thread-tree" },
+      }),
+    ).resolves.toEqual(installResult);
+    await expect(client.uninstallDesktopExtension({ id: "sidebar-thread-tree" })).resolves.toEqual(
+      uninstallResult,
+    );
+    expect(sendRequest.mock.calls).toEqual([
+      ["codexhost/desktop/extensions/catalog", { forceRefresh: true }],
+      [
+        "codexhost/desktop/extensions/install",
+        { source: { type: "catalog", id: "sidebar-thread-tree" } },
+      ],
+      ["codexhost/desktop/extensions/uninstall", { id: "sidebar-thread-tree" }],
+    ]);
+  });
+
   it.each(["check", "update", "install"] as const)(
     "routes Harness installation %s through the fixed Host method",
     async (action) => {
@@ -420,12 +501,17 @@ describe("Renderer fixed Model request client", () => {
     expect(Object.keys(client).sort()).toEqual([
       "checkUpdate",
       "credentialImports",
+      "disableAllDesktopExtensionsAndReload",
+      "disableDesktopExtension",
+      "enableDesktopExtension",
       "executeThreadCommand",
       "forkThread",
+      "getDesktopExtensionSettings",
       "getHarnessDisplayCapabilities",
       "getHarnessDisplaySettings",
       "getHarnessLaunchSettings",
       "getHarnessPreferences",
+      "hasDesktopThread",
       "importHarnessSession",
       "inspectCodexAccountUsage",
       "inspectHarness",
@@ -434,8 +520,12 @@ describe("Renderer fixed Model request client", () => {
       "inspectThread",
       "inspectThreadCommands",
       "inspectThreadUsage",
+      "installDesktopExtension",
       "installation",
+      "invokeDesktopExtensionBackend",
       "listCodexAccounts",
+      "listDesktopExtensionCatalog",
+      "listDesktopExtensions",
       "listHarnessAccountSources",
       "listHarnessAccounts",
       "listHarnessPlugins",
@@ -449,6 +539,7 @@ describe("Renderer fixed Model request client", () => {
       "openWeb",
       "patchHarnessPreferences",
       "readDelegationThread",
+      "readDesktopExtensionAsset",
       "readUpdateStatus",
       "refreshCodexAccounts",
       "runtimeStatus",
@@ -456,6 +547,7 @@ describe("Renderer fixed Model request client", () => {
       "selectThreadPermissionMode",
       "selectThreadThinking",
       "setDelegationCapacitySettings",
+      "setDesktopExtensionSettings",
       "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
@@ -466,7 +558,9 @@ describe("Renderer fixed Model request client", () => {
       "subscribeHarnessPreferences",
       "subscribeSkillsChanged",
       "subscribeThreadUsage",
+      "uninstallDesktopExtension",
       "updateRemote",
+      "watchThreadTree",
     ]);
 
     await expect(client.inspectHarness({ harnessId: piHarnessId, refresh: true })).resolves.toEqual(
@@ -968,5 +1062,68 @@ describe("Renderer fixed Model request client", () => {
       "Invalid params",
     );
     expect(sendRequest).toHaveBeenCalledOnce();
+  });
+
+  it("validates and sends Desktop extension asset, settings, and backend invoke RPCs", async () => {
+    const sendRequest = vi.fn(async (method: string, params: unknown) => {
+      if (method === "codexhost/desktop/extensions/asset") {
+        return { mimeType: "image/png", dataUrl: "data:image/png;base64,AAAA" };
+      }
+      if (method === "codexhost/desktop/extensions/settings/get") {
+        return { values: { opacity: 0.85, theme: "aurora" } };
+      }
+      if (method === "codexhost/desktop/extensions/settings/set") {
+        return { values: (params as { values: Record<string, unknown> }).values };
+      }
+      if (method === "codexhost/desktop/extensions/backend/invoke") {
+        return { result: { ok: true, echoed: (params as { params?: unknown }).params } };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Desktop extension client was not created");
+
+    await expect(
+      client.readDesktopExtensionAsset?.({ id: "aurora-theme", path: "assets/wallpaper.png" }),
+    ).resolves.toEqual({
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AAAA",
+    });
+    await expect(
+      client.readDesktopExtensionAsset?.({ id: "aurora-theme", path: "../secret.png" }),
+    ).rejects.toThrow();
+
+    await expect(client.getDesktopExtensionSettings?.({ id: "aurora-theme" })).resolves.toEqual({
+      values: { opacity: 0.85, theme: "aurora" },
+    });
+
+    await expect(
+      client.setDesktopExtensionSettings?.({
+        id: "aurora-theme",
+        values: { opacity: 0.6, darkBlur: true },
+      }),
+    ).resolves.toEqual({
+      values: { opacity: 0.6, darkBlur: true },
+    });
+
+    await expect(
+      client.invokeDesktopExtensionBackend?.({
+        id: "aurora-theme",
+        method: "stats.summary",
+        params: { range: "7d" },
+      }),
+    ).resolves.toEqual({
+      result: { ok: true, echoed: { range: "7d" } },
+    });
+    await expect(
+      client.invokeDesktopExtensionBackend?.({ id: "aurora-theme", method: "   " }),
+    ).rejects.toThrow();
+
+    expect(sendRequest.mock.calls.map(([method]) => method)).toEqual([
+      "codexhost/desktop/extensions/asset",
+      "codexhost/desktop/extensions/settings/get",
+      "codexhost/desktop/extensions/settings/set",
+      "codexhost/desktop/extensions/backend/invoke",
+    ]);
   });
 });

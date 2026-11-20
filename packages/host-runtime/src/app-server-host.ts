@@ -295,6 +295,8 @@ import {
   type ExternalThreadStatus,
   type ProjectedTurn,
 } from "./external-turn-projection.js";
+import { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import { codexhostDataDirectory } from "./external-clients.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
@@ -353,6 +355,7 @@ import {
 import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
 import { ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
+import { ThreadTreeWatch } from "./thread-tree-watch.js";
 import {
   externalThreadListEntries,
   type ExternalThreadListRuntimeState,
@@ -400,6 +403,7 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
+  desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
   /** Shared service's live Desktop connection count, not native client subscriptions. */
@@ -892,9 +896,11 @@ export class AppServerHost {
   readonly clientEvents = new ClientChannelEvents();
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
+  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
   readonly #threadTree: ThreadTree;
+  readonly #treeWatch: ThreadTreeWatch;
   #sectionOperations: Promise<unknown> = Promise.resolve();
   readonly #turnProjection: ExternalTurnProjection;
   /** Console requests share Desktop handling; their replies return to the console. */
@@ -1026,6 +1032,7 @@ export class AppServerHost {
     this.#writer = new OrderedWriter(this.#options.desktopOutput, (value) => {
       this.#noteDesktopReply(value);
       this.#client.observeDesktopMessage(value);
+      this.#treeWatch?.observe(value);
       return this.#takeConsoleReply(value);
     });
     this.#skills =
@@ -1070,6 +1077,7 @@ export class AppServerHost {
         this.#pendingOfficialTurnStarts.clear();
         this.#abandonQueuedClaims();
         this.#activeOfficialTurns.clear();
+        this.#treeWatch?.resetOfficial();
         this.#client.resetNativeSession();
         for (const listener of this.#nativeSettingsNotifications) listener(null);
         this.#threadActivity.clear();
@@ -1113,6 +1121,29 @@ export class AppServerHost {
     this.#threadTree = new ThreadTree(this.#repository, () =>
       this.#runSectionOperation(() => this.#threadPins.list()),
     );
+    this.#treeWatch = new ThreadTreeWatch({
+      tree: this.#threadTree,
+      repository: this.#repository,
+      events: this.clientEvents,
+      shared: options.sharedThreads,
+      externalOnly: options.externalOnly,
+      localStatus: (id) => {
+        const thread = this.#externalRuntime.get(id);
+        return thread
+          ? thread.running || thread.activeTurnId !== null
+            ? "running"
+            : "idle"
+          : undefined;
+      },
+      waiting: (id) =>
+        [...this.#pendingDesktopApprovals.values()].some(({ thread }) => thread.id === id) ||
+        [...this.#pendingDesktopQuestions.values()].some(({ thread }) => thread.id === id) ||
+        this.#pendingDelegationQuestions(id).length > 0,
+      readOfficial: (threadId) =>
+        this.#requestOfficial("thread/read", { threadId, includeTurns: false }),
+      send: (message) => this.#writer.json(message),
+      diagnose: (error) => this.#diagnose(error),
+    });
     this.#externalAdapters = new Map(options.externalAdapters);
     for (const [harnessId, adapter] of this.#externalAdapters) {
       if (adapter.harnessId !== harnessId) {
@@ -1258,7 +1289,17 @@ export class AppServerHost {
       publishExternalQueue: (threadId) => this.#publishExternalQueue(threadId),
       startNextQueuedExternalTurn: (thread) => this.#startNextQueuedExternalTurn(thread),
     });
+    const desktopEnvironment = options.environment ?? process.env;
+    this.desktopExtensionBackends =
+      desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
+        ? undefined
+        : (options.desktopExtensionBackends ??
+          new DesktopExtensionBackendManager(
+            codexhostDataDirectory(desktopEnvironment),
+            (message) => this.#diagnose(message),
+          ));
     this.#desktopControl = new DesktopControlRequests({
+      desktopExtensionBackends: this.desktopExtensionBackends,
       writeJson: (value) => this.#writer.json(value),
       dispatchReply: (request, run, threadId) => this.#dispatchDesktopReply(request, run, threadId),
       waitForPlugins: () => this.#waitForPlugins(),
@@ -1534,6 +1575,8 @@ export class AppServerHost {
           .catch((closeError: unknown) => this.#diagnose(closeError));
       }
     }
+    if (!this.#closeRequested && !this.#options.desktopExtensionBackends)
+      this.desktopExtensionBackends?.start();
     // Load statistics plugins before native subscription negotiation; Session plugins continue
     // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
@@ -1553,8 +1596,10 @@ export class AppServerHost {
       return this.#closeRequested ? 0 : 1;
     } finally {
       this.#skills?.dispose();
+      this.#treeWatch.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
+      if (!this.#options.desktopExtensionBackends) await this.desktopExtensionBackends?.close();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
       await this.#desktopRequests.drain();
@@ -2080,6 +2125,7 @@ export class AppServerHost {
       }
       return;
     }
+    if (await this.#treeWatch.handle(request)) return;
     if (await this.#desktopControl.handle(request)) return;
     if (request.method === "codexhost/thread/tree/read") {
       this.#dispatchDesktopReply(request, async () => {
@@ -2206,6 +2252,7 @@ export class AppServerHost {
     const original = this.#officialServerRequests.get(requestId);
     if (original === undefined) return false;
     this.#officialServerRequests.delete(requestId);
+    this.#treeWatch.resolveOfficial(original);
     await this.#officialRuntime.send({ ...response, id: original });
     return true;
   }
@@ -2259,6 +2306,7 @@ export class AppServerHost {
     value: JsonValue;
   }): Promise<void> {
     for (const listener of this.#nativeSettingsNotifications) listener(input.value);
+    this.#treeWatch.observe(input.value, true);
     this.#threadActivity.observeOfficial(input.value);
     this.#observeOfficialForkLineage(input.value);
     if (this.#options.externalOnly) {
@@ -6729,7 +6777,9 @@ export class AppServerHost {
           (output) => this.#projectHarnessOutput(thread, output),
           (failure) => this.#diagnose(failure),
         );
-        if (!thread.activeTurnId && thread.projectedTurns.size === 0) {
+        // Completed Turn projections can remain for late background output;
+        // only active work should prevent the final status cleanup.
+        if (!thread.running && !thread.activeTurnId) {
           // The failure projection can re-register running Subagents from the
           // Item ledger while settling; retire them again so no stale entry
           // outlives the dead parent stream.

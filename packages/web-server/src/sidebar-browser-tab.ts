@@ -23,6 +23,8 @@ import {
   sidebarBrowserReduced,
 } from "./sidebar-browser-delivery.ts";
 import { EDITABLE_CHANGE_BINDING, SidebarBrowserEditables } from "./sidebar-browser-input.ts";
+import { SidebarDirectFrames, type SidebarDirectFrame } from "./sidebar-browser-direct-frames.ts";
+import type { SidebarDirectSession } from "./sidebar-browser-direct.ts";
 
 /** Stream tuning; a relayed link can trade sharpness and frame rate for bandwidth. */
 export interface SidebarBrowserQuality {
@@ -58,9 +60,12 @@ interface Viewer {
   readonly heldKeys: Set<string>;
   readonly heldButtons: Set<"left" | "middle" | "right">;
   visible: boolean;
-  readonly inFlight: { sequence: number; bytes: number }[];
+  readonly inFlight: { sequence: number; bytes: number; via: "direct" | "socket" }[];
+  readonly findDirect: (peer: string) => SidebarDirectSession | undefined;
+  direct?: SidebarDirectFrames;
+  session?: SidebarDirectSession;
   delivery: SidebarBrowserDelivery;
-  pending: { sequence: number; frame: Buffer } | undefined;
+  pending: SidebarDirectFrame | undefined;
 }
 
 interface Viewport {
@@ -107,6 +112,7 @@ export class SidebarBrowserTab {
   private titlePoll: ReturnType<typeof setInterval> | undefined;
   private lastAck = 0;
   private sequence = 0;
+  private latest: { cast: Cast; picture: SidebarDirectFrame } | undefined;
   private readonly editables: SidebarBrowserEditables;
   private input: Promise<unknown> = Promise.resolve();
   private pendingMove: { x: number; y: number } | undefined;
@@ -118,6 +124,7 @@ export class SidebarBrowserTab {
     readonly key: string,
     private readonly context: () => Promise<BrowserContext>,
     private readonly quality: SidebarBrowserQuality,
+    private readonly countFrameBytes: (via: "direct" | "socket", bytes: number) => void = () => {},
   ) {
     this.editables = new SidebarBrowserEditables(
       () => {
@@ -145,9 +152,10 @@ export class SidebarBrowserTab {
     return this.page === page;
   }
 
-  attach(socket: WebSocket): void {
+  attach(socket: WebSocket, findDirect: Viewer["findDirect"] = () => undefined): void {
     const viewer: Viewer = {
       socket,
+      findDirect,
       heldKeys: new Set(),
       heldButtons: new Set(),
       visible: false,
@@ -169,6 +177,7 @@ export class SidebarBrowserTab {
     });
     socket.on("close", () => {
       this.viewers.delete(viewer);
+      viewer.direct?.dispose();
       this.releaseInput(viewer);
       if (this.viewers.size === 0) this.detachedAt = Date.now();
       this.adapt();
@@ -201,21 +210,12 @@ export class SidebarBrowserTab {
 
   private receive(viewer: Viewer, message: SidebarBrowserClientMessage): void {
     switch (message.type) {
-      case "ack": {
-        const index = viewer.inFlight.findIndex((frame) => frame.sequence === message.sequence);
-        if (index < 0) return;
-        const spareSlot = hasSpareSlot(viewer, inFlightBytes(viewer));
-        const acknowledged = viewer.inFlight.splice(0, index + 1);
-        viewer.delivery.acknowledged(
-          performance.now(),
-          acknowledged.reduce((sum, frame) => sum + frame.bytes, 0),
-          viewer.inFlight.length > 0,
-          spareSlot,
-        );
-        this.adapt();
-        this.flush(viewer);
+      case "ack":
+        this.acknowledged(viewer, message.sequence);
         return;
-      }
+      case "transport":
+        this.changeTransport(viewer, message.peer);
+        return;
       case "visible":
         if (viewer.visible === message.visible) return;
         viewer.visible = message.visible;
@@ -241,6 +241,85 @@ export class SidebarBrowserTab {
       default:
         this.dispatchInput(viewer, message);
     }
+  }
+
+  private acknowledged(viewer: Viewer, sequence: number): void {
+    const index = viewer.inFlight.findIndex((frame) => frame.sequence === sequence);
+    if (index < 0) return;
+    const via = viewer.direct ? "direct" : "socket";
+    const bytes = inFlightBytes(viewer, via);
+    const spareSlot = bytes === inFlightBytes(viewer) && hasSpareSlot(viewer, bytes);
+    const acknowledged = viewer.inFlight.splice(0, index + 1);
+    const delivered = acknowledged.reduce(
+      (sum, frame) => sum + (frame.via === via ? frame.bytes : 0),
+      0,
+    );
+    if (delivered > 0)
+      viewer.delivery.acknowledged(
+        performance.now(),
+        delivered,
+        viewer.inFlight.some((frame) => frame.via === via),
+        spareSlot,
+      );
+    viewer.direct?.acknowledged(sequence);
+    this.adapt();
+    this.flush(viewer);
+  }
+
+  private changeTransport(viewer: Viewer, peer: string | undefined): void {
+    const session = peer === undefined ? undefined : viewer.findDirect(peer);
+    if (session && viewer.direct && viewer.session === session) return;
+    const binding = session?.bind(this.key, (reason) => this.fallback(viewer, reason));
+    if (!session || !binding) {
+      this.fallback(viewer, "client-request");
+      return;
+    }
+    const direct = new SidebarDirectFrames(
+      binding,
+      () => this.flush(viewer),
+      (sequence) => this.acknowledged(viewer, sequence),
+      (bytes) => this.countFrameBytes("direct", bytes),
+    );
+    if (!direct.usable) {
+      direct.dispose();
+      this.fallback(viewer, "message-size");
+      return;
+    }
+    viewer.direct?.dispose();
+    viewer.direct = direct;
+    viewer.session = session;
+    viewer.delivery = new SidebarBrowserDelivery();
+    this.send(viewer, {
+      type: "transport",
+      via: "direct",
+      from: viewer.pending?.sequence ?? this.sequence + 1,
+    });
+    this.adapt();
+    this.flush(viewer);
+  }
+
+  private fallback(viewer: Viewer, reason: string): void {
+    const direct = viewer.direct;
+    if (direct) {
+      delete viewer.direct;
+      direct.dispose();
+      viewer.session?.fallback(reason);
+      for (let i = viewer.inFlight.length - 1; i >= 0; i--)
+        if (viewer.inFlight[i]!.via === "direct") viewer.inFlight.splice(i, 1);
+      viewer.delivery = new SidebarBrowserDelivery();
+      if (reason === "revoked" || reason === "shutdown") return;
+      const latest = this.latest;
+      if (
+        viewer.visible &&
+        latest?.cast === this.casting &&
+        latest &&
+        !viewer.inFlight.some((frame) => frame.sequence === latest.picture.sequence)
+      )
+        viewer.pending = latest.picture;
+    }
+    this.send(viewer, { type: "transport", via: "socket" });
+    this.adapt();
+    this.flush(viewer);
   }
 
   private async navigate(url: string): Promise<void> {
@@ -402,8 +481,12 @@ export class SidebarBrowserTab {
     const rates = [...this.viewers]
       .filter((viewer) => viewer.visible)
       .map((viewer) => {
-        const bytes = inFlightBytes(viewer);
-        return viewer.delivery.rate(now, bytes, hasSpareSlot(viewer, bytes));
+        const bytes = inFlightBytes(viewer, viewer.direct ? "direct" : "socket");
+        return viewer.delivery.rate(
+          now,
+          bytes,
+          bytes === inFlightBytes(viewer) && hasSpareSlot(viewer, bytes),
+        );
       });
     const reduced = sidebarBrowserReduced(
       now,
@@ -507,11 +590,8 @@ export class SidebarBrowserTab {
     return false;
   }
 
-  private deliver(
-    image: Buffer,
-    { viewport, reduced }: Cast,
-    generation = this.editables.current.generation,
-  ): void {
+  private deliver(image: Buffer, cast: Cast, generation = this.editables.current.generation): void {
+    const { viewport, reduced } = cast;
     const sequence = ++this.sequence;
     this.editables.frame(generation);
     const frame = Buffer.concat([
@@ -527,9 +607,11 @@ export class SidebarBrowserTab {
       const previous = this.fullFrameBytes ?? frame.length;
       this.fullFrameBytes = previous + (frame.length - previous) / 4;
     }
+    const picture = { sequence, frame };
+    this.latest = { cast, picture };
     for (const viewer of this.viewers) {
       if (!viewer.visible) continue;
-      viewer.pending = { sequence, frame };
+      viewer.pending = picture;
       this.flush(viewer);
     }
   }
@@ -543,16 +625,25 @@ export class SidebarBrowserTab {
       this.casting.reduced !== this.reduced ||
       viewer.socket.readyState !== viewer.socket.OPEN ||
       viewer.inFlight.length >= MAX_IN_FLIGHT_FRAMES ||
-      (bytesInFlight > 0 && bytesInFlight + pending.frame.length > MAX_IN_FLIGHT_BYTES) ||
-      viewer.socket.bufferedAmount > MAX_IN_FLIGHT_BYTES
+      (bytesInFlight > 0 && bytesInFlight + pending.frame.length > MAX_IN_FLIGHT_BYTES)
     )
       return;
+    const { direct, socket } = viewer;
+    if (direct ? !direct.canSend(pending) : socket.bufferedAmount > MAX_IN_FLIGHT_BYTES) return;
     viewer.pending = undefined;
-    viewer.inFlight.push({ sequence: pending.sequence, bytes: pending.frame.length });
-    viewer.delivery.sent(performance.now());
-    viewer.socket.send(pending.frame, { binary: true }, (error) => {
-      if (!error) this.flush(viewer);
+    viewer.inFlight.push({
+      sequence: pending.sequence,
+      bytes: pending.frame.length,
+      via: direct ? "direct" : "socket",
     });
+    viewer.delivery.sent(performance.now());
+    if (direct) direct.send(pending);
+    else {
+      this.countFrameBytes("socket", pending.frame.length);
+      socket.send(pending.frame, { binary: true }, (error) => {
+        if (!error) this.flush(viewer);
+      });
+    }
   }
 
   private dispatchInput(
@@ -646,8 +737,11 @@ export class SidebarBrowserTab {
   }
 }
 
-function inFlightBytes(viewer: Viewer): number {
-  return viewer.inFlight.reduce((sum, frame) => sum + frame.bytes, 0);
+function inFlightBytes(viewer: Viewer, via?: "socket" | "direct"): number {
+  return viewer.inFlight.reduce(
+    (sum, frame) => sum + (via === undefined || frame.via === via ? frame.bytes : 0),
+    0,
+  );
 }
 
 function hasSpareSlot(viewer: Viewer, bytes: number): boolean {

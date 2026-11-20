@@ -47,7 +47,11 @@ import { RemoteRelay } from "./remote-relay/state.ts";
 import { registerRelayRpc } from "./remote-relay/rpc.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
 import { DesktopScreenshots } from "./desktop-screenshot.ts";
-import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browser";
+import {
+  SIDEBAR_BROWSER_PATH,
+  SIDEBAR_BROWSER_TAB_PARAM,
+} from "@codexhost/shared-contracts/sidebar-browser";
+import { SidebarBrowserDirect, sidebarDirectStunUrls } from "./sidebar-browser-direct.ts";
 import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
 import { PushNotifier } from "./push.ts";
@@ -156,6 +160,7 @@ const dataRoot = resolve(
     ),
 );
 const data = new DataDir(dataRoot);
+const directIceServers = sidebarDirectStunUrls(process.env.CODEXHOST_WEB_STUN_URLS);
 if (values["save-service-options"]) {
   try {
     process.exit(saveServiceOptions(data, values) ? SETTINGS_CHANGED_EXIT_CODE : 0);
@@ -712,7 +717,12 @@ registerRelayRpc(rpc, accessTokens, relay);
 if (serviceOptions.relayEnabled) relay.start();
 
 const wss = createBrowserWebSocketServer();
-const sidebarBrowser = new SidebarBrowser({ profileDirectory: join(dataRoot, "sidebar-browser") });
+const sidebarBrowser = new SidebarBrowser({
+  profileDirectory: join(dataRoot, "sidebar-browser"),
+  ...(auth === undefined
+    ? {}
+    : { direct: new SidebarBrowserDirect(data, connections, directIceServers) }),
+});
 server.on("upgrade", (request, socket, head) => {
   const path = (request.url ?? "").split("?")[0];
   if (!trust.sameOrigin(request)) {
@@ -720,8 +730,19 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
-  if (auth !== undefined && !auth.admitUpgrade(request, socket)) return;
-  if (path === SIDEBAR_BROWSER_PATH) sidebarBrowser.upgrade(request, socket, head);
+  const signaling =
+    path === SIDEBAR_BROWSER_PATH &&
+    !new URLSearchParams(request.url?.split("?")[1]).has(SIDEBAR_BROWSER_TAB_PARAM);
+  const credential = auth?.admitUpgrade(request, socket, !signaling);
+  if (auth !== undefined && credential === undefined) return;
+  if (path === SIDEBAR_BROWSER_PATH)
+    sidebarBrowser.upgrade(
+      request,
+      socket,
+      head,
+      credential,
+      signaling && trust.offersSidebarDirect(request),
+    );
   else if (path === "/api/remote.mux")
     wss.handleUpgrade(request, socket, head, (ws) =>
       streams.attach(ws, trust.relaySockets.has(request.socket)),

@@ -58,6 +58,25 @@ export class RequestTrust {
     }
   >();
 
+  /** Direct ICE is useful only when the existing connection goes through an intermediary. */
+  offersSidebarDirect(request: IncomingMessage): boolean {
+    if (isLocalConnection(request)) return false;
+    const address = normalizedAddress(request.socket.remoteAddress);
+    if (this.relaySockets.has(request.socket) || this.proxies.has(address)) return true;
+    if (!isLoopbackAddress(address)) return false;
+    const client = normalizedAddress(lastHeaderValue(request.headers["x-forwarded-for"]));
+    const family = isIP(client);
+    if (family === 4) {
+      const [first, second] = client.split(".").map(Number);
+      return first !== 100 || second! < 64 || second! > 127;
+    }
+    // Canonicalize the Serve address without changing what the auth layer trusts.
+    return (
+      family !== 6 ||
+      !new URL(`http://[${client.split("%")[0]}]`).hostname.startsWith("[fd7a:115c:a1e0:")
+    );
+  }
+
   /** Notify only the relay connection bound by the TLS bridge, never client-provided headers. */
   authenticated(request: IncomingMessage): void {
     try {

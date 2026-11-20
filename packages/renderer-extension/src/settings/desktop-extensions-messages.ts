@@ -5,7 +5,6 @@ import type {
 } from "@codexhost/shared-contracts";
 
 export interface DesktopExtensionsMessages {
-  readonly description: string;
   readonly directoryLabel: string;
   readonly directoryDefaultHint: string;
   readonly copyPath: string;
@@ -82,14 +81,6 @@ export interface DesktopExtensionsMessages {
   readonly previousScreenshot: string;
   readonly nextScreenshot: string;
   readonly closePreview: string;
-  readonly technicalDetails: string;
-  readonly detailId: string;
-  readonly detailVersion: string;
-  readonly detailSlots: string;
-  readonly detailHash: string;
-  readonly detailSha256: string;
-  readonly detailDiagnostics: string;
-  readonly noExclusiveSlots: string;
   readonly slots: Readonly<Record<DesktopExtensionSlot, string>>;
   readonly states: Readonly<Record<DesktopExtensionStatus["state"], string>>;
   readonly toggleLabel: string;
@@ -104,17 +95,12 @@ export interface DesktopExtensionsMessages {
   readonly revisionConflictBanner: string;
   readonly actionFailed: string;
   readonly importDialogTitle: string;
-  readonly importDialogSubtitle: string;
   readonly importTabUrl: string;
   readonly importTabZip: string;
   readonly importUrlLabel: string;
   readonly importUrlPlaceholder: string;
   readonly importUrlHint: string;
-  readonly importAdvancedToggle: string;
-  readonly importSha256Label: string;
-  readonly importSha256Placeholder: string;
   readonly importZipDropTitle: string;
-  readonly importZipDropHint: string;
   readonly importZipChooseFile: string;
   readonly importZipSelected: string;
   readonly importZipClear: string;
@@ -123,11 +109,9 @@ export interface DesktopExtensionsMessages {
   readonly importCancel: string;
   readonly importErrorEmptyUrl: string;
   readonly importErrorInvalidUrl: string;
-  readonly importErrorInvalidSha256: string;
   readonly importErrorNoFile: string;
   readonly importErrorInvalidExtension: string;
   readonly importErrorEmptyFile: string;
-  readonly importErrorFileTooLarge: string;
   readonly importErrorReadFailed: string;
   readonly importUnavailable: string;
   readonly recoveryTitle: string;
@@ -143,8 +127,6 @@ export interface DesktopExtensionsMessages {
 }
 
 export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze({
-  description:
-    "Manage optional UI extensions for the local Codex Desktop main window. Enabling or disabling applies live without restarting Desktop.",
   directoryLabel: "Extensions directory",
   directoryDefaultHint: "Default: ~/.codexhost/desktop-extensions/",
   copyPath: "Copy path",
@@ -236,14 +218,6 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   previousScreenshot: "Previous screenshot",
   nextScreenshot: "Next screenshot",
   closePreview: "Close preview",
-  technicalDetails: "Technical details",
-  detailId: "ID",
-  detailVersion: "Version",
-  detailSlots: "Slots",
-  detailHash: "Hash",
-  detailSha256: "SHA-256",
-  detailDiagnostics: "Diagnostic",
-  noExclusiveSlots: "No exclusive slots",
   slots: Object.freeze({
     "sidebar.thread-layout": "Sidebar thread layout",
     "sidebar.thread-badge": "Sidebar thread badge",
@@ -272,31 +246,23 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
     "Extension settings were updated elsewhere. The latest list has been reloaded—please try again.",
   actionFailed: "Could not update extension settings: {message}",
   importDialogTitle: "Import Desktop extension",
-  importDialogSubtitle:
-    "Install from a GitHub repository/release link or upload a local .zip package.",
   importTabUrl: "GitHub link",
   importTabZip: "Local .zip",
-  importUrlLabel: "GitHub repository or Release .zip URL",
-  importUrlPlaceholder: "https://github.com/owner/repo or …/extension.zip",
-  importUrlHint: "Supports a GitHub repository homepage URL or a direct .zip release link.",
-  importAdvancedToggle: "Optional SHA-256 verification",
-  importSha256Label: "Expected SHA-256 (optional)",
-  importSha256Placeholder: "64-character hexadecimal SHA-256 digest",
-  importZipDropTitle: "Drop a .zip extension package here",
-  importZipDropHint: "Maximum size 5 MiB. Package must include manifest.json and desktop.js.",
+  importUrlLabel: "GitHub repository URL",
+  importUrlPlaceholder: "https://github.com/owner/repo",
+  importUrlHint: "Supports a GitHub repository URL, subdirectory tree link, or Release .zip URL.",
+  importZipDropTitle: "Click to choose or drop a .zip file",
   importZipChooseFile: "Choose .zip file",
   importZipSelected: "{name} ({size})",
   importZipClear: "Remove",
   importSubmit: "Import",
   importSubmitting: "Importing…",
   importCancel: "Cancel",
-  importErrorEmptyUrl: "Enter a GitHub repository or .zip URL.",
+  importErrorEmptyUrl: "Enter a GitHub repository URL.",
   importErrorInvalidUrl: "Enter a valid http:// or https:// URL.",
-  importErrorInvalidSha256: "SHA-256 must be 64 hexadecimal characters.",
   importErrorNoFile: "Choose a local .zip package first.",
   importErrorInvalidExtension: "Only .zip packages are supported.",
   importErrorEmptyFile: "The selected .zip file is empty.",
-  importErrorFileTooLarge: "Package exceeds the 5 MiB limit ({size}).",
   importErrorReadFailed: "Could not read the selected file: {message}",
   importUnavailable: "This Host does not support importing Desktop extensions.",
   recoveryTitle: "Emergency recovery",
@@ -315,8 +281,6 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
 });
 
 export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze({
-  description:
-    "管理本机 Codex Desktop 主窗口的可选界面扩展。启用或禁用会实时生效，无需重启 Desktop。",
   directoryLabel: "扩展根目录",
   directoryDefaultHint: "默认 ~/.codexhost/desktop-extensions/",
   copyPath: "复制路径",
@@ -403,14 +367,6 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   previousScreenshot: "上一张截图",
   nextScreenshot: "下一张截图",
   closePreview: "收起大图",
-  technicalDetails: "技术信息",
-  detailId: "ID",
-  detailVersion: "版本",
-  detailSlots: "声明槽位",
-  detailHash: "Hash",
-  detailSha256: "SHA-256",
-  detailDiagnostics: "诊断信息",
-  noExclusiveSlots: "无独占槽位",
   slots: Object.freeze({
     "sidebar.thread-layout": "侧栏 Thread 布局",
     "sidebar.thread-badge": "侧栏 Thread 角标",
@@ -437,30 +393,23 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   revisionConflictBanner: "扩展配置已在其他入口更新，已自动刷新最新列表，请重试。",
   actionFailed: "更新扩展配置失败：{message}",
   importDialogTitle: "导入 Desktop 扩展",
-  importDialogSubtitle: "支持通过 GitHub 仓库或 Release 链接安装，或上传本地 .zip 扩展包。",
   importTabUrl: "GitHub 链接",
   importTabZip: "本地 .zip 包",
-  importUrlLabel: "GitHub 仓库或 Release .zip 链接",
-  importUrlPlaceholder: "https://github.com/owner/repo 或 Release .zip 链接",
-  importUrlHint: "支持粘贴 GitHub 仓库主页链接或 Release .zip 直链。",
-  importAdvancedToggle: "可选：SHA-256 校验值",
-  importSha256Label: "预期 SHA-256（可选）",
-  importSha256Placeholder: "64 位十六进制 SHA-256 摘要",
-  importZipDropTitle: "拖拽 .zip 扩展包到此处",
-  importZipDropHint: "单包不超过 5 MiB，需包含 manifest.json 与 desktop.js。",
+  importUrlLabel: "GitHub 仓库链接",
+  importUrlPlaceholder: "https://github.com/owner/repo",
+  importUrlHint: "支持 GitHub 仓库主页、子目录链接或 Release .zip 直链。",
+  importZipDropTitle: "点击选择或拖拽 .zip 文件",
   importZipChooseFile: "选择 .zip 文件",
   importZipSelected: "{name}（{size}）",
   importZipClear: "移除",
   importSubmit: "开始导入",
   importSubmitting: "导入中…",
   importCancel: "取消",
-  importErrorEmptyUrl: "请输入 GitHub 仓库或 .zip 链接。",
+  importErrorEmptyUrl: "请输入 GitHub 仓库链接。",
   importErrorInvalidUrl: "请输入有效的 http:// 或 https:// 链接。",
-  importErrorInvalidSha256: "SHA-256 校验值需为 64 位十六进制字符。",
   importErrorNoFile: "请先选择一个本地 .zip 扩展包。",
   importErrorInvalidExtension: "仅支持 .zip 格式的扩展包。",
   importErrorEmptyFile: "所选 .zip 文件为空。",
-  importErrorFileTooLarge: "文件大小超过 5 MiB 限制（当前 {size}）。",
   importErrorReadFailed: "无法读取所选文件：{message}",
   importUnavailable: "当前 Host 不支持导入 Desktop 扩展。",
   recoveryTitle: "应急恢复",

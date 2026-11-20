@@ -560,7 +560,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     )!;
     marketTab.dispatch("click");
 
-    // 1) Open community catalog item detail modal before installing: shows community notice, safe HTTPS screenshot only, and SHA-256 in tech details.
+    // 1) Open community catalog item detail modal before installing: shows community notice and safe HTTPS screenshot only, omitting technical metadata.
     const themeCard = descendants(mounted.content).find(
       (el) =>
         el.className === "settings-extensions-card" &&
@@ -573,7 +573,10 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     )!;
     expect(detailDialog.open).toBe(true);
     expect(textOf(detailDialog)).toContain("社区扩展，启用前建议先查看源码仓库");
-    expect(textOf(detailDialog)).toContain(HASH_C);
+    expect(descendants(detailDialog).find((el) => el.tagName === "details")).toBeUndefined();
+    expect(textOf(detailDialog)).not.toContain(HASH_C);
+    expect(textOf(detailDialog)).not.toContain("nord-palette");
+    expect(textOf(detailDialog)).not.toContain("技术信息");
     const modalImages = descendants(detailDialog).filter(
       (el) =>
         el.tagName === "img" && !el.className.includes("settings-extensions-detail-modal__preview"),
@@ -694,7 +697,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     mounted.dispose();
   });
 
-  it("imports via GitHub URL (with optional SHA-256) and local .zip upload, and blocks >5 MiB packages client-side", async () => {
+  it("imports via GitHub repository URL and local .zip upload without SHA-256 input or client-side 5 MiB limit", async () => {
     const importedList: DesktopExtensionsListResult = {
       ...sampleInstalledList(),
       extensions: [
@@ -749,15 +752,22 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
           el.tagName === "dialog" && el.className.includes("settings-extensions-import-dialog"),
       );
 
-    // 1) GitHub URL import with optional SHA-256.
+    // 1) GitHub repository URL import without dialog subtitle or SHA-256 input.
     const urlDialog = findImportDialog()!;
     expect(urlDialog.open).toBe(true);
+    expect(textOf(urlDialog)).not.toContain("支持通过 GitHub 仓库或 Release 链接安装");
+    expect(textOf(urlDialog)).toContain("GitHub 仓库链接");
+    expect(textOf(urlDialog)).not.toContain("SHA-256");
+    expect(
+      descendants(urlDialog).find((el) => el.dataset.importField === "sha256"),
+    ).toBeUndefined();
+    expect(descendants(urlDialog).find((el) => el.tagName === "details")).toBeUndefined();
+
     const urlInput = descendants(urlDialog).find((el) => el.dataset.importField === "url")!;
-    const shaInput = descendants(urlDialog).find((el) => el.dataset.importField === "sha256")!;
+    expect(urlInput.placeholder).toBe("https://github.com/owner/repo");
     const form = descendants(urlDialog).find((el) => el.tagName === "form")!;
 
     urlInput.value = "https://github.com/example/custom-widget";
-    shaInput.value = HASH_A.toUpperCase();
     form.dispatch("submit");
 
     await vi.waitFor(() => expect(findImportDialog()).toBeUndefined());
@@ -766,7 +776,6 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       source: {
         type: "url",
         url: "https://github.com/example/custom-widget",
-        expectedSha256: HASH_A,
       },
     });
     const installedTab = descendants(mounted.content).find(
@@ -775,7 +784,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     expect(installedTab.getAttribute("aria-selected")).toBe("true");
     expect(textOf(mounted.content)).toContain("已安装“自定义组件”（v0.3.0），可按需开启。");
 
-    // 2) Local .zip upload: reject > 5 MiB client-side without calling RPC, then accept valid .zip and send base64.
+    // 2) Local .zip upload: no 5 MiB hint or client-side size block; accepts >5 MiB metadata and sends base64.
     openImportButton.dispatch("click");
     const zipDialog = findImportDialog()!;
     const zipModeTab = descendants(zipDialog).find(
@@ -783,36 +792,27 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     )!;
     zipModeTab.dispatch("click");
 
+    expect(textOf(zipDialog)).toContain("点击选择或拖拽 .zip 文件");
+    expect(textOf(zipDialog)).not.toContain("5 MiB");
+    expect(textOf(zipDialog)).not.toContain("manifest.json");
+
     const fileInput = descendants(zipDialog).find((el) => el.dataset.importField === "zip")!;
     const zipForm = descendants(zipDialog).find((el) => el.tagName === "form")!;
 
-    // Oversized file (> 5 MiB) is blocked immediately on selection.
-    const tooBigFile = {
-      name: "huge-ext.zip",
-      size: DESKTOP_EXTENSION_ZIP_MAX_BYTES + 1,
-      arrayBuffer: vi.fn(),
-    };
-    fileInput.files = [tooBigFile];
-    fileInput.dispatch("change");
-    expect(textOf(zipDialog)).toContain("5 MiB");
-    expect(tooBigFile.arrayBuffer).not.toHaveBeenCalled();
-
-    zipForm.dispatch("submit");
-    expect(installDesktopExtension).toHaveBeenCalledTimes(1);
-
-    // Valid small .zip file is base64-encoded and submitted.
     const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x01, 0x02]);
-    const validFile = {
+    const largeZipFile = {
       name: "custom-widget.zip",
-      size: zipBytes.byteLength,
+      size: DESKTOP_EXTENSION_ZIP_MAX_BYTES + 1,
       arrayBuffer: vi.fn(async () => zipBytes.buffer),
     };
-    fileInput.files = [validFile];
+    fileInput.files = [largeZipFile];
     fileInput.dispatch("change");
     expect(textOf(zipDialog)).toContain("custom-widget.zip");
+    expect(textOf(zipDialog)).not.toContain("5 MiB");
 
     zipForm.dispatch("submit");
     await vi.waitFor(() => expect(findImportDialog()).toBeUndefined());
+    expect(largeZipFile.arrayBuffer).toHaveBeenCalledTimes(1);
     expect(installDesktopExtension).toHaveBeenCalledTimes(2);
     expect(installDesktopExtension).toHaveBeenLastCalledWith({
       source: {

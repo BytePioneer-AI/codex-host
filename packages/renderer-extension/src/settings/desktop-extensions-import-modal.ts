@@ -1,6 +1,4 @@
 import {
-  DESKTOP_EXTENSION_ZIP_MAX_BYTES,
-  desktopExtensionHashSchema,
   desktopExtensionHttpUrlSchema,
   type DesktopExtensionsInstallParams,
 } from "@codexhost/shared-contracts";
@@ -76,13 +74,7 @@ export function createDesktopExtensionImportModal(options: {
       copy.importDialogTitle,
     );
     titleEl.id = titleId;
-    const subtitleEl = createEl(
-      document,
-      "p",
-      "settings-extensions-import-modal__subtitle",
-      copy.importDialogSubtitle,
-    );
-    headerCopy.append(titleEl, subtitleEl);
+    headerCopy.append(titleEl);
 
     const closeButton = createEl(
       document,
@@ -138,29 +130,7 @@ export function createDesktopExtensionImportModal(options: {
     const urlHint = createEl(document, "small", "", copy.importUrlHint);
     urlField.append(urlLabel, urlInput, urlHint);
 
-    const shaDetails = createEl(document, "details", "settings-extensions-import-modal__advanced");
-    const shaSummary = createEl(
-      document,
-      "summary",
-      "settings-extensions-detail-modal__tech-summary",
-    );
-    shaSummary.append(
-      createEl(document, "span", "", copy.importAdvancedToggle),
-      createRendererSettingsIcon("chevron-down", 12),
-    );
-    const shaField = createEl(document, "div", "settings-extensions-import-modal__field");
-    const shaInputId = preferenceId("desktop-ext-import-sha256");
-    const shaLabel = createEl(document, "label", "", copy.importSha256Label);
-    shaLabel.setAttribute("for", shaInputId);
-    const shaInput = createEl(document, "input", "settings-extensions-import-modal__input");
-    shaInput.id = shaInputId;
-    shaInput.type = "text";
-    shaInput.placeholder = copy.importSha256Placeholder;
-    shaInput.dataset.importField = "sha256";
-    shaField.append(shaLabel, shaInput);
-    shaDetails.append(shaSummary, shaField);
-
-    urlPanel.append(urlField, shaDetails);
+    urlPanel.append(urlField);
 
     // Panel 2: Local .zip upload
     const zipPanel = createEl(document, "div", "settings-extensions-import-modal__panel");
@@ -181,12 +151,6 @@ export function createDesktopExtensionImportModal(options: {
       "settings-extensions-dropzone__title",
       copy.importZipDropTitle,
     );
-    const dropHint = createEl(
-      document,
-      "p",
-      "settings-extensions-dropzone__hint",
-      copy.importZipDropHint,
-    );
     const chooseFileButton = createEl(
       document,
       "button",
@@ -198,7 +162,7 @@ export function createDesktopExtensionImportModal(options: {
       if (!busy) fileInput.click?.();
     });
 
-    dropzone.append(dropIcon, dropTitle, dropHint, chooseFileButton, fileInput);
+    dropzone.append(dropIcon, dropTitle, chooseFileButton, fileInput);
 
     const selectedFileBar = createEl(document, "div", "settings-extensions-dropzone__selected");
     selectedFileBar.hidden = true;
@@ -286,7 +250,6 @@ export function createDesktopExtensionImportModal(options: {
       urlTabButton.disabled = next;
       zipTabButton.disabled = next;
       urlInput.disabled = next;
-      shaInput.disabled = next;
       fileInput.disabled = next;
       chooseFileButton.disabled = next;
       clearFileButton.disabled = next;
@@ -311,16 +274,6 @@ export function createDesktopExtensionImportModal(options: {
         setError(copy.importErrorEmptyFile);
         return;
       }
-      if (file.size > DESKTOP_EXTENSION_ZIP_MAX_BYTES) {
-        selectedFile = null;
-        syncSelectedFile();
-        setError(
-          formatMessage(copy.importErrorFileTooLarge, {
-            size: formatByteSize(file.size),
-          }),
-        );
-        return;
-      }
       selectedFile = file;
       syncSelectedFile();
     };
@@ -339,7 +292,6 @@ export function createDesktopExtensionImportModal(options: {
     });
 
     urlInput.addEventListener("input", () => setError(null));
-    shaInput.addEventListener("input", () => setError(null));
 
     fileInput.addEventListener("change", () => {
       const files = (fileInput as unknown as { files?: ArrayLike<DesktopExtensionImportFileLike> })
@@ -413,19 +365,7 @@ export function createDesktopExtensionImportModal(options: {
             setError(copy.importErrorInvalidUrl);
             return;
           }
-          const rawSha = shaInput.value.trim().toLowerCase();
-          let expectedSha256: string | undefined;
-          if (rawSha) {
-            const parsedSha = desktopExtensionHashSchema.safeParse(rawSha);
-            if (!parsedSha.success) {
-              setError(copy.importErrorInvalidSha256);
-              return;
-            }
-            expectedSha256 = parsedSha.data;
-          }
-          source = expectedSha256
-            ? { type: "url", url: parsedUrl.data, expectedSha256 }
-            : { type: "url", url: parsedUrl.data };
+          source = { type: "url", url: parsedUrl.data };
         } else {
           if (!selectedFile) {
             setError(copy.importErrorNoFile);
@@ -439,14 +379,6 @@ export function createDesktopExtensionImportModal(options: {
             setError(copy.importErrorEmptyFile);
             return;
           }
-          if (selectedFile.size > DESKTOP_EXTENSION_ZIP_MAX_BYTES) {
-            setError(
-              formatMessage(copy.importErrorFileTooLarge, {
-                size: formatByteSize(selectedFile.size),
-              }),
-            );
-            return;
-          }
           let buffer: ArrayBuffer;
           try {
             buffer = await selectedFile.arrayBuffer();
@@ -458,14 +390,6 @@ export function createDesktopExtensionImportModal(options: {
           }
           if (buffer.byteLength <= 0) {
             setError(copy.importErrorEmptyFile);
-            return;
-          }
-          if (buffer.byteLength > DESKTOP_EXTENSION_ZIP_MAX_BYTES) {
-            setError(
-              formatMessage(copy.importErrorFileTooLarge, {
-                size: formatByteSize(buffer.byteLength),
-              }),
-            );
             return;
           }
           source = {

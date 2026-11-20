@@ -103,7 +103,7 @@ export function createDesktopExtensionsSettingsPage(
       const ownerWindow = document.defaultView;
       const root = createEl(document, "div", "settings-extensions");
 
-      // Header: title + description on left, compact Import + Refresh on right.
+      // Header: title on left, compact Import + Refresh on right.
       const header = createEl(document, "div", "settings-remote__header");
       const headerCopy = createEl(document, "div");
       const title = createEl(
@@ -112,8 +112,7 @@ export function createDesktopExtensionsSettingsPage(
         "settings-section-label",
         messages.pageLabels["desktop-extensions"],
       );
-      const description = createEl(document, "p", "settings-page-description", copy.description);
-      headerCopy.append(title, description);
+      headerCopy.append(title);
 
       const toolbar = createEl(document, "div", "settings-remote__toolbar");
       const importButton = createEl(

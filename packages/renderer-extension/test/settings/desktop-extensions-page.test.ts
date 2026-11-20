@@ -340,6 +340,10 @@ describe("Desktop extensions settings page", () => {
     );
     expect(textOf(zhMount.content)).toContain("尚未发现 Desktop 扩展");
     expect(textOf(zhMount.content)).toContain("等待 Desktop 连接");
+    expect(textOf(zhMount.content)).not.toContain("管理本机 Codex Desktop 主窗口的可选界面扩展");
+    expect(
+      descendants(zhMount.content).find((el) => el.className === "settings-page-description"),
+    ).toBeUndefined();
     zhMount.dispose();
 
     const enMount = mountPage("en", () => client);
@@ -347,6 +351,7 @@ describe("Desktop extensions settings page", () => {
       expect(textOf(enMount.content)).toContain("No Desktop extensions found"),
     );
     expect(textOf(enMount.content)).toContain("$CODEXHOST_DATA_DIR/desktop-extensions/<id>/");
+    expect(textOf(enMount.content)).not.toContain("Manage optional UI extensions");
     enMount.dispose();
   });
 
@@ -843,17 +848,39 @@ describe("Desktop extensions settings page", () => {
     expect(previewStage.hidden).toBe(true);
     expect(dialog.open).toBe(true);
 
-    // Technical details live inside the subtle bottom <details> disclosure.
-    const techDisclosure = descendants(dialog).find((el) => el.tagName === "details")!;
-    expect(techDisclosure).toBeDefined();
-    expect(textOf(techDisclosure)).toContain("sidebar-thread-tree");
-    expect(textOf(techDisclosure)).toContain("侧栏 Thread 布局");
-    expect(textOf(techDisclosure)).toContain("侧栏 Thread 角标");
-    expect(textOf(techDisclosure)).toContain(SAMPLE_TREE_HASH);
+    // Healthy extension detail modal stays clean without technical metadata or diagnostic alert.
+    expect(descendants(dialog).find((el) => el.tagName === "details")).toBeUndefined();
+    const healthyAlert = descendants(dialog).find((el) =>
+      el.className.includes("settings-extensions-detail-modal__alert"),
+    )!;
+    expect(healthyAlert.hidden).toBe(true);
+    expect(textOf(dialog)).not.toContain("技术信息");
+    expect(textOf(dialog)).not.toContain("sidebar-thread-tree");
+    expect(textOf(dialog)).not.toContain("侧栏 Thread 布局");
+    expect(textOf(dialog)).not.toContain("侧栏 Thread 角标");
+    expect(textOf(dialog)).not.toContain(SAMPLE_TREE_HASH);
+    expect(textOf(dialog)).not.toContain("SHA-256");
 
     // Second Escape closes the detail modal.
     dialog.dispatch("keydown", { key: "Escape" });
     expect(dialog.open).toBe(false);
+    expect(findDetailDialog()).toBeUndefined();
+
+    // Unhealthy extension detail modal surfaces diagnostic alert without technical disclosure.
+    const brokenCard = descendants(mounted.content).find(
+      (el) => el.tagName === "article" && el.dataset.extensionId === "broken-extension",
+    )!;
+    brokenCard.dispatch("click");
+    const brokenDialog = findDetailDialog()!;
+    expect(brokenDialog.open).toBe(true);
+    const brokenAlert = descendants(brokenDialog).find((el) =>
+      el.className.includes("settings-extensions-detail-modal__alert"),
+    )!;
+    expect(brokenAlert.hidden).toBe(false);
+    expect(brokenAlert.dataset.tone).toBe("danger");
+    expect(textOf(brokenAlert)).toContain("Invalid manifest.json");
+    expect(descendants(brokenDialog).find((el) => el.tagName === "details")).toBeUndefined();
+    brokenDialog.close();
     expect(findDetailDialog()).toBeUndefined();
 
     // Keyboard Enter on a row without `details` falls back to `description`, and backdrop click closes it.

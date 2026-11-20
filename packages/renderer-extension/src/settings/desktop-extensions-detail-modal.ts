@@ -64,7 +64,6 @@ export function createDesktopExtensionDetailModal(options: {
   let openExtensionId: string | null = null;
   let activeScreenshotIndex: number | null = null;
   let renderedScreenshotsKey = "";
-  let techExpanded = false;
   let confirmingUninstall = false;
   let currentItem: DesktopExtensionItem | undefined;
   let currentCatalogEntry: DesktopExtensionCatalogEntry | undefined;
@@ -86,8 +85,6 @@ export function createDesktopExtensionDetailModal(options: {
   let previewPrevButton: HTMLButtonElement | null = null;
   let previewNextButton: HTMLButtonElement | null = null;
   let galleryGrid: HTMLDivElement | null = null;
-  let techDetails: HTMLDetailsElement | null = null;
-  let techMetaList: HTMLDListElement | null = null;
   let currentScreenshots: readonly string[] = [];
   let currentDisplayName = "";
 
@@ -345,9 +342,7 @@ export function createDesktopExtensionDetailModal(options: {
       !modalToggle ||
       !feedbackBar ||
       !attentionBar ||
-      !descriptionSection ||
-      !techDetails ||
-      !techMetaList
+      !descriptionSection
     ) {
       return;
     }
@@ -529,64 +524,6 @@ export function createDesktopExtensionDetailModal(options: {
 
     // Screenshots gallery + interactive large preview.
     renderScreenshots(extensionId, installed, catalogEntry, displayName);
-
-    // Subtle bottom collapsible technical details.
-    techDetails.open = techExpanded;
-    const techRows: HTMLElement[] = [];
-    const appendTechRow = (label: string, valueNode: HTMLElement): void => {
-      const row = createEl(document, "div", "settings-extensions-card__meta-row");
-      row.append(createEl(document, "dt", "", label));
-      const dd = createEl(document, "dd");
-      dd.append(valueNode);
-      row.append(dd);
-      techRows.push(row);
-    };
-
-    appendTechRow(copy.detailId, createEl(document, "code", "", extensionId));
-
-    const slots = installed?.manifest?.slots ?? catalogEntry?.slots;
-    if (slots !== undefined) {
-      const slotsRow = createEl(document, "div", "settings-extensions-slots");
-      if (slots.length === 0) {
-        slotsRow.append(
-          createEl(
-            document,
-            "span",
-            "settings-status-badge settings-extensions-slot-chip--empty",
-            copy.noExclusiveSlots,
-          ),
-        );
-      } else {
-        for (const slot of slots) {
-          const chip = createEl(
-            document,
-            "span",
-            "settings-status-badge settings-extensions-slot-chip",
-            copy.slots[slot] ?? slot,
-          );
-          chip.dataset.slot = slot;
-          chip.title = slot;
-          slotsRow.append(chip);
-        }
-      }
-      appendTechRow(copy.detailSlots, slotsRow);
-    }
-
-    if (installed?.status.hash) {
-      const hashCode = createEl(document, "code", "", installed.status.hash);
-      hashCode.title = installed.status.hash;
-      appendTechRow(copy.detailHash, hashCode);
-    } else if (!installed && catalogEntry?.sha256) {
-      const shaCode = createEl(document, "code", "", catalogEntry.sha256);
-      shaCode.title = catalogEntry.sha256;
-      appendTechRow(copy.detailSha256, shaCode);
-    }
-
-    if (attention) {
-      appendTechRow(copy.detailDiagnostics, createEl(document, "span", "", attention.text));
-    }
-
-    techMetaList.replaceChildren(...techRows);
   };
 
   const cleanup = (): void => {
@@ -596,7 +533,6 @@ export function createDesktopExtensionDetailModal(options: {
     openExtensionId = null;
     activeScreenshotIndex = null;
     renderedScreenshotsKey = "";
-    techExpanded = false;
     confirmingUninstall = false;
     currentItem = undefined;
     currentCatalogEntry = undefined;
@@ -618,8 +554,6 @@ export function createDesktopExtensionDetailModal(options: {
     previewPrevButton = null;
     previewNextButton = null;
     galleryGrid = null;
-    techDetails = null;
-    techMetaList = null;
     previous?.remove();
     onClose?.();
   };
@@ -771,34 +705,7 @@ export function createDesktopExtensionDetailModal(options: {
     galleryGrid = createEl(document, "div", "settings-extensions-detail-modal__gallery");
     screenshotsSection.append(screenshotsHeading, previewStage, galleryGrid);
 
-    // Subtle bottom collapsible technical details
-    techDetails = createEl(document, "details", "settings-extensions-detail-modal__tech");
-    const techSummary = createEl(
-      document,
-      "summary",
-      "settings-extensions-detail-modal__tech-summary",
-    );
-    techSummary.append(
-      createEl(document, "span", "", copy.technicalDetails),
-      createRendererSettingsIcon("chevron-down", 12),
-    );
-    techMetaList = createEl(
-      document,
-      "dl",
-      "settings-extensions-card__meta-grid settings-extensions-detail-modal__meta-grid",
-    );
-    techDetails.append(techSummary, techMetaList);
-    techDetails.addEventListener("toggle", () => {
-      techExpanded = Boolean(techDetails?.open);
-    });
-
-    modalBody.append(
-      feedbackBar,
-      attentionBar,
-      descriptionSection,
-      screenshotsSection,
-      techDetails,
-    );
+    modalBody.append(feedbackBar, attentionBar, descriptionSection, screenshotsSection);
     surface.append(modalHeader, modalBody);
     modal.append(surface);
 
@@ -861,7 +768,6 @@ export function createDesktopExtensionDetailModal(options: {
       if (openExtensionId !== extensionId) {
         activeScreenshotIndex = null;
         renderedScreenshotsKey = "";
-        techExpanded = false;
         confirmingUninstall = false;
       }
       openExtensionId = extensionId;

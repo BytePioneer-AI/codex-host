@@ -60,6 +60,11 @@ export const inject = [
   "remote.workspaceFiles",
 ];
 
+declare module "@deepseek-ai/dsh-session-projection/types" {
+  interface SessionProjectionMap {
+    remoteWorkspacePath: string | null;
+  }
+}
 /**
  * Client plugin body: register the type, its dictionaries, its body, and its chip title.
  * @param ctx - client root context carrying the registry, the slots, and the Remote face.

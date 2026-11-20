@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sidebarAction } from "./remote-sidebar.js";
 
 export const REMOTE_CONTROLLER_REQUEST_MAX_BYTES = 16 * 1024;
 /** REMOTE + nonce + separators/newline, including JSON escaping and UTF-8 encoding. */
@@ -23,6 +24,25 @@ export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
     cwd: z.string().min(1).max(8192),
     epoch: identity,
   }),
+  z.strictObject({ kind: z.literal("projectHarnesses"), ...target, epoch: identity }),
+  z.strictObject({
+    kind: z.literal("inspectHarness"),
+    ...target,
+    epoch: identity,
+    cwd: z.string().min(1).max(8192),
+    harnessId: identity,
+  }),
+  z.strictObject({
+    kind: z.literal("startSelected"),
+    ...target,
+    epoch: identity,
+    cwd: z.string().min(1).max(8192),
+    harnessId: identity,
+    model: z.string().min(1).max(4096),
+    serviceTier: z.enum(["priority", "ultrafast"]).optional(),
+    reasoningEffort: identity.optional(),
+  }),
+  z.strictObject({ kind: z.literal("sidebar"), ...thread, epoch: identity, action: sidebarAction }),
   z.strictObject({ kind: z.literal("status"), ...thread }),
   z.strictObject({
     kind: z.literal("list"),

@@ -201,6 +201,57 @@ export async function rendererRemoteSession(
   const generation = connectionGeneration(route);
   if ("epoch" in operation && operation.epoch !== generation.epoch)
     throw connectionError("Remote connection changed; refresh before operating", true);
+  if (operation.kind === "sidebar")
+    return read(() =>
+      manager.sendRequest("codexhost/web/sidebar", {
+        nativeId: operation.threadId,
+        action: operation.action,
+      }),
+    );
+  if (operation.kind === "projectHarnesses") {
+    const result = (await read(() =>
+      manager.sendRequest("codexhost/harness/plugins/list", {}),
+    )) as {
+      plugins: Array<{ id: string; name: string; kind?: string }>;
+    };
+    return result.plugins
+      .filter((plugin) => plugin.kind !== "usage")
+      .map(({ id, name }) => ({ id, name }));
+  }
+  if (operation.kind === "inspectHarness")
+    return read(() =>
+      manager.sendRequest("codexhost/harness/inspect", {
+        harnessId: operation.harnessId,
+        cwd: operation.cwd,
+      }),
+    );
+  if (operation.kind === "startSelected") {
+    const result = (await read(() =>
+      manager.sendRequest("thread/start", {
+        cwd: operation.cwd,
+        historyMode: "paginated",
+        model: operation.model,
+        ...(operation.serviceTier ? { serviceTier: operation.serviceTier } : {}),
+        ...(operation.reasoningEffort
+          ? { config: { model_reasoning_effort: operation.reasoningEffort } }
+          : {}),
+      }),
+    )) as { thread: { id: string } };
+    const owner = (await read(() =>
+      manager.sendRequest("codexhost/thread/inspect", {
+        threadId: result.thread.id,
+      }),
+    )) as { owner: string; harnessId?: string };
+    if (
+      (owner.owner === "codex"
+        ? "codex"
+        : owner.owner === "external"
+          ? owner.harnessId
+          : undefined) !== operation.harnessId
+    )
+      throw new Error("Remote Host did not confirm the selected Harness; no message was sent");
+    return result;
+  }
   if (operation.kind === "create") {
     const result = await manager.sendRequest("thread/start", {
       cwd: operation.cwd,

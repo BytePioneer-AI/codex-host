@@ -224,7 +224,10 @@ export function FilesBody({
     [tab.actions, tab.id, refresh],
   );
   const { signal, actions: tabActions } = tab;
-  const cwd = useSessions((sessions) => sessions.byId[sessionId]?.cwd);
+  const cwd = useSessions((sessions) => {
+    const row = sessions.byId[sessionId];
+    return row?.projectionValues?.remoteWorkspacePath ?? row?.cwd;
+  });
   const state = useStore((store) => store.byTab[tab.id]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrollTopRef = useRef(0);

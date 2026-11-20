@@ -265,7 +265,7 @@ export function ProjectRowItem({
             }
           />
         )}
-        {!row.remote && (
+        {(!row.remote || (row.remote.state === "connected" && !!group.cwd)) && (
           <Tooltip
             label={t("actions.newSession")}
             shortcutKeys={newShortcut?.keys}

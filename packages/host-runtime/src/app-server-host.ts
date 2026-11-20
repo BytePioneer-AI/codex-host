@@ -287,6 +287,7 @@ import {
 } from "./external-turn-projection.js";
 import { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
 import { codexhostDataDirectory } from "./external-clients.js";
+import type { RemoteSidebarPeer } from "./remote-sidebar-peer.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
 import { errorMessage, rpcEnvelope, rpcError, type HostRequestOrigin } from "./desktop-rpc.js";
@@ -393,6 +394,8 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
+  /** Scoped to one authenticated Desktop SSH/Remote Control listener connection. */
+  sidebarPeer?: RemoteSidebarPeer;
   desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
@@ -1370,6 +1373,7 @@ export class AppServerHost {
   }
 
   async #closeOfficialRuntime(): Promise<void> {
+    this.#options.sidebarPeer?.close();
     this.#nativeAccountObserver?.close();
     if (this.#ownsOfficialRuntimeScope) await this.#officialRuntimeScope.close();
     await this.#officialRuntime.close();
@@ -2028,6 +2032,24 @@ export class AppServerHost {
         this.#diagnose(error);
         await this.#writer.json(rpcError(request, -32075, "External prewarm could not close"));
       }
+      return;
+    }
+    if (request.method === "codexhost/web/sidebar") {
+      const peer = this.#options.sidebarPeer;
+      if (origin !== "desktop" || !peer) {
+        await this.#writer.json(
+          rpcError(request, -32601, "Remote workspace panels require a Desktop remote connection."),
+        );
+        return;
+      }
+      this.#dispatchDesktopReply(request, async () => {
+        try {
+          const value = await peer.run(request.params);
+          await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(value) }));
+        } catch (error) {
+          await this.#writer.json(rpcError(request, -32090, errorMessage(error)));
+        }
+      });
       return;
     }
     if (await this.#treeWatch.handle(request)) return;

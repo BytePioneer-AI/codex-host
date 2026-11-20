@@ -1,3 +1,4 @@
+import { RemoteProjectDraft } from "./remote-project-draft.ts";
 import { remoteApprovalPresentation } from "./remote-approval.ts";
 import { requestRemoteSession, RemoteSessionError } from "@codexhost/desktop-control";
 import { z } from "zod";
@@ -9,6 +10,7 @@ import {
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
   webToolOutputReferenceSchema,
   type RemoteSessionOperation,
+  type SidebarAction,
 } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { defaultProjections } from "./session-log.ts";
@@ -127,6 +129,7 @@ type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
 /** Separate remote ownership facade. Local ChSessions and native shared-backend discovery
  * retain their own lifecycle; remote cwd and attachment paths never reach local tools. */
 export class RemoteSessions {
+  private drafts = new Map<string, RemoteProjectDraft>();
   private entries = new Map<string, Entry>();
   private hosts = new Map<string, RemoteWorkspaceHost>();
   private controls = new Set<StreamSink>();
@@ -168,7 +171,22 @@ export class RemoteSessions {
     try {
       return await this.call(parsed.data);
     } catch (error) {
-      const write = !["hosts", "list", "read", "status", "usage"].includes(operation.kind);
+      if (operation.kind === "sidebar")
+        throw new RpcError(
+          "remote/sidebar-unavailable",
+          error instanceof RemoteSessionError
+            ? error.message
+            : "The target Host could not be reached. Reconnect Desktop and verify that the target Web service is running.",
+        );
+      const write = ![
+        "hosts",
+        "list",
+        "read",
+        "status",
+        "usage",
+        "projectHarnesses",
+        "inspectHarness",
+      ].includes(operation.kind);
       if (!write && error instanceof RemoteSessionError && ![-32090, -32093].includes(error.code))
         throw new RpcError(
           error.code === -32094
@@ -297,7 +315,7 @@ export class RemoteSessions {
     }
     this.syncGroups();
   }
-  private async createInProject(workspaceId: string) {
+  private async projectTarget(workspaceId: string) {
     const hosts = hostsSchema.parse(await this.invoke({ kind: "hosts" }));
     for (const host of hosts) {
       const project = host.projects?.find(
@@ -311,12 +329,94 @@ export class RemoteSessions {
           "remote/unsupported",
           "Update CodexHost Desktop to create remote Threads.",
         );
-      const reply = await this.invoke({
-        kind: "create",
-        hostId: host.hostId,
-        epoch: host.epoch,
-        cwd: project.path,
-      });
+      return {
+        host,
+        project,
+        target: { hostId: host.hostId, epoch: host.epoch, cwd: project.path },
+      };
+    }
+    throw new RpcError(
+      "workspace/not-found",
+      "Select a registered remote project in Codex Desktop.",
+    );
+  }
+  private async createInProject(workspaceId: string, previous?: string) {
+    const { host, project, target } = await this.projectTarget(workspaceId);
+    if (previous) {
+      const draft = this.drafts.get(previous);
+      if (
+        !draft ||
+        draft.workspaceId !== workspaceId ||
+        draft.submission ||
+        draft.target.epoch !== target.epoch ||
+        draft.target.cwd !== target.cwd
+      )
+        throw new RpcError("session/writer-held", "Start a fresh draft in this remote project.");
+      draft.lastUsed = Date.now();
+      return { sessionId: draft.id, agentPreset: "standard" };
+    }
+    // Ephemeral aliases also fence repeated first sends. Expired IDs cannot target a native Thread.
+    for (const [key, old] of this.drafts) {
+      if (Date.now() - old.lastUsed > 24 * 60 * 60 * 1000 && !old.sending) {
+        this.drafts.delete(key);
+        if (!old.canonicalId) this.events.emit("api-session/removed", key);
+      }
+    }
+    const draft = new RemoteProjectDraft(
+      workspaceId,
+      project.id,
+      target,
+      remoteHostDisplayName(host),
+    );
+    this.drafts.set(draft.id, draft);
+    this.hosts.set(host.hostId, host);
+    this.syncGroups();
+    this.events.emit("api-session/added", draft.summary());
+    return { sessionId: draft.id, agentPreset: "standard" };
+  }
+  private async firstTurn(draft: RemoteProjectDraft, request: Record<string, unknown>) {
+    const parts = z
+      .array(z.object({ type: z.literal("text"), text: z.string() }))
+      .safeParse(request.content);
+    const text = parts.success ? parts.data.map((p) => p.text).join("\n") : "";
+    const prompt = {
+      kind: "prompt" as const,
+      hostId: draft.target.hostId,
+      epoch: draft.target.epoch,
+      text,
+      ...(typeof request.requestId === "string" ? { requestId: request.requestId } : {}),
+    };
+    const probe = { ...prompt, threadId: "0".repeat(128) };
+    if (
+      !text.trim() ||
+      request.mode === "steer" ||
+      !remoteSessionOperationSchema.safeParse(probe).success ||
+      remoteSessionRequestBytes(probe) > REMOTE_CONTROLLER_REQUEST_MAX_BYTES
+    )
+      throw new RpcError(
+        "remote/invalid-request",
+        "Send a nonempty text message within the remote size limit.",
+      );
+    const key = JSON.stringify([request.requestId, text]);
+    if (draft.submission) {
+      if (draft.submission.key === key) return draft.submission.result;
+      throw new RpcError("session/busy", "The first message was already submitted.");
+    }
+    let dispatched = false;
+    const result = (async () => {
+      const operation = await draft.startOperation((op) => this.invoke(op));
+      const { host, target, project } = await this.projectTarget(draft.workspaceId);
+      if (
+        target.hostId !== draft.target.hostId ||
+        target.epoch !== draft.target.epoch ||
+        target.cwd !== draft.target.cwd
+      )
+        throw new RpcError(
+          "remote/connection-changed",
+          "Reopen the draft in the reconnected project.",
+        );
+      dispatched = true;
+      const reply = await this.invoke(operation);
       const result = z.object({ thread: rowSchema }).safeParse(reply);
       if (!result.success || this.closed)
         throw new RpcError(
@@ -330,7 +430,7 @@ export class RemoteSessions {
         identity,
         row: { ...thread, turns: [] } as ChThread,
         online: true,
-        createdEpoch: host.epoch,
+        createdEpoch: target.epoch,
         configurationRevision: 0,
       };
       this.hosts.set(host.hostId, host);
@@ -341,26 +441,46 @@ export class RemoteSessions {
         // The Host already created this Thread. Return its ID even if the local disk is full.
         console.warn("[remote-sessions] Could not persist the remote project assignment.");
       }
+      draft.canonicalId = id;
       this.syncGroups();
       this.events.emit("api-session/added", this.summary(id, entry));
-      return { sessionId: id, agentPreset: "standard" };
-    }
-    throw new RpcError(
-      "workspace/not-found",
-      "Select a registered remote project in Codex Desktop.",
-    );
+      this.events.emit("codexhost/session-bound", draft.id, id);
+      this.events.emit("api-session/removed", draft.id);
+      await this.invoke({ ...prompt, threadId: thread.id });
+      void this.read(id).catch(() => undefined);
+      return { accepted: true };
+    })().catch((error: unknown) => {
+      if (!dispatched) delete draft.submission;
+      throw error;
+    });
+    draft.sending = true;
+    draft.submission = {
+      key,
+      result: result.finally(() => {
+        draft.sending = false;
+      }),
+    };
+    return draft.submission.result;
   }
   private syncGroups(): void {
     this.workspaces?.setRemoteGroups(
-      remoteWorkspaceGroups(
-        this.hosts.values(),
-        [...this.entries].map(([sessionId, entry]) => ({
+      remoteWorkspaceGroups(this.hosts.values(), [
+        ...[...this.entries].map(([sessionId, entry]) => ({
           sessionId,
           ...entry.identity,
           cwd: entry.row.cwd,
           projectId: this.workspaces?.remoteProjectId(sessionId),
         })),
-      ),
+        ...[...this.drafts.values()]
+          .filter((d) => !d.canonicalId)
+          .map((d) => ({
+            sessionId: d.id,
+            hostId: d.target.hostId,
+            threadId: d.id,
+            cwd: d.target.cwd,
+            projectId: d.projectId,
+          })),
+      ]),
     );
   }
   private reference(entry: Entry) {
@@ -424,6 +544,7 @@ export class RemoteSessions {
         values: {
           ...defaultProjections(),
           title: entry.row.name || entry.row.preview || entry.identity.threadId,
+          remoteWorkspacePath: entry.row.cwd,
           remoteHost: {
             ...entry.identity,
             displayName: remoteHostDisplayName(
@@ -446,6 +567,23 @@ export class RemoteSessions {
         },
       },
     };
+  }
+  /** Pin a panel to a confirmed native identity and the current Desktop connection. */
+  async sidebarChannel(id: string) {
+    if (this.drafts.has(id))
+      throw new RpcError(
+        "remote/draft",
+        "Send the first message before opening a remote workspace panel.",
+      );
+    const identity = remoteSessionIdentity(id);
+    if (!identity) throw new RpcError("remote/not-found", "Remote Thread not found.");
+    if (!this.entries.has(id)) await this.refresh();
+    const entry = this.entries.get(id);
+    const host = this.hosts.get(identity.hostId);
+    const epoch = host?.epoch ?? entry?.epoch;
+    if (!host?.online || !entry?.online || !epoch)
+      throw new RpcError("remote/offline", "Reconnect the target Host in Codex Desktop.");
+    return (action: SidebarAction) => this.invoke({ kind: "sidebar", ...identity, epoch, action });
   }
   private offline(entry: Entry): void {
     const changed = entry.online;
@@ -557,6 +695,7 @@ export class RemoteSessions {
               "nativeDiscovery",
               "attachmentInput",
               "remoteHost",
+              "remoteWorkspacePath",
               "harnessIdentity",
               "remoteHistoryError",
             ].includes(key)
@@ -725,12 +864,12 @@ export class RemoteSessions {
           typeof request.workspaceId === "string" &&
           request.workspaceId.startsWith("remote-workspace:")
         ) {
-          if (request.cwd !== undefined || request.sessionId !== undefined)
+          if (request.cwd !== undefined)
             throw new RpcError(
               "remote/invalid-request",
               "Choose a remote project to create a new Thread.",
             );
-          return this.createInProject(request.workspaceId);
+          return this.createInProject(request.workspaceId, request.sessionId);
         }
       }
       if (method === "session/list") {
@@ -738,6 +877,9 @@ export class RemoteSessions {
         if (request.sessionId !== undefined) {
           const id = request.sessionId;
           if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+          const draft = this.drafts.get(id);
+          if (draft && !draft.canonicalId)
+            return { items: [draft.summary()], archivedSessionIds: this.syncArchives() };
           remoteSessionIdentity(id);
           if (request.cursor !== undefined)
             throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
@@ -752,6 +894,7 @@ export class RemoteSessions {
           ...(local as object),
           items: [
             ...(local as { items: unknown[] }).items,
+            ...[...this.drafts.values()].filter((d) => !d.canonicalId).map((d) => d.summary()),
             ...[...this.entries].map(([id, entry]) => this.summary(id, entry)),
           ],
         };
@@ -763,6 +906,33 @@ export class RemoteSessions {
       }>(args);
       const id = request.sessionId ?? request.address?.sessionId ?? request.agentId ?? args.agentId;
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+      const draft = this.drafts.get(id);
+      if (draft) {
+        draft.lastUsed = Date.now();
+        const input = request as Record<string, unknown>;
+        if (method === "session/prompt") return this.firstTurn(draft, input);
+        if (draft.canonicalId) return this.handle(method, draft.canonicalId, input);
+        switch (method) {
+          case "session/modelCatalog":
+            return draft.catalog((op) => this.invoke(op));
+          case "session/projections":
+            return draft.summary().projections;
+          case "session/selectModel": {
+            await draft.select(input, (op) => this.invoke(op));
+            const summary = draft.summary();
+            this.events.emit("api-session/added", summary);
+            for (const sink of this.controls)
+              for (const [key, value] of Object.entries(summary.projections.values))
+                sink.push({ type: "projection", sessionId: id, key, value, seq: 0 });
+            return {};
+          }
+          default:
+            throw new RpcError(
+              "remote/unsupported",
+              "This operation needs a submitted remote Thread.",
+            );
+        }
+      }
       return this.handle(method, id, request as Record<string, unknown>);
     });
     streams.routeSessions(async (endpoint, args, sink, next) => {
@@ -792,13 +962,20 @@ export class RemoteSessions {
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return false;
       if (endpoint !== "session/follow")
         throw new RpcError("remote/unsupported", "This remote stream is unavailable");
+      const draft = this.drafts.get(id);
+      if (draft && !draft.canonicalId) {
+        draft.lastUsed = Date.now();
+        draft.follow(sink);
+        return true;
+      }
+      const threadId = draft?.canonicalId ?? id;
       await followRemoteHistory(
-        () => this.read(id),
+        () => this.read(threadId),
         sink,
         requestOf(args),
         this.followLifetime.signal,
-        () => this.entries.get(id)?.historyError,
-        (view) => this.entries.get(id)?.view === view,
+        () => this.entries.get(threadId)?.historyError,
+        (view) => this.entries.get(threadId)?.view === view,
       );
       return true;
     });
@@ -940,5 +1117,6 @@ export class RemoteSessions {
     for (const id of this.entries.keys()) this.clearPending(id);
     for (const entry of this.entries.values()) entry.view?.log.reconnectFollowers();
     this.controls.clear();
+    this.drafts.clear();
   }
 }

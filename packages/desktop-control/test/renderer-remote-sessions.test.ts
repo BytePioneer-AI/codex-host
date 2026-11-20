@@ -96,6 +96,31 @@ describe("Desktop remote session boundary", () => {
     await rendererRemoteSession(f.target, prompt);
     expect(request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1);
   });
+  it("stops before the first turn if the target reports a different Harness owner", async () => {
+    const f = fixture();
+    const hostId = "remote-ssh-discovered:a";
+    const { epoch } = await f.read();
+    const send = f.route(hostId).manager.sendRequest;
+    send
+      .mockClear()
+      .mockResolvedValueOnce({ thread: { id: "new" } })
+      .mockResolvedValueOnce({ owner: "codex" });
+    await expect(
+      rendererRemoteSession(f.target, {
+        kind: "startSelected",
+        hostId,
+        epoch,
+        cwd: "/remote/center",
+        model: "selected-model",
+        harnessId: "claude-code",
+      }),
+    ).rejects.toThrow(/did not confirm the selected Harness/);
+    expect(send.mock.calls.map(([method]) => method)).toEqual([
+      "thread/start",
+      "codexhost/thread/inspect",
+    ]);
+  });
+
   it("reads usage on the selected remote host and rejects a stale connection", async () => {
     const f = fixture();
     const hostId = "remote-ssh-discovered:a";

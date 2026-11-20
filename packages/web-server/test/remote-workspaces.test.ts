@@ -118,7 +118,26 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
           nextCursor: null,
           ...(op.includeLoaded ? { loaded: [thread.id], epoch: host.epoch } : {}),
         };
-      if (op.kind !== "create") throw new Error("unexpected operation");
+      if (op.kind === "projectHarnesses") return [{ id: "claude", name: "Claude Code" }];
+      if (op.kind === "inspectHarness")
+        return {
+          status: "ready",
+          catalog: {
+            models: [{ ref: { id: "standard" }, label: "Standard" }],
+            thinkingOptions: [],
+          },
+          capabilities: {
+            configuration: {
+              selectModel: true,
+              selectThinkingOption: false,
+              selectPermissionMode: false,
+              permissionModeScope: "live",
+            },
+            history: { fork: false, forkAcrossCwd: false, rollbackLastTurn: false },
+          },
+        };
+      if (op.kind !== "startSelected" && op.kind !== "prompt")
+        throw new Error("unexpected operation");
       writes.push(op);
       return { thread };
     },
@@ -139,7 +158,34 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   const create = (extra: Record<string, unknown> = {}) =>
     rpc.dispatch("session/create", { args: { request: { workspaceId, ...extra } } });
   const sessionId = remoteSessionId(hostId, thread.id);
-  assert.deepEqual(await create(), { ok: true, value: { sessionId, agentPreset: "standard" } });
+  const opened = await create();
+  assert.ok(opened.ok);
+  const draftId = (opened.value as { sessionId: string }).sessionId;
+  assert.notEqual(draftId, sessionId);
+  const call = (method: string, request: Record<string, unknown>) =>
+    rpc.dispatch(method, { args: { request: { sessionId: draftId, ...request } } });
+  for (const method of [
+    "session/modelCatalog",
+    "session/prompt",
+    "session/selectModel",
+    "session/projections",
+  ])
+    rpc.register(method, () => {
+      throw new Error("local fallback");
+    });
+  assert.equal((await call("session/modelCatalog", {})).ok, true);
+  assert.equal(
+    (await call("session/selectModel", { provider: "claude", model: "standard" })).ok,
+    true,
+  );
+  assert.equal(
+    (await call("session/prompt", { content: [{ type: "text", text: " " }] })).ok,
+    false,
+  );
+  assert.deepEqual(writes, []);
+  const prompt = { content: [{ type: "text", text: "ping" }], requestId: "first" };
+  const sent = await Promise.all([call("session/prompt", prompt), call("session/prompt", prompt)]);
+  for (const reply of sent) assert.ok(reply.ok, JSON.stringify(reply));
   const members = () =>
     workspaces
       .list()
@@ -152,7 +198,16 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   assert.equal((await create({ workspaceId: "remote-workspace:unknown" })).ok, false);
   host.online = false;
   assert.equal((await create()).ok, false);
-  assert.deepEqual(writes, [{ kind: "create", hostId, epoch: "one", cwd: project.path }]);
+  assert.equal(writes.length, 2);
+  assert.match(JSON.stringify(writes[0]), /codexhost\/plugin-v1@/);
+  assert.deepEqual(writes[1], {
+    kind: "prompt",
+    hostId,
+    threadId: thread.id,
+    epoch: "one",
+    text: "ping",
+    requestId: "first",
+  });
   host.online = true;
   host.epoch = "two";
   await remote.refresh();

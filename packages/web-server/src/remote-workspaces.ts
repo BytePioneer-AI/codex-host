@@ -3,6 +3,7 @@ import type { WorkspaceView } from "./workspaces.ts";
 export interface RemoteWorkspaceHost {
   hostId: string;
   online: boolean;
+  epoch?: string | undefined;
   displayName?: string | undefined;
   state?: string | undefined;
   projects?: Array<{ id: string; name: string; path: string; threadIds: string[] }> | undefined;

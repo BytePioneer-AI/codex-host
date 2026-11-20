@@ -163,8 +163,23 @@ class FakeElement {
 }
 
 class FakeDocument {
-  readonly defaultView = {} as Window;
+  readonly storage: Map<string, string>;
+  readonly defaultView: Window;
   visibilityState: DocumentVisibilityState = "visible";
+
+  constructor(storage: Map<string, string> = new Map()) {
+    this.storage = storage;
+    const localStorage = {
+      getItem: (key: string) => this.storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        this.storage.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        this.storage.delete(key);
+      },
+    };
+    this.defaultView = { localStorage } as unknown as Window;
+  }
 
   createElement(tagName: string): FakeElement {
     return new FakeElement(tagName.toLowerCase(), this);
@@ -944,6 +959,63 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     )!;
     installedTab.dispatch("click");
     expect(banner.hidden).toBe(true);
+
+    mounted.dispose();
+  });
+
+  it("re-renders Marketplace cards, category pills, and detail modal when switching extension content language", async () => {
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => sampleInstalledList()),
+      listDesktopExtensionCatalog: vi.fn(async () => sampleCatalog()),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
+
+    descendants(mounted.content)
+      .find((el) => el.tagName === "button" && el.dataset.tab === "marketplace")!
+      .dispatch("click");
+    expect(textOf(mounted.content)).toContain("极光配色");
+
+    const localeButton = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
+    )!;
+    const localeMenu = descendants(mounted.content).find(
+      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "content-locale",
+    )!;
+    localeButton.dispatch("click");
+    descendants(localeMenu)
+      .find((el) => el.dataset.contentLocale === "en")!
+      .dispatch("click");
+
+    expect(textOf(localeButton)).toBe("EN");
+    const themeCard = descendants(mounted.content).find(
+      (el) =>
+        el.tagName === "article" &&
+        el.dataset.cardKind === "marketplace" &&
+        el.dataset.extensionId === "nord-palette",
+    )!;
+    expect(textOf(themeCard)).toContain("Nord Palette");
+    expect(textOf(themeCard)).toContain("Calm Arctic palette for sidebar.");
+    expect(
+      textOf(
+        descendants(themeCard).find(
+          (el) => el.className === "settings-extensions-card__categories-text",
+        )!,
+      ),
+    ).toBe("Appearance");
+
+    const pillLabels = descendants(mounted.content)
+      .filter((el) => el.className.includes("settings-extensions-filter-pill"))
+      .map((pill) => textOf(pill));
+    expect(pillLabels).toEqual(["All", "Sidebar", "Appearance", "Tools", "Workflow"]);
+
+    themeCard.dispatch("click");
+    const detailDialog = descendants(mounted.content).find(
+      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+    )!;
+    expect(textOf(detailDialog)).toContain("Nord Palette");
+    expect(textOf(detailDialog)).toContain("Community theme tuned for dark mode.");
+    detailDialog.close();
 
     mounted.dispose();
   });

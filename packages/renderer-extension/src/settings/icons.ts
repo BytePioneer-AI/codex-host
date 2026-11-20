@@ -18,6 +18,7 @@ import EyeOff from "lucide/dist/esm/icons/eye-off.mjs";
 import Ellipsis from "lucide/dist/esm/icons/ellipsis.mjs";
 import FileArchive from "lucide/dist/esm/icons/file-archive.mjs";
 import FolderInput from "lucide/dist/esm/icons/folder-input.mjs";
+import Globe from "lucide/dist/esm/icons/globe.mjs";
 import GripVertical from "lucide/dist/esm/icons/grip-vertical.mjs";
 import Info from "lucide/dist/esm/icons/info.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
@@ -94,6 +95,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "upload",
   "file-archive",
   "link",
+  "globe",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -155,6 +157,7 @@ const iconNodes = {
   upload: Upload,
   "file-archive": FileArchive,
   link: Link,
+  globe: Globe,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

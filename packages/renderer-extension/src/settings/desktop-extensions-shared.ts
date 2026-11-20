@@ -20,6 +20,14 @@ export type DesktopExtensionItem = DesktopExtensionsListResult["extensions"][num
 export type DesktopExtensionBannerTone = "info" | "success" | "warning" | "danger";
 export type DesktopExtensionGroupId = "attention" | "enabled" | "disabled";
 export type DesktopExtensionMutationAction = "toggle" | "install" | "update" | "uninstall";
+export type DesktopExtensionContentLocale = RendererSettingsMessages["locale"];
+export type DesktopExtensionContentLocalePreference = "system" | DesktopExtensionContentLocale;
+
+export function contentLocaleMessages(
+  locale: DesktopExtensionContentLocale,
+): DesktopExtensionsMessages {
+  return locale === "zh-CN" ? desktopExtensionsChinese : desktopExtensionsEnglish;
+}
 
 export interface DesktopExtensionFeedback {
   readonly tone: DesktopExtensionBannerTone;

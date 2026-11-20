@@ -160,13 +160,25 @@ class FakeElement {
 
 class FakeDocument {
   readonly clipboardWriteText = vi.fn(async () => undefined);
+  readonly storage: Map<string, string>;
   readonly defaultView: Window;
   visibilityState: DocumentVisibilityState = "visible";
   readonly #listeners = new Map<string, Set<(event?: unknown) => void>>();
 
-  constructor() {
+  constructor(storage: Map<string, string> = new Map()) {
+    this.storage = storage;
+    const localStorage = {
+      getItem: (key: string) => this.storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        this.storage.set(key, String(value));
+      },
+      removeItem: (key: string) => {
+        this.storage.delete(key);
+      },
+    };
     this.defaultView = {
       navigator: { clipboard: { writeText: this.clipboardWriteText } },
+      localStorage,
     } as unknown as Window;
   }
 
@@ -214,8 +226,9 @@ function textOf(node: unknown): string {
 function mountPage(
   locale: "en" | "zh-CN",
   getClient: () => RendererDesktopExtensionsClient | null,
+  storage?: Map<string, string>,
 ) {
-  const document = new FakeDocument();
+  const document = new FakeDocument(storage);
   const content = document.createElement("div");
   const scope = new RendererSettingsPageScope();
   const page = createDesktopExtensionsSettingsPage(rendererSettingsMessages(locale), getClient);
@@ -350,7 +363,7 @@ describe("Desktop extensions settings page", () => {
       expect(textOf(zhMount.content)).toContain("$CODEXHOST_DATA_DIR/desktop-extensions/<id>/"),
     );
     expect(textOf(zhMount.content)).toContain("尚未发现 Desktop 扩展");
-    expect(textOf(zhMount.content)).toContain("等待 Desktop 连接");
+    expect(textOf(zhMount.content)).toContain("Desktop 未连接");
     expect(textOf(zhMount.content)).not.toContain("管理本机 Codex Desktop 主窗口的可选界面扩展");
     expect(
       descendants(zhMount.content).find((el) => el.className === "settings-page-description"),
@@ -361,6 +374,7 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() =>
       expect(textOf(enMount.content)).toContain("No Desktop extensions found"),
     );
+    expect(textOf(enMount.content)).toContain("Desktop disconnected");
     expect(textOf(enMount.content)).toContain("$CODEXHOST_DATA_DIR/desktop-extensions/<id>/");
     expect(textOf(enMount.content)).not.toContain("Manage optional UI extensions");
     enMount.dispose();
@@ -376,7 +390,7 @@ describe("Desktop extensions settings page", () => {
     const mounted = mountPage("zh-CN", () => client);
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
-    // Bottom directory bar and emergency recovery banner are removed; connection indicator sits in header.
+    // Bottom directory bar and emergency recovery banner are removed; connected state stays clean without a badge.
     expect(
       descendants(mounted.content).find((el) => el.className === "settings-extensions__meta"),
     ).toBeUndefined();
@@ -386,7 +400,12 @@ describe("Desktop extensions settings page", () => {
     const header = descendants(mounted.content).find((el) =>
       el.className.includes("settings-extensions__header"),
     )!;
-    expect(textOf(header)).toContain("Desktop 已连接");
+    const connectionBadge = descendants(header).find(
+      (el) => el.className === "settings-extensions__connection",
+    )!;
+    expect(connectionBadge.hidden).toBe(true);
+    expect(textOf(header)).not.toContain("Desktop 已连接");
+    expect(textOf(header)).not.toContain("Desktop 未连接");
 
     // Only Needs Attention gets a section heading; normal extensions share one flat 3-column grid.
     const groups = descendants(mounted.content).filter(
@@ -1210,7 +1229,9 @@ describe("Desktop extensions settings page", () => {
     const moreButton = descendants(mounted.content).find(
       (el) => el.tagName === "button" && el.dataset.action === "more-menu",
     )!;
-    const moreMenu = descendants(mounted.content).find((el) => el.getAttribute("role") === "menu")!;
+    const moreMenu = descendants(mounted.content).find(
+      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "more",
+    )!;
     expect(moreMenu.hidden).toBe(true);
     expect(moreButton.getAttribute("aria-expanded")).toBe("false");
 
@@ -1266,6 +1287,117 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(2));
     expect(textOf(banner)).toBe("恢复指令已保存，等待 Desktop Controller 重载窗口。");
     mounted.dispose();
+  });
+
+  it("switches extension content language live across cards, filter pills, and detail modal, and persists to localStorage", async () => {
+    const storage = new Map<string, string>();
+    const client: RendererDesktopExtensionsClient = {
+      listDesktopExtensions: vi.fn(async () => sampleList()),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    };
+    const mounted = mountPage("zh-CN", () => client, storage);
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const localeButton = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
+    )!;
+    const localeMenu = descendants(mounted.content).find(
+      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "content-locale",
+    )!;
+    const moreButton = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && el.dataset.action === "more-menu",
+    )!;
+    const moreMenu = descendants(mounted.content).find(
+      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "more",
+    )!;
+
+    // Defaults to Follow system (zh-CN shell -> "中").
+    expect(textOf(localeButton)).toBe("中");
+    expect(localeMenu.hidden).toBe(true);
+
+    // Mutually exclusive with the "..." menu and dismissible via Escape / outside click.
+    moreButton.dispatch("click");
+    expect(moreMenu.hidden).toBe(false);
+    localeButton.dispatch("click");
+    expect(localeMenu.hidden).toBe(false);
+    expect(moreMenu.hidden).toBe(true);
+    mounted.document.dispatch("keydown", { key: "Escape" });
+    expect(localeMenu.hidden).toBe(true);
+
+    localeButton.dispatch("click");
+    mounted.document.dispatch("click", { target: mounted.content });
+    expect(localeMenu.hidden).toBe(true);
+
+    // Switch to English -> updates cards, category filter pills, and detail modal while keeping shell Chinese.
+    localeButton.dispatch("click");
+    const enOption = descendants(localeMenu).find((el) => el.dataset.contentLocale === "en")!;
+    enOption.dispatch("click");
+    expect(localeMenu.hidden).toBe(true);
+    expect(textOf(localeButton)).toBe("EN");
+    expect(storage.get("codexhost.desktopExtensions.contentLocale")).toBe("en");
+    expect(enOption.getAttribute("aria-checked")).toBe("true");
+    // Shell controls remain Chinese.
+    expect(textOf(mounted.content)).toContain("导入扩展");
+
+    const filterLabels = () =>
+      descendants(mounted.content)
+        .filter((el) => el.className.includes("settings-extensions-filter-pill"))
+        .map((pill) => textOf(pill));
+    expect(filterLabels()).toEqual(["All", "Sidebar", "Workflow"]);
+
+    const treeCardEn = descendants(mounted.content).find(
+      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+    )!;
+    expect(textOf(treeCardEn)).toContain("Sidebar Thread Tree");
+    expect(textOf(treeCardEn)).toContain("Groups delegated Threads");
+    expect(
+      textOf(
+        descendants(treeCardEn).find(
+          (el) => el.className === "settings-extensions-card__categories-text",
+        )!,
+      ),
+    ).toBe("Sidebar · Workflow");
+
+    // Detail modal reflects the selected English content locale.
+    treeCardEn.dispatch("click");
+    const detailDialog = descendants(mounted.content).find(
+      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+    )!;
+    expect(textOf(detailDialog)).toContain("Sidebar Thread Tree");
+    expect(textOf(detailDialog)).toContain("Expand a parent Thread to inspect delegated children.");
+    expect(
+      descendants(detailDialog)
+        .filter((el) => el.className.includes("settings-extensions-category-chip"))
+        .map((chip) => textOf(chip)),
+    ).toEqual(["Sidebar", "Workflow"]);
+    detailDialog.close();
+
+    // Switch back to Simplified Chinese, then Follow system.
+    localeButton.dispatch("click");
+    descendants(localeMenu)
+      .find((el) => el.dataset.contentLocale === "zh-CN")!
+      .dispatch("click");
+    expect(textOf(localeButton)).toBe("中");
+    expect(storage.get("codexhost.desktopExtensions.contentLocale")).toBe("zh-CN");
+    expect(filterLabels()).toEqual(["全部", "侧栏", "多会话协作"]);
+
+    localeButton.dispatch("click");
+    descendants(localeMenu)
+      .find((el) => el.dataset.contentLocale === "system")!
+      .dispatch("click");
+    expect(textOf(localeButton)).toBe("中");
+    expect(storage.get("codexhost.desktopExtensions.contentLocale")).toBe("system");
+    mounted.dispose();
+
+    // Persisted "en" preference is restored automatically on next mount.
+    storage.set("codexhost.desktopExtensions.contentLocale", "en");
+    const restored = mountPage("zh-CN", () => client, storage);
+    await vi.waitFor(() => expect(textOf(restored.content)).toContain("Sidebar Thread Tree"));
+    const restoredLocaleBtn = descendants(restored.content).find(
+      (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
+    )!;
+    expect(textOf(restoredLocaleBtn)).toBe("EN");
+    restored.dispose();
   });
 
   it("shows an unavailable state when the Host does not support Desktop extension RPCs", async () => {

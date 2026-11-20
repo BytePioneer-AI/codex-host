@@ -25,6 +25,7 @@ import {
   CATEGORY_ORDER,
   blockedToggleReason,
   catalogDisplayName,
+  contentLocaleMessages,
   createEl,
   describeOtherExtension,
   errorMessage,
@@ -40,6 +41,8 @@ import {
   matchesInstalledSearchQuery,
   overlappingSlots,
   resolveAttentionDetail,
+  type DesktopExtensionContentLocale,
+  type DesktopExtensionContentLocalePreference,
   type DesktopExtensionFeedback,
   type DesktopExtensionItem,
   type DesktopExtensionMutationAction,
@@ -50,8 +53,36 @@ import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
 
 const POLL_INTERVAL_MS = 5_000;
 const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/desktop-extensions/";
+const CONTENT_LOCALE_STORAGE_KEY = "codexhost.desktopExtensions.contentLocale";
 
 type ActiveTab = "installed" | "marketplace";
+
+function readContentLocalePreference(
+  ownerWindow: Window | null,
+): DesktopExtensionContentLocalePreference {
+  try {
+    const storage =
+      ownerWindow?.localStorage ?? (typeof localStorage !== "undefined" ? localStorage : undefined);
+    const stored = storage?.getItem(CONTENT_LOCALE_STORAGE_KEY);
+    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
+  } catch {
+    // Ignore restricted storage environments.
+  }
+  return "system";
+}
+
+function writeContentLocalePreference(
+  ownerWindow: Window | null,
+  preference: DesktopExtensionContentLocalePreference,
+): void {
+  try {
+    const storage =
+      ownerWindow?.localStorage ?? (typeof localStorage !== "undefined" ? localStorage : undefined);
+    storage?.setItem(CONTENT_LOCALE_STORAGE_KEY, preference);
+  } catch {
+    // Ignore restricted storage environments.
+  }
+}
 
 export interface RendererDesktopExtensionsClient {
   listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;
@@ -115,6 +146,71 @@ export function createDesktopExtensionsSettingsPage(
       headerLeft.append(title, connectionBadge);
 
       const toolbar = createEl(document, "div", "settings-remote__toolbar");
+
+      const localeWrap = createEl(document, "div", "settings-extensions__locale");
+      const localeButton = createEl(
+        document,
+        "button",
+        "settings-command-button settings-command-button--secondary settings-extensions__locale-button",
+      );
+      localeButton.type = "button";
+      localeButton.dataset.action = "content-locale-menu";
+      localeButton.title = copy.contentLocaleLabel;
+      localeButton.setAttribute("aria-label", copy.contentLocaleLabel);
+      localeButton.setAttribute("aria-haspopup", "menu");
+      localeButton.setAttribute("aria-expanded", "false");
+      const localeShortLabel = createEl(document, "span", "settings-extensions__locale-label");
+      localeButton.append(
+        createRendererSettingsIcon("globe", 13),
+        localeShortLabel,
+        createRendererSettingsIcon("chevron-down", 12),
+      );
+
+      const localeMenu = createEl(
+        document,
+        "div",
+        "settings-extensions-menu settings-extensions-menu--compact",
+      );
+      localeMenu.dataset.menu = "content-locale";
+      localeMenu.setAttribute("role", "menu");
+      localeMenu.setAttribute("aria-label", copy.contentLocaleLabel);
+      localeMenu.hidden = true;
+
+      const localeOptions: readonly {
+        readonly value: DesktopExtensionContentLocalePreference;
+        readonly label: string;
+      }[] = [
+        { value: "system", label: copy.contentLocaleFollowSystem },
+        { value: "zh-CN", label: copy.contentLocaleZh },
+        { value: "en", label: copy.contentLocaleEn },
+      ];
+      const localeOptionButtons = new Map<
+        DesktopExtensionContentLocalePreference,
+        { readonly button: HTMLButtonElement; readonly checkSlot: HTMLSpanElement }
+      >();
+      for (const option of localeOptions) {
+        const itemButton = createEl(
+          document,
+          "button",
+          "settings-extensions-menu__item settings-extensions-menu__item--radio",
+        );
+        itemButton.type = "button";
+        itemButton.setAttribute("role", "menuitemradio");
+        itemButton.dataset.contentLocale = option.value;
+        const labelSpan = createEl(
+          document,
+          "span",
+          "settings-extensions-menu__item-label",
+          option.label,
+        );
+        const checkSlot = createEl(document, "span", "settings-extensions-menu__check");
+        checkSlot.append(createRendererSettingsIcon("check", 13));
+        itemButton.append(labelSpan, checkSlot);
+        localeMenu.append(itemButton);
+        localeOptionButtons.set(option.value, { button: itemButton, checkSlot });
+      }
+      localeWrap.append(localeButton, localeMenu);
+
       const importButton = createEl(
         document,
         "button",
@@ -152,6 +248,7 @@ export function createDesktopExtensionsSettingsPage(
       moreButton.append(createRendererSettingsIcon("ellipsis", 16));
 
       const moreMenu = createEl(document, "div", "settings-extensions-menu");
+      moreMenu.dataset.menu = "more";
       moreMenu.setAttribute("role", "menu");
       moreMenu.hidden = true;
 
@@ -190,7 +287,7 @@ export function createDesktopExtensionsSettingsPage(
       moreMenu.append(copyDirectoryMenuItem, menuDivider, recoveryMenuItem);
       moreWrap.append(moreButton, moreMenu);
 
-      toolbar.append(importButton, refreshButton, moreWrap);
+      toolbar.append(localeWrap, importButton, refreshButton, moreWrap);
       header.append(headerLeft, toolbar);
 
       // Persistent top navigation row: segmented tabs (Installed / Marketplace) + search input.
@@ -265,6 +362,9 @@ export function createDesktopExtensionsSettingsPage(
 
       let disposed = false;
       let moreMenuOpen = false;
+      let localeMenuOpen = false;
+      let contentLocalePreference: DesktopExtensionContentLocalePreference =
+        readContentLocalePreference(ownerWindow);
       let activeTab: ActiveTab = "installed";
       let listing: DesktopExtensionsListResult | null = null;
       let catalog: DesktopExtensionsCatalogResult | null = null;
@@ -294,11 +394,27 @@ export function createDesktopExtensionsSettingsPage(
         };
       };
 
+      const resolveContentLocale = (): DesktopExtensionContentLocale =>
+        contentLocalePreference === "system" ? messages.locale : contentLocalePreference;
+
+      const syncLocaleControl = (): void => {
+        const effective = resolveContentLocale();
+        localeShortLabel.textContent = effective === "zh-CN" ? "中" : "EN";
+        localeButton.dataset.contentLocale = contentLocalePreference;
+        localeButton.dataset.effectiveLocale = effective;
+        for (const [value, entry] of localeOptionButtons) {
+          const selected = value === contentLocalePreference;
+          entry.button.setAttribute("aria-checked", String(selected));
+          entry.checkSlot.hidden = !selected;
+        }
+      };
+
       const buildDetailModalState = () => {
         const { canInstall, canUninstall } = clientCapabilities();
         return {
           extensions: listing?.extensions ?? [],
           catalogExtensions: catalog?.extensions ?? [],
+          contentLocale: resolveContentLocale(),
           unavailable,
           canInstall,
           canUninstall,
@@ -385,18 +501,19 @@ export function createDesktopExtensionsSettingsPage(
         });
         installedTabButton.setAttribute("aria-selected", String(activeTab === "installed"));
         marketplaceTabButton.setAttribute("aria-selected", String(activeTab === "marketplace"));
+        syncLocaleControl();
       };
 
       const renderConnectionState = (): void => {
-        if (!listing || unavailable) {
+        if (!listing || unavailable || listing.desktopConnected) {
           connectionBadge.hidden = true;
+          connectionBadge.textContent = "";
+          delete connectionBadge.dataset.tone;
           return;
         }
         connectionBadge.hidden = false;
-        connectionBadge.dataset.tone = listing.desktopConnected ? "success" : "neutral";
-        connectionBadge.textContent = listing.desktopConnected
-          ? copy.desktopConnected
-          : copy.desktopDisconnected;
+        connectionBadge.dataset.tone = "neutral";
+        connectionBadge.textContent = copy.desktopDisconnected;
       };
 
       const renderDiagnostics = (): void => {
@@ -519,25 +636,39 @@ export function createDesktopExtensionsSettingsPage(
           filterBar.append(pill);
         };
 
-        addFilterPill(copy.categoryAll, null);
+        const filterCopy = contentLocaleMessages(resolveContentLocale());
+        addFilterPill(filterCopy.categoryAll, null);
         for (const category of availableCategories) {
-          addFilterPill(copy.categories[category], category);
+          addFilterPill(filterCopy.categories[category], category);
         }
         categorySlot.hidden = false;
         categorySlot.replaceChildren(filterBar);
       };
 
+      const setLocaleMenuOpen = (open: boolean): void => {
+        if (open && moreMenuOpen) setMoreMenuOpen(false);
+        localeMenuOpen = open;
+        localeMenu.hidden = !open;
+        localeButton.setAttribute("aria-expanded", String(open));
+      };
+
       const setMoreMenuOpen = (open: boolean): void => {
+        if (open && localeMenuOpen) setLocaleMenuOpen(false);
         moreMenuOpen = open;
         moreMenu.hidden = !open;
         moreButton.setAttribute("aria-expanded", String(open));
+      };
+
+      const closeHeaderMenus = (): void => {
+        if (moreMenuOpen) setMoreMenuOpen(false);
+        if (localeMenuOpen) setLocaleMenuOpen(false);
       };
 
       const openDetailModal = (extensionId: string): void => {
         if (disposed || context.signal.aborted || activeRecoveryDialog || importModal.isOpen) {
           return;
         }
-        setMoreMenuOpen(false);
+        closeHeaderMenus();
         if (detailModal.extensionId !== extensionId) {
           modalFeedbackExtensionId = null;
         }
@@ -549,7 +680,8 @@ export function createDesktopExtensionsSettingsPage(
         allExtensions: readonly DesktopExtensionItem[],
         catalogEntry: DesktopExtensionCatalogEntry | undefined,
       ): HTMLElement => {
-        const displayName = extensionDisplayName(item, messages.locale);
+        const contentLocale = resolveContentLocale();
+        const displayName = extensionDisplayName(item, contentLocale);
         const switchId = preferenceId(`desktop-ext-${item.id}`);
         const errorId = preferenceId(`desktop-ext-error-${item.id}`);
         const blocked = isToggleBlocked(item);
@@ -588,6 +720,7 @@ export function createDesktopExtensionsSettingsPage(
         return renderDesktopExtensionCard({
           document,
           messages,
+          contentLocale,
           extensionId: item.id,
           cardKind: "installed",
           displayName,
@@ -596,7 +729,7 @@ export function createDesktopExtensionsSettingsPage(
           trustTier: catalogEntry?.trustTier,
           statusState: item.status.state,
           updateHint,
-          description: extensionDescription(item, messages.locale),
+          description: extensionDescription(item, contentLocale),
           attention,
           attentionId: attention ? errorId : undefined,
           categories: item.manifest?.categories,
@@ -661,13 +794,14 @@ export function createDesktopExtensionsSettingsPage(
           }
         }
 
+        const contentLocale = resolveContentLocale();
         normalItems.sort((left, right) => {
           const leftRank = left.enabled ? 0 : 1;
           const rightRank = right.enabled ? 0 : 1;
           if (leftRank !== rightRank) return leftRank - rightRank;
-          const nameCmp = extensionDisplayName(left, messages.locale).localeCompare(
-            extensionDisplayName(right, messages.locale),
-            messages.locale,
+          const nameCmp = extensionDisplayName(left, contentLocale).localeCompare(
+            extensionDisplayName(right, contentLocale),
+            contentLocale,
           );
           if (nameCmp !== 0) return nameCmp;
           return left.id.localeCompare(right.id);
@@ -817,6 +951,7 @@ export function createDesktopExtensionsSettingsPage(
         const grid = renderDesktopExtensionsMarketplaceGrid({
           document,
           messages,
+          contentLocale: resolveContentLocale(),
           catalog,
           visibleEntries,
           installedById,
@@ -1441,7 +1576,7 @@ export function createDesktopExtensionsSettingsPage(
 
       const switchTab = (next: ActiveTab): void => {
         if (activeTab === next) return;
-        setMoreMenuOpen(false);
+        closeHeaderMenus();
         activeTab = next;
         setFeedback(null);
         render();
@@ -1465,19 +1600,43 @@ export function createDesktopExtensionsSettingsPage(
       };
 
       const onDocumentClick = (event?: Event): void => {
-        if (!moreMenuOpen) return;
-        if (event?.target && isWithinElement(event.target, moreWrap)) return;
-        setMoreMenuOpen(false);
+        if (moreMenuOpen && !(event?.target && isWithinElement(event.target, moreWrap))) {
+          setMoreMenuOpen(false);
+        }
+        if (localeMenuOpen && !(event?.target && isWithinElement(event.target, localeWrap))) {
+          setLocaleMenuOpen(false);
+        }
       };
 
       const onDocumentKeyDown = (event?: Event): void => {
-        if (!moreMenuOpen) return;
+        if (!moreMenuOpen && !localeMenuOpen) return;
         const key = (event as KeyboardEvent | undefined)?.key;
         if (key !== "Escape") return;
         event?.preventDefault?.();
-        setMoreMenuOpen(false);
-        moreButton.focus?.();
+        if (localeMenuOpen) {
+          setLocaleMenuOpen(false);
+          localeButton.focus?.();
+        }
+        if (moreMenuOpen) {
+          setMoreMenuOpen(false);
+          moreButton.focus?.();
+        }
       };
+
+      localeButton.addEventListener("click", (event) => {
+        event.stopPropagation?.();
+        setLocaleMenuOpen(!localeMenuOpen);
+      });
+
+      for (const [value, { button }] of localeOptionButtons) {
+        button.addEventListener("click", () => {
+          setLocaleMenuOpen(false);
+          if (contentLocalePreference === value) return;
+          contentLocalePreference = value;
+          writeContentLocalePreference(ownerWindow, value);
+          render();
+        });
+      }
 
       moreButton.addEventListener("click", (event) => {
         event.stopPropagation?.();
@@ -1528,14 +1687,14 @@ export function createDesktopExtensionsSettingsPage(
 
       importButton.addEventListener("click", () => {
         if (mutating || !clientCapabilities().canInstall) return;
-        setMoreMenuOpen(false);
+        closeHeaderMenus();
         detailModal.close();
         importModal.open();
       });
 
       refreshButton.addEventListener("click", () => {
         if (mutating) return;
-        setMoreMenuOpen(false);
+        closeHeaderMenus();
         if (activeTab === "marketplace") {
           if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: false });
         } else if (!loading) {

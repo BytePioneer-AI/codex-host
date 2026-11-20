@@ -2697,10 +2697,32 @@
   background: var(--settings-success);
 }
 
+.settings-extensions__locale,
 .settings-extensions__more {
   position: relative;
   display: inline-flex;
   align-items: center;
+}
+
+.settings-extensions__locale-button {
+  height: 30px;
+  min-height: 30px;
+  gap: 4px;
+  padding: 0 9px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+}
+
+.settings-extensions__locale-button:hover:not(:disabled) {
+  color: var(--settings-text);
+  background: var(--settings-hover);
+}
+
+.settings-extensions__locale-label {
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
 }
 
 .settings-extensions-menu {
@@ -2718,6 +2740,28 @@
   box-shadow:
     0 10px 28px light-dark(rgb(0 0 0 / 10%), rgb(0 0 0 / 42%)),
     0 1px 3px light-dark(rgb(0 0 0 / 6%), rgb(0 0 0 / 28%));
+}
+
+.settings-extensions-menu--compact {
+  min-width: 152px;
+}
+
+.settings-extensions-menu__item--radio {
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-extensions-menu__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--settings-text);
+}
+
+.settings-extensions-menu__check[hidden] {
+  display: none;
 }
 
 .settings-extensions-menu[hidden] {
@@ -2886,20 +2930,29 @@
 
 .settings-extensions__filters {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.settings-extensions__filters::-webkit-scrollbar {
+  display: none;
 }
 
 .settings-extensions-filter-pill {
   display: inline-flex;
   align-items: center;
+  flex: none;
   min-height: 25px;
   padding: 2px 10px;
   color: var(--settings-muted);
   font-size: 12px;
   font-weight: 500;
   line-height: 16px;
+  white-space: nowrap;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -3252,8 +3305,16 @@
 .settings-extensions-categories {
   display: inline-flex;
   flex: none;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.settings-extensions-categories::-webkit-scrollbar {
+  display: none;
 }
 
 .settings-extensions-category-chip {
@@ -3392,8 +3453,9 @@
 }
 
 .settings-extensions__import-button {
-  min-height: 28px;
-  padding: 4px 10px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0 10px;
   font-size: 12px;
   font-weight: 500;
 }

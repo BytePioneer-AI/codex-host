@@ -9,6 +9,7 @@ import {
   createEl,
   formatMessage,
   hasCatalogUpdate,
+  type DesktopExtensionContentLocale,
   type DesktopExtensionItem,
   type DesktopExtensionMutationAction,
 } from "./desktop-extensions-shared.js";
@@ -18,6 +19,7 @@ import type { RendererSettingsMessages } from "./localization.js";
 export interface DesktopExtensionsMarketplaceViewOptions {
   readonly document: Document;
   readonly messages: RendererSettingsMessages;
+  readonly contentLocale?: DesktopExtensionContentLocale | undefined;
   readonly catalog: DesktopExtensionsCatalogResult;
   readonly visibleEntries: readonly DesktopExtensionCatalogEntry[];
   readonly installedById: ReadonlyMap<string, DesktopExtensionItem>;
@@ -74,6 +76,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
   const {
     document,
     messages,
+    contentLocale = messages.locale,
     visibleEntries,
     installedById,
     canInstall,
@@ -90,7 +93,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
   grid.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
 
   for (const entry of visibleEntries) {
-    const displayName = catalogDisplayName(entry, messages.locale);
+    const displayName = catalogDisplayName(entry, contentLocale);
     const installed = installedById.get(entry.id);
     const updateAvailable = hasCatalogUpdate(installed, entry);
     const installState = installed ? (updateAvailable ? "update" : "installed") : "available";
@@ -143,13 +146,14 @@ export function renderDesktopExtensionsMarketplaceGrid(
       renderDesktopExtensionCard({
         document,
         messages,
+        contentLocale,
         extensionId: entry.id,
         cardKind: "marketplace",
         displayName,
         author: entry.author,
         version: entry.version,
         trustTier: entry.trustTier,
-        description: catalogDescription(entry, messages.locale),
+        description: catalogDescription(entry, contentLocale),
         categories: entry.categories,
         actionControl: actionButton,
         busy: isBusyCard,

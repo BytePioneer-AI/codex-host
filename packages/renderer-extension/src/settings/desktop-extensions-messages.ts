@@ -6,6 +6,10 @@ import type {
 
 export interface DesktopExtensionsMessages {
   readonly moreActions: string;
+  readonly contentLocaleLabel: string;
+  readonly contentLocaleFollowSystem: string;
+  readonly contentLocaleZh: string;
+  readonly contentLocaleEn: string;
   readonly copyDirectoryMenuItem: string;
   readonly copiedDirectoryPath: string;
   readonly copyPathFailed: string;
@@ -16,7 +20,6 @@ export interface DesktopExtensionsMessages {
   readonly tabListLabel: string;
   readonly tabInstalled: string;
   readonly tabMarketplace: string;
-  readonly desktopConnected: string;
   readonly desktopDisconnected: string;
   readonly loading: string;
   readonly unavailableTitle: string;
@@ -123,6 +126,10 @@ export interface DesktopExtensionsMessages {
 
 export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze({
   moreActions: "More actions",
+  contentLocaleLabel: "Extension language",
+  contentLocaleFollowSystem: "Follow system",
+  contentLocaleZh: "简体中文",
+  contentLocaleEn: "English",
   copyDirectoryMenuItem: "Copy extensions directory path",
   copiedDirectoryPath: "Copied extensions directory path.",
   copyPathFailed: "Copy failed",
@@ -133,8 +140,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   tabListLabel: "Desktop extension views",
   tabInstalled: "Installed ({count})",
   tabMarketplace: "Marketplace ({count})",
-  desktopConnected: "Desktop connected",
-  desktopDisconnected: "Waiting for Desktop",
+  desktopDisconnected: "Desktop disconnected",
   loading: "Loading Desktop extensions…",
   unavailableTitle: "Desktop extension management is unavailable",
   unavailableDescription:
@@ -271,6 +277,10 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
 
 export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze({
   moreActions: "更多操作",
+  contentLocaleLabel: "扩展内容语言",
+  contentLocaleFollowSystem: "跟随系统",
+  contentLocaleZh: "简体中文",
+  contentLocaleEn: "English",
   copyDirectoryMenuItem: "复制扩展目录路径",
   copiedDirectoryPath: "已复制扩展目录路径。",
   copyPathFailed: "复制失败",
@@ -281,8 +291,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   tabListLabel: "Desktop 扩展视图",
   tabInstalled: "已安装 ({count})",
   tabMarketplace: "市场 ({count})",
-  desktopConnected: "Desktop 已连接",
-  desktopDisconnected: "等待 Desktop 连接",
+  desktopDisconnected: "Desktop 未连接",
   loading: "正在加载 Desktop 扩展…",
   unavailableTitle: "无法管理 Desktop 扩展",
   unavailableDescription: "请连接到支持 Desktop 扩展管理的本机 codexhost Host 后再试。",

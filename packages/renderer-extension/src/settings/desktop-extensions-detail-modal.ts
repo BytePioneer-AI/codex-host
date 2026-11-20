@@ -3,6 +3,7 @@ import {
   blockedToggleReason,
   catalogDescription,
   catalogDisplayName,
+  contentLocaleMessages,
   createEl,
   createTrustBadge,
   extensionDescription,
@@ -16,6 +17,7 @@ import {
   safeScreenshotUrls,
   splitParagraphs,
   statusTone,
+  type DesktopExtensionContentLocale,
   type DesktopExtensionFeedback,
   type DesktopExtensionItem,
   type DesktopExtensionMutationAction,
@@ -29,6 +31,7 @@ export * from "./desktop-extensions-shared.js";
 export interface DesktopExtensionDetailModalState {
   readonly extensions: readonly DesktopExtensionItem[];
   readonly catalogExtensions: readonly DesktopExtensionCatalogEntry[];
+  readonly contentLocale?: DesktopExtensionContentLocale | undefined;
   readonly unavailable: boolean;
   readonly canInstall: boolean;
   readonly canUninstall: boolean;
@@ -354,10 +357,12 @@ export function createDesktopExtensionDetailModal(options: {
       confirmingUninstall = false;
     }
 
+    const contentLocale = state.contentLocale ?? messages.locale;
+    const contentCopy = contentLocaleMessages(contentLocale);
     const displayName = installed?.manifest
-      ? extensionDisplayName(installed, messages.locale)
+      ? extensionDisplayName(installed, contentLocale)
       : catalogEntry
-        ? catalogDisplayName(catalogEntry, messages.locale)
+        ? catalogDisplayName(catalogEntry, contentLocale)
         : extensionId;
     const updateAvailable = hasCatalogUpdate(installed, catalogEntry);
 
@@ -441,7 +446,7 @@ export function createDesktopExtensionDetailModal(options: {
           document,
           "span",
           "settings-extensions-category-chip",
-          copy.categories[category] ?? category,
+          contentCopy.categories[category] ?? category,
         );
         chip.dataset.category = category;
         categoriesRow.append(chip);
@@ -505,10 +510,10 @@ export function createDesktopExtensionDetailModal(options: {
 
     // Multi-paragraph bilingual details (fallback to description).
     const rawDetails =
-      resolveOptionalLocalizedText(installed?.manifest?.details, messages.locale) ??
-      resolveOptionalLocalizedText(catalogEntry?.details, messages.locale) ??
-      (installed ? extensionDescription(installed, messages.locale) : null) ??
-      (catalogEntry ? catalogDescription(catalogEntry, messages.locale) : null);
+      resolveOptionalLocalizedText(installed?.manifest?.details, contentLocale) ??
+      resolveOptionalLocalizedText(catalogEntry?.details, contentLocale) ??
+      (installed ? extensionDescription(installed, contentLocale) : null) ??
+      (catalogEntry ? catalogDescription(catalogEntry, contentLocale) : null);
     const paragraphs = splitParagraphs(rawDetails);
     if (paragraphs.length > 0) {
       descriptionSection.hidden = false;

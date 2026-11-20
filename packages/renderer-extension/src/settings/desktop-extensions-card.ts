@@ -4,11 +4,13 @@ import type {
   DesktopExtensionTrustTier,
 } from "@codexhost/shared-contracts";
 import {
+  contentLocaleMessages,
   createEl,
   formatMessage,
   isWithinElement,
   statusTone,
   type DesktopExtensionAttentionDetail,
+  type DesktopExtensionContentLocale,
 } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -18,6 +20,7 @@ export const MAX_CARD_CATEGORIES = 2;
 export interface DesktopExtensionCardOptions {
   readonly document: Document;
   readonly messages: RendererSettingsMessages;
+  readonly contentLocale?: DesktopExtensionContentLocale | undefined;
   readonly extensionId: string;
   readonly cardKind: "installed" | "marketplace";
   readonly displayName: string;
@@ -53,6 +56,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   const {
     document,
     messages,
+    contentLocale = messages.locale,
     extensionId,
     cardKind,
     displayName,
@@ -71,6 +75,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     onOpenDetails,
   } = options;
   const copy = messages.desktopExtensions;
+  const contentCopy = contentLocaleMessages(contentLocale);
 
   const card = createEl(document, "article", "settings-extensions-card");
   card.dataset.extensionId = extensionId;
@@ -156,7 +161,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   const authorVersion = formatAuthorVersion(author, version);
   const categoryLabels = (categories ?? [])
     .slice(0, MAX_CARD_CATEGORIES)
-    .map((category) => copy.categories[category] ?? category);
+    .map((category) => contentCopy.categories[category] ?? category);
   const categoriesText = categoryLabels.join(" · ");
 
   if (authorVersion || updateHint || categoriesText) {

@@ -82,7 +82,7 @@ Copilot 的实时速度与最近缓存命中率来自原生 assistant.usage，�
 
 ## 账号额度与会话用量分离
 
-会话用量查询可以附带 Adapter 的账号额度缓存，但它不是该历史 Thread 实际使用的 Account/Billing Source 绑定。插件通过正式可选 `credits()` / `refreshCredits()` 提供读取与刷新；Host 校验快照并隔离失败，用 `accountCreditsSupported` 声明是否存在这项能力，客户端不维护 Harness 白名单。设置页的 `inspectAccount(s)` 仍执行新鲜账号查询，两者不互相代替。
+会话用量查询可以附带 Adapter 的账号额度缓存，但它不是该历史 Thread 实际使用的 Account/Billing Source 绑定。插件通过正式可选 `credits()` / `refreshCredits()` 提供读取与刷新；Host 校验快照并隔离失败，用 `accountCreditsSupported` 声明是否存在这项能力，客户端不维护 Harness 白名单。设置页的 `inspectAccount(s)` 仍执行新鲜账号查询，两者不互相代替。只报告预付费余额的插件改用 `balance()` / `refreshBalance()`，对话框的额度胶囊此时显示金额与币种（如 `¥12.34`），浮窗只列来源和余额，不画进度条或百分比。
 
 Web 的 Codex CLI 插件通过原生 `account/read` 确认当前 ChatGPT 身份，再读取 `account/rateLimits/read`，复用输入框下方的账号额度百分比和详情浮窗。5 小时、7 天以及模型独立窗口按原生返回展示，缺少的窗口不补零；API Key、自定义 Provider 无 OpenAI 认证要求或查询失败时不显示套餐额度。额度查询不创建 Thread 或 Model Turn，不参与模型检查或 Session 创建前置校验。后台查询合并并限制为每 30 秒最多一次，缓存 60 秒后失效；账号设置页显式查询读取新鲜结果。
 

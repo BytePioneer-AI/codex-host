@@ -62,7 +62,7 @@ import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import type { ModelSelectInjected } from "./slots.ts";
 import css from "./ModelSelect.module.css";
 import { orderModelProviders } from "./provider-order.ts";
-import { isModelRoute } from "./fast-model.ts";
+import { isModelRoute, modelRowSelection } from "./fast-model.ts";
 import { en, type ModelKey } from "./locales.ts";
 
 /** The primary Thinking card stays mounted while its Model sibling is open. */
@@ -557,15 +557,12 @@ export function ModelSelect({
   };
 
   const choose = (selection: ModelSelection): void => {
-    // Re-picking the current Model (plain or Fast) keeps the selection unchanged.
-    if (
-      state.current?.provider === selection.provider &&
-      currentChoice?.selection.model === selection.model
-    ) {
+    const target = modelRowSelection(state.groups, state.current, selection);
+    if (state.current?.provider === target.provider && state.current.model === target.model) {
       closeAfterSelection();
       return;
     }
-    submit(selection);
+    submit(target);
   };
 
   const chooseEffort = (effort: string | undefined): void => {

@@ -255,6 +255,14 @@ export function ChatView({
     },
     [inputActions],
   );
+  // A passage attached with a note leaves the Composer unfocused, so the reader
+  // can go on selecting and commenting before writing the request.
+  const attachComment = useCallback(
+    (text: string, annotation: string) => {
+      return inputActions?.addResponseAnnotation({ text, annotation }) !== undefined;
+    },
+    [inputActions],
+  );
   const running = useSession((s) => s.running);
   const carrier = useSyncExternalStore(connection.state.subscribe, connection.state.getSnapshot);
   const recoveryLasting = useSustainedRecovery(carrier !== "connected");
@@ -508,8 +516,14 @@ export function ChatView({
         </div>
       </div>
       <SelectionActions
-        labels={{ addToChat: t("selection.addToChat") }}
+        labels={{
+          addToChat: t("selection.addToChat"),
+          comment: t("selection.comment"),
+          placeholder: t("selection.commentPlaceholder"),
+          submit: t("selection.commentSubmit"),
+        }}
         onAdd={attachSelection}
+        onComment={attachComment}
         container={() => scroll.columnRef.current}
       />
       {!scroll.followingTail && (

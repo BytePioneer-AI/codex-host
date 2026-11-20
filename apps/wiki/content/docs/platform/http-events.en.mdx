@@ -30,16 +30,16 @@ Content-Type: application/json
 
 All action endpoints accept `POST` requests with a JSON body:
 
-| Endpoint                  | What It Does                            | Common Fields                                                                              |
-| :------------------------ | :-------------------------------------- | :----------------------------------------------------------------------------------------- |
-| `POST /v1/harness/list`   | List ready Agents                       | `{}`                                                                                       |
-| `POST /v1/project/list`   | Search discovered local Git repos       | Optional `query`, `limit`, `offset`                                                        |
-| `POST /v1/delegate/start` | Spawn a new session and submit a task   | `harness`, `task`, `cwd` (absolute path), optional `taskName`, `worktree`, `base`, `watch` |
-| `POST /v1/thread/send`    | Follow up, steer mid-turn, or interrupt | `threadId`, `message`, optional `steer`, `interrupt`, `watch`                              |
-| `POST /v1/thread/read`    | Read the latest result or turn history  | `threadId`, optional `view` (`"result"` or `"messages"`), `from`, `to`                     |
-| `POST /v1/thread/wait`    | Wait up to `timeoutMs` for completion   | `threadId`, optional `timeoutMs`, `view`                                                   |
-| `POST /v1/thread/cancel`  | Cancel the active turn                  | `threadId`                                                                                 |
-| `POST /v1/thread/watches` | List pending completion watches         | `{}`                                                                                       |
+| Endpoint                  | What It Does                            | Common Fields                                                                                               |
+| :------------------------ | :-------------------------------------- | :---------------------------------------------------------------------------------------------------------- |
+| `POST /v1/harness/list`   | List ready Agents                       | `{}`                                                                                                        |
+| `POST /v1/project/list`   | Search discovered local Git repos       | Optional `query`, `limit`, `offset`                                                                         |
+| `POST /v1/delegate/start` | Spawn a new session and submit a task   | `harnessId` (or `harness`), `task`, `cwd` (absolute path), optional `taskName`, `worktree`, `base`, `watch` |
+| `POST /v1/thread/send`    | Follow up, steer mid-turn, or interrupt | `threadId`, `message`, optional `steer`, `interrupt`, `watch`                                               |
+| `POST /v1/thread/read`    | Read the latest result or turn history  | `threadId`, optional `view` (`"result"` or `"messages"`, default `"result"`), `from`, `to`                  |
+| `POST /v1/thread/wait`    | Wait up to `timeoutMs` for completion   | `threadId`, optional `timeoutMs` (default 30000), `view`                                                    |
+| `POST /v1/thread/cancel`  | Cancel the active turn                  | `threadId`                                                                                                  |
+| `POST /v1/thread/watches` | List pending completion watches         | `{}`                                                                                                        |
 
 ### Example: Start a Task in a Fresh Worktree with a Watch
 
@@ -48,7 +48,7 @@ curl -X POST http://127.0.0.1:4398/v1/delegate/start \
   -H "Authorization: Bearer chc_your_token_here" \
   -H "Content-Type: application/json" \
   -d '{
-    "harness": "pi",
+    "harnessId": "pi",
     "cwd": "/Users/me/projects/my-app",
     "taskName": "Investigate login timeout",
     "worktree": "fix/login-timeout",

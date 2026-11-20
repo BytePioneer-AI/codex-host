@@ -20,6 +20,7 @@ import {
   type HarnessPermissionModeId,
   type HarnessPermissionModeScope,
   type HarnessThinkingOptionId,
+  type AccountBalanceSnapshot,
   type AccountCreditsSnapshot,
   type ThreadInspection,
   type ThreadUsageInspection,
@@ -223,13 +224,28 @@ export function rendererUsageRefreshDelay(attempt: number): number {
   return rendererUsageRefreshDelays[index] ?? rendererUsageRefreshDelays[0];
 }
 
+/**
+ * Missing usage keeps retrying. Once usage is shown, a quota or balance that never arrives (no
+ * key, an invalid key, an account without quota) gets one pass of the backoff, not endless polls.
+ */
+export function canScheduleExternalThreadUsageRefresh(
+  usage: ThreadUsageSnapshot | null,
+  attempt: number,
+): boolean {
+  return usage === null || attempt < rendererUsageRefreshDelays.length;
+}
+
 /** Retry quota only when the Host confirms that this source supplies it. */
 export function shouldRetryExternalThreadUsage(
   accountCreditsSupported: boolean,
   usage: ThreadUsageSnapshot | null,
   accountCredits: AccountCreditsSnapshot | null = null,
+  accountBalance: AccountBalanceSnapshot | null = null,
 ): boolean {
-  return usage === null || (accountCreditsSupported && accountCredits === null);
+  return (
+    usage === null ||
+    (accountCreditsSupported && accountCredits === null && accountBalance === null)
+  );
 }
 
 export function shouldReloadExternalCatalogAfterAvailabilityRefresh(
@@ -605,6 +621,7 @@ interface MountedComposer {
   threadConfiguration: HarnessModelSelectionState | undefined;
   usage: ThreadUsageSnapshot | null;
   accountCredits: AccountCreditsSnapshot | null;
+  accountBalance: AccountBalanceSnapshot | null;
   accountCreditsSupported: boolean;
   hostId: string | null;
   usageRequestGeneration: number;
@@ -1109,6 +1126,7 @@ export function installRendererBindingProbe(
       settingsLifecycle.locale,
       currentCodexAccount ?? null,
       mounted.ownershipStatus === "error",
+      mounted.accountBalance,
     );
     showCodexUsageGateStatus(mounted, mounted.codexUsageGate.update(externalSubmissionReady));
     if (mounted.control.usage) {
@@ -1256,6 +1274,7 @@ export function installRendererBindingProbe(
       mounted.usageRequestGeneration += 1;
       mounted.usage = update.usage;
       mounted.accountCredits = update.accountCredits ?? null;
+      mounted.accountBalance = update.accountBalance ?? null;
       if (update.accountCreditsSupported !== undefined)
         mounted.accountCreditsSupported = update.accountCreditsSupported;
       usageRefreshAttempts.delete(mounted.composer);
@@ -1291,6 +1310,7 @@ export function installRendererBindingProbe(
     mounted.draftUsageClient = null;
     mounted.usage = null;
     mounted.accountCredits = null;
+    mounted.accountBalance = null;
     mounted.accountCreditsSupported = false;
     renderMounted(mounted);
     const isCurrent = (): boolean =>
@@ -1346,6 +1366,7 @@ export function installRendererBindingProbe(
     if (!modelControl) {
       mounted.usage = null;
       mounted.accountCredits = null;
+      mounted.accountBalance = null;
       usageRefreshAttempts.delete(mounted.composer);
       renderMounted(mounted);
       return;
@@ -1373,8 +1394,12 @@ export function installRendererBindingProbe(
       }
       mounted.usage = result.usage;
       mounted.accountCredits = result.accountCredits ?? null;
+      mounted.accountBalance = result.accountBalance ?? null;
       mounted.accountCreditsSupported = result.accountCreditsSupported ?? false;
-      if (result.usage !== null && (!mounted.accountCreditsSupported || result.accountCredits)) {
+      if (
+        result.usage !== null &&
+        (!mounted.accountCreditsSupported || result.accountCredits || result.accountBalance)
+      ) {
         usageRefreshAttempts.delete(mounted.composer);
       }
       renderMounted(mounted);
@@ -1383,6 +1408,7 @@ export function installRendererBindingProbe(
           mounted.accountCreditsSupported,
           result.usage,
           result.accountCredits ?? null,
+          result.accountBalance ?? null,
         )
       ) {
         scheduleThreadUsageRefresh(mounted);
@@ -1406,6 +1432,7 @@ export function installRendererBindingProbe(
   const scheduleThreadUsageRefresh = (mounted: MountedComposer): void => {
     if (usageRefreshTimers.has(mounted.composer)) return;
     const attempt = usageRefreshAttempts.get(mounted.composer) ?? 0;
+    if (!canScheduleExternalThreadUsageRefresh(mounted.usage, attempt)) return;
     usageRefreshAttempts.set(mounted.composer, attempt + 1);
     const timer = window.setTimeout(() => {
       usageRefreshTimers.delete(mounted.composer);
@@ -1595,6 +1622,7 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
       mounted.accountCredits = null;
+      mounted.accountBalance = null;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
       if (previousTarget?.[0] === "conversation") renderMounted(mounted);
@@ -2329,6 +2357,7 @@ export function installRendererBindingProbe(
       candidate.usageRequestGeneration += 1;
       candidate.usage = null;
       candidate.accountCredits = null;
+      candidate.accountBalance = null;
       candidate.accountCreditsSupported = false;
       usageRefreshAttempts.delete(candidate.composer);
       const timer = usageRefreshTimers.get(candidate.composer);
@@ -2690,6 +2719,7 @@ export function installRendererBindingProbe(
         mounted.permissionModeView = { status: "idle" };
         mounted.usage = null;
         mounted.accountCredits = null;
+        mounted.accountBalance = null;
         mounted.usageRequestGeneration += 1;
         const state = controller.get(mounted.composer);
         if (applyDraftAgentCarrier(mounted.composer, state.agent)) {
@@ -2714,6 +2744,7 @@ export function installRendererBindingProbe(
       mounted.ownershipStatus = "loading";
       mounted.usage = null;
       mounted.accountCredits = null;
+      mounted.accountBalance = null;
       mounted.usageRequestGeneration += 1;
       usageRefreshAttempts.delete(mounted.composer);
       const timer = usageRefreshTimers.get(mounted.composer);
@@ -3005,6 +3036,7 @@ export function installRendererBindingProbe(
       threadConfiguration: inherited?.threadConfiguration,
       usage: inherited?.usage ?? null,
       accountCredits: inherited?.accountCredits ?? null,
+      accountBalance: inherited?.accountBalance ?? null,
       accountCreditsSupported: inherited?.accountCreditsSupported ?? false,
       hostId: inherited?.hostId ?? hostId,
       usageRequestGeneration: 0,
@@ -3026,6 +3058,7 @@ export function installRendererBindingProbe(
         mounted.accountCreditsSupported,
         mounted.usage,
         mounted.accountCredits,
+        mounted.accountBalance,
       )
     ) {
       scheduleThreadUsageRefresh(mounted);
@@ -3210,6 +3243,11 @@ export function installRendererBindingProbe(
     if (mounted?.modelTarget?.[0] === "conversation") {
       return state.phase === "locked" && mounted.ownershipStatus === "ready";
     }
+    // Native routing is cleared through the Composer's scoped prewarm policy.
+    // A missing private Model binding must not disable native editing or sending.
+    if (mounted && state.agent === "codex" && mounted.modelTarget === null) {
+      return applyDraftAgentCarrier(composer, state.agent);
+    }
     if (!mounted || !isComposerModelWriteAllowed(mounted.modelTarget)) return false;
     return applyComposerModelWrite(mounted.modelTarget, () =>
       applyDraftAgentCarrier(composer, state.agent),
@@ -3227,6 +3265,8 @@ export function installRendererBindingProbe(
       return false;
     }
     if (!isExternalConfigurationReady(mounted)) return false;
+    if (current.agent === "codex" && mounted.modelTarget === null && !applyAdapterAgent)
+      return false;
     if (current.phase === "locked") return true;
     if (!applyComposerAgent(composer)) return false;
     controller.markSubmissionPending(composer);

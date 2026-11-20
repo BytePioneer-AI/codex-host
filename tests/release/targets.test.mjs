@@ -26,7 +26,7 @@ describe("release targets", () => {
     expect(installerReleaseTargets()).toEqual(
       expectedTargets.filter((target) => !target.startsWith("linux-")),
     );
-    expect(NODE_VERSION).toBe("24.13.1");
+    expect(NODE_VERSION).toBe("24.22.1");
     expect(Object.values(RELEASE_TARGETS).map((target) => target.rustTarget)).toEqual([
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",

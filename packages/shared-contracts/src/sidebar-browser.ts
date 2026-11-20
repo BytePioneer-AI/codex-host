@@ -43,6 +43,33 @@ export interface SidebarBrowserDirectCandidate {
   readonly usernameFragment?: string | null;
 }
 
+/** Known client close reasons allowed in service logs. The wire remains tolerant of other values. */
+export const SIDEBAR_BROWSER_DIRECT_CANCEL_REASONS: readonly string[] = [
+  "background",
+  "network-changed",
+  "signaling-closed",
+];
+export const SIDEBAR_BROWSER_DIRECT_CLIENT_FAILURE_REASONS: readonly string[] = [
+  "candidate-error",
+  "connection-lost",
+  "control-close",
+  "control-error",
+  "control-send",
+  "frame-decode",
+  "frame-fragment",
+  "frame-sequence",
+  "frame-window",
+  "frame-ack",
+  "frames-close",
+  "frames-error",
+  "frames-fallback",
+  "frames-open",
+  "heartbeat-timeout",
+  "offer-error",
+  "ready-timeout",
+  "signaling-error",
+];
+
 type DirectSignal =
   | {
       readonly type: "direct-candidate";
@@ -127,7 +154,7 @@ export type SidebarBrowserClientMessage =
   /** The latest presented frame; also acknowledges every earlier frame on this connection. */
   | SidebarBrowserAck
   /** Bind to a ready direct peer, or omit peer to return to the WebSocket. */
-  | { readonly type: "transport"; readonly peer?: string };
+  | { readonly type: "transport"; readonly binding: number; readonly peer?: string };
 
 export interface SidebarBrowserState {
   readonly type: "state";
@@ -162,8 +189,13 @@ export type SidebarBrowserServerMessage =
   | SidebarBrowserTransport;
 
 export type SidebarBrowserTransport =
-  | { readonly type: "transport"; readonly via: "socket" }
-  | { readonly type: "transport"; readonly via: "direct"; readonly from: number };
+  | { readonly type: "transport"; readonly binding: number; readonly via: "socket" }
+  | {
+      readonly type: "transport";
+      readonly binding: number;
+      readonly via: "direct";
+      readonly from: number;
+    };
 
 export type SidebarBrowserFrameFormat = "jpeg" | "png";
 
@@ -301,10 +333,11 @@ export function parseSidebarBrowserDirectServerMessage(
 
 export function parseSidebarBrowserTransport(value: unknown): SidebarBrowserTransport | undefined {
   const message = record(value);
-  if (message?.type !== "transport") return undefined;
-  if (message.via === "socket") return { type: "transport", via: "socket" };
+  if (message?.type !== "transport" || !integer(message.binding, 1)) return undefined;
+  const { binding } = message;
+  if (message.via === "socket") return { type: "transport", binding, via: "socket" };
   if (message.via === "direct" && integer(message.from, 1))
-    return { type: "transport", via: "direct", from: message.from };
+    return { type: "transport", binding, via: "direct", from: message.from };
   return undefined;
 }
 
@@ -412,8 +445,11 @@ export function parseSidebarBrowserClientMessage(
     case "ack":
       return parseSidebarBrowserAck(message);
     case "transport":
-      if (message.peer === undefined) return { type: "transport" };
-      return directId(message.peer) ? { type: "transport", peer: message.peer } : undefined;
+      if (!integer(message.binding, 1)) return undefined;
+      if (message.peer === undefined) return { type: "transport", binding: message.binding };
+      return directId(message.peer)
+        ? { type: "transport", binding: message.binding, peer: message.peer }
+        : undefined;
     case "mouse": {
       const action = message.action;
       const button = message.button;

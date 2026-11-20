@@ -61,9 +61,10 @@ export class DirectSession {
     connection?.addEventListener(
       "change",
       () => {
-        const changed = connection.type !== networkType;
-        networkType = connection.type;
-        if (changed && this.current) {
+        const type = connection.type;
+        if (type === networkType) return;
+        networkType = type;
+        if (this.current) {
           if (this.ready) this.fail(this.current, "network-changed");
           else this.cancel("network-changed");
         }

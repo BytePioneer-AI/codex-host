@@ -46,14 +46,21 @@ describe("sidebar browser direct protocol", () => {
     });
     expect(decodeSidebarBrowserDirectAck('{"type":"ack","sequence":1.5}')).toBeUndefined();
     expect(decodeSidebarBrowserDirectAck("{")).toBeUndefined();
-    expect(parseSidebarBrowserClientMessage({ type: "transport" })).toEqual({ type: "transport" });
-    expect(parseSidebarBrowserClientMessage({ type: "transport", peer: "" })).toBeUndefined();
-    expect(parseSidebarBrowserTransport({ type: "transport", via: "direct", from: 8 })).toEqual({
+    expect(parseSidebarBrowserClientMessage({ type: "transport", binding: 1 })).toEqual({
       type: "transport",
-      via: "direct",
-      from: 8,
+      binding: 1,
     });
-    expect(parseSidebarBrowserTransport({ type: "transport", via: "direct" })).toBeUndefined();
+    expect(parseSidebarBrowserClientMessage({ type: "transport", peer: "peer" })).toBeUndefined();
+    expect(
+      parseSidebarBrowserClientMessage({ type: "transport", binding: 1, peer: "" }),
+    ).toBeUndefined();
+    const bound = { type: "transport", binding: 2, via: "direct", from: 8 };
+    expect(parseSidebarBrowserTransport(bound)).toEqual(bound);
+    expect(parseSidebarBrowserTransport({ ...bound, from: undefined })).toBeUndefined();
+    expect(parseSidebarBrowserTransport({ type: "transport", via: "socket" })).toBeUndefined();
+    expect(
+      parseSidebarBrowserTransport({ type: "transport", via: "socket", binding: 0 }),
+    ).toBeUndefined();
   });
 
   it("round trips a full-size fragment without truncating sequence or accepting out-of-bounds bytes", () => {

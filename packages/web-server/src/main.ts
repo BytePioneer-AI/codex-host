@@ -47,10 +47,7 @@ import { RemoteRelay } from "./remote-relay/state.ts";
 import { registerRelayRpc } from "./remote-relay/rpc.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
 import { DesktopScreenshots } from "./desktop-screenshot.ts";
-import {
-  SIDEBAR_BROWSER_PATH,
-  SIDEBAR_BROWSER_TAB_PARAM,
-} from "@codexhost/shared-contracts/sidebar-browser";
+import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browser";
 import { SidebarBrowserDirect, sidebarDirectStunUrls } from "./sidebar-browser-direct.ts";
 import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
@@ -730,20 +727,12 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
-  const signaling =
-    path === SIDEBAR_BROWSER_PATH &&
-    !new URLSearchParams(request.url?.split("?")[1]).has(SIDEBAR_BROWSER_TAB_PARAM);
-  const credential = auth?.admitUpgrade(request, socket, !signaling);
-  if (auth !== undefined && credential === undefined) return;
-  if (path === SIDEBAR_BROWSER_PATH)
-    sidebarBrowser.upgrade(
-      request,
-      socket,
-      head,
-      credential,
-      signaling && trust.offersSidebarDirect(request),
-    );
-  else if (path === "/api/remote.mux")
+  if (path === SIDEBAR_BROWSER_PATH) {
+    sidebarBrowser.upgrade(request, socket, head, trust, auth);
+    return;
+  }
+  if (auth !== undefined && !auth.admitUpgrade(request, socket)) return;
+  if (path === "/api/remote.mux")
     wss.handleUpgrade(request, socket, head, (ws) =>
       streams.attach(ws, trust.relaySockets.has(request.socket)),
     );

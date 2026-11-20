@@ -38,7 +38,7 @@ export function isLocalConnection(request: IncomingMessage): boolean {
   try {
     const { hostname, port } = new URL(`http://${request.headers.host ?? ""}`);
     return (
-      (hostname === "127.0.0.1" || hostname === "localhost") &&
+      (hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "localhost") &&
       Number(port || 80) === request.socket.localPort
     );
   } catch {

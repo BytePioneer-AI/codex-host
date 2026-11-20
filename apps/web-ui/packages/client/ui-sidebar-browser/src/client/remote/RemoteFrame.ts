@@ -38,6 +38,7 @@ export class RemoteFrame implements BrowserFrame {
   private drawing: Promise<void> = Promise.resolve();
   private presented = 0;
   private direct: DirectFrames | undefined;
+  private lastBinding = 0;
   private unsubscribeDirect: (() => void) | undefined;
   private disposed = false;
 
@@ -116,6 +117,7 @@ export class RemoteFrame implements BrowserFrame {
     socket.binaryType = "arraybuffer";
     this.socket = socket;
     this.presented = 0;
+    this.lastBinding = 0;
     socket.addEventListener("open", () => {
       if (this.socket !== socket) return;
       this.retryMs = 500;
@@ -159,7 +161,8 @@ export class RemoteFrame implements BrowserFrame {
   private subscribeDirect(socket: WebSocket): void {
     this.unsubscribeDirect = this.directSession.subscribe((ready) => {
       if (this.socket !== socket) return;
-      if (this.clearDirect()) this.send({ type: "transport" });
+      const released = this.clearDirect();
+      if (released !== undefined) this.send({ type: "transport", binding: released });
       if (!ready) return;
       try {
         const frames = new DirectFrames(
@@ -167,8 +170,9 @@ export class RemoteFrame implements BrowserFrame {
           this.key,
           () => {
             if (this.direct !== frames) return;
-            frames.requested = true;
-            this.send({ type: "transport", peer: ready.peer });
+            const binding = ++this.lastBinding;
+            frames.binding = binding;
+            this.send({ type: "transport", peer: ready.peer, binding });
           },
           ({ data, header }) => this.draw(socket, data, frames, header),
         );
@@ -179,11 +183,11 @@ export class RemoteFrame implements BrowserFrame {
     });
   }
 
-  private clearDirect(): boolean {
+  private clearDirect(): number | undefined {
     const frames = this.direct;
     this.direct = undefined;
     frames?.dispose();
-    return frames?.requested ?? false;
+    return frames?.binding;
   }
 
   private detachDirect(): void {
@@ -194,7 +198,7 @@ export class RemoteFrame implements BrowserFrame {
 
   private transport(message: SidebarBrowserTransport): void {
     const frames = this.direct;
-    if (!frames?.requested) return;
+    if (frames?.binding !== message.binding) return;
     if (message.via === "direct") frames.confirm(message.from);
     else {
       this.clearDirect(); // The server already switched this tab back.

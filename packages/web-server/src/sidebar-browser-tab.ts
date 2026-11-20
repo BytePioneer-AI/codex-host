@@ -62,6 +62,7 @@ interface Viewer {
   visible: boolean;
   readonly inFlight: { sequence: number; bytes: number; via: "direct" | "socket" }[];
   readonly findDirect: (peer: string) => SidebarDirectSession | undefined;
+  binding: number;
   direct?: SidebarDirectFrames;
   session?: SidebarDirectSession;
   delivery: SidebarBrowserDelivery;
@@ -156,6 +157,7 @@ export class SidebarBrowserTab {
     const viewer: Viewer = {
       socket,
       findDirect,
+      binding: 0,
       heldKeys: new Set(),
       heldButtons: new Set(),
       visible: false,
@@ -214,7 +216,7 @@ export class SidebarBrowserTab {
         this.acknowledged(viewer, message.sequence);
         return;
       case "transport":
-        this.changeTransport(viewer, message.peer);
+        this.changeTransport(viewer, message.binding, message.peer);
         return;
       case "visible":
         if (viewer.visible === message.visible) return;
@@ -266,31 +268,37 @@ export class SidebarBrowserTab {
     this.flush(viewer);
   }
 
-  private changeTransport(viewer: Viewer, peer: string | undefined): void {
-    const session = peer === undefined ? undefined : viewer.findDirect(peer);
-    if (session && viewer.direct && viewer.session === session) return;
-    const binding = session?.bind(this.key, (reason) => this.fallback(viewer, reason));
+  private changeTransport(viewer: Viewer, id: number, peer: string | undefined): void {
+    if (peer === undefined) {
+      if (id === viewer.binding) this.fallback(viewer, id, "client-request");
+      return;
+    }
+    if (id <= viewer.binding) return;
+    viewer.binding = id;
+    const session = viewer.findDirect(peer);
+    const binding = session?.bind(this.key, (reason) => this.fallback(viewer, id, reason));
     if (!session || !binding) {
-      this.fallback(viewer, "client-request");
+      this.fallback(viewer, id, "client-request");
       return;
     }
     const direct = new SidebarDirectFrames(
       binding,
       () => this.flush(viewer),
       (sequence) => this.acknowledged(viewer, sequence),
-      (bytes) => this.countFrameBytes("direct", bytes),
+      (bytes) => this.recordFrameBytes(viewer, "direct", bytes),
     );
     if (!direct.usable) {
       direct.dispose();
-      this.fallback(viewer, "message-size");
+      this.fallback(viewer, id, "message-size");
       return;
     }
-    viewer.direct?.dispose();
+    this.clearDirect(viewer);
     viewer.direct = direct;
     viewer.session = session;
     viewer.delivery = new SidebarBrowserDelivery();
     this.send(viewer, {
       type: "transport",
+      binding: id,
       via: "direct",
       from: viewer.pending?.sequence ?? this.sequence + 1,
     });
@@ -298,15 +306,21 @@ export class SidebarBrowserTab {
     this.flush(viewer);
   }
 
-  private fallback(viewer: Viewer, reason: string): void {
+  private clearDirect(viewer: Viewer): boolean {
     const direct = viewer.direct;
-    if (direct) {
-      delete viewer.direct;
-      direct.dispose();
+    if (!direct) return false;
+    delete viewer.direct;
+    direct.dispose();
+    for (let i = viewer.inFlight.length - 1; i >= 0; i--)
+      if (viewer.inFlight[i]!.via === "direct") viewer.inFlight.splice(i, 1);
+    viewer.delivery = new SidebarBrowserDelivery();
+    return true;
+  }
+
+  private fallback(viewer: Viewer, id: number, reason: string): void {
+    if (id !== viewer.binding) return;
+    if (this.clearDirect(viewer)) {
       viewer.session?.fallback(reason);
-      for (let i = viewer.inFlight.length - 1; i >= 0; i--)
-        if (viewer.inFlight[i]!.via === "direct") viewer.inFlight.splice(i, 1);
-      viewer.delivery = new SidebarBrowserDelivery();
       if (reason === "revoked" || reason === "shutdown") return;
       const latest = this.latest;
       if (
@@ -317,9 +331,9 @@ export class SidebarBrowserTab {
       )
         viewer.pending = latest.picture;
     }
-    this.send(viewer, { type: "transport", via: "socket" });
-    this.adapt();
+    this.send(viewer, { type: "transport", binding: id, via: "socket" });
     this.flush(viewer);
+    this.adapt();
   }
 
   private async navigate(url: string): Promise<void> {
@@ -639,11 +653,16 @@ export class SidebarBrowserTab {
     viewer.delivery.sent(performance.now());
     if (direct) direct.send(pending);
     else {
-      this.countFrameBytes("socket", pending.frame.length);
+      this.recordFrameBytes(viewer, "socket", pending.frame.length);
       socket.send(pending.frame, { binary: true }, (error) => {
         if (!error) this.flush(viewer);
       });
     }
+  }
+
+  private recordFrameBytes(viewer: Viewer, via: "direct" | "socket", bytes: number): void {
+    this.countFrameBytes(via, bytes);
+    viewer.session?.countFrameBytes(via, bytes);
   }
 
   private dispatchInput(

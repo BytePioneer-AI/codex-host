@@ -22,6 +22,8 @@ import {
   type SidebarBrowserQuality,
 } from "./sidebar-browser-tab.ts";
 
+import type { AccessAuth } from "./auth.ts";
+import type { RequestTrust } from "./request-trust.ts";
 import type { SidebarBrowserDirect } from "./sidebar-browser-direct.ts";
 import { SidebarBrowserFrameTotals } from "./sidebar-browser-frame-totals.ts";
 
@@ -59,17 +61,19 @@ export class SidebarBrowser {
     this.sweeper.unref();
   }
 
-  /** Accept an already admitted, same-origin upgrade. */
+  /** Admit a same-origin upgrade and route it using the same tab key. */
   upgrade(
     request: IncomingMessage,
     socket: Duplex,
     head: Buffer,
-    credential?: string,
-    offered = false,
+    trust: RequestTrust,
+    auth?: AccessAuth,
   ): void {
     const key = new URL(request.url ?? "/", "http://local").searchParams.get(
       SIDEBAR_BROWSER_TAB_PARAM,
     );
+    const credential = auth?.admitUpgrade(request, socket, key !== null);
+    if (auth !== undefined && credential === undefined) return;
     if (
       this.closed ||
       (key === null
@@ -83,7 +87,7 @@ export class SidebarBrowser {
       this.alive.add(ws);
       ws.on("pong", () => this.alive.add(ws));
       if (key === null) {
-        this.options.direct!.attach(ws, credential!, offered);
+        this.options.direct!.attach(ws, credential!, trust.offersSidebarDirect(request));
         return;
       }
       const tab = this.tab(key);

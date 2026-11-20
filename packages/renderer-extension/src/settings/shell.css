@@ -4008,6 +4008,7 @@ dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
 .settings-extensions-detail-modal__description {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .settings-extensions-detail-dialog .settings-extensions-detail-modal__paragraph {
@@ -4015,8 +4016,113 @@ dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
   color: var(--settings-text);
   font-size: 13px;
   line-height: 21px;
-  white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+.settings-extensions-md__h3,
+.settings-extensions-md__h4,
+.settings-extensions-md__h5 {
+  margin: 4px 0 0;
+  color: var(--settings-text);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.settings-extensions-md__h3:first-child,
+.settings-extensions-md__h4:first-child,
+.settings-extensions-md__h5:first-child {
+  margin-top: 0;
+}
+
+.settings-extensions-md__h3 {
+  font-size: 14.5px;
+  line-height: 21px;
+}
+
+.settings-extensions-md__h4 {
+  font-size: 13.5px;
+  line-height: 20px;
+}
+
+.settings-extensions-md__h5 {
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.settings-extensions-md__list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--settings-text);
+  font-size: 13px;
+  line-height: 20px;
+  list-style: disc;
+  overflow-wrap: anywhere;
+}
+
+.settings-extensions-md__list--ordered {
+  list-style: decimal;
+}
+
+.settings-extensions-md__code {
+  padding: 1px 5px;
+  color: var(--settings-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: light-dark(rgb(15 23 42 / 6%), rgb(255 255 255 / 9%));
+  border-radius: 5px;
+}
+
+.settings-extensions-md__pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  color: var(--settings-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--settings-inset);
+  border: 1px solid var(--settings-border);
+  border-radius: 9px;
+}
+
+.settings-extensions-md__pre code {
+  padding: 0;
+  font: inherit;
+  background: transparent;
+}
+
+.settings-extensions-md__quote {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 3px 0 3px 12px;
+  color: var(--settings-muted);
+  border-left: 2.5px solid light-dark(rgb(15 23 42 / 18%), rgb(255 255 255 / 22%));
+}
+
+.settings-extensions-detail-dialog
+  .settings-extensions-md__quote
+  .settings-extensions-detail-modal__paragraph {
+  color: var(--settings-muted);
+}
+
+.settings-extensions-md__link {
+  color: var(--settings-focus);
+  text-decoration: none;
+}
+
+.settings-extensions-md__link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-extensions-md__link:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 .settings-extensions-detail-modal__screenshots {

@@ -1,4 +1,5 @@
 import type { DesktopExtensionCatalogEntry } from "@codexhost/shared-contracts";
+import { renderSafeMarkdown } from "./desktop-extensions-markdown.js";
 import {
   blockedToggleReason,
   catalogDescription,
@@ -15,7 +16,6 @@ import {
   resolveAttentionDetail,
   resolveOptionalLocalizedText,
   safeScreenshotUrls,
-  splitParagraphs,
   statusTone,
   type DesktopExtensionContentLocale,
   type DesktopExtensionFeedback,
@@ -67,6 +67,7 @@ export function createDesktopExtensionDetailModal(options: {
   let openExtensionId: string | null = null;
   let activeScreenshotIndex: number | null = null;
   let renderedScreenshotsKey = "";
+  let renderedDetailsKey = "";
   let confirmingUninstall = false;
   let currentItem: DesktopExtensionItem | undefined;
   let currentCatalogEntry: DesktopExtensionCatalogEntry | undefined;
@@ -508,23 +509,24 @@ export function createDesktopExtensionDetailModal(options: {
       delete attentionBar.dataset.tone;
     }
 
-    // Multi-paragraph bilingual details (fallback to description).
+    // Safe-subset Markdown bilingual details (fallback to description).
+    // Skip DOM rebuild across polling ticks when raw content has not changed.
     const rawDetails =
       resolveOptionalLocalizedText(installed?.manifest?.details, contentLocale) ??
       resolveOptionalLocalizedText(catalogEntry?.details, contentLocale) ??
       (installed ? extensionDescription(installed, contentLocale) : null) ??
       (catalogEntry ? catalogDescription(catalogEntry, contentLocale) : null);
-    const paragraphs = splitParagraphs(rawDetails);
-    if (paragraphs.length > 0) {
-      descriptionSection.hidden = false;
-      descriptionSection.replaceChildren(
-        ...paragraphs.map((text) =>
-          createEl(document, "p", "settings-extensions-detail-modal__paragraph", text),
-        ),
-      );
-    } else {
-      descriptionSection.hidden = true;
-      descriptionSection.replaceChildren();
+    const detailsKey = `${extensionId}\0${contentLocale}\0${rawDetails ?? ""}`;
+    if (detailsKey !== renderedDetailsKey) {
+      renderedDetailsKey = detailsKey;
+      const blocks = renderSafeMarkdown(document, rawDetails);
+      if (blocks.length > 0) {
+        descriptionSection.hidden = false;
+        descriptionSection.replaceChildren(...blocks);
+      } else {
+        descriptionSection.hidden = true;
+        descriptionSection.replaceChildren();
+      }
     }
 
     // Screenshots gallery + interactive large preview.
@@ -538,6 +540,7 @@ export function createDesktopExtensionDetailModal(options: {
     openExtensionId = null;
     activeScreenshotIndex = null;
     renderedScreenshotsKey = "";
+    renderedDetailsKey = "";
     confirmingUninstall = false;
     currentItem = undefined;
     currentCatalogEntry = undefined;
@@ -773,6 +776,7 @@ export function createDesktopExtensionDetailModal(options: {
       if (openExtensionId !== extensionId) {
         activeScreenshotIndex = null;
         renderedScreenshotsKey = "";
+        renderedDetailsKey = "";
         confirmingUninstall = false;
       }
       openExtensionId = extensionId;

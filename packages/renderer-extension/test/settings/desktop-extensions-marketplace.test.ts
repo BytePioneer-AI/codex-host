@@ -185,6 +185,10 @@ class FakeDocument {
     return new FakeElement(tagName.toLowerCase(), this);
   }
 
+  createTextNode(text: string): string {
+    return text;
+  }
+
   addEventListener(): void {}
   removeEventListener(): void {}
 }

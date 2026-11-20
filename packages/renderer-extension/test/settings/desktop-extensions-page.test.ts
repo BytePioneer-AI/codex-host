@@ -186,6 +186,10 @@ class FakeDocument {
     return new FakeElement(tagName.toLowerCase(), this);
   }
 
+  createTextNode(text: string): string {
+    return text;
+  }
+
   addEventListener(name: string, listener: (event?: unknown) => void): void {
     const bucket = this.#listeners.get(name) ?? new Set();
     bucket.add(listener);
@@ -1067,12 +1071,20 @@ describe("Desktop extensions settings page", () => {
     expect(modalSwitch.checked).toBe(false);
     expect(textOf(dialog)).toContain("未启用");
 
-    // 5-second background poll updates modal status/switch live without closing the modal.
+    // 5-second background poll updates modal status/switch live without closing the modal
+    // or needlessly rebuilding unchanged Markdown details DOM.
+    const paragraphBeforePoll = descendants(dialog).find((el) =>
+      el.className.includes("settings-extensions-detail-modal__paragraph"),
+    );
     await vi.advanceTimersByTimeAsync(5_000);
     await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(3));
     expect(dialog.open).toBe(true);
     expect(modalSwitch.checked).toBe(true);
     expect(textOf(dialog)).toContain("等待 Desktop");
+    const paragraphAfterPoll = descendants(dialog).find((el) =>
+      el.className.includes("settings-extensions-detail-modal__paragraph"),
+    );
+    expect(paragraphAfterPoll).toBe(paragraphBeforePoll);
     mounted.dispose();
   });
 

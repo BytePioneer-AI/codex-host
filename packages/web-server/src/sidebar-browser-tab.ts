@@ -23,6 +23,10 @@ import {
   sidebarBrowserReduced,
 } from "./sidebar-browser-delivery.ts";
 import { EDITABLE_CHANGE_BINDING, SidebarBrowserEditables } from "./sidebar-browser-input.ts";
+import {
+  SidebarBrowserInputBatcher,
+  type SidebarBrowserInput,
+} from "./sidebar-browser-input-batcher.ts";
 import { SidebarDirectFrames, type SidebarDirectFrame } from "./sidebar-browser-direct-frames.ts";
 import type { SidebarDirectSession } from "./sidebar-browser-direct.ts";
 
@@ -116,7 +120,7 @@ export class SidebarBrowserTab {
   private latest: { cast: Cast; picture: SidebarDirectFrame } | undefined;
   private readonly editables: SidebarBrowserEditables;
   private input: Promise<unknown> = Promise.resolve();
-  private pendingMove: { x: number; y: number } | undefined;
+  private readonly inputBatcher = new SidebarBrowserInputBatcher<Viewer, Page>();
   private closed = false;
   /** When the last viewer left; the page is kept for reconnects until the owner sweeps it. */
   detachedAt: number | undefined = Date.now();
@@ -230,14 +234,17 @@ export class SidebarBrowserTab {
         void this.updateCasting(viewer.visible);
         return;
       case "viewport":
+        this.inputBatcher.seal();
         void this.resize(message);
         return;
       case "navigate":
+        this.inputBatcher.seal();
         void this.navigate(message.url);
         return;
       case "back":
       case "forward":
       case "reload":
+        this.inputBatcher.seal();
         void this.history(message.type);
         return;
       default:
@@ -665,10 +672,7 @@ export class SidebarBrowserTab {
     viewer.session?.countFrameBytes(via, bytes);
   }
 
-  private dispatchInput(
-    viewer: Viewer,
-    message: Extract<SidebarBrowserClientMessage, { type: "mouse" | "wheel" | "key" | "text" }>,
-  ): void {
+  private dispatchInput(viewer: Viewer, message: SidebarBrowserInput): void {
     const page = this.page;
     if (page === undefined) return;
     if (
@@ -680,24 +684,16 @@ export class SidebarBrowserTab {
       clearTimeout(this.idleTimer);
       this.idleTimer = setTimeout(() => this.adapt(), SIDEBAR_INTERACTION_IDLE_MS + 1);
     }
-    if (message.type === "mouse" && message.action === "move") {
-      // Moves coalesce: only the newest position waits behind earlier input.
-      const queued = this.pendingMove !== undefined;
-      this.pendingMove = { x: message.x, y: message.y };
-      if (queued) return;
-    }
+    const take = this.inputBatcher.enqueue(viewer, page, message);
+    if (take === undefined) return;
     this.input = this.input
       .then(async () => {
+        const message = take();
         if (this.page !== page) return;
         switch (message.type) {
           case "mouse": {
-            if (message.action === "move") {
-              const move = this.pendingMove;
-              this.pendingMove = undefined;
-              if (move !== undefined) await page.mouse.move(move.x, move.y);
-              return;
-            }
             await page.mouse.move(message.x, message.y);
+            if (message.action === "move") return;
             const button = message.button === "none" ? "left" : message.button;
             const options = { button, clickCount: Math.max(1, message.clickCount) };
             await (message.action === "down" ? page.mouse.down(options) : page.mouse.up(options));
@@ -726,6 +722,7 @@ export class SidebarBrowserTab {
   /** Release only this viewer's held input, after all its already queued events. */
   private releaseInput(viewer: Viewer): void {
     const page = this.page;
+    this.inputBatcher.seal();
     this.input = this.input
       .then(async () => {
         if (page === undefined || this.page !== page) return;

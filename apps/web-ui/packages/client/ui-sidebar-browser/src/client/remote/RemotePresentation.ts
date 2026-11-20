@@ -8,6 +8,7 @@ import {
 } from "@codexhost/shared-contracts/sidebar-browser";
 import type { BrowserPresentation } from "../view/BrowserPresentation.ts";
 import css from "./Remote.module.css";
+import { TouchScroll } from "./TouchScroll.ts";
 
 type ViewerMessage = Extract<
   SidebarBrowserClientMessage,
@@ -18,8 +19,6 @@ const BUTTONS: readonly SidebarBrowserMouseButton[] = ["left", "middle", "right"
 const IS_MAC = /Mac|iPhone|iPad/u.test(navigator.platform);
 /** The viewer's shortcut modifier; the CodexHost machine maps it to its own. */
 const PRIMARY_KEY = IS_MAC ? "Meta" : "Control";
-/** A touch that moves less than this is a tap. */
-const TAP_SLOP = 8;
 
 /** Owns the canvas and focus target; the frame owns the connection. */
 export class RemotePresentation implements BrowserPresentation {
@@ -193,7 +192,7 @@ export class RemotePresentation implements BrowserPresentation {
     ): void => {
       target.addEventListener(type, listener, { signal, passive });
     };
-    let touch: { id: number; x: number; y: number; moved: number } | undefined;
+    let touch: TouchScroll | undefined;
     let pointerType = "mouse";
     const focusAt = (event: MouseEvent): void => {
       const at = this.point(event);
@@ -242,7 +241,7 @@ export class RemotePresentation implements BrowserPresentation {
         if (event.pointerType !== "mouse") {
           // Touch taps are forwarded below; suppress their compatibility mouse events.
           event.preventDefault();
-          touch = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: 0 };
+          touch = new TouchScroll(event.pointerId, this.point(event), event.clientX, event.clientY);
         }
       },
       false,
@@ -259,21 +258,12 @@ export class RemotePresentation implements BrowserPresentation {
         return;
       }
       if (touch?.id !== event.pointerId) return;
-      // A touch drag scrolls the remote page.
-      const deltaX = touch.x - event.clientX;
-      const deltaY = touch.y - event.clientY;
-      touch = {
-        ...touch,
-        x: event.clientX,
-        y: event.clientY,
-        moved: touch.moved + Math.hypot(deltaX, deltaY),
-      };
-      if (touch.moved > TAP_SLOP)
-        this.send({ type: "wheel", ...this.point(event), deltaX, deltaY });
+      const wheel = touch.move(event.clientX, event.clientY);
+      if (wheel !== undefined) this.send(wheel);
     });
     on(canvas, "pointerup", (event) => {
       if (event.pointerType === "mouse" || touch?.id !== event.pointerId) return;
-      const tapped = touch.moved <= TAP_SLOP;
+      const tapped = touch.tapped;
       touch = undefined;
       if (!tapped) return;
       const at = this.point(event);

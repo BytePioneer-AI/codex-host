@@ -537,25 +537,29 @@ export function installRendererSidebarAgentIcons(options: {
         continue;
       }
       const threadId = hostThreadIdSchema.safeParse(row.threadId());
-      trackRowThread(row, threadId.success ? ownershipKey(hostId, threadId.data) : undefined);
+      const key = threadId.success ? ownershipKey(hostId, threadId.data) : undefined;
+      trackRowThread(row, key);
       const localAgent = options.getLocalAgent?.({
         hostId,
         threadId: threadId.success ? threadId.data : null,
         draftId: row.draftId(),
       });
-      const key = threadId.success ? ownershipKey(hostId, threadId.data) : undefined;
       const cached = key ? ownershipByThread.get(key) : undefined;
-      const verifyPlaceholder =
-        hostId.startsWith("remote-ssh") &&
-        row.placeholderPath?.() &&
-        (cached?.stale || cached?.client);
-      if (localAgent !== null && localAgent !== undefined && !verifyPlaceholder) {
-        if (key && !cached?.stale && !cached?.client) {
-          ownershipByThread.set(key, { agent: localAgent, stale: false });
-          clearOwnershipRetry(key);
+      if (localAgent !== null && localAgent !== undefined) {
+        // A duplicate Composer row shares the same ownership entry as the path row.
+        const verifyPlaceholder =
+          key &&
+          (cached?.stale || cached?.client) &&
+          hostId.startsWith("remote-ssh") &&
+          [...(rowsByThread.get(key) ?? [])].some((candidate) => candidate.placeholderPath?.());
+        if (!verifyPlaceholder) {
+          if (key) {
+            ownershipByThread.set(key, { agent: localAgent, stale: false });
+            clearOwnershipRetry(key);
+          }
+          row.render(localAgent, getPlugin(hostId, localAgent));
+          continue;
         }
-        row.render(localAgent, getPlugin(hostId, localAgent));
-        continue;
       }
       if (!threadId.success || !key) {
         row.clear();

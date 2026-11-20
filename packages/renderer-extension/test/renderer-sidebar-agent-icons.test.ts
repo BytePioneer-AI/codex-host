@@ -207,6 +207,7 @@ describe("Renderer sidebar Agent ownership", () => {
     const host = "remote-ssh-discovered:test";
     const id = crypto.randomUUID();
     const row = new FakeRow(id, null, host);
+    const duplicate = new FakeRow(id, null, host);
     row.path = "/workspace";
     let external = true;
     const client = clientWith(async ({ threadIds }) => ({
@@ -218,7 +219,7 @@ describe("Renderer sidebar Agent ownership", () => {
     }));
     const checkRemotePlaceholder = vi.fn();
     const icons = installRendererSidebarAgentIcons({
-      dom: new FakeDom([row]),
+      dom: new FakeDom([duplicate, row]),
       getLocalAgent: () => "claude-code",
       getClient: () => client,
       checkRemotePlaceholder,

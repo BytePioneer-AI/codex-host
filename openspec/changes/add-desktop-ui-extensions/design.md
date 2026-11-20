@@ -26,16 +26,19 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  （默认 ~/.codexhost/desktop-extensio
 {
   "manifestVersion": 1,
   "id": "sidebar-thread-tree",
-  "name": "Sidebar Thread Tree",
+  "name": { "en": "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
   "version": "0.1.0",
   "description": { "en": "…", "zh-CN": "…" },
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
-  "slots": ["sidebar.thread-layout", "sidebar.thread-badge"]
+  "slots": ["sidebar.thread-layout", "sidebar.thread-badge"],
+  "categories": ["sidebar", "workflow"]
 }
 ```
 
 - 新增独立的 `desktopExtensionManifestSchema`（strict），放在 `shared-contracts/src/desktop-extensions.ts`。**不**扩展 `harnessPluginManifestSchema`：它是 `.strict()` 的，`kind` 已被 `"usage"` 占用，扩展混进去会进入 `isAdapter` 判断路径。
+- 新扩展提供 `en` 与 `zh-CN` 的名称和描述。`name` 的两种语言必填，兼容旧字符串；`description` 保留既有可选对象格式。发现和列表传递原有双语结构，由客户端按界面语言取值；槽位冲突继续用扩展 id 标识占用者。
+- `categories` 使用 `desktopExtensionCategorySchema` 定义的六个预置标签，沿用 `slots` 的重复项校验，省略时视为未分类，不参与槽位互斥。
 - id 规则与 Harness 插件 id 相同（`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`，最长 128），并且**必须等于目录名**，这样无需处理重复 id。
 - 资源路径复用 Harness 的相对路径规则，并经 `pluginResourcePath` 解析。上限：manifest 32 KiB、脚本 2 MiB、样式 256 KiB、最多 64 个扩展，单次注入总量不超过 8 MiB。
 - `backend` 是保留字段：schema 分两步解析，先用宽松外壳读出 `manifestVersion/id/name/version/desktopApi/backend`，再做严格校验。外壳中出现 `backend` 或 `desktopApi > 1` 时报告**不兼容**，其余未知字段报告**无效**。这样 v1 能对 v2 扩展给出可理解的提示。
@@ -193,7 +196,7 @@ interface DesktopSidebarRow {
 
 ## Migration
 
-- 只新增文件、目录和协议方法，不迁移任何已有数据格式。扩展根目录不存在时，功能完全处于未启用状态。
+- 不迁移已有数据：扩展根目录不存在时，功能完全处于未启用状态。旧 manifest 的字符串 `name` 和未声明 `categories` 的格式仍可发现。
 - 回滚：移除功能后 `~/.codexhost/desktop-extensions/` 和 `diagnostics/desktop-extensions-v1.json` 不再被读取，可以直接删除。之后打开的 Desktop 不会再注册扩展快照脚本；已打开的 Desktop 窗口重载一次即可清除。
 - #926、#947 关闭或改为扩展 PR，它们新增的 Host 方法不进入主干，不存在兼容负担。
 

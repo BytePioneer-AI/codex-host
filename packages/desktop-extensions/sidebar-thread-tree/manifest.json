@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "id": "sidebar-thread-tree",
-  "name": "Sidebar Thread Tree",
+  "name": { "en": "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
   "version": "0.1.0",
   "description": {
     "en": "Groups delegated Threads below their parent and shows live activity.",
@@ -9,5 +9,6 @@
   },
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
-  "slots": ["sidebar.thread-badge", "sidebar.thread-layout"]
+  "slots": ["sidebar.thread-badge", "sidebar.thread-layout"],
+  "categories": ["sidebar", "workflow"]
 }

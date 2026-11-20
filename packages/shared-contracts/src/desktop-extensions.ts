@@ -13,11 +13,23 @@ export const desktopExtensionIdSchema = installedPluginIdSchema;
 export const desktopExtensionSlotSchema = z.enum(["sidebar.thread-layout", "sidebar.thread-badge"]);
 export type DesktopExtensionSlot = z.infer<typeof desktopExtensionSlotSchema>;
 
+export const desktopExtensionCategorySchema = z.enum([
+  "sidebar",
+  "composer",
+  "conversation",
+  "appearance",
+  "tools",
+  "workflow",
+]);
+export type DesktopExtensionCategory = z.infer<typeof desktopExtensionCategorySchema>;
+
+const extensionName = z.string().trim().min(1).max(128);
+
 const manifestHeader = z
   .object({
     manifestVersion: z.int().positive(),
     id: desktopExtensionIdSchema,
-    name: z.string().trim().min(1).max(128),
+    name: z.union([extensionName, z.strictObject({ en: extensionName, "zh-CN": extensionName })]),
     version: z.string().min(1).max(128),
     desktopApi: z.int().positive(),
   })
@@ -38,9 +50,25 @@ export const desktopExtensionManifestSchema = manifestHeader
       .array(desktopExtensionSlotSchema)
       .max(desktopExtensionSlotSchema.options.length)
       .refine((slots) => new Set(slots).size === slots.length, "Duplicate slots"),
+    categories: z
+      .array(desktopExtensionCategorySchema)
+      .max(desktopExtensionCategorySchema.options.length)
+      .refine(
+        (categories) => new Set(categories).size === categories.length,
+        "Duplicate categories",
+      )
+      .optional(),
   })
   .strict();
 export type DesktopExtensionManifest = z.infer<typeof desktopExtensionManifestSchema>;
+
+export function resolveLocalizedExtensionText(
+  value: string | { en: string; "zh-CN"?: string },
+  locale: string,
+): string {
+  if (typeof value === "string") return value;
+  return locale === "zh-CN" ? (value["zh-CN"] ?? value.en) : value.en;
+}
 
 export type DesktopExtensionManifestResult =
   | { state: "valid"; manifest: DesktopExtensionManifest }

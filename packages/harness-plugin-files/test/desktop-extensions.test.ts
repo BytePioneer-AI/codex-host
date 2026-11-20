@@ -70,6 +70,26 @@ it("discovers trusted files by content without evaluating code and rejects inval
   });
 });
 
+it("preserves bilingual metadata and diagnoses duplicate categories during discovery", async () => {
+  const name = { en: "Sidebar badges", "zh-CN": "侧栏角标" };
+  const description = { en: "Shows delegated Threads", "zh-CN": "显示委派的 Thread" };
+  const categories = ["sidebar", "workflow"];
+  await install("bilingual", { name, description, categories });
+  await install("duplicate-tags", { name, categories: ["sidebar", "sidebar"] });
+  expect((await discoverDesktopExtensions(root)).extensions).toEqual([
+    expect.objectContaining({
+      id: "bilingual",
+      state: "valid",
+      manifest: expect.objectContaining({ name, description, categories }),
+    }),
+    {
+      id: "duplicate-tags",
+      state: "invalid",
+      error: expect.stringMatching(/Duplicate categories[\s\S]*categories/u),
+    },
+  ]);
+});
+
 it.skipIf(!process.getuid)("rejects another user's writable root and files on POSIX", async () => {
   const file = await install("example");
   await chmod(file, 0o622);

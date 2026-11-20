@@ -21,6 +21,8 @@ it("shares Desktop and client-channel selection, status and recovery without exe
     await fixture.ready;
     const data = fixture.mappingStoreDirectory;
     const root = path.join(data, "desktop-extensions");
+    const badgeName = { en: "Delegation badges", "zh-CN": "委派角标" };
+    const badgeCategories = ["sidebar", "workflow"];
     for (const [id, desktopApi] of [
       ["badge", 1],
       ["tree", 1],
@@ -34,7 +36,8 @@ it("shares Desktop and client-channel selection, status and recovery without exe
           id,
           desktopApi,
           manifestVersion: 1,
-          name: id,
+          name: id === "badge" ? badgeName : id,
+          ...(id === "badge" ? { categories: badgeCategories } : {}),
           version: "1",
           slots: ["sidebar.thread-badge"],
           desktop: { script: "desktop.js" },
@@ -91,7 +94,8 @@ it("shares Desktop and client-channel selection, status and recovery without exe
           id: "badge",
           enabled: true,
           manifest: expect.objectContaining({
-            name: "badge",
+            name: badgeName,
+            categories: badgeCategories,
             version: "1",
             slots: ["sidebar.thread-badge"],
           }),

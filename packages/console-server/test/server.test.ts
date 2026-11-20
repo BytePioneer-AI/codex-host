@@ -138,6 +138,8 @@ it("ignores Pi extensions when listing Desktop extensions and diagnoses broken c
 
 it("manages Desktop extensions offline and protects all selection changes", async () => {
   const root = path.join(directory, "desktop-extensions");
+  const name = { en: "Sidebar layout", "zh-CN": "侧栏布局" };
+  const categories = ["sidebar", "appearance"];
   for (const [id, desktopApi] of [
     ["layout", 1],
     ["badge", 1],
@@ -152,7 +154,8 @@ it("manages Desktop extensions offline and protects all selection changes", asyn
         desktopApi,
         manifestVersion: 1,
         version: "1",
-        name: id,
+        name: id === "layout" ? name : id,
+        categories,
         desktop: { script: "desktop.js" },
         slots: ["sidebar.thread-badge"],
       }),
@@ -184,11 +187,19 @@ it("manages Desktop extensions offline and protects all selection changes", asyn
   expect((await send("enable", { id: "layout", expectedRevision: 0 })).status).toBe(200);
   const conflict = await send("enable", { id: "badge", expectedRevision: 1 });
   expect(conflict.status).toBe(409);
-  expect(await conflict.json()).toMatchObject({ conflictWith: "layout" });
+  expect(await conflict.json()).toEqual({
+    conflictWith: "layout",
+    error: "Slot already occupied by layout",
+  });
   expect(await (await fetch(`${base}/api/extensions`)).json()).toMatchObject({
     desktopConnected: false,
     extensions: expect.arrayContaining([
-      { id: "layout", enabled: true, manifest: expect.any(Object), status: { state: "waiting" } },
+      expect.objectContaining({
+        id: "layout",
+        enabled: true,
+        manifest: expect.objectContaining({ name, categories }),
+        status: { state: "waiting" },
+      }),
     ]),
   });
   const first = await (await send("disable-all-and-reload", {})).json();

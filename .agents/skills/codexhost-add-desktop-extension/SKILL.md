@@ -13,7 +13,7 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 | 接入 Agent Harness，提供 Session 执行、历史、模型或账号能力 | [Harness 插件](../codexhost-add-harness/SKILL.md) |
 | 改变 Thread 归属、执行、持久化，或增加通用宿主原语          | 在主干设计公共能力，不在扩展里绕过 API            |
 
-## 1. 声明扩展和槽位
+## 1. 声明扩展元数据和槽位
 
 从 [`sidebar-delegation-badges`](../../../packages/desktop-extensions/sidebar-delegation-badges) 或 [`sidebar-thread-tree`](../../../packages/desktop-extensions/sidebar-thread-tree) 选一个样板。源码放在 `<source-dir>/src/index.ts`，可选样式为 `<source-dir>/src/desktop.css`。安装目录是 `$CODEXHOST_DATA_DIR/desktop-extensions/<id>/`，内有 `manifest.json`、`desktop.js`、可选 `desktop.css`。目录名与 `id` 一致；复制文件不等于启用。
 
@@ -21,17 +21,32 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 {
   "manifestVersion": 1,
   "id": "example.tree_v1",
-  "name": "Example Thread Tree",
+  "name": { "en": "Example Thread Tree", "zh-CN": "示例委派树" },
   "version": "0.1.0",
+  "description": { "en": "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
-  "slots": ["sidebar.thread-layout"]
+  "slots": ["sidebar.thread-layout"],
+  "categories": ["sidebar", "workflow"]
 }
 ```
 
+新扩展的 `name` 和 `description` **必须各自提供非空的 `en` 和 `zh-CN` 文案**，方便用户切换中英文界面。旧 manifest 的字符串名称和不完整的描述仅用于兼容。
+
+`categories` 是可选的多选标签。只选能说明扩展主要用途的项，允许跨类但不能重复；没有适合的标签时省略或填 `[]`。标签只用于归类，不授予 API 能力，也不参与槽位互斥。六个预置值如下：
+
+| 标签 | 用途 |
+| --- | --- |
+| `sidebar` | 侧栏中的行、角标、分组或导航 |
+| `composer` | 与输入区、草稿或撰写体验相关 |
+| `conversation` | 与会话内容、消息或 Turn 展示相关 |
+| `appearance` | 主题、样式、排版或视觉密度 |
+| `tools` | 工具信息展示或辅助操作入口 |
+| `workflow` | 任务流转、委派或跨 Thread 协作 |
+
 `sidebar.thread-badge` 用于角标与计数；`sidebar.thread-layout` 用于改变行布局。只声明实际使用的槽位，没有就用 `[]`。扩展必须取得全部声明的槽位才会激活；同一槽位只归一个扩展，启用冲突时管理入口会指出占用者。没有样式时省略 `desktop.style`。
 
-完成条件：manifest 可通过 v1 schema，目录名、入口和槽位与实际产物一致。
+完成条件：manifest 通过 v1 schema；名称和描述均有中英文文案；标签与用途相符，目录名、入口和槽位与实际产物一致。
 
 ## 2. 实现 `define({ activate(api) })`
 

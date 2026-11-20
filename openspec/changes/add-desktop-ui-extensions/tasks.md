@@ -6,6 +6,9 @@
 
 - [x] 1.1 新增 `desktop-extensions.ts`：manifest（含保留字段 `backend` 的两步解析）、启用配置、状态文件 schema、槽位枚举、纯函数 `resolveDesktopExtensionSlots`、`DesktopExtensionApiV1` 与 `define` 的类型。新增 `thread-tree-watch.ts`：watch、unwatch、snapshot 的 schema 和上限常量。从包入口导出。验证：在最近的 shared-contracts 测试中用 `test.each` 覆盖以下情况——有效 manifest、未知字段为无效、`backend` 或 `desktopApi: 2` 为不兼容、未知槽位为无效、按 `enabled` 顺序判定槽位冲突；再运行 `npx tsc -b packages/shared-contracts`。
 
+- [x] 1.2 支持双语名称和向后兼容的字符串名称、可选的预置分类多选及重复项校验。从 `shared-contracts` 导出本地化取值 helper；覆盖发现、Console 列表及冲突、Host 设置列表和 Controller 对账；同步两个样板与作者文档。
+- [ ] 1.3 Desktop / Web 设置和 Console 页面消费双语元数据与分类标签。
+
 ## 2. 主干 Thread 树订阅（host-runtime）
 
 - [x] 2.1 新增 `thread-tree-watch.ts`，在 `app-server-host.ts` 中只加路由。实现内容：快照（`parents` 复用 `ThreadTree.read()`）、本地状态（审批、提问含多选、计划审阅；快照直接检查 Desktop 待处理多选提问，不改变 Delegation 提问契约）、250 ms 合并推送、版本号、5000 节点上限与 `truncated`、连接关闭时释放订阅。官方 Thread 的初始状态按 design 中的 Open Question 确认。验证：新增聚焦测试，覆盖首次快照、新委派在 1 s 内推送、Turn 开始与结束、多选提问报告为 `waiting`、置顶子 Thread 成为顶层、截断标记、断开连接后不再推送；现有 Web `tree/read` 测试保持通过。

@@ -30,6 +30,27 @@
 - **WHEN** Pi Adapter 在 `extensions/` 下写入自己的扩展
 - **THEN** Desktop 界面扩展发现忽略这些目录，不将它们列为无效 Desktop 扩展
 
+### Requirement: 扩展元数据的双语与分类
+
+`name` SHALL 接受旧版纯字符串，或仅含 `en` 和 `zh-CN` 且两者必填的对象；每个名称去掉首尾空白后 MUST 为 1–128 字符。新扩展的作者 MUST 为 `name` 和 `description` 各提供非空的英文及简体中文文案；为兼容旧 manifest，系统 SHALL 继续接受省略 `description` 或只提供 `description.en`。管理列表返回有效 manifest 时 SHALL 保留双语对象与分类数据，不按服务端语言压平。
+
+`categories` SHALL 为可选、无重复的多选列表，值仅限 `sidebar`、`composer`、`conversation`、`appearance`、`tools`、`workflow`。省略或空列表表示未分类。分类标签 MUST NOT 参与槽位占用或授予宿主 API 能力。
+
+#### Scenario: 发现双语扩展
+
+- **WHEN** manifest 提供了双语名称、双语描述和 `sidebar`、`workflow` 分类
+- **THEN** 管理列表保留两种语言和两个分类，供客户端按界面语言选择文案
+
+#### Scenario: 兼容旧版元数据
+
+- **WHEN** manifest 使用纯字符串名称且省略描述与分类，其他字段有效
+- **THEN** 系统正常发现该扩展，名称保持原有字符串，扩展未分类
+
+#### Scenario: 无效的名称或分类
+
+- **WHEN** 名称对象缺少任何一种语言，或分类含有未知或重复的标签
+- **THEN** 系统将扩展标为无效并给出原因
+
 ### Requirement: 宿主 API 版本兼容
 
 manifest SHALL 声明扩展依赖的 Desktop 宿主 API 版本。声明了本机不支持的版本，或声明了本版本不支持的能力（例如扩展后端）时，系统 SHALL 将其标为不兼容并说明原因，MUST NOT 执行其代码或启用它。

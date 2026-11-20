@@ -34,7 +34,8 @@ async function install(id: string, script: string) {
     JSON.stringify({
       manifestVersion: 1,
       id,
-      name: id,
+      name: { en: `Extension ${id}`, "zh-CN": `扩展 ${id}` },
+      categories: ["sidebar", "workflow"],
       version: "1",
       desktopApi: 1,
       desktop: { script: "desktop.js" },

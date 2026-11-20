@@ -823,7 +823,7 @@ it("workspace deletion: uses the Desktop removal bridge and fails closed for old
   host.projectSnapshot.projects.push({ id: "project", name: "Project", rootPaths: ["/missing"] });
   const oldDebugger = await startFakeChDebugger(host);
   const oldClient = new DesktopChHostClient(oldDebugger.endpoint);
-  const debuggerServer = await startFakeChDebugger(host, { projectRemoval: true });
+  const debuggerServer = await startFakeChDebugger(host, { projectRemoval: true, signedOut: true });
   const client = new DesktopChHostClient(debuggerServer.endpoint);
   t.after(async () => {
     oldClient.close();
@@ -832,6 +832,7 @@ it("workspace deletion: uses the Desktop removal bridge and fails closed for old
     await debuggerServer.close();
   });
   await assert.rejects(oldClient.removeProject("project", "/missing"), /updated, running/);
+  await assert.rejects(client.request("thread/list", {}), /unavailable/i);
   assert.equal(host.projectSnapshot.projects.length, 1);
   await client.removeProject("project", "/missing");
   assert.deepEqual(host.projectSnapshot.projects, []);

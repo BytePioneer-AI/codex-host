@@ -353,7 +353,12 @@ export class FakeChHost implements ChHostClient {
 /** Browser acceptance reaches the production Desktop transport through an isolated fake CDP peer. */
 export async function startFakeChDebugger(
   host: FakeChHost,
-  options: { rpc?: boolean; pinServiceAvailable?: boolean; projectRemoval?: boolean } = {},
+  options: {
+    rpc?: boolean;
+    pinServiceAvailable?: boolean;
+    projectRemoval?: boolean;
+    signedOut?: boolean;
+  } = {},
 ) {
   const server = createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
@@ -403,6 +408,7 @@ export async function startFakeChDebugger(
               },
             };
       const window = {
+        __codexhostLoadedModulesV1: { complete: true, documentUrl: "app://codex/index.html" },
         __codexhostRendererBindingProbeV1: {
           ...(options.rpc ? { pinnedThreads: async () => pinService } : {}),
           ...(options.projectRemoval
@@ -443,7 +449,14 @@ export async function startFakeChDebugger(
           }),
         },
       };
-      void Promise.resolve(runInNewContext(frame.params.expression, { window })).then(
+      if (options.signedOut)
+        delete (window as { __codexhostHostRoutingV1?: unknown }).__codexhostHostRoutingV1;
+      void Promise.resolve(
+        runInNewContext(frame.params.expression, {
+          window,
+          location: { href: "app://codex/index.html" },
+        }),
+      ).then(
         (value) =>
           socket.send(
             JSON.stringify({ id: frame.id, result: { result: { type: "object", value } } }),

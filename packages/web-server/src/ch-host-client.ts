@@ -10,6 +10,7 @@ import {
   discoverHostClientChannel,
   ensureHostService,
   isHostClientChannelOnline,
+  installRendererLoadedModules,
   type HostServiceLaunch,
   type HostClientUpdate,
 } from "@codexhost/desktop-control";
@@ -240,21 +241,49 @@ export class DesktopChHostClient implements ChHostClient {
   }
 
   async removeProject(projectId: string, path: string): Promise<void> {
-    const client = await this.connect();
-    const reply = await client.evaluate<{ ok: boolean; error?: string }>(`(async () => {
-      const api = window.__codexhostRendererBindingProbeV1;
-      if (typeof api?.removeLocalProject !== 'function')
-        return {ok:false,error:'Native project removal requires an updated, running codexhost Desktop.'};
-      try {
-        await api.removeLocalProject(${JSON.stringify(projectId)}, ${JSON.stringify(path)});
-        return {ok:true};
-      } catch (error) { return {ok:false,error:String(error?.message ?? error)}; }
-    })()`);
-    if (!reply.ok)
-      throw new RpcError(
-        "workspace/native-delete-failed",
-        reply.error ?? "Native project removal failed.",
-      );
+    if (this.closed) throw new RpcError("host/offline", "The CH connection is closed.");
+    // Project management exists before login/Composer initialization. Do not
+    // require a chat Host manager, and keep its module catalog in our own lease.
+    for (const endpoint of await desktopEndpoints(this.endpoint)) {
+      const targets = await listCdpTargets(endpoint).catch(() => []);
+      for (const target of targets.filter((value) => value.type === "page")) {
+        const client = await CdpClient.connect(target.webSocketDebuggerUrl, {
+          commandTimeoutMs: 120_000,
+        }).catch(() => null);
+        if (!client) continue;
+        let stopCatalog: (() => void) | undefined;
+        try {
+          const ready = await client.evaluate<boolean>(
+            "typeof window.__codexhostRendererBindingProbeV1?.removeLocalProject === 'function'",
+          );
+          if (!ready) continue;
+          // Discovery is read-only. Once a write is sent, never try another window.
+          const catalogReady = await client.evaluate<boolean>(
+            "window.__codexhostLoadedModulesV1?.complete === true && window.__codexhostLoadedModulesV1.documentUrl === location.href",
+          );
+          if (!catalogReady) stopCatalog = await installRendererLoadedModules(client);
+          const reply = await client.evaluate<{ ok: boolean; error?: string }>(`(async () => {
+            try {
+              await window.__codexhostRendererBindingProbeV1.removeLocalProject(${JSON.stringify(projectId)}, ${JSON.stringify(path)});
+              return {ok:true};
+            } catch (error) { return {ok:false,error:String(error?.message ?? error)}; }
+          })()`);
+          if (!reply.ok)
+            throw new RpcError(
+              "workspace/native-delete-failed",
+              reply.error ?? "Native project removal failed.",
+            );
+          return;
+        } finally {
+          stopCatalog?.();
+          client.close();
+        }
+      }
+    }
+    throw new RpcError(
+      "workspace/native-delete-unavailable",
+      "Native project removal requires an updated, running codexhost Desktop; no account login is required.",
+    );
   }
 
   pins(change?: ChPinChange): Promise<string[]> {

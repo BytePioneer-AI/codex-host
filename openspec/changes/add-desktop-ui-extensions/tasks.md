@@ -7,7 +7,8 @@
 - [x] 1.1 新增 `desktop-extensions.ts`：manifest（含保留字段 `backend` 的两步解析）、启用配置、状态文件 schema、槽位枚举、纯函数 `resolveDesktopExtensionSlots`、`DesktopExtensionApiV1` 与 `define` 的类型。新增 `thread-tree-watch.ts`：watch、unwatch、snapshot 的 schema 和上限常量。从包入口导出。验证：在最近的 shared-contracts 测试中用 `test.each` 覆盖以下情况——有效 manifest、未知字段为无效、`backend` 或 `desktopApi: 2` 为不兼容、未知槽位为无效、按 `enabled` 顺序判定槽位冲突；再运行 `npx tsc -b packages/shared-contracts`。
 
 - [x] 1.2 支持双语名称和向后兼容的字符串名称、可选的预置分类多选及重复项校验。从 `shared-contracts` 导出本地化取值 helper；覆盖发现、Console 列表及冲突、Host 设置列表和 Controller 对账；同步两个样板与作者文档。
-- [ ] 1.3 Desktop / Web 设置和 Console 页面消费双语元数据与分类标签。
+- [ ] 1.3 Desktop / Web 设置和 Console 页面消费双语元数据、分类标签、作者、仓库、详情和截图。
+- [x] 1.4 扩展 manifest 的可选展示字段和九种分类；打包与发现复用截图路径、权限、大小及签名校验；管理列表返回有总量上限的 `screenshotDataUrls`。覆盖无效 URL、缺失、越界、超限、伪装类型、列表上限及打包复制，更新样板 manifest 和作者 Skill。
 
 ## 2. 主干 Thread 树订阅（host-runtime）
 

@@ -24,16 +24,27 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
   "name": { "en": "Example Thread Tree", "zh-CN": "示例委派树" },
   "version": "0.1.0",
   "description": { "en": "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
+  "author": "codexhost",
+  "repository": "https://github.com/BytePioneer-AI/codex-host",
+  "details": {
+    "en": "Expand a parent Thread to see its delegated work.\n\nOnly local sidebar rows are affected.",
+    "zh-CN": "展开父 Thread，查看委派的工作。\n\n仅影响本机侧栏行。"
+  },
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-layout"],
-  "categories": ["sidebar", "workflow"]
+  "categories": ["sidebar", "workflow"],
+  "screenshots": ["images/sidebar.png"]
 }
 ```
 
 新扩展的 `name` 和 `description` **必须各自提供非空的 `en` 和 `zh-CN` 文案**，方便用户切换中英文界面。旧 manifest 的字符串名称和不完整的描述仅用于兼容。
 
-`categories` 是可选的多选标签。只选能说明扩展主要用途的项，允许跨类但不能重复；没有适合的标签时省略或填 `[]`。标签只用于归类，不授予 API 能力，也不参与槽位互斥。六个预置值如下：
+- `author` 可选，去掉首尾空白后为 1–128 字符。`repository` 可选，只接受 `http://` 或 `https://` URL（至多 2048 字符），推荐填写公开的 GitHub 仓库 HTTPS 链接。
+- 推荐填写双语 `details`，用 `\n\n` 分隔段落。提供时 `en` 必填，`zh-CN` 可省略，每种语言最多 16384 字符；写清用途、操作和适用范围。
+- `screenshots` 可选。将图片放在 `<source-dir>/` 下，如 `images/sidebar.png`，与示例路径一致；没准备图片就省略字段。最多 4 张、不重复，每张 ≤ 512 KiB，只能用 PNG、JPEG（`.jpg` / `.jpeg`）或 WebP，扩展名须匹配文件签名。使用 `/` 分隔路径，不用绝对路径、`..`、以点或空格结尾的路径段或指向目录外的链接。工具会校验并原样复制，管理列表提供 `screenshotDataUrls` 供 `<img>` 使用。
+
+`categories` 是可选的多选标签。只选能说明扩展主要用途的项，允许跨类但不能重复；没有适合的标签时省略或填 `[]`。标签只用于归类，不授予 API 能力，也不参与槽位互斥。九个预置值如下：
 
 | 标签 | 用途 |
 | --- | --- |
@@ -43,10 +54,13 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 | `appearance` | 主题、样式、排版或视觉密度 |
 | `tools` | 工具信息展示或辅助操作入口 |
 | `workflow` | 任务流转、委派或跨 Thread 协作 |
+| `usage-analytics` | 用量、成本、额度或统计分析 |
+| `memory-knowledge` | 记忆、笔记或知识检索与展示 |
+| `integrations` | 外部工具、服务或工作空间的集成 |
 
 `sidebar.thread-badge` 用于角标与计数；`sidebar.thread-layout` 用于改变行布局。只声明实际使用的槽位，没有就用 `[]`。扩展必须取得全部声明的槽位才会激活；同一槽位只归一个扩展，启用冲突时管理入口会指出占用者。没有样式时省略 `desktop.style`。
 
-完成条件：manifest 通过 v1 schema；名称和描述均有中英文文案；标签与用途相符，目录名、入口和槽位与实际产物一致。
+完成条件：manifest 通过 v1 schema；名称和描述均有中英文文案；标签与用途相符，目录名、入口和槽位与实际产物一致；声明的截图全部能通过打包校验。
 
 ## 2. 实现 `define({ activate(api) })`
 
@@ -76,7 +90,7 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 
    ```bash
    : "${CODEXHOST_DATA_DIR:?请先设置独立的测试数据目录}"
-   npx tsc -b packages/shared-contracts
+   npx tsc -b packages/harness-plugin-files
    node tools/build-desktop-extension.mjs packages/desktop-extensions/sidebar-thread-tree \
      "$CODEXHOST_DATA_DIR/desktop-extensions"
    ```

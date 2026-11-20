@@ -12,7 +12,8 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
   sidebar-thread-tree/                  # 必须是实际目录，目录名与 id 一致
     manifest.json
     desktop.js
-    desktop.css                         # 可选
+    desktop.css                          # 可选
+    images/sidebar.png                   # 可选，以 manifest 中的相对路径为准
 ```
 
 `desktop-extensions/` 独立于 Harness 插件目录，也不扫描 Pi Adapter 使用的 `extensions/`。`enabled.json` 保存启用顺序和配置版本；Console 和本机 Host 设置 RPC 共用修订号并通过原子替换更新它。复制或构建扩展不会修改该文件。文件尚未生成是正常初始状态，不显示诊断；配置存在但无效时报告原因。Web 设置连接必须通过身份验证且同源，只能管理该 Web 服务的本机 Host 上的 Desktop 扩展，不会在 Web 里运行扩展。
@@ -24,18 +25,27 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
   "name": { "en": "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
   "version": "0.1.0",
   "description": { "en": "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
+  "author": "codexhost",
+  "repository": "https://github.com/BytePioneer-AI/codex-host",
+  "details": {
+    "en": "Expand a parent Thread to see its delegated work.\n\nOnly local sidebar rows are affected.",
+    "zh-CN": "展开父 Thread，查看委派的工作。\n\n仅影响本机侧栏行。"
+  },
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-badge", "sidebar.thread-layout"],
-  "categories": ["sidebar", "workflow"]
+  "categories": ["sidebar", "workflow"],
+  "screenshots": ["images/sidebar.png"]
 }
 ```
 
 - `id` 最长 128 字符，匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`。`desktop.style` 可省略。未知字段或槽位无效；更高的 `desktopApi` 或出现 `backend` 时报告不兼容。
 - 新扩展必须为 `name` 和 `description` 提供 `en` 和 `zh-CN` 文案。兼容旧 manifest：`name` 可用纯字符串；`description` 可省略或只提供 `en`。名称去掉首尾空白后须为 1–128 字符，描述每种语言最多 4096 字符。列表接口保留双语对象；`resolveLocalizedExtensionText(value, locale)` 在 `zh-CN` 时优先取中文，缺少中文或使用其他语言时取英文，字符串则原样返回。
-- `categories` 是可选多选标签，省略或 `[]` 均表示未分类。可选值为 `sidebar`（侧栏）、`composer`（输入区）、`conversation`（会话）、`appearance`（外观）、`tools`（工具）、`workflow`（工作流）。未知或重复标签使 manifest 无效。标签不授予 API 能力，不参与槽位占用。
-- 资源必须解析到扩展目录内的普通文件。POSIX 上，扩展根、扩展目录和文件须归当前用户所有，且不能允许同组或其他用户写入。新建目录建议使用 `0700`。
-- 文件上限：manifest 32 KiB、脚本 2 MiB、样式 256 KiB。最多发现 64 个扩展，单次注入的快照最多 8 MiB。
+- `categories` 是可选多选标签，省略或 `[]` 均表示未分类。可选值为 `sidebar`（侧栏）、`composer`（输入区）、`conversation`（会话）、`appearance`（外观）、`tools`（工具）、`workflow`（工作流）、`usage-analytics`（用量分析）、`memory-knowledge`（记忆与知识）、`integrations`（外部集成）。未知或重复标签使 manifest 无效。标签不授予 API 能力，不参与槽位占用。
+- `author`、`repository` 和 `details` 是可选展示字段。作者名去掉首尾空白后为 1–128 字符；仓库链接限 HTTP(S)、至多 2048 字符，推荐 GitHub HTTPS 链接；详细介绍支持多段落，`en` 必填、`zh-CN` 可选，每种语言最多 16384 字符。
+- 资源必须解析到扩展目录内的普通文件。POSIX 上，扩展根、扩展目录、资源经过的子目录和文件须归当前用户所有，且不能允许同组或其他用户写入。新建目录建议使用 `0700`。
+- `screenshots` 可选，最多 4 个不重复的相对路径（以 `/` 分隔；路径段不得以点或空格结尾）。只接受 `.png`、`.jpg`、`.jpeg`、`.webp`（扩展名不区分大小写），文件签名必须与扩展名匹配，每张最多 512 KiB，每扩展合计最多 2 MiB。缺失、越界、超限或类型不符会将扩展标为无效，并报告具体截图及原因。有效扩展的 `screenshotDataUrls` 按 `manifest.screenshots` 顺序返回，可直接作为 `<img src>`，不需要文件 URL 或额外网络请求。每次管理列表最多包含 8 MiB 原始截图（base64 编码前），按扩展目录名排序分配；剩余预算不足时省略该扩展的整组预览，给出列表诊断，不影响扩展状态。截图字节不参与热更新 hash 或注入快照。
+- 文件上限：manifest 128 KiB、脚本 2 MiB、样式 256 KiB。最多发现 64 个扩展，单次注入的快照最多 8 MiB。
 
 ## Desktop API v1
 
@@ -67,13 +77,13 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 3. 在仓库根构建，**直接输出到目标扩展目录，不要用符号链接**。下面的根路径须与运行中的 Console 和 Desktop 使用的数据目录一致：
 
    ```bash
-   npx tsc -b packages/shared-contracts
+   npx tsc -b packages/harness-plugin-files
    node tools/build-desktop-extension.mjs \
      packages/desktop-extensions/sidebar-thread-tree \
      "${CODEXHOST_DATA_DIR:-$HOME/.codexhost}/desktop-extensions"
    ```
 
-   工具将 manifest、单文件 `desktop.js` 和声明的 `desktop.css` 写到 `<扩展根>/<id>/`，不写入其他运行依赖。重新构建可触发热更新。
+   工具验证生成的 manifest，并将其与单文件 `desktop.js`、声明的 `desktop.css`、校验通过的截图写到 `<扩展根>/<id>/`。截图在源码根中与 manifest 声明路径一致，打包时保留相对路径。不写入其他运行依赖。重新构建可触发热更新。
 
 4. 打开 Console 的扩展页启用并查看状态。验证禁用后恢复原生行、更新后不留旧实例，以及远程 Host 行不受影响。依赖的私有 DOM 锚点不存在时应安全降级。
 

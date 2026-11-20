@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  desktopExtensionListItemSchema,
   parseDesktopExtensionManifest,
   resolveDesktopExtensionSlots,
   resolveLocalizedExtensionText,
@@ -31,7 +32,19 @@ test.each([
   [{ name: { ...bilingualName, fr: "Arbre" } }, "invalid"],
   [{ categories: [] }, "valid"],
   [
-    { categories: ["sidebar", "composer", "conversation", "appearance", "tools", "workflow"] },
+    {
+      categories: [
+        "sidebar",
+        "composer",
+        "conversation",
+        "appearance",
+        "tools",
+        "workflow",
+        "usage-analytics",
+        "memory-knowledge",
+        "integrations",
+      ],
+    },
     "valid",
   ],
   [{ categories: ["sidebar", "sidebar"] }, "invalid"],
@@ -43,6 +56,66 @@ test.each([
   [{ desktop: { script: "../desktop.js" } }, "invalid"],
 ])("classifies desktop manifest with %j as %s", (patch, state) => {
   expect(parseDesktopExtensionManifest({ ...manifest, ...patch }).state).toBe(state);
+});
+
+test("preserves optional details, author, repository, and screenshot paths", () => {
+  const metadata = {
+    author: "codexhost",
+    repository: "https://github.com/BytePioneer-AI/codex-host",
+    details: { en: "First paragraph.\n\nSecond paragraph.", "zh-CN": "第一段。\n\n第二段。" },
+    screenshots: ["images/sidebar.png", "images/status.JPG", "details.jpeg", "preview.webp"],
+  };
+  expect(
+    parseDesktopExtensionManifest({ ...manifest, ...metadata, author: " codexhost " }),
+  ).toEqual({
+    state: "valid",
+    manifest: { ...manifest, ...metadata },
+  });
+  expect(
+    parseDesktopExtensionManifest({
+      ...manifest,
+      repository: "http://example.org/repo",
+      details: { en: "a".repeat(16384) },
+    }).state,
+  ).toBe("valid");
+});
+
+test.each([
+  { author: " " },
+  { author: "a".repeat(129) },
+  { details: { "zh-CN": "缺少英文" } },
+  { details: { en: "a".repeat(16385) } },
+  { details: { en: "Valid English", "zh-CN": "字".repeat(16385) } },
+  { repository: "javascript:alert(1)" },
+  { repository: "file:///tmp/repo" },
+  { repository: "ftp://example.org/repo" },
+  { repository: "//example.org/repo" },
+  { repository: "https:example.org/repo" },
+  { screenshots: ["https://example.com/preview.png"] },
+  { screenshots: ["/tmp/preview.png"] },
+  { screenshots: ["C:\\images\\preview.png"] },
+  { screenshots: ["images/../preview.png"] },
+  { screenshots: ["images/.. /preview.png"] },
+  { screenshots: ["images/preview.svg"] },
+  { screenshots: ["preview.png", "preview.png"] },
+  { screenshots: ["1.png", "2.png", "3.png", "4.png", "5.png"] },
+])("rejects invalid optional metadata (case %#)", (patch) => {
+  expect(parseDesktopExtensionManifest({ ...manifest, ...patch }).state).toBe("invalid");
+});
+
+test.each([
+  ["data:image/png;base64,YQ==", true],
+  ["data:image/svg+xml;base64,YQ==", false],
+  ["file:///tmp/screenshot.png", false],
+])("only accepts raster data URLs for rendered screenshots: %s", (url, valid) => {
+  expect(
+    desktopExtensionListItemSchema.safeParse({
+      id: manifest.id,
+      enabled: false,
+      status: { state: "disabled" },
+      screenshotDataUrls: [url],
+    }).success,
+  ).toBe(valid);
 });
 
 test.each([

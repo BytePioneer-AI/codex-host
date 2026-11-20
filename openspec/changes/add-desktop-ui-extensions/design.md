@@ -20,6 +20,7 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  （默认 ~/.codexhost/desktop-extensio
   <id>/manifest.json
   <id>/desktop.js
   <id>/desktop.css                     （可选）
+  <id>/images/sidebar.png               （可选；以 manifest 中的相对路径为准）
 ```
 
 ```json
@@ -29,6 +30,10 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  （默认 ~/.codexhost/desktop-extensio
   "name": { "en": "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
   "version": "0.1.0",
   "description": { "en": "…", "zh-CN": "…" },
+  "author": "codexhost",
+  "repository": "https://github.com/BytePioneer-AI/codex-host",
+  "details": { "en": "…", "zh-CN": "…" },
+  "screenshots": ["images/sidebar.png"],
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-layout", "sidebar.thread-badge"],
@@ -38,9 +43,10 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  （默认 ~/.codexhost/desktop-extensio
 
 - 新增独立的 `desktopExtensionManifestSchema`（strict），放在 `shared-contracts/src/desktop-extensions.ts`。**不**扩展 `harnessPluginManifestSchema`：它是 `.strict()` 的，`kind` 已被 `"usage"` 占用，扩展混进去会进入 `isAdapter` 判断路径。
 - 新扩展提供 `en` 与 `zh-CN` 的名称和描述。`name` 的两种语言必填，兼容旧字符串；`description` 保留既有可选对象格式。发现和列表传递原有双语结构，由客户端按界面语言取值；槽位冲突继续用扩展 id 标识占用者。
-- `categories` 使用 `desktopExtensionCategorySchema` 定义的六个预置标签，沿用 `slots` 的重复项校验，省略时视为未分类，不参与槽位互斥。
+- `categories` 使用 `desktopExtensionCategorySchema` 定义的九个预置标签，沿用 `slots` 的重复项校验，省略时视为未分类，不参与槽位互斥。
+- `author`、`repository` 和 `details` 是可选的展示元数据。仓库链接仅支持 HTTP(S)；`details` 保留段落和原有语言键，客户端使用与 `description` 相同的本地化规则。
 - id 规则与 Harness 插件 id 相同（`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`，最长 128），并且**必须等于目录名**，这样无需处理重复 id。
-- 资源路径复用 Harness 的相对路径规则，并经 `pluginResourcePath` 解析。上限：manifest 32 KiB、脚本 2 MiB、样式 256 KiB、最多 64 个扩展，单次注入总量不超过 8 MiB。
+- 资源路径复用 Harness 的相对路径规则，并经 `pluginResourcePath` 解析。上限：manifest 128 KiB、脚本 2 MiB、样式 256 KiB、最多 64 个扩展，单次注入总量不超过 8 MiB。最多声明四张 PNG、JPEG 或 WebP 截图，每张至多 512 KiB。发现与构建共用受限读取及文件签名校验；打包保留截图的相对路径。截图字节不计入注入快照或实例 hash。
 - `backend` 是保留字段：schema 分两步解析，先用宽松外壳读出 `manifestVersion/id/name/version/desktopApi/backend`，再做严格校验。外壳中出现 `backend` 或 `desktopApi > 1` 时报告**不兼容**，其余未知字段报告**无效**。这样 v1 能对 v2 扩展给出可理解的提示。
 - POSIX 上，扩展根目录与扩展文件必须属于当前用户，且不可被同组或其他用户写入，否则判为无效。这些代码会注入 Desktop，不能让其他本机用户改写。
 - `contentHash = sha256(manifest 字节 ‖ 0x00 ‖ 脚本字节 ‖ 0x00 ‖ 样式字节)`，是"内容是否变化"的唯一依据。
@@ -131,7 +137,7 @@ interface DesktopSidebarRow {
 ### D7 管理接口与 Console 兜底
 
 - console-server 新增 `src/extensions.ts` 和以下路由，沿用现有 `request-guard`：
-  - `GET /api/extensions`：返回 discover 结果、保存的选择和状态文件（Controller 进程不在时显示"等待 Desktop"）。
+  - `GET /api/extensions`：返回 discover 结果、保存的选择和状态文件（Controller 进程不在时显示"等待 Desktop"）。Console 与 Host 设置列表在有效扩展项中按 `manifest.screenshots` 顺序附带 `screenshotDataUrls`。原始截图合计最多 8 MiB，按目录名排序依次分配；预算不足则省略对应扩展的整组预览并报告列表诊断，不影响其状态。客户端直接使用图片 data URL，不读取本机文件路径。
   - `POST /api/extensions/enable|disable {id, expectedRevision}`：enable 时做兼容性检查和 D6 冲突预检，冲突时返回 409 并给出占用者。
   - `POST /api/extensions/disable-all-and-reload`：原子写入 `enabled: []` 和新的 `reloadToken`。
 - Controller 发现 `reloadToken` 与状态文件中的 `handledReloadToken` 不同时，依次执行：移除快照脚本标识 → 实时对账为空集合（有超时，尽力而为）→ `Page.reload` → 记录 `handledReloadToken`，避免 Controller 重启后再次触发。若读取到令牌时已有更新的非空启用集合，则只记录令牌，按新集合对账，不重载。

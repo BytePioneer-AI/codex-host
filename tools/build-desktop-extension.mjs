@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Script } from "node:vm";
 import { build } from "esbuild";
+import { readDesktopExtensionScreenshot } from "@codexhost/harness-plugin-files";
 import {
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
+  DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
   DESKTOP_EXTENSION_STYLE_MAX_BYTES,
   desktopExtensionManifestSchema,
@@ -34,7 +36,7 @@ async function prepareDirectory(directory, recursive = false) {
 const [sourcePath, extensionsRoot, ...extra] = process.argv.slice(2);
 if (!sourcePath || !extensionsRoot || extra.length)
   throw new Error("Usage: node tools/build-desktop-extension.mjs <source-dir> <extensions-root>");
-const source = path.resolve(sourcePath);
+const source = await realpath(sourcePath);
 const manifest = desktopExtensionManifestSchema.parse(
   JSON.parse(await readFile(path.join(source, "manifest.json"), "utf8")),
 );
@@ -58,23 +60,36 @@ new Script(script.text);
 const style = manifest.desktop.style
   ? await readFile(path.join(source, "src", "desktop.css"))
   : undefined;
-const root = path.resolve(extensionsRoot);
-const directory = path.join(root, manifest.id);
-if (source === directory)
-  throw new Error("Use a different output directory from the extension source");
+const screenshots = [];
+for (const resource of manifest.screenshots ?? []) {
+  if (["manifest.json", "desktop.js", "desktop.css"].includes(resource.split("/")[0].toLowerCase()))
+    throw new Error(`Screenshot ${JSON.stringify(resource)} conflicts with a generated file`);
+  const { bytes } = await readDesktopExtensionScreenshot(source, resource);
+  screenshots.push([resource, bytes, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES]);
+}
+const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + "\n");
+desktopExtensionManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
 const files = [
   ["desktop.js", script.contents, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES],
   ...(style ? [["desktop.css", style, DESKTOP_EXTENSION_STYLE_MAX_BYTES]] : []),
-  [
-    "manifest.json",
-    Buffer.from(JSON.stringify(manifest, null, 2) + "\n"),
-    DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
-  ],
+  ...screenshots,
+  ["manifest.json", manifestBytes, DESKTOP_EXTENSION_MANIFEST_MAX_BYTES],
 ];
 for (const [name, bytes, limit] of files) {
   if (bytes.byteLength > limit) throw new Error(`${name} exceeds ${limit} bytes`);
 }
+const root = path.resolve(extensionsRoot);
 await prepareDirectory(root, true);
+const directory = path.join(root, manifest.id);
 await prepareDirectory(directory);
+if (source === (await realpath(directory)))
+  throw new Error("Use a different output directory from the extension source");
+for (const [resource] of screenshots) {
+  let parent = directory;
+  for (const segment of resource.split("/").slice(0, -1)) {
+    parent = path.join(parent, segment);
+    await prepareDirectory(parent);
+  }
+}
 for (const [name, bytes] of files) await writeOutput(directory, name, bytes);
 console.log(directory);

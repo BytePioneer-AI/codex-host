@@ -7,6 +7,12 @@
     "en": "Groups delegated Threads below their parent and shows live activity.",
     "zh-CN": "在侧栏将委派的 Thread 归到父 Thread 下，并显示实时状态。"
   },
+  "author": "codexhost",
+  "repository": "https://github.com/BytePioneer-AI/codex-host",
+  "details": {
+    "en": "Follow delegated work in the sidebar: expand a parent Thread to see its children, their live activity, and which Threads are waiting for input. Select a child to open it through Desktop navigation.\n\nGrouping stays within each local sidebar list and does not change Thread ownership, execution, pinning, or archiving. Remote Host rows are left alone.",
+    "zh-CN": "在侧栏展开父 Thread，即可查看委派的子 Thread 及其实时活动，并找到等待处理的 Thread。点击子行可通过 Desktop 原生导航打开对应 Thread。\n\n归组仅发生在本机侧栏的各个列表内，不改变 Thread 的归属、执行、置顶或归档，也不影响远程 Host 的行。"
+  },
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-badge", "sidebar.thread-layout"],

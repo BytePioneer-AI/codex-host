@@ -8,7 +8,7 @@
 
 ### Requirement: 扩展的安装形态与发现
 
-系统 SHALL 从 codexhost 数据目录下的 `desktop-extensions/` 根目录发现 Desktop 界面扩展。每个扩展是一个子目录，包含 manifest、一个 Desktop 脚本和可选样式表，各文件 MUST 是位于该目录内的普通文件且不超过规定大小。发现过程 MUST NOT 执行扩展代码。无效的扩展 SHALL 被报告并跳过，不影响其他扩展；扩展根目录 MUST NOT 与 Harness 插件根目录或 Pi Adapter 使用的 `extensions/` 共用。
+系统 SHALL 从 codexhost 数据目录下的 `desktop-extensions/` 根目录发现 Desktop 界面扩展。每个扩展是一个子目录，包含 manifest、一个 Desktop 脚本以及可选的样式表和本地截图，各文件 MUST 是位于该目录内的普通文件且不超过规定大小。发现过程 MUST NOT 执行扩展代码。无效的扩展 SHALL 被报告并跳过，不影响其他扩展；扩展根目录 MUST NOT 与 Harness 插件根目录或 Pi Adapter 使用的 `extensions/` 共用。
 
 #### Scenario: 有效扩展被发现
 
@@ -34,7 +34,7 @@
 
 `name` SHALL 接受旧版纯字符串，或仅含 `en` 和 `zh-CN` 且两者必填的对象；每个名称去掉首尾空白后 MUST 为 1–128 字符。新扩展的作者 MUST 为 `name` 和 `description` 各提供非空的英文及简体中文文案；为兼容旧 manifest，系统 SHALL 继续接受省略 `description` 或只提供 `description.en`。管理列表返回有效 manifest 时 SHALL 保留双语对象与分类数据，不按服务端语言压平。
 
-`categories` SHALL 为可选、无重复的多选列表，值仅限 `sidebar`、`composer`、`conversation`、`appearance`、`tools`、`workflow`。省略或空列表表示未分类。分类标签 MUST NOT 参与槽位占用或授予宿主 API 能力。
+`categories` SHALL 为可选、无重复的多选列表，值仅限 `sidebar`、`composer`、`conversation`、`appearance`、`tools`、`workflow`、`usage-analytics`、`memory-knowledge`、`integrations`。省略或空列表表示未分类。分类标签 MUST NOT 参与槽位占用或授予宿主 API 能力。
 
 #### Scenario: 发现双语扩展
 
@@ -50,6 +50,39 @@
 
 - **WHEN** 名称对象缺少任何一种语言，或分类含有未知或重复的标签
 - **THEN** 系统将扩展标为无效并给出原因
+
+### Requirement: 作者、仓库与详细介绍
+
+manifest SHALL 支持可选 `author`、`repository` 和 `details`。`author` 去掉首尾空白后 MUST 为 1–128 字符；`repository` MUST 为最长 2048 字符的 HTTP(S) URL；`details` 如存在 MUST 为 `en` 必填、`zh-CN` 可选的对象，每种语言最多 16384 字符并保留段落。管理列表 SHALL 保留这些字段。
+
+#### Scenario: 发现带有展示信息的扩展
+
+- **WHEN** 扩展提供有效作者、仓库链接和详细介绍
+- **THEN** 管理列表保留这些展示字段，不压平多语言文案
+
+#### Scenario: 拒绝不安全的仓库链接
+
+- **WHEN** 仓库链接使用非 HTTP(S) 协议
+- **THEN** 系统将该扩展标为无效并报告出错字段与原因
+
+### Requirement: 本地截图的打包与展示
+
+可选的 `screenshots` MUST 含至多 4 个不重复的扩展目录内相对路径，仅限 `.png`、`.jpg`、`.jpeg`、`.webp`（不区分大小写），每张最多 512 KiB。打包和发现 MUST 检查解析符号链接后的目录边界、文件类型、大小和匹配的文件签名；打包 MUST 保留原相对路径并校验产出 manifest。管理列表 SHALL 在预算允许时按声明顺序返回对应图片的 base64 `screenshotDataUrls`，总量不超过 8 MiB（编码前）。截图字节 MUST NOT 进入注入快照或参与实例 hash。
+
+#### Scenario: 打包有效截图
+
+- **WHEN** 扩展作者打包带有效本地截图的扩展
+- **THEN** 产物包含校验过的 manifest 和原相对路径截图，管理列表提供无需额外文件请求的 `data:image/png`、`data:image/jpeg` 或 `data:image/webp` URL
+
+#### Scenario: 拒绝无效截图
+
+- **WHEN** 声明的截图缺失、通过符号链接越界、超限或与声明类型不符
+- **THEN** 系统将该扩展标为无效，报告出错截图及原因，且不返回该扩展的预览
+
+#### Scenario: 管理列表触及截图预算
+
+- **WHEN** 按扩展目录名排序组装管理列表时，一组有效截图超出剩余预算
+- **THEN** 管理列表省略该扩展的整组预览并报告列表诊断，保留其 manifest 和实际状态
 
 ### Requirement: 宿主 API 版本兼容
 

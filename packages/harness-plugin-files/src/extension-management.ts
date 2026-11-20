@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import {
   desktopExtensionsDiagnosticSchema,
   resolveDesktopExtensionSlots,
+  type DesktopExtensionListItem,
   type DesktopExtensionMutationResult,
   type DesktopExtensionSelectionParams,
   type DesktopExtensionStatus,
@@ -43,7 +44,7 @@ export async function listDesktopExtensions(
     configuration.enabled,
     discovery.extensions.flatMap((item) => (item.state === "valid" ? [item.manifest] : [])),
   );
-  const extensions = discovery.extensions.map((item) => {
+  const extensions = discovery.extensions.map<DesktopExtensionListItem>((item) => {
     const enabled = configuration.enabled.includes(item.id);
     if (item.state !== "valid")
       return { id: item.id, enabled, status: { state: item.state, error: item.error } };
@@ -60,7 +61,13 @@ export async function listDesktopExtensions(
         : active?.hash === item.hash
           ? active
           : { state: "waiting" };
-    return { id: item.id, manifest: item.manifest, enabled, status: observed };
+    return {
+      id: item.id,
+      manifest: item.manifest,
+      ...(item.screenshotDataUrls ? { screenshotDataUrls: item.screenshotDataUrls } : {}),
+      enabled,
+      status: observed,
+    };
   });
   for (const id of configuration.enabled)
     if (!extensions.some((item) => item.id === id))

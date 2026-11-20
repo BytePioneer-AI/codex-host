@@ -1,12 +1,21 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { DESKTOP_EXTENSION_SCRIPT_MAX_BYTES } from "@codexhost/shared-contracts";
+import {
+  DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES,
+  DESKTOP_EXTENSION_SCREENSHOT_LIMIT,
+  DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
+  DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
+  desktopExtensionsListResultSchema,
+} from "@codexhost/shared-contracts";
 import {
   discoverDesktopExtensions,
+  listDesktopExtensions,
   readDesktopExtensionConfiguration,
   writeDesktopExtensionConfiguration,
 } from "../src/index.js";
@@ -88,6 +97,127 @@ it("preserves bilingual metadata and diagnoses duplicate categories during disco
       error: expect.stringMatching(/Duplicate categories[\s\S]*categories/u),
     },
   ]);
+});
+
+const png = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lYQAAAAASUVORK5CYII=",
+  "base64",
+);
+
+it("lists verified local screenshots in manifest order through the management schema", async () => {
+  const screenshots = ["images/sidebar.PNG", "images/status.jpeg", "images/preview.webp"];
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff]);
+  const webp = Buffer.from("RIFF\0\0\0\0WEBP");
+  const details = { en: "Overview\n\nUsage", "zh-CN": "概览\n\n用法" };
+  const metadata = {
+    author: "codexhost",
+    repository: "https://github.com/BytePioneer-AI/codex-host",
+    details,
+    screenshots,
+  };
+  const script = await install("gallery", metadata);
+  await mkdir(path.join(path.dirname(script), "images"));
+  for (const [index, bytes] of [png, jpeg, webp].entries()) {
+    await writeFile(path.join(path.dirname(script), screenshots[index]!), bytes);
+  }
+  const list = desktopExtensionsListResultSchema.parse(await listDesktopExtensions(directory));
+  expect(list.diagnostics).toEqual([]);
+  expect(list.extensions).toMatchObject([
+    {
+      id: "gallery",
+      manifest: metadata,
+      status: { state: "disabled" },
+      screenshotDataUrls: [
+        `data:image/png;base64,${png.toString("base64")}`,
+        `data:image/jpeg;base64,${jpeg.toString("base64")}`,
+        `data:image/webp;base64,${webp.toString("base64")}`,
+      ],
+    },
+  ]);
+});
+
+it.each([
+  ["missing", "preview.png", /file not found/u],
+  ["oversize", "preview.png", /exceeds its limit/u],
+  ["mislabeled", "preview.jpg", /signature does not match image\/jpeg/u],
+  ["escape", "preview.png", /inside its root/u],
+  ["traversal", "../preview.png", /relative paths/u],
+  ["directory", "preview.png", /regular file/u],
+] as const)("reports the screenshot path and reason for %s", async (kind, relative, reason) => {
+  const file = await install("bad-shot", { screenshots: [relative] });
+  const screenshot = path.join(path.dirname(file), relative);
+  if (kind === "mislabeled") await writeFile(screenshot, png);
+  if (kind === "oversize")
+    await writeFile(screenshot, Buffer.alloc(DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES + 1));
+  if (kind === "directory") await mkdir(screenshot);
+  if (kind === "escape") {
+    const external = path.join(directory, "outside.png");
+    await writeFile(external, png);
+    await symlink(external, screenshot);
+  }
+  const {
+    extensions: [item],
+  } = await discoverDesktopExtensions(root);
+  expect(item).toMatchObject({ state: "invalid", error: expect.stringMatching(reason) });
+  expect(item).toMatchObject({
+    error: expect.stringContaining(kind === "traversal" ? "screenshots[0]" : relative),
+  });
+});
+
+it("rejects unsafe repository protocols during discovery", async () => {
+  await install("unsafe-link", { repository: "javascript:alert(1)" });
+  const { extensions } = await discoverDesktopExtensions(root);
+  expect(extensions).toMatchObject([
+    { state: "invalid", error: expect.stringContaining("repository") },
+  ]);
+});
+
+it("bounds list previews without marking otherwise valid installations invalid", async () => {
+  const screenshots = Array.from(
+    { length: DESKTOP_EXTENSION_SCREENSHOT_LIMIT },
+    (_, i) => `${i}.png`,
+  );
+  const bytes = Buffer.alloc(DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES);
+  png.copy(bytes);
+  const galleriesThatFit = Math.floor(
+    DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES / (bytes.length * screenshots.length),
+  );
+  for (let i = 0; i <= galleriesThatFit; i++) {
+    const dir = path.dirname(await install(`gallery-${i}`, { screenshots }));
+    await Promise.all(screenshots.map((file) => writeFile(path.join(dir, file), bytes)));
+  }
+  const list = await listDesktopExtensions(directory);
+  expect(list.diagnostics).toEqual([expect.stringContaining("some previews were omitted")]);
+  expect(list.extensions.map((item) => item.status.state)).toEqual(
+    Array(galleriesThatFit + 1).fill("disabled"),
+  );
+  expect(list.extensions.map((item) => item.screenshotDataUrls?.length)).toEqual([
+    ...Array(galleriesThatFit).fill(screenshots.length),
+    undefined,
+  ]);
+});
+
+it("packages nested screenshots and rejects invalid screenshot bytes before publishing", async () => {
+  const screenshot = "images/sidebar.png";
+  const source = path.dirname(await install("gallery", { screenshots: [screenshot] }));
+  await mkdir(path.join(source, "src"));
+  await mkdir(path.join(source, "images"));
+  await writeFile(path.join(source, "src", "index.ts"), "define({ activate() {} });");
+  await writeFile(path.join(source, screenshot), png);
+  const outputRoot = path.join(directory, "output");
+  const buildTool = fileURLToPath(
+    new URL("../../../tools/build-desktop-extension.mjs", import.meta.url),
+  );
+  const build = () => promisify(execFile)(process.execPath, [buildTool, source, outputRoot]);
+  await build();
+  const output = path.join(outputRoot, "gallery", screenshot);
+  expect(await readFile(output)).toEqual(png);
+  expect((await discoverDesktopExtensions(outputRoot)).extensions).toMatchObject([
+    { state: "valid", manifest: { screenshots: [screenshot] } },
+  ]);
+  await writeFile(path.join(source, screenshot), "not a PNG");
+  await expect(build()).rejects.toThrow(/Screenshot.*does not match image\/png/u);
+  expect(await readFile(output)).toEqual(png);
 });
 
 it.skipIf(!process.getuid)("rejects another user's writable root and files on POSIX", async () => {

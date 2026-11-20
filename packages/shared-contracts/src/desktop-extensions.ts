@@ -4,9 +4,13 @@ import type { ThreadTreeSnapshot } from "./thread-tree-watch.js";
 
 export const DESKTOP_EXTENSION_API_VERSION = 1;
 export const DESKTOP_EXTENSION_LIMIT = 64;
-export const DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 32 * 1024;
+export const DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 128 * 1024;
 export const DESKTOP_EXTENSION_SCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 export const DESKTOP_EXTENSION_STYLE_MAX_BYTES = 256 * 1024;
+export const DESKTOP_EXTENSION_SCREENSHOT_LIMIT = 4;
+export const DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES = 512 * 1024;
+/** Raw image bytes before base64 encoding, across one management list. */
+export const DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES = 8 * 1024 * 1024;
 export const DESKTOP_EXTENSION_SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024;
 
 export const desktopExtensionIdSchema = installedPluginIdSchema;
@@ -20,10 +24,41 @@ export const desktopExtensionCategorySchema = z.enum([
   "appearance",
   "tools",
   "workflow",
+  "usage-analytics",
+  "memory-knowledge",
+  "integrations",
 ]);
 export type DesktopExtensionCategory = z.infer<typeof desktopExtensionCategorySchema>;
 
 const extensionName = z.string().trim().min(1).max(128);
+
+export function desktopExtensionScreenshotMimeType(resource: string) {
+  switch (resource.match(/\.([^./]+)$/u)?.[1]?.toLowerCase()) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
+    default:
+      return undefined;
+  }
+}
+
+const screenshotPathSchema = pluginRelativeResourceSchema.refine(
+  (resource) =>
+    desktopExtensionScreenshotMimeType(resource) !== undefined &&
+    resource.split("/").every((segment) => !/[. ]$/u.test(segment)),
+  "Screenshots must be relative .png, .jpg, .jpeg, or .webp paths with no segments ending in a dot or space",
+);
+
+const repositorySchema = z
+  .string()
+  .trim()
+  .max(2048)
+  .regex(/^https?:\/\/[^/?#\\\s]+/iu, "Repository must be an HTTP(S) URL")
+  .pipe(z.url({ protocol: /^https?$/u }));
 
 const manifestHeader = z
   .object({
@@ -41,6 +76,19 @@ export const desktopExtensionManifestSchema = manifestHeader
     desktopApi: z.literal(DESKTOP_EXTENSION_API_VERSION),
     description: z
       .strictObject({ en: z.string().max(4096), "zh-CN": z.string().max(4096).optional() })
+      .optional(),
+    author: z.string().trim().min(1).max(128).optional(),
+    repository: repositorySchema.optional(),
+    details: z
+      .strictObject({ en: z.string().max(16384), "zh-CN": z.string().max(16384).optional() })
+      .optional(),
+    screenshots: z
+      .array(screenshotPathSchema)
+      .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
+      .refine(
+        (screenshots) => new Set(screenshots).size === screenshots.length,
+        "Duplicate screenshots",
+      )
       .optional(),
     desktop: z.strictObject({
       script: pluginRelativeResourceSchema,

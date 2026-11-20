@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+  DESKTOP_EXTENSION_SCREENSHOT_LIMIT,
+  DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   desktopExtensionConfigurationSchema,
   desktopExtensionIdSchema,
   desktopExtensionManifestSchema,
@@ -38,19 +40,32 @@ export const desktopExtensionsRecoveryParamsSchema = z.strictObject({
   expectedRevision: revisionSchema.optional(),
 });
 
+export const desktopExtensionListItemSchema = z.strictObject({
+  // An invalid discovery can have a directory name that isn't a valid extension ID.
+  id: z.string().min(1),
+  manifest: desktopExtensionManifestSchema.optional(),
+  screenshotDataUrls: z
+    .array(
+      z
+        .string()
+        .max(
+          "data:image/jpeg;base64,".length +
+            4 * Math.ceil(DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES / 3),
+        )
+        .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u),
+    )
+    .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
+    .optional(),
+  enabled: z.boolean(),
+  status: desktopExtensionStatusSchema,
+});
+export type DesktopExtensionListItem = z.infer<typeof desktopExtensionListItemSchema>;
+
 export const desktopExtensionsListResultSchema = z.strictObject({
   configuration: desktopExtensionConfigurationSchema,
   desktopConnected: z.boolean(),
   diagnostics: z.array(z.string()),
-  extensions: z.array(
-    z.strictObject({
-      // An invalid discovery can have a directory name that isn't a valid extension ID.
-      id: z.string().min(1),
-      manifest: desktopExtensionManifestSchema.optional(),
-      enabled: z.boolean(),
-      status: desktopExtensionStatusSchema,
-    }),
-  ),
+  extensions: z.array(desktopExtensionListItemSchema),
 });
 
 export const desktopExtensionMutationResultSchema = z.discriminatedUnion("state", [

@@ -3,10 +3,13 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import {
   DESKTOP_EXTENSION_LIMIT,
+  DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES,
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
+  DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
   DESKTOP_EXTENSION_STYLE_MAX_BYTES,
   desktopExtensionIdSchema,
+  desktopExtensionScreenshotMimeType,
   parseDesktopExtensionManifest,
   type DesktopExtensionManifest,
 } from "@codexhost/shared-contracts";
@@ -19,6 +22,7 @@ export type DesktopExtensionInstallation = { id: string } & (
       hash: string;
       script: string;
       style?: string;
+      screenshotDataUrls?: string[];
     }
   | { state: "invalid" | "incompatible"; error: string }
 );
@@ -71,7 +75,45 @@ export async function readExtensionResource(
   return readPluginFile(resource, max);
 }
 
-async function discover(root: string, id: string): Promise<DesktopExtensionInstallation> {
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const jpegSignature = Buffer.from([0xff, 0xd8, 0xff]);
+const riffSignature = Buffer.from("RIFF");
+const webpSignature = Buffer.from("WEBP");
+
+/** Both installation discovery and packaging require the declared image type to match its bytes. */
+export async function readDesktopExtensionScreenshot(root: string, relative: string) {
+  try {
+    const mime = desktopExtensionScreenshotMimeType(relative);
+    if (!mime) throw new Error("Unsupported image extension");
+    const bytes = await readExtensionResource(
+      root,
+      relative,
+      DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
+    );
+    const matches =
+      mime === "image/png"
+        ? bytes.subarray(0, 8).equals(pngSignature)
+        : mime === "image/jpeg"
+          ? bytes.subarray(0, 3).equals(jpegSignature)
+          : bytes.subarray(0, 4).equals(riffSignature) &&
+            bytes.subarray(8, 12).equals(webpSignature);
+    if (!matches) throw new Error(`File signature does not match ${mime}`);
+    return { bytes, mime };
+  } catch (error) {
+    const reason = extensionFileMissing(error)
+      ? "file not found"
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    throw new Error(`Screenshot ${JSON.stringify(relative)}: ${reason}`, { cause: error });
+  }
+}
+
+async function discover(
+  root: string,
+  id: string,
+  screenshotBudget: { remaining: number; omitted: boolean },
+): Promise<DesktopExtensionInstallation> {
   try {
     if (!desktopExtensionIdSchema.safeParse(id).success)
       throw new Error("Invalid extension directory name");
@@ -96,14 +138,31 @@ async function discover(root: string, id: string): Promise<DesktopExtensionInsta
     const zero = Buffer.from([0]);
     const hash = createHash("sha256").update(bytes).update(zero).update(script).update(zero);
     if (style) hash.update(style);
-    return {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const item: DesktopExtensionInstallation = {
       id,
       state: "valid",
       manifest: parsed.manifest,
       hash: hash.digest("hex"),
-      script: new TextDecoder("utf-8", { fatal: true }).decode(script),
-      ...(style ? { style: new TextDecoder("utf-8", { fatal: true }).decode(style) } : {}),
+      script: decoder.decode(script),
+      ...(style ? { style: decoder.decode(style) } : {}),
     };
+    const screenshots = [];
+    let screenshotBytes = 0;
+    for (const relative of parsed.manifest.screenshots ?? []) {
+      const screenshot = await readDesktopExtensionScreenshot(directory, relative);
+      screenshots.push(screenshot);
+      screenshotBytes += screenshot.bytes.length;
+    }
+    if (screenshotBytes > screenshotBudget.remaining) {
+      screenshotBudget.omitted = true;
+    } else if (screenshots.length) {
+      screenshotBudget.remaining -= screenshotBytes;
+      item.screenshotDataUrls = screenshots.map(
+        ({ bytes, mime }) => `data:${mime};base64,${bytes.toString("base64")}`,
+      );
+    }
+    return item;
   } catch (error) {
     return { id, state: "invalid", error: error instanceof Error ? error.message : String(error) };
   }
@@ -129,8 +188,20 @@ export async function discoverDesktopExtensions(configuredRoot: string): Promise
         diagnostic: `At most ${DESKTOP_EXTENSION_LIMIT} extensions are supported`,
       };
     const extensions: DesktopExtensionInstallation[] = [];
-    for (const id of names) extensions.push(await discover(root, id));
-    return { extensions };
+    const screenshotBudget = {
+      remaining: DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES,
+      omitted: false,
+    };
+    for (const id of names) extensions.push(await discover(root, id, screenshotBudget));
+    return {
+      extensions,
+      ...(screenshotBudget.omitted
+        ? {
+            diagnostic:
+              "Desktop extension screenshot list size limit exceeded; some previews were omitted",
+          }
+        : {}),
+    };
   } catch (error) {
     return {
       extensions: [],

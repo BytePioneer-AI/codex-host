@@ -9,6 +9,7 @@ export {
   desktopExtensionsRoot,
   desktopExtensionsStatusPath,
   discoverDesktopExtensions,
+  readDesktopExtensionScreenshot,
   type DesktopExtensionInstallation,
 } from "./extension-discovery.js";
 export {

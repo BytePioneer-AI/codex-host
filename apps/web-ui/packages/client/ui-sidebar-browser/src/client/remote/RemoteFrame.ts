@@ -3,8 +3,8 @@ import { createSnapshotStore, type SnapshotStore } from "@deepseek-ai/dsh-client
 import {
   SIDEBAR_BROWSER_PATH,
   SIDEBAR_BROWSER_TAB_PARAM,
+  decodeSidebarBrowserFrameHeader,
   type SidebarBrowserClientMessage,
-  type SidebarBrowserEditableRegion,
   type SidebarBrowserServerMessage,
   type SidebarBrowserState,
 } from "@codexhost/shared-contracts/sidebar-browser";
@@ -31,7 +31,6 @@ export class RemoteFrame implements BrowserFrame {
   private checkpoint: BrowserTarget | undefined;
   private revision = 0;
   private drawing: Promise<void> = Promise.resolve();
-  private editableRegions: readonly SidebarBrowserEditableRegion[] = [];
   private disposed = false;
 
   /**
@@ -115,23 +114,29 @@ export class RemoteFrame implements BrowserFrame {
       if (queued !== undefined) this.send(queued);
     });
     socket.addEventListener("message", (event: MessageEvent<ArrayBuffer | string>) => {
+      if (this.socket !== socket) return;
       if (typeof event.data === "string") {
         this.receive(JSON.parse(event.data) as SidebarBrowserServerMessage);
         return;
       }
       const frame = event.data;
-      const regions = this.editableRegions;
-      // Frames arrive one at a time; the ack releases the next one.
+      const current = (): boolean => this.socket === socket;
+      // Serialize decoding and painting even when two frames arrive before either is drawn.
       this.drawing = this.drawing
-        .then(() => this.presentation.draw(frame, regions))
-        .catch(() => undefined)
-        .then(() => {
-          if (this.socket === socket) this.send({ type: "ack" });
+        .then(async () => {
+          if (!current()) return;
+          const header = decodeSidebarBrowserFrameHeader(frame);
+          await this.presentation.draw(frame, header, current);
+          if (current()) this.send({ type: "ack", sequence: header.sequence });
+        })
+        .catch(() => {
+          if (current()) socket.close();
         });
     });
     socket.addEventListener("close", (event) => {
       if (this.socket !== socket || this.disposed) return;
       this.socket = undefined;
+      this.presentation.setEditables(undefined);
       const current = this.store.getSnapshot();
       if (current.target !== undefined)
         this.store.set({
@@ -152,7 +157,7 @@ export class RemoteFrame implements BrowserFrame {
 
   private receive(message: SidebarBrowserServerMessage): void {
     if (message.type === "editable") {
-      this.editableRegions = message.regions;
+      this.presentation.setEditables(message);
       return;
     }
     if (message.type === "open") {

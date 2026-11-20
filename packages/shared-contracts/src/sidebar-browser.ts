@@ -51,8 +51,8 @@ export type SidebarBrowserClientMessage =
     }
   /** Committed text, including IME composition results and paste. */
   | { readonly type: "text"; readonly text: string }
-  /** The previous frame has been drawn; the next one may be sent. */
-  | { readonly type: "ack" };
+  /** The latest presented frame; also acknowledges every earlier frame on this connection. */
+  | { readonly type: "ack"; readonly sequence: number };
 
 export interface SidebarBrowserState {
   readonly type: "state";
@@ -76,20 +76,26 @@ export interface SidebarBrowserEditableRegion {
 
 export type SidebarBrowserServerMessage =
   | SidebarBrowserState
-  /** Sent immediately before the frame whose touch-input hit areas it describes. */
-  | { readonly type: "editable"; readonly regions: readonly SidebarBrowserEditableRegion[] }
+  /** Replaces the touch hit areas; applies only to frames of this viewport/geometry generation. */
+  | {
+      readonly type: "editable";
+      readonly generation: number;
+      readonly regions: readonly SidebarBrowserEditableRegion[];
+    }
   /** The page opened a window; the viewer opens it as another tab. */
   | { readonly type: "open"; readonly url: string };
 
 export type SidebarBrowserFrameFormat = "jpeg" | "png";
 
-/** Binary frame: 1-byte format, CSS width and height as big-endian uint16, then the image. */
+/** Binary frame: format byte, CSS size (two uint16s), sequence (float64), generation (uint32), then image. */
 export interface SidebarBrowserFrameHeader {
   readonly format: SidebarBrowserFrameFormat;
   readonly width: number;
   readonly height: number;
+  readonly sequence: number;
+  readonly generation: number;
 }
-export const SIDEBAR_BROWSER_FRAME_HEADER_BYTES = 5;
+export const SIDEBAR_BROWSER_FRAME_HEADER_BYTES = 17;
 
 export function encodeSidebarBrowserFrameHeader(header: SidebarBrowserFrameHeader): Uint8Array {
   const bytes = new Uint8Array(SIDEBAR_BROWSER_FRAME_HEADER_BYTES);
@@ -97,6 +103,8 @@ export function encodeSidebarBrowserFrameHeader(header: SidebarBrowserFrameHeade
   view.setUint8(0, header.format === "png" ? 1 : 0);
   view.setUint16(1, header.width);
   view.setUint16(3, header.height);
+  view.setFloat64(5, header.sequence);
+  view.setUint32(13, header.generation);
   return bytes;
 }
 
@@ -106,6 +114,8 @@ export function decodeSidebarBrowserFrameHeader(bytes: ArrayBuffer): SidebarBrow
     format: view.getUint8(0) === 1 ? "png" : "jpeg",
     width: view.getUint16(1),
     height: view.getUint16(3),
+    sequence: view.getFloat64(5),
+    generation: view.getUint32(13),
   };
 }
 
@@ -144,8 +154,13 @@ export function parseSidebarBrowserClientMessage(
     case "back":
     case "forward":
     case "reload":
-    case "ack":
       return { type: message.type };
+    case "ack":
+      return typeof message.sequence === "number" &&
+        Number.isSafeInteger(message.sequence) &&
+        message.sequence > 0
+        ? { type: "ack", sequence: message.sequence }
+        : undefined;
     case "mouse": {
       const action = message.action;
       const button = message.button;

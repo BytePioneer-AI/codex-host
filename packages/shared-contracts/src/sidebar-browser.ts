@@ -59,7 +59,7 @@ export const SIDEBAR_BROWSER_DIRECT_CLIENT_FAILURE_REASONS: readonly string[] = 
   "frame-fragment",
   "frame-sequence",
   "frame-window",
-  "frames-ack",
+  "frame-ack",
   "frames-close",
   "frames-error",
   "frames-fallback",

@@ -227,7 +227,7 @@ export class Workspaces {
     if (this.remoteGroups.some((group) => group.workspaceId === workspaceId))
       throw new RpcError(
         "workspace/remote-read-only",
-        "Open an existing remote Thread; remote project creation and local tools are unavailable.",
+        "This operation requires a local workspace; remote project paths belong to their Host.",
       );
     return this.state.items.find((item) => item.workspaceId === workspaceId);
   }

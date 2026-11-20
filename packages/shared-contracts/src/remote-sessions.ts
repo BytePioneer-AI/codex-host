@@ -17,12 +17,19 @@ const thread = { ...target, threadId: identity };
 /** Operations on existing Desktop connections; no connection or credential management. */
 export const remoteSessionOperationSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("hosts") }),
+  z.strictObject({
+    kind: z.literal("create"),
+    ...target,
+    cwd: z.string().min(1).max(8192),
+    epoch: identity,
+  }),
   z.strictObject({ kind: z.literal("status"), ...thread }),
   z.strictObject({
     kind: z.literal("list"),
     ...target,
     cursor: z.string().nullable(),
     archived: z.boolean(),
+    includeLoaded: z.literal(true).optional(),
   }),
   z.strictObject({
     kind: z.literal("read"),

@@ -44,6 +44,7 @@ import type { Workspaces } from "./workspaces.ts";
 import { applyUsageProjections } from "./usage-projection.ts";
 import {
   remoteWorkspaceGroups,
+  remoteWorkspaceId,
   remoteHostDisplayName,
   type RemoteWorkspaceHost,
 } from "./remote-workspaces.ts";
@@ -53,6 +54,7 @@ const hostsSchema = z.array(
   z.object({
     hostId: z.string().min(1),
     online: z.boolean(),
+    epoch: z.string().min(1).optional(),
     displayName: z.string().optional(),
     state: z.string().optional(),
     projects: z
@@ -67,7 +69,12 @@ const hostsSchema = z.array(
       .optional(),
   }),
 );
-const pageSchema = z.object({ data: z.array(rowSchema), nextCursor: z.string().nullable() });
+const pageSchema = z.object({
+  data: z.array(rowSchema),
+  nextCursor: z.string().nullable(),
+  loaded: z.array(z.string()).optional(),
+  epoch: z.string().optional(),
+});
 export function remoteSessionId(hostId: string, threadId: string): string {
   return PREFIX + Buffer.from(JSON.stringify([hostId, threadId])).toString("base64url");
 }
@@ -97,6 +104,9 @@ interface Entry {
   online: boolean;
   archived?: boolean;
   epoch?: string;
+  /** A new native Thread can be loaded before it appears in the persisted catalog. */
+  createdEpoch?: string;
+  projectId?: string;
   fullReadAt?: number;
   configurationRevision: number;
   view?: ChThreadView;
@@ -209,6 +219,13 @@ export class RemoteSessions {
       if (!present.has(entry.identity.hostId)) this.offline(entry);
     for (const host of hosts.filter((host) => host.online)) {
       const found = new Map<string, Entry>();
+      const unlisted = new Set(
+        [...this.entries.values()].filter(
+          (entry) => entry.identity.hostId === host.hostId && entry.createdEpoch,
+        ),
+      );
+      let loaded: Set<string> | undefined;
+      let loadedEpoch: string | undefined;
       try {
         let cursor: string | null = null;
         const seen = new Set<string>();
@@ -219,8 +236,13 @@ export class RemoteSessions {
               hostId: host.hostId,
               cursor,
               archived: false,
+              ...(cursor === null && unlisted.size ? { includeLoaded: true } : {}),
             }),
           );
+          if (page.loaded) {
+            loaded = new Set(page.loaded);
+            loadedEpoch = page.epoch;
+          }
           for (const row of page.data) {
             const id = remoteSessionId(host.hostId, row.id);
             found.set(id, {
@@ -238,6 +260,17 @@ export class RemoteSessions {
         if (this.closed || archiveRevision !== this.archiveRevision) return;
         for (const [id, entry] of this.entries)
           if (entry.identity.hostId === host.hostId && !found.has(id) && !entry.archived) {
+            if (
+              entry.createdEpoch &&
+              (!unlisted.has(entry) ||
+                (entry.createdEpoch === loadedEpoch && loaded?.has(entry.identity.threadId)))
+            ) {
+              if (!entry.online && entry.createdEpoch === loadedEpoch) {
+                entry.online = true;
+                this.events.emit("api-session/added", this.summary(id, entry));
+              }
+              continue;
+            }
             this.entries.delete(id);
             this.clearPending(id);
             entry.view?.log.reconnectFollowers();
@@ -253,6 +286,7 @@ export class RemoteSessions {
             ? Object.assign(previous, { row: entry.row, online: true, archived: false })
             : entry;
           this.entries.set(id, current);
+          delete current.createdEpoch;
           if (changed) this.events.emit("api-session/added", this.summary(id, current));
         }
         this.syncArchives();
@@ -264,6 +298,54 @@ export class RemoteSessions {
     }
     this.syncGroups();
   }
+  private async createInProject(workspaceId: string) {
+    const hosts = hostsSchema.parse(await this.invoke({ kind: "hosts" }));
+    for (const host of hosts) {
+      const project = host.projects?.find(
+        (p) => remoteWorkspaceId(host.hostId, p.id) === workspaceId,
+      );
+      if (!project?.path) continue;
+      if (!host.online)
+        throw new RpcError("remote/offline", "Reconnect this project in Codex Desktop.");
+      if (!host.epoch)
+        throw new RpcError(
+          "remote/unsupported",
+          "Update CodexHost Desktop to create remote Threads.",
+        );
+      const reply = await this.invoke({
+        kind: "create",
+        hostId: host.hostId,
+        epoch: host.epoch,
+        cwd: project.path,
+      });
+      const result = z.object({ thread: rowSchema }).safeParse(reply);
+      if (!result.success || this.closed)
+        throw new RpcError(
+          "remote/outcome-unknown",
+          "Remote Thread creation was not confirmed. Refresh the project before retrying.",
+        );
+      const thread = result.data.thread;
+      const identity = { hostId: host.hostId, threadId: thread.id };
+      const id = remoteSessionId(identity.hostId, identity.threadId);
+      const entry: Entry = {
+        identity,
+        row: { ...thread, turns: [] } as ChThread,
+        online: true,
+        createdEpoch: host.epoch,
+        projectId: project.id,
+        configurationRevision: 0,
+      };
+      this.hosts.set(host.hostId, host);
+      this.entries.set(id, entry);
+      this.syncGroups();
+      this.events.emit("api-session/added", this.summary(id, entry));
+      return { sessionId: id, agentPreset: "standard" };
+    }
+    throw new RpcError(
+      "workspace/not-found",
+      "Select a registered remote project in Codex Desktop.",
+    );
+  }
   private syncGroups(): void {
     this.workspaces?.setRemoteGroups(
       remoteWorkspaceGroups(
@@ -272,6 +354,7 @@ export class RemoteSessions {
           sessionId,
           ...entry.identity,
           cwd: entry.row.cwd,
+          projectId: entry.projectId,
         })),
       ),
     );
@@ -632,6 +715,20 @@ export class RemoteSessions {
   }
   install(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.routeSessions(async (method, args, next) => {
+      if (method === "session/create") {
+        const request = requestOf<{ workspaceId?: string; cwd?: string; sessionId?: string }>(args);
+        if (
+          typeof request.workspaceId === "string" &&
+          request.workspaceId.startsWith("remote-workspace:")
+        ) {
+          if (request.cwd !== undefined || request.sessionId !== undefined)
+            throw new RpcError(
+              "remote/invalid-request",
+              "Choose a remote project to create a new Thread.",
+            );
+          return this.createInProject(request.workspaceId);
+        }
+      }
       if (method === "session/list") {
         const request = requestOf<{ sessionId?: unknown; cursor?: unknown }>(args);
         if (request.sessionId !== undefined) {

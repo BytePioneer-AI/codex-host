@@ -10,7 +10,7 @@ function fixture() {
     { id: 7, method: "item/commandExecution/requestApproval", params: { threadId: "same" } },
   ];
   const manager = () => ({
-    sendRequest: vi.fn(async (method: string) =>
+    sendRequest: vi.fn(async (method: string): Promise<unknown> =>
       method === "thread/read" ? { thread: { id: "same" } } : {},
     ),
     getConversation: () => ({ requests }),
@@ -39,7 +39,40 @@ function fixture() {
   };
   return { target, routes, read, requests, route };
 }
-describe("Desktop existing remote session boundary", () => {
+describe("Desktop remote session boundary", () => {
+  it("starts a Thread on the selected Host with its defaults and fences a changed connection", async () => {
+    const f = fixture();
+    const hostId = "remote-ssh-discovered:a";
+    const snapshot = await f.read(hostId);
+    const create = {
+      kind: "create",
+      hostId,
+      cwd: "/remote/center",
+      epoch: snapshot.epoch,
+    } as const;
+    await rendererRemoteSession(f.target, create);
+    expect(f.route(hostId).manager.sendRequest).toHaveBeenCalledWith("thread/start", {
+      cwd: create.cwd,
+      historyMode: "paginated",
+    });
+    const other = f.route("remote-control:b");
+    f.routes.set(hostId, other);
+    await expect(rendererRemoteSession(f.target, create)).rejects.toThrow("changed");
+    expect(other.manager.sendRequest).not.toHaveBeenCalled();
+  });
+  it("sends the first Turn after a missing rollout only if the selected Host still has the Thread loaded", async () => {
+    const f = fixture();
+    const hostId = "remote-ssh-discovered:a";
+    const { epoch } = await f.read(hostId);
+    const request = f.route(hostId).manager.sendRequest;
+    const missing = new Error("no rollout found for thread id same");
+    const prompt = { kind: "prompt", hostId, threadId: "same", epoch, text: "hello" } as const;
+    request.mockRejectedValueOnce(missing).mockResolvedValueOnce({ data: [] });
+    await expect(rendererRemoteSession(f.target, prompt)).rejects.toBe(missing);
+    request.mockRejectedValueOnce(missing).mockResolvedValueOnce({ data: ["same"] });
+    await rendererRemoteSession(f.target, prompt);
+    expect(request.mock.calls.filter(([method]) => method === "turn/start")).toHaveLength(1);
+  });
   it("reads usage on the selected remote host and rejects a stale connection", async () => {
     const f = fixture();
     const hostId = "remote-ssh-discovered:a";
@@ -226,8 +259,8 @@ describe("Desktop existing remote session boundary", () => {
     const evaluate = new Function("window", `return ${expression}`);
     expect(await evaluate(f.target)).toEqual({
       result: [
-        { hostId: "remote-ssh-discovered:a", online: true },
-        { hostId: "remote-control:b", online: true },
+        { hostId: "remote-ssh-discovered:a", online: true, epoch: expect.any(String) },
+        { hostId: "remote-control:b", online: true, epoch: expect.any(String) },
       ],
     });
     expect(() =>

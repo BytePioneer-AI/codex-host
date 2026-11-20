@@ -17,6 +17,8 @@ The Linux release supports the official ChatGPT `.deb` and `.rpm` packages on x8
 
 The runtime requires a mounted `/proc` and Linux `pidfd` support. Snap, Flatpak, AppImage, local or relocated installations, wrapper or `alternatives` launchers, cross-architecture execution, and codexhost Linux installer packages are not supported. codexhost is installed and updated through npm on Linux.
 
+Host and Web service startup requires `HOME` to be set to an absolute path, including when `XDG_RUNTIME_DIR` and a custom data directory are set. The services register their supervisor under `$HOME/.codexhost/independent-processes`, and npm updates use `$HOME/.codexhost/updates`.
+
 ## Renderer compatibility
 
 Renderer integration failures are recovered in the background and do not display compatibility dialogs or write local warning acknowledgements. While an external Agent integration is unavailable, the managed Desktop remains usable with official Codex routing. The initial Controller handshake still fails closed on malformed or unsupported readiness output.

@@ -190,7 +190,12 @@ pub(super) fn update_state_directory() -> io::Result<PathBuf> {
         .map(PathBuf::from)
         .filter(|home| home.is_absolute())
         .map(|home| home.join(".codexhost").join("updates"))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "HOME must be set to an absolute path",
+            )
+        })
 }
 
 #[cfg(not(target_os = "linux"))]

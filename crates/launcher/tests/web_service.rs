@@ -954,6 +954,25 @@ fn owned_gui_activation(refuse_stop: bool) {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_service_start_explains_missing_home() {
+    let fixture = Fixture::new();
+    for service in ["host", "web-service"] {
+        let started = fixture
+            .command(service, "ensure")
+            .env_remove("HOME")
+            .output()
+            .unwrap();
+        assert!(!started.status.success());
+        let stderr = String::from_utf8_lossy(&started.stderr);
+        assert!(
+            stderr.contains("HOME must be set to an absolute path"),
+            "{service}: {stderr}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {

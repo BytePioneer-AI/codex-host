@@ -157,4 +157,23 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   host.epoch = "two";
   await remote.refresh();
   assert.deepEqual(members(), []);
+  const reopened = new Workspaces(new DataDir(dir), dir);
+  const rediscovered = new RemoteSessions(
+    new EventHub("restart"),
+    async (op) => {
+      if (op.kind === "hosts") return [host];
+      if (op.kind === "list") return { data: [thread], nextCursor: null };
+      throw new Error("unexpected operation");
+    },
+    reopened,
+  );
+  t.after(() => rediscovered.close());
+  await rediscovered.refresh();
+  assert.deepEqual(
+    reopened
+      .list()
+      .filter((w) => w.sessionIds.includes(sessionId))
+      .map((w) => w.workspaceId),
+    [workspaceId],
+  );
 });

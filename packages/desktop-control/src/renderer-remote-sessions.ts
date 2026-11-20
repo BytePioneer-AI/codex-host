@@ -281,30 +281,43 @@ export async function rendererRemoteSession(
         serviceTier?: unknown;
       };
     };
+    const readTurns = async (
+      cursor: string | null,
+      limit: number,
+      sortDirection: "asc" | "desc",
+    ) => {
+      try {
+        return (await read(() =>
+          manager.sendRequest("thread/turns/list", {
+            threadId,
+            cursor,
+            limit,
+            sortDirection,
+            itemsView: "full",
+          }),
+        )) as { data?: unknown[]; nextCursor?: string | null };
+      } catch (error) {
+        const rpc = error as { code?: number; jsonRpcCode?: number; message?: string } | null;
+        if (
+          cursor === null &&
+          (rpc?.jsonRpcCode ?? rpc?.code) === -32600 &&
+          rpc?.message ===
+            `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`
+        )
+          return { data: [], nextCursor: null };
+        throw error;
+      }
+    };
     let nextCursor: string | null = null;
     const requestedPage = operation.page;
     if (header.thread?.historyMode === "paginated" && requestedPage) {
       let limit = requestedPage.limit ?? 20;
       for (;;) {
-        const response = (await read(() =>
-          manager.sendRequest("thread/turns/list", {
-            threadId,
-            cursor: requestedPage.cursor,
-            limit,
-            sortDirection: requestedPage.sortDirection ?? "asc",
-            itemsView: "full",
-          }),
-        ).catch((error: unknown) => {
-          const rpc = error as { code?: number; jsonRpcCode?: number; message?: string } | null;
-          if (
-            requestedPage.cursor === null &&
-            (rpc?.jsonRpcCode ?? rpc?.code) === -32600 &&
-            rpc?.message ===
-              `thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`
-          )
-            return { data: [], nextCursor: null };
-          throw error;
-        })) as { data?: unknown[]; nextCursor?: string | null };
+        const response = await readTurns(
+          requestedPage.cursor,
+          limit,
+          requestedPage.sortDirection ?? "asc",
+        );
         if (
           !Array.isArray(response.data) ||
           (response.nextCursor !== null &&
@@ -337,15 +350,7 @@ export async function rendererRemoteSession(
       for (let page = 0; page < 100; page++) {
         if (routing.forHost(operation.hostId) !== route)
           throw connectionError("Remote connection changed during read", true);
-        const response = (await read(() =>
-          manager.sendRequest("thread/turns/list", {
-            threadId,
-            cursor,
-            limit: 50,
-            sortDirection: "asc",
-            itemsView: "full",
-          }),
-        )) as { data?: unknown[]; nextCursor?: string | null };
+        const response = await readTurns(cursor, 50, "asc");
         if (
           !Array.isArray(response.data) ||
           (response.nextCursor !== null && typeof response.nextCursor !== "string")

@@ -106,7 +106,6 @@ interface Entry {
   epoch?: string;
   /** A new native Thread can be loaded before it appears in the persisted catalog. */
   createdEpoch?: string;
-  projectId?: string;
   fullReadAt?: number;
   configurationRevision: number;
   view?: ChThreadView;
@@ -332,11 +331,16 @@ export class RemoteSessions {
         row: { ...thread, turns: [] } as ChThread,
         online: true,
         createdEpoch: host.epoch,
-        projectId: project.id,
         configurationRevision: 0,
       };
       this.hosts.set(host.hostId, host);
       this.entries.set(id, entry);
+      try {
+        this.workspaces?.rememberRemoteProject(id, project.id);
+      } catch {
+        // The Host already created this Thread. Return its ID even if the local disk is full.
+        console.warn("[remote-sessions] Could not persist the remote project assignment.");
+      }
       this.syncGroups();
       this.events.emit("api-session/added", this.summary(id, entry));
       return { sessionId: id, agentPreset: "standard" };
@@ -354,7 +358,7 @@ export class RemoteSessions {
           sessionId,
           ...entry.identity,
           cwd: entry.row.cwd,
-          projectId: entry.projectId,
+          projectId: this.workspaces?.remoteProjectId(sessionId),
         })),
       ),
     );

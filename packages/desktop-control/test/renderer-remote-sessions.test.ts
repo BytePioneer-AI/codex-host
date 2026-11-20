@@ -40,6 +40,29 @@ function fixture() {
   return { target, routes, read, requests, route };
 }
 describe("Desktop remote session boundary", () => {
+  it.each([true, false])("opens unmaterialized first-turn history (paged=%s)", async (paged) => {
+    const f = fixture();
+    const hostId = "remote-ssh-discovered:a";
+    const missing = Object.assign(
+      new Error(
+        "thread same is not materialized yet; thread/turns/list is unavailable before first user message",
+      ),
+      { jsonRpcCode: -32600 },
+    );
+    f.route(hostId).manager.sendRequest.mockImplementation(async (method) => {
+      if (method === "thread/read") return { thread: { id: "same", historyMode: "paginated" } };
+      if (method === "thread/turns/list") throw missing;
+      return {};
+    });
+    await expect(
+      rendererRemoteSession(f.target, {
+        kind: "read",
+        hostId,
+        threadId: "same",
+        ...(paged ? { page: { cursor: null } } : {}),
+      }),
+    ).resolves.toMatchObject({ result: { thread: { id: "same", turns: [] } } });
+  });
   it("starts a Thread on the selected Host with its defaults and fences a changed connection", async () => {
     const f = fixture();
     const hostId = "remote-ssh-discovered:a";

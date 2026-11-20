@@ -20,6 +20,8 @@ export interface WorkspaceView {
 }
 
 interface WorkspaceState {
+  /** Web-created assignments keyed by the Host-qualified Web Session ID. */
+  remoteProjectIds?: Record<string, string>;
   items: WorkspaceView[];
   archivedSessionIds: string[];
   pinnedSessionIds: string[];
@@ -111,6 +113,15 @@ export class Workspaces {
 
   private save(): void {
     this.data.writeJson(FILE, this.state);
+  }
+
+  rememberRemoteProject(sessionId: string, projectId: string): void {
+    (this.state.remoteProjectIds ??= {})[sessionId] = projectId;
+    this.save();
+  }
+
+  remoteProjectId(sessionId: string): string | undefined {
+    return this.state.remoteProjectIds?.[sessionId];
   }
 
   private broadcast(frame: unknown): void {

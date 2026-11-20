@@ -6,6 +6,7 @@ import type {
 import {
   contentLocaleMessages,
   createEl,
+  createExtensionIconElement,
   formatExtensionCount,
   formatMessage,
   isValidExtensionCount,
@@ -27,6 +28,7 @@ export interface DesktopExtensionCardOptions {
   readonly extensionId: string;
   readonly cardKind: "installed" | "marketplace";
   readonly displayName: string;
+  readonly iconUrl?: string | undefined;
   readonly author?: string | undefined;
   readonly version?: string | undefined;
   readonly repository?: string | undefined;
@@ -66,6 +68,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     extensionId,
     cardKind,
     displayName,
+    iconUrl,
     author,
     version,
     repository,
@@ -100,12 +103,20 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
   card.setAttribute("aria-haspopup", "dialog");
   card.setAttribute("aria-label", formatMessage(copy.openDetailsLabel, { name: displayName }));
 
-  // Row 1: Title + optional lightweight official shield / status dot on left, action control on right.
+  // Row 1: 32x32 rounded icon + Title + optional lightweight official shield / status dot on left, action control on right.
   const topRow = createEl(document, "div", "settings-extensions-card__top");
   const identity = createEl(document, "div", "settings-extensions-card__identity");
+  const iconEl = createExtensionIconElement({
+    document,
+    iconUrl,
+    categories,
+    size: "card",
+    alt: displayName,
+  });
+  const titleGroup = createEl(document, "div", "settings-extensions-card__title-group");
   const nameEl = createEl(document, "h3", "settings-extensions-card__title", displayName);
   nameEl.title = displayName;
-  identity.append(nameEl);
+  titleGroup.append(nameEl);
 
   if (trustTier === "official") {
     const verified = createEl(document, "span", "settings-extensions-card__verified");
@@ -114,7 +125,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     verified.setAttribute("aria-label", copy.trustOfficial);
     verified.title = copy.trustOfficial;
     verified.append(createRendererSettingsIcon("shield-check", 14));
-    identity.append(verified);
+    titleGroup.append(verified);
   }
 
   if (shouldShowStatusDot(statusState) && statusState) {
@@ -124,8 +135,10 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     dot.setAttribute("role", "img");
     dot.setAttribute("aria-label", copy.states[statusState]);
     dot.title = copy.states[statusState];
-    identity.append(dot);
+    titleGroup.append(dot);
   }
+
+  identity.append(iconEl, titleGroup);
 
   const actionWrap = createEl(document, "div", "settings-extensions-card__action");
   const stopTrigger = (event: Event): void => {

@@ -13,7 +13,7 @@ import {
   desktopExtensionsEnglish,
   type DesktopExtensionsMessages,
 } from "./desktop-extensions-messages.js";
-import { createRendererSettingsIcon } from "./icons.js";
+import { createRendererSettingsIcon, type RendererSettingsIconName } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 
 export type DesktopExtensionItem = DesktopExtensionsListResult["extensions"][number];
@@ -51,6 +51,100 @@ export const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
 
 const SAFE_SCREENSHOT_DATA_URL_PATTERN =
   /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u;
+
+const SAFE_ICON_DATA_URL_PATTERN =
+  /^data:image\/(?:png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/]+={0,2}$/u;
+
+export type DesktopExtensionIconSize = "card" | "detail";
+
+export interface CreateExtensionIconOptions {
+  readonly document?: Document | undefined;
+  readonly iconUrl?: string | null | undefined;
+  readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly size: DesktopExtensionIconSize;
+  readonly alt?: string | undefined;
+}
+
+export const EXTENSION_CATEGORY_ICON_MAP: Readonly<
+  Record<DesktopExtensionCategory, RendererSettingsIconName>
+> = Object.freeze({
+  appearance: "palette",
+  interface: "layout-grid",
+  workflow: "zap",
+  analytics: "chart-column",
+  integrations: "plug",
+  tools: "puzzle",
+});
+
+export function resolveExtensionIconCategory(
+  categories: readonly DesktopExtensionCategory[] | undefined,
+): DesktopExtensionCategory {
+  const primary = categories?.[0];
+  if (primary && Object.hasOwn(EXTENSION_CATEGORY_ICON_MAP, primary)) {
+    return primary;
+  }
+  return "tools";
+}
+
+export function parseSafeExtensionIconUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (SAFE_ICON_DATA_URL_PATTERN.test(trimmed)) return trimmed;
+  return parseSafeHttpUrl(trimmed);
+}
+
+export function resolveInstalledExtensionIconUrl(
+  installed: DesktopExtensionItem | undefined,
+  catalogEntry: DesktopExtensionCatalogEntry | undefined,
+): string | undefined {
+  const localIcon = (installed as { readonly iconDataUrl?: string } | undefined)?.iconDataUrl;
+  if (parseSafeExtensionIconUrl(localIcon)) return localIcon;
+  const catalogIcon = (catalogEntry as { readonly icon?: string } | undefined)?.icon;
+  if (parseSafeExtensionIconUrl(catalogIcon)) return catalogIcon;
+  return undefined;
+}
+
+export function createExtensionIconElement(options: CreateExtensionIconOptions): HTMLSpanElement {
+  const { document: targetDocument = document, iconUrl, categories, size, alt = "" } = options;
+  const category = resolveExtensionIconCategory(categories);
+  const iconName = EXTENSION_CATEGORY_ICON_MAP[category];
+  const glyphSize = size === "detail" ? 22 : 16;
+
+  const container = createEl(
+    targetDocument,
+    "span",
+    `settings-extensions-icon settings-extensions-icon--${size}`,
+  );
+  container.dataset.iconSize = size;
+  container.dataset.iconCategory = category;
+  container.setAttribute("aria-hidden", "true");
+
+  let renderedFallback = false;
+  const renderFallback = (): void => {
+    if (renderedFallback) return;
+    renderedFallback = true;
+    container.dataset.iconKind = "fallback";
+    container.dataset.iconName = iconName;
+    container.replaceChildren(createRendererSettingsIcon(iconName, glyphSize));
+  };
+
+  const safeUrl = parseSafeExtensionIconUrl(iconUrl);
+  if (safeUrl) {
+    container.dataset.iconKind = "image";
+    const image = createEl(targetDocument, "img", "settings-extensions-icon__img");
+    image.src = safeUrl;
+    image.alt = alt;
+    image.loading = "lazy";
+    image.setAttribute("decoding", "async");
+    image.addEventListener("error", renderFallback);
+    container.append(image);
+  } else {
+    renderFallback();
+  }
+
+  return container;
+}
 
 export function formatMessage(template: string, values: Readonly<Record<string, string>>): string {
   return template.replace(/\{([a-zA-Z0-9_]+)\}/gu, (match, key: string) => values[key] ?? match);

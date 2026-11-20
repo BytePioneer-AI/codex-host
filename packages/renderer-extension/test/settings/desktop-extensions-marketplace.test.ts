@@ -1271,4 +1271,124 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
 
     mounted.dispose();
   });
+
+  it("renders https marketplace icons, rejects unsafe icon protocols, degrades on image error, and uses Import plugin dialog titles", async () => {
+    const iconCatalog = sampleCatalog({
+      extensions: [
+        { ...CATALOG_TREE, icon: "https://cdn.example.com/icons/tree.png" },
+        { ...CATALOG_THEME, icon: "javascript:alert(1)" },
+      ],
+    });
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => sampleInstalledList({ extensions: [] })),
+      listDesktopExtensionCatalog: vi.fn(async () => iconCatalog),
+      installDesktopExtension: vi.fn(),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (2)"));
+
+    // Import button and dialog title use "导入插件".
+    const importButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "open-import",
+      ),
+    );
+    expect(textOf(importButton)).toBe("导入插件");
+    importButton.dispatch("click");
+    const importDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-import-dialog"),
+      ),
+    );
+    expect(textOf(importDialog)).toContain("导入插件");
+    importDialog.close();
+
+    // Switch to Marketplace tab and verify icons.
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    ).dispatch("click");
+
+    const treeCard = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "article" &&
+          el.dataset.cardKind === "marketplace" &&
+          el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
+    const treeIcon = must(
+      descendants(treeCard).find((el) => el.className.includes("settings-extensions-icon--card")),
+    );
+    expect(treeIcon.dataset.iconKind).toBe("image");
+    const treeImg = must(descendants(treeIcon).find((el) => el.tagName === "img"));
+    expect(treeImg.src).toBe("https://cdn.example.com/icons/tree.png");
+
+    // Simulate broken remote icon image -> gracefully degrades to category vector icon.
+    treeImg.dispatch("error");
+    expect(treeIcon.dataset.iconKind).toBe("fallback");
+    expect(treeIcon.dataset.iconName).toBe("layout-grid");
+    expect(descendants(treeIcon).filter((el) => el.tagName === "img")).toHaveLength(0);
+
+    // Unsafe protocol on theme card is blocked and renders appearance palette fallback.
+    const themeCard = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "article" &&
+          el.dataset.cardKind === "marketplace" &&
+          el.dataset.extensionId === "nord-palette",
+      ),
+    );
+    const themeIcon = must(
+      descendants(themeCard).find((el) => el.className.includes("settings-extensions-icon--card")),
+    );
+    expect(themeIcon.dataset.iconKind).toBe("fallback");
+    expect(themeIcon.dataset.iconCategory).toBe("appearance");
+    expect(themeIcon.dataset.iconName).toBe("palette");
+    expect(descendants(themeIcon).filter((el) => el.tagName === "img")).toHaveLength(0);
+
+    // Marketplace detail modal renders the 44px detail icon.
+    treeCard.dispatch("click");
+    const detailDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const detailIcon = must(
+      descendants(detailDialog).find((el) =>
+        el.className.includes("settings-extensions-icon--detail"),
+      ),
+    );
+    expect(detailIcon.dataset.iconKind).toBe("image");
+    expect(must(descendants(detailIcon).find((el) => el.tagName === "img")).src).toBe(
+      "https://cdn.example.com/icons/tree.png",
+    );
+    detailDialog.close();
+    mounted.dispose();
+
+    // English import button & dialog title use "Import plugin".
+    const enMounted = mountPage("en", () => ({
+      listDesktopExtensions: vi.fn(async () => sampleInstalledList({ extensions: [] })),
+      installDesktopExtension: vi.fn(),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(enMounted.content)).toContain("Import plugin"));
+    must(
+      descendants(enMounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "open-import",
+      ),
+    ).dispatch("click");
+    const enImportDialog = must(
+      descendants(enMounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-import-dialog"),
+      ),
+    );
+    expect(textOf(enImportDialog)).toContain("Import plugin");
+    enImportDialog.close();
+    enMounted.dispose();
+  });
 });

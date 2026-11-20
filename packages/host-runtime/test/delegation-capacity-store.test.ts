@@ -10,6 +10,7 @@ import {
   defaultDelegationQueueDirectory,
   type PersistedQueuedDelegation,
 } from "../src/delegation-capacity-store.js";
+import { withRemoteAppServerSocketInitializationLock } from "../src/remote-socket-lock.js";
 
 const bootSeconds = () => Math.round(Date.now() / 1_000 - os.uptime());
 
@@ -175,6 +176,40 @@ describe("FileDelegationQueueStore", () => {
       new FileDelegationQueueStore(directory).adopt(),
     ]);
     expect([...left, ...right]).toEqual([entry("race")]);
+  });
+
+  it("waits for another Runtime's adoption to finish before claiming a queue", async () => {
+    await mkdir(directory, { recursive: true });
+    await writeForeign(
+      directory,
+      "held.json",
+      { pid: exitedPid(), boot: bootSeconds(), instance: "held" },
+      [entry("held")],
+    );
+    let release!: () => void;
+    let acquired!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => (acquired = resolve));
+    const otherAdoption = withRemoteAppServerSocketInitializationLock(
+      `${directory}.adoption`,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+          acquired();
+        }),
+    );
+    await lockAcquired;
+
+    let adopted: PersistedQueuedDelegation[] | undefined;
+    const adoption = new FileDelegationQueueStore(directory).adopt().then((queued) => {
+      adopted = queued;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(adopted).toBeUndefined();
+    expect(await readdir(directory)).toContain("held.json");
+
+    release();
+    await Promise.all([otherAdoption, adoption]);
+    expect(adopted).toEqual([entry("held")]);
   });
 
   it("sets aside an unreadable queue and reports it", async () => {

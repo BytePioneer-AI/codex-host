@@ -4263,12 +4263,27 @@ export class AppServerHost {
       throw new ExternalCommandError(-32072, "External Thread already has an active operation");
     }
     const turnId = requestedTurnId ?? hostTurnIdSchema.parse(randomUUID());
+    const manualCompaction = descriptor.invocation === "/compact";
+    const argumentText = typeof arguments_?.text === "string" ? arguments_.text.trim() : "";
     const projection: ProjectedTurn = {
       projector: new CodexTurnProjector({
         threadId: thread.id,
         turnId,
         cwd: thread.cwd,
         startedAtMs: Date.now(),
+        // An agy prompt-backed command can settle as a persisted conversation Turn.
+        ...(thread.harnessId === "antigravity" && !manualCompaction
+          ? {
+              snapshotInput: [
+                {
+                  type: "text",
+                  text: argumentText
+                    ? `${descriptor.invocation} ${argumentText}`
+                    : descriptor.invocation,
+                },
+              ],
+            }
+          : {}),
       }),
     };
     const gate = turnProjectionGate();
@@ -4278,7 +4293,7 @@ export class AppServerHost {
     thread.projectedTurns.set(turnId, projection);
     thread.responseGates.set(turnId, gate);
     thread.ephemeralTurnIds.add(turnId);
-    if (descriptor.invocation === "/compact") this.#manualCompactionTurns.set(thread, turnId);
+    if (manualCompaction) this.#manualCompactionTurns.set(thread, turnId);
     else this.#manualCompactionTurns.delete(thread);
 
     const restoreExecutionHost = this.#setExecutionHost(thread, sourceHostId);

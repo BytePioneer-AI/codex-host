@@ -707,4 +707,140 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     expect(rangeInput.value).toBe("95");
     expect(selectInput.value).toBe("nord");
   });
+
+  it("ignores out-of-order syncInstalledExtensions responses with a stale configRevision", () => {
+    const harness = createHarness("zh-CN");
+    const extEnabled: DesktopExtensionsListResult["extensions"] = [
+      {
+        id: "stale-sync-ext",
+        enabled: true,
+        status: { state: "waiting" },
+        manifest: {
+          manifestVersion: 1,
+          id: "stale-sync-ext",
+          name: { en: "Stale Sync", "zh-CN": "同步防回退" },
+          version: "1.0.0",
+          desktopApi: 1,
+          desktop: { script: "desktop.js" },
+          slots: [],
+          settingsSchema: [must(SAMPLE_SCHEMA[0])],
+        },
+      },
+    ];
+    const extDisabled: DesktopExtensionsListResult["extensions"] = [
+      {
+        ...must(extEnabled[0]),
+        enabled: false,
+        status: { state: "disabled" },
+      },
+    ];
+
+    harness.pluginPages.syncInstalledExtensions?.(extEnabled, 2);
+    const pageId = must(harness.pluginPages.getPageIdForExtension("stale-sync-ext"));
+    harness.shell.openSettings(undefined, pageId);
+    expect(harness.shell.activePageId).toBe(pageId);
+
+    // Newer revision 3 disables the extension and removes its declarative page.
+    harness.pluginPages.syncInstalledExtensions?.(extDisabled, 3);
+    expect(harness.pluginPages.hasPageForExtension("stale-sync-ext")).toBe(false);
+    expect(harness.shell.activePageId).toBe("desktop-extensions");
+
+    // Late out-of-order response from revision 2 must not re-inject the disabled declarative page.
+    harness.pluginPages.syncInstalledExtensions?.(extEnabled, 2);
+    expect(harness.pluginPages.hasPageForExtension("stale-sync-ext")).toBe(false);
+
+    // A newer revision 4 re-enabling the extension is applied normally.
+    harness.pluginPages.syncInstalledExtensions?.(extEnabled, 4);
+    expect(harness.pluginPages.hasPageForExtension("stale-sync-ext")).toBe(true);
+  });
+
+  it("waits for pending extension-scoped writes before re-reading settings across unmount/remount", async () => {
+    const harness = createHarness("zh-CN");
+    await harness.host.reconcile([
+      {
+        id: "schema-theme",
+        hash: "h-remount-1",
+        slots: [],
+        name: { en: "Schema Theme", "zh-CN": "声明式主题" },
+        settingsSchema: SAMPLE_SCHEMA,
+        defineScript: (define) => define({ activate() {} }),
+      },
+    ]);
+
+    const schemaPageId = must(harness.pluginPages.getPageIdForExtension("schema-theme"));
+    harness.shell.openSettings(undefined, schemaPageId);
+
+    await vi.waitFor(() => {
+      const input = harness
+        .contentRoot()
+        .querySelector<HTMLInputElement>('input[data-setting-key="opacity"]');
+      expect(input?.disabled).toBe(false);
+      expect(input?.value).toBe("65");
+    });
+
+    let diskState: Record<string, unknown> = {
+      enabledBlur: false,
+      wallpaperUrl: "assets/custom.png",
+      refreshInterval: 60,
+      opacity: 65,
+      preset: "solar",
+    };
+    let resolveFirstWrite!: () => void;
+    harness.getSettings.mockImplementation(async () => ({ ...diskState }));
+    harness.setSettings
+      .mockImplementationOnce(
+        (_id: string, values: Record<string, unknown>) =>
+          new Promise<Record<string, unknown>>((resolve) => {
+            const snapshot = { ...values };
+            resolveFirstWrite = () => {
+              diskState = snapshot;
+              resolve(snapshot);
+            };
+          }),
+      )
+      .mockImplementationOnce(async (_id: string, values: Record<string, unknown>) => {
+        diskState = { ...values };
+        return { ...diskState };
+      });
+
+    const rangeInput = must(
+      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
+    );
+    const selectInput = must(
+      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
+    );
+
+    // Trigger two rapid edits: write 1 is in flight, write 2 is queued in the extension-scoped queue.
+    rangeInput.value = "90";
+    rangeInput.dispatchEvent(new Event("change"));
+    selectInput.value = "nord";
+    selectInput.dispatchEvent(new Event("change"));
+    expect(harness.setSettings).toHaveBeenCalledTimes(1);
+
+    // Close and immediately reopen the schema settings page while write 1 is still pending.
+    harness.getSettings.mockClear();
+    harness.shell.close();
+    harness.shell.openSettings(undefined, schemaPageId);
+
+    // Mount #2 must stay locked and wait for the extension-scoped write queue before calling storage.get().
+    const remountedRange = must(
+      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
+    );
+    const remountedSelect = must(
+      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
+    );
+    expect(remountedRange.disabled).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.getSettings).not.toHaveBeenCalled();
+
+    // Let write 1 finish -> write 2 flushes next -> mount #2 reads the latest persisted state and unlocks.
+    resolveFirstWrite();
+    await vi.waitFor(() => expect(remountedRange.disabled).toBe(false));
+    expect(harness.setSettings).toHaveBeenCalledTimes(2);
+    expect(harness.getSettings).toHaveBeenCalledTimes(1);
+    expect(remountedRange.value).toBe("90");
+    expect(remountedSelect.value).toBe("nord");
+    expect(diskState).toMatchObject({ opacity: 90, preset: "nord" });
+  });
 });

@@ -50,9 +50,83 @@ export interface RendererSettingsPluginPagesSource {
   getPages(): readonly RendererSettingsDynamicPageEntry[];
   getPageIdForExtension(extensionId: string): string | undefined;
   hasPageForExtension(extensionId: string): boolean;
-  syncInstalledExtensions?(extensions: DesktopExtensionsListResult["extensions"]): void;
+  syncInstalledExtensions?(
+    extensions: DesktopExtensionsListResult["extensions"],
+    configRevision?: number,
+  ): void;
   subscribe(listener: () => void): () => void;
   dispose?(): void;
+}
+
+export interface ExtensionSettingsWriteQueue {
+  readonly busy: boolean;
+  enqueue(
+    storage: DesktopExtensionStorageApi,
+    values: Record<string, unknown>,
+    callbacks?: {
+      onSaved?(saved: Record<string, unknown>, isLatest: boolean): void;
+      onError?(error: unknown, isLatest: boolean): void;
+    },
+  ): number;
+  waitForIdle(): Promise<void>;
+}
+
+function createExtensionSettingsWriteQueue(): ExtensionSettingsWriteQueue {
+  let version = 0;
+  let inFlight = false;
+  let pending: {
+    readonly storage: DesktopExtensionStorageApi;
+    readonly values: Record<string, unknown>;
+    readonly callbacks?: {
+      onSaved?(saved: Record<string, unknown>, isLatest: boolean): void;
+      onError?(error: unknown, isLatest: boolean): void;
+    };
+  } | null = null;
+  let drainPromise: Promise<void> | null = null;
+
+  const drain = async (): Promise<void> => {
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      while (pending !== null) {
+        const job = pending;
+        const sentVersion = version;
+        pending = null;
+        try {
+          const saved = await job.storage.set(job.values);
+          job.callbacks?.onSaved?.(saved, sentVersion === version && pending === null);
+        } catch (error: unknown) {
+          job.callbacks?.onError?.(error, sentVersion === version && pending === null);
+        }
+      }
+    } finally {
+      inFlight = false;
+      drainPromise = null;
+    }
+  };
+
+  return {
+    get busy() {
+      return inFlight || pending !== null;
+    },
+    enqueue(storage, values, callbacks) {
+      version += 1;
+      pending = {
+        storage,
+        values: cloneStorageValues(values),
+        ...(callbacks ? { callbacks } : {}),
+      };
+      if (!drainPromise) {
+        drainPromise = drain();
+      }
+      return version;
+    },
+    async waitForIdle() {
+      while (drainPromise) {
+        await drainPromise;
+      }
+    },
+  };
 }
 
 const MAX_PLUGIN_PAGE_ID_LENGTH = 48;
@@ -135,8 +209,10 @@ export function createSchemaSettingsPageDefinition(options: {
   readonly schema: readonly DesktopExtensionSettingField[];
   readonly messages: RendererSettingsMessages;
   readonly storage: DesktopExtensionStorageApi;
+  readonly writeQueue?: ExtensionSettingsWriteQueue;
 }): RendererSettingsPageDefinition {
   const { pageId, extensionId, title, schema, messages, storage } = options;
+  const writeQueue = options.writeQueue ?? createExtensionSettingsWriteQueue();
   const label = resolvePageLabel(title, extensionId, messages.locale);
   const copy = messages.desktopExtensions;
 
@@ -165,9 +241,6 @@ export function createSchemaSettingsPageDefinition(options: {
         currentValues[field.key] = fieldDefaultValue(field);
       }
       let hydrated = false;
-      let saveVersion = 0;
-      let saveInFlight = false;
-      let pendingSaveValues: Record<string, unknown> | null = null;
       let latestExternalBeforeHydrate: Record<string, unknown> | null = null;
       let disposed = false;
 
@@ -201,52 +274,27 @@ export function createSchemaSettingsPageDefinition(options: {
         }
       };
 
-      const flushPendingSaves = async (): Promise<void> => {
-        if (saveInFlight) return;
-        saveInFlight = true;
-        try {
-          while (pendingSaveValues !== null) {
-            const payload = pendingSaveValues;
-            const sentVersion = saveVersion;
-            pendingSaveValues = null;
-            try {
-              const saved = await storage.set(payload);
-              if (
-                !disposed &&
-                !context.signal.aborted &&
-                sentVersion === saveVersion &&
-                pendingSaveValues === null
-              ) {
-                applyValuesToControls(saved);
-                setStatus(copy.extensionSettingsSaved, "success");
-              }
-            } catch (error: unknown) {
-              if (
-                !disposed &&
-                !context.signal.aborted &&
-                sentVersion === saveVersion &&
-                pendingSaveValues === null
-              ) {
-                setStatus(
-                  formatMessage(copy.extensionSettingsSaveFailed, { message: errorMessage(error) }),
-                  "danger",
-                );
-              }
-            }
-          }
-        } finally {
-          saveInFlight = false;
-        }
-      };
-
       const persistValue = (key: string, value: unknown): void => {
         if (!hydrated || disposed || context.signal.aborted) return;
         const nextValues = { ...currentValues, [key]: value };
         currentValues = nextValues;
-        saveVersion += 1;
-        pendingSaveValues = cloneStorageValues(nextValues);
         setStatus(copy.extensionSettingsSaving, "muted");
-        void flushPendingSaves();
+        writeQueue.enqueue(storage, nextValues, {
+          onSaved(saved, isLatest) {
+            if (!disposed && !context.signal.aborted && isLatest) {
+              applyValuesToControls(saved);
+              setStatus(copy.extensionSettingsSaved, "success");
+            }
+          },
+          onError(error, isLatest) {
+            if (!disposed && !context.signal.aborted && isLatest) {
+              setStatus(
+                formatMessage(copy.extensionSettingsSaveFailed, { message: errorMessage(error) }),
+                "danger",
+              );
+            }
+          },
+        });
       };
 
       for (const field of schema) {
@@ -399,34 +447,43 @@ export function createSchemaSettingsPageDefinition(options: {
 
       const unsubscribeStorage = storage.onChange((updated) => {
         if (disposed || context.signal.aborted) return;
+        if (writeQueue.busy) return;
         if (!hydrated) {
           latestExternalBeforeHydrate = cloneStorageValues(updated);
           return;
         }
-        if (saveInFlight || pendingSaveValues !== null) return;
         applyValuesToControls(updated);
       });
 
-      void context.runLatest(async () => storage.get(), {
-        success(loaded) {
-          if (disposed || context.signal.aborted) return;
-          hydrated = true;
-          root.dataset.settingsState = "ready";
-          applyValuesToControls(
-            latestExternalBeforeHydrate ? { ...loaded, ...latestExternalBeforeHydrate } : loaded,
-          );
-          latestExternalBeforeHydrate = null;
-          setControlsDisabled(false);
+      void context.runLatest(
+        async () => {
+          if (writeQueue.busy) {
+            await writeQueue.waitForIdle();
+            if (disposed || context.signal.aborted) return {};
+          }
+          return storage.get();
         },
-        failure(error) {
-          if (disposed || context.signal.aborted) return;
-          root.dataset.settingsState = "error";
-          setStatus(
-            formatMessage(copy.extensionSettingsLoadFailed, { message: errorMessage(error) }),
-            "danger",
-          );
+        {
+          success(loaded) {
+            if (disposed || context.signal.aborted) return;
+            hydrated = true;
+            root.dataset.settingsState = "ready";
+            applyValuesToControls(
+              latestExternalBeforeHydrate ? { ...loaded, ...latestExternalBeforeHydrate } : loaded,
+            );
+            latestExternalBeforeHydrate = null;
+            setControlsDisabled(false);
+          },
+          failure(error) {
+            if (disposed || context.signal.aborted) return;
+            root.dataset.settingsState = "error";
+            setStatus(
+              formatMessage(copy.extensionSettingsLoadFailed, { message: errorMessage(error) }),
+              "danger",
+            );
+          },
         },
-      });
+      );
 
       return () => {
         disposed = true;
@@ -484,11 +541,13 @@ export function createDesktopExtensionPluginPagesSource(options: {
   const { messages, getHost = () => null, getClient = () => null } = options;
   const listeners = new Set<() => void>();
   const localStorageListeners = new Map<string, Set<(values: Record<string, unknown>) => void>>();
+  const writeQueues = new Map<string, ExtensionSettingsWriteQueue>();
   let installedSchemaExtensions: Array<{
     readonly id: string;
     readonly name: string | { readonly en: string; readonly "zh-CN": string };
     readonly schema: readonly DesktopExtensionSettingField[];
   }> = [];
+  let lastAppliedConfigRevision: number | null = null;
   let cachedPages: readonly RendererSettingsDynamicPageEntry[] = [];
   let cachedEntriesByExtension = new Map<string, RendererSettingsDynamicPageEntry>();
   let previousHostExtensionIds = new Set<string>();
@@ -496,6 +555,15 @@ export function createDesktopExtensionPluginPagesSource(options: {
   let hostUnsubscribe: (() => void) | null = null;
   let boundHost: DesktopExtensionHost | null = null;
   let disposed = false;
+
+  const writeQueueForExtension = (extensionId: string): ExtensionSettingsWriteQueue => {
+    let queue = writeQueues.get(extensionId);
+    if (!queue) {
+      queue = createExtensionSettingsWriteQueue();
+      writeQueues.set(extensionId, queue);
+    }
+    return queue;
+  };
 
   const notify = (): void => {
     for (const listener of [...listeners]) {
@@ -678,6 +746,7 @@ export function createDesktopExtensionPluginPagesSource(options: {
             schema,
             messages,
             storage: servicesForExtension(entry.extensionId).storage,
+            writeQueue: writeQueueForExtension(entry.extensionId),
           }),
         );
         nextPages.push(pageEntry);
@@ -700,6 +769,7 @@ export function createDesktopExtensionPluginPagesSource(options: {
           schema: ext.schema,
           messages,
           storage: servicesForExtension(ext.id).storage,
+          writeQueue: writeQueueForExtension(ext.id),
         }),
       );
       nextPages.push(pageEntry);
@@ -726,8 +796,19 @@ export function createDesktopExtensionPluginPagesSource(options: {
       ensureHostSubscription();
       return extensionToPageId.has(extensionId);
     },
-    syncInstalledExtensions(extensions) {
+    syncInstalledExtensions(extensions, configRevision) {
       if (disposed) return;
+      if (
+        typeof configRevision === "number" &&
+        Number.isFinite(configRevision) &&
+        lastAppliedConfigRevision !== null &&
+        configRevision < lastAppliedConfigRevision
+      ) {
+        return;
+      }
+      if (typeof configRevision === "number" && Number.isFinite(configRevision)) {
+        lastAppliedConfigRevision = configRevision;
+      }
       const nextSchemaExtensions: typeof installedSchemaExtensions = [];
       for (const item of extensions) {
         if (

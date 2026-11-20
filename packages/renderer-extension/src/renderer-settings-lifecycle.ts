@@ -132,7 +132,10 @@ export function installRendererSettingsLifecycle(
       .listDesktopExtensions()
       .then((result) => {
         if (disposed || !settingsOpen || generation !== pluginPagesSyncGeneration) return;
-        targetPluginPages.syncInstalledExtensions?.(result.extensions);
+        targetPluginPages.syncInstalledExtensions?.(
+          result.extensions,
+          result.configuration.revision,
+        );
       })
       .catch((error: unknown) => {
         if (error instanceof RendererMethodUnavailableError) {

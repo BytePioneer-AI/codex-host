@@ -1092,7 +1092,10 @@ export function createDesktopExtensionsSettingsPage(
             loading = false;
             unavailable = false;
             listing = result;
-            pluginPages?.syncInstalledExtensions?.(result.extensions);
+            pluginPages?.syncInstalledExtensions?.(
+              result.extensions,
+              result.configuration.revision,
+            );
             if (!keepFeedback) setFeedback(null);
             render();
             schedulePoll();
@@ -1203,7 +1206,10 @@ export function createDesktopExtensionsSettingsPage(
           const result = await install({ source: { type: "catalog", id: entry.id } });
           if (disposed || context.signal.aborted) return;
           listing = result.list;
-          pluginPages?.syncInstalledExtensions?.(result.list.extensions);
+          pluginPages?.syncInstalledExtensions?.(
+            result.list.extensions,
+            result.list.configuration.revision,
+          );
           const displayName = resolveDisplayNameFromList(
             result.list,
             result.extensionId,
@@ -1257,7 +1263,10 @@ export function createDesktopExtensionsSettingsPage(
           const result = await install({ source });
           if (disposed || context.signal.aborted) return;
           listing = result.list;
-          pluginPages?.syncInstalledExtensions?.(result.list.extensions);
+          pluginPages?.syncInstalledExtensions?.(
+            result.list.extensions,
+            result.list.configuration.revision,
+          );
           activeTab = "installed";
           selectedCategory = null;
           searchQuery = "";
@@ -1300,7 +1309,10 @@ export function createDesktopExtensionsSettingsPage(
           const result = await uninstall({ id: item.id });
           if (disposed || context.signal.aborted) return;
           listing = result.list;
-          pluginPages?.syncInstalledExtensions?.(result.list.extensions);
+          pluginPages?.syncInstalledExtensions?.(
+            result.list.extensions,
+            result.list.configuration.revision,
+          );
           detailModal.close();
           setFeedback({
             tone: "success",
@@ -1362,7 +1374,10 @@ export function createDesktopExtensionsSettingsPage(
                   entry.id === item.id ? { ...entry, enabled: enable } : entry,
                 ),
               };
-              pluginPages?.syncInstalledExtensions?.(listing.extensions);
+              pluginPages?.syncInstalledExtensions?.(
+                listing.extensions,
+                listing.configuration.revision,
+              );
             }
             setFeedback(
               {
@@ -1559,7 +1574,10 @@ export function createDesktopExtensionsSettingsPage(
                       enabled: false,
                     })),
                   };
-                  pluginPages?.syncInstalledExtensions?.(listing.extensions);
+                  pluginPages?.syncInstalledExtensions?.(
+                    listing.extensions,
+                    listing.configuration.revision,
+                  );
                 }
                 setFeedback({
                   tone: "info",

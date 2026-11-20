@@ -43,6 +43,33 @@ export interface SidebarBrowserDirectCandidate {
   readonly usernameFragment?: string | null;
 }
 
+/** Known client close reasons allowed in service logs. The wire remains tolerant of other values. */
+export const SIDEBAR_BROWSER_DIRECT_CANCEL_REASONS: readonly string[] = [
+  "background",
+  "network-changed",
+  "signaling-closed",
+];
+export const SIDEBAR_BROWSER_DIRECT_CLIENT_FAILURE_REASONS: readonly string[] = [
+  "candidate-error",
+  "connection-lost",
+  "control-close",
+  "control-error",
+  "control-send",
+  "frame-decode",
+  "frame-fragment",
+  "frame-sequence",
+  "frame-window",
+  "frames-ack",
+  "frames-close",
+  "frames-error",
+  "frames-fallback",
+  "frames-open",
+  "heartbeat-timeout",
+  "offer-error",
+  "ready-timeout",
+  "signaling-error",
+];
+
 type DirectSignal =
   | {
       readonly type: "direct-candidate";

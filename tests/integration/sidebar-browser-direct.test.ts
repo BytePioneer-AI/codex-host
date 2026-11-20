@@ -199,6 +199,52 @@ it("trickles before an unresponsive STUN deadline, isolates the retired peer, an
   expect(JSON.stringify(logs.mock.calls)).not.toContain("127.0.0.1");
 }, 15_000);
 
+it("classifies client-ended attempts and logs only aggregated ICE candidate metadata", async () => {
+  const logs = vi.spyOn(console, "info").mockImplementation(() => undefined);
+  const { socket } = direct();
+  const { offer } = client(socket);
+  const addresses = ["192.0.2.10", "2001:db8::10", "198.51.100.10"];
+  const reasonCases = [
+    ["ready-timeout", "failed", "ready-timeout"],
+    ["connection-lost", "failed", "connection-lost"],
+    ["background", "closed", "background"],
+    ["network-changed", "closed", "network-changed"],
+    ["signaling-closed", "closed", "signaling-closed"],
+    ["private-details", "failed", "unclassified"],
+  ] as const;
+  for (const [index, [reason, outcome, loggedReason]] of reasonCases.entries()) {
+    const attempt = index + 1;
+    await offer(attempt);
+    if (index === 0) {
+      const lines = [
+        `candidate:1 1 UDP 2130706431 ${addresses[0]} 50001 typ host`,
+        `candidate:2 1 UDP 1694498815 ${addresses[1]} 50002 typ srflx raddr ${addresses[0]} rport 50001`,
+        `candidate:3 1 UDP 1862270975 ${addresses[2]} 50003 typ prflx`,
+      ];
+      for (const candidate of [...lines, lines[1]])
+        socket.receive({
+          type: "direct-candidate",
+          attempt,
+          candidate: { candidate, sdpMid: "0" },
+        });
+    }
+    socket.receive({ type: "direct-close", attempt, reason });
+    const log = JSON.parse(
+      logs.mock.calls.filter(([tag]) => tag === "[direct] attempt").at(-1)![1],
+    );
+    expect(log).toMatchObject({ attempt, outcome, reason: loggedReason });
+    expect(log.candidates.remoteSrflxReceived).toBe(index === 0);
+    if (index === 0) {
+      expect(log.candidates.remote.ipv4.host).toBeGreaterThan(0);
+      expect(log.candidates.remote.ipv4.prflx).toBe(1);
+      expect(log.candidates.remote.ipv6).toEqual({ host: 0, srflx: 1, prflx: 0 });
+    }
+  }
+  const output = JSON.stringify(logs.mock.calls);
+  for (const address of addresses) expect(output).not.toContain(address);
+  expect(output).not.toContain("private-details");
+});
+
 it("does not accept DTLS when the caller's certificate disagrees with its offer fingerprint", async () => {
   const { socket, trace } = direct();
   const { pc, control, offer } = client(socket);

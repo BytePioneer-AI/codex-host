@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { RTCPeerConnection, SessionDescription, type RTCDataChannel } from "werift";
 import type { WebSocket } from "ws";
 import {
+  SIDEBAR_BROWSER_DIRECT_CANCEL_REASONS,
+  SIDEBAR_BROWSER_DIRECT_CLIENT_FAILURE_REASONS,
   SIDEBAR_BROWSER_DIRECT_CONTROL,
   SIDEBAR_BROWSER_DIRECT_HEARTBEAT_MS,
   SIDEBAR_BROWSER_DIRECT_IDLE_MS,
@@ -16,6 +18,7 @@ import {
   type SidebarBrowserDirectServerMessage,
 } from "@codexhost/shared-contracts/sidebar-browser";
 import type { CredentialConnections } from "./auth.ts";
+import { SidebarBrowserIceSummary } from "./sidebar-browser-ice-summary.ts";
 import type { DataDir } from "./store.ts";
 
 export function sidebarDirectStunUrls(override: string | undefined): readonly string[] {
@@ -38,6 +41,7 @@ type Attempt = {
   readonly cleanup: Unsubscribe[];
   readonly frames: Map<string, RTCDataChannel>;
   readonly falls: Set<(reason: string) => void>;
+  readonly iceSummary: SidebarBrowserIceSummary;
   candidates: Promise<unknown>;
   ready: boolean;
   answered: boolean;
@@ -207,7 +211,9 @@ export class SidebarDirectSession {
         this.negotiate(message);
       } catch {
         this.closePeer();
-        this.report(message, "failed", "offer-error");
+        this.report(message, "failed", "offer-error", {
+          candidates: new SidebarBrowserIceSummary().summary(),
+        });
         this.send({ type: "direct-close", attempt: message.attempt, reason: "offer-error" });
       }
       return;
@@ -215,7 +221,13 @@ export class SidebarDirectSession {
     const current = this.current;
     if (current?.offer.attempt !== message.attempt) return;
     if (message.type === "direct-close") {
-      this.end("client-closed");
+      const cancelled = SIDEBAR_BROWSER_DIRECT_CANCEL_REASONS.includes(message.reason);
+      const known =
+        cancelled || SIDEBAR_BROWSER_DIRECT_CLIENT_FAILURE_REASONS.includes(message.reason);
+      this.end(
+        known ? message.reason : "unclassified",
+        current.ready || cancelled ? "closed" : "failed",
+      );
       this.closePeer();
     } else this.addCandidate(current, message.candidate);
   }
@@ -255,6 +267,8 @@ export class SidebarDirectSession {
     }
     const peer = this.peer!;
     const { pc } = peer;
+    const iceSummary = new SidebarBrowserIceSummary();
+    for (const candidate of media.iceCandidates) iceSummary.received(candidate);
     const current: Attempt = {
       offer,
       peer,
@@ -268,6 +282,7 @@ export class SidebarDirectSession {
       cleanup: [],
       frames: new Map(),
       falls: new Set(),
+      iceSummary,
       candidates: Promise.resolve(),
     };
     this.current = current;
@@ -333,6 +348,11 @@ export class SidebarDirectSession {
 
   private addCandidate(current: Attempt, candidate: Candidate["candidate"]): void {
     if (!candidate) return; // End of candidates is informational.
+    if (
+      candidate.usernameFragment == null ||
+      candidate.usernameFragment === current.peer.remoteUfrag
+    )
+      current.iceSummary.receivedLine(candidate.candidate);
     current.candidates = current.candidates
       .then(async () => {
         if (this.current === current) await current.peer.pc.addIceCandidate(candidate);
@@ -427,13 +447,10 @@ export class SidebarDirectSession {
       clearInterval(heartbeat);
       clearTimeout(idle);
     });
-    this.report(
-      current.offer,
-      "ready",
-      "connected",
-      Math.round(performance.now() - current.started),
-      `${pair.local.type}/${pair.remote.type}`,
-    );
+    this.report(current.offer, "ready", "connected", {
+      readyMs: Math.round(performance.now() - current.started),
+      pair: `${pair.local.type}/${pair.remote.type}`,
+    });
     this.send({ type: "direct-ready", attempt: current.offer.attempt });
   }
 
@@ -452,7 +469,11 @@ export class SidebarDirectSession {
     for (const cleanup of current.cleanup) cleanup();
     for (const fall of current.falls) fall(reason);
     for (const channel of current.frames.values()) channel.close();
-    if (!current.ready) this.report(current.offer, outcome, reason);
+    // Before the answer is applied, a reused peer still holds the preceding ICE generation.
+    const ice = current.answered
+      ? current.peer.pc.sctpTransport?.dtlsTransport.iceTransport
+      : undefined;
+    this.report(current.offer, outcome, reason, { candidates: current.iceSummary.summary(ice) });
   }
 
   private closePeer(): void {
@@ -466,12 +487,19 @@ export class SidebarDirectSession {
     offer: Offer,
     outcome: "ready" | "closed" | "failed",
     reason: string,
-    readyMs?: number,
-    pair?: string,
+    details:
+      | { readyMs: number; pair: string }
+      | { candidates: ReturnType<SidebarBrowserIceSummary["summary"]> },
   ): void {
     console.info(
       "[direct] attempt",
-      JSON.stringify({ outcome, reason, readyMs, pair, restart: offer.restart }),
+      JSON.stringify({
+        attempt: offer.attempt,
+        outcome,
+        reason,
+        restart: offer.restart,
+        ...details,
+      }),
     );
   }
 

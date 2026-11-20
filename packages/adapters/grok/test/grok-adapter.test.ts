@@ -983,6 +983,7 @@ describe("Grok Adapter ACP projection", () => {
     const adapter = new GrokAdapter(
       {},
       {
+        randomUUID: () => "grok-id",
         createTransport: () => transport,
         fetchCredits: async () => null,
       },

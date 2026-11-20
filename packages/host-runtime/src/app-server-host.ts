@@ -6128,28 +6128,22 @@ export class AppServerHost {
         thread.id,
         new Error("External Harness output ended before replacement"),
       );
-      if (!this.#closeRequested && (thread.running || thread.activeTurnId)) {
-        // Readonly snapshot Subagent Sessions (for example Claude Code native
-        // subagents restored through ReadonlySnapshotSession) never end their
-        // output stream, so their Host-side "active" status is only retired
-        // when the parent's own output stream ends here. Retire them before
-        // the Turn settles so the settled status can go idle.
-        await this.#retireRunningSubagents(thread);
-        // A Session that died (for example a Harness subagent that was killed
-        // natively) can end its output stream without a terminal Turn event.
-        // Without settling here the Thread stays busy forever and every later
-        // submission fails with "External Thread already has an active Turn".
-        await settleExternalOutputFailure(
-          thread,
-          new Error("External Harness output ended before the active Turn settled"),
-          (output) => this.#projectHarnessOutput(thread, output),
-          (failure) => this.#diagnose(failure),
-        );
-        if (!thread.activeTurnId && thread.projectedTurns.size === 0) {
-          // The failure projection can re-register running Subagents from the
-          // Item ledger while settling; retire them again so no stale entry
-          // outlives the dead parent stream.
+      const needsSettlement = thread.running || Boolean(thread.activeTurnId);
+      if (!this.#closeRequested && (needsSettlement || this.#hasRunningSubagents(thread.id))) {
+        if (needsSettlement) {
+          // Retire snapshot Subagents before settling so the parent can go idle.
           await this.#retireRunningSubagents(thread);
+          await settleExternalOutputFailure(
+            thread,
+            new Error("External Harness output ended before the active Turn settled"),
+            (output) => this.#projectHarnessOutput(thread, output),
+            (failure) => this.#diagnose(failure),
+          );
+        }
+        // A completed parent or the catch block may have already settled the Turn.
+        // Settlement can also re-register running Subagents from the Item ledger.
+        await this.#retireRunningSubagents(thread);
+        if (!thread.activeTurnId) {
           if (thread.record.subagent) {
             await this.#setSubagentThreadStatus(thread.id, "idle");
             // The parent Session may be gone too and will never emit a status
@@ -6173,6 +6167,7 @@ export class AppServerHost {
         // "outcome-unknown" when no pause was published, so the Desktop never
         // receives two inconsistent pause notifications.
         if (
+          needsSettlement &&
           !this.#externalQueue.isPaused(thread.id) &&
           this.#externalQueue.pause(thread.id, "outcome-unknown")
         ) {

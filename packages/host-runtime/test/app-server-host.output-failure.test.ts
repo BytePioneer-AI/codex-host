@@ -310,7 +310,8 @@ describe("AppServerHost output failure", () => {
     }
   });
 
-  it("retires a running Subagent when the parent's output stream ends and pauses the queue once", async () => {
+  const endings = ["active EOF", "active error", "settled EOF"] as const;
+  it.each(endings)("retires running Subagents after parent output ends (%s)", async (ending) => {
     const permissionModes = harnessPermissionModeCatalogSchema.parse({
       modes: [{ id: "auto", label: "Auto" }],
       defaultModeId: "auto",
@@ -336,9 +337,11 @@ describe("AppServerHost output failure", () => {
               const inner = real[Symbol.asyncIterator]();
               return {
                 next: async () => {
-                  if (kill.killed) return { done: true as const, value: undefined };
                   const output = await inner.next();
-                  if (kill.killed) return { done: true as const, value: undefined };
+                  if (kill.killed) {
+                    if (ending === "active error") throw new Error("Parent output failed");
+                    return { done: true as const, value: undefined };
+                  }
                   return output;
                 },
               };
@@ -374,27 +377,36 @@ describe("AppServerHost output failure", () => {
           method(message, "thread/started") &&
           (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
       );
-      const childId = (messageParams(childThread).thread as JsonObject).id as string;
+      const child = messageParams(childThread).thread as JsonObject;
+      expect(child.status).toMatchObject({ type: "active" });
+      const childId = child.id as string;
+
+      if (ending === "settled EOF") {
+        session.emitEvent({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      }
 
       // Queue one submission so the settle path pauses and publishes the queue.
-      writeRequest(fixture.desktopInput, {
-        id: 3,
-        method: "thread/queue/add",
-        params: { threadId, input: [{ type: "text", text: "queued" }] },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
-        result: { queuedSubmission: { id: expect.any(String) } },
-      });
-      await fixture.collector.waitFor(
-        (message) =>
-          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
-      );
+      if (ending !== "settled EOF") {
+        writeRequest(fixture.desktopInput, {
+          id: 3,
+          method: "thread/queue/add",
+          params: { threadId, input: [{ type: "text", text: "queued" }] },
+        });
+        expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+          result: { queuedSubmission: { id: expect.any(String) } },
+        });
+        await fixture.collector.waitFor(
+          (message) =>
+            method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
+        );
+      }
       const queueChangesBeforeKill = fixture.collector.messages.filter(
         (message) =>
           method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
       ).length;
 
-      // Kill the parent's output stream without a terminal Turn event.
+      // Wake the iterator so it ends (or throws) without projecting another Item.
       kill.killed = true;
       session.emitEvent({
         type: "item.started",
@@ -406,9 +418,14 @@ describe("AppServerHost output failure", () => {
         },
       });
 
+      await fixture.collector.waitFor((message) => threadStatus(message, childId, "idle"));
       await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
       // The Subagent must be retired even though its own output stream never ends.
-      await fixture.collector.waitFor((message) => threadStatus(message, childId, "idle"));
+      const childStatuses = fixture.collector.messages.filter(
+        (message) =>
+          method(message, "thread/status/changed") && messageParams(message).threadId === childId,
+      );
+      expect(threadStatus(childStatuses.at(-1) ?? {}, childId, "idle")).toBe(true);
 
       // Exactly one pause publication: the settled failure's "failed" pause from
       // the Turn projection, without a second inconsistent "outcome-unknown" one.
@@ -416,7 +433,9 @@ describe("AppServerHost output failure", () => {
         (message) =>
           method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
       );
-      expect(queueChanges).toHaveLength(queueChangesBeforeKill + 1);
+      expect(queueChanges).toHaveLength(
+        queueChangesBeforeKill + (ending === "settled EOF" ? 0 : 1),
+      );
     } finally {
       await stopFixture(fixture);
     }

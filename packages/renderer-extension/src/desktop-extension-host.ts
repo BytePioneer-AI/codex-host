@@ -32,6 +32,7 @@ export interface DesktopExtensionEntry {
 export interface RegisteredDesktopExtensionSettingsPage {
   readonly extensionId: string;
   readonly kind: "custom" | "schema";
+  readonly revision: number;
   readonly title?: string | { readonly en: string; readonly "zh-CN": string };
   readonly page?: DesktopExtensionSettingsPageContribution;
   readonly schema?: readonly DesktopExtensionSettingField[];
@@ -39,6 +40,7 @@ export interface RegisteredDesktopExtensionSettingsPage {
 
 interface Instance {
   hash: string;
+  revision: number;
   state: DesktopExtensionStatus["state"];
   error?: string;
   name?: string | { readonly en: string; readonly "zh-CN": string };
@@ -111,11 +113,21 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
   let pendingReady: ReturnType<typeof setTimeout> | undefined;
   const instances = new Map<string, Instance>();
   const reports = new Map<string, DesktopExtensionStatus>();
-  const customSettingsPages = new Map<string, DesktopExtensionSettingsPageContribution>();
+  const customSettingsPages = new Map<
+    string,
+    { readonly page: DesktopExtensionSettingsPageContribution; readonly revision: number }
+  >();
   const settingsPageListeners = new Set<() => void>();
   const storageListeners = new Map<string, Set<(values: Record<string, unknown>) => void>>();
+  let settingsPageRevision = 0;
+  let settingsPageBatchDepth = 0;
+  let settingsPagesDirty = false;
 
   const notifySettingsPages = (): void => {
+    if (settingsPageBatchDepth > 0) {
+      settingsPagesDirty = true;
+      return;
+    }
     for (const listener of [...settingsPageListeners]) {
       try {
         listener();
@@ -158,10 +170,11 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
     extensionId: string,
     page: DesktopExtensionSettingsPageContribution,
   ): (() => void) => {
-    customSettingsPages.set(extensionId, page);
+    const record = { page, revision: ++settingsPageRevision };
+    customSettingsPages.set(extensionId, record);
     notifySettingsPages();
     return () => {
-      if (customSettingsPages.get(extensionId) !== page) return;
+      if (customSettingsPages.get(extensionId) !== record) return;
       customSettingsPages.delete(extensionId);
       notifySettingsPages();
     };
@@ -189,6 +202,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       delete instance.resources;
       delete instance.dispose;
       delete instance.removeStyle;
+      if (instance.state !== "failed") instance.state = "disabled";
       const hadCustomPage = customSettingsPages.delete(extensionId);
       if (hadCustomPage || hadSchemaPage) notifySettingsPages();
     }
@@ -198,6 +212,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
   async function start(entry: DesktopExtensionEntry, currentBridge: DesktopExtensionBridge) {
     const instance: Instance = {
       hash: entry.hash,
+      revision: ++settingsPageRevision,
       state: "waiting",
       ...(entry.name !== undefined ? { name: entry.name } : {}),
       ...(entry.settingsSchema !== undefined ? { settingsSchema: entry.settingsSchema } : {}),
@@ -244,7 +259,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       if (entry.style) instance.removeStyle = installStyle(document, entry.style);
       const activate = definition.activate as (
         api: DesktopExtensionRuntimeApiV1,
-      ) => void | DesktopExtensionDispose | Promise<void | DesktopExtensionDispose>;
+      ) => DesktopExtensionDispose | undefined | Promise<DesktopExtensionDispose | undefined>;
       const dispose = await withTimeout(
         () => activate(resources.api),
         ACTIVATE_TIMEOUT_MS,
@@ -267,47 +282,61 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
 
   async function apply(): Promise<void> {
     clearTimeout(pendingReady);
-    const entries = desired;
-    const available = new Map(entries.map((entry) => [entry.id, entry]));
-    const { active, conflicts } = resolveDesktopExtensionSlots(
-      entries.map((entry) => entry.id),
-      entries,
-    );
-    const activeIds = new Set(active);
-    for (const [id, instance] of instances) {
-      if (activeIds.has(id) && available.get(id)?.hash === instance.hash) continue;
-      const error = await reclaim(id, instance);
-      instances.delete(id);
-      if (error) reports.set(id, { state: "disabled", hash: instance.hash, error });
-    }
-    for (const [id, report] of reports) if (report.state === "conflict") reports.delete(id);
-    for (const [id, owner] of conflicts)
-      reports.set(id, { state: "conflict", hash: available.get(id)!.hash, conflictWith: owner });
-    const current = bridge;
-    for (const id of active) {
-      if (instances.has(id)) continue;
-      if (!current?.ready()) {
-        pendingReady = setTimeout(() => {
-          void serialize(apply);
-        }, 150);
-        return;
+    settingsPageBatchDepth += 1;
+    try {
+      const entries = desired;
+      const available = new Map(entries.map((entry) => [entry.id, entry]));
+      const { active, conflicts } = resolveDesktopExtensionSlots(
+        entries.map((entry) => entry.id),
+        entries,
+      );
+      const activeIds = new Set(active);
+      for (const [id, instance] of instances) {
+        if (activeIds.has(id) && available.get(id)?.hash === instance.hash) continue;
+        const error = await reclaim(id, instance);
+        instances.delete(id);
+        if (error) reports.set(id, { state: "disabled", hash: instance.hash, error });
       }
-      await start(available.get(id)!, current);
-      if (entries !== desired || bridge !== current) return;
+      for (const [id, report] of reports) if (report.state === "conflict") reports.delete(id);
+      for (const [id, owner] of conflicts) {
+        const entry = available.get(id);
+        if (entry) reports.set(id, { state: "conflict", hash: entry.hash, conflictWith: owner });
+      }
+      const current = bridge;
+      for (const id of active) {
+        if (instances.has(id)) continue;
+        if (!current?.ready()) {
+          pendingReady = setTimeout(() => {
+            void serialize(apply);
+          }, 150);
+          return;
+        }
+        const entry = available.get(id);
+        if (!entry) continue;
+        await start(entry, current);
+        if (entries !== desired || bridge !== current) return;
+      }
+    } finally {
+      settingsPageBatchDepth -= 1;
+      if (settingsPageBatchDepth === 0 && settingsPagesDirty) {
+        settingsPagesDirty = false;
+        notifySettingsPages();
+      }
     }
   }
 
   const getRegisteredSettingsPages = (): readonly RegisteredDesktopExtensionSettingsPage[] => {
     const pages: RegisteredDesktopExtensionSettingsPage[] = [];
     const seen = new Set<string>();
-    for (const [extensionId, page] of customSettingsPages) {
+    for (const [extensionId, record] of customSettingsPages) {
       const instance = instances.get(extensionId);
-      const title = page.title ?? instance?.name;
+      const title = record.page.title ?? instance?.name;
       pages.push({
         extensionId,
         kind: "custom",
+        revision: record.revision,
         ...(title !== undefined ? { title } : {}),
-        page,
+        page: record.page,
       });
       seen.add(extensionId);
     }
@@ -318,6 +347,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       pages.push({
         extensionId,
         kind: "schema",
+        revision: instance.revision,
         ...(instance.name !== undefined ? { title: instance.name } : {}),
         schema: instance.settingsSchema,
       });

@@ -12,7 +12,10 @@ import {
   type RendererSettingsPageDefinition,
   type RendererSettingsPageRegistry,
 } from "./core.js";
-import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
+import type {
+  RendererSettingsDynamicPageEntry,
+  RendererSettingsPluginPagesSource,
+} from "./desktop-extension-settings-pages.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import {
   DEFAULT_RENDERER_SETTINGS_MESSAGES,
@@ -142,8 +145,10 @@ export function mountRendererSettingsShell(
 
   const navigationState = new RendererSettingsNavigationState(resolvedRegistry);
   const navigationButtons = new Map<string, HTMLButtonElement>();
-  const dynamicPagesById = new Map<string, RendererSettingsPageDefinition>();
+  const dynamicPagesById = new Map<string, RendererSettingsDynamicPageEntry>();
   let activePageId = navigationState.activePageId;
+  let activePageDefinition: RendererSettingsPageDefinition | null = null;
+  let activePageRevision: string | undefined;
   let activeScope: RendererSettingsPageScope | null = null;
   let activeCleanup: (() => void) | null = null;
   let opener: HTMLElement | null = null;
@@ -152,11 +157,13 @@ export function mountRendererSettingsShell(
   let disposed = false;
 
   const resolvePage = (pageId: string): RendererSettingsPageDefinition | undefined =>
-    resolvedRegistry.getPage(pageId) ?? dynamicPagesById.get(pageId);
+    resolvedRegistry.getPage(pageId) ?? dynamicPagesById.get(pageId)?.definition;
 
   const disposeActivePage = (): void => {
     activeScope?.dispose();
     activeScope = null;
+    activePageDefinition = null;
+    activePageRevision = undefined;
     const cleanup = activeCleanup;
     activeCleanup = null;
     try {
@@ -188,6 +195,8 @@ export function mountRendererSettingsShell(
     }
     activePageId = pageId;
     disposeActivePage();
+    activePageDefinition = definition;
+    activePageRevision = dynamicPagesById.get(pageId)?.revision;
     setActiveNavigation(navigationButtons, pageId);
     pageContent.replaceChildren();
     const scope = new RendererSettingsPageScope();
@@ -249,7 +258,7 @@ export function mountRendererSettingsShell(
     const pluginEntries = pluginPages?.getPages() ?? [];
     for (const entry of pluginEntries) {
       if (!resolvedRegistry.getPage(entry.definition.id)) {
-        dynamicPagesById.set(entry.definition.id, entry.definition);
+        dynamicPagesById.set(entry.definition.id, entry);
       }
     }
 
@@ -293,11 +302,22 @@ export function mountRendererSettingsShell(
     pluginPages?.subscribe(() => {
       if (disposed) return;
       renderNavigation();
-      if (!surface.hidden && !resolvePage(activePageId)) {
-        const fallbackPageId = resolvedRegistry.getPage("desktop-extensions")
-          ? "desktop-extensions"
-          : resolvedRegistry.defaultPageId;
-        activatePage(fallbackPageId);
+      if (!surface.hidden) {
+        const resolved = resolvePage(activePageId);
+        if (!resolved) {
+          const fallbackPageId = resolvedRegistry.getPage("desktop-extensions")
+            ? "desktop-extensions"
+            : resolvedRegistry.defaultPageId;
+          activatePage(fallbackPageId);
+        } else {
+          const nextDynamic = dynamicPagesById.get(activePageId);
+          const changed =
+            resolved !== activePageDefinition ||
+            (nextDynamic !== undefined && nextDynamic.revision !== activePageRevision);
+          if (changed) {
+            activatePage(activePageId);
+          }
+        }
       }
     }) ?? null;
 

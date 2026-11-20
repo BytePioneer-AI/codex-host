@@ -837,10 +837,11 @@ export function createDesktopExtensionsSettingsPage(
           return left.id.localeCompare(right.id);
         });
 
+        const allExtensions = listing.extensions;
         const buildGrid = (items: readonly DesktopExtensionItem[]): HTMLElement => {
           const grid = createEl(document, "div", "settings-extensions-grid");
           for (const item of items) {
-            grid.append(renderExtensionCard(item, listing!.extensions, catalogById.get(item.id)));
+            grid.append(renderExtensionCard(item, allExtensions, catalogById.get(item.id)));
           }
           return grid;
         };

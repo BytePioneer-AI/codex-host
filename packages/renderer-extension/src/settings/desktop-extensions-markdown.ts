@@ -157,9 +157,9 @@ function appendInlineNodes(
 
 function createParagraph(document: Document, lines: readonly string[]): HTMLParagraphElement {
   const paragraph = createEl(document, "p", "settings-extensions-detail-modal__paragraph");
-  for (let i = 0; i < lines.length; i += 1) {
+  for (const [i, line] of lines.entries()) {
     if (i > 0) paragraph.append(document.createElement("br"));
-    appendInlineNodes(document, paragraph, lines[i]!);
+    appendInlineNodes(document, paragraph, line);
   }
   return paragraph;
 }
@@ -178,7 +178,8 @@ export function renderSafeMarkdown(document: Document, raw: string | null): HTML
   let index = 0;
 
   while (index < lines.length) {
-    const line = lines[index]!;
+    const line = lines[index];
+    if (line === undefined) break;
 
     if (!line.trim()) {
       index += 1;
@@ -189,11 +190,14 @@ export function renderSafeMarkdown(document: Document, raw: string | null): HTML
     if (FENCE_PATTERN.test(line)) {
       index += 1;
       const codeLines: string[] = [];
-      while (index < lines.length && !FENCE_PATTERN.test(lines[index]!)) {
-        codeLines.push(lines[index]!);
+      while (index < lines.length) {
+        const codeLine = lines[index];
+        if (codeLine === undefined || FENCE_PATTERN.test(codeLine)) break;
+        codeLines.push(codeLine);
         index += 1;
       }
-      if (index < lines.length && FENCE_PATTERN.test(lines[index]!)) {
+      const closingFence = lines[index];
+      if (closingFence !== undefined && FENCE_PATTERN.test(closingFence)) {
         index += 1;
       }
       const pre = createEl(document, "pre", "settings-extensions-md__pre");
@@ -206,11 +210,11 @@ export function renderSafeMarkdown(document: Document, raw: string | null): HTML
 
     // Headings: #, ##, ### -> h3, h4, h5
     const headingMatch = line.match(HEADING_PATTERN);
-    if (headingMatch) {
-      const level = headingMatch[1]!.length;
+    if (headingMatch?.[1] && headingMatch[2] !== undefined) {
+      const level = headingMatch[1].length;
       const tag = level === 1 ? "h3" : level === 2 ? "h4" : "h5";
       const heading = createEl(document, tag, `settings-extensions-md__${tag}`);
-      appendInlineNodes(document, heading, headingMatch[2]!.trim());
+      appendInlineNodes(document, heading, headingMatch[2].trim());
       blocks.push(heading);
       index += 1;
       continue;
@@ -220,9 +224,10 @@ export function renderSafeMarkdown(document: Document, raw: string | null): HTML
     if (BLOCKQUOTE_PATTERN.test(line)) {
       const quoteLines: string[] = [];
       while (index < lines.length) {
-        const quoteMatch = lines[index]!.match(BLOCKQUOTE_PATTERN);
-        if (!quoteMatch) break;
-        quoteLines.push(quoteMatch[1]!);
+        const currentLine = lines[index];
+        const quoteMatch = currentLine?.match(BLOCKQUOTE_PATTERN);
+        if (!quoteMatch || quoteMatch[1] === undefined) break;
+        quoteLines.push(quoteMatch[1]);
         index += 1;
       }
       const blockquote = createEl(document, "blockquote", "settings-extensions-md__quote");
@@ -252,10 +257,11 @@ export function renderSafeMarkdown(document: Document, raw: string | null): HTML
     if (UNORDERED_LIST_PATTERN.test(line)) {
       const ul = createEl(document, "ul", "settings-extensions-md__list");
       while (index < lines.length) {
-        const itemMatch = lines[index]!.match(UNORDERED_LIST_PATTERN);
-        if (!itemMatch) break;
+        const currentLine = lines[index];
+        const itemMatch = currentLine?.match(UNORDERED_LIST_PATTERN);
+        if (!itemMatch || itemMatch[1] === undefined) break;
         const li = createEl(document, "li");
-        appendInlineNodes(document, li, itemMatch[1]!.trim());
+        appendInlineNodes(document, li, itemMatch[1].trim());
         ul.append(li);
         index += 1;
       }
@@ -271,10 +277,11 @@ export function renderSafeMarkdown(document: Document, raw: string | null): HTML
         "settings-extensions-md__list settings-extensions-md__list--ordered",
       );
       while (index < lines.length) {
-        const itemMatch = lines[index]!.match(ORDERED_LIST_PATTERN);
-        if (!itemMatch) break;
+        const currentLine = lines[index];
+        const itemMatch = currentLine?.match(ORDERED_LIST_PATTERN);
+        if (!itemMatch || itemMatch[1] === undefined) break;
         const li = createEl(document, "li");
-        appendInlineNodes(document, li, itemMatch[1]!.trim());
+        appendInlineNodes(document, li, itemMatch[1].trim());
         ol.append(li);
         index += 1;
       }
@@ -286,8 +293,8 @@ export function renderSafeMarkdown(document: Document, raw: string | null): HTML
     const paragraphLines: string[] = [line];
     index += 1;
     while (index < lines.length) {
-      const nextLine = lines[index]!;
-      if (!nextLine.trim() || isBlockStart(nextLine)) break;
+      const nextLine = lines[index];
+      if (nextLine === undefined || !nextLine.trim() || isBlockStart(nextLine)) break;
       paragraphLines.push(nextLine);
       index += 1;
     }

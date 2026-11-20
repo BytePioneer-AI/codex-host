@@ -43,6 +43,7 @@ export interface DesktopExtensionSettingsRpcClient {
 export interface RendererSettingsDynamicPageEntry {
   readonly extensionId: string;
   readonly definition: RendererSettingsPageDefinition;
+  readonly revision?: string;
 }
 
 export interface RendererSettingsPluginPagesSource {
@@ -148,6 +149,7 @@ export function createSchemaSettingsPageDefinition(options: {
       const root = createEl(document, "div", "settings-extension-plugin-page");
       root.dataset.extensionId = extensionId;
       root.dataset.settingsMode = "schema";
+      root.dataset.settingsState = "loading";
 
       const header = createEl(document, "div", "settings-extension-plugin-page__header");
       const heading = createEl(document, "h1", "settings-section-label", label);
@@ -162,7 +164,11 @@ export function createSchemaSettingsPageDefinition(options: {
       for (const field of schema) {
         currentValues[field.key] = fieldDefaultValue(field);
       }
+      let hydrated = false;
       let saveVersion = 0;
+      let saveInFlight = false;
+      let pendingSaveValues: Record<string, unknown> | null = null;
+      let latestExternalBeforeHydrate: Record<string, unknown> | null = null;
       let disposed = false;
 
       const setStatus = (text: string | null, tone: "muted" | "success" | "danger" = "muted") => {
@@ -178,6 +184,13 @@ export function createSchemaSettingsPageDefinition(options: {
       };
 
       const controlSyncers = new Map<string, (value: unknown) => void>();
+      const formControls: Array<HTMLInputElement | HTMLSelectElement> = [];
+
+      const setControlsDisabled = (disabled: boolean): void => {
+        for (const control of formControls) {
+          control.disabled = disabled;
+        }
+      };
 
       const applyValuesToControls = (values: Record<string, unknown>): void => {
         currentValues = { ...currentValues, ...values };
@@ -188,25 +201,52 @@ export function createSchemaSettingsPageDefinition(options: {
         }
       };
 
+      const flushPendingSaves = async (): Promise<void> => {
+        if (saveInFlight) return;
+        saveInFlight = true;
+        try {
+          while (pendingSaveValues !== null) {
+            const payload = pendingSaveValues;
+            const sentVersion = saveVersion;
+            pendingSaveValues = null;
+            try {
+              const saved = await storage.set(payload);
+              if (
+                !disposed &&
+                !context.signal.aborted &&
+                sentVersion === saveVersion &&
+                pendingSaveValues === null
+              ) {
+                applyValuesToControls(saved);
+                setStatus(copy.extensionSettingsSaved, "success");
+              }
+            } catch (error: unknown) {
+              if (
+                !disposed &&
+                !context.signal.aborted &&
+                sentVersion === saveVersion &&
+                pendingSaveValues === null
+              ) {
+                setStatus(
+                  formatMessage(copy.extensionSettingsSaveFailed, { message: errorMessage(error) }),
+                  "danger",
+                );
+              }
+            }
+          }
+        } finally {
+          saveInFlight = false;
+        }
+      };
+
       const persistValue = (key: string, value: unknown): void => {
+        if (!hydrated || disposed || context.signal.aborted) return;
         const nextValues = { ...currentValues, [key]: value };
         currentValues = nextValues;
-        const version = ++saveVersion;
+        saveVersion += 1;
+        pendingSaveValues = cloneStorageValues(nextValues);
         setStatus(copy.extensionSettingsSaving, "muted");
-        void storage
-          .set(nextValues)
-          .then((saved) => {
-            if (disposed || context.signal.aborted || version !== saveVersion) return;
-            applyValuesToControls(saved);
-            setStatus(copy.extensionSettingsSaved, "success");
-          })
-          .catch((error: unknown) => {
-            if (disposed || context.signal.aborted || version !== saveVersion) return;
-            setStatus(
-              formatMessage(copy.extensionSettingsSaveFailed, { message: errorMessage(error) }),
-              "danger",
-            );
-          });
+        void flushPendingSaves();
       };
 
       for (const field of schema) {
@@ -226,6 +266,8 @@ export function createSchemaSettingsPageDefinition(options: {
           const toggle = createPreferenceSwitch(document, controlId, description.id);
           toggle.dataset.settingKey = field.key;
           toggle.checked = Boolean(currentValues[field.key]);
+          toggle.disabled = true;
+          formControls.push(toggle);
           toggle.addEventListener("change", () => {
             persistValue(field.key, toggle.checked);
           });
@@ -246,6 +288,8 @@ export function createSchemaSettingsPageDefinition(options: {
             input.placeholder = resolveLocalizedExtensionText(field.placeholder, messages.locale);
           }
           input.value = String(currentValues[field.key] ?? "");
+          input.disabled = true;
+          formControls.push(input);
           input.setAttribute("aria-describedby", description.id);
           input.addEventListener("change", () => {
             persistValue(field.key, input.value);
@@ -267,6 +311,8 @@ export function createSchemaSettingsPageDefinition(options: {
           if (field.max !== undefined) input.max = String(field.max);
           if (field.step !== undefined) input.step = String(field.step);
           input.value = String(currentValues[field.key] ?? "");
+          input.disabled = true;
+          formControls.push(input);
           input.setAttribute("aria-describedby", description.id);
           input.addEventListener("change", () => {
             const parsed = Number(input.value);
@@ -298,6 +344,8 @@ export function createSchemaSettingsPageDefinition(options: {
           if (field.step !== undefined) input.step = String(field.step);
           const initialValue = Number(currentValues[field.key] ?? field.min);
           input.value = String(initialValue);
+          input.disabled = true;
+          formControls.push(input);
           input.setAttribute("aria-describedby", description.id);
           const output = createEl(
             document,
@@ -324,6 +372,8 @@ export function createSchemaSettingsPageDefinition(options: {
           const select = createEl(document, "select", "settings-extension-schema__select");
           select.id = controlId;
           select.dataset.settingKey = field.key;
+          select.disabled = true;
+          formControls.push(select);
           select.setAttribute("aria-describedby", description.id);
           for (const option of field.options) {
             const optEl = document.createElement("option");
@@ -348,24 +398,33 @@ export function createSchemaSettingsPageDefinition(options: {
       context.content.append(root);
 
       const unsubscribeStorage = storage.onChange((updated) => {
-        if (!disposed && !context.signal.aborted) {
-          applyValuesToControls(updated);
+        if (disposed || context.signal.aborted) return;
+        if (!hydrated) {
+          latestExternalBeforeHydrate = cloneStorageValues(updated);
+          return;
         }
+        if (saveInFlight || pendingSaveValues !== null) return;
+        applyValuesToControls(updated);
       });
 
       void context.runLatest(async () => storage.get(), {
         success(loaded) {
-          if (!disposed && !context.signal.aborted) {
-            applyValuesToControls(loaded);
-          }
+          if (disposed || context.signal.aborted) return;
+          hydrated = true;
+          root.dataset.settingsState = "ready";
+          applyValuesToControls(
+            latestExternalBeforeHydrate ? { ...loaded, ...latestExternalBeforeHydrate } : loaded,
+          );
+          latestExternalBeforeHydrate = null;
+          setControlsDisabled(false);
         },
         failure(error) {
-          if (!disposed && !context.signal.aborted) {
-            setStatus(
-              formatMessage(copy.extensionSettingsLoadFailed, { message: errorMessage(error) }),
-              "danger",
-            );
-          }
+          if (disposed || context.signal.aborted) return;
+          root.dataset.settingsState = "error";
+          setStatus(
+            formatMessage(copy.extensionSettingsLoadFailed, { message: errorMessage(error) }),
+            "danger",
+          );
         },
       });
 
@@ -431,6 +490,8 @@ export function createDesktopExtensionPluginPagesSource(options: {
     readonly schema: readonly DesktopExtensionSettingField[];
   }> = [];
   let cachedPages: readonly RendererSettingsDynamicPageEntry[] = [];
+  let cachedEntriesByExtension = new Map<string, RendererSettingsDynamicPageEntry>();
+  let previousHostExtensionIds = new Set<string>();
   let extensionToPageId = new Map<string, string>();
   let hostUnsubscribe: (() => void) | null = null;
   let boundHost: DesktopExtensionHost | null = null;
@@ -524,8 +585,22 @@ export function createDesktopExtensionPluginPagesSource(options: {
     hostUnsubscribe?.();
     hostUnsubscribe = null;
     boundHost = host;
+    previousHostExtensionIds = new Set(
+      (host?.getRegisteredSettingsPages() ?? []).map((entry) => entry.extensionId),
+    );
     if (host && !disposed) {
       hostUnsubscribe = host.subscribeSettingsPages(() => {
+        const currentHostIds = new Set(
+          host.getRegisteredSettingsPages().map((entry) => entry.extensionId),
+        );
+        for (const previousId of previousHostExtensionIds) {
+          if (!currentHostIds.has(previousId)) {
+            installedSchemaExtensions = installedSchemaExtensions.filter(
+              (ext) => ext.id !== previousId,
+            );
+          }
+        }
+        previousHostExtensionIds = currentHostIds;
         rebuild();
         notify();
       });
@@ -546,10 +621,29 @@ export function createDesktopExtensionPluginPagesSource(options: {
   const rebuild = (): void => {
     const host = ensureHostSubscription();
     const hostPages = host?.getRegisteredSettingsPages() ?? [];
+    previousHostExtensionIds = new Set(hostPages.map((entry) => entry.extensionId));
     const nextPages: RendererSettingsDynamicPageEntry[] = [];
+    const nextEntriesByExtension = new Map<string, RendererSettingsDynamicPageEntry>();
     const usedIds = new Set<string>();
     const nextMap = new Map<string, string>();
     const seenExtensions = new Set<string>();
+
+    const reuseOrCreate = (
+      extensionId: string,
+      pageId: string,
+      revision: string,
+      buildDefinition: () => RendererSettingsPageDefinition,
+    ): RendererSettingsDynamicPageEntry => {
+      const existing = cachedEntriesByExtension.get(extensionId);
+      if (existing && existing.definition.id === pageId && existing.revision === revision) {
+        return existing;
+      }
+      return {
+        extensionId,
+        definition: buildDefinition(),
+        revision,
+      };
+    };
 
     for (const entry of hostPages) {
       if (seenExtensions.has(entry.extensionId)) continue;
@@ -559,29 +653,35 @@ export function createDesktopExtensionPluginPagesSource(options: {
       nextMap.set(entry.extensionId, pageId);
 
       if (entry.kind === "custom" && entry.page) {
-        nextPages.push({
-          extensionId: entry.extensionId,
-          definition: createCustomExtensionSettingsPageDefinition({
+        const customPage = entry.page;
+        const revision = `custom:${entry.revision}:${JSON.stringify(entry.title ?? null)}:${customPage.icon ?? ""}`;
+        const pageEntry = reuseOrCreate(entry.extensionId, pageId, revision, () =>
+          createCustomExtensionSettingsPageDefinition({
             pageId,
             extensionId: entry.extensionId,
             title: entry.title,
-            contribution: entry.page,
+            contribution: customPage,
             messages,
             services: servicesForExtension(entry.extensionId),
           }),
-        });
+        );
+        nextPages.push(pageEntry);
+        nextEntriesByExtension.set(entry.extensionId, pageEntry);
       } else if (entry.kind === "schema" && entry.schema && entry.schema.length > 0) {
-        nextPages.push({
-          extensionId: entry.extensionId,
-          definition: createSchemaSettingsPageDefinition({
+        const schema = entry.schema;
+        const revision = `schema:${JSON.stringify(entry.title ?? null)}:${JSON.stringify(schema)}`;
+        const pageEntry = reuseOrCreate(entry.extensionId, pageId, revision, () =>
+          createSchemaSettingsPageDefinition({
             pageId,
             extensionId: entry.extensionId,
             title: entry.title,
-            schema: entry.schema,
+            schema,
             messages,
             storage: servicesForExtension(entry.extensionId).storage,
           }),
-        });
+        );
+        nextPages.push(pageEntry);
+        nextEntriesByExtension.set(entry.extensionId, pageEntry);
       }
     }
 
@@ -591,9 +691,9 @@ export function createDesktopExtensionPluginPagesSource(options: {
       const pageId = desktopExtensionSettingsPageId(ext.id, usedIds);
       usedIds.add(pageId);
       nextMap.set(ext.id, pageId);
-      nextPages.push({
-        extensionId: ext.id,
-        definition: createSchemaSettingsPageDefinition({
+      const revision = `schema:${JSON.stringify(ext.name)}:${JSON.stringify(ext.schema)}`;
+      const pageEntry = reuseOrCreate(ext.id, pageId, revision, () =>
+        createSchemaSettingsPageDefinition({
           pageId,
           extensionId: ext.id,
           title: ext.name,
@@ -601,10 +701,13 @@ export function createDesktopExtensionPluginPagesSource(options: {
           messages,
           storage: servicesForExtension(ext.id).storage,
         }),
-      });
+      );
+      nextPages.push(pageEntry);
+      nextEntriesByExtension.set(ext.id, pageEntry);
     }
 
     cachedPages = Object.freeze(nextPages);
+    cachedEntriesByExtension = nextEntriesByExtension;
     extensionToPageId = nextMap;
   };
 
@@ -627,7 +730,13 @@ export function createDesktopExtensionPluginPagesSource(options: {
       if (disposed) return;
       const nextSchemaExtensions: typeof installedSchemaExtensions = [];
       for (const item of extensions) {
-        if (!item.enabled) continue;
+        if (
+          !item.enabled ||
+          item.status.state === "invalid" ||
+          item.status.state === "incompatible"
+        ) {
+          continue;
+        }
         const manifest = item.manifest;
         if (!manifest?.settingsSchema || manifest.settingsSchema.length === 0) continue;
         nextSchemaExtensions.push({
@@ -637,10 +746,10 @@ export function createDesktopExtensionPluginPagesSource(options: {
         });
       }
       const prevSignature = installedSchemaExtensions
-        .map((ext) => `${ext.id}:${JSON.stringify(ext.schema)}`)
+        .map((ext) => JSON.stringify({ id: ext.id, name: ext.name, schema: ext.schema }))
         .join("\0");
       const nextSignature = nextSchemaExtensions
-        .map((ext) => `${ext.id}:${JSON.stringify(ext.schema)}`)
+        .map((ext) => JSON.stringify({ id: ext.id, name: ext.name, schema: ext.schema }))
         .join("\0");
       if (prevSignature === nextSignature) return;
       installedSchemaExtensions = nextSchemaExtensions;

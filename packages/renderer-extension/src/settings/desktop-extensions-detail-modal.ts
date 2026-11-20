@@ -131,7 +131,13 @@ export function createDesktopExtensionDetailModal(options: {
       return;
     }
 
-    const activeUrl = currentScreenshots[activeScreenshotIndex]!;
+    const activeUrl = currentScreenshots[activeScreenshotIndex];
+    if (!activeUrl) {
+      previewStage.hidden = true;
+      previewImage.src = "";
+      previewImage.alt = "";
+      return;
+    }
     previewStage.hidden = false;
     previewImage.src = activeUrl;
     previewImage.alt = formatMessage(copy.screenshotAlt, {
@@ -176,7 +182,8 @@ export function createDesktopExtensionDetailModal(options: {
 
     const thumbs: HTMLElement[] = [];
     for (let i = 0; i < urls.length; i += 1) {
-      const url = urls[i]!;
+      const url = urls[i];
+      if (!url) continue;
       const thumbButton = createEl(document, "button", "settings-extensions-detail-modal__thumb");
       thumbButton.type = "button";
       thumbButton.dataset.screenshotIndex = String(i);

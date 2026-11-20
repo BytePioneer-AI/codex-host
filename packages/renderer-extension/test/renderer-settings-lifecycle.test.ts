@@ -36,6 +36,7 @@ vi.mock("../src/settings/trigger.js", () => ({
   installRendererSettingsRailTrigger: vi.fn(() => ({
     root: null,
     refresh: triggerRefresh,
+    setSelected: vi.fn(),
     setUpdateAvailable: triggerSetUpdateAvailable,
     dispose: vi.fn(),
   })),
@@ -43,6 +44,7 @@ vi.mock("../src/settings/trigger.js", () => ({
 
 import { installRendererSettingsLifecycle } from "../src/renderer-settings-lifecycle.js";
 import { createDefaultRendererSettingsPages } from "../src/settings/pages.js";
+import { installRendererSettingsShell } from "../src/settings/shell.js";
 
 function failedUpdateCheck(): UpdateCheckResult {
   return {
@@ -284,6 +286,106 @@ describe("Renderer Settings lifecycle", () => {
     expect(openImportedThread.mock.calls[0]?.slice(0, 2)).toEqual(["imported-thread", signal]);
     expect(openSchedules).toHaveBeenCalledTimes(2);
     expect(shellClose).toHaveBeenCalledTimes(2);
+    lifecycle.dispose();
+  });
+
+  it("periodically syncs installed Desktop extensions while Settings is open and stops on close", async () => {
+    vi.useFakeTimers();
+    const listDesktopExtensions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        configuration: { version: 1, revision: 1, enabled: ["ext-a"] },
+        desktopConnected: true,
+        diagnostics: [],
+        extensions: [
+          {
+            id: "ext-a",
+            enabled: true,
+            status: { state: "running" },
+            manifest: {
+              manifestVersion: 1,
+              id: "ext-a",
+              name: { en: "Ext A", "zh-CN": "扩展 A" },
+              version: "1.0.0",
+              desktopApi: 1,
+              desktop: { script: "desktop.js" },
+              slots: [],
+              settingsSchema: [
+                {
+                  key: "flag",
+                  type: "boolean",
+                  label: { en: "Flag", "zh-CN": "开关" },
+                  default: true,
+                },
+              ],
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        configuration: { version: 1, revision: 2, enabled: [] },
+        desktopConnected: true,
+        diagnostics: [],
+        extensions: [
+          {
+            id: "ext-a",
+            enabled: false,
+            status: { state: "disabled" },
+            manifest: {
+              manifestVersion: 1,
+              id: "ext-a",
+              name: { en: "Ext A", "zh-CN": "扩展 A" },
+              version: "1.0.0",
+              desktopApi: 1,
+              desktop: { script: "desktop.js" },
+              slots: [],
+              settingsSchema: [
+                {
+                  key: "flag",
+                  type: "boolean",
+                  label: { en: "Flag", "zh-CN": "开关" },
+                  default: true,
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+    const ownerWindow = {
+      navigator: { languages: ["en"] },
+      document: { visibilityState: "visible" },
+      setTimeout,
+      clearTimeout,
+    } as unknown as Window;
+
+    const lifecycle = installRendererSettingsLifecycle(ownerWindow, {
+      getDesktopExtensionsClient: () => ({ listDesktopExtensions }),
+    });
+
+    const shellCall = vi.mocked(installRendererSettingsShell).mock.calls.at(-1);
+    const shellOptions = shellCall?.[3];
+    const pluginPages = shellOptions?.pluginPages;
+    if (!shellOptions?.onOpenChange || !pluginPages) {
+      throw new Error("Expected shell onOpenChange and pluginPages options");
+    }
+
+    // Opening Settings triggers an immediate sync and registers ext-a's declarative page.
+    shellOptions.onOpenChange(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listDesktopExtensions).toHaveBeenCalledTimes(1);
+    expect(pluginPages.hasPageForExtension("ext-a")).toBe(true);
+
+    // Periodic sync detects external disable while Settings remains open and removes ext-a.
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(listDesktopExtensions).toHaveBeenCalledTimes(2);
+    expect(pluginPages.hasPageForExtension("ext-a")).toBe(false);
+
+    // Closing Settings stops further periodic polling.
+    shellOptions.onOpenChange(false);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(listDesktopExtensions).toHaveBeenCalledTimes(2);
+
     lifecycle.dispose();
   });
 });

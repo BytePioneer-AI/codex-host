@@ -412,8 +412,8 @@ export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   for (let offset = 0; offset < bytes.length; offset += chunkSize) {
     const chunk = bytes.subarray(offset, offset + chunkSize);
     let binary = "";
-    for (let i = 0; i < chunk.length; i += 1) {
-      binary += String.fromCharCode(chunk[i]!);
+    for (const byte of chunk) {
+      binary += String.fromCharCode(byte);
     }
     parts.push(binary);
   }

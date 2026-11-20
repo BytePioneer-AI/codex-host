@@ -43,7 +43,10 @@ export interface DesktopExtensionSettingsPageContext {
 export interface DesktopExtensionSettingsPageContribution {
   readonly title?: string | { readonly en: string; readonly "zh-CN": string };
   readonly icon?: RendererSettingsIconName;
-  mount(container: HTMLElement, context: DesktopExtensionSettingsPageContext): void | (() => void);
+  mount(
+    container: HTMLElement,
+    context: DesktopExtensionSettingsPageContext,
+  ): (() => void) | undefined;
 }
 
 export interface DesktopExtensionSettingsApi {

@@ -574,7 +574,7 @@ it("projects resolution IDs per client and retires another client's answered req
 
 it("does not treat resumed historical inProgress Turns as active work on this backend", async () => {
   const f = fixture();
-  const { client } = f.attach();
+  const { client, output } = f.attach();
   try {
     await f.owner.start();
     await client.initialize(initialization);
@@ -590,11 +590,66 @@ it("does not treat resumed historical inProgress Turns as active work on this ba
     expect(f.owner.hasActiveWork).toBe(false);
     await client.request("turn/start", { threadId: "thread-one", input: [] });
     expect(f.owner.hasActiveWork).toBe(true);
-    f.connection().emit({ method: "turn/completed", params: { threadId: "thread-one" } });
+    const staleCompletion = {
+      method: "turn/completed",
+      params: { threadId: "thread-one", turn: { id: "stale-turn", status: "completed" } },
+    };
+    f.connection().emit(staleCompletion);
+    await vi.waitFor(() => expect(output).toContainEqual(staleCompletion));
+    expect(f.owner.hasActiveWork).toBe(true);
+    f.connection().emit({
+      method: "turn/completed",
+      params: { threadId: "thread-one", turn: { id: "new-turn", status: "completed" } },
+    });
     await vi.waitFor(() => expect(f.owner.hasActiveWork).toBe(false));
   } finally {
     await f.owner.stop();
     client.close();
+  }
+});
+
+it("keeps the current Turn active when a slow client delivers an older Turn's lifecycle", async () => {
+  const f = fixture();
+  const fast = f.attach();
+  const blocked = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const slowOutput: JsonObject[] = [];
+  const slow = f.owner.attach(async ({ value }) => {
+    const message = value as JsonObject;
+    if (message.method === "fixture/blocked") {
+      blocked.resolve();
+      await release.promise;
+    }
+    slowOutput.push(message);
+  });
+  const event = (method: string, id: string) => ({
+    method,
+    params: { threadId: "shared-thread", turn: { id } },
+  });
+  try {
+    await f.owner.start();
+    f.gate.initialized();
+    await Promise.all([fast.client.initialize(initialization), slow.initialize(initialization)]);
+    f.connection(0, 1).emit({ method: "fixture/blocked" });
+    await blocked.promise;
+    const earlier = [event("turn/started", "old"), event("turn/completed", "old")];
+    for (const message of earlier) {
+      f.connection(0, 0).emit(message);
+      f.connection(0, 1).emit(message);
+    }
+    f.connection(0, 0).emit(event("turn/started", "current"));
+    await vi.waitFor(() => expect(fast.output).toHaveLength(3));
+    expect(f.owner.hasActiveWork).toBe(true);
+    release.resolve();
+    await vi.waitFor(() => expect(slowOutput).toHaveLength(3));
+    expect(f.owner.hasActiveWork).toBe(true);
+    f.connection(0, 0).emit(event("turn/completed", "current"));
+    await vi.waitFor(() => expect(f.owner.hasActiveWork).toBe(false));
+  } finally {
+    release.resolve();
+    await f.owner.stop();
+    fast.client.close();
+    slow.close();
   }
 });
 

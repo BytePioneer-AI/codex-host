@@ -13,11 +13,13 @@ Host 夹在 Codex Desktop 与官方 app-server 之间。官方协议的方法和
 
 只有确认归属后才做严格校验并返回 `-32602` 等错误。带 codexhost 前缀但格式非法的标记或游标直接报错，不回落官方。
 
-## macOS 原生 Browser MCP 的进程归属
+## macOS 原生 Desktop MCP 的进程归属
 
-Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树中。本地 macOS 前端识别 Desktop 下发的第一方 Browser `node_repl` MCP 配置，把这些工具服务启动在 Desktop 子进程中，并将其配置转换为经过能力令牌认证的本机 Streamable HTTP MCP。识别限定到所选运行时的真实 `node_repl` 可执行文件及带 Browser 服务的配置。未知配置和远程执行环境仍交给原生处理。
+Desktop 原生 Browser 和 app-tools IPC 都校验调用进程的归属。本地 macOS 前端在当前 Desktop 进程树中启动需要原生校验的第一方 MCP 工具。Browser 使用所选运行时的 `node_repl` 和带 Browser 服务的配置。`codex_app` 使用当前 Desktop 随包的工具服务和 socket。接受的缓存定义须位于该插件的原生缓存中，启动脚本和服务入口须与随包文件一致。未知配置和远程执行环境仍交给原生处理。
 
-前端通过原生 CLI 的 `mcp list --json` 读取实际启用的本地及插件工具定义。仅为识别出的第一方服务生成临时 stdio 命令覆盖，经认证的 Desktop 上下文传给共享后端，启动记录保留原始参数。`thread/start`、`thread/resume`、`thread/fork` 的显式 MCP 覆盖沿用同一转换。保留请求其余字段、工具审批设置、超时和工具选择。MCP 消息及原生请求元数据按标准传输转发。配置转换在 Desktop 前端发生，共享 Host 继续持有任务执行。
+Browser 的临时 stdio 命令覆盖经认证的 Desktop 上下文传给共享后端，通过本机 Streamable HTTP MCP 转发消息。`codex_app` 的启用状态和工具策略由原生插件配置决定。Desktop 仅提供临时 Node 启动入口，也识别 `thread/start`、`thread/resume`、`thread/fork` 中的显式 Node 配置。启动记录保留原始参数。
+
+app-tools 代理使用 Unix socket。Desktop 前端从内核取得连接进程的 PID，核对它是否是由本次共享 Host 管理的 stock Codex 所启动的 Node 进程，并检查 Host 的启动时间。验证通过后，前端才启动随包工具。工具连接当前 Desktop 的原生 socket 时，仍由 Desktop 校验对端。
 
 ## 原生 Codex Fork 的模型继承
 

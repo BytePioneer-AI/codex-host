@@ -49,6 +49,7 @@ export interface OfficialRuntimeOwnerOptions {
   createBackend(): OwnedOfficialBackend;
   diagnosticOutput: Writable;
   gate: OfficialWorkGate;
+  onIdle?: (() => void) | undefined;
 }
 const object = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -75,8 +76,10 @@ export class OfficialRuntimeOwner {
   readonly gate: OfficialWorkGate;
   readonly #factory: () => OwnedOfficialBackend;
   readonly #diagnosticOutput: Writable;
+  readonly #onIdle: (() => void) | undefined;
   readonly #clients = new Set<Client>();
-  readonly #activeTurns = new Set<string>();
+  readonly #activeTurns = new Map<string, Set<string>>();
+  readonly #turnStarts = new Map<string, { pending: number; completed: Set<string> }>();
   readonly #threadModelSettings = new Map<string, JsonObject & { model: string }>();
   #backend: OwnedOfficialBackend | undefined;
   #generation = 0;
@@ -87,6 +90,7 @@ export class OfficialRuntimeOwner {
   constructor(input: OfficialRuntimeOwnerOptions) {
     this.#factory = input.createBackend;
     this.#diagnosticOutput = input.diagnosticOutput;
+    this.#onIdle = input.onIdle;
     this.gate = input.gate;
   }
   get generation(): number {
@@ -99,6 +103,44 @@ export class OfficialRuntimeOwner {
 
   get running(): boolean {
     return this.#phase === "running";
+  }
+
+  #admit(method: string, params: JsonObject): () => void {
+    const finish = this.gate.admit();
+    const threadId =
+      method === "turn/start" && typeof params.threadId === "string" ? params.threadId : undefined;
+    const starts = threadId
+      ? (this.#turnStarts.get(threadId) ?? { pending: 0, completed: new Set<string>() })
+      : undefined;
+    if (threadId && starts) {
+      starts.pending++;
+      this.#turnStarts.set(threadId, starts);
+    }
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      if (threadId && starts && --starts.pending === 0) this.#turnStarts.delete(threadId);
+      finish();
+      this.#notifyIdle();
+    };
+  }
+
+  #notifyIdle(): void {
+    if (this.running && !this.hasActiveWork) this.#onIdle?.();
+  }
+
+  #markTurnActive(threadId: string, turnId: string): void {
+    const turns = this.#activeTurns.get(threadId) ?? new Set<string>();
+    turns.add(turnId);
+    this.#activeTurns.set(threadId, turns);
+  }
+
+  #finishTurn(threadId: string, turnId: string): boolean {
+    const turns = this.#activeTurns.get(threadId);
+    if (!turns?.delete(turnId)) return false;
+    if (!turns.size) this.#activeTurns.delete(threadId);
+    return true;
   }
 
   start(): Promise<void> {
@@ -347,7 +389,7 @@ export class OfficialRuntimeOwner {
 
   async #request(client: Client, method: string, params: JsonObject): Promise<JsonObject> {
     this.#checkMethod(method);
-    const finish = this.gate.admit();
+    const finish = this.#admit(method, params);
     let response: JsonObject | undefined;
     try {
       const runtime = await this.#connection(client);
@@ -387,7 +429,7 @@ export class OfficialRuntimeOwner {
     const method = value.method;
     const params = object(value.params) ? value.params : {};
     this.#checkMethod(method);
-    const finish = this.gate.admit();
+    const finish = this.#admit(method, params);
     let pendingKey: string | undefined;
     try {
       const runtime = await this.#connection(client);
@@ -429,16 +471,21 @@ export class OfficialRuntimeOwner {
       return;
     const value = event.value;
     if (!object(value)) return client.output(event);
-    if (object(value.params) && typeof value.params.threadId === "string") {
-      if (value.method === "turn/started") this.#activeTurns.add(value.params.threadId);
-      if (value.method === "turn/completed" || value.method === "thread/closed")
-        this.#activeTurns.delete(value.params.threadId);
+    const params = object(value.params) ? value.params : {};
+    const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+    const turnId =
+      object(params.turn) && typeof params.turn.id === "string" ? params.turn.id : undefined;
+    if (threadId) {
+      if (value.method === "turn/started" && turnId) this.#markTurnActive(threadId, turnId);
+      // A completion can precede the response that reports the Turn as in progress.
+      if (value.method === "turn/completed" && turnId)
+        this.#turnStarts.get(threadId)?.completed.add(turnId);
       if (value.method === "thread/closed") {
-        client.threads.delete(value.params.threadId);
-        this.#threadModelSettings.delete(value.params.threadId);
+        client.threads.delete(threadId);
+        this.#threadModelSettings.delete(threadId);
       }
-      if (value.method === "thread/settings/updated" && object(value.params.threadSettings))
-        this.#rememberModelSettings(value.params.threadId, value.params.threadSettings);
+      if (value.method === "thread/settings/updated" && object(params.threadSettings))
+        this.#rememberModelSettings(threadId, params.threadSettings);
     }
     if (value.method === "serverRequest/resolved" && object(value.params)) {
       const nativeId = value.params.requestId;
@@ -473,7 +520,19 @@ export class OfficialRuntimeOwner {
         pending.finish();
       }
     }
-    await client.output(event);
+    try {
+      await client.output(event);
+    } finally {
+      // Keep the Turn active until its terminal notification reaches the client.
+      if (
+        threadId &&
+        event.generation === this.#generation &&
+        (value.method === "thread/closed"
+          ? this.#activeTurns.delete(threadId)
+          : value.method === "turn/completed" && turnId && this.#finishTurn(threadId, turnId))
+      )
+        this.#notifyIdle();
+    }
   }
 
   #remember(client: Client, method: string, params: JsonObject, response: JsonObject): void {
@@ -483,9 +542,11 @@ export class OfficialRuntimeOwner {
         method === "turn/start" &&
         typeof params.threadId === "string" &&
         object(response.result.turn) &&
-        response.result.turn.status === "inProgress"
+        typeof response.result.turn.id === "string" &&
+        response.result.turn.status === "inProgress" &&
+        !this.#turnStarts.get(params.threadId)?.completed.has(response.result.turn.id)
       )
-        this.#activeTurns.add(params.threadId);
+        this.#markTurnActive(params.threadId, response.result.turn.id);
     }
     if (
       ["thread/archive", "thread/unsubscribe", "thread/delete"].includes(method) &&

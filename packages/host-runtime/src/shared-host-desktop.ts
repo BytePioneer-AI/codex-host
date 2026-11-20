@@ -19,7 +19,7 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import {
-  DESKTOP_BROWSER_CONTEXT_ENV,
+  DESKTOP_LAUNCH_CONTEXT_ENV,
   isDesktopContextVariable,
 } from "./desktop-context-environment.js";
 
@@ -56,7 +56,7 @@ function desktopContext(
     arguments: envelope.arguments as string[],
     environment: {
       ...Object.fromEntries(
-        Object.entries(base).filter(([key]) => !DESKTOP_BROWSER_CONTEXT_ENV.includes(key)),
+        Object.entries(base).filter(([key]) => !DESKTOP_LAUNCH_CONTEXT_ENV.includes(key)),
       ),
       ...context,
       CODEXHOST_DATA_DIR: base.CODEXHOST_DATA_DIR,

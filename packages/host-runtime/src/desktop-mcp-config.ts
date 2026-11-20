@@ -8,7 +8,13 @@ import { Transform, type TransformCallback } from "node:stream";
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
 import { parseJsonFrame } from "@codexhost/protocol-core";
 
-type RegisterServer = (server: JsonObject, cwd?: string) => JsonObject | undefined;
+type RegisterServer = (
+  server: JsonObject,
+  cwd: string | undefined,
+  name: string,
+) => JsonObject | undefined;
+
+const APP_TOOLS_CONFIG = "mcp_servers.codex_app.";
 
 function object(value: JsonValue | undefined): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -23,14 +29,14 @@ export function rewriteDesktopMcpRequest(
   if (!object(params)) return message;
   const request = object(params.request) ? params.request : params;
   const cwd = typeof request.cwd === "string" ? request.cwd : undefined;
-  function server(value: JsonValue): JsonValue {
-    return object(value) ? (register(value, cwd) ?? value) : value;
+  function server(name: string, value: JsonValue): JsonValue {
+    return object(value) ? (register(value, cwd, name) ?? value) : value;
   }
   function servers(value: JsonValue): JsonValue {
     if (!object(value)) return value;
     let changed = false;
     const entries = Object.entries(value).map(([key, current]) => {
-      const next = server(current);
+      const next = server(key, current);
       changed ||= next !== current;
       return [key, next];
     });
@@ -38,7 +44,7 @@ export function rewriteDesktopMcpRequest(
   }
   function entry(key: string, value: JsonValue): JsonValue {
     if (key === "mcp_servers") return servers(value);
-    if (/^mcp_servers\.[^.]+$/u.test(key)) return server(value);
+    if (/^mcp_servers\.[^.]+$/u.test(key)) return server(key.slice("mcp_servers.".length), value);
     return value;
   }
   if (
@@ -46,13 +52,25 @@ export function rewriteDesktopMcpRequest(
     object(request.config)
   ) {
     let changed = false;
+    const entries = Object.entries(request.config);
+    const appTools = Object.fromEntries(
+      entries
+        .filter(([key]) => key.startsWith(APP_TOOLS_CONFIG))
+        .map(([key, value]) => [key.slice(APP_TOOLS_CONFIG.length), value]),
+    );
+    const adapted =
+      appTools.command === undefined ? undefined : register(appTools, cwd, "codex_app");
     const config = Object.fromEntries(
-      Object.entries(request.config).map(([key, value]) => {
+      entries.map(([key, value]) => {
         const next = entry(key, value);
         changed ||= next !== value;
         return [key, next];
       }),
     );
+    if (adapted?.env !== undefined) {
+      config[`${APP_TOOLS_CONFIG}env`] = adapted.env;
+      changed = true;
+    }
     if (!changed) return message;
     return {
       ...message,
@@ -168,7 +186,8 @@ async function bundledServerPolicy(
     value.env_vars,
     value.cwd ?? null,
   ];
-  for (const plugin of await readdir(cache).catch(() => [])) {
+  const plugins = await readdir(cache).catch(() => []);
+  for (const plugin of plugins) {
     try {
       const manifest = z
         .object({ mcpServers: z.record(z.string(), z.record(z.string(), z.json())) })
@@ -207,13 +226,10 @@ export async function desktopNativeMcpOverrides(
         }
       }
       const invocation = { env: environment, timeout: 15_000, maxBuffer: Number.MAX_SAFE_INTEGER };
+      const run = promisify(execFile);
       const [result, globalResult] = await Promise.all([
-        promisify(execFile)(
-          native.executable,
-          [...configArguments, "mcp", "list", "--json"],
-          invocation,
-        ),
-        promisify(execFile)(
+        run(native.executable, [...configArguments, "mcp", "list", "--json"], invocation),
+        run(
           native.executable,
           [...configArguments, "-c", "features.plugins=false", "mcp", "list", "--json"],
           invocation,
@@ -240,6 +256,7 @@ export async function desktopNativeMcpOverrides(
       for (const server of listed) {
         if (
           !server.enabled ||
+          server.name === "codex_app" ||
           !/^[a-zA-Z0-9_-]+$/u.test(server.name) ||
           server.transport.type !== "stdio"
         )
@@ -256,6 +273,7 @@ export async function desktopNativeMcpOverrides(
         const adapted = register(
           definition,
           environment.CODEX_HOME ?? path.join(environment.HOME ?? homedir(), ".codex"),
+          server.name,
         );
         if (!adapted) continue;
         const fields = {
@@ -277,7 +295,7 @@ export async function desktopNativeMcpOverrides(
       }
     }
   } catch {
-    process.stderr.write("codexhost: Desktop browser MCP configuration could not be read\n");
+    process.stderr.write("codexhost: Desktop MCP configuration could not be read\n");
   }
   return overrides;
 }

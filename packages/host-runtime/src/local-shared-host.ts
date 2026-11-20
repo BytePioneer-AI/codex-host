@@ -8,7 +8,11 @@ import {
 } from "@codexhost/desktop-control";
 import { WebSocket, createWebSocketStream } from "ws";
 import { StreamThreadPeer, type SharedThreadPeer } from "./shared-thread-peer.js";
-import { isDesktopContextVariable } from "./desktop-context-environment.js";
+import {
+  DESKTOP_APP_TOOLS_NODE_ENV,
+  isDesktopContextVariable,
+} from "./desktop-context-environment.js";
+import { createDesktopAppToolsBridge } from "./desktop-app-tools-bridge.js";
 import { createDesktopMcpBridge } from "./desktop-mcp-bridge.js";
 import {
   CODEX_RUNTIME_REMOVED_MESSAGE,
@@ -48,7 +52,9 @@ export function sharedHostDataDirectory(
 
 async function connectStream(
   launch: HostServiceLaunch,
-  desktop?: { environment: NodeJS.ProcessEnv; arguments: string[] },
+  prepareDesktop?: (
+    hostPid: number,
+  ) => Promise<{ environment: NodeJS.ProcessEnv; arguments: string[] }>,
   endpoint = "/v1/desktop",
 ) {
   await ensureHostService(launch);
@@ -56,6 +62,7 @@ async function connectStream(
     path.join(launch.dataDirectory, "client-hosts"),
   );
   if (descriptor?.owner !== "service") throw new Error("Independent Host is unavailable");
+  const desktop = await prepareDesktop?.(descriptor.pid);
   const context = desktop
     ? Buffer.from(
         JSON.stringify({
@@ -119,7 +126,7 @@ export async function connectLocalSharedExternalHost(
   return peer;
 }
 
-/** Desktop owns its browser MCP children while the shared Host owns task execution. */
+/** Desktop owns its native MCP children while the shared Host owns task execution. */
 export async function runLocalDesktopBridge(
   environment: NodeJS.ProcessEnv,
   runtime: string,
@@ -129,15 +136,8 @@ export async function runLocalDesktopBridge(
   const launcher = environment.CODEXHOST_LAUNCHER_EXECUTABLE;
   if (!launcher || !path.isAbsolute(launcher))
     throw new Error("Independent Host requires the native Launcher");
-  const mcp =
-    process.platform === "darwin"
-      ? await createDesktopMcpBridge({
-          runtimePath: runtime,
-          native: { executable: stockCodex, arguments: arguments_ },
-          nodeReplPath: path.join(path.dirname(process.execPath), "node_repl"),
-          environment,
-        })
-      : undefined;
+  let appTools: Awaited<ReturnType<typeof createDesktopAppToolsBridge>>;
+  let mcp: Awaited<ReturnType<typeof createDesktopMcpBridge>>;
   let stream: Duplex | undefined;
   try {
     stream = await connectStream(
@@ -150,7 +150,36 @@ export async function runLocalDesktopBridge(
         ),
         ...(environment.CODEX_HOME ? { codexHome: environment.CODEX_HOME } : {}),
       },
-      { environment: { ...environment, ...mcp?.environment }, arguments: arguments_ },
+      async (hostPid) => {
+        if (process.platform === "darwin") {
+          appTools = await createDesktopAppToolsBridge({
+            launcher,
+            hostPid,
+            stockCodex,
+            runtimePath: runtime,
+            environment,
+            resourcesPath: path.resolve(path.dirname(process.execPath), "../.."),
+          }).catch(() => {
+            process.stderr.write("codexhost: Desktop app-tools bridge is unavailable\n");
+            return undefined;
+          });
+          mcp = await createDesktopMcpBridge({
+            runtimePath: runtime,
+            native: { executable: stockCodex, arguments: arguments_ },
+            nodeReplPath: path.join(path.dirname(process.execPath), "node_repl"),
+            ...(appTools ? { appTools } : {}),
+            environment,
+          });
+        }
+        return {
+          arguments: arguments_,
+          environment: {
+            ...environment,
+            ...mcp?.environment,
+            ...(appTools ? { [DESKTOP_APP_TOOLS_NODE_ENV]: appTools.wrapper } : {}),
+          },
+        };
+      },
     );
     const connection = stream;
     const closed = new Promise<number>((resolve) => {
@@ -175,6 +204,6 @@ export async function runLocalDesktopBridge(
     mcp?.input.destroy();
     stream?.unpipe(process.stdout);
     stream?.destroy();
-    await mcp?.close();
+    await Promise.all([mcp?.close(), appTools?.close()]);
   }
 }

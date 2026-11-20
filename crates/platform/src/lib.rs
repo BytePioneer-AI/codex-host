@@ -32,7 +32,12 @@ pub use macos_aqua_process::{
     AQUA_SPAWN_ARGUMENT, run_aqua_spawn_helper, spawn_in_desktop_session,
 };
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod macos_mcp_peer;
+#[cfg(target_os = "macos")]
 mod macos_process_observation;
+#[cfg(target_os = "macos")]
+pub use macos_mcp_peer::authorize_macos_mcp_peer;
 mod process;
 mod process_chain;
 mod process_identity;

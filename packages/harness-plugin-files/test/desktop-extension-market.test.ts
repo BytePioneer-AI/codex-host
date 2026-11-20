@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { extensionZip, makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
-import seed from "../../../registry/desktop-extensions/catalog.json";
+import seed from "../../../registry/desktop-extensions/catalog.json" with { type: "json" };
 import { reportDesktopExtensionInstall } from "../src/desktop-extension-installer.js";
 import {
   desktopExtensionsRoot,

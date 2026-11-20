@@ -278,12 +278,12 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     pluginButton.click();
     expect(harness.shell.activePageId).toBe(pluginButton.dataset.pageId);
     expect(harness.contentRoot().textContent).toContain("Custom Studio (zh-CN)");
-    expect(mountedContext).not.toBeNull();
-    await expect(must(mountedContext).assets.readDataUrl("hero.png")).resolves.toEqual({
+    const context = must<DesktopExtensionSettingsPageContext>(mountedContext, "mounted context");
+    await expect(context.assets.readDataUrl("hero.png")).resolves.toEqual({
       mimeType: "image/png",
       dataUrl: "data:image/png;base64,hero.png",
     });
-    await expect(must(mountedContext).backend.invoke("ping", { n: 1 })).resolves.toEqual({
+    await expect(context.backend.invoke("ping", { n: 1 })).resolves.toEqual({
       id: "aurora.dashboard",
       method: "ping",
       params: { n: 1 },

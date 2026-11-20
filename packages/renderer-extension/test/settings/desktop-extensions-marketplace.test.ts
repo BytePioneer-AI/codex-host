@@ -1049,7 +1049,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       });
     const disableDesktopExtension = vi.fn(async () => ({
       state: "saved" as const,
-      configuration: { version: 1, revision: 4, enabled: [] },
+      configuration: { version: 1 as const, revision: 4, enabled: [] },
     }));
     const listDesktopExtensionCatalog = vi
       .fn<() => Promise<DesktopExtensionsCatalogResult>>()

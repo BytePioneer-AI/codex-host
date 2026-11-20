@@ -15,7 +15,7 @@
 ### D1 目录与 manifest
 
 ```
-$CODEXHOST_DATA_DIR/extensions/        （默认 ~/.codexhost/extensions/，权限 0700）
+$CODEXHOST_DATA_DIR/desktop-extensions/  （默认 ~/.codexhost/desktop-extensions/，权限 0700）
   enabled.json
   <id>/manifest.json
   <id>/desktop.js
@@ -49,7 +49,7 @@ $CODEXHOST_DATA_DIR/extensions/        （默认 ~/.codexhost/extensions/，权�
 ```
 
 - Console 与本机 Host 设置 RPC 共用跨进程写锁：在同一事务中核对 `expectedRevision`、预检槽位并原子替换配置。修订号不符时报告当前修订号。手工编辑也被接受。
-- 文件不存在表示什么都不启用。文件无法解析时**也按什么都不启用处理**，并报告诊断：出错时选择安全的方向。
+- 文件不存在是正常初始状态：修订号为 0、不启用任何扩展、不报告配置诊断。文件存在但无效（例如无法解析）时同样不启用任何扩展，并报告诊断。
 - `enabled` 的数组顺序就是槽位优先级（见 D6）。
 - `reloadToken` 只在"禁用全部并重载"时写入（同一次原子写中 `enabled: []`），见 D7。
 - Controller、Console 和本机 Host 设置 RPC 读取该文件。Host 只管理选择，不执行扩展代码。
@@ -194,7 +194,7 @@ interface DesktopSidebarRow {
 ## Migration
 
 - 只新增文件、目录和协议方法，不迁移任何已有数据格式。扩展根目录不存在时，功能完全处于未启用状态。
-- 回滚：移除功能后 `~/.codexhost/extensions/` 和 `diagnostics/desktop-extensions-v1.json` 不再被读取，可以直接删除。之后打开的 Desktop 不会再注册扩展快照脚本；已打开的 Desktop 窗口重载一次即可清除。
+- 回滚：移除功能后 `~/.codexhost/desktop-extensions/` 和 `diagnostics/desktop-extensions-v1.json` 不再被读取，可以直接删除。之后打开的 Desktop 不会再注册扩展快照脚本；已打开的 Desktop 窗口重载一次即可清除。
 - #926、#947 关闭或改为扩展 PR，它们新增的 Host 方法不进入主干，不存在兼容负担。
 
 ## Open Questions

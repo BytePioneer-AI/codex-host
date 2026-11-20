@@ -8,7 +8,7 @@
 
 ### Requirement: 扩展的安装形态与发现
 
-系统 SHALL 从 codexhost 数据目录下的 `extensions` 根目录发现 Desktop 界面扩展。每个扩展是一个子目录，包含 manifest、一个 Desktop 脚本和可选样式表，各文件 MUST 是位于该目录内的普通文件且不超过规定大小。发现过程 MUST NOT 执行扩展代码。无效的扩展 SHALL 被报告并跳过，不影响其他扩展；扩展根目录 MUST NOT 与 Harness 插件根目录共用。
+系统 SHALL 从 codexhost 数据目录下的 `desktop-extensions/` 根目录发现 Desktop 界面扩展。每个扩展是一个子目录，包含 manifest、一个 Desktop 脚本和可选样式表，各文件 MUST 是位于该目录内的普通文件且不超过规定大小。发现过程 MUST NOT 执行扩展代码。无效的扩展 SHALL 被报告并跳过，不影响其他扩展；扩展根目录 MUST NOT 与 Harness 插件根目录或 Pi Adapter 使用的 `extensions/` 共用。
 
 #### Scenario: 有效扩展被发现
 
@@ -24,6 +24,11 @@
 
 - **WHEN** 扩展根目录中存在扩展
 - **THEN** Harness 插件的发现与诊断结果不变，不出现与扩展相关的无效插件报告
+
+#### Scenario: Pi Adapter 目录不参与发现
+
+- **WHEN** Pi Adapter 在 `extensions/` 下写入自己的扩展
+- **THEN** Desktop 界面扩展发现忽略这些目录，不将它们列为无效 Desktop 扩展
 
 ### Requirement: 宿主 API 版本兼容
 
@@ -41,12 +46,17 @@ manifest SHALL 声明扩展依赖的 Desktop 宿主 API 版本。声明了本机
 
 ### Requirement: 启用选择的持久化
 
-扩展的启用选择 SHALL 持久保存在扩展根目录中，独立于 Harness 插件的启用配置。新复制进来的扩展 SHALL 默认不启用。没有启用配置时 SHALL 视为不启用任何扩展。重启 Desktop 或共享 Host 后 SHALL 按已保存的选择恢复。
+扩展的启用选择 SHALL 持久保存在扩展根目录中，独立于 Harness 插件的启用配置。新复制进来的扩展 SHALL 默认不启用。`enabled.json` 不存在时 SHALL 视为不启用任何扩展，且不报告配置诊断；配置存在但无效时 SHALL 不启用任何扩展并报告诊断。重启 Desktop 或共享 Host 后 SHALL 按已保存的选择恢复。
 
 #### Scenario: 默认不启用
 
 - **WHEN** 用户只复制了扩展目录，没有在 Console 中启用
-- **THEN** 打开 Desktop 后该扩展不运行
+- **THEN** 打开 Desktop 后该扩展不运行，设置页不会因缺少 `enabled.json` 显示诊断
+
+#### Scenario: 启用配置损坏
+
+- **WHEN** `enabled.json` 存在但不是有效的启用配置
+- **THEN** 系统使用空启用集合，并通过管理入口报告诊断
 
 #### Scenario: 重启后恢复
 

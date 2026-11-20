@@ -30,11 +30,11 @@ export async function readDesktopExtensionConfiguration(
       configuration: desktopExtensionConfigurationSchema.parse(JSON.parse(bytes.toString("utf8"))),
     };
   } catch (error) {
+    const configuration: DesktopExtensionConfiguration = { version: 1, revision: 0, enabled: [] };
+    if (extensionFileMissing(error)) return { configuration };
     return {
-      configuration: { version: 1, revision: 0, enabled: [] },
-      diagnostic: extensionFileMissing(error)
-        ? "No extension configuration saved"
-        : `Invalid extension configuration: ${error instanceof Error ? error.message : String(error)}`,
+      configuration,
+      diagnostic: `Invalid extension configuration: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 }

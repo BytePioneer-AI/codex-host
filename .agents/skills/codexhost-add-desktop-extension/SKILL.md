@@ -15,7 +15,7 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
 
 ## 1. 声明扩展和槽位
 
-从 [`sidebar-delegation-badges`](../../../packages/desktop-extensions/sidebar-delegation-badges) 或 [`sidebar-thread-tree`](../../../packages/desktop-extensions/sidebar-thread-tree) 选一个样板。源码放在 `<source-dir>/src/index.ts`，可选样式为 `<source-dir>/src/desktop.css`。安装目录是 `$CODEXHOST_DATA_DIR/extensions/<id>/`，内有 `manifest.json`、`desktop.js`、可选 `desktop.css`。目录名与 `id` 一致；复制文件不等于启用。
+从 [`sidebar-delegation-badges`](../../../packages/desktop-extensions/sidebar-delegation-badges) 或 [`sidebar-thread-tree`](../../../packages/desktop-extensions/sidebar-thread-tree) 选一个样板。源码放在 `<source-dir>/src/index.ts`，可选样式为 `<source-dir>/src/desktop.css`。安装目录是 `$CODEXHOST_DATA_DIR/desktop-extensions/<id>/`，内有 `manifest.json`、`desktop.js`、可选 `desktop.css`。目录名与 `id` 一致；复制文件不等于启用。
 
 ```json
 {
@@ -63,10 +63,10 @@ description: 开发、打包、验收或排查 codexhost Desktop UI 扩展。用
    : "${CODEXHOST_DATA_DIR:?请先设置独立的测试数据目录}"
    npx tsc -b packages/shared-contracts
    node tools/build-desktop-extension.mjs packages/desktop-extensions/sidebar-thread-tree \
-     "$CODEXHOST_DATA_DIR/extensions"
+     "$CODEXHOST_DATA_DIR/desktop-extensions"
    ```
 
-   将样板路径替换为实际源码目录。工具把产物写到 `$CODEXHOST_DATA_DIR/extensions/<id>/`，不改 `enabled.json`。目录和文件须归当前用户所有，不允许同组或其他用户写入。
+   将样板路径替换为实际源码目录。工具把产物写到扩展根下的 `<id>/`，不改 `enabled.json`。目录和文件须归当前用户所有，不允许同组或其他用户写入。
 
 3. 在 Console 的扩展页启用。确认从等待进入运行中；重复构建一次确认热更新且没有旧实例；禁用后原生行恢复。验证远程行不变；使用同槽位样板验证冲突提示包含占用者。记录实际验证范围。
 4. 看不到扩展时，核对数据目录、目录名、manifest 与权限。等待状态时确认 Desktop 主窗口已建立界面控制；失败时先看状态原因和声明的文件，修复后重新构建。若 Desktop 无法操作，在独立的 **Console → 扩展** 选择「禁用全部扩展并重载 Desktop」；选择会立即保存，有在线 Controller 时才执行窗口重载。

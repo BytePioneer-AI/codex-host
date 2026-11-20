@@ -19,7 +19,7 @@ let root: string;
 const controllers: RendererDesktopExtensions[] = [];
 beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "extension-controller-"));
-  root = path.join(directory, "extensions");
+  root = path.join(directory, "desktop-extensions");
 });
 afterEach(async () => {
   for (const controller of controllers.splice(0)) controller.close();

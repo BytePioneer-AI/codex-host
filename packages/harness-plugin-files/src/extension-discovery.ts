@@ -26,7 +26,7 @@ export type DesktopExtensionInstallation = { id: string } & (
 export const DESKTOP_EXTENSION_CONFIGURATION_LOCK = ".enabled.lock";
 
 export function desktopExtensionsRoot(dataDirectory: string): string {
-  return path.join(dataDirectory, "extensions");
+  return path.join(dataDirectory, "desktop-extensions");
 }
 
 export function desktopExtensionsStatusPath(dataDirectory: string): string {

@@ -15,7 +15,7 @@ import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
 
 const POLL_INTERVAL_MS = 5_000;
 const COPY_FEEDBACK_MS = 2_000;
-const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/extensions/";
+const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/desktop-extensions/";
 
 export interface RendererDesktopExtensionsClient {
   listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;

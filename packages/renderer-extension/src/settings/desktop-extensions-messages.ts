@@ -50,7 +50,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   description:
     "Manage optional UI extensions for the local Codex Desktop main window. Enabling or disabling applies live without restarting Desktop.",
   directoryLabel: "Extensions directory",
-  directoryDefaultHint: "Default: ~/.codexhost/extensions/",
+  directoryDefaultHint: "Default: ~/.codexhost/desktop-extensions/",
   copyPath: "Copy path",
   copiedPath: "Copied",
   copyPathFailed: "Copy failed",
@@ -68,7 +68,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   emptyTitle: "No Desktop extensions found",
   emptyDescription:
     "Copy an extension folder containing manifest.json and desktop.js into the directory below, then refresh.",
-  emptyPathHint: "$CODEXHOST_DATA_DIR/extensions/<id>/",
+  emptyPathHint: "$CODEXHOST_DATA_DIR/desktop-extensions/<id>/",
   noExclusiveSlots: "No exclusive slots",
   slots: Object.freeze({
     "sidebar.thread-layout": "Sidebar thread layout",
@@ -116,7 +116,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   description:
     "管理本机 Codex Desktop 主窗口的可选界面扩展。启用或禁用会实时生效，无需重启 Desktop。",
   directoryLabel: "扩展根目录",
-  directoryDefaultHint: "默认 ~/.codexhost/extensions/",
+  directoryDefaultHint: "默认 ~/.codexhost/desktop-extensions/",
   copyPath: "复制路径",
   copiedPath: "已复制",
   copyPathFailed: "复制失败",
@@ -132,7 +132,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   diagnosticsTitle: "配置诊断",
   emptyTitle: "尚未发现 Desktop 扩展",
   emptyDescription: "请将包含 manifest.json 和 desktop.js 的扩展目录放到以下路径，然后点击刷新：",
-  emptyPathHint: "$CODEXHOST_DATA_DIR/extensions/<id>/",
+  emptyPathHint: "$CODEXHOST_DATA_DIR/desktop-extensions/<id>/",
   noExclusiveSlots: "无独占槽位",
   slots: Object.freeze({
     "sidebar.thread-layout": "侧栏 Thread 布局",

@@ -7,15 +7,15 @@ Desktop 界面扩展是可选的受信任代码。它们只在通过 codexhost �
 ## 安装目录和 manifest
 
 ```text
-$CODEXHOST_DATA_DIR/extensions/  # 默认 ~/.codexhost/extensions/
-  enabled.json                   # 管理入口写入；缺失或损坏时不启用任何扩展
-  sidebar-thread-tree/           # 必须是实际目录，目录名与 id 一致
+$CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extensions/
+  enabled.json                          # 管理入口写入；缺失或损坏时不启用任何扩展
+  sidebar-thread-tree/                  # 必须是实际目录，目录名与 id 一致
     manifest.json
     desktop.js
-    desktop.css                  # 可选
+    desktop.css                         # 可选
 ```
 
-`extensions/` 独立于 Harness 插件目录。`enabled.json` 保存启用顺序和配置版本；Console 和本机 Host 设置 RPC 共用修订号并通过原子替换更新它。复制或构建扩展不会修改该文件。Web 设置连接必须通过身份验证且同源，只能管理该 Web 服务的本机 Host 上的 Desktop 扩展，不会在 Web 里运行扩展。
+`desktop-extensions/` 独立于 Harness 插件目录，也不扫描 Pi Adapter 使用的 `extensions/`。`enabled.json` 保存启用顺序和配置版本；Console 和本机 Host 设置 RPC 共用修订号并通过原子替换更新它。复制或构建扩展不会修改该文件。文件尚未生成是正常初始状态，不显示诊断；配置存在但无效时报告原因。Web 设置连接必须通过身份验证且同源，只能管理该 Web 服务的本机 Host 上的 Desktop 扩展，不会在 Web 里运行扩展。
 
 ```json
 {
@@ -67,7 +67,7 @@ $CODEXHOST_DATA_DIR/extensions/  # 默认 ~/.codexhost/extensions/
    npx tsc -b packages/shared-contracts
    node tools/build-desktop-extension.mjs \
      packages/desktop-extensions/sidebar-thread-tree \
-     "${CODEXHOST_DATA_DIR:-$HOME/.codexhost}/extensions"
+     "${CODEXHOST_DATA_DIR:-$HOME/.codexhost}/desktop-extensions"
    ```
 
    工具将 manifest、单文件 `desktop.js` 和声明的 `desktop.css` 写到 `<扩展根>/<id>/`，不写入其他运行依赖。重新构建可触发热更新。

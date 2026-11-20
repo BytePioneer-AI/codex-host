@@ -116,8 +116,28 @@ async function start(
 
 const CHANGE = { "x-codexhost-console": "1" };
 
+it("ignores Pi extensions when listing Desktop extensions and diagnoses broken configuration", async () => {
+  for (const id of ["pi-codex-fast", "pi-subagent-observer"])
+    await mkdir(path.join(directory, "extensions", id), { recursive: true, mode: 0o700 });
+  const { base } = await start();
+  const list = async () => (await fetch(`${base}/api/extensions`)).json();
+  const fresh = await list();
+  expect(fresh.extensions).toEqual([]);
+  expect(fresh.diagnostics).toEqual([]);
+  expect(fresh.configuration).toEqual({ version: 1, revision: 0, enabled: [] });
+
+  const root = path.join(directory, "desktop-extensions");
+  await mkdir(root, { mode: 0o700 });
+  expect((await list()).diagnostics).toEqual([]);
+  await writeFile(path.join(root, "enabled.json"), "{!");
+  expect(await list()).toMatchObject({
+    configuration: fresh.configuration,
+    diagnostics: [expect.stringMatching(/^Invalid extension configuration:/u)],
+  });
+});
+
 it("manages Desktop extensions offline and protects all selection changes", async () => {
-  const root = path.join(directory, "extensions");
+  const root = path.join(directory, "desktop-extensions");
   for (const [id, desktopApi] of [
     ["layout", 1],
     ["badge", 1],

@@ -15,7 +15,7 @@ let directory: string;
 let root: string;
 beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "desktop-extensions-"));
-  root = path.join(directory, "extensions");
+  root = path.join(directory, "desktop-extensions");
 });
 afterEach(() => rm(directory, { recursive: true, force: true }));
 
@@ -132,11 +132,14 @@ it("prevents two management processes from overwriting the same revision", async
   }
 });
 
+it("treats missing configuration as a normal empty selection", async () => {
+  const empty = { configuration: { version: 1, enabled: [], revision: 0 } };
+  expect(await readDesktopExtensionConfiguration(root)).toStrictEqual(empty);
+  await mkdir(root, { mode: 0o700 });
+  expect(await readDesktopExtensionConfiguration(root)).toStrictEqual(empty);
+});
+
 it("saves recovery tokens and fails closed on damaged configuration", async () => {
-  expect(await readDesktopExtensionConfiguration(root)).toMatchObject({
-    configuration: { enabled: [], revision: 0 },
-    diagnostic: expect.any(String),
-  });
   await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["example"] }));
   const reloadToken = "bbd3fcb4-27e1-44ad-9ed2-a384ae8b3619";
   await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: [], reloadToken }));

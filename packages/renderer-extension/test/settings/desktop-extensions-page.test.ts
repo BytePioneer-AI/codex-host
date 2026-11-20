@@ -271,7 +271,7 @@ describe("Desktop extensions settings page", () => {
     };
     const zhMount = mountPage("zh-CN", () => client);
     await vi.waitFor(() =>
-      expect(textOf(zhMount.content)).toContain("$CODEXHOST_DATA_DIR/extensions/<id>/"),
+      expect(textOf(zhMount.content)).toContain("$CODEXHOST_DATA_DIR/desktop-extensions/<id>/"),
     );
     expect(textOf(zhMount.content)).toContain("尚未发现 Desktop 扩展");
     expect(textOf(zhMount.content)).toContain("等待 Desktop 连接");
@@ -281,7 +281,7 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() =>
       expect(textOf(enMount.content)).toContain("No Desktop extensions found"),
     );
-    expect(textOf(enMount.content)).toContain("$CODEXHOST_DATA_DIR/extensions/<id>/");
+    expect(textOf(enMount.content)).toContain("$CODEXHOST_DATA_DIR/desktop-extensions/<id>/");
     enMount.dispose();
   });
 

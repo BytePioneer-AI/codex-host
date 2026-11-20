@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- 新增 Desktop 界面扩展：用户把扩展目录放进独立根目录 `~/.codexhost/extensions/`（随 `CODEXHOST_DATA_DIR` 变化），在 Console 中启用、禁用。Desktop Controller 不重启 Codex Desktop、不刷新窗口，直接把变化应用到正在运行的 Desktop 窗口；窗口重载后按最新启用集合恢复。
+- 新增 Desktop 界面扩展：用户把扩展目录放进独立根目录 `$CODEXHOST_DATA_DIR/desktop-extensions/`（默认 `~/.codexhost/desktop-extensions/`，不与 Pi Adapter 的 `extensions/` 共用），在 Console 中启用、禁用。Desktop Controller 不重启 Codex Desktop、不刷新窗口，直接把变化应用到正在运行的 Desktop 窗口；窗口重载后按最新启用集合恢复。
 - 扩展只包含 `manifest.json`、`desktop.js` 和可选的 `desktop.css`，通过按扩展作用域传入的宿主 API 使用 v1 原语：侧栏行观察、Thread 树订阅、Thread 跳转、Harness 展示信息、受管 DOM 挂载与标记、卸载信号。宿主在卸载时强制回收这些原语登记的资源。
 - 扩展在 manifest 中声明独占的界面槽位，同一槽位只能有一个扩展生效；Console 在启用前提示冲突。
 - Console 增加扩展列表、启停、运行状态，以及"禁用全部扩展并重载 Desktop 窗口"的兜底操作；Desktop 和通过身份验证的 Web 设置连接可通过本机 Host RPC 管理同一份选择。

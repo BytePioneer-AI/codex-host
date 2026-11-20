@@ -20,7 +20,7 @@ it("shares Desktop and client-channel selection, status and recovery without exe
   try {
     await fixture.ready;
     const data = fixture.mappingStoreDirectory;
-    const root = path.join(data, "extensions");
+    const root = path.join(data, "desktop-extensions");
     for (const [id, desktopApi] of [
       ["badge", 1],
       ["tree", 1],
@@ -164,7 +164,7 @@ it("does not expose Desktop extension management on an SSH-managed Host", async 
       error: { code: -32601 },
     });
     const { configuration } = await readDesktopExtensionConfiguration(
-      path.join(fixture.mappingStoreDirectory, "extensions"),
+      path.join(fixture.mappingStoreDirectory, "desktop-extensions"),
     );
     expect(configuration).toEqual({ version: 1, revision: 0, enabled: [] });
   } finally {

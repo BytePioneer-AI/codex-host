@@ -149,7 +149,7 @@ Launcher 启动的本地 Host Runtime 在 `127.0.0.1` 的随机端口开放控�
 
 ## Desktop 扩展
 
-将你信任的扩展目录（包含 `manifest.json`、脚本和可选样式）复制到 `$CODEXHOST_DATA_DIR/extensions/`（默认 `~/.codexhost/extensions/`），然后在 **Desktop 扩展** 页启用。扩展以受信任代码运行，不是沙箱；POSIX 上目录和文件必须属于当前用户，不能允许同组或其他用户写入。复制目录不会自动启用它，也不影响 Harness 插件。
+将你信任的扩展目录（包含 `manifest.json`、脚本和可选样式）复制到 `$CODEXHOST_DATA_DIR/desktop-extensions/`（默认 `~/.codexhost/desktop-extensions/`），然后在 **Desktop 扩展** 页启用。扩展以受信任代码运行，不是沙箱；POSIX 上目录和文件必须属于当前用户，不能允许同组或其他用户写入。复制目录不会自动启用它，也不影响 Harness 插件。
 
 页面显示保存的选择和实际运行状态。若没有连接到 Desktop，选择仍可保存，下次 Controller 就绪时生效。同一槽位只能由一个扩展占用，冲突时 Console 会指出占用者。扩展文件损坏、不兼容，或改动过期的启用选择时，页面会显示原因。
 

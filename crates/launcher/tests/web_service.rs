@@ -983,14 +983,14 @@ fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
         .unwrap()
         .parse()
         .unwrap();
-    let state = PathBuf::from(
-        environment["CODEXHOST_RUNTIME_DESCRIPTOR_PATH"]
-            .as_str()
-            .unwrap(),
-    )
-    .parent()
-    .unwrap()
-    .join("updates");
+    // Stage the operation where the Host Runtime writes it, even when the
+    // Launcher stores the Desktop runtime descriptor in a different directory.
+    #[cfg(target_os = "linux")]
+    let state = fixture.root.join(".codexhost").join("updates");
+    #[cfg(target_os = "macos")]
+    let state = fixture
+        .root
+        .join("Library/Application Support/codexhost/updates");
     fs::create_dir_all(&state).unwrap();
     let deadline = || Instant::now() + Duration::from_secs(15);
     for attempt in 1..=2 {

@@ -13,14 +13,28 @@ import { DEFAULT_SIDEBAR_BROWSER_QUALITY, SidebarBrowserTab } from "../src/sideb
 
 /** Only the Chrome and socket boundaries are substituted; the tab owns all scheduling. */
 async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
-  const cdp = Object.assign(new EventEmitter(), {
-    send: async (command: string) => {
-      if (command === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
-      if (command === "Page.getNavigationHistory") return { entries: [], currentIndex: 0 };
-      if (command === "Page.captureScreenshot") return { data: "" };
+  const starts: Record<string, unknown>[] = [];
+  const screenshots: Record<string, unknown>[] = [];
+  const sessions: EventEmitter[] = [];
+  const context = {
+    newCDPSession: async () => {
+      const cdp = Object.assign(new EventEmitter(), {
+        send: async (command: string, params: Record<string, unknown>) => {
+          if (command === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (command === "Page.getNavigationHistory") return { entries: [], currentIndex: 0 };
+          if (command === "Page.startScreencast") starts.push(params);
+          if (command === "Page.captureScreenshot") {
+            screenshots.push(params);
+            return { data: "" };
+          }
+        },
+        detach: async () => undefined,
+      });
+      sessions.push(cdp);
+      return cdp;
     },
-  });
-  const context = { newCDPSession: async () => cdp, newPage: async () => page };
+    newPage: async () => page,
+  };
   let editableChanged!: () => void;
   const page = Object.assign(new EventEmitter(), {
     close: async () => undefined,
@@ -61,14 +75,14 @@ async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
   const viewer = await attach();
   viewer.receive({ type: "navigate", url: page.url() });
   await setImmediate();
-  const paint = async (id: number, size = 1) => {
-    cdp.emit("Page.screencastFrame", {
+  const paint = async (id: number, size = 1, session = 0) => {
+    sessions[session]!.emit("Page.screencastFrame", {
       data: Buffer.alloc(size, id).toString("base64"),
       sessionId: 1,
     });
     await setImmediate();
   };
-  return { viewer, attach, paint, changeContent: () => editableChanged() };
+  return { viewer, attach, paint, starts, screenshots, changeContent: () => editableChanged() };
 }
 
 function header(frame: Buffer | undefined) {
@@ -124,6 +138,54 @@ it("bounds outstanding bytes without starving an oversized picture", async (t) =
   assert.deepEqual(pictures(viewer.frames), [undefined, 1, 2, 3]);
   ackLatest();
   assert.deepEqual(pictures(viewer.frames), [undefined, 1, 2, 3, 4]);
+});
+
+it("paces JPEG and sends a newer full PNG to both viewers when motion stops", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { viewer, attach, paint, starts, screenshots } = await openTab(t);
+  const second = await attach();
+  await setImmediate();
+
+  // Two slow viewers share one cast; queue pressure replaces PNGs waiting behind a large frame.
+  for (let i = 1; i <= 5; i++) {
+    now += 30;
+    t.mock.timers.tick(30);
+    await paint(i, 1400 * 1024);
+  }
+  assert.deepEqual(
+    starts.map(({ format }) => format),
+    ["png", "jpeg"],
+  );
+  assert.equal(starts.at(-1)?.quality, 80);
+  assert.equal(starts.at(-1)?.maxWidth, 2000);
+  assert.equal(starts.at(-1)?.maxHeight, 1600);
+  const viewers = [viewer, second];
+  const ack = () => {
+    for (const v of viewers) v.receive({ type: "ack", sequence: sequence(v.frames.at(-1)) });
+  };
+  ack();
+  await paint(6, 100, 1);
+  await paint(7, 100, 1); // Same output slot, even if Chrome already finished another encode.
+  for (const v of viewers) {
+    assert.equal(header(v.frames.at(-1)).format, "jpeg");
+    assert.equal(pictures(v.frames).at(-1), 6);
+  }
+  const jpeg = viewer.frames.at(-1);
+  now += 400;
+  t.mock.timers.tick(400);
+  await setImmediate();
+  assert.deepEqual(
+    starts.map(({ format }) => format),
+    ["png", "jpeg", "png"],
+  );
+  assert.deepEqual(screenshots.at(-1), { format: "png" });
+  await paint(8, 100, 1); // A pending JPEG encode completed after its cast stopped.
+  for (const v of viewers) {
+    assert.equal(header(v.frames.at(-1)).format, "png");
+    assert.ok(sequence(v.frames.at(-1)) > sequence(jpeg));
+  }
 });
 
 it("keeps editable areas valid while streaming during scans", { timeout: 3000 }, async (t) => {

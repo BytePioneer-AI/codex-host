@@ -140,11 +140,23 @@ export function rendererAgentForThreadOwnership(ownership: ThreadOwnership): Ren
   return ownership.harnessId;
 }
 
-// Desktop wraps some titles (hover label, secondary line), so the title is not always a direct
-// child of the trigger. Anchor the icon to the title's outermost wrapper that still sits in a
-// horizontal flex row, keeping it on the title line.
 function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): HTMLElement {
   const view = title.ownerDocument.defaultView;
+  if (
+    titleTrigger.hasAttribute("data-thread-title-trigger") &&
+    titleTrigger.parentElement &&
+    titleTrigger.contains(
+      title.closest("button[data-interactive-row-button], a[data-interactive-row-link]"),
+    )
+  ) {
+    // The button/link has no gap. Use the native leading position in the content row instead.
+    const style = view?.getComputedStyle(titleTrigger.parentElement);
+    if (style?.display.includes("flex") && !style.flexDirection.startsWith("column")) {
+      return titleTrigger;
+    }
+  }
+
+  // Older and scheduled rows can wrap the title; keep the icon on the title line.
   let anchor = title;
   while (anchor.parentElement && anchor.parentElement !== titleTrigger) {
     const style = view?.getComputedStyle(anchor.parentElement);
@@ -224,11 +236,15 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     marker.style.display = "inline-flex";
     marker.style.alignItems = "center";
     marker.style.justifyContent = "center";
-    marker.style.width = "14px";
-    marker.style.height = "14px";
+    const leadingSlot = anchor === titleTrigger;
+    const slotSize = leadingSlot ? "var(--icon-leading-size, 16px)" : "14px";
+    marker.style.width = slotSize;
+    marker.style.height = slotSize;
     marker.style.flex = "none";
     marker.style.pointerEvents = "none";
-    marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument, plugin));
+    // The filled Codex glyph reads heavier at the same size as the other Harness artwork.
+    const artworkSize = leadingSlot && agent === "codex" ? 12 : 14;
+    marker.append(createRendererAgentIcon(agent, artworkSize, this.element.ownerDocument, plugin));
     anchor.before(marker);
   }
 

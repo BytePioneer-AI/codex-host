@@ -344,7 +344,7 @@ describe("Renderer binding native draft routing", () => {
 
     const applyAgent = vi.fn(() => true);
     probe.setAdapter(
-      { state: "ready", reason: "ready", modelUpdates: 0, hook: "model-state" },
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
       undefined,
       applyAgent,
     );

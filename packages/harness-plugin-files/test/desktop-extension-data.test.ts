@@ -1,6 +1,7 @@
 import {
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   rm,
@@ -10,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   DESKTOP_EXTENSION_ASSET_MAX_BYTES,
   DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
@@ -139,6 +141,24 @@ it("atomically replaces only that extension's settings and retains them across u
   await truncate(path.join(settings, "settings.json"), DESKTOP_EXTENSION_SETTINGS_MAX_BYTES + 1);
   await expect(readDesktopExtensionSettings(location)).rejects.toThrow("exceeds its limit");
 });
+
+it.runIf(process.platform === "win32")(
+  "replaces settings after an active reader closes",
+  async () => {
+    const location = { dataDir, id };
+    await writeDesktopExtensionSettings({ ...location, values: { revision: 1 } });
+    const directory = path.join(dataDir, "desktop-extension-data", id);
+    const reader = await open(path.join(directory, "settings.json"), "r");
+    const close = delay(60).then(() => reader.close());
+    try {
+      await writeDesktopExtensionSettings({ ...location, values: { revision: 2 } });
+    } finally {
+      await close;
+    }
+    expect(await readDesktopExtensionSettings(location)).toEqual({ revision: 2 });
+    expect(await readdir(directory)).toEqual(["settings.json"]);
+  },
+);
 
 it("requires a bounded backend entry at installation and discovery", async () => {
   const extensionsRoot = desktopExtensionsRoot(dataDir);

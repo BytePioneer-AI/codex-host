@@ -265,9 +265,11 @@ export interface DelegationThreadListResult {
 export interface ThreadWatchInput {
   /** Thread observed until it stops. */
   threadId: string;
-  /** Thread that receives the single notification. */
+  /** Thread that receives stop/expiry and any enabled silence notifications. */
   notifyThreadId: string;
   timeoutMs: number;
+  /** Optional silence threshold; omitted disables stalled notifications. */
+  stallAfterMs?: number;
 }
 
 export type ThreadWatchOutcome =
@@ -278,6 +280,8 @@ export type ThreadWatchOutcome =
   | "needsInput"
   /** The Thread was still running when the watch expired. */
   | "timedOut"
+  /** Still running, with no observed Harness event for the configured threshold. */
+  | "stalled"
   /** Reads kept failing, so the state of the Thread is unknown. */
   | "unreadable"
   | "notFound";
@@ -292,6 +296,7 @@ export interface ThreadWatchResult {
   state: "watching" | "alreadyTerminal" | "alreadyNeedsInput";
   status: DelegationThreadStatus;
   timeoutMs: number;
+  stallAfterMs?: number;
   /** Present for `alreadyNeedsInput`, so the caller can answer without re-reading. */
   pendingQuestions?: DelegationPendingQuestion[];
 }
@@ -308,6 +313,7 @@ export interface ThreadWatchEntry {
   /** Present for `undeliverable`. */
   reason?: string;
   registeredAt: string;
+  stallAfterMs?: number;
   /** Current title, or the last observed title when the Thread cannot be read. */
   taskName?: string;
   /** Current Thread status; omitted when the Thread cannot be read. */
@@ -345,6 +351,8 @@ export interface DelegationControlApi {
 }
 
 export interface DelegationControlRegistration extends DelegationControlApi {
+  /** Thread and Harness subagent ancestors active in an incoming Harness event. */
+  subscribeActivity?(listener: (threadIds: readonly string[]) => void): () => void;
   executionHostId?(threadId: string): string | undefined;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;

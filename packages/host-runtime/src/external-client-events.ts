@@ -10,7 +10,7 @@ export const EVENT_RETENTION_DAYS_ENV = "CODEXHOST_CLIENT_EVENT_RETENTION_DAYS";
 const DAY_MS = 24 * 60 * 60_000;
 const SEGMENT = /^(\d{4}-\d{2}-\d{2})\.jsonl$/u;
 
-/** What an external client learns when a watched Thread stops: state and links, never content. */
+/** Watch outcomes for an external client: state and links, never conversation content. */
 export interface ClientEvent {
   /** Increases within a client's log; use it as the cursor. */
   id: number;

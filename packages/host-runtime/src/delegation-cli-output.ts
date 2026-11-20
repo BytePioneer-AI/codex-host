@@ -31,6 +31,7 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
       state: watch.state,
       notify: targetLink(watch.notifyThreadId),
       timeoutMs: watch.timeoutMs,
+      ...(watch.stallAfterMs !== undefined ? { stallAfterMs: watch.stallAfterMs } : {}),
       ...(watch.pendingQuestions?.length ? { pendingQuestions: watch.pendingQuestions } : {}),
     },
   };
@@ -172,6 +173,7 @@ export function compactDelegationOutput(
         state: result.state,
         status: result.status,
         timeoutMs: result.timeoutMs,
+        ...(result.stallAfterMs !== undefined ? { stallAfterMs: result.stallAfterMs } : {}),
         ...(result.pendingQuestions?.length ? { pendingQuestions: result.pendingQuestions } : {}),
       };
     }
@@ -190,6 +192,7 @@ export function compactDelegationOutput(
             taskName,
             threadStatus,
             watchedForMs,
+            stallAfterMs,
           }) => ({
             thread: threadLink(threadId),
             notify: targetLink(notifyThreadId),
@@ -201,6 +204,7 @@ export function compactDelegationOutput(
             ...(taskName ? { taskName } : {}),
             ...(threadStatus ? { threadStatus } : {}),
             ...(watchedForMs !== undefined ? { watchedForMs } : {}),
+            ...(stallAfterMs !== undefined ? { stallAfterMs } : {}),
           }),
         ),
       };

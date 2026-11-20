@@ -1,70 +1,222 @@
+/* Host-managed marker on the native Agent icon container. */
+[data-cx-sidebar-delegation-badges-anchor] {
+  position: relative !important;
+  overflow: visible !important;
+}
+
 .cx-delegation-badge {
+  position: absolute;
+  inset-inline-end: -5px;
+  inset-block-end: -4px;
+  z-index: 2;
   display: inline-flex;
-  flex: none;
-  margin-inline: 3px;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  line-height: 0;
 }
 
-.cx-delegation-badge button {
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.cx-delegation-badge > button {
-  min-width: 17px;
-  height: 17px;
-  padding: 0 2px;
-  border: 1px solid currentColor;
-  border-radius: 5px;
-  background: transparent;
-  font-size: 10px;
+.cx-delegation-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 999px;
+  background: light-dark(#6b7280, #52525b);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 1px light-dark(rgba(255, 255, 255, 0.92), rgba(24, 24, 27, 0.92));
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    transform 120ms ease,
+    filter 120ms ease;
 }
 
-.cx-delegation-badge [data-state="running"] {
-  color: light-dark(#075cae, #7bbaff);
+.cx-delegation-trigger::after {
+  content: "";
+  position: absolute;
+  inset: -3px -2px -3px -3px;
 }
 
-.cx-delegation-badge [data-state="waiting"] {
-  color: light-dark(#8b4900, #f6ae57);
+.cx-delegation-trigger:hover {
+  filter: brightness(1.06);
+  transform: scale(1.05);
 }
 
-.cx-delegation-badge [data-state="unknown"] {
-  border-style: dashed;
+.cx-delegation-trigger:focus-visible {
+  outline: 2px solid light-dark(#2563eb, #60a5fa);
+  outline-offset: 1px;
+}
+
+.cx-delegation-trigger[data-state="waiting"] {
+  background: light-dark(#e68a19, #d97706);
+}
+
+.cx-delegation-trigger[data-state="running"] {
+  background: light-dark(#2563eb, #3b82f6);
+}
+
+.cx-delegation-trigger[data-state="idle"] {
+  background: light-dark(#71717a, #52525b);
+}
+
+.cx-delegation-trigger[data-state="unknown"] {
+  background: light-dark(#71717a, #52525b);
+  outline: 1px dashed light-dark(#d4d4d8, #a1a1aa);
+  outline-offset: -1px;
 }
 
 .cx-delegation-panel {
   position: fixed;
-  position-area: block-end span-inline-end;
-  position-try-fallbacks: flip-block, flip-inline;
-  max-width: min(310px, 90vw);
-  max-height: min(320px, 80vh);
-  padding: 4px;
-  overflow: auto;
-  color: CanvasText;
-  background: Canvas;
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-  border-radius: 8px;
+  inset: auto;
+  margin: 0;
+  min-width: 230px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: min(320px, calc(100vh - 16px));
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  color: light-dark(#18181b, #f4f4f5);
+  background: light-dark(#ffffff, #1f2024);
+  border: 1px solid light-dark(rgba(0, 0, 0, 0.09), rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+  box-shadow: light-dark(0 8px 24px rgba(0, 0, 0, 0.12), 0 10px 28px rgba(0, 0, 0, 0.45));
+  box-sizing: border-box;
+  pointer-events: auto;
 }
 
-.cx-delegation-panel button {
+.cx-delegation-panel[hidden] {
+  display: none;
+}
+
+.cx-delegation-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
-  padding: 5px 7px;
+  min-height: 30px;
+  padding: 5px 8px;
   border: 0;
+  border-radius: 8px;
   background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.35;
   text-align: start;
+  cursor: pointer;
+  box-sizing: border-box;
 }
 
-.cx-delegation-panel button:hover {
-  background: color-mix(in srgb, currentColor 10%, transparent);
+.cx-delegation-item:hover {
+  background: light-dark(rgba(0, 0, 0, 0.05), rgba(255, 255, 255, 0.08));
 }
 
-.cx-delegation-panel img {
-  width: 13px;
-  height: 13px;
+.cx-delegation-item:focus-visible {
+  outline: 2px solid light-dark(#2563eb, #60a5fa);
+  outline-offset: -2px;
+}
+
+.cx-delegation-item .cx-thread-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.cx-delegation-item .cx-thread-icon img,
+.cx-delegation-item .cx-thread-icon svg {
+  width: 14px;
+  height: 14px;
   object-fit: contain;
+  display: block;
+}
+
+.cx-delegation-item .cx-thread-icon-fallback {
+  border-radius: 4px;
+  background: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.1));
+  color: light-dark(#52525b, #d4d4d8);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.cx-delegation-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cx-delegation-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  margin-inline-start: 8px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.cx-delegation-status[data-state="waiting"] {
+  color: light-dark(#d97706, #f59e0b);
+}
+
+.cx-delegation-status[data-state="running"] {
+  color: light-dark(#18181b, #f4f4f5);
+}
+
+.cx-delegation-status[data-state="idle"],
+.cx-delegation-status[data-state="unknown"] {
+  color: light-dark(#71717a, #a1a1aa);
+}
+
+.cx-delegation-status-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  line-height: 1;
+}
+
+.cx-delegation-status[data-state="waiting"] .cx-delegation-status-glyph {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cx-delegation-status[data-state="running"] .cx-delegation-status-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.cx-delegation-status[data-state="idle"] .cx-delegation-status-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.25px solid currentColor;
+  box-sizing: border-box;
+}
+
+.cx-delegation-status[data-state="unknown"] .cx-delegation-status-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.25px dashed currentColor;
+  box-sizing: border-box;
 }

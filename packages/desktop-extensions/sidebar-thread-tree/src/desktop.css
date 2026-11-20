@@ -4,20 +4,220 @@
   display: none !important;
 }
 
-.cx-sidebar-tree {
-  margin-inline: 10px 4px;
-  padding-block: 2px 4px;
-  font-size: 12px;
+[data-cx-sidebar-thread-tree-icon-anchor] {
+  position: relative !important;
+  overflow: visible !important;
 }
 
-.cx-sidebar-tree button {
+/* Native root toggle overlaid directly on the Agent icon slot. */
+.cx-tree-icon-toggle {
+  position: absolute;
+  inset: -4px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: light-dark(rgba(24, 24, 27, 0.7), rgba(244, 244, 245, 0.75));
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.cx-tree-icon-toggle:hover {
+  background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.1));
+  color: light-dark(#18181b, #fafafa);
+}
+
+.cx-tree-icon-toggle:focus-visible {
+  outline: 2px solid light-dark(#2563eb, #60a5fa);
+  outline-offset: -1px;
+  opacity: 1;
+}
+
+/* Expanded native root: show chevron in place of the underlying Agent icon. */
+[data-cx-sidebar-thread-tree-icon-expanded] > :not(.cx-tree-icon-toggle) {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+[data-cx-sidebar-thread-tree-icon-expanded] > .cx-tree-icon-toggle {
+  opacity: 1;
+}
+
+/* Collapsed native root: keep Agent icon at rest; reveal chevron on hover/focus. */
+[data-cx-sidebar-thread-tree-icon-collapsed] > .cx-tree-icon-toggle {
+  opacity: 0;
+}
+
+[data-cx-sidebar-thread-tree-root-row]:hover
+  [data-cx-sidebar-thread-tree-icon-collapsed]
+  > :not(.cx-tree-icon-toggle),
+[data-cx-sidebar-thread-tree-icon-collapsed]:has(
+    .cx-tree-icon-toggle:hover,
+    .cx-tree-icon-toggle:focus-visible
+  )
+  > :not(.cx-tree-icon-toggle) {
+  opacity: 0;
+}
+
+[data-cx-sidebar-thread-tree-root-row]:hover
+  [data-cx-sidebar-thread-tree-icon-collapsed]
+  > .cx-tree-icon-toggle,
+[data-cx-sidebar-thread-tree-icon-collapsed]:has(
+    .cx-tree-icon-toggle:hover,
+    .cx-tree-icon-toggle:focus-visible
+  )
+  > .cx-tree-icon-toggle {
+  opacity: 1;
+}
+
+.cx-tree-chevron {
+  width: 12px;
+  height: 12px;
+  display: block;
+  transition: transform 140ms ease;
+}
+
+.cx-tree-icon-toggle[aria-expanded="false"] .cx-tree-chevron,
+.cx-tree-row-toggle[aria-expanded="false"] .cx-tree-chevron {
+  transform: rotate(-90deg);
+}
+
+/* Tree panel variables (populated from measured sibling native rows). */
+.cx-sidebar-tree {
+  --cx-tree-row-height: 32px;
+  --cx-tree-row-radius: 8px;
+  --cx-tree-font-size: 13px;
+  --cx-tree-row-inset-start: 0px;
+  --cx-tree-row-inset-end: 0px;
+  --cx-tree-icon-size: 14px;
+  --cx-tree-icon-offset: 10px;
+  --cx-tree-gap: 8px;
+  --cx-tree-step: calc(var(--cx-tree-icon-size) + var(--cx-tree-gap));
+  --cx-tree-guide-color: light-dark(rgba(0, 0, 0, 0.13), rgba(255, 255, 255, 0.16));
+  --cx-tree-hover-bg: light-dark(rgba(0, 0, 0, 0.045), rgba(255, 255, 255, 0.07));
+  --cx-tree-focus-ring: light-dark(#2563eb, #60a5fa);
+  min-width: 0;
+  font-size: var(--cx-tree-font-size);
+}
+
+.cx-tree-node {
+  --cx-tree-depth: 0;
+  position: relative;
+  min-width: 0;
+}
+
+/* Virtual root & child rows aligned with native sidebar row geometry. */
+.cx-tree-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  width: 100%;
-  padding: 3px 5px;
+  gap: var(--cx-tree-gap);
+  height: var(--cx-tree-row-height);
+  margin-inline-start: var(--cx-tree-row-inset-start);
+  margin-inline-end: var(--cx-tree-row-inset-end);
+  padding-inline-start: var(--cx-tree-icon-offset);
+  padding-inline-end: 10px;
+  border-radius: var(--cx-tree-row-radius);
+  box-sizing: border-box;
+  min-width: 0;
+  transition: background-color 100ms ease;
+}
+
+.cx-tree-row[data-depth]:not([data-depth="0"]) {
+  margin-inline-start: calc(
+    var(--cx-tree-row-inset-start) + var(--cx-tree-icon-offset) + var(--cx-tree-depth) *
+      var(--cx-tree-step) - 6px
+  );
+  padding-inline-start: 6px;
+}
+
+.cx-tree-row:hover {
+  background: var(--cx-tree-hover-bg);
+}
+
+.cx-tree-lead {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cx-tree-icon-size);
+  height: var(--cx-tree-icon-size);
+  flex: none;
+}
+
+.cx-tree-row-toggle {
+  position: absolute;
+  inset: -4px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: 5px;
+  background: transparent;
+  color: light-dark(rgba(24, 24, 27, 0.7), rgba(244, 244, 245, 0.75));
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.cx-tree-row-toggle:hover {
+  background: light-dark(rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.1));
+  color: light-dark(#18181b, #fafafa);
+}
+
+.cx-tree-row-toggle:focus-visible {
+  outline: 2px solid var(--cx-tree-focus-ring);
+  outline-offset: -1px;
+  opacity: 1;
+}
+
+/* Expanded virtual/nested parent: show chevron in icon slot. */
+.cx-tree-row[data-expanded="true"] > .cx-tree-lead > .cx-thread-icon {
+  opacity: 0;
+}
+
+.cx-tree-row[data-expanded="true"] > .cx-tree-lead > .cx-tree-row-toggle {
+  opacity: 1;
+}
+
+/* Collapsed virtual/nested parent: show Agent icon at rest; reveal chevron on hover/focus. */
+.cx-tree-row[data-expanded="false"]:hover > .cx-tree-lead > .cx-thread-icon,
+.cx-tree-row[data-expanded="false"]
+  > .cx-tree-lead:has(.cx-tree-row-toggle:focus-visible)
+  > .cx-thread-icon {
+  opacity: 0;
+}
+
+.cx-tree-row[data-expanded="false"]:hover > .cx-tree-lead > .cx-tree-row-toggle,
+.cx-tree-row[data-expanded="false"]
+  > .cx-tree-lead:has(.cx-tree-row-toggle:focus-visible)
+  > .cx-tree-row-toggle {
+  opacity: 1;
+}
+
+.cx-tree-row-main {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: var(--cx-tree-gap);
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cx-tree-row-radius);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -25,51 +225,179 @@
   cursor: pointer;
 }
 
-.cx-sidebar-tree button:hover {
-  background: color-mix(in srgb, currentColor 10%, transparent);
+.cx-tree-row-main:focus-visible {
+  outline: 2px solid var(--cx-tree-focus-ring);
+  outline-offset: -2px;
 }
 
-.cx-sidebar-tree .cx-tree-toggle {
-  color: color-mix(in srgb, currentColor 75%, transparent);
-  font-size: 11px;
+.cx-sidebar-tree .cx-thread-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cx-tree-icon-size);
+  height: var(--cx-tree-icon-size);
+  flex: none;
+  transition: opacity 120ms ease;
 }
 
-.cx-tree-thread img {
-  width: 13px;
-  height: 13px;
+.cx-sidebar-tree .cx-thread-icon img,
+.cx-sidebar-tree .cx-thread-icon svg {
+  width: var(--cx-tree-icon-size);
+  height: var(--cx-tree-icon-size);
   object-fit: contain;
+  display: block;
 }
 
-.cx-tree-thread span {
+.cx-sidebar-tree .cx-thread-icon-fallback {
+  border-radius: 4px;
+  background: light-dark(rgba(0, 0, 0, 0.07), rgba(255, 255, 255, 0.1));
+  color: light-dark(#52525b, #d4d4d8);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.cx-tree-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+}
+
+/* Right-side status indicators: running spinner, waiting orange dot, nothing for idle. */
+.cx-tree-status {
+  flex: none;
+  margin-inline-start: auto;
+  box-sizing: border-box;
+}
+
+.cx-tree-status[data-state="waiting"] {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: light-dark(#b45309, #f59e0b);
+}
+
+.cx-tree-status[data-state="running"] {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid light-dark(rgba(0, 0, 0, 0.16), rgba(255, 255, 255, 0.2));
+  border-top-color: light-dark(#2563eb, #60a5fa);
+  animation: cx-tree-spin 0.9s linear infinite;
+}
+
+.cx-tree-status[data-state="unknown"] {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.25px dashed light-dark(rgba(0, 0, 0, 0.35), rgba(255, 255, 255, 0.4));
+}
+
+@keyframes cx-tree-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cx-tree-status[data-state="running"] {
+    animation: none;
+    border-color: light-dark(#2563eb, #60a5fa);
+  }
+}
+
+/* Collapsed-only localized summary line aligned under the parent title. */
+.cx-tree-summary {
+  appearance: none;
+  display: block;
+  width: calc(100% - var(--cx-tree-row-inset-end));
+  margin: 0;
+  padding-block: 1px 4px;
+  padding-inline-start: calc(
+    var(--cx-tree-row-inset-start) + var(--cx-tree-icon-offset) + (var(--cx-tree-depth) + 1) *
+      var(--cx-tree-step)
+  );
+  padding-inline-end: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: light-dark(#71717a, #a1a1aa);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: start;
+  cursor: pointer;
+  box-sizing: border-box;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.cx-tree-thread::before {
+.cx-tree-summary:hover {
+  background: var(--cx-tree-hover-bg);
+}
+
+.cx-tree-summary:focus-visible {
+  outline: 2px solid var(--cx-tree-focus-ring);
+  outline-offset: -2px;
+}
+
+.cx-tree-summary-activity[data-activity="running"] {
+  color: light-dark(#0e7490, #38bdf8);
+}
+
+.cx-tree-summary-activity[data-activity="waiting"] {
+  color: light-dark(#b45309, #f59e0b);
+}
+
+/* Expanded children container with smooth curved tree connectors. */
+.cx-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-block-start: 1px;
+  min-width: 0;
+}
+
+.cx-tree-children > .cx-tree-node {
+  --cx-tree-guide-x: calc(
+    var(--cx-tree-row-inset-start) + var(--cx-tree-icon-offset) + (var(--cx-tree-depth) - 1) *
+      var(--cx-tree-step) + var(--cx-tree-icon-size) / 2
+  );
+  --cx-tree-guide-branch: max(8px, calc(var(--cx-tree-icon-size) / 2 + var(--cx-tree-gap) - 4px));
+}
+
+/* Curved elbow connecting the vertical trunk to each child row's icon midpoint. */
+.cx-tree-children > .cx-tree-node::before {
   content: "";
-  width: 5px;
-  height: 5px;
-  flex: none;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  opacity: 0.65;
+  position: absolute;
+  top: 0;
+  inset-inline-start: var(--cx-tree-guide-x);
+  width: var(--cx-tree-guide-branch);
+  height: calc(var(--cx-tree-row-height) / 2);
+  border-inline-start: 1px solid var(--cx-tree-guide-color);
+  border-block-end: 1px solid var(--cx-tree-guide-color);
+  border-end-start-radius: 7px;
+  pointer-events: none;
+  box-sizing: border-box;
 }
 
-.cx-tree-thread[data-state="running"]::before {
-  background: light-dark(#075cae, #7bbaff);
+.cx-tree-children > .cx-tree-node:first-child::before {
+  top: 2px;
+  height: calc(var(--cx-tree-row-height) / 2 - 2px);
 }
 
-.cx-tree-thread[data-state="waiting"]::before {
-  background: light-dark(#8b4900, #f6ae57);
-}
-
-.cx-tree-thread[data-state="unknown"]::before {
-  border-style: dashed;
-}
-
-.cx-tree-indent {
-  margin-inline-start: 7px;
-  padding-inline-start: 9px;
-  border-inline-start: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+/* Continuous vertical stem for non-last siblings, starting right past the curve bend. */
+.cx-tree-children > .cx-tree-node:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--cx-tree-row-height) / 2 - 7px);
+  bottom: -1px;
+  inset-inline-start: var(--cx-tree-guide-x);
+  width: 1px;
+  background: var(--cx-tree-guide-color);
+  pointer-events: none;
 }

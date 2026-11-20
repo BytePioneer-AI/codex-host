@@ -102,6 +102,24 @@ async function rpc(
   return front.collector.waitFor((message) => message.id === id);
 }
 
+function hostTimeoutContext(
+  front: ReturnType<typeof createFixture>,
+  viewer: string,
+  stage: string,
+) {
+  return (error: unknown) => {
+    if (!(error instanceof Error) || error.message !== "Timed out waiting for Host output") {
+      throw error;
+    }
+    throw new Error(
+      `${viewer} timed out at ${stage}; received Host output: ${JSON.stringify(
+        front.collector.messages,
+      )}`,
+      { cause: error },
+    );
+  };
+}
+
 describe("shared external Threads", () => {
   it.each(["submit", "discard"])(
     "keeps SSH prewarms out of every viewer's history until used (%s)",
@@ -317,28 +335,41 @@ describe("shared external Threads", () => {
     const { front, adapter, open } = setup();
     const ssh = front(true);
     const desktop = front(false);
-    const threadId = await startPiThread(ssh);
-    await desktop.collector.waitFor(
-      (m) => m.method === "thread/started" && (m.params as JsonObject).thread !== undefined,
+    const threadId = await startPiThread(ssh).catch(
+      hostTimeoutContext(ssh, "SSH", "startPiThread"),
     );
+    await desktop.collector
+      .waitFor(
+        (m) => m.method === "thread/started" && (m.params as JsonObject).thread !== undefined,
+      )
+      .catch(hostTimeoutContext(desktop, "desktop", "thread/started before turn/start"));
     const accepted = await rpc(ssh, 20, "turn/start", {
       threadId,
       clientUserMessageId: "message-a",
       input: [{ type: "text", text: "hello from SSH" }],
-    });
+    }).catch(hostTimeoutContext(ssh, "SSH", "turn/start response"));
     expect(accepted).not.toHaveProperty("error");
-    const ownStart = await ssh.collector.waitFor((m) => m.method === "turn/started");
+    const ownStart = await ssh.collector
+      .waitFor((m) => m.method === "turn/started")
+      .catch(hostTimeoutContext(ssh, "SSH", "initial turn/started"));
     expect(ssh.collector.messages.indexOf(accepted)).toBeLessThan(
       ssh.collector.messages.indexOf(ownStart),
     );
     for (const viewer of [ssh, desktop]) {
-      const start = await viewer.collector.waitFor((m) => m.method === "turn/started");
+      const viewerName = viewer === ssh ? "SSH" : "desktop";
+      const start = await viewer.collector
+        .waitFor((m) => m.method === "turn/started")
+        .catch(hostTimeoutContext(viewer, viewerName, "broadcast turn/started"));
       expect(start).toMatchObject({
         params: {
           threadId,
           turn: {
             items: [
-              { type: "userMessage", clientId: "message-a", content: [{ text: "hello from SSH" }] },
+              {
+                type: "userMessage",
+                clientId: "message-a",
+                content: [{ text: "hello from SSH" }],
+              },
             ],
           },
         },
@@ -346,8 +377,11 @@ describe("shared external Threads", () => {
     }
     session(adapter).appendText("same reply");
     for (const viewer of [ssh, desktop]) {
+      const viewerName = viewer === ssh ? "SSH" : "desktop";
       await expect(
-        viewer.collector.waitFor((m) => m.method === "item/agentMessage/delta"),
+        viewer.collector
+          .waitFor((m) => m.method === "item/agentMessage/delta")
+          .catch(hostTimeoutContext(viewer, viewerName, "item/agentMessage/delta")),
       ).resolves.toMatchObject({ params: { threadId, delta: "same reply" } });
     }
     expect(desktop.collector.messages.some((m) => m.id === 20)).toBe(false);
@@ -355,7 +389,9 @@ describe("shared external Threads", () => {
     expect(ssh.adapter.sessions).toHaveLength(0);
     expect(desktop.adapter.sessions).toHaveLength(0);
     session(adapter).succeedTurn();
-    await desktop.collector.waitFor((m) => m.method === "turn/completed");
+    await desktop.collector
+      .waitFor((m) => m.method === "turn/completed")
+      .catch(hostTimeoutContext(desktop, "desktop", "turn/completed"));
   });
 
   it("allows the other GUI to interrupt and then send; concurrent sends execute only once", async () => {

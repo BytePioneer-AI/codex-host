@@ -13,6 +13,7 @@ import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
   type RendererCodexAccountClient,
+  type RendererDesktopExtensionsClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
 import type {
@@ -35,6 +36,7 @@ export interface RendererSettingsLifecycleOptions {
   getAccountClient?(): RendererCodexAccountClient | null;
   getSessionImportClient?(hostId?: string): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
+  getDesktopExtensionsClient?(): RendererDesktopExtensionsClient | null;
   getRemoteConnections?(): RemoteConnectionsControl | null;
   requestUsageStatistics?: RendererUsageStatisticsRequest;
   /** Machines the usage statistics page may read besides the local Host. */
@@ -98,6 +100,7 @@ export function installRendererSettingsLifecycle(
             },
           }
         : undefined,
+      options.getDesktopExtensionsClient ?? (() => null),
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       onOpenChange(open) {

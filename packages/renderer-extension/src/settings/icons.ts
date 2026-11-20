@@ -24,6 +24,7 @@ import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
 import Network from "lucide/dist/esm/icons/network.mjs";
 import Play from "lucide/dist/esm/icons/play.mjs";
 import PlugZap from "lucide/dist/esm/icons/plug-zap.mjs";
+import Puzzle from "lucide/dist/esm/icons/puzzle.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
 import RotateCcw from "lucide/dist/esm/icons/rotate-ccw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
@@ -48,6 +49,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "github",
   "language",
   "connections",
+  "extensions",
   "accounts",
   "session-import",
   "add",
@@ -104,6 +106,7 @@ const iconNodes = {
   ],
   language: Languages,
   connections: PlugZap,
+  extensions: Puzzle,
   accounts: Users,
   "session-import": FolderInput,
   add: Plus,

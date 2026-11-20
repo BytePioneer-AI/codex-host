@@ -3,6 +3,11 @@ import {
   credentialImportChinese,
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
+import {
+  desktopExtensionsEnglish,
+  desktopExtensionsChinese,
+  type DesktopExtensionsMessages,
+} from "./desktop-extensions-messages.js";
 import type { DefaultRendererSettingsPageId } from "./pages.js";
 import {
   harnessVersionEnglish,
@@ -29,6 +34,7 @@ export interface RendererSettingsLanguageControl {
 
 export interface RendererSettingsMessages {
   readonly credentialImports: CredentialImportMessages;
+  readonly desktopExtensions: DesktopExtensionsMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
   readonly close: string;
@@ -289,6 +295,7 @@ export interface RendererSettingsMessages {
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportEnglish,
+  desktopExtensions: desktopExtensionsEnglish,
   locale: "en",
   title: "Settings",
   close: "Close settings",
@@ -595,6 +602,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "mobile-web": "Phone & browser",
     "remote-connections": "Other computers (SSH)",
     appearance: "General",
+    "desktop-extensions": "Desktop Extensions",
     accounts: "Accounts",
     "session-import": "Session Import",
     "usage-statistics": "Usage statistics",
@@ -605,6 +613,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportChinese,
+  desktopExtensions: desktopExtensionsChinese,
   locale: "zh-CN",
   title: "设置",
   close: "关闭设置",
@@ -892,6 +901,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "mobile-web": "手机与浏览器",
     "remote-connections": "其他电脑（SSH）",
     appearance: "通用",
+    "desktop-extensions": "Desktop 扩展",
     accounts: "账号",
     "session-import": "会话导入",
     "usage-statistics": "用量统计",

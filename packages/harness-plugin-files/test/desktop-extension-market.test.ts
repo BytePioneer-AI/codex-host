@@ -7,7 +7,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DESKTOP_EXTENSION_ICON_MAX_BYTES } from "@codexhost/shared-contracts";
 import { extensionZip, makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import seed from "../../../registry/desktop-extensions/catalog.json";
-import { reportDesktopExtensionInstall } from "../src/desktop-extension-installer.js";
+import {
+  DEFAULT_DESKTOP_EXTENSION_STATS_URL,
+  reportDesktopExtensionInstall,
+  resolveDesktopExtensionStatsUrl,
+} from "../src/desktop-extension-installer.js";
 import {
   desktopExtensionsRoot,
   fetchDesktopExtensionCatalog,
@@ -461,6 +465,27 @@ it.each([
   await expect(
     reportDesktopExtensionInstall("sample", "https://stats.example"),
   ).resolves.toBeUndefined();
+});
+
+it("resolves default, opt-out, custom-catalog, and explicit stats URLs", () => {
+  expect(resolveDesktopExtensionStatsUrl({})).toBe(DEFAULT_DESKTOP_EXTENSION_STATS_URL);
+  expect(resolveDesktopExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "off" })).toBe(
+    undefined,
+  );
+  expect(resolveDesktopExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "none" })).toBe(
+    undefined,
+  );
+  expect(
+    resolveDesktopExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: "https://custom.example/catalog.json",
+    }),
+  ).toBe(undefined);
+  expect(
+    resolveDesktopExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: "https://custom.example/catalog.json",
+      CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "https://stats.example",
+    }),
+  ).toBe("https://stats.example");
 });
 
 it("skips missing, invalid or credentialed stats URLs", async () => {

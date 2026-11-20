@@ -76,7 +76,8 @@ export async function readNativeHistory(
             : row.step_type === ERROR_MESSAGE
               ? 24
               : 140;
-      const body = message(messageField(step, number));
+      const body =
+        row.step_type === GENERIC_TOOL ? nested(step, number) : message(messageField(step, number));
       switch (row.step_type) {
         case USER_INPUT: {
           const items = body.flatMap((field) =>

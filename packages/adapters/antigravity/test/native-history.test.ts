@@ -78,11 +78,7 @@ describe("native session history", () => {
         5,
         132,
         7,
-        Buffer.concat([
-          callMetadata("missing"),
-          bytes(140, Buffer.alloc(0)),
-          bytes(31, textField(2, "Not found")),
-        ]),
+        Buffer.concat([callMetadata("missing"), bytes(31, textField(2, "Not found"))]),
       );
       insert.run(6, 132, 3, result("read", "x".repeat(128)));
       insert.run(7, 132, 2, result("pending", "Not settled yet"));
@@ -92,15 +88,7 @@ describe("native session history", () => {
       ]);
       insert.run(8, 132, 3, unplannedCommand);
       insert.run(9, 132, 3, unplannedCommand);
-      insert.run(
-        10,
-        132,
-        5,
-        Buffer.concat([
-          bytes(5, bytes(4, callFields("skipped", "run_command", {}))),
-          bytes(140, Buffer.alloc(0)),
-        ]),
-      );
+      insert.run(10, 132, 5, bytes(5, bytes(4, callFields("skipped", "run_command", {}))));
       answerStep(db, 11, "First paragraph.");
       answerStep(db, 12, "Second paragraph.");
       insert.run(13, 17, 3, bytes(24, bytes(3, textField(2, "Retry suggested"))));

@@ -6105,8 +6105,9 @@ export class AppServerHost {
   }
 
   async #consumeHarnessOutputs(thread: ExternalThread): Promise<void> {
+    const session = thread.session;
     try {
-      for await (const output of thread.session.outputs) {
+      for await (const output of session.outputs) {
         await this.#externalRuntime.idleRelease.consumeOutput(thread, () =>
           this.#projectHarnessOutput(thread, output),
         );
@@ -6155,21 +6156,26 @@ export class AppServerHost {
           // Item ledger while settling; retire them again so no stale entry
           // outlives the dead parent stream.
           await this.#retireRunningSubagents(thread);
-          if (thread.record.subagent) {
-            await this.#setSubagentThreadStatus(thread.id, "idle");
-            // The parent Session may be gone too and will never emit a status
-            // event, so clear the parent's running-subagent entry here —
-            // otherwise #hasActiveWork() stays true and disconnect() waits
-            // forever on the stale child registration.
-            this.#trackRunningSubagent(
-              thread.record.subagent.parentHostThreadId,
-              thread.id,
-              "idle",
-            );
-          } else if (!thread.running && !this.#hasRunningSubagents(thread.id)) {
-            // The Turn projection may have seen a since-retired Subagent and
-            // kept this Thread active; settle the published status now.
-            await this.#setThreadStatus(thread, { type: "idle" });
+          // Waiting for descendant history can overlap a new Turn or a Session replacement.
+          const canPublishIdle = () =>
+            this.#externalRuntime.get(thread.id) === thread &&
+            thread.session === session &&
+            !thread.running &&
+            !thread.activeTurnId;
+          if (canPublishIdle()) {
+            if (thread.record.subagent) {
+              // Clear the old registration before awaiting a refresh so it cannot
+              // remove a new running registration emitted during that refresh.
+              this.#trackRunningSubagent(
+                thread.record.subagent.parentHostThreadId,
+                thread.id,
+                "idle",
+              );
+              await this.#setSubagentThreadStatus(thread.id, "idle", canPublishIdle);
+            } else if (!this.#hasRunningSubagents(thread.id)) {
+              // The Turn projection may have kept the Thread active due to a retired Subagent.
+              await this.#setThreadStatus(thread, { type: "idle" });
+            }
           }
         }
         this.#signalActiveWorkChanged();
@@ -6517,7 +6523,11 @@ export class AppServerHost {
     }
   }
 
-  async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {
+  async #setSubagentThreadStatus(
+    threadId: string,
+    status: "active" | "idle",
+    canPublish?: () => boolean,
+  ): Promise<void> {
     const previousStatus = this.#subagentThreadStatuses.get(threadId);
     const child = this.#externalRuntime.get(threadId);
     if (child) {
@@ -6533,13 +6543,14 @@ export class AppServerHost {
     if (status === "idle" && previousStatus === "active") {
       for (const [index, waitMs] of SUBAGENT_TERMINAL_REFRESH_DELAYS_MS.entries()) {
         if (waitMs > 0) await delay(waitMs);
+        if (canPublish?.() === false) return;
         await this.#refreshOpenSubagentThread(
           threadId,
           index === SUBAGENT_TERMINAL_REFRESH_DELAYS_MS.length - 1,
         );
       }
     }
-    if (previousStatus === status) return;
+    if (previousStatus === status || canPublish?.() === false) return;
     this.#subagentThreadStatuses.set(threadId, status);
     await this.#writer.json({
       method: "thread/status/changed",

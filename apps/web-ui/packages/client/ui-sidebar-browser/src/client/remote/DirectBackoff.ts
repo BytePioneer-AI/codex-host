@@ -32,31 +32,27 @@ export function directNetworkKey(address: string | undefined): string {
 /** Failure records live on this page even when browser storage is blocked. */
 export class DirectBackoff {
   private readonly targets = new Map<string, Target>();
+  private memoryOnly = false;
 
-  constructor(private readonly storage: () => Pick<Storage, "getItem" | "setItem">) {
-    try {
-      const entries = JSON.parse(storage().getItem(STORAGE_KEY) ?? "{}") as Record<string, Target>;
-      for (const [id, entry] of Object.entries(entries))
-        if (typeof entry?.boot === "string" && entry.networks && typeof entry.networks === "object")
-          this.targets.set(id, entry);
-    } catch {
-      // Unavailable storage or unreadable data: start with an empty page cache.
-    }
-  }
+  constructor(private readonly storage: () => Pick<Storage, "getItem" | "setItem">) {}
 
   setBoot(target: string, boot: string): void {
-    const previous = this.targets.get(target);
-    if (previous?.boot === boot) return;
-    this.targets.set(target, { boot, networks: {} });
-    if (previous !== undefined) this.save();
+    const stored = this.read();
+    const previous = (stored ?? this.targets).get(target);
+    const entry = previous?.boot === boot ? previous : { boot, networks: {} };
+    this.targets.set(target, entry);
+    if (entry !== previous) this.save(stored, target, entry);
   }
 
   cooling(target: string, network: string, now: number): boolean {
-    return (this.target(target).networks[network]?.until ?? 0) > now;
+    return (this.target(target, this.read())?.networks[network]?.until ?? 0) > now;
   }
 
   failed(target: string, network: string, now: number): void {
-    const { networks } = this.target(target);
+    const stored = this.read();
+    const entry = this.target(target, stored);
+    if (entry === undefined) return;
+    const { networks } = entry;
     const failures = (networks[network]?.failures ?? 0) + 1;
     const cooldown = COOLDOWNS[Math.min(failures, COOLDOWNS.length) - 1]!;
     // Object insertion order keeps the most recently failed networks at the end.
@@ -64,26 +60,55 @@ export class DirectBackoff {
     networks[network] = { failures, until: now + cooldown };
     const keys = Object.keys(networks);
     for (const key of keys.slice(0, Math.max(0, keys.length - MAX_NETWORKS))) delete networks[key];
-    this.save();
+    this.save(stored, target, entry);
   }
 
   succeeded(target: string, network: string): void {
-    const { networks } = this.target(target);
-    if (Object.hasOwn(networks, network)) {
-      delete networks[network];
-      this.save();
+    const stored = this.read();
+    const entry = this.target(target, stored);
+    if (entry && Object.hasOwn(entry.networks, network)) {
+      delete entry.networks[network];
+      this.save(stored, target, entry);
     }
   }
 
-  private target(target: string): Target {
-    return this.targets.get(target)!;
+  private target(target: string, stored: Map<string, Target> | undefined): Target | undefined {
+    const local = this.targets.get(target);
+    if (stored === undefined) return local;
+    const latest = stored.get(target);
+    // A pending result from another boot must not update the current boot's records.
+    if (local && latest && local.boot !== latest.boot) return undefined;
+    if (latest) this.targets.set(target, latest);
+    else if (local) this.targets.set(target, { boot: local.boot, networks: {} });
+    return this.targets.get(target);
   }
 
-  private save(): void {
+  private read(): Map<string, Target> | undefined {
+    if (this.memoryOnly) return undefined;
     try {
-      this.storage().setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(this.targets)));
+      const entries = JSON.parse(this.storage().getItem(STORAGE_KEY) ?? "{}") as Record<
+        string,
+        Target
+      >;
+      return new Map(
+        Object.entries(entries).filter(
+          ([, entry]) =>
+            typeof entry?.boot === "string" && entry.networks && typeof entry.networks === "object",
+        ),
+      );
     } catch {
-      // Keep the page cache when storage cannot be written.
+      this.memoryOnly = true;
+      return undefined;
+    }
+  }
+
+  private save(stored: Map<string, Target> | undefined, target: string, entry: Target): void {
+    if (stored === undefined) return;
+    stored.set(target, entry);
+    try {
+      this.storage().setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(stored)));
+    } catch {
+      this.memoryOnly = true;
     }
   }
 }

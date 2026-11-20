@@ -15,7 +15,7 @@ type Frame = { data: ArrayBuffer; header: SidebarBrowserFrameHeader };
 
 /** One tab's channel, scoped to one ready generation and one label WebSocket. */
 export class DirectFrames {
-  requested = false;
+  binding: number | undefined;
   private readonly lifetime = new AbortController();
   private readonly channel: RTCDataChannel;
   private partial: { sequence: number; offset: number; bytes: Uint8Array<ArrayBuffer> } | undefined;

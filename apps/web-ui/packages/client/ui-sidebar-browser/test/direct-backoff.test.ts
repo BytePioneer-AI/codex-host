@@ -7,6 +7,16 @@ const noStorage = () => {
   throw new Error("blocked");
 };
 
+function sharedStorage() {
+  let value: string | null = null;
+  return () => ({
+    getItem: () => value,
+    setItem: (_key: string, next: string) => {
+      value = next;
+    },
+  });
+}
+
 describe("direct backoff", () => {
   it("escalates after expiry, caps at a day and clears on success even without storage", () => {
     const backoff = new DirectBackoff(noStorage);
@@ -24,13 +34,7 @@ describe("direct backoff", () => {
   });
 
   it("persists across reloads, isolates networks and computers, and resets only the restarted computer", () => {
-    let value: string | null = null;
-    const storage = () => ({
-      getItem: () => value,
-      setItem: (_key: string, next: string) => {
-        value = next;
-      },
-    });
+    const storage = sharedStorage();
     const wifi = directNetworkKey("192.0.2.1");
     const mobile = directNetworkKey("198.51.100.1");
     const first = new DirectBackoff(storage);
@@ -49,6 +53,33 @@ describe("direct backoff", () => {
     const afterRestart = new DirectBackoff(storage);
     expect(afterRestart.cooling("first", wifi, NOW)).toBe(false);
     expect(afterRestart.cooling("second", wifi, NOW)).toBe(true);
+  });
+
+  it("shares cooldowns and merges updates from two open pages", () => {
+    const storage = sharedStorage();
+    const first = new DirectBackoff(storage);
+    const second = new DirectBackoff(storage);
+    first.setBoot("computer", "boot");
+    second.setBoot("computer", "boot");
+    second.setBoot("other-computer", "other-boot");
+
+    first.failed("computer", "wifi", NOW);
+    expect(second.cooling("computer", "wifi", NOW)).toBe(true);
+    const nextAttempt = NOW + 10 * MINUTE;
+    second.failed("computer", "mobile", nextAttempt);
+    second.failed("other-computer", "wifi", nextAttempt);
+    second.failed("computer", "wifi", nextAttempt);
+    expect(first.cooling("computer", "wifi", nextAttempt + 10 * MINUTE)).toBe(true);
+    first.succeeded("computer", "wifi");
+    expect(second.cooling("computer", "wifi", nextAttempt)).toBe(false);
+    expect(second.cooling("computer", "mobile", nextAttempt)).toBe(true);
+    expect(second.cooling("other-computer", "wifi", nextAttempt)).toBe(true);
+
+    second.setBoot("computer", "new-boot");
+    second.failed("computer", "mobile", nextAttempt);
+    first.failed("computer", "wifi", nextAttempt);
+    expect(second.cooling("computer", "wifi", nextAttempt)).toBe(false);
+    expect(second.cooling("computer", "mobile", nextAttempt)).toBe(true);
   });
 
   it("keeps the latest 32 network records per computer", () => {

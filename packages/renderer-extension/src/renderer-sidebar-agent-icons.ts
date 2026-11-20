@@ -543,21 +543,24 @@ export function installRendererSidebarAgentIcons(options: {
         threadId: threadId.success ? threadId.data : null,
         draftId: row.draftId(),
       });
-      if (localAgent !== null && localAgent !== undefined) {
-        if (threadId.success) {
-          const key = ownershipKey(hostId, threadId.data);
+      const key = threadId.success ? ownershipKey(hostId, threadId.data) : undefined;
+      const cached = key ? ownershipByThread.get(key) : undefined;
+      const verifyPlaceholder =
+        hostId.startsWith("remote-ssh") &&
+        row.placeholderPath?.() &&
+        (cached?.stale || cached?.client);
+      if (localAgent !== null && localAgent !== undefined && !verifyPlaceholder) {
+        if (key && !cached?.stale && !cached?.client) {
           ownershipByThread.set(key, { agent: localAgent, stale: false });
           clearOwnershipRetry(key);
         }
         row.render(localAgent, getPlugin(hostId, localAgent));
         continue;
       }
-      if (!threadId.success) {
+      if (!threadId.success || !key) {
         row.clear();
         continue;
       }
-      const key = ownershipKey(hostId, threadId.data);
-      const cached = ownershipByThread.get(key);
       if (cached) {
         // Revalidation must not remove a known icon while its reply is pending.
         row.render(cached.agent, getPlugin(hostId, cached.agent));

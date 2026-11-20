@@ -203,6 +203,41 @@ describe("Renderer sidebar Agent ownership", () => {
     }
   });
 
+  it("rechecks a closed SSH path row even while the Composer still knows its Agent", async () => {
+    const host = "remote-ssh-discovered:test";
+    const id = crypto.randomUUID();
+    const row = new FakeRow(id, null, host);
+    row.path = "/workspace";
+    let external = true;
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) =>
+        external
+          ? { threadId, owner: "external", harnessId: harnessIdSchema.parse("claude-code") }
+          : { threadId, owner: "codex" },
+      ),
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom: new FakeDom([row]),
+      getLocalAgent: () => "claude-code",
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      expect(row.agent).toBe("claude-code");
+      await settle();
+      expect(checkRemotePlaceholder).not.toHaveBeenCalled();
+      external = false;
+      icons.remoteThreadClosed(host, id);
+      expect(row.agent).toBe("claude-code");
+      await vi.waitFor(() =>
+        expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, id, "/workspace"),
+      );
+    } finally {
+      icons.dispose();
+    }
+  });
+
   it("checks a late path on settled ownership and bounds retries after a failed check", async () => {
     vi.useFakeTimers();
     const host = "remote-ssh-discovered:test";

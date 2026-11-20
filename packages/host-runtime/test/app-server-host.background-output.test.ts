@@ -143,7 +143,8 @@ describe("Host runtime idle background output on a completed Turn", () => {
         return (reply.result as { thread: { updatedAt: number; recencyAt: number } }).thread;
       };
       const before = await readMetadata(3);
-      using _clock = vi.spyOn(Date, "now").mockReturnValue((before.updatedAt + 2) * 1_000);
+      using clock = vi.spyOn(Date, "now");
+      clock.mockReturnValue((before.updatedAt + 2) * 1_000);
       const itemId = hostItemIdSchema.parse("bg-item-1");
       const id = hostTurnIdSchema.parse(turnId);
       session.emitEvent({

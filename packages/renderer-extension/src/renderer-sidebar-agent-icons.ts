@@ -242,9 +242,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
     marker.style.height = slotSize;
     marker.style.flex = "none";
     marker.style.pointerEvents = "none";
-    // The filled Codex glyph reads heavier at the same size as the other Harness artwork.
-    const artworkSize = leadingSlot && agent === "codex" ? 12 : 14;
-    marker.append(createRendererAgentIcon(agent, artworkSize, this.element.ownerDocument, plugin));
+    marker.append(createRendererAgentIcon(agent, 14, this.element.ownerDocument, plugin));
     anchor.before(marker);
   }
 

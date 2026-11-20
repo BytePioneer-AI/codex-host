@@ -37,6 +37,7 @@ import RotateCcw from "lucide/dist/esm/icons/rotate-ccw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import ShieldCheck from "lucide/dist/esm/icons/shield-check.mjs";
+import Sparkles from "lucide/dist/esm/icons/sparkles.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
@@ -107,6 +108,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "chart-column",
   "plug",
   "puzzle",
+  "sparkles",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -175,6 +177,7 @@ const iconNodes = {
   "chart-column": ChartColumn,
   plug: Plug,
   puzzle: Puzzle,
+  sparkles: Sparkles,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

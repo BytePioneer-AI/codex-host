@@ -96,7 +96,13 @@ define({ activate() {} });
 - **设置**：在 `settingsSchema` 声明唯一标识符 `key`、双语 `label` 和字段类型（`boolean`、`string`、`number`、`range`、`select`）；例如用 `range` 表达壁纸模糊度。保存时提交整份 JSON 对象。默认值是 UI 元数据，不会自动写入。Host 在安装目录之外持久化，覆盖安装和卸载都保留设置。
 - **Node 入口**：声明 `"backend": { "script": "backend.mjs" }`，将构建好的 JS 与依赖一起打包。导出 `activate(ctx)` 或 `default.activate(ctx)`；在激活时用 `ctx.handle` 登记方法，用 `ctx.readSettings` / `ctx.writeSettings` 访问配置。返回清理函数或 `{ dispose() }` 以释放资源。后端只在启用且取得槽位时加载，运行在本机用户权限的独立子进程中，不是沙箱。
 
-字段、大小限制和四个 [Host RPC](../../../docs/architecture/desktop-ui-extensions.md#资源设置与后端-rpc) 以契约为准；不要假定已有 Renderer 资源/设置/调用 API。
+- **Renderer 侧新 API（v1 已上线）**：
+  - `api.assets.readDataUrl(relativePath)`：读取包内静态资源并返回 `{ mimeType, dataUrl }`（单文件 ≤ 16 MiB，适合全皮肤壁纸/字体）。
+  - `api.storage.get()` / `api.storage.set(values)` / `api.storage.onChange(cb)`：读写独立持久化的扩展设置并订阅实时变更。
+  - `api.backend.invoke(method, params?)`：调用本扩展在 Host 子进程中通过 `ctx.handle(method, fn)` 注册的后端方法。
+  - `api.settings.registerPage({ title?, icon?, mount(container, ctx) })`：在设置页左侧「插件设置」分组中注册最多 1 个自定义页面（禁用/卸载自动注销）；若仅需轻量表单，可直接在 `manifest.json` 声明 `settingsSchema` 由宿主自动渲染。
+
+字段、大小限制和四个 [Host RPC](../../../docs/architecture/desktop-ui-extensions.md#资源设置与后端-rpc) 以契约为准。
 
 完成条件：资源可从实际安装包读取；改写设置后覆盖安装仍可读回；已登记的方法可调用，禁用后不可调用，重载前完成旧实例清理。
 
@@ -120,9 +126,14 @@ define({ activate() {} });
 
 完成条件：报告构建产物位置、启停/热更新/冲突结果，以及未验证项。
 
-## 4. 通过 GitHub 分发
+## 4. 通过 GitHub 分发与投稿官方市场
 
 将 `manifest.json` 和声明的 `desktop.script` / `backend.script`（构建好的 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把样式、Logo、截图及其他静态资源也提交到对应路径。上架索引时，若使用 Release ZIP，Logo 和截图还须各自作为同名文件资产上传，且与 ZIP 内的字节一致。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
+
+**投稿到官方插件市场（`BytePioneer-AI/codexhost-extensions-registry`）**：
+1. 打开 [投稿表单（GitHub Issue Form）](https://github.com/BytePioneer-AI/codexhost-extensions-registry/issues/new/choose) 填写你的公开 GitHub 仓库地址（或直接向 `sources.json` 提交 PR）。
+2. 仓库 Actions 会自动校验 `manifest.json`、双语字段、Logo/截图与静态安全检查并生成报告；维护者首次审核合并后即上架。
+3. 上架后每 30 分钟自动同步你的新版本、GitHub Star 数与下载量，后续发版无需重复提 PR。
 
 完成条件：确认选中的 GitHub 目录同时包含 manifest 和声明的入口 JS，安装时不需要构建。
 

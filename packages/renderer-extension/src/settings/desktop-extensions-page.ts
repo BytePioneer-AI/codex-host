@@ -17,6 +17,7 @@ import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext }
 import { renderDesktopExtensionCard } from "./desktop-extensions-card.js";
 import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import { createDesktopExtensionDetailModal } from "./desktop-extensions-detail-modal.js";
+import { createDesktopExtensionCreateModal } from "./desktop-extensions-create-modal.js";
 import { createDesktopExtensionImportModal } from "./desktop-extensions-import-modal.js";
 import {
   renderDesktopExtensionsMarketplaceGrid,
@@ -228,6 +229,18 @@ export function createDesktopExtensionsSettingsPage(
       }
       localeWrap.append(localeButton, localeMenu);
 
+      const createButton = createEl(
+        document,
+        "button",
+        "settings-command-button settings-command-button--secondary settings-extensions__create-button",
+      );
+      createButton.type = "button";
+      createButton.dataset.action = "open-create";
+      createButton.append(
+        createRendererSettingsIcon("sparkles", 14),
+        createEl(document, "span", "", copy.createButton),
+      );
+
       const importButton = createEl(
         document,
         "button",
@@ -304,7 +317,7 @@ export function createDesktopExtensionsSettingsPage(
       moreMenu.append(copyDirectoryMenuItem, menuDivider, recoveryMenuItem);
       moreWrap.append(moreButton, moreMenu);
 
-      toolbar.append(localeWrap, importButton, refreshButton, moreWrap);
+      toolbar.append(localeWrap, createButton, importButton, refreshButton, moreWrap);
       header.append(headerLeft, toolbar);
 
       // Persistent top navigation row: segmented tabs (Installed / Marketplace) + search input.
@@ -472,6 +485,13 @@ export function createDesktopExtensionsSettingsPage(
         onClose: () => {
           modalFeedbackExtensionId = null;
         },
+      });
+
+      const createModal = createDesktopExtensionCreateModal({
+        document,
+        host: root,
+        signal: context.signal,
+        messages,
       });
 
       const importModal = createDesktopExtensionImportModal({
@@ -1743,10 +1763,18 @@ export function createDesktopExtensionsSettingsPage(
         searchInput.focus?.();
       });
 
+      createButton.addEventListener("click", () => {
+        closeHeaderMenus();
+        detailModal.close();
+        importModal.close();
+        createModal.open();
+      });
+
       importButton.addEventListener("click", () => {
         if (mutating || !clientCapabilities().canInstall) return;
         closeHeaderMenus();
         detailModal.close();
+        createModal.close();
         importModal.open();
       });
 
@@ -1793,6 +1821,7 @@ export function createDesktopExtensionsSettingsPage(
         document.removeEventListener?.("click", onDocumentClick);
         document.removeEventListener?.("keydown", onDocumentKeyDown);
         detailModal.dispose();
+        createModal.dispose();
         importModal.dispose();
         activeRecoveryDialog?.remove();
         activeRecoveryDialog = null;

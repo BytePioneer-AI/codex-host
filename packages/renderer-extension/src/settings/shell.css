@@ -3821,7 +3821,8 @@ dialog.settings-account-dialog.settings-extensions-detail-dialog::backdrop {
   font-weight: 500;
 }
 
-dialog.settings-account-dialog.settings-extensions-import-dialog {
+dialog.settings-account-dialog.settings-extensions-import-dialog,
+dialog.settings-account-dialog.settings-extensions-create-dialog {
   width: min(500px, calc(100vw - 40px));
   margin: auto;
   padding: 0;
@@ -3832,15 +3833,123 @@ dialog.settings-account-dialog.settings-extensions-import-dialog {
   box-shadow: 0 20px 52px rgb(0 0 0 / 28%);
 }
 
-dialog.settings-account-dialog.settings-extensions-import-dialog[open] {
+dialog.settings-account-dialog.settings-extensions-create-dialog {
+  width: min(560px, calc(100vw - 40px));
+}
+
+dialog.settings-account-dialog.settings-extensions-import-dialog[open],
+dialog.settings-account-dialog.settings-extensions-create-dialog[open] {
   animation: settings-extensions-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
+dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop,
+dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
   background: light-dark(rgb(15 23 42 / 32%), rgb(0 0 0 / 52%));
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   animation: settings-extensions-backdrop-in 180ms ease-out;
+}
+
+.settings-extensions-create-modal {
+  display: grid;
+  gap: 0;
+}
+
+.settings-extensions-create-modal__body {
+  display: grid;
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+.settings-extensions-create-modal__steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--settings-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.settings-extensions-create-modal__field {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-extensions-create-modal__label {
+  color: var(--settings-text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.settings-extensions-create-modal__prompt {
+  width: 100%;
+  min-height: 188px;
+  padding: 10px 12px;
+  border: 1px solid var(--settings-border);
+  border-radius: 10px;
+  background: var(--settings-surface);
+  color: var(--settings-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.settings-extensions-create-modal__prompt:focus {
+  outline: none;
+  border-color: var(--settings-accent);
+}
+
+.settings-extensions-create-modal__status {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-extensions-create-modal__status[data-tone="success"] {
+  color: var(--settings-success);
+}
+
+.settings-extensions-create-modal__status[data-tone="danger"] {
+  color: var(--settings-danger);
+}
+
+.settings-extensions-create-modal__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--settings-border);
+}
+
+.settings-extensions-create-modal__links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.settings-extensions-create-modal__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--settings-muted);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+.settings-extensions-create-modal__link:hover {
+  color: var(--settings-text);
+  text-decoration: underline;
+}
+
+.settings-extensions-create-modal__icon {
+  display: inline-flex;
+  align-items: center;
 }
 
 .settings-extensions-import-modal {
@@ -4585,8 +4694,10 @@ dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
 
   dialog.settings-account-dialog.settings-extensions-detail-dialog[open],
   dialog.settings-account-dialog.settings-extensions-import-dialog[open],
+  dialog.settings-account-dialog.settings-extensions-create-dialog[open],
   dialog.settings-account-dialog.settings-extensions-detail-dialog::backdrop,
-  dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
+  dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop,
+  dialog.settings-account-dialog.settings-extensions-create-dialog::backdrop {
     animation: none;
   }
 }

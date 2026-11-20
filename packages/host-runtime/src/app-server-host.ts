@@ -486,21 +486,36 @@ function longestSuffixPrefixOverlap(historical: string, live: string): number {
   return 0;
 }
 
-function withBackgroundItemText(item: JsonObject, text: string): JsonObject {
-  if (item.type !== "reasoning") return { ...item, text: `${item.text}${text}` };
-  const summary = Array.isArray(item.summary) ? item.summary : [];
-  const last = summary.at(-1);
-  return {
-    ...item,
-    summary:
-      typeof last === "string" ? [...summary.slice(0, -1), `${last}${text}`] : [...summary, text],
-  };
-}
-
 interface BackgroundTextRunItem {
   index: number;
   text: string;
   start: number;
+}
+
+function appendBackgroundText(
+  items: JsonObject[],
+  { index, text }: BackgroundTextRunItem,
+  suffix: string,
+): void {
+  const item = items[index];
+  if (!item) return;
+  if (item.type !== "reasoning") {
+    items[index] = { ...item, text: text + suffix };
+    return;
+  }
+  const summary = Array.isArray(item.summary) ? item.summary : [];
+  const last = summary.at(-1);
+  items[index] = {
+    ...item,
+    summary:
+      typeof last === "string" ? [...summary.slice(0, -1), last + suffix] : [...summary, suffix],
+  };
+  const transcript = items[index + 1];
+  if (transcript?.command === REASONING_TRANSCRIPT_COMMAND) {
+    const output =
+      typeof transcript.aggregatedOutput === "string" ? transcript.aggregatedOutput : text;
+    items[index + 1] = { ...transcript, aggregatedOutput: output + suffix };
+  }
 }
 
 interface BackgroundTextRun {
@@ -560,26 +575,20 @@ function alignBackgroundTextRun(
       (item) => item.type !== "commandExecution" || item.command !== REASONING_TRANSCRIPT_COMMAND,
     );
     const prefix = run.text.slice(searchStart);
-    const historical = items[lastIndex];
-    if (tail.index === lastIndex && historical && prefix && liveText.startsWith(prefix)) {
-      const suffix = liveText.slice(prefix.length);
-      items[lastIndex] = withBackgroundItemText(historical, suffix);
-      const transcript = items[lastIndex + 1];
-      if (type === "reasoning" && transcript?.command === REASONING_TRANSCRIPT_COMMAND) {
-        items[lastIndex + 1] = { ...transcript, aggregatedOutput: tail.text + suffix };
-      }
+    if (tail.index === lastIndex && prefix && liveText.startsWith(prefix)) {
+      appendBackgroundText(items, tail, liveText.slice(prefix.length));
       return searchStart + liveText.length;
     }
   }
 
   for (const item of run.items) {
-    if (item.start < searchStart) continue;
-    const overlap = longestSuffixPrefixOverlap(item.text, liveText);
+    const itemEnd = item.start + item.text.length;
+    if (itemEnd <= searchStart) continue;
+    const unread = item.text.slice(Math.max(0, searchStart - item.start));
+    const overlap = longestSuffixPrefixOverlap(unread, liveText);
     if (overlap < 2) continue;
-    const historical = items[item.index];
-    if (!historical) return null;
-    items[item.index] = withBackgroundItemText(historical, liveText.slice(overlap));
-    return item.start + item.text.length + liveText.length - overlap;
+    appendBackgroundText(items, item, liveText.slice(overlap));
+    return itemEnd + liveText.length - overlap;
   }
   return null;
 }
@@ -1216,6 +1225,8 @@ export class AppServerHost {
       steering: this.#externalSteering,
       queue: this.#externalQueue,
       manualCompactionTurns: this.#manualCompactionTurns,
+      foldSettledItem: (turn, projector, itemId) =>
+        this.#withBackgroundItems(turn, projector, itemId),
       outputFailed: (thread) => this.#externalRuntime.idleRelease.outputFailed(thread),
       submitPrewarm: (thread) => this.#externalRuntime.submitPrewarm(thread),
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
@@ -5247,7 +5258,10 @@ export class AppServerHost {
   }
 
   #externalHistoryTurns(thread: ExternalThread, forClient = false): JsonObject[] {
-    const turns = this.#withOpenBackgroundCommands(thread, ownTurns(thread.record, thread.turns));
+    const turns = ownTurns(thread.record, thread.turns).map((turn) => {
+      const projector = thread.projectedTurns.get((turn as { id: HostTurnId }).id)?.projector;
+      return projector ? this.#withBackgroundItems(turn, projector) : turn;
+    });
     if (!thread.activeTurnId || (forClient && thread.ephemeralTurnIds.has(thread.activeTurnId)))
       return turns;
     const active = thread.projectedTurns.get(thread.activeTurnId);
@@ -5256,63 +5270,61 @@ export class AppServerHost {
       : turns;
   }
 
-  /**
-   * Background commands whose native task has not settled overlay their live
-   * wire state (`inProgress`, accumulated output) onto the served history Turn
-   * they detached from, replacing the historical Item or appending to the Turn.
-   */
-  #withOpenBackgroundCommands(thread: ExternalThread, turns: JsonObject[]): JsonObject[] {
-    return turns.map((turn) => {
-      const projection = thread.projectedTurns.get((turn as { id: HostTurnId }).id)?.projector;
-      const open = projection?.openDetachedWireItems();
-      const background = projection?.backgroundWireItems();
-      const foreground = projection?.foregroundWireItems();
-      if ((!open || open.size === 0) && (!background || background.size === 0)) return turn;
-      const remaining = new Map(open ?? []);
-      // Background text is matched by type and content below; only commands use Item-id overlay.
-      for (const itemId of background?.keys() ?? []) remaining.delete(itemId);
-      const items = (turn as { items: JsonObject[] }).items.map((item) => {
-        const id = (item as { id: HostItemId }).id;
-        const live = remaining.get(id);
-        if (!live) return item;
-        remaining.delete(id);
-        return live;
-      });
-      const historicalCount = items.length;
-      const consumedEnd = new Map<string, number>();
-      const liveItems = [...(background?.values() ?? [])].filter(
-        (item) => backgroundItemText(item) !== "",
-      );
-      for (const [index, live] of liveItems.entries()) {
-        const liveText = backgroundItemText(live);
-        if (liveText === null) {
-          items.push(live);
-          continue;
-        }
-        if (typeof live.type !== "string") {
-          items.push(live);
-          continue;
-        }
-        const aligned = alignBackgroundTextRun(
-          items,
-          historicalCount,
-          live.type,
-          liveText,
-          consumedEnd.get(live.type) ?? 0,
-          [...(foreground?.values() ?? [])],
-          index === liveItems.length - 1 && items.length === historicalCount,
-        );
-        if (aligned === null) {
-          items.push(live);
-          continue;
-        }
-        consumedEnd.set(live.type, aligned);
-      }
-      return {
-        ...turn,
-        items: [...items, ...remaining.values()],
-      };
+  /** Overlay open Items for reads, or fold settled output into the cached Turn. */
+  #withBackgroundItems(
+    turn: JsonObject,
+    projector: CodexTurnProjector,
+    settledItemId?: HostItemId,
+  ): JsonObject {
+    const foreground = projector.foregroundWireItems();
+    const background = projector.backgroundWireItems();
+    const remaining = new Map(settledItemId === undefined ? projector.openDetachedWireItems() : []);
+    if (settledItemId === undefined) {
+      for (const id of background.keys()) remaining.delete(id);
+    } else {
+      const settled = foreground.get(settledItemId);
+      if (settled) remaining.set(settledItemId, settled);
+    }
+    // Reads can overlay open text, but only cache it once all detached Items settle.
+    const liveItems =
+      settledItemId !== undefined && projector.hasOpenDetachedItems
+        ? []
+        : [...background.values()].filter((item) => backgroundItemText(item) !== "");
+    if (remaining.size === 0 && liveItems.length === 0) return turn;
+
+    const items = (turn as { items: JsonObject[] }).items.map((item) => {
+      const id = (item as { id: HostItemId }).id;
+      const live = remaining.get(id);
+      if (!live) return item;
+      remaining.delete(id);
+      return live;
     });
+    const historicalCount = items.length;
+    const consumedEnd = new Map<string, number>();
+    const foregroundItems = [...foreground.values()];
+    for (const [index, live] of liveItems.entries()) {
+      const liveText = backgroundItemText(live);
+      if (liveText === null || typeof live.type !== "string") {
+        items.push(live);
+        continue;
+      }
+      const aligned = alignBackgroundTextRun(
+        items,
+        historicalCount,
+        live.type,
+        liveText,
+        consumedEnd.get(live.type) ?? 0,
+        foregroundItems,
+        index === liveItems.length - 1 && items.length === historicalCount,
+      );
+      if (aligned === null) {
+        // A retained projector may revisit an Item already folded into the cache.
+        if (!items.some((item) => item.id === live.id)) items.push(live);
+        continue;
+      }
+      consumedEnd.set(live.type, aligned);
+    }
+    return { ...turn, items: [...items, ...remaining.values()] };
   }
 
   #externalThreadBusy(thread: ExternalThread): boolean {

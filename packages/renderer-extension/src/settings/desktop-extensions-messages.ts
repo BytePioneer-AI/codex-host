@@ -39,10 +39,22 @@ export interface DesktopExtensionsMessages {
     disabled: string;
   }>;
   readonly details: string;
+  readonly openDetailsLabel: string;
+  readonly closeModal: string;
+  readonly authorBy: string;
+  readonly githubRepository: string;
+  readonly screenshotsTitle: string;
+  readonly screenshotAlt: string;
+  readonly screenshotPreviewLabel: string;
+  readonly previousScreenshot: string;
+  readonly nextScreenshot: string;
+  readonly closePreview: string;
+  readonly technicalDetails: string;
   readonly detailId: string;
   readonly detailVersion: string;
   readonly detailSlots: string;
   readonly detailHash: string;
+  readonly detailDiagnostics: string;
   readonly noExclusiveSlots: string;
   readonly slots: Readonly<Record<DesktopExtensionSlot, string>>;
   readonly states: Readonly<Record<DesktopExtensionStatus["state"], string>>;
@@ -117,10 +129,22 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
     disabled: "Disabled",
   }),
   details: "Details",
+  openDetailsLabel: "View details for {name}",
+  closeModal: "Close",
+  authorBy: "By {author}",
+  githubRepository: "GitHub",
+  screenshotsTitle: "Screenshots",
+  screenshotAlt: "{name} screenshot {index}",
+  screenshotPreviewLabel: "Preview screenshot {index} of {total}",
+  previousScreenshot: "Previous screenshot",
+  nextScreenshot: "Next screenshot",
+  closePreview: "Close preview",
+  technicalDetails: "Technical details",
   detailId: "ID",
   detailVersion: "Version",
   detailSlots: "Slots",
   detailHash: "Hash",
+  detailDiagnostics: "Diagnostic",
   noExclusiveSlots: "No exclusive slots",
   slots: Object.freeze({
     "sidebar.thread-layout": "Sidebar thread layout",
@@ -210,10 +234,22 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
     disabled: "未启用",
   }),
   details: "详情",
+  openDetailsLabel: "查看“{name}”详情",
+  closeModal: "关闭",
+  authorBy: "作者：{author}",
+  githubRepository: "GitHub 仓库",
+  screenshotsTitle: "界面预览",
+  screenshotAlt: "{name} 截图 {index}",
+  screenshotPreviewLabel: "预览第 {index} 张截图（共 {total} 张）",
+  previousScreenshot: "上一张截图",
+  nextScreenshot: "下一张截图",
+  closePreview: "收起大图",
+  technicalDetails: "技术信息",
   detailId: "ID",
   detailVersion: "版本",
-  detailSlots: "槽位",
+  detailSlots: "声明槽位",
   detailHash: "Hash",
+  detailDiagnostics: "诊断信息",
   noExclusiveSlots: "无独占槽位",
   slots: Object.freeze({
     "sidebar.thread-layout": "侧栏 Thread 布局",

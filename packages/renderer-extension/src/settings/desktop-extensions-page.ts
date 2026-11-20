@@ -1,16 +1,31 @@
 import {
-  resolveLocalizedExtensionText,
   type DesktopExtensionCategory,
   type DesktopExtensionMutationResult,
   type DesktopExtensionSelectionParams,
-  type DesktopExtensionSlot,
   type DesktopExtensionStatus,
   type DesktopExtensionsListResult,
   type DesktopExtensionsRecoveryParams,
 } from "@codexhost/shared-contracts";
 import { RendererMethodUnavailableError } from "../renderer-request-sender.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
-import type { DesktopExtensionsMessages } from "./desktop-extensions-messages.js";
+import {
+  blockedToggleReason,
+  createDesktopExtensionDetailModal,
+  createEl,
+  describeOtherExtension,
+  extensionDescription,
+  extensionDisplayName,
+  extensionGroupOf,
+  formatMessage,
+  formatSlotLabel,
+  isToggleBlocked,
+  overlappingSlots,
+  resolveAttentionDetail,
+  statusTone,
+  type DesktopExtensionFeedback,
+  type DesktopExtensionGroupId,
+  type DesktopExtensionItem,
+} from "./desktop-extensions-detail-modal.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
@@ -32,10 +47,6 @@ export interface RendererDesktopExtensionsClient {
   ): Promise<DesktopExtensionMutationResult>;
 }
 
-type DesktopExtensionItem = DesktopExtensionsListResult["extensions"][number];
-type BannerTone = "info" | "success" | "warning" | "danger";
-type ExtensionGroupId = "attention" | "enabled" | "disabled";
-
 const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
   "sidebar",
   "composer",
@@ -48,68 +59,27 @@ const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
   "integrations",
 ];
 
-const EXTENSION_GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
-
-function extensionGroupOf(state: DesktopExtensionStatus["state"]): ExtensionGroupId {
-  switch (state) {
-    case "failed":
-    case "conflict":
-    case "invalid":
-    case "incompatible":
-      return "attention";
-    case "running":
-    case "waiting":
-      return "enabled";
-    case "disabled":
-      return "disabled";
-  }
-}
-
-interface FeedbackBanner {
-  readonly tone: BannerTone;
-  readonly text: string;
-  readonly retryable?: boolean;
-}
-
-function formatMessage(template: string, values: Readonly<Record<string, string>>): string {
-  return template.replace(/\{([a-zA-Z0-9_]+)\}/gu, (match, key: string) => values[key] ?? match);
-}
+const EXTENSION_GROUP_ORDER: readonly DesktopExtensionGroupId[] = [
+  "attention",
+  "enabled",
+  "disabled",
+];
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function createEl<K extends keyof HTMLElementTagNameMap>(
-  document: Document,
-  tag: K,
-  className = "",
-  text = "",
-): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tag);
-  if (className) element.className = className;
-  if (text) element.textContent = text;
-  return element;
-}
-
-function extensionDisplayName(
-  item: DesktopExtensionItem,
-  locale: RendererSettingsMessages["locale"],
-): string {
-  return item.manifest ? resolveLocalizedExtensionText(item.manifest.name, locale) : item.id;
-}
-
-function extensionDescription(
-  item: DesktopExtensionItem,
-  locale: RendererSettingsMessages["locale"],
-): string | null {
-  const description = item.manifest?.description;
-  if (!description) return null;
-  const localized =
-    description["zh-CN"] !== undefined
-      ? { en: description.en, "zh-CN": description["zh-CN"] }
-      : { en: description.en };
-  const trimmed = resolveLocalizedExtensionText(localized, locale).trim();
-  return trimmed.length > 0 ? trimmed : null;
+function isWithinElement(target: EventTarget | null, container: HTMLElement): boolean {
+  if (!target) return false;
+  if (target === container) return true;
+  if (
+    typeof container.contains === "function" &&
+    typeof Node !== "undefined" &&
+    target instanceof Node
+  ) {
+    return container.contains(target);
+  }
+  return false;
 }
 
 function matchesSearchQuery(item: DesktopExtensionItem, normalizedQuery: string): boolean {
@@ -124,10 +94,19 @@ function matchesSearchQuery(item: DesktopExtensionItem, normalizedQuery: string)
     } else {
       fields.push(manifest.name.en, manifest.name["zh-CN"]);
     }
+    if (manifest.author) {
+      fields.push(manifest.author);
+    }
     if (manifest.description) {
       fields.push(manifest.description.en);
       if (manifest.description["zh-CN"]) {
         fields.push(manifest.description["zh-CN"]);
+      }
+    }
+    if (manifest.details) {
+      fields.push(manifest.details.en);
+      if (manifest.details["zh-CN"]) {
+        fields.push(manifest.details["zh-CN"]);
       }
     }
   }
@@ -137,60 +116,6 @@ function matchesSearchQuery(item: DesktopExtensionItem, normalizedQuery: string)
 
 function shouldShowStatusBadge(state: DesktopExtensionStatus["state"]): boolean {
   return state !== "disabled";
-}
-
-function statusTone(state: DesktopExtensionStatus["state"]): BannerTone | "neutral" {
-  if (state === "running") return "success";
-  if (state === "waiting") return "info";
-  if (state === "conflict" || state === "incompatible") return "warning";
-  if (state === "failed" || state === "invalid") return "danger";
-  return "neutral";
-}
-
-function formatSlotLabel(slot: DesktopExtensionSlot, copy: DesktopExtensionsMessages): string {
-  const localized = copy.slots[slot];
-  return localized ? `${localized} (${slot})` : slot;
-}
-
-function describeOtherExtension(
-  conflictWithId: string,
-  extensions: readonly DesktopExtensionItem[],
-  locale: RendererSettingsMessages["locale"],
-): string {
-  const other = extensions.find((item) => item.id === conflictWithId);
-  const name = other?.manifest
-    ? resolveLocalizedExtensionText(other.manifest.name, locale)
-    : undefined;
-  return name && name !== conflictWithId ? `${name} (${conflictWithId})` : conflictWithId;
-}
-
-function overlappingSlots(
-  target: DesktopExtensionItem,
-  conflictWithId: string,
-  extensions: readonly DesktopExtensionItem[],
-): readonly DesktopExtensionSlot[] {
-  const targetSlots = target.manifest?.slots ?? [];
-  if (targetSlots.length === 0) return [];
-  const otherSlots = extensions.find((item) => item.id === conflictWithId)?.manifest?.slots;
-  if (!otherSlots || otherSlots.length === 0) return targetSlots;
-  const shared = targetSlots.filter((slot) => otherSlots.includes(slot));
-  return shared.length > 0 ? shared : targetSlots;
-}
-
-function isToggleBlocked(item: DesktopExtensionItem): boolean {
-  if (item.enabled) return false;
-  return (
-    item.status.state === "incompatible" ||
-    item.status.state === "invalid" ||
-    item.manifest === undefined
-  );
-}
-
-function blockedToggleReason(item: DesktopExtensionItem, copy: DesktopExtensionsMessages): string {
-  if (item.status.error) return item.status.error;
-  return item.status.state === "incompatible"
-    ? copy.toggleDisabledIncompatible
-    : copy.toggleDisabledInvalid;
 }
 
 function resolveAvailableClient(
@@ -350,12 +275,42 @@ export function createDesktopExtensionsSettingsPage(
       let mutating = false;
       let activeMutationId: string | null = null;
       let pollTimer: ReturnType<typeof setTimeout> | undefined;
-      let activeDialog: HTMLDialogElement | null = null;
+      let activeRecoveryDialog: HTMLDialogElement | null = null;
       let selectedCategory: DesktopExtensionCategory | null = null;
       let searchQuery = "";
-      const expandedIds = new Set<string>();
+      let currentFeedback: DesktopExtensionFeedback | null = null;
+      let modalFeedbackExtensionId: string | null = null;
 
-      const setFeedback = (next: FeedbackBanner | null): void => {
+      const buildDetailModalState = () => ({
+        extensions: listing?.extensions ?? [],
+        unavailable,
+        mutating,
+        activeMutationId,
+        feedback:
+          modalFeedbackExtensionId !== null && modalFeedbackExtensionId === detailModal.extensionId
+            ? currentFeedback
+            : null,
+      });
+
+      const detailModal = createDesktopExtensionDetailModal({
+        document,
+        host: root,
+        signal: context.signal,
+        messages,
+        onToggle: (item, enable) => {
+          void toggleExtension(item, enable);
+        },
+        onClose: () => {
+          modalFeedbackExtensionId = null;
+        },
+      });
+
+      const setFeedback = (
+        next: DesktopExtensionFeedback | null,
+        modalExtensionId: string | null = null,
+      ): void => {
+        currentFeedback = next;
+        modalFeedbackExtensionId = next ? modalExtensionId : null;
         if (!next) {
           banner.hidden = true;
           bannerText.textContent = "";
@@ -470,9 +425,17 @@ export function createDesktopExtensionsSettingsPage(
         item: DesktopExtensionItem,
         allExtensions: readonly DesktopExtensionItem[],
       ): HTMLElement => {
+        const displayName = extensionDisplayName(item, messages.locale);
         const card = createEl(document, "article", "settings-extensions-card");
         card.dataset.extensionId = item.id;
         card.dataset.extensionState = item.status.state;
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-haspopup", "dialog");
+        card.setAttribute(
+          "aria-label",
+          formatMessage(copy.openDetailsLabel, { name: displayName }),
+        );
         if (activeMutationId === item.id) card.dataset.busy = "true";
 
         const head = createEl(document, "div", "settings-extensions-card__head");
@@ -480,7 +443,6 @@ export function createDesktopExtensionsSettingsPage(
 
         // Row 1: bold title + compact category chips + active/attention status badge.
         const titleRow = createEl(document, "div", "settings-extensions-card__title");
-        const displayName = extensionDisplayName(item, messages.locale);
         const nameEl = createEl(document, "h3", "", displayName);
         nameEl.title = displayName;
         titleRow.append(nameEl);
@@ -525,11 +487,6 @@ export function createDesktopExtensionsSettingsPage(
         const controlColumn = createEl(document, "div", "settings-extensions-card__control");
         const switchId = preferenceId(`desktop-ext-${item.id}`);
         const errorId = preferenceId(`desktop-ext-error-${item.id}`);
-        const detailsId = preferenceId(`desktop-ext-details-${item.id}`);
-
-        const detailsToggle = createEl(document, "button", "settings-extensions-details-toggle");
-        detailsToggle.type = "button";
-        detailsToggle.setAttribute("aria-controls", detailsId);
 
         const blocked = isToggleBlocked(item);
         const toggle = createPreferenceSwitch(document, switchId, errorId);
@@ -539,6 +496,13 @@ export function createDesktopExtensionsSettingsPage(
         if (blocked) {
           toggle.title = blockedToggleReason(item, copy);
         }
+        const stopRowTrigger = (event: Event): void => {
+          event.stopPropagation?.();
+        };
+        controlColumn.addEventListener("click", stopRowTrigger);
+        controlColumn.addEventListener("keydown", stopRowTrigger);
+        toggle.addEventListener("click", stopRowTrigger);
+        toggle.addEventListener("keydown", stopRowTrigger);
         toggle.addEventListener("change", () => {
           const desired = toggle.checked;
           if (mutating || blocked) {
@@ -547,132 +511,40 @@ export function createDesktopExtensionsSettingsPage(
           }
           void toggleExtension(item, desired);
         });
-        controlColumn.append(detailsToggle, toggle);
+        controlColumn.append(toggle);
         head.append(identity, controlColumn);
         card.append(head);
 
         // Attention states surface a concise single-row error inline below the main row.
-        if (extensionGroupOf(item.status.state) === "attention") {
-          let errorText: string | null = null;
-          let errorTone: "warning" | "danger" = "danger";
-          if (item.status.conflictWith) {
-            const other = describeOtherExtension(
-              item.status.conflictWith,
-              allExtensions,
-              messages.locale,
-            );
-            const shared = overlappingSlots(item, item.status.conflictWith, allExtensions);
-            errorText =
-              shared.length > 0
-                ? formatMessage(copy.conflictSlotDetails, {
-                    slots: shared.map((slot) => formatSlotLabel(slot, copy)).join(", "),
-                    other,
-                  })
-                : formatMessage(copy.conflictOccupiedBy, { other });
-            errorTone = "warning";
-          } else if (item.status.error) {
-            errorText = item.status.error;
-            errorTone = item.status.state === "incompatible" ? "warning" : "danger";
-          } else if (blocked) {
-            errorText = blockedToggleReason(item, copy);
-            errorTone = item.status.state === "incompatible" ? "warning" : "danger";
-          }
-
-          if (errorText) {
-            const detail = createEl(document, "div", "settings-extensions-card__detail");
-            detail.id = errorId;
-            detail.dataset.tone = errorTone;
-            detail.append(
-              createRendererSettingsIcon("alert", 13),
-              createEl(document, "span", "", errorText),
-            );
-            card.append(detail);
-          }
-        }
-
-        // Collapsible secondary metadata drawer: full description, ID, version, slots, hash.
-        const detailsPanel = createEl(document, "div", "settings-extensions-card__details");
-        detailsPanel.id = detailsId;
-        if (desc) {
-          detailsPanel.append(
-            createEl(document, "p", "settings-extensions-card__details-description", desc),
+        const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
+        if (attention) {
+          const detail = createEl(document, "div", "settings-extensions-card__detail");
+          detail.id = errorId;
+          detail.dataset.tone = attention.tone;
+          detail.append(
+            createRendererSettingsIcon("alert", 13),
+            createEl(document, "span", "", attention.text),
           );
+          card.append(detail);
         }
 
-        const metaList = createEl(document, "dl", "settings-extensions-card__meta-grid");
-        const appendMetaRow = (label: string, valueNode: HTMLElement): void => {
-          const row = createEl(document, "div", "settings-extensions-card__meta-row");
-          row.append(createEl(document, "dt", "", label));
-          const dd = createEl(document, "dd");
-          dd.append(valueNode);
-          row.append(dd);
-          metaList.append(row);
+        const openDetails = (): void => {
+          if (disposed || context.signal.aborted || activeRecoveryDialog) return;
+          if (detailModal.extensionId !== item.id) {
+            modalFeedbackExtensionId = null;
+          }
+          detailModal.open(item.id, buildDetailModalState());
         };
-
-        appendMetaRow(copy.detailId, createEl(document, "code", "", item.id));
-
-        if (item.manifest?.version) {
-          appendMetaRow(
-            copy.detailVersion,
-            createEl(
-              document,
-              "span",
-              "settings-extensions-card__version",
-              `v${item.manifest.version}`,
-            ),
-          );
-        }
-
-        if (item.manifest) {
-          const slotsRow = createEl(document, "div", "settings-extensions-slots");
-          if (item.manifest.slots.length === 0) {
-            slotsRow.append(
-              createEl(
-                document,
-                "span",
-                "settings-status-badge settings-extensions-slot-chip--empty",
-                copy.noExclusiveSlots,
-              ),
-            );
-          } else {
-            for (const slot of item.manifest.slots) {
-              const chip = createEl(
-                document,
-                "span",
-                "settings-status-badge settings-extensions-slot-chip",
-                copy.slots[slot] ?? slot,
-              );
-              chip.dataset.slot = slot;
-              chip.title = slot;
-              slotsRow.append(chip);
-            }
+        card.addEventListener("click", (event) => {
+          if (isWithinElement(event.target, controlColumn)) return;
+          openDetails();
+        });
+        card.addEventListener("keydown", (event) => {
+          if (isWithinElement(event.target, controlColumn)) return;
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openDetails();
           }
-          appendMetaRow(copy.detailSlots, slotsRow);
-        }
-
-        if (item.status.hash) {
-          const hashCode = createEl(document, "code", "", item.status.hash);
-          hashCode.title = item.status.hash;
-          appendMetaRow(copy.detailHash, hashCode);
-        }
-
-        detailsPanel.append(metaList);
-        card.append(detailsPanel);
-
-        const syncExpandedState = (expanded: boolean): void => {
-          detailsToggle.setAttribute("aria-expanded", String(expanded));
-          detailsToggle.replaceChildren(
-            createEl(document, "span", "", copy.details),
-            createRendererSettingsIcon(expanded ? "chevron-up" : "chevron-down", 12),
-          );
-          detailsPanel.hidden = !expanded;
-        };
-        syncExpandedState(expandedIds.has(item.id));
-        detailsToggle.addEventListener("click", () => {
-          const next = !expandedIds.has(item.id);
-          if (next) expandedIds.add(item.id);
-          else expandedIds.delete(item.id);
-          syncExpandedState(next);
         });
 
         return card;
@@ -688,6 +560,7 @@ export function createDesktopExtensionsSettingsPage(
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           renderEmptyBox(copy.unavailableTitle, copy.unavailableDescription);
+          detailModal.sync(buildDetailModalState());
           return;
         }
         if (!listing) {
@@ -696,6 +569,7 @@ export function createDesktopExtensionsSettingsPage(
           categorySlot.replaceChildren();
           if (loading) renderLoading();
           else body.replaceChildren();
+          detailModal.sync(buildDetailModalState());
           return;
         }
         if (listing.extensions.length === 0) {
@@ -703,6 +577,7 @@ export function createDesktopExtensionsSettingsPage(
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           renderEmptyBox(copy.emptyTitle, copy.emptyDescription, copy.emptyPathHint);
+          detailModal.sync(buildDetailModalState());
           return;
         }
 
@@ -763,10 +638,11 @@ export function createDesktopExtensionsSettingsPage(
 
         if (visibleExtensions.length === 0) {
           renderNoMatchesBox();
+          detailModal.sync(buildDetailModalState());
           return;
         }
 
-        const buckets: Record<ExtensionGroupId, DesktopExtensionItem[]> = {
+        const buckets: Record<DesktopExtensionGroupId, DesktopExtensionItem[]> = {
           attention: [],
           enabled: [],
           disabled: [],
@@ -811,6 +687,7 @@ export function createDesktopExtensionsSettingsPage(
         }
 
         body.replaceChildren(groupsContainer);
+        detailModal.sync(buildDetailModalState());
       };
 
       const clearPollTimer = (): void => {
@@ -822,7 +699,7 @@ export function createDesktopExtensionsSettingsPage(
         clearPollTimer();
         if (disposed || context.signal.aborted || document.visibilityState === "hidden") return;
         pollTimer = setTimeout(() => {
-          if (disposed || context.signal.aborted || mutating || loading || activeDialog) {
+          if (disposed || context.signal.aborted || mutating || loading || activeRecoveryDialog) {
             schedulePoll();
             return;
           }
@@ -900,6 +777,7 @@ export function createDesktopExtensionsSettingsPage(
         }
         const expectedRevision = listing?.configuration.revision ?? 0;
         const displayName = extensionDisplayName(item, messages.locale);
+        const modalTargetId = detailModal.extensionId === item.id ? item.id : null;
         mutating = true;
         activeMutationId = item.id;
         clearPollTimer();
@@ -919,12 +797,15 @@ export function createDesktopExtensionsSettingsPage(
                 ),
               };
             }
-            setFeedback({
-              tone: "success",
-              text: formatMessage(enable ? copy.savedEnabled : copy.savedDisabled, {
-                name: displayName,
-              }),
-            });
+            setFeedback(
+              {
+                tone: "success",
+                text: formatMessage(enable ? copy.savedEnabled : copy.savedDisabled, {
+                  name: displayName,
+                }),
+              },
+              modalTargetId,
+            );
             mutating = false;
             activeMutationId = null;
             render();
@@ -940,28 +821,34 @@ export function createDesktopExtensionsSettingsPage(
               messages.locale,
             );
             const shared = overlappingSlots(item, result.conflictWith, allExtensions);
-            setFeedback({
-              tone: "warning",
-              text:
-                shared.length > 0
-                  ? formatMessage(copy.slotConflictBannerWithSlots, {
-                      name: displayName,
-                      slots: shared.map((slot) => formatSlotLabel(slot, copy)).join(", "),
-                      other,
-                    })
-                  : formatMessage(copy.slotConflictBanner, {
-                      name: displayName,
-                      other,
-                    }),
-            });
+            setFeedback(
+              {
+                tone: "warning",
+                text:
+                  shared.length > 0
+                    ? formatMessage(copy.slotConflictBannerWithSlots, {
+                        name: displayName,
+                        slots: shared.map((slot) => formatSlotLabel(slot, copy)).join(", "),
+                        other,
+                      })
+                    : formatMessage(copy.slotConflictBanner, {
+                        name: displayName,
+                        other,
+                      }),
+              },
+              modalTargetId,
+            );
             return;
           }
 
           if (result.state === "revision-conflict") {
-            setFeedback({
-              tone: "warning",
-              text: copy.revisionConflictBanner,
-            });
+            setFeedback(
+              {
+                tone: "warning",
+                text: copy.revisionConflictBanner,
+              },
+              modalTargetId,
+            );
             mutating = false;
             activeMutationId = null;
             render();
@@ -976,10 +863,13 @@ export function createDesktopExtensionsSettingsPage(
             setFeedback(null);
             return;
           }
-          setFeedback({
-            tone: "danger",
-            text: formatMessage(copy.actionFailed, { message: errorMessage(error) }),
-          });
+          setFeedback(
+            {
+              tone: "danger",
+              text: formatMessage(copy.actionFailed, { message: errorMessage(error) }),
+            },
+            modalTargetId,
+          );
         } finally {
           if (!disposed && !context.signal.aborted) {
             mutating = false;
@@ -991,9 +881,10 @@ export function createDesktopExtensionsSettingsPage(
       };
 
       const openRecoveryDialog = (): void => {
-        if (disposed || context.signal.aborted || mutating || activeDialog) return;
+        if (disposed || context.signal.aborted || mutating || activeRecoveryDialog) return;
         const client = resolveAvailableClient(getClient);
         if (!client?.disableAllDesktopExtensionsAndReload) return;
+        detailModal.close();
 
         const modal = createEl(
           document,
@@ -1051,7 +942,7 @@ export function createDesktopExtensionsSettingsPage(
 
         const cleanupDialog = (): void => {
           context.signal.removeEventListener("abort", cleanupDialog);
-          if (activeDialog === modal) activeDialog = null;
+          if (activeRecoveryDialog === modal) activeRecoveryDialog = null;
           modal.remove();
         };
 
@@ -1145,14 +1036,20 @@ export function createDesktopExtensionsSettingsPage(
             });
         });
 
-        activeDialog = modal;
+        activeRecoveryDialog = modal;
         root.append(modal);
         modal.showModal();
       };
 
       const onVisibilityChange = (): void => {
         if (document.visibilityState === "hidden") clearPollTimer();
-        else if (!disposed && !context.signal.aborted && !mutating && !loading && !activeDialog) {
+        else if (
+          !disposed &&
+          !context.signal.aborted &&
+          !mutating &&
+          !loading &&
+          !activeRecoveryDialog
+        ) {
           void load({ silent: true });
         }
       };
@@ -1186,8 +1083,9 @@ export function createDesktopExtensionsSettingsPage(
         clearPollTimer();
         clearTimeout(copyResetTimer);
         document.removeEventListener?.("visibilitychange", onVisibilityChange);
-        activeDialog?.remove();
-        activeDialog = null;
+        detailModal.dispose();
+        activeRecoveryDialog?.remove();
+        activeRecoveryDialog = null;
       };
     },
   });

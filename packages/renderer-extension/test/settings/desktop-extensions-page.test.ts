@@ -34,6 +34,13 @@ class FakeElement {
   checked = false;
   disabled = false;
   open = false;
+  href = "";
+  target = "";
+  rel = "";
+  src = "";
+  alt = "";
+  loading = "";
+  tabIndex = -1;
   parent: FakeElement | undefined;
 
   constructor(
@@ -43,6 +50,15 @@ class FakeElement {
 
   get isConnected(): boolean {
     return Boolean(this.parent);
+  }
+
+  contains(target: unknown): boolean {
+    let cursor = target instanceof FakeElement ? target : undefined;
+    while (cursor) {
+      if (cursor === this) return true;
+      cursor = cursor.parent;
+    }
+    return false;
   }
 
   addEventListener(name: string, listener: (event?: unknown) => void): void {
@@ -60,9 +76,38 @@ class FakeElement {
     );
   }
 
-  dispatch(name: string, event: Record<string, unknown> = {}): void {
+  dispatch(name: string, event: Record<string, unknown> = {}): { stopped: boolean } {
+    let stopped = false;
+    const payload = {
+      target: this,
+      preventDefault() {},
+      stopPropagation() {
+        stopped = true;
+      },
+      ...event,
+    };
     for (const listener of [...(this.#listeners.get(name) ?? [])]) {
-      listener({ preventDefault() {}, ...event });
+      listener(payload);
+    }
+    return { stopped };
+  }
+
+  dispatchBubbling(name: string, event: Record<string, unknown> = {}): void {
+    let stopped = false;
+    const payload = {
+      target: this,
+      preventDefault() {},
+      stopPropagation() {
+        stopped = true;
+      },
+      ...event,
+    };
+    let cursor: FakeElement | undefined = this;
+    while (cursor && !stopped) {
+      for (const listener of [...(cursor.#listeners.get(name) ?? [])]) {
+        listener(payload);
+      }
+      cursor = cursor.parent;
     }
   }
 
@@ -189,6 +234,10 @@ function deferred<T>() {
 }
 
 const SAMPLE_TREE_HASH = "a".repeat(64);
+const SAMPLE_SCREENSHOT_1 =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const SAMPLE_SCREENSHOT_2 =
+  "data:image/webp;base64,UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=";
 
 function sampleList(
   overrides: Partial<DesktopExtensionsListResult> = {},
@@ -202,12 +251,20 @@ function sampleList(
         id: "sidebar-thread-tree",
         enabled: true,
         status: { state: "running", hash: SAMPLE_TREE_HASH },
+        screenshotDataUrls: [SAMPLE_SCREENSHOT_1, SAMPLE_SCREENSHOT_2],
         manifest: {
           manifestVersion: 1,
           id: "sidebar-thread-tree",
           name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
           version: "0.1.0",
           description: { en: "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
+          author: "codexhost",
+          repository: "https://github.com/BytePioneer-AI/codex-host",
+          details: {
+            en: "Expand a parent Thread to inspect delegated children.\n\nGrouping stays local and leaves remote rows untouched.",
+            "zh-CN": "在侧栏展开父 Thread 查看委派子任务。\n\n归组仅作用于本机列表，不影响远程行。",
+          },
+          screenshots: ["assets/tree-1.png", "assets/tree-2.webp"],
           desktopApi: 1,
           desktop: { script: "desktop.js", style: "desktop.css" },
           slots: ["sidebar.thread-layout", "sidebar.thread-badge"],
@@ -344,11 +401,15 @@ describe("Desktop extensions settings page", () => {
       el.className.includes("settings-extensions-category-chip"),
     );
     expect(treeCategoryChips.map((chip) => textOf(chip))).toEqual(["侧栏", "多会话协作"]);
-    // Secondary metadata stays collapsed by default until Details is expanded.
+    // Main list row stays minimal: no raw ID, version, slots, hash, or inline details drawer.
     expect(textOf(treeCard)).not.toContain("v0.1.0");
     expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
     expect(textOf(treeCard)).not.toContain("侧栏 Thread 布局");
+    expect(textOf(treeCard)).not.toContain("侧栏 Thread 角标");
     expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
+    expect(
+      descendants(treeCard).filter((el) => el.className.includes("settings-extensions-slot-chip")),
+    ).toHaveLength(0);
 
     const badgesCard = cards[3]!;
     expect(textOf(badgesCard)).toContain("Delegation Badges");
@@ -680,9 +741,187 @@ describe("Desktop extensions settings page", () => {
     mounted.dispose();
   });
 
-  it("expands and collapses secondary extension details (full description, ID, version, slots, hash)", async () => {
+  it("opens extension detail modal on row click or keyboard, ignores switch click bubbling, and renders metadata, GitHub link, details, screenshots, and Esc dismissal", async () => {
     const mounted = mountPage("zh-CN", () => ({
       listDesktopExtensions: vi.fn(async () => sampleList()),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const findDetailDialog = () =>
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      );
+
+    const treeCard = descendants(mounted.content).find(
+      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+    )!;
+    const treeSwitch = descendants(treeCard).find(
+      (el) => el.tagName === "input" && el.type === "checkbox",
+    )!;
+
+    // Clicking the row switch stops propagation and does not open the detail modal.
+    treeSwitch.dispatchBubbling("click");
+    expect(findDetailDialog()).toBeUndefined();
+
+    // Clicking the card row opens the centered detail modal.
+    treeCard.dispatch("click");
+    const dialog = findDetailDialog()!;
+    expect(dialog).toBeDefined();
+    expect(dialog.open).toBe(true);
+    expect(dialog.dataset.extensionId).toBe("sidebar-thread-tree");
+
+    // Header: bilingual title, author, version, status badge, categories, GitHub link, and switch.
+    expect(textOf(dialog)).toContain("侧栏委派树");
+    expect(textOf(dialog)).toContain("作者：codexhost");
+    expect(textOf(dialog)).toContain("v0.1.0");
+    expect(textOf(dialog)).toContain("运行中");
+    expect(textOf(dialog)).toContain("侧栏");
+    expect(textOf(dialog)).toContain("多会话协作");
+
+    const repoLink = descendants(dialog).find((el) => el.tagName === "a")!;
+    expect(repoLink).toBeDefined();
+    expect(repoLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
+    expect(repoLink.target).toBe("_blank");
+    expect(repoLink.rel).toBe("noopener noreferrer");
+    expect(textOf(repoLink)).toContain("GitHub 仓库");
+
+    // Multi-paragraph localized details.
+    const paragraphs = descendants(dialog).filter((el) =>
+      el.className.includes("settings-extensions-detail-modal__paragraph"),
+    );
+    expect(paragraphs.map((p) => textOf(p))).toEqual([
+      "在侧栏展开父 Thread 查看委派子任务。",
+      "归组仅作用于本机列表，不影响远程行。",
+    ]);
+
+    // Screenshot gallery + interactive large preview.
+    const galleryImages = descendants(dialog).filter(
+      (el) =>
+        el.tagName === "img" && !el.className.includes("settings-extensions-detail-modal__preview"),
+    );
+    expect(galleryImages.map((img) => img.src)).toEqual([SAMPLE_SCREENSHOT_1, SAMPLE_SCREENSHOT_2]);
+
+    const previewStage = descendants(dialog).find((el) =>
+      el.className.includes("settings-extensions-detail-modal__preview"),
+    )!;
+    const previewImg = descendants(previewStage).find((el) => el.tagName === "img")!;
+    expect(previewStage.hidden).toBe(true);
+
+    const thumbButtons = descendants(dialog).filter((el) =>
+      el.className.includes("settings-extensions-detail-modal__thumb"),
+    );
+    thumbButtons[0]!.dispatch("click");
+    expect(previewStage.hidden).toBe(false);
+    expect(previewImg.src).toBe(SAMPLE_SCREENSHOT_1);
+    expect(thumbButtons[0]!.getAttribute("aria-pressed")).toBe("true");
+
+    // Clicking the second thumbnail switches the large preview image.
+    thumbButtons[1]!.dispatch("click");
+    expect(previewImg.src).toBe(SAMPLE_SCREENSHOT_2);
+    expect(thumbButtons[1]!.getAttribute("aria-pressed")).toBe("true");
+
+    // First Escape closes the large preview while keeping the detail modal open.
+    dialog.dispatch("keydown", { key: "Escape" });
+    expect(previewStage.hidden).toBe(true);
+    expect(dialog.open).toBe(true);
+
+    // Technical details live inside the subtle bottom <details> disclosure.
+    const techDisclosure = descendants(dialog).find((el) => el.tagName === "details")!;
+    expect(techDisclosure).toBeDefined();
+    expect(textOf(techDisclosure)).toContain("sidebar-thread-tree");
+    expect(textOf(techDisclosure)).toContain("侧栏 Thread 布局");
+    expect(textOf(techDisclosure)).toContain("侧栏 Thread 角标");
+    expect(textOf(techDisclosure)).toContain(SAMPLE_TREE_HASH);
+
+    // Second Escape closes the detail modal.
+    dialog.dispatch("keydown", { key: "Escape" });
+    expect(dialog.open).toBe(false);
+    expect(findDetailDialog()).toBeUndefined();
+
+    // Keyboard Enter on a row without `details` falls back to `description`, and backdrop click closes it.
+    const badgesCard = descendants(mounted.content).find(
+      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-delegation-badges",
+    )!;
+    badgesCard.dispatch("keydown", { key: "Enter" });
+    const badgesDialog = findDetailDialog()!;
+    expect(badgesDialog.open).toBe(true);
+    expect(textOf(badgesDialog)).toContain("显示子 Thread 角标");
+    expect(descendants(badgesDialog).filter((el) => el.tagName === "a")).toHaveLength(0);
+    badgesDialog.dispatch("click", { target: badgesDialog });
+    expect(badgesDialog.open).toBe(false);
+    expect(findDetailDialog()).toBeUndefined();
+    mounted.dispose();
+
+    // English locale renders English details, GitHub label, and blocks unsafe repository protocols.
+    const unsafeRepoList = sampleList({
+      extensions: sampleList().extensions.map((item) =>
+        item.id === "sidebar-thread-tree" && item.manifest
+          ? {
+              ...item,
+              manifest: {
+                ...item.manifest,
+                repository: "javascript:alert(1)",
+              },
+            }
+          : item,
+      ),
+    });
+    const enMount = mountPage("en", () => ({
+      listDesktopExtensions: vi.fn(async () => unsafeRepoList),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(enMount.content)).toContain("Sidebar Thread Tree"));
+    const enTreeCard = descendants(enMount.content).find(
+      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+    )!;
+    enTreeCard.dispatch("keydown", { key: " " });
+    const enDialog = descendants(enMount.content).find(
+      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+    )!;
+    expect(enDialog.open).toBe(true);
+    expect(textOf(enDialog)).toContain("By codexhost");
+    expect(textOf(enDialog)).toContain("Expand a parent Thread to inspect delegated children.");
+    expect(textOf(enDialog)).toContain("Grouping stays local and leaves remote rows untouched.");
+    expect(descendants(enDialog).filter((el) => el.tagName === "a")).toHaveLength(0);
+    enMount.dispose();
+  });
+
+  it("toggles extension state from inside the detail modal and stays open across 5s polling updates", async () => {
+    vi.useFakeTimers();
+    const listDesktopExtensions = vi
+      .fn<() => Promise<DesktopExtensionsListResult>>()
+      .mockResolvedValueOnce(sampleList())
+      .mockResolvedValueOnce(
+        sampleList({
+          configuration: { version: 1, revision: 5, enabled: [] },
+          extensions: sampleList().extensions.map((item) =>
+            item.id === "sidebar-thread-tree"
+              ? { ...item, enabled: false, status: { state: "disabled" } }
+              : item,
+          ),
+        }),
+      )
+      .mockResolvedValueOnce(
+        sampleList({
+          configuration: { version: 1, revision: 6, enabled: ["sidebar-thread-tree"] },
+          extensions: sampleList().extensions.map((item) =>
+            item.id === "sidebar-thread-tree"
+              ? { ...item, enabled: true, status: { state: "waiting" } }
+              : item,
+          ),
+        }),
+      );
+    const disableDesktopExtension = vi.fn(async (): Promise<DesktopExtensionMutationResult> => ({
+      state: "saved",
+      configuration: { version: 1, revision: 5, enabled: [] },
+    }));
+
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions,
+      enableDesktopExtension: vi.fn(),
+      disableDesktopExtension,
       disableAllDesktopExtensionsAndReload: vi.fn(),
     }));
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
@@ -690,32 +929,35 @@ describe("Desktop extensions settings page", () => {
     const treeCard = descendants(mounted.content).find(
       (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
     )!;
-    const toggleButton = descendants(treeCard).find((el) =>
-      el.className.includes("settings-extensions-details-toggle"),
+    treeCard.dispatch("click");
+
+    const dialog = descendants(mounted.content).find(
+      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
     )!;
+    const modalSwitch = descendants(dialog).find(
+      (el) => el.tagName === "input" && el.type === "checkbox",
+    )!;
+    expect(modalSwitch.checked).toBe(true);
 
-    expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
-    expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
-    expect(textOf(treeCard)).not.toContain("v0.1.0");
-    expect(textOf(treeCard)).not.toContain("侧栏 Thread 布局");
-    expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
+    // Toggle off from inside the detail modal.
+    modalSwitch.checked = false;
+    modalSwitch.dispatch("change");
 
-    // Expand details drawer.
-    toggleButton.dispatch("click");
-    expect(toggleButton.getAttribute("aria-expanded")).toBe("true");
-    expect(textOf(treeCard)).toContain("归组委派的 Thread");
-    expect(textOf(treeCard)).toContain("sidebar-thread-tree");
-    expect(textOf(treeCard)).toContain("v0.1.0");
-    expect(textOf(treeCard)).toContain("侧栏 Thread 布局");
-    expect(textOf(treeCard)).toContain("侧栏 Thread 角标");
-    expect(textOf(treeCard)).toContain(SAMPLE_TREE_HASH);
+    await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(2));
+    expect(disableDesktopExtension).toHaveBeenCalledWith({
+      id: "sidebar-thread-tree",
+      expectedRevision: 4,
+    });
+    expect(dialog.open).toBe(true);
+    expect(modalSwitch.checked).toBe(false);
+    expect(textOf(dialog)).toContain("未启用");
 
-    // Collapse details drawer again.
-    toggleButton.dispatch("click");
-    expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
-    expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
-    expect(textOf(treeCard)).not.toContain("v0.1.0");
-    expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
+    // 5-second background poll updates modal status/switch live without closing the modal.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(3));
+    expect(dialog.open).toBe(true);
+    expect(modalSwitch.checked).toBe(true);
+    expect(textOf(dialog)).toContain("等待 Desktop");
     mounted.dispose();
   });
 

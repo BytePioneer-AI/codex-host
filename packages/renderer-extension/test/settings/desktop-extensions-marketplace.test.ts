@@ -361,15 +361,32 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
     expect(textOf(mounted.content)).toContain("已安装 (2)");
 
-    // Installed tab shows lightweight update badge for sidebar-thread-tree (0.1.0 -> 0.2.0), not for badges (0.1.0 == 0.1.0).
-    const treeInstalledRow = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+    // Installed tab uses the unified 3-column grid/card structure without initial-letter avatars,
+    // shows official trust badge & lightweight update chip, and places the toggle in the card footer.
+    const installedGrids = descendants(mounted.content).filter(
+      (el) => el.className === "settings-extensions-grid",
+    );
+    expect(installedGrids.length).toBeGreaterThan(0);
+    const treeInstalledCard = descendants(mounted.content).find(
+      (el) =>
+        el.tagName === "article" &&
+        el.className === "settings-extensions-card" &&
+        el.dataset.extensionId === "sidebar-thread-tree",
     )!;
-    const badgesInstalledRow = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-delegation-badges",
+    const badgesInstalledCard = descendants(mounted.content).find(
+      (el) =>
+        el.tagName === "article" &&
+        el.className === "settings-extensions-card" &&
+        el.dataset.extensionId === "sidebar-delegation-badges",
     )!;
-    expect(textOf(treeInstalledRow)).toContain("可更新");
-    expect(textOf(badgesInstalledRow)).not.toContain("可更新");
+    expect(treeInstalledCard).toBeDefined();
+    expect(textOf(treeInstalledCard)).toContain("官方");
+    expect(textOf(treeInstalledCard)).toContain("codexhost · v0.1.0");
+    expect(textOf(treeInstalledCard)).toContain("可更新");
+    expect(textOf(badgesInstalledCard)).not.toContain("可更新");
+    expect(
+      descendants(treeInstalledCard).filter((el) => el.className.includes("__icon")),
+    ).toHaveLength(0);
 
     // Switch to Marketplace tab.
     const marketTab = descendants(mounted.content).find(
@@ -378,18 +395,25 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     marketTab.dispatch("click");
     expect(marketTab.getAttribute("aria-selected")).toBe("true");
 
-    // Fallback notice is shown above the grid and does not block browsing cards.
+    // Fallback notice renders clean localized Chinese without leaking raw English backend error text.
     const fallbackNotice = descendants(mounted.content).find((el) =>
       el.className.includes("settings-extensions-market__notice"),
     )!;
     expect(fallbackNotice).toBeDefined();
-    expect(textOf(fallbackNotice)).toContain("内置官方目录");
-    expect(textOf(fallbackNotice)).toContain("offline");
+    expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
+    expect(textOf(fallbackNotice)).not.toContain("offline");
 
-    // 3 marketplace cards rendered with official/community badges, max 2 categories + overflow, and zero slot chips.
+    // 3 marketplace cards share the exact same grid/card classes, have no avatar squares,
+    // render official/community badges, max 2 categories + overflow, and zero slot chips.
+    expect(
+      descendants(mounted.content).filter((el) => el.className === "settings-extensions-grid"),
+    ).toHaveLength(1);
     const findMarketCards = () =>
       descendants(mounted.content).filter(
-        (el) => el.tagName === "article" && el.className === "settings-extensions-market-card",
+        (el) =>
+          el.tagName === "article" &&
+          el.className === "settings-extensions-card" &&
+          el.dataset.cardKind === "marketplace",
       );
     const marketCards = findMarketCards();
     expect(marketCards.map((card) => card.dataset.extensionId)).toEqual([
@@ -397,6 +421,11 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       "sidebar-delegation-badges",
       "nord-palette",
     ]);
+    expect(
+      marketCards.every(
+        (card) => descendants(card).filter((el) => el.className.includes("__icon")).length === 0,
+      ),
+    ).toBe(true);
 
     const treeMarketCard = marketCards[0]!;
     expect(textOf(treeMarketCard)).toContain("官方");
@@ -534,7 +563,8 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     // 1) Open community catalog item detail modal before installing: shows community notice, safe HTTPS screenshot only, and SHA-256 in tech details.
     const themeCard = descendants(mounted.content).find(
       (el) =>
-        el.className.includes("settings-extensions-market-card") &&
+        el.className === "settings-extensions-card" &&
+        el.dataset.cardKind === "marketplace" &&
         el.dataset.extensionId === "nord-palette",
     )!;
     themeCard.dispatch("click");
@@ -589,7 +619,8 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     // 3) Update sidebar-thread-tree from detail modal (which merges installed + catalog, blocks javascript: screenshot URL).
     const treeMarketCard = descendants(mounted.content).find(
       (el) =>
-        el.className.includes("settings-extensions-market-card") &&
+        el.className === "settings-extensions-card" &&
+        el.dataset.cardKind === "marketplace" &&
         el.dataset.extensionId === "sidebar-thread-tree",
     )!;
     treeMarketCard.dispatch("click");
@@ -790,6 +821,98 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
         contentBase64: "UEsDBAEC",
       },
     });
+
+    mounted.dispose();
+  });
+
+  it("clears transient feedback banners when switching tabs and only surfaces raw catalog errors when non-fallback listing is empty", async () => {
+    const listDesktopExtensions = vi
+      .fn<() => Promise<DesktopExtensionsListResult>>()
+      .mockResolvedValueOnce(sampleInstalledList())
+      .mockResolvedValueOnce({
+        ...sampleInstalledList(),
+        configuration: { version: 1, revision: 4, enabled: [] },
+        extensions: sampleInstalledList().extensions.map((item) =>
+          item.id === "sidebar-thread-tree"
+            ? { ...item, enabled: false, status: { state: "disabled" } }
+            : item,
+        ),
+      });
+    const disableDesktopExtension = vi.fn(async () => ({
+      state: "saved" as const,
+      configuration: { version: 1, revision: 4, enabled: [] },
+    }));
+    const listDesktopExtensionCatalog = vi
+      .fn<() => Promise<DesktopExtensionsCatalogResult>>()
+      .mockResolvedValueOnce(
+        sampleCatalog({
+          source: "fallback",
+          error: "Catalog request failed: HTTP 404",
+        }),
+      )
+      .mockResolvedValueOnce(
+        sampleCatalog({
+          source: "remote",
+          error: "upstream timeout",
+          extensions: [],
+        }),
+      );
+
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions,
+      listDesktopExtensionCatalog,
+      disableDesktopExtension,
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
+
+    // Disable an extension on the Installed tab so the green success feedback banner appears.
+    const treeSwitch = descendants(mounted.content).find(
+      (el) => el.tagName === "input" && el.getAttribute("aria-label")?.includes("侧栏委派树"),
+    )!;
+    treeSwitch.checked = false;
+    treeSwitch.dispatch("change");
+
+    await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(2));
+    const banner = descendants(mounted.content).find((el) =>
+      el.className.includes("settings-extensions__banner"),
+    )!;
+    expect(banner.hidden).toBe(false);
+    expect(textOf(banner)).toBe("已禁用“侧栏委派树”。");
+
+    // Switching to Marketplace clears the stale feedback banner.
+    const marketTab = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+    )!;
+    marketTab.dispatch("click");
+    expect(banner.hidden).toBe(true);
+    expect(textOf(banner)).toBe("");
+
+    // Fallback notice keeps clean localized copy without raw English backend error text.
+    const fallbackNotice = descendants(mounted.content).find((el) =>
+      el.className.includes("settings-extensions-market__notice"),
+    )!;
+    expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
+    expect(textOf(fallbackNotice)).not.toContain("HTTP 404");
+
+    // When source is not fallback and the catalog is empty with an error, surface the error notice.
+    const refreshButton = descendants(mounted.content).find((el) =>
+      el.className.includes("settings-remote__refresh"),
+    )!;
+    refreshButton.dispatch("click");
+    await vi.waitFor(() => expect(listDesktopExtensionCatalog).toHaveBeenCalledTimes(2));
+    const errorNotice = descendants(mounted.content).find((el) =>
+      el.className.includes("settings-extensions-market__notice"),
+    )!;
+    expect(errorNotice).toBeDefined();
+    expect(textOf(errorNotice)).toContain("无法加载扩展市场：upstream timeout");
+
+    // Switching back to Installed keeps the feedback banner cleared.
+    const installedTab = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && el.dataset.tab === "installed",
+    )!;
+    installedTab.dispatch("click");
+    expect(banner.hidden).toBe(true);
 
     mounted.dispose();
   });

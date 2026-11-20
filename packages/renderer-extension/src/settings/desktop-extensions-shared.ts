@@ -358,20 +358,6 @@ export function matchesCatalogSearchQuery(
   return matchesTokens(fields, normalizedQuery);
 }
 
-export function extensionAvatarInitial(displayName: string): string {
-  const trimmed = displayName.trim();
-  const first = Array.from(trimmed)[0];
-  return first ? first.toUpperCase() : "E";
-}
-
-export function extensionAvatarTone(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i += 1) {
-    hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  }
-  return String(hash % 6);
-}
-
 export function formatShortDate(raw: string | undefined): string | null {
   if (!raw) return null;
   const trimmed = raw.trim();

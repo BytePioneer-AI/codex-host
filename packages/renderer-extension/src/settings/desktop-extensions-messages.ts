@@ -65,7 +65,6 @@ export interface DesktopExtensionsMessages {
   readonly marketplaceEmptyTitle: string;
   readonly marketplaceEmptyDescription: string;
   readonly marketplaceFallbackNotice: string;
-  readonly marketplaceFallbackNoticeWithError: string;
   readonly marketplaceLoadFailed: string;
   readonly installedSuccess: string;
   readonly updatedSuccess: string;
@@ -220,8 +219,6 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
     "Refresh to check for newly published extensions, or import one from GitHub or a local .zip package.",
   marketplaceFallbackNotice:
     "Showing the built-in official catalog while the remote catalog is unreachable.",
-  marketplaceFallbackNoticeWithError:
-    "Showing the built-in official catalog because the remote catalog could not be reached ({message}).",
   marketplaceLoadFailed: "Could not load extension marketplace: {message}",
   installedSuccess: "Installed “{name}” (v{version}). Enable it when ready.",
   updatedSuccess: "Updated “{name}” to v{version}.",
@@ -389,7 +386,6 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   marketplaceEmptyTitle: "市场暂无可用扩展",
   marketplaceEmptyDescription: "可点击刷新获取最新目录，或通过 GitHub 链接 / 本地 .zip 包导入。",
   marketplaceFallbackNotice: "远端市场目录暂不可达，当前展示内置官方目录。",
-  marketplaceFallbackNoticeWithError: "远端市场暂不可达，当前展示内置官方目录（{message}）。",
   marketplaceLoadFailed: "无法加载扩展市场：{message}",
   installedSuccess: "已安装“{name}”（v{version}），可按需开启。",
   updatedSuccess: "已将“{name}”更新至 v{version}。",

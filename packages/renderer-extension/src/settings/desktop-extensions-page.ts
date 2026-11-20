@@ -3,7 +3,6 @@ import {
   type DesktopExtensionCategory,
   type DesktopExtensionMutationResult,
   type DesktopExtensionSelectionParams,
-  type DesktopExtensionStatus,
   type DesktopExtensionsCatalogParams,
   type DesktopExtensionsCatalogResult,
   type DesktopExtensionsInstallParams,
@@ -15,6 +14,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { RendererMethodUnavailableError } from "../renderer-request-sender.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
+import { renderDesktopExtensionCard } from "./desktop-extensions-card.js";
 import { createDesktopExtensionDetailModal } from "./desktop-extensions-detail-modal.js";
 import { createDesktopExtensionImportModal } from "./desktop-extensions-import-modal.js";
 import {
@@ -35,12 +35,10 @@ import {
   formatSlotLabel,
   hasCatalogUpdate,
   isToggleBlocked,
-  isWithinElement,
   matchesCatalogSearchQuery,
   matchesInstalledSearchQuery,
   overlappingSlots,
   resolveAttentionDetail,
-  statusTone,
   type DesktopExtensionFeedback,
   type DesktopExtensionGroupId,
   type DesktopExtensionItem,
@@ -83,10 +81,6 @@ const EXTENSION_GROUP_ORDER: readonly DesktopExtensionGroupId[] = [
   "enabled",
   "disabled",
 ];
-
-function shouldShowStatusBadge(state: DesktopExtensionStatus["state"]): boolean {
-  return state !== "disabled";
-}
 
 function resolveAvailableClient(
   getClient: () => RendererDesktopExtensionsClient | null,
@@ -565,80 +559,10 @@ export function createDesktopExtensionsSettingsPage(
         catalogEntry: DesktopExtensionCatalogEntry | undefined,
       ): HTMLElement => {
         const displayName = extensionDisplayName(item, messages.locale);
-        const card = createEl(document, "article", "settings-extensions-card");
-        card.dataset.extensionId = item.id;
-        card.dataset.extensionState = item.status.state;
-        card.tabIndex = 0;
-        card.setAttribute("role", "button");
-        card.setAttribute("aria-haspopup", "dialog");
-        card.setAttribute(
-          "aria-label",
-          formatMessage(copy.openDetailsLabel, { name: displayName }),
-        );
-        if (activeMutationId === item.id) card.dataset.busy = "true";
-
-        const head = createEl(document, "div", "settings-extensions-card__head");
-        const identity = createEl(document, "div", "settings-extensions-card__identity");
-
-        // Row 1: bold title + compact category chips + active/attention status badge + optional update chip.
-        const titleRow = createEl(document, "div", "settings-extensions-card__title");
-        const nameEl = createEl(document, "h3", "", displayName);
-        nameEl.title = displayName;
-        titleRow.append(nameEl);
-
-        if (item.manifest?.categories && item.manifest.categories.length > 0) {
-          const categoriesRow = createEl(document, "div", "settings-extensions-categories");
-          for (const category of item.manifest.categories) {
-            const chip = createEl(
-              document,
-              "span",
-              "settings-extensions-category-chip",
-              copy.categories[category] ?? category,
-            );
-            chip.dataset.category = category;
-            categoriesRow.append(chip);
-          }
-          titleRow.append(categoriesRow);
-        }
-
-        if (shouldShowStatusBadge(item.status.state)) {
-          const badge = createEl(
-            document,
-            "span",
-            "settings-extensions-badge",
-            copy.states[item.status.state],
-          );
-          badge.dataset.state = item.status.state;
-          badge.dataset.tone = statusTone(item.status.state);
-          titleRow.append(badge);
-        }
-
-        if (hasCatalogUpdate(item, catalogEntry)) {
-          const updateChip = createEl(
-            document,
-            "span",
-            "settings-extensions-update-chip",
-            copy.updateAvailable,
-          );
-          updateChip.dataset.updateAvailable = "true";
-          titleRow.append(updateChip);
-        }
-
-        identity.append(titleRow);
-
-        // Row 2: single-line truncated description.
-        const desc = extensionDescription(item, messages.locale);
-        if (desc) {
-          const descEl = createEl(document, "p", "settings-extensions-card__description", desc);
-          descEl.title = desc;
-          identity.append(descEl);
-        }
-
-        const controlColumn = createEl(document, "div", "settings-extensions-card__control");
         const switchId = preferenceId(`desktop-ext-${item.id}`);
         const errorId = preferenceId(`desktop-ext-error-${item.id}`);
-
         const blocked = isToggleBlocked(item);
+
         const toggle = createPreferenceSwitch(document, switchId, errorId);
         toggle.checked = item.enabled;
         toggle.setAttribute("aria-label", formatMessage(copy.toggleLabel, { name: displayName }));
@@ -646,13 +570,11 @@ export function createDesktopExtensionsSettingsPage(
         if (blocked) {
           toggle.title = blockedToggleReason(item, copy);
         }
-        const stopRowTrigger = (event: Event): void => {
+        const stopTrigger = (event: Event): void => {
           event.stopPropagation?.();
         };
-        controlColumn.addEventListener("click", stopRowTrigger);
-        controlColumn.addEventListener("keydown", stopRowTrigger);
-        toggle.addEventListener("click", stopRowTrigger);
-        toggle.addEventListener("keydown", stopRowTrigger);
+        toggle.addEventListener("click", stopTrigger);
+        toggle.addEventListener("keydown", stopTrigger);
         toggle.addEventListener("change", () => {
           const desired = toggle.checked;
           if (mutating || blocked) {
@@ -661,36 +583,57 @@ export function createDesktopExtensionsSettingsPage(
           }
           void toggleExtension(item, desired);
         });
-        controlColumn.append(toggle);
-        head.append(identity, controlColumn);
-        card.append(head);
 
-        // Attention states surface a concise single-row error inline below the main row.
-        const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
-        if (attention) {
-          const detail = createEl(document, "div", "settings-extensions-card__detail");
-          detail.id = errorId;
-          detail.dataset.tone = attention.tone;
-          detail.append(
-            createRendererSettingsIcon("alert", 13),
-            createEl(document, "span", "", attention.text),
+        let footerMeta: HTMLElement | string | null = null;
+        if (hasCatalogUpdate(item, catalogEntry) && catalogEntry) {
+          const updateChip = createEl(
+            document,
+            "span",
+            "settings-extensions-update-chip",
+            copy.updateAvailable,
           );
-          card.append(detail);
+          updateChip.dataset.updateAvailable = "true";
+          updateChip.title = formatMessage(copy.updateToVersion, {
+            version: catalogEntry.version,
+          });
+          footerMeta = updateChip;
+        } else if (item.status.state === "disabled") {
+          footerMeta = copy.states.disabled;
+        } else if (item.status.state === "running") {
+          footerMeta = copy.groups.enabled;
+        } else if (item.status.state === "waiting") {
+          footerMeta = copy.states.waiting;
+        } else {
+          footerMeta = item.manifest?.version
+            ? `v${item.manifest.version}`
+            : copy.states[item.status.state];
         }
 
-        card.addEventListener("click", (event) => {
-          if (isWithinElement(event.target, controlColumn)) return;
-          openDetailModal(item.id);
-        });
-        card.addEventListener("keydown", (event) => {
-          if (isWithinElement(event.target, controlColumn)) return;
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            openDetailModal(item.id);
-          }
-        });
+        const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
 
-        return card;
+        return renderDesktopExtensionCard({
+          document,
+          messages,
+          extensionId: item.id,
+          cardKind: "installed",
+          displayName,
+          author: item.manifest?.author ?? catalogEntry?.author,
+          version: item.manifest?.version,
+          trustTier: catalogEntry?.trustTier,
+          statusState: item.status.state,
+          description: extensionDescription(item, messages.locale),
+          attention,
+          attentionId: attention ? errorId : undefined,
+          categories: item.manifest?.categories,
+          footerMeta,
+          footerAction: toggle,
+          busy: activeMutationId === item.id,
+          dataset: {
+            extensionState: item.status.state,
+            trustTier: catalogEntry?.trustTier,
+          },
+          onOpenDetails: () => openDetailModal(item.id),
+        });
       };
 
       const renderInstalledTab = (): void => {
@@ -773,7 +716,7 @@ export function createDesktopExtensionsSettingsPage(
           );
           groupHead.append(groupTitle, groupCount);
 
-          const list = createEl(document, "div", "settings-extensions__list");
+          const list = createEl(document, "div", "settings-extensions-grid");
           for (const item of groupItems) {
             list.append(renderExtensionCard(item, listing.extensions, catalogById.get(item.id)));
           }
@@ -900,6 +843,7 @@ export function createDesktopExtensionsSettingsPage(
             searchQuery = "";
             searchInput.value = "";
             clearSearchButton.hidden = true;
+            setFeedback(null);
             render();
           },
           onRetryCatalog: () => {
@@ -1509,6 +1453,7 @@ export function createDesktopExtensionsSettingsPage(
       const switchTab = (next: ActiveTab): void => {
         if (activeTab === next) return;
         activeTab = next;
+        setFeedback(null);
         render();
         if (next === "marketplace" && !catalog && !catalogLoading && !catalogUnavailable) {
           void loadCatalog({ forceRefresh: false, silent: false });

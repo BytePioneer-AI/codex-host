@@ -376,6 +376,11 @@ describe("Desktop extensions settings page", () => {
       ),
     ).toEqual(["需要处理", "已启用", "未启用"]);
 
+    const grids = descendants(mounted.content).filter(
+      (element) => element.className === "settings-extensions-grid",
+    );
+    expect(grids).toHaveLength(3);
+
     const cards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
     );
@@ -385,6 +390,7 @@ describe("Desktop extensions settings page", () => {
       "sidebar-thread-tree",
       "sidebar-delegation-badges",
     ]);
+    expect(cards.every((card) => card.className === "settings-extensions-card")).toBe(true);
 
     const incompatibleSwitch = descendants(cards[0]!).find((el) => el.tagName === "input")!;
     const invalidSwitch = descendants(cards[1]!).find((el) => el.tagName === "input")!;
@@ -395,14 +401,14 @@ describe("Desktop extensions settings page", () => {
 
     const treeCard = cards[2]!;
     expect(textOf(treeCard)).toContain("侧栏委派树");
+    expect(textOf(treeCard)).toContain("codexhost · v0.1.0");
     expect(textOf(treeCard)).toContain("归组委派的 Thread");
     expect(textOf(treeCard)).toContain("运行中");
     const treeCategoryChips = descendants(treeCard).filter((el) =>
       el.className.includes("settings-extensions-category-chip"),
     );
     expect(treeCategoryChips.map((chip) => textOf(chip))).toEqual(["侧栏", "多会话协作"]);
-    // Main list row stays minimal: no raw ID, version, slots, hash, or inline details drawer.
-    expect(textOf(treeCard)).not.toContain("v0.1.0");
+    // Compact card shows author · version but omits raw ID, slots, hash, and initial-letter avatar.
     expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
     expect(textOf(treeCard)).not.toContain("侧栏 Thread 布局");
     expect(textOf(treeCard)).not.toContain("侧栏 Thread 角标");
@@ -410,10 +416,20 @@ describe("Desktop extensions settings page", () => {
     expect(
       descendants(treeCard).filter((el) => el.className.includes("settings-extensions-slot-chip")),
     ).toHaveLength(0);
+    expect(descendants(treeCard).filter((el) => el.className.includes("__icon"))).toHaveLength(0);
+
+    const treeFooter = descendants(treeCard).find(
+      (el) => el.className === "settings-extensions-card__footer",
+    )!;
+    expect(treeFooter).toBeDefined();
+    expect(
+      descendants(treeFooter).find((el) => el.tagName === "input" && el.type === "checkbox"),
+    ).toBeDefined();
 
     const badgesCard = cards[3]!;
     expect(textOf(badgesCard)).toContain("Delegation Badges");
-    // Disabled rows omit redundant neutral status badges.
+    expect(textOf(badgesCard)).toContain("v0.2.0");
+    // Disabled cards omit redundant neutral status badges in header.
     expect(
       descendants(badgesCard).filter((el) => el.className.includes("settings-extensions-badge")),
     ).toHaveLength(0);

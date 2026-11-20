@@ -593,25 +593,47 @@ export function projectReplayedEventsToTurns(params: {
   outputLimit?: number;
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
-  const usedTurnKeys = new Set(params.knownTurnRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
+  const knownTurnRefs = params.knownTurnRefs ?? [];
+  const usedTurnKeys = new Set(knownTurnRefs.map(({ nativeTurnKey }) => nativeTurnKey));
+  const knownTurnKeys = new Set(knownTurnRefs.map(({ nativeTurnKey }) => nativeTurnKey));
+  let knownRefIndex = 0;
+  const takeKnownRef = (
+    boundary: number | undefined,
+    allowUnanchored: boolean,
+  ): NativeTurnRef | undefined => {
+    const ref = knownTurnRefs[knownRefIndex];
+    if (!ref) return undefined;
+    if (boundary === undefined) {
+      knownRefIndex++;
+      return ref;
+    }
+    const match = /^turn-(0|[1-9]\d*)$/u.exec(ref.nativeTurnKey);
+    if ((allowUnanchored && !match) || (match && Number(match[1]) === boundary)) {
+      knownRefIndex++;
+      return ref;
+    }
+    return undefined;
+  };
   let active: { turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
   let sequence = 0;
-  const begin = () => {
+  let nativeTurnIndex: number | undefined;
+  const begin = (boundary?: number) => {
     active?.tracker.finishPending({
       status: "cancelled",
       reason: "No terminal tool status in native history",
     });
     const index = turns.length;
     const turnId = hostTurnIdSchema.parse(`turn-${index}`);
-    let nativeTurnKey = params.knownTurnRefs?.[index]?.nativeTurnKey;
+    const knownRef = takeKnownRef(boundary, true);
+    let nativeTurnKey = knownRef?.nativeTurnKey;
     if (nativeTurnKey === undefined) {
-      let n = index;
+      let n = boundary ?? index;
       nativeTurnKey = `turn-${n}`;
       while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
-      usedTurnKeys.add(nativeTurnKey);
     }
+    usedTurnKeys.add(nativeTurnKey);
     const turn: HostTurnSnapshot = {
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: "antigravity",
@@ -622,7 +644,7 @@ export function projectReplayedEventsToTurns(params: {
       checkpoint: nativeCheckpointRefSchema.parse({
         harnessId: "antigravity",
         nativeSessionId: params.nativeSessionId,
-        checkpointId: `turn-${index}`,
+        checkpointId: `turn-${boundary ?? index}`,
         formatVersion: 1,
       }),
       input: [],
@@ -647,12 +669,42 @@ export function projectReplayedEventsToTurns(params: {
       },
     });
     textItem = undefined;
+    nativeTurnIndex = boundary;
     active = { turn, tracker };
     return active;
   };
+  const updateNativeIdentity = (turn: HostTurnSnapshot, boundary: number): void => {
+    const knownRef = takeKnownRef(boundary, false);
+    if (knownRef) {
+      if (turn.nativeTurnRef.nativeTurnKey !== knownRef.nativeTurnKey)
+        turn.nativeTurnRef = knownRef;
+      return;
+    }
+    if (knownTurnKeys.has(turn.nativeTurnRef.nativeTurnKey)) return;
+    const nativeTurnKey = `turn-${boundary}`;
+    if (usedTurnKeys.has(nativeTurnKey)) return;
+    turn.nativeTurnRef = nativeTurnRefSchema.parse({
+      harnessId: "antigravity",
+      nativeSessionId: params.nativeSessionId,
+      nativeTurnKey,
+      formatVersion: 1,
+    });
+    usedTurnKeys.add(nativeTurnKey);
+  };
   for (const event of params.events) {
     if (event.type === "user.text") {
-      const { turn } = !active || !userRun ? begin() : active;
+      const { turn } = !active || !userRun ? begin(event.nativeTurnIndex) : active;
+      if (event.nativeTurnIndex !== undefined) {
+        const isNewNativeBoundary = nativeTurnIndex !== event.nativeTurnIndex;
+        nativeTurnIndex = event.nativeTurnIndex;
+        if (isNewNativeBoundary) updateNativeIdentity(turn, event.nativeTurnIndex);
+        turn.checkpoint = nativeCheckpointRefSchema.parse({
+          harnessId: "antigravity",
+          nativeSessionId: params.nativeSessionId,
+          checkpointId: `turn-${event.nativeTurnIndex}`,
+          formatVersion: 1,
+        });
+      }
       const previous = turn.input[0];
       if (previous) previous.text += event.text;
       else turn.input.push({ type: "text", text: event.text });

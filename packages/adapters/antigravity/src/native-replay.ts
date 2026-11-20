@@ -65,7 +65,7 @@ export async function readNativeHistory(
        ORDER BY idx`,
       )
       .iterate()) {
-      if (row.step_type === USER_INPUT) turnCount++;
+      const nativeTurnIndex = row.step_type === USER_INPUT ? turnCount++ : undefined;
       if (IN_FLIGHT.has(Number(row.status))) continue;
       const step = message(row.step_payload);
       const number =
@@ -84,7 +84,12 @@ export async function readNativeHistory(
           );
           const text = items.join("") || textField(body, 2) || textField(body, 1);
           pendingCalls.clear();
-          if (text) events.push({ type: "user.text", text });
+          if (text)
+            events.push({
+              type: "user.text",
+              text,
+              ...(nativeTurnIndex !== undefined ? { nativeTurnIndex } : {}),
+            });
           break;
         }
         case PLANNER_RESPONSE: {

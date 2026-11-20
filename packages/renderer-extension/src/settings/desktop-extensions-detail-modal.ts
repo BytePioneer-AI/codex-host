@@ -9,11 +9,11 @@ import {
   createTrustBadge,
   extensionDescription,
   extensionDisplayName,
-  formatExtensionStarCount,
+  formatExtensionCount,
   formatMessage,
   hasCatalogUpdate,
   isToggleBlocked,
-  isValidExtensionStarCount,
+  isValidExtensionCount,
   parseSafeRepositoryUrl,
   resolveAttentionDetail,
   resolveOptionalLocalizedText,
@@ -493,8 +493,11 @@ export function createDesktopExtensionDetailModal(options: {
     const repositoryHref = parseSafeRepositoryUrl(
       installed?.manifest?.repository ?? catalogEntry?.repository,
     );
-    const formattedStars = isValidExtensionStarCount(catalogEntry?.stars)
-      ? formatExtensionStarCount(catalogEntry.stars)
+    const formattedStars = isValidExtensionCount(catalogEntry?.stars)
+      ? formatExtensionCount(catalogEntry.stars)
+      : null;
+    const formattedDownloads = isValidExtensionCount(catalogEntry?.downloads)
+      ? formatExtensionCount(catalogEntry.downloads)
       : null;
     if (repositoryHref) {
       const repoLink = createEl(document, "a", "settings-extensions-detail-modal__repo");
@@ -521,6 +524,18 @@ export function createDesktopExtensionDetailModal(options: {
       }
       repoLink.append(createRendererSettingsIcon("external-link", 11));
       metaNodes.push(repoLink);
+    }
+    if (formattedDownloads) {
+      const downloadsEl = createEl(document, "span", "settings-extensions-detail-modal__downloads");
+      downloadsEl.dataset.metric = "downloads";
+      const downloadsLabel = formatMessage(copy.downloadsLabel, { count: formattedDownloads });
+      downloadsEl.title = downloadsLabel;
+      downloadsEl.setAttribute("aria-label", downloadsLabel);
+      downloadsEl.append(
+        createRendererSettingsIcon("download", 12),
+        createEl(document, "span", "", formattedDownloads),
+      );
+      metaNodes.push(downloadsEl);
     }
     metaRow.hidden = metaNodes.length === 0;
     metaRow.replaceChildren(...metaNodes);

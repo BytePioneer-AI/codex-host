@@ -256,6 +256,7 @@ const CATALOG_TREE: DesktopExtensionCatalogEntry = {
   author: "codexhost",
   repository: "https://github.com/BytePioneer-AI/codex-host",
   stars: 1200,
+  downloads: 3200,
   categories: ["sidebar", "workflow", "tools"],
   trustTier: "official",
   screenshots: ["https://cdn.example.com/tree-preview.png", "javascript:alert(1)"],
@@ -289,6 +290,7 @@ const CATALOG_THEME: DesktopExtensionCatalogEntry = {
   author: "alice-dev",
   repository: "https://github.com/alice-dev/nord-palette",
   stars: 42,
+  downloads: 480,
   categories: ["appearance"],
   trustTier: "community",
   screenshots: ["https://cdn.example.com/nord-1.webp"],
@@ -419,6 +421,12 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     expect(installedStarLink).toBeDefined();
     expect(installedStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
     expect(textOf(installedStarLink)).toBe("1.2k");
+    const installedDownloads = descendants(treeInstalledCard).find(
+      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+    )!;
+    expect(installedDownloads).toBeDefined();
+    expect(textOf(installedDownloads)).toBe("3.2k");
+    expect(installedDownloads.getAttribute("aria-label")).toBe("下载量：3.2k");
     // Clicking the card star link stops propagation and does not open the detail modal.
     installedStarLink.dispatchBubbling("click");
     expect(
@@ -432,6 +440,10 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     )!;
     expect(badgesStarLink).toBeDefined();
     expect(textOf(badgesStarLink)).toBe("");
+    // Catalog entry without downloads renders no downloads metric and never shows fake "0".
+    expect(
+      descendants(badgesInstalledCard).find((el) => el.dataset.metric === "downloads"),
+    ).toBeUndefined();
     expect(
       descendants(treeInstalledCard).filter((el) => el.className.includes("__icon")),
     ).toHaveLength(0);
@@ -493,6 +505,11 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     )!;
     expect(treeMarketStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
     expect(textOf(treeMarketStarLink)).toBe("1.2k");
+    const treeMarketDownloads = descendants(treeMarketCard).find(
+      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+    )!;
+    expect(treeMarketDownloads).toBeDefined();
+    expect(textOf(treeMarketDownloads)).toBe("3.2k");
     treeMarketStarLink.dispatchBubbling("click");
     expect(
       descendants(mounted.content).find((el) =>
@@ -511,6 +528,9 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
 
     const badgesMarketCard = marketCards[1]!;
     expect(textOf(badgesMarketCard)).toContain("已安装");
+    expect(
+      descendants(badgesMarketCard).find((el) => el.dataset.metric === "downloads"),
+    ).toBeUndefined();
 
     const themeMarketCard = marketCards[2]!;
     expect(
@@ -661,6 +681,12 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     expect(themeRepoLink.href).toBe("https://github.com/alice-dev/nord-palette");
     expect(textOf(themeRepoLink)).toContain("GitHub 仓库");
     expect(textOf(themeRepoLink)).toContain("42");
+    const themeDetailDownloads = descendants(detailDialog).find(
+      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+    )!;
+    expect(themeDetailDownloads).toBeDefined();
+    expect(textOf(themeDetailDownloads)).toBe("480");
+    expect(themeDetailDownloads.getAttribute("aria-label")).toBe("下载量：480");
     expect(descendants(detailDialog).find((el) => el.tagName === "details")).toBeUndefined();
     expect(textOf(detailDialog)).not.toContain(HASH_C);
     expect(textOf(detailDialog)).not.toContain("nord-palette");
@@ -722,6 +748,10 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       (el) => el.tagName === "a" && el.className.includes("settings-extensions-detail-modal__repo"),
     )!;
     expect(textOf(treeRepoLink)).toContain("1.2k");
+    const treeDetailDownloads = descendants(treeDialog).find(
+      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+    )!;
+    expect(textOf(treeDetailDownloads)).toBe("3.2k");
     const treeImgs = descendants(treeDialog).filter(
       (el) =>
         el.tagName === "img" && !el.className.includes("settings-extensions-detail-modal__preview"),

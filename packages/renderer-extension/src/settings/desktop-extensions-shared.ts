@@ -387,12 +387,12 @@ export function formatByteSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export function isValidExtensionStarCount(stars: unknown): stars is number {
-  return typeof stars === "number" && Number.isInteger(stars) && stars >= 0;
+export function isValidExtensionCount(count: unknown): count is number {
+  return typeof count === "number" && Number.isInteger(count) && count >= 0;
 }
 
-export function formatExtensionStarCount(stars: number): string {
-  const normalized = Math.max(0, Math.floor(stars));
+export function formatExtensionCount(count: number): string {
+  const normalized = Math.max(0, Math.floor(count));
   if (normalized < 1_000) return String(normalized);
   if (normalized < 10_000) {
     const rounded = Math.round((normalized / 1_000) * 10) / 10;
@@ -404,6 +404,9 @@ export function formatExtensionStarCount(stars: number): string {
   const roundedM = Math.round((normalized / 1_000_000) * 10) / 10;
   return `${Number.isInteger(roundedM) ? roundedM.toFixed(0) : roundedM.toFixed(1)}m`;
 }
+
+export const isValidExtensionStarCount = isValidExtensionCount;
+export const formatExtensionStarCount = formatExtensionCount;
 
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);

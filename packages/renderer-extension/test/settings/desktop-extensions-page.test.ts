@@ -884,6 +884,7 @@ describe("Desktop extensions settings page", () => {
     expect(treeStarLink.rel).toBe("noopener noreferrer");
     expect(textOf(treeStarLink)).toBe("");
     expect(treeStarLink.getAttribute("aria-label")).toBe("GitHub 仓库");
+    expect(descendants(treeCard).find((el) => el.dataset.metric === "downloads")).toBeUndefined();
     treeStarLink.dispatchBubbling("click");
     expect(findDetailDialog()).toBeUndefined();
 
@@ -913,6 +914,7 @@ describe("Desktop extensions settings page", () => {
         el.className.includes("settings-extensions-detail-modal__repo-stars"),
       ),
     ).toBeUndefined();
+    expect(descendants(dialog).find((el) => el.dataset.metric === "downloads")).toBeUndefined();
 
     // Multi-paragraph localized details.
     const paragraphs = descendants(dialog).filter((el) =>

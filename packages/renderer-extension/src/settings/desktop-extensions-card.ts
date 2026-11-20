@@ -6,9 +6,9 @@ import type {
 import {
   contentLocaleMessages,
   createEl,
-  formatExtensionStarCount,
+  formatExtensionCount,
   formatMessage,
-  isValidExtensionStarCount,
+  isValidExtensionCount,
   isWithinElement,
   parseSafeRepositoryUrl,
   statusTone,
@@ -31,6 +31,7 @@ export interface DesktopExtensionCardOptions {
   readonly version?: string | undefined;
   readonly repository?: string | undefined;
   readonly stars?: number | undefined;
+  readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly statusState?: DesktopExtensionStatus["state"] | undefined;
   readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
@@ -69,6 +70,7 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     version,
     repository,
     stars,
+    downloads,
     trustTier,
     statusState,
     updateHint,
@@ -163,18 +165,28 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
     card.append(body);
   }
 
-  // Row 3: Borderless muted metadata line — "author · vX.Y.Z" (+ optional subtle update cue & star link) on left,
+  // Row 3: Borderless muted metadata line — "author · vX.Y.Z" (+ optional subtle update cue, star link & downloads) on left,
   // plain middot-separated categories (up to 2) on right.
   const authorVersion = formatAuthorVersion(author, version);
   const repositoryHref = parseSafeRepositoryUrl(repository);
-  const formattedStars = isValidExtensionStarCount(stars) ? formatExtensionStarCount(stars) : null;
+  const formattedStars = isValidExtensionCount(stars) ? formatExtensionCount(stars) : null;
+  const formattedDownloads = isValidExtensionCount(downloads)
+    ? formatExtensionCount(downloads)
+    : null;
   const categoryLabels = (categories ?? [])
     .slice(0, MAX_CARD_CATEGORIES)
     .map((category) => contentCopy.categories[category] ?? category);
   const categoriesText = categoryLabels.join(" · ");
 
   let starControl: HTMLElement | null = null;
-  if (authorVersion || updateHint || repositoryHref || formattedStars || categoriesText) {
+  if (
+    authorVersion ||
+    updateHint ||
+    repositoryHref ||
+    formattedStars ||
+    formattedDownloads ||
+    categoriesText
+  ) {
     const metaRow = createEl(document, "div", "settings-extensions-card__meta");
     const metaLeft = createEl(document, "div", "settings-extensions-card__meta-left");
     if (authorVersion || updateHint) {
@@ -235,6 +247,19 @@ export function renderDesktopExtensionCard(options: DesktopExtensionCardOptions)
         createEl(document, "span", "", formattedStars),
       );
       metaLeft.append(starBadge);
+    }
+
+    if (formattedDownloads) {
+      const downloadsBadge = createEl(document, "span", "settings-extensions-card__downloads");
+      downloadsBadge.dataset.metric = "downloads";
+      const downloadsLabel = formatMessage(copy.downloadsLabel, { count: formattedDownloads });
+      downloadsBadge.title = downloadsLabel;
+      downloadsBadge.setAttribute("aria-label", downloadsLabel);
+      downloadsBadge.append(
+        createRendererSettingsIcon("download", 11),
+        createEl(document, "span", "", formattedDownloads),
+      );
+      metaLeft.append(downloadsBadge);
     }
 
     metaRow.append(metaLeft);

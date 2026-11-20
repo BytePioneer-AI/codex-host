@@ -75,6 +75,7 @@ export interface DesktopExtensionsMessages {
   readonly closeModal: string;
   readonly authorBy: string;
   readonly githubRepository: string;
+  readonly downloadsLabel: string;
   readonly screenshotsTitle: string;
   readonly screenshotAlt: string;
   readonly screenshotPreviewLabel: string;
@@ -216,6 +217,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   closeModal: "Close",
   authorBy: "By {author}",
   githubRepository: "GitHub",
+  downloadsLabel: "Downloads: {count}",
   screenshotsTitle: "Screenshots",
   screenshotAlt: "{name} screenshot {index}",
   screenshotPreviewLabel: "Preview screenshot {index} of {total}",
@@ -369,6 +371,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   closeModal: "关闭",
   authorBy: "作者：{author}",
   githubRepository: "GitHub 仓库",
+  downloadsLabel: "下载量：{count}",
   screenshotsTitle: "界面预览",
   screenshotAlt: "{name} 截图 {index}",
   screenshotPreviewLabel: "预览第 {index} 张截图（共 {total} 张）",

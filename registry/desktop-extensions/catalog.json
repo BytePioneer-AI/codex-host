@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "extensions": [
+    {
+      "id": "sidebar-delegation-badges",
+      "version": "0.1.0",
+      "name": {
+        "en": "Sidebar Delegation Badges",
+        "zh-CN": "侧栏委派角标"
+      },
+      "description": {
+        "en": "Shows delegated Thread counts and live status beside the sidebar Agent icon.",
+        "zh-CN": "在侧栏 Agent 图标旁显示委派子 Thread 数量与实时状态。"
+      },
+      "details": {
+        "en": "See how many delegated Threads belong to a parent and their most urgent status at a glance. Select the badge to see the child Threads and jump to one.\n\nThe badge keeps the native sidebar layout and only decorates local Threads. It shares the sidebar badge slot with Sidebar Thread Tree, so only one can be enabled at a time.",
+        "zh-CN": "不用离开侧栏，就能看到父 Thread 委派了多少个子 Thread，以及其中最需要关注的状态。点击角标可查看子 Thread 列表并跳转。\n\n扩展保留原生侧栏布局，只装饰本机 Thread。它与「侧栏委派树」共用角标槽位，两者不能同时启用。"
+      },
+      "author": "codexhost",
+      "repository": "https://github.com/BytePioneer-AI/codex-host",
+      "categories": ["interface", "workflow"],
+      "trustTier": "official",
+      "downloadUrl": "https://github.com/BytePioneer-AI/codexhost-extensions-registry/releases/download/desktop-extensions-v1/sidebar-delegation-badges.zip",
+      "sha256": "1fd7ee6e08ff6e4fd28eebe59bc735a7929e4f95b5ba23b54d879fa21a483bb6",
+      "slots": ["sidebar.thread-badge"]
+    },
+    {
+      "id": "sidebar-thread-tree",
+      "version": "0.1.0",
+      "name": {
+        "en": "Sidebar Thread Tree",
+        "zh-CN": "侧栏委派树"
+      },
+      "description": {
+        "en": "Groups delegated Threads below their parent and shows live activity.",
+        "zh-CN": "在侧栏将委派的 Thread 归到父 Thread 下，并显示实时状态。"
+      },
+      "details": {
+        "en": "Follow delegated work in the sidebar: expand a parent Thread to see its children, their live activity, and which Threads are waiting for input. Select a child to open it through Desktop navigation.\n\nGrouping stays within each local sidebar list and does not change Thread ownership, execution, pinning, or archiving. Remote Host rows are left alone.",
+        "zh-CN": "在侧栏展开父 Thread，即可查看委派的子 Thread 及其实时活动，并找到等待处理的 Thread。点击子行可通过 Desktop 原生导航打开对应 Thread。\n\n归组仅发生在本机侧栏的各个列表内，不改变 Thread 的归属、执行、置顶或归档，也不影响远程 Host 的行。"
+      },
+      "author": "codexhost",
+      "repository": "https://github.com/BytePioneer-AI/codex-host",
+      "categories": ["interface", "workflow"],
+      "trustTier": "official",
+      "downloadUrl": "https://github.com/BytePioneer-AI/codexhost-extensions-registry/releases/download/desktop-extensions-v1/sidebar-thread-tree.zip",
+      "sha256": "996fb2203026b46547ddb4654ed99fde55838f318f80c379afc5d43ed05cb520",
+      "slots": ["sidebar.thread-badge", "sidebar.thread-layout"]
+    }
+  ]
+}

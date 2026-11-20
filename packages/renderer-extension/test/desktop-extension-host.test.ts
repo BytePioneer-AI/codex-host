@@ -47,8 +47,9 @@ function setup() {
   let storedSettings: Record<string, Record<string, unknown>> = {};
   const getSettings = vi.fn(async (id: string) => storedSettings[id] ?? {});
   const setSettings = vi.fn(async (id: string, values: Record<string, unknown>) => {
-    storedSettings = { ...storedSettings, [id]: { ...values } };
-    return storedSettings[id]!;
+    const next = { ...values };
+    storedSettings = { ...storedSettings, [id]: next };
+    return next;
   });
   const invokeBackend = vi.fn(async (id: string, method: string, params?: unknown) => ({
     id,
@@ -283,21 +284,23 @@ it("exposes assets, storage (with onChange fan-out & cleanup), backend invoke, a
   });
   expect(pageEvents).toHaveBeenCalled();
 
-  await expect(runtimeApi!.assets.readDataUrl("wallpapers/bg.png")).resolves.toEqual({
+  if (!runtimeApi) throw new Error("Expected runtime API to be captured during activation");
+
+  await expect(runtimeApi.assets.readDataUrl("wallpapers/bg.png")).resolves.toEqual({
     mimeType: "image/png",
     dataUrl: "data:image/png;base64,wallpapers/bg.png",
   });
   expect(readAsset).toHaveBeenCalledWith("aurora", "wallpapers/bg.png");
 
-  await expect(runtimeApi!.storage.get()).resolves.toEqual({});
+  await expect(runtimeApi.storage.get()).resolves.toEqual({});
   expect(getSettings).toHaveBeenCalledWith("aurora");
 
-  await expect(runtimeApi!.storage.set({ opacity: 0.8 })).resolves.toEqual({ opacity: 0.8 });
+  await expect(runtimeApi.storage.set({ opacity: 0.8 })).resolves.toEqual({ opacity: 0.8 });
   expect(setSettings).toHaveBeenCalledWith("aurora", { opacity: 0.8 });
   expect(storageEventsA).toHaveBeenCalledWith({ opacity: 0.8 });
   expect(storageEventsB).toHaveBeenCalledWith({ opacity: 0.8 });
 
-  await expect(runtimeApi!.backend.invoke("theme.scan", { dir: "wallpapers" })).resolves.toEqual({
+  await expect(runtimeApi.backend.invoke("theme.scan", { dir: "wallpapers" })).resolves.toEqual({
     id: "aurora",
     method: "theme.scan",
     params: { dir: "wallpapers" },
@@ -313,7 +316,7 @@ it("exposes assets, storage (with onChange fan-out & cleanup), backend invoke, a
 
   host.notifyStorageChange("aurora", { opacity: 0.5 });
   expect(storageEventsA).not.toHaveBeenCalled();
-  await expect(runtimeApi!.storage.get()).rejects.toThrow();
+  await expect(runtimeApi.storage.get()).rejects.toThrow();
 
   stopListeningPages();
 });

@@ -103,7 +103,10 @@ class FakeElement {
       },
       ...event,
     };
-    let cursor: FakeElement | undefined = this;
+    for (const listener of [...(this.#listeners.get(name) ?? [])]) {
+      listener(payload);
+    }
+    let cursor = this.parent;
     while (cursor && !stopped) {
       for (const listener of [...(cursor.#listeners.get(name) ?? [])]) {
         listener(payload);
@@ -218,6 +221,11 @@ function descendants(root: FakeElement): FakeElement[] {
     root,
     ...root.children.flatMap((child) => (child instanceof FakeElement ? descendants(child) : [])),
   ];
+}
+
+function must<T>(value: T | null | undefined, label = "value"): T {
+  if (value === null || value === undefined) throw new Error(`Expected ${label} to be defined`);
+  return value;
 }
 
 function textOf(node: unknown): string {
@@ -412,12 +420,14 @@ describe("Desktop extensions settings page", () => {
     expect(
       descendants(mounted.content).find((el) => el.className === "settings-extensions-recovery"),
     ).toBeUndefined();
-    const header = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions__header"),
-    )!;
-    const connectionBadge = descendants(header).find(
-      (el) => el.className === "settings-extensions__connection",
-    )!;
+    const header = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions__header"),
+      ),
+    );
+    const connectionBadge = must(
+      descendants(header).find((el) => el.className === "settings-extensions__connection"),
+    );
     expect(connectionBadge.hidden).toBe(true);
     expect(textOf(header)).not.toContain("Desktop 已连接");
     expect(textOf(header)).not.toContain("Desktop 未连接");
@@ -451,21 +461,23 @@ describe("Desktop extensions settings page", () => {
     ]);
     expect(cards.every((card) => card.className === "settings-extensions-card")).toBe(true);
 
-    const incompatibleSwitch = descendants(cards[0]!).find((el) => el.tagName === "input")!;
-    const invalidSwitch = descendants(cards[1]!).find((el) => el.tagName === "input")!;
+    const incompatibleSwitch = must(
+      descendants(must(cards[0])).find((el) => el.tagName === "input"),
+    );
+    const invalidSwitch = must(descendants(must(cards[1])).find((el) => el.tagName === "input"));
     expect(incompatibleSwitch.disabled).toBe(true);
     expect(invalidSwitch.disabled).toBe(true);
-    expect(textOf(cards[0]!)).toContain("Desktop API 2 requires a newer codexhost");
-    expect(textOf(cards[1]!)).toContain("Invalid manifest.json");
+    expect(textOf(must(cards[0]))).toContain("Desktop API 2 requires a newer codexhost");
+    expect(textOf(must(cards[1]))).toContain("Invalid manifest.json");
 
     // Row 1 (top): title + toggle on right; Row 2: description; Row 3: borderless meta line with plain middot categories.
-    const treeCard = cards[2]!;
+    const treeCard = must(cards[2]);
     expect(textOf(treeCard)).toContain("侧栏委派树");
     expect(textOf(treeCard)).toContain("codexhost · v0.1.0");
     expect(textOf(treeCard)).toContain("归组委派的 Thread");
-    const treeTop = descendants(treeCard).find(
-      (el) => el.className === "settings-extensions-card__top",
-    )!;
+    const treeTop = must(
+      descendants(treeCard).find((el) => el.className === "settings-extensions-card__top"),
+    );
     expect(
       descendants(treeTop).find((el) => el.tagName === "input" && el.type === "checkbox"),
     ).toBeDefined();
@@ -480,16 +492,18 @@ describe("Desktop extensions settings page", () => {
     expect(
       descendants(treeCard).filter((el) => el.className.includes("settings-extensions-badge")),
     ).toHaveLength(0);
-    const treeCategoriesText = descendants(treeCard).find(
-      (el) => el.className === "settings-extensions-card__categories-text",
-    )!;
+    const treeCategoriesText = must(
+      descendants(treeCard).find(
+        (el) => el.className === "settings-extensions-card__categories-text",
+      ),
+    );
     expect(textOf(treeCategoriesText)).toBe("界面增强 · 效率与协作");
     expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
     expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
     expect(descendants(treeCard).filter((el) => el.className.includes("__icon"))).toHaveLength(0);
 
     // Disabled card omits redundant "未启用" text, status dot, and footer divider.
-    const badgesCard = cards[3]!;
+    const badgesCard = must(cards[3]);
     expect(textOf(badgesCard)).toContain("Delegation Badges");
     expect(textOf(badgesCard)).toContain("v0.2.0");
     expect(textOf(badgesCard)).not.toContain("未启用");
@@ -512,16 +526,20 @@ describe("Desktop extensions settings page", () => {
         ),
       ),
     ).toEqual(["Needs Attention"]);
-    const enTreeCard = descendants(enMount.content).find(
-      (element) => element.dataset.extensionId === "sidebar-thread-tree",
-    )!;
+    const enTreeCard = must(
+      descendants(enMount.content).find(
+        (element) => element.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
     expect(textOf(enTreeCard)).toContain("Sidebar Thread Tree");
     expect(textOf(enTreeCard)).toContain("Groups delegated Threads");
     expect(
       textOf(
-        descendants(enTreeCard).find(
-          (el) => el.className === "settings-extensions-card__categories-text",
-        )!,
+        must(
+          descendants(enTreeCard).find(
+            (el) => el.className === "settings-extensions-card__categories-text",
+          ),
+        ),
       ),
     ).toBe("Interface · Workflow");
     enMount.dispose();
@@ -638,10 +656,10 @@ describe("Desktop extensions settings page", () => {
         .map((card) => card.dataset.extensionId)
         .sort(),
     ).toEqual(["running-ext", "waiting-ext"]);
-    expect(cards[4]!.dataset.extensionId).toBe("disabled-ext");
+    expect(must(cards[4]).dataset.extensionId).toBe("disabled-ext");
     // Inline conflict occupant name uses localized text and failed error stays exposed inline.
-    expect(textOf(cards[0]!)).toContain("主侧栏布局 (running-ext)");
-    expect(textOf(cards[1]!)).toContain("activate() threw TypeError");
+    expect(textOf(must(cards[0]))).toContain("主侧栏布局 (running-ext)");
+    expect(textOf(must(cards[1]))).toContain("activate() threw TypeError");
     mounted.dispose();
 
     // When only normal (enabled + disabled) extensions exist, zero group headings are rendered
@@ -650,9 +668,9 @@ describe("Desktop extensions settings page", () => {
       listDesktopExtensions: vi.fn(async () => ({
         ...allStatesList,
         extensions: [
-          allStatesList.extensions[0]!, // disabled-ext
-          allStatesList.extensions[1]!, // waiting-ext (enabled, "Waiting Theme")
-          allStatesList.extensions[3]!, // running-ext (enabled, "Primary Layout")
+          must(allStatesList.extensions[0]), // disabled-ext
+          must(allStatesList.extensions[1]), // waiting-ext (enabled, "Waiting Theme")
+          must(allStatesList.extensions[3]), // running-ext (enabled, "Primary Layout")
         ],
       })),
       disableAllDesktopExtensionsAndReload: vi.fn(),
@@ -746,11 +764,11 @@ describe("Desktop extensions settings page", () => {
       "界面增强",
       "效率与协作",
     ]);
-    expect(findPills()[0]!.getAttribute("aria-pressed")).toBe("true");
+    expect(must(findPills()[0]).getAttribute("aria-pressed")).toBe("true");
 
     // Click "外观主题" -> only ext-theme remains in a flat grid without group headings.
-    findPills()[1]!.dispatch("click");
-    expect(findPills()[1]!.getAttribute("aria-pressed")).toBe("true");
+    must(findPills()[1]).dispatch("click");
+    expect(must(findPills()[1]).getAttribute("aria-pressed")).toBe("true");
     const themeCards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
     );
@@ -761,7 +779,7 @@ describe("Desktop extensions settings page", () => {
     expect(themeGroups).toHaveLength(0);
 
     // Click "全部" -> restores all 3 extensions (enabled first, then disabled sorted by name).
-    findPills()[0]!.dispatch("click");
+    must(findPills()[0]).dispatch("click");
     const restoredCards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
     );
@@ -776,16 +794,18 @@ describe("Desktop extensions settings page", () => {
     const uncategorized = mountPage("zh-CN", () => ({
       listDesktopExtensions: vi.fn(async () => ({
         ...categorizedList,
-        extensions: [categorizedList.extensions[2]!],
+        extensions: [must(categorizedList.extensions[2])],
       })),
       disableAllDesktopExtensionsAndReload: vi.fn(),
     }));
     await vi.waitFor(() =>
       expect(textOf(uncategorized.content)).toContain("Uncategorized Extension"),
     );
-    const categorySlot = descendants(uncategorized.content).find(
-      (el) => el.className === "settings-extensions__category-slot",
-    )!;
+    const categorySlot = must(
+      descendants(uncategorized.content).find(
+        (el) => el.className === "settings-extensions__category-slot",
+      ),
+    );
     expect(categorySlot.hidden).toBe(true);
     expect(
       descendants(uncategorized.content).filter((el) =>
@@ -808,12 +828,14 @@ describe("Desktop extensions settings page", () => {
     }));
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
-    const searchInput = descendants(mounted.content).find(
-      (el) => el.tagName === "input" && el.type === "search",
-    )!;
-    const clearSearchButton = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions__search-clear"),
-    )!;
+    const searchInput = must(
+      descendants(mounted.content).find((el) => el.tagName === "input" && el.type === "search"),
+    );
+    const clearSearchButton = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions__search-clear"),
+      ),
+    );
     const cardIds = () =>
       descendants(mounted.content)
         .filter((el) => el.tagName === "article" && Boolean(el.dataset.extensionId))
@@ -843,18 +865,20 @@ describe("Desktop extensions settings page", () => {
     expect(cardIds()).toEqual([]);
     expect(textOf(mounted.content)).toContain("未找到匹配的扩展");
 
-    const resetButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && textOf(el).includes("清除筛选"),
-    )!;
+    const resetButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && textOf(el).includes("清除筛选"),
+      ),
+    );
     resetButton.dispatch("click");
     expect(searchInput.value).toBe("");
     expect(clearSearchButton.hidden).toBe(true);
     expect(cardIds()).toHaveLength(4);
 
     // Search input instance remains mounted across filtering so focus is preserved.
-    const sameInput = descendants(mounted.content).find(
-      (el) => el.tagName === "input" && el.type === "search",
-    )!;
+    const sameInput = must(
+      descendants(mounted.content).find((el) => el.tagName === "input" && el.type === "search"),
+    );
     expect(sameInput).toBe(searchInput);
     mounted.dispose();
   });
@@ -872,12 +896,14 @@ describe("Desktop extensions settings page", () => {
           el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
       );
 
-    const treeCard = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
-    )!;
-    const treeSwitch = descendants(treeCard).find(
-      (el) => el.tagName === "input" && el.type === "checkbox",
-    )!;
+    const treeCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
+    const treeSwitch = must(
+      descendants(treeCard).find((el) => el.tagName === "input" && el.type === "checkbox"),
+    );
 
     // Clicking the row switch stops propagation and does not open the detail modal.
     treeSwitch.dispatchBubbling("click");
@@ -885,9 +911,11 @@ describe("Desktop extensions settings page", () => {
 
     // Unlisted local extension with repository renders a clickable star icon link without fake "0",
     // and clicking it stops propagation instead of opening the detail modal.
-    const treeStarLink = descendants(treeCard).find(
-      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
-    )!;
+    const treeStarLink = must(
+      descendants(treeCard).find(
+        (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+      ),
+    );
     expect(treeStarLink).toBeDefined();
     expect(treeStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
     expect(treeStarLink.target).toBe("_blank");
@@ -900,7 +928,7 @@ describe("Desktop extensions settings page", () => {
 
     // Clicking the card row opens the centered detail modal.
     treeCard.dispatch("click");
-    const dialog = findDetailDialog()!;
+    const dialog = must(findDetailDialog());
     expect(dialog).toBeDefined();
     expect(dialog.open).toBe(true);
     expect(dialog.dataset.extensionId).toBe("sidebar-thread-tree");
@@ -913,7 +941,7 @@ describe("Desktop extensions settings page", () => {
     expect(textOf(dialog)).toContain("界面增强");
     expect(textOf(dialog)).toContain("效率与协作");
 
-    const repoLink = descendants(dialog).find((el) => el.tagName === "a")!;
+    const repoLink = must(descendants(dialog).find((el) => el.tagName === "a"));
     expect(repoLink).toBeDefined();
     expect(repoLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
     expect(repoLink.target).toBe("_blank");
@@ -942,24 +970,26 @@ describe("Desktop extensions settings page", () => {
     );
     expect(galleryImages.map((img) => img.src)).toEqual([SAMPLE_SCREENSHOT_1, SAMPLE_SCREENSHOT_2]);
 
-    const previewStage = descendants(dialog).find((el) =>
-      el.className.includes("settings-extensions-detail-modal__preview"),
-    )!;
-    const previewImg = descendants(previewStage).find((el) => el.tagName === "img")!;
+    const previewStage = must(
+      descendants(dialog).find((el) =>
+        el.className.includes("settings-extensions-detail-modal__preview"),
+      ),
+    );
+    const previewImg = must(descendants(previewStage).find((el) => el.tagName === "img"));
     expect(previewStage.hidden).toBe(true);
 
     const thumbButtons = descendants(dialog).filter((el) =>
       el.className.includes("settings-extensions-detail-modal__thumb"),
     );
-    thumbButtons[0]!.dispatch("click");
+    must(thumbButtons[0]).dispatch("click");
     expect(previewStage.hidden).toBe(false);
     expect(previewImg.src).toBe(SAMPLE_SCREENSHOT_1);
-    expect(thumbButtons[0]!.getAttribute("aria-pressed")).toBe("true");
+    expect(must(thumbButtons[0]).getAttribute("aria-pressed")).toBe("true");
 
     // Clicking the second thumbnail switches the large preview image.
-    thumbButtons[1]!.dispatch("click");
+    must(thumbButtons[1]).dispatch("click");
     expect(previewImg.src).toBe(SAMPLE_SCREENSHOT_2);
-    expect(thumbButtons[1]!.getAttribute("aria-pressed")).toBe("true");
+    expect(must(thumbButtons[1]).getAttribute("aria-pressed")).toBe("true");
 
     // First Escape closes the large preview while keeping the detail modal open.
     dialog.dispatch("keydown", { key: "Escape" });
@@ -968,9 +998,11 @@ describe("Desktop extensions settings page", () => {
 
     // Healthy extension detail modal stays clean without technical metadata or diagnostic alert.
     expect(descendants(dialog).find((el) => el.tagName === "details")).toBeUndefined();
-    const healthyAlert = descendants(dialog).find((el) =>
-      el.className.includes("settings-extensions-detail-modal__alert"),
-    )!;
+    const healthyAlert = must(
+      descendants(dialog).find((el) =>
+        el.className.includes("settings-extensions-detail-modal__alert"),
+      ),
+    );
     expect(healthyAlert.hidden).toBe(true);
     expect(textOf(dialog)).not.toContain("技术信息");
     expect(textOf(dialog)).not.toContain("sidebar-thread-tree");
@@ -985,15 +1017,19 @@ describe("Desktop extensions settings page", () => {
     expect(findDetailDialog()).toBeUndefined();
 
     // Unhealthy extension detail modal surfaces diagnostic alert without technical disclosure.
-    const brokenCard = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "broken-extension",
-    )!;
+    const brokenCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "broken-extension",
+      ),
+    );
     brokenCard.dispatch("click");
-    const brokenDialog = findDetailDialog()!;
+    const brokenDialog = must(findDetailDialog());
     expect(brokenDialog.open).toBe(true);
-    const brokenAlert = descendants(brokenDialog).find((el) =>
-      el.className.includes("settings-extensions-detail-modal__alert"),
-    )!;
+    const brokenAlert = must(
+      descendants(brokenDialog).find((el) =>
+        el.className.includes("settings-extensions-detail-modal__alert"),
+      ),
+    );
     expect(brokenAlert.hidden).toBe(false);
     expect(brokenAlert.dataset.tone).toBe("danger");
     expect(textOf(brokenAlert)).toContain("Invalid manifest.json");
@@ -1002,11 +1038,13 @@ describe("Desktop extensions settings page", () => {
     expect(findDetailDialog()).toBeUndefined();
 
     // Keyboard Enter on a row without `details` falls back to `description`, and backdrop click closes it.
-    const badgesCard = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-delegation-badges",
-    )!;
+    const badgesCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-delegation-badges",
+      ),
+    );
     badgesCard.dispatch("keydown", { key: "Enter" });
-    const badgesDialog = findDetailDialog()!;
+    const badgesDialog = must(findDetailDialog());
     expect(badgesDialog.open).toBe(true);
     expect(textOf(badgesDialog)).toContain("显示子 Thread 角标");
     expect(descendants(badgesDialog).filter((el) => el.tagName === "a")).toHaveLength(0);
@@ -1034,15 +1072,20 @@ describe("Desktop extensions settings page", () => {
       disableAllDesktopExtensionsAndReload: vi.fn(),
     }));
     await vi.waitFor(() => expect(textOf(enMount.content)).toContain("Sidebar Thread Tree"));
-    const enTreeCard = descendants(enMount.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
-    )!;
+    const enTreeCard = must(
+      descendants(enMount.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
     // Unsafe repository protocol is blocked on the card star link as well.
     expect(descendants(enTreeCard).filter((el) => el.tagName === "a")).toHaveLength(0);
     enTreeCard.dispatch("keydown", { key: " " });
-    const enDialog = descendants(enMount.content).find(
-      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
-    )!;
+    const enDialog = must(
+      descendants(enMount.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
     expect(enDialog.open).toBe(true);
     expect(textOf(enDialog)).toContain("By codexhost");
     expect(textOf(enDialog)).toContain("Expand a parent Thread to inspect delegated children.");
@@ -1089,17 +1132,22 @@ describe("Desktop extensions settings page", () => {
     }));
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
-    const treeCard = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
-    )!;
+    const treeCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
     treeCard.dispatch("click");
 
-    const dialog = descendants(mounted.content).find(
-      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
-    )!;
-    const modalSwitch = descendants(dialog).find(
-      (el) => el.tagName === "input" && el.type === "checkbox",
-    )!;
+    const dialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const modalSwitch = must(
+      descendants(dialog).find((el) => el.tagName === "input" && el.type === "checkbox"),
+    );
     expect(modalSwitch.checked).toBe(true);
 
     // Toggle off from inside the detail modal.
@@ -1157,9 +1205,11 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
     const findTreeSwitch = () =>
-      descendants(mounted.content).find(
-        (el) => el.tagName === "input" && el.getAttribute("aria-label")?.includes("侧栏委派树"),
-      )!;
+      must(
+        descendants(mounted.content).find(
+          (el) => el.tagName === "input" && el.getAttribute("aria-label")?.includes("侧栏委派树"),
+        ),
+      );
 
     const initialSwitch = findTreeSwitch();
     initialSwitch.checked = false;
@@ -1176,7 +1226,7 @@ describe("Desktop extensions settings page", () => {
       (el) => el.tagName === "input" && el.type === "checkbox",
     );
     expect(switchesWhileBusy.every((el) => el.disabled)).toBe(true);
-    switchesWhileBusy[0]!.dispatch("change");
+    must(switchesWhileBusy[0]).dispatch("change");
     expect(disableDesktopExtension).toHaveBeenCalledTimes(1);
 
     pendingDisable.resolve({
@@ -1219,10 +1269,12 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Delegation Badges"));
 
     const findBadgeSwitch = () =>
-      descendants(mounted.content).find(
-        (el) =>
-          el.tagName === "input" && el.getAttribute("aria-label")?.includes("Delegation Badges"),
-      )!;
+      must(
+        descendants(mounted.content).find(
+          (el) =>
+            el.tagName === "input" && el.getAttribute("aria-label")?.includes("Delegation Badges"),
+        ),
+      );
 
     // 1) slot-conflict reports occupied slot and localized conflicting extension name
     const firstSwitch = findBadgeSwitch();
@@ -1230,9 +1282,11 @@ describe("Desktop extensions settings page", () => {
     firstSwitch.dispatch("change");
 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
-    const banner = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions__banner"),
-    )!;
+    const banner = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions__banner"),
+      ),
+    );
     expect(banner.hidden).toBe(false);
     expect(textOf(banner)).toContain("sidebar.thread-badge");
     expect(textOf(banner)).toContain("侧栏委派树 (sidebar-thread-tree)");
@@ -1282,12 +1336,16 @@ describe("Desktop extensions settings page", () => {
     }));
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
-    const moreButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.action === "more-menu",
-    )!;
-    const moreMenu = descendants(mounted.content).find(
-      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "more",
-    )!;
+    const moreButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "more-menu",
+      ),
+    );
+    const moreMenu = must(
+      descendants(mounted.content).find(
+        (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "more",
+      ),
+    );
     expect(moreMenu.hidden).toBe(true);
     expect(moreButton.getAttribute("aria-expanded")).toBe("false");
 
@@ -1305,9 +1363,11 @@ describe("Desktop extensions settings page", () => {
 
     // Copy extensions directory path from menu.
     moreButton.dispatch("click");
-    const copyMenuItem = descendants(moreMenu).find(
-      (el) => el.tagName === "button" && el.dataset.action === "copy-directory",
-    )!;
+    const copyMenuItem = must(
+      descendants(moreMenu).find(
+        (el) => el.tagName === "button" && el.dataset.action === "copy-directory",
+      ),
+    );
     expect(textOf(copyMenuItem)).toContain("复制扩展目录路径");
     expect(textOf(copyMenuItem)).toContain("$CODEXHOST_DATA_DIR/desktop-extensions/");
     copyMenuItem.dispatch("click");
@@ -1317,25 +1377,29 @@ describe("Desktop extensions settings page", () => {
         "$CODEXHOST_DATA_DIR/desktop-extensions/",
       ),
     );
-    const banner = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions__banner"),
-    )!;
+    const banner = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions__banner"),
+      ),
+    );
     expect(textOf(banner)).toBe("已复制扩展目录路径。");
 
     // Trigger emergency recovery from menu -> opens confirmation dialog.
     moreButton.dispatch("click");
-    const recoveryMenuItem = descendants(moreMenu).find(
-      (el) => el.tagName === "button" && el.dataset.action === "open-recovery",
-    )!;
+    const recoveryMenuItem = must(
+      descendants(moreMenu).find(
+        (el) => el.tagName === "button" && el.dataset.action === "open-recovery",
+      ),
+    );
     expect(textOf(recoveryMenuItem)).toContain("禁用全部扩展并重载 Desktop");
     recoveryMenuItem.dispatch("click");
     expect(moreMenu.hidden).toBe(true);
 
     // Confirmation dialog opens; RPC is not sent until confirmed.
     expect(disableAllDesktopExtensionsAndReload).not.toHaveBeenCalled();
-    const dialog = descendants(mounted.content).find((el) => el.tagName === "dialog")!;
+    const dialog = must(descendants(mounted.content).find((el) => el.tagName === "dialog"));
     expect(dialog.open).toBe(true);
-    const form = descendants(dialog).find((el) => el.tagName === "form")!;
+    const form = must(descendants(dialog).find((el) => el.tagName === "form"));
     form.dispatch("submit");
 
     await vi.waitFor(() => expect(disableAllDesktopExtensionsAndReload).toHaveBeenCalledTimes(1));
@@ -1354,18 +1418,26 @@ describe("Desktop extensions settings page", () => {
     const mounted = mountPage("zh-CN", () => client, storage);
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
-    const localeButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
-    )!;
-    const localeMenu = descendants(mounted.content).find(
-      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "content-locale",
-    )!;
-    const moreButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.action === "more-menu",
-    )!;
-    const moreMenu = descendants(mounted.content).find(
-      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "more",
-    )!;
+    const localeButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
+      ),
+    );
+    const localeMenu = must(
+      descendants(mounted.content).find(
+        (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "content-locale",
+      ),
+    );
+    const moreButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "more-menu",
+      ),
+    );
+    const moreMenu = must(
+      descendants(mounted.content).find(
+        (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "more",
+      ),
+    );
 
     // Defaults to Follow system (zh-CN shell -> "中").
     expect(textOf(localeButton)).toBe("中");
@@ -1386,7 +1458,7 @@ describe("Desktop extensions settings page", () => {
 
     // Switch to English -> updates cards, category filter pills, and detail modal while keeping shell Chinese.
     localeButton.dispatch("click");
-    const enOption = descendants(localeMenu).find((el) => el.dataset.contentLocale === "en")!;
+    const enOption = must(descendants(localeMenu).find((el) => el.dataset.contentLocale === "en"));
     enOption.dispatch("click");
     expect(localeMenu.hidden).toBe(true);
     expect(textOf(localeButton)).toBe("EN");
@@ -1401,24 +1473,31 @@ describe("Desktop extensions settings page", () => {
         .map((pill) => textOf(pill));
     expect(filterLabels()).toEqual(["All", "Interface", "Workflow"]);
 
-    const treeCardEn = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
-    )!;
+    const treeCardEn = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
     expect(textOf(treeCardEn)).toContain("Sidebar Thread Tree");
     expect(textOf(treeCardEn)).toContain("Groups delegated Threads");
     expect(
       textOf(
-        descendants(treeCardEn).find(
-          (el) => el.className === "settings-extensions-card__categories-text",
-        )!,
+        must(
+          descendants(treeCardEn).find(
+            (el) => el.className === "settings-extensions-card__categories-text",
+          ),
+        ),
       ),
     ).toBe("Interface · Workflow");
 
     // Detail modal reflects the selected English content locale.
     treeCardEn.dispatch("click");
-    const detailDialog = descendants(mounted.content).find(
-      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
-    )!;
+    const detailDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
     expect(textOf(detailDialog)).toContain("Sidebar Thread Tree");
     expect(textOf(detailDialog)).toContain("Expand a parent Thread to inspect delegated children.");
     expect(
@@ -1430,17 +1509,17 @@ describe("Desktop extensions settings page", () => {
 
     // Switch back to Simplified Chinese, then Follow system.
     localeButton.dispatch("click");
-    descendants(localeMenu)
-      .find((el) => el.dataset.contentLocale === "zh-CN")!
-      .dispatch("click");
+    must(descendants(localeMenu).find((el) => el.dataset.contentLocale === "zh-CN")).dispatch(
+      "click",
+    );
     expect(textOf(localeButton)).toBe("中");
     expect(storage.get("codexhost.desktopExtensions.contentLocale")).toBe("zh-CN");
     expect(filterLabels()).toEqual(["全部", "界面增强", "效率与协作"]);
 
     localeButton.dispatch("click");
-    descendants(localeMenu)
-      .find((el) => el.dataset.contentLocale === "system")!
-      .dispatch("click");
+    must(descendants(localeMenu).find((el) => el.dataset.contentLocale === "system")).dispatch(
+      "click",
+    );
     expect(textOf(localeButton)).toBe("中");
     expect(storage.get("codexhost.desktopExtensions.contentLocale")).toBe("system");
     mounted.dispose();
@@ -1449,9 +1528,11 @@ describe("Desktop extensions settings page", () => {
     storage.set("codexhost.desktopExtensions.contentLocale", "en");
     const restored = mountPage("zh-CN", () => client, storage);
     await vi.waitFor(() => expect(textOf(restored.content)).toContain("Sidebar Thread Tree"));
-    const restoredLocaleBtn = descendants(restored.content).find(
-      (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
-    )!;
+    const restoredLocaleBtn = must(
+      descendants(restored.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
+      ),
+    );
     expect(textOf(restoredLocaleBtn)).toBe("EN");
     restored.dispose();
   });
@@ -1465,9 +1546,11 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() =>
       expect(textOf(mounted.content)).toContain("Desktop extension management is unavailable"),
     );
-    const recoveryMenuItem = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.action === "open-recovery",
-    )!;
+    const recoveryMenuItem = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "open-recovery",
+      ),
+    );
     expect(recoveryMenuItem.disabled).toBe(true);
     mounted.dispose();
   });

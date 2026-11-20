@@ -27,6 +27,11 @@ const CODEX = harnessIdSchema.parse("codex");
 
 const cleanups: Array<() => void> = [];
 
+function must<T>(value: T | null | undefined, label = "value"): T {
+  if (value === null || value === undefined) throw new Error(`Expected ${label} to be defined`);
+  return value;
+}
+
 afterEach(() => {
   for (const stop of cleanups.splice(0)) stop();
   document.body.replaceChildren();
@@ -245,13 +250,13 @@ describe("sidebar-thread-tree DOM behavior", () => {
     expect(parent.item.querySelector(`[${SIDEBAR_TREE_CHILDREN_ATTRIBUTE}]`)).toBeNull();
 
     // Clicking the summary line outside the summary button opens the parent via api.navigate.openThread.
-    summaryLine!.click();
+    must(summaryLine, "summary line").click();
     expect(harness.openThread).toHaveBeenCalledWith("parent");
 
     // Clicking the toggle expands without bubbling to the native row.
     const rowClicks: string[] = [];
     parent.row.element.addEventListener("click", () => rowClicks.push("click"));
-    toggle!.click();
+    must(toggle, "tree toggle").click();
     expect(rowClicks).toEqual([]);
 
     // Expanded state marks root-expanded, removes summary line, and mounts guided children.
@@ -282,11 +287,13 @@ describe("sidebar-thread-tree DOM behavior", () => {
     expect(idleRow?.querySelector(".cxh-tree-status")).toBeNull();
 
     // Clicking a child row calls api.navigate.openThread.
-    waitRow!.click();
+    must(waitRow, "wait child row").click();
     expect(harness.openThread).toHaveBeenCalledWith("child-wait");
 
     // Keyboard Enter on a child row also navigates.
-    runRow!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    must(runRow, "run child row").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
     expect(harness.openThread).toHaveBeenCalledWith("child-run");
 
     // Disposing restores all marks and removes all extension nodes.
@@ -331,8 +338,9 @@ describe("sidebar-thread-tree DOM behavior", () => {
     expect(summaryBtn?.textContent).toBe("1 child sessions · 1 running");
 
     // Focusing summary button then clicking moves focus to the root toggle after expand.
-    summaryBtn!.focus();
-    summaryBtn!.click();
+    const requiredSummaryBtn = must(summaryBtn, "summary button");
+    requiredSummaryBtn.focus();
+    requiredSummaryBtn.click();
     expect(virtual?.querySelector(`[${SIDEBAR_TREE_EXPAND_ATTRIBUTE}]`)).toBeNull();
     const rootToggle = virtual?.querySelector<HTMLElement>(
       `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
@@ -372,9 +380,12 @@ describe("sidebar-thread-tree DOM behavior", () => {
     expect(activeRow?.getAttribute("aria-current")).toBe("page");
 
     // User can still collapse the parent afterwards without auto-expand overriding it.
-    parent.row.element
-      .querySelector<HTMLButtonElement>(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`)!
-      .click();
+    must(
+      parent.row.element.querySelector<HTMLButtonElement>(
+        `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
+      ),
+      "parent tree toggle",
+    ).click();
     expect(parent.item.hasAttribute("data-cx-sidebar-thread-tree-root-collapsed")).toBe(true);
   });
 

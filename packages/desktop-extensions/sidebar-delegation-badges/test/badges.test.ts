@@ -16,6 +16,11 @@ const CLAUDE = harnessIdSchema.parse("claude");
 
 const cleanups: Array<() => void> = [];
 
+function must<T>(value: T | null | undefined, label = "value"): T {
+  if (value === null || value === undefined) throw new Error(`Expected ${label} to be defined`);
+  return value;
+}
+
 afterEach(() => {
   for (const stop of cleanups.splice(0)) stop();
   document.body.replaceChildren();
@@ -199,9 +204,10 @@ describe("sidebar-delegation-badges", () => {
     const withoutIcon = makeSidebarRow("parent-2", { withIcon: false });
     const remoteRow = makeSidebarRow("parent-3", { isLocal: false });
 
-    const originalStyle = withIcon.icon!.getAttribute("style");
-    const originalClass = withIcon.icon!.getAttribute("class");
-    const originalRole = withIcon.icon!.getAttribute("role");
+    const icon = must(withIcon.icon, "sidebar agent icon");
+    const originalStyle = icon.getAttribute("style");
+    const originalClass = icon.getAttribute("class");
+    const originalRole = icon.getAttribute("role");
 
     harness.setRows([withIcon.row, withoutIcon.row, remoteRow.row]);
     harness.setTree({
@@ -293,20 +299,24 @@ describe("sidebar-delegation-badges", () => {
       },
     });
 
-    const badge = row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge");
-    expect(badge).not.toBeNull();
-    badge!.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    badge!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    badge!.dispatchEvent(new Event("pointerup", { bubbles: true }));
-    badge!.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-    badge!.click();
+    const badge = must(
+      row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge"),
+      "delegation badge",
+    );
+    badge.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    badge.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    badge.dispatchEvent(new Event("pointerup", { bubbles: true }));
+    badge.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    badge.click();
     expect(rowEvents).toEqual([]);
 
-    const popover = document.body.querySelector<HTMLElement>("[data-codexhost-delegation-popover]");
-    expect(popover).not.toBeNull();
-    expect(popover?.getAttribute("role")).toBe("menu");
+    const popover = must(
+      document.body.querySelector<HTMLElement>("[data-codexhost-delegation-popover]"),
+      "delegation popover",
+    );
+    expect(popover.getAttribute("role")).toBe("menu");
 
-    const items = [...popover!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    const items = [...popover.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
     expect(items.map((el) => el.getAttribute("data-codexhost-delegation-child"))).toEqual([
       "child-wait",
       "child-run",
@@ -326,7 +336,7 @@ describe("sidebar-delegation-badges", () => {
       "○ 无活动",
     ]);
 
-    items[0]!.click();
+    must(items[0], "first menu item").click();
     expect(harness.openThread).toHaveBeenCalledWith("child-wait");
     expect(document.body.querySelector("[data-codexhost-delegation-popover]")).toBeNull();
     expect(rowEvents).toEqual([]);
@@ -351,7 +361,10 @@ describe("sidebar-delegation-badges", () => {
       },
     });
 
-    const badge = row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge")!;
+    const badge = must(
+      row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge"),
+      "delegation badge",
+    );
     badge.focus();
     badge.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
@@ -411,7 +424,10 @@ describe("sidebar-delegation-badges", () => {
       },
     });
 
-    const badge = row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge")!;
+    const badge = must(
+      row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge"),
+      "delegation badge",
+    );
     vi.spyOn(badge, "getBoundingClientRect").mockReturnValue({
       top: 260,
       bottom: 274,
@@ -433,9 +449,10 @@ describe("sidebar-delegation-badges", () => {
       .mockReturnValue(220);
     try {
       badge.click();
-      const popover = document.body.querySelector<HTMLElement>(
-        "[data-codexhost-delegation-popover]",
-      )!;
+      const popover = must(
+        document.body.querySelector<HTMLElement>("[data-codexhost-delegation-popover]"),
+        "delegation popover",
+      );
       expect(popover.style.top).toBe("auto");
       expect(popover.style.bottom).toBe("44px"); // 300 - 260 + 4
       expect(popover.style.left).toBe("172px"); // 400 - 8 - 220
@@ -467,7 +484,7 @@ describe("sidebar-delegation-badges", () => {
     const replacement = document.createElement("span");
     replacement.setAttribute("data-codexhost-sidebar-agent-icon", "codex");
     replacement.setAttribute("aria-label", "Codex Agent");
-    icon!.replaceWith(replacement);
+    must(icon, "sidebar agent icon").replaceWith(replacement);
 
     await Promise.resolve();
     await Promise.resolve();
@@ -492,7 +509,10 @@ describe("sidebar-delegation-badges", () => {
       },
     });
 
-    row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge")!.click();
+    must(
+      row.element.querySelector<HTMLButtonElement>(".cx-delegation-badge"),
+      "delegation badge",
+    ).click();
     expect(document.body.querySelector("[data-codexhost-delegation-popover]")).not.toBeNull();
 
     harness.dispose();

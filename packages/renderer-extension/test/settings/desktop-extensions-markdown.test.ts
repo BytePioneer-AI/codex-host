@@ -59,6 +59,11 @@ function render(markdown: string | null): FakeElement[] {
   return renderSafeMarkdown(doc as unknown as Document, markdown) as unknown as FakeElement[];
 }
 
+function must<T>(value: T | null | undefined, label = "value"): T {
+  if (value === null || value === undefined) throw new Error(`Expected ${label} to be defined`);
+  return value;
+}
+
 describe("renderSafeMarkdown", () => {
   it("returns empty array for empty or whitespace-only input", () => {
     expect(render(null)).toEqual([]);
@@ -102,20 +107,21 @@ describe("renderSafeMarkdown", () => {
     ]);
 
     // Headings map # / ## / ### -> h3 / h4 / h5 with inline formatting.
-    expect(textOf(blocks[0]!)).toBe("Overview");
-    expect(collectElements([blocks[1]!]).some((el) => el.tagName === "em")).toBe(true);
-    expect(collectElements([blocks[2]!]).some((el) => el.tagName === "code")).toBe(true);
+    expect(textOf(must(blocks[0]))).toBe("Overview");
+    expect(collectElements([must(blocks[1])]).some((el) => el.tagName === "em")).toBe(true);
+    expect(collectElements([must(blocks[2])]).some((el) => el.tagName === "code")).toBe(true);
 
     // Paragraph preserves single line break via <br>, renders <strong>, <em>, and keeps code literal.
-    const paragraphChildren = collectElements([blocks[3]!]);
+    const paragraphChildren = collectElements([must(blocks[3])]);
     expect(paragraphChildren.map((el) => el.tagName)).toEqual(["p", "strong", "em", "code", "br"]);
-    const inlineCode = paragraphChildren.find((el) => el.tagName === "code")!;
+    const inlineCode = must(paragraphChildren.find((el) => el.tagName === "code"));
     expect(textOf(inlineCode)).toBe("inline **raw**");
 
     // Unordered list + safe https link.
-    const ulItems = blocks[4]!.children.filter((c): c is FakeElement => c instanceof FakeElement);
+    const ulBlock = must(blocks[4]);
+    const ulItems = ulBlock.children.filter((c): c is FakeElement => c instanceof FakeElement);
     expect(ulItems.map((li) => li.tagName)).toEqual(["li", "li"]);
-    const link = collectElements([blocks[4]!]).find((el) => el.tagName === "a")!;
+    const link = must(collectElements([ulBlock]).find((el) => el.tagName === "a"));
     expect(link).toBeDefined();
     expect(link.href).toBe("https://example.com/docs");
     expect(link.target).toBe("_blank");
@@ -123,16 +129,18 @@ describe("renderSafeMarkdown", () => {
     expect(textOf(link)).toBe("Docs");
 
     // Ordered list.
-    const olItems = blocks[5]!.children.filter((c): c is FakeElement => c instanceof FakeElement);
+    const olItems = must(blocks[5]).children.filter(
+      (c): c is FakeElement => c instanceof FakeElement,
+    );
     expect(olItems.map((li) => textOf(li))).toEqual(["Step one", "Step two with npm test"]);
 
     // Blockquote preserves multiline content and inline strong.
-    const quoteElements = collectElements([blocks[6]!]);
+    const quoteElements = collectElements([must(blocks[6])]);
     expect(quoteElements.some((el) => el.tagName === "strong")).toBe(true);
     expect(quoteElements.some((el) => el.tagName === "br")).toBe(true);
 
     // Fenced code block preserves raw HTML characters as literal text inside <pre><code>.
-    const preCode = blocks[7]!.children[0] as FakeElement;
+    const preCode = must(blocks[7]).children[0] as FakeElement;
     expect(preCode.tagName).toBe("code");
     expect(textOf(preCode)).toBe("const x = '<script>alert(1)</script>';\nconsole.log(x);");
   });
@@ -155,12 +163,15 @@ describe("renderSafeMarkdown", () => {
     // Only the safe https:// link becomes an <a>.
     const anchors = all.filter((el) => el.tagName === "a");
     expect(anchors).toHaveLength(1);
-    expect(anchors[0]!.href).toBe("https://github.com/BytePioneer-AI/codex-host");
-    expect(anchors[0]!.target).toBe("_blank");
-    expect(anchors[0]!.rel).toBe("noopener noreferrer");
+    const safeAnchor = must(anchors[0]);
+    expect(safeAnchor.href).toBe("https://github.com/BytePioneer-AI/codex-host");
+    expect(safeAnchor.target).toBe("_blank");
+    expect(safeAnchor.rel).toBe("noopener noreferrer");
 
     // Unsafe links downgrade to plain text labels and raw HTML stays escaped text nodes.
-    expect(textOf(blocks[0]!)).toBe("Click bad js or bad data.");
-    expect(textOf(blocks[1]!)).toBe("<script>alert('xss')</script><img src=x onerror=alert(1)>");
+    expect(textOf(must(blocks[0]))).toBe("Click bad js or bad data.");
+    expect(textOf(must(blocks[1]))).toBe(
+      "<script>alert('xss')</script><img src=x onerror=alert(1)>",
+    );
   });
 });

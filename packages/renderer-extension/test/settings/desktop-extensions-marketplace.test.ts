@@ -102,7 +102,10 @@ class FakeElement {
       },
       ...event,
     };
-    let cursor: FakeElement | undefined = this;
+    for (const listener of [...(this.#listeners.get(name) ?? [])]) {
+      listener(payload);
+    }
+    let cursor = this.parent;
     while (cursor && !stopped) {
       for (const listener of [...(cursor.#listeners.get(name) ?? [])]) {
         listener(payload);
@@ -198,6 +201,11 @@ function descendants(root: FakeElement): FakeElement[] {
     root,
     ...root.children.flatMap((child) => (child instanceof FakeElement ? descendants(child) : [])),
   ];
+}
+
+function must<T>(value: T | null | undefined, label = "value"): T {
+  if (value === null || value === undefined) throw new Error(`Expected ${label} to be defined`);
+  return value;
 }
 
 function textOf(node: unknown): string {
@@ -390,22 +398,28 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       (el) => el.className === "settings-extensions-grid",
     );
     expect(installedGrids).toHaveLength(1);
-    const treeInstalledCard = descendants(mounted.content).find(
-      (el) =>
-        el.tagName === "article" &&
-        el.className === "settings-extensions-card" &&
-        el.dataset.extensionId === "sidebar-thread-tree",
-    )!;
-    const badgesInstalledCard = descendants(mounted.content).find(
-      (el) =>
-        el.tagName === "article" &&
-        el.className === "settings-extensions-card" &&
-        el.dataset.extensionId === "sidebar-delegation-badges",
-    )!;
+    const treeInstalledCard = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "article" &&
+          el.className === "settings-extensions-card" &&
+          el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
+    const badgesInstalledCard = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "article" &&
+          el.className === "settings-extensions-card" &&
+          el.dataset.extensionId === "sidebar-delegation-badges",
+      ),
+    );
     expect(treeInstalledCard).toBeDefined();
-    const treeVerified = descendants(treeInstalledCard).find(
-      (el) => el.className === "settings-extensions-card__verified",
-    )!;
+    const treeVerified = must(
+      descendants(treeInstalledCard).find(
+        (el) => el.className === "settings-extensions-card__verified",
+      ),
+    );
     expect(treeVerified).toBeDefined();
     expect(treeVerified.getAttribute("aria-label")).toBe("官方");
     expect(
@@ -415,15 +429,19 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     ).toHaveLength(0);
     expect(textOf(treeInstalledCard)).toContain("codexhost · v0.1.0");
     expect(textOf(treeInstalledCard)).toContain("可更新");
-    const installedStarLink = descendants(treeInstalledCard).find(
-      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
-    )!;
+    const installedStarLink = must(
+      descendants(treeInstalledCard).find(
+        (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+      ),
+    );
     expect(installedStarLink).toBeDefined();
     expect(installedStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
     expect(textOf(installedStarLink)).toBe("1.2k");
-    const installedDownloads = descendants(treeInstalledCard).find(
-      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
-    )!;
+    const installedDownloads = must(
+      descendants(treeInstalledCard).find(
+        (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+      ),
+    );
     expect(installedDownloads).toBeDefined();
     expect(textOf(installedDownloads)).toBe("3.2k");
     expect(installedDownloads.getAttribute("aria-label")).toBe("下载量：3.2k");
@@ -435,9 +453,11 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       ),
     ).toBeUndefined();
     expect(textOf(badgesInstalledCard)).not.toContain("可更新");
-    const badgesStarLink = descendants(badgesInstalledCard).find(
-      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
-    )!;
+    const badgesStarLink = must(
+      descendants(badgesInstalledCard).find(
+        (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+      ),
+    );
     expect(badgesStarLink).toBeDefined();
     expect(textOf(badgesStarLink)).toBe("");
     // Catalog entry without downloads renders no downloads metric and never shows fake "0".
@@ -449,16 +469,20 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     ).toHaveLength(0);
 
     // Switch to Marketplace tab.
-    const marketTab = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
-    )!;
+    const marketTab = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    );
     marketTab.dispatch("click");
     expect(marketTab.getAttribute("aria-selected")).toBe("true");
 
     // Fallback notice renders clean localized Chinese without leaking raw English backend error text.
-    const fallbackNotice = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions-market__notice"),
-    )!;
+    const fallbackNotice = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions-market__notice"),
+      ),
+    );
     expect(fallbackNotice).toBeDefined();
     expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
     expect(textOf(fallbackNotice)).not.toContain("offline");
@@ -493,21 +517,25 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       ),
     ).toBe(true);
 
-    const treeMarketCard = marketCards[0]!;
+    const treeMarketCard = must(marketCards[0]);
     expect(
       descendants(treeMarketCard).find(
         (el) => el.className === "settings-extensions-card__verified",
       ),
     ).toBeDefined();
     expect(textOf(treeMarketCard)).toContain("codexhost · v0.2.0");
-    const treeMarketStarLink = descendants(treeMarketCard).find(
-      (el) => el.tagName === "a" && el.dataset.action === "open-repository",
-    )!;
+    const treeMarketStarLink = must(
+      descendants(treeMarketCard).find(
+        (el) => el.tagName === "a" && el.dataset.action === "open-repository",
+      ),
+    );
     expect(treeMarketStarLink.href).toBe("https://github.com/BytePioneer-AI/codex-host");
     expect(textOf(treeMarketStarLink)).toBe("1.2k");
-    const treeMarketDownloads = descendants(treeMarketCard).find(
-      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
-    )!;
+    const treeMarketDownloads = must(
+      descendants(treeMarketCard).find(
+        (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+      ),
+    );
     expect(treeMarketDownloads).toBeDefined();
     expect(textOf(treeMarketDownloads)).toBe("3.2k");
     treeMarketStarLink.dispatchBubbling("click");
@@ -518,21 +546,23 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     ).toBeUndefined();
     expect(
       textOf(
-        descendants(treeMarketCard).find(
-          (el) => el.className === "settings-extensions-card__categories-text",
-        )!,
+        must(
+          descendants(treeMarketCard).find(
+            (el) => el.className === "settings-extensions-card__categories-text",
+          ),
+        ),
       ),
     ).toBe("界面增强 · 效率与协作");
     expect(textOf(treeMarketCard)).toContain("更新");
     expect(textOf(treeMarketCard)).not.toContain("sidebar.thread-layout");
 
-    const badgesMarketCard = marketCards[1]!;
+    const badgesMarketCard = must(marketCards[1]);
     expect(textOf(badgesMarketCard)).toContain("已安装");
     expect(
       descendants(badgesMarketCard).find((el) => el.dataset.metric === "downloads"),
     ).toBeUndefined();
 
-    const themeMarketCard = marketCards[2]!;
+    const themeMarketCard = must(marketCards[2]);
     expect(
       descendants(themeMarketCard).find(
         (el) => el.className === "settings-extensions-card__verified",
@@ -541,41 +571,47 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     expect(textOf(themeMarketCard)).toContain("alice-dev · v1.0.0");
     expect(
       textOf(
-        descendants(themeMarketCard).find(
-          (el) => el.className === "settings-extensions-card__categories-text",
-        )!,
+        must(
+          descendants(themeMarketCard).find(
+            (el) => el.className === "settings-extensions-card__categories-text",
+          ),
+        ),
       ),
     ).toBe("外观主题");
     expect(textOf(themeMarketCard)).toContain("安装");
 
     // Category filter works on Marketplace tab.
-    const appearancePill = descendants(mounted.content).find(
-      (el) =>
-        el.className.includes("settings-extensions-filter-pill") &&
-        el.dataset.category === "appearance",
-    )!;
+    const appearancePill = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.className.includes("settings-extensions-filter-pill") &&
+          el.dataset.category === "appearance",
+      ),
+    );
     appearancePill.dispatch("click");
     const filteredCards = findMarketCards();
     expect(filteredCards.map((c) => c.dataset.extensionId)).toEqual(["nord-palette"]);
 
     // Clear category pill, then search by author and category name.
-    const allPill = descendants(mounted.content).find(
-      (el) =>
-        el.className.includes("settings-extensions-filter-pill") && el.dataset.category === "all",
-    )!;
+    const allPill = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.className.includes("settings-extensions-filter-pill") && el.dataset.category === "all",
+      ),
+    );
     allPill.dispatch("click");
 
-    const searchInput = descendants(mounted.content).find(
-      (el) => el.tagName === "input" && el.type === "search",
-    )!;
+    const searchInput = must(
+      descendants(mounted.content).find((el) => el.tagName === "input" && el.type === "search"),
+    );
     searchInput.value = "alice-dev";
     searchInput.dispatch("input");
     expect(findMarketCards().map((c) => c.dataset.extensionId)).toEqual(["nord-palette"]);
 
     // Refresh button on Marketplace tab sends forceRefresh: true and clears fallback notice.
-    const refreshButton = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-remote__refresh"),
-    )!;
+    const refreshButton = must(
+      descendants(mounted.content).find((el) => el.className.includes("settings-remote__refresh")),
+    );
     refreshButton.dispatch("click");
     await vi.waitFor(() => expect(listDesktopExtensionCatalog).toHaveBeenCalledTimes(2));
     expect(listDesktopExtensionCatalog).toHaveBeenLastCalledWith({ forceRefresh: true });
@@ -656,34 +692,46 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     }));
 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
-    const marketTab = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
-    )!;
+    const marketTab = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    );
     marketTab.dispatch("click");
 
     // 1) Open community catalog item detail modal before installing: shows community notice and safe HTTPS screenshot only, omitting technical metadata.
-    const themeCard = descendants(mounted.content).find(
-      (el) =>
-        el.className === "settings-extensions-card" &&
-        el.dataset.cardKind === "marketplace" &&
-        el.dataset.extensionId === "nord-palette",
-    )!;
+    const themeCard = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.className === "settings-extensions-card" &&
+          el.dataset.cardKind === "marketplace" &&
+          el.dataset.extensionId === "nord-palette",
+      ),
+    );
     themeCard.dispatch("click");
-    const detailDialog = descendants(mounted.content).find(
-      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
-    )!;
+    const detailDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
     expect(detailDialog.open).toBe(true);
     expect(textOf(detailDialog)).toContain("社区扩展，启用前建议先查看源码仓库");
-    const themeRepoLink = descendants(detailDialog).find(
-      (el) => el.tagName === "a" && el.className.includes("settings-extensions-detail-modal__repo"),
-    )!;
+    const themeRepoLink = must(
+      descendants(detailDialog).find(
+        (el) =>
+          el.tagName === "a" && el.className.includes("settings-extensions-detail-modal__repo"),
+      ),
+    );
     expect(themeRepoLink).toBeDefined();
     expect(themeRepoLink.href).toBe("https://github.com/alice-dev/nord-palette");
     expect(textOf(themeRepoLink)).toContain("GitHub 仓库");
     expect(textOf(themeRepoLink)).toContain("42");
-    const themeDetailDownloads = descendants(detailDialog).find(
-      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
-    )!;
+    const themeDetailDownloads = must(
+      descendants(detailDialog).find(
+        (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+      ),
+    );
     expect(themeDetailDownloads).toBeDefined();
     expect(textOf(themeDetailDownloads)).toBe("480");
     expect(themeDetailDownloads.getAttribute("aria-label")).toBe("下载量：480");
@@ -699,12 +747,14 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     detailDialog.close();
 
     // 2) Click Install directly on the marketplace card: stops propagation (no modal), shows loading text & disables button.
-    const installButton = descendants(mounted.content).find(
-      (el) =>
-        el.tagName === "button" &&
-        el.dataset.action === "install" &&
-        el.dataset.extensionId === "nord-palette",
-    )!;
+    const installButton = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "button" &&
+          el.dataset.action === "install" &&
+          el.dataset.extensionId === "nord-palette",
+      ),
+    );
     installButton.dispatchBubbling("click");
     expect(
       descendants(mounted.content).find((el) =>
@@ -715,12 +765,14 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       source: { type: "catalog", id: "nord-palette" },
     });
 
-    const busyInstallButton = descendants(mounted.content).find(
-      (el) =>
-        el.tagName === "button" &&
-        el.dataset.action === "install" &&
-        el.dataset.extensionId === "nord-palette",
-    )!;
+    const busyInstallButton = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "button" &&
+          el.dataset.action === "install" &&
+          el.dataset.extensionId === "nord-palette",
+      ),
+    );
     expect(busyInstallButton.disabled).toBe(true);
     expect(textOf(busyInstallButton)).toBe("安装中…");
 
@@ -734,32 +786,44 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("已安装 (3)"));
 
     // 3) Update sidebar-thread-tree from detail modal (which merges installed + catalog, blocks javascript: screenshot URL).
-    const treeMarketCard = descendants(mounted.content).find(
-      (el) =>
-        el.className === "settings-extensions-card" &&
-        el.dataset.cardKind === "marketplace" &&
-        el.dataset.extensionId === "sidebar-thread-tree",
-    )!;
+    const treeMarketCard = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.className === "settings-extensions-card" &&
+          el.dataset.cardKind === "marketplace" &&
+          el.dataset.extensionId === "sidebar-thread-tree",
+      ),
+    );
     treeMarketCard.dispatch("click");
-    const treeDialog = descendants(mounted.content).find(
-      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
-    )!;
-    const treeRepoLink = descendants(treeDialog).find(
-      (el) => el.tagName === "a" && el.className.includes("settings-extensions-detail-modal__repo"),
-    )!;
+    const treeDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const treeRepoLink = must(
+      descendants(treeDialog).find(
+        (el) =>
+          el.tagName === "a" && el.className.includes("settings-extensions-detail-modal__repo"),
+      ),
+    );
     expect(textOf(treeRepoLink)).toContain("1.2k");
-    const treeDetailDownloads = descendants(treeDialog).find(
-      (el) => el.tagName === "span" && el.dataset.metric === "downloads",
-    )!;
+    const treeDetailDownloads = must(
+      descendants(treeDialog).find(
+        (el) => el.tagName === "span" && el.dataset.metric === "downloads",
+      ),
+    );
     expect(textOf(treeDetailDownloads)).toBe("3.2k");
     const treeImgs = descendants(treeDialog).filter(
       (el) =>
         el.tagName === "img" && !el.className.includes("settings-extensions-detail-modal__preview"),
     );
     expect(treeImgs.map((img) => img.src)).toEqual(["https://cdn.example.com/tree-preview.png"]);
-    const updateModalButton = descendants(treeDialog).find(
-      (el) => el.tagName === "button" && el.dataset.action === "update",
-    )!;
+    const updateModalButton = must(
+      descendants(treeDialog).find(
+        (el) => el.tagName === "button" && el.dataset.action === "update",
+      ),
+    );
     expect(textOf(updateModalButton)).toBe("更新到 v0.2.0");
     updateModalButton.dispatch("click");
 
@@ -768,28 +832,39 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     treeDialog.close();
 
     // 4) Open installed nord-palette detail modal and test inline uninstall confirmation (cancel then confirm).
-    const installedTab = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.tab === "installed",
-    )!;
+    const installedTab = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "installed",
+      ),
+    );
     installedTab.dispatch("click");
-    const nordRow = descendants(mounted.content).find(
-      (el) => el.tagName === "article" && el.dataset.extensionId === "nord-palette",
-    )!;
+    const nordRow = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === "nord-palette",
+      ),
+    );
     nordRow.dispatch("click");
 
-    const nordDialog = descendants(mounted.content).find(
-      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
-    )!;
-    const uninstallBtn = descendants(nordDialog).find(
-      (el) => el.tagName === "button" && el.dataset.action === "uninstall",
-    )!;
+    const nordDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const uninstallBtn = must(
+      descendants(nordDialog).find(
+        (el) => el.tagName === "button" && el.dataset.action === "uninstall",
+      ),
+    );
     uninstallBtn.dispatch("click");
     expect(uninstallDesktopExtension).not.toHaveBeenCalled();
 
     // Cancel restores normal uninstall button.
-    const cancelUninstallBtn = descendants(nordDialog).find(
-      (el) => el.tagName === "button" && el.dataset.action === "cancel-uninstall",
-    )!;
+    const cancelUninstallBtn = must(
+      descendants(nordDialog).find(
+        (el) => el.tagName === "button" && el.dataset.action === "cancel-uninstall",
+      ),
+    );
     cancelUninstallBtn.dispatch("click");
     expect(
       descendants(nordDialog).find(
@@ -798,12 +873,16 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     ).toBeDefined();
 
     // Click uninstall again, then confirm.
-    descendants(nordDialog)
-      .find((el) => el.tagName === "button" && el.dataset.action === "uninstall")!
-      .dispatch("click");
-    const confirmUninstallBtn = descendants(nordDialog).find(
-      (el) => el.tagName === "button" && el.dataset.action === "confirm-uninstall",
-    )!;
+    must(
+      descendants(nordDialog).find(
+        (el) => el.tagName === "button" && el.dataset.action === "uninstall",
+      ),
+    ).dispatch("click");
+    const confirmUninstallBtn = must(
+      descendants(nordDialog).find(
+        (el) => el.tagName === "button" && el.dataset.action === "confirm-uninstall",
+      ),
+    );
     confirmUninstallBtn.dispatch("click");
 
     await vi.waitFor(() => expect(uninstallDesktopExtension).toHaveBeenCalledTimes(1));
@@ -859,13 +938,17 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
 
     // Start from Marketplace tab to verify successful import switches back to Installed tab.
-    descendants(mounted.content)
-      .find((el) => el.tagName === "button" && el.dataset.tab === "marketplace")!
-      .dispatch("click");
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    ).dispatch("click");
 
-    const openImportButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.action === "open-import",
-    )!;
+    const openImportButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "open-import",
+      ),
+    );
     openImportButton.dispatch("click");
 
     const findImportDialog = () =>
@@ -875,7 +958,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       );
 
     // 1) GitHub repository URL import without dialog subtitle or SHA-256 input.
-    const urlDialog = findImportDialog()!;
+    const urlDialog = must(findImportDialog());
     expect(urlDialog.open).toBe(true);
     expect(textOf(urlDialog)).not.toContain("支持通过 GitHub 仓库或 Release 链接安装");
     expect(textOf(urlDialog)).toContain("GitHub 仓库链接");
@@ -885,9 +968,9 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     ).toBeUndefined();
     expect(descendants(urlDialog).find((el) => el.tagName === "details")).toBeUndefined();
 
-    const urlInput = descendants(urlDialog).find((el) => el.dataset.importField === "url")!;
+    const urlInput = must(descendants(urlDialog).find((el) => el.dataset.importField === "url"));
     expect(urlInput.placeholder).toBe("https://github.com/owner/repo");
-    const form = descendants(urlDialog).find((el) => el.tagName === "form")!;
+    const form = must(descendants(urlDialog).find((el) => el.tagName === "form"));
 
     urlInput.value = "https://github.com/example/custom-widget";
     form.dispatch("submit");
@@ -900,26 +983,30 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
         url: "https://github.com/example/custom-widget",
       },
     });
-    const installedTab = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.tab === "installed",
-    )!;
+    const installedTab = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "installed",
+      ),
+    );
     expect(installedTab.getAttribute("aria-selected")).toBe("true");
     expect(textOf(mounted.content)).toContain("已安装“自定义组件”（v0.3.0），可按需开启。");
 
     // 2) Local .zip upload: no 5 MiB hint or client-side size block; accepts >5 MiB metadata and sends base64.
     openImportButton.dispatch("click");
-    const zipDialog = findImportDialog()!;
-    const zipModeTab = descendants(zipDialog).find(
-      (el) => el.tagName === "button" && el.dataset.importMode === "zip",
-    )!;
+    const zipDialog = must(findImportDialog());
+    const zipModeTab = must(
+      descendants(zipDialog).find(
+        (el) => el.tagName === "button" && el.dataset.importMode === "zip",
+      ),
+    );
     zipModeTab.dispatch("click");
 
     expect(textOf(zipDialog)).toContain("点击选择或拖拽 .zip 文件");
     expect(textOf(zipDialog)).not.toContain("5 MiB");
     expect(textOf(zipDialog)).not.toContain("manifest.json");
 
-    const fileInput = descendants(zipDialog).find((el) => el.dataset.importField === "zip")!;
-    const zipForm = descendants(zipDialog).find((el) => el.tagName === "form")!;
+    const fileInput = must(descendants(zipDialog).find((el) => el.dataset.importField === "zip"));
+    const zipForm = must(descendants(zipDialog).find((el) => el.tagName === "form"));
 
     const zipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x01, 0x02]);
     const largeZipFile = {
@@ -989,50 +1076,62 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
 
     // Disable an extension on the Installed tab so the green success feedback banner appears.
-    const treeSwitch = descendants(mounted.content).find(
-      (el) => el.tagName === "input" && el.getAttribute("aria-label")?.includes("侧栏委派树"),
-    )!;
+    const treeSwitch = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "input" && el.getAttribute("aria-label")?.includes("侧栏委派树"),
+      ),
+    );
     treeSwitch.checked = false;
     treeSwitch.dispatch("change");
 
     await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(2));
-    const banner = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions__banner"),
-    )!;
+    const banner = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions__banner"),
+      ),
+    );
     expect(banner.hidden).toBe(false);
     expect(textOf(banner)).toBe("已禁用“侧栏委派树”。");
 
     // Switching to Marketplace clears the stale feedback banner.
-    const marketTab = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
-    )!;
+    const marketTab = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    );
     marketTab.dispatch("click");
     expect(banner.hidden).toBe(true);
     expect(textOf(banner)).toBe("");
 
     // Fallback notice keeps clean localized copy without raw English backend error text.
-    const fallbackNotice = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions-market__notice"),
-    )!;
+    const fallbackNotice = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions-market__notice"),
+      ),
+    );
     expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
     expect(textOf(fallbackNotice)).not.toContain("HTTP 404");
 
     // When source is not fallback and the catalog is empty with an error, surface the error notice.
-    const refreshButton = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-remote__refresh"),
-    )!;
+    const refreshButton = must(
+      descendants(mounted.content).find((el) => el.className.includes("settings-remote__refresh")),
+    );
     refreshButton.dispatch("click");
     await vi.waitFor(() => expect(listDesktopExtensionCatalog).toHaveBeenCalledTimes(2));
-    const errorNotice = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions-market__notice"),
-    )!;
+    const errorNotice = must(
+      descendants(mounted.content).find((el) =>
+        el.className.includes("settings-extensions-market__notice"),
+      ),
+    );
     expect(errorNotice).toBeDefined();
     expect(textOf(errorNotice)).toContain("无法加载扩展市场：upstream timeout");
 
     // Switching back to Installed keeps the feedback banner cleared.
-    const installedTab = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.tab === "installed",
-    )!;
+    const installedTab = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "installed",
+      ),
+    );
     installedTab.dispatch("click");
     expect(banner.hidden).toBe(true);
 
@@ -1047,36 +1146,44 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     }));
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
 
-    descendants(mounted.content)
-      .find((el) => el.tagName === "button" && el.dataset.tab === "marketplace")!
-      .dispatch("click");
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    ).dispatch("click");
     expect(textOf(mounted.content)).toContain("极光配色");
 
-    const localeButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
-    )!;
-    const localeMenu = descendants(mounted.content).find(
-      (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "content-locale",
-    )!;
+    const localeButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "content-locale-menu",
+      ),
+    );
+    const localeMenu = must(
+      descendants(mounted.content).find(
+        (el) => el.getAttribute("role") === "menu" && el.dataset.menu === "content-locale",
+      ),
+    );
     localeButton.dispatch("click");
-    descendants(localeMenu)
-      .find((el) => el.dataset.contentLocale === "en")!
-      .dispatch("click");
+    must(descendants(localeMenu).find((el) => el.dataset.contentLocale === "en")).dispatch("click");
 
     expect(textOf(localeButton)).toBe("EN");
-    const themeCard = descendants(mounted.content).find(
-      (el) =>
-        el.tagName === "article" &&
-        el.dataset.cardKind === "marketplace" &&
-        el.dataset.extensionId === "nord-palette",
-    )!;
+    const themeCard = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "article" &&
+          el.dataset.cardKind === "marketplace" &&
+          el.dataset.extensionId === "nord-palette",
+      ),
+    );
     expect(textOf(themeCard)).toContain("Nord Palette");
     expect(textOf(themeCard)).toContain("Calm Arctic palette for sidebar.");
     expect(
       textOf(
-        descendants(themeCard).find(
-          (el) => el.className === "settings-extensions-card__categories-text",
-        )!,
+        must(
+          descendants(themeCard).find(
+            (el) => el.className === "settings-extensions-card__categories-text",
+          ),
+        ),
       ),
     ).toBe("Appearance");
 
@@ -1086,9 +1193,12 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     expect(pillLabels).toEqual(["All", "Appearance", "Interface", "Workflow", "Tools"]);
 
     themeCard.dispatch("click");
-    const detailDialog = descendants(mounted.content).find(
-      (el) => el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
-    )!;
+    const detailDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
     expect(textOf(detailDialog)).toContain("Nord Palette");
     expect(textOf(detailDialog)).toContain("Community theme tuned for dark mode.");
     detailDialog.close();
@@ -1112,23 +1222,29 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
 
     // Select a category on the Installed tab first.
     const findWorkflowPill = () =>
-      descendants(mounted.content).find(
-        (el) =>
-          el.className.includes("settings-extensions-filter-pill") &&
-          el.dataset.category === "workflow",
-      )!;
+      must(
+        descendants(mounted.content).find(
+          (el) =>
+            el.className.includes("settings-extensions-filter-pill") &&
+            el.dataset.category === "workflow",
+        ),
+      );
     findWorkflowPill().dispatch("click");
     expect(findWorkflowPill().getAttribute("aria-pressed")).toBe("true");
 
     // Switch to Marketplace where no entries declare categories: filter bar is hidden completely
     // (not even "全部"), selectedCategory resets to all, and both cards remain visible.
-    descendants(mounted.content)
-      .find((el) => el.tagName === "button" && el.dataset.tab === "marketplace")!
-      .dispatch("click");
+    must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.tab === "marketplace",
+      ),
+    ).dispatch("click");
 
-    const categorySlot = descendants(mounted.content).find(
-      (el) => el.className === "settings-extensions__category-slot",
-    )!;
+    const categorySlot = must(
+      descendants(mounted.content).find(
+        (el) => el.className === "settings-extensions__category-slot",
+      ),
+    );
     expect(categorySlot.hidden).toBe(true);
     expect(
       descendants(mounted.content).filter((el) =>

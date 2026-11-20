@@ -24,6 +24,11 @@ import {
 
 const disposables: Array<() => void | Promise<void>> = [];
 
+function must<T>(value: T | null | undefined, label = "value"): T {
+  if (value === null || value === undefined) throw new Error(`Expected ${label} to be defined`);
+  return value;
+}
+
 if (typeof HTMLDialogElement !== "undefined") {
   if (typeof HTMLDialogElement.prototype.showModal !== "function") {
     HTMLDialogElement.prototype.showModal = function showModal() {
@@ -116,7 +121,7 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
   const getSettings = vi.fn(async (id: string) => settingsStore[id] ?? {});
   const setSettings = vi.fn(async (id: string, values: Record<string, unknown>) => {
     settingsStore = { ...settingsStore, [id]: { ...values } };
-    return settingsStore[id]!;
+    return must(settingsStore[id]);
   });
   const invokeBackend = vi.fn(async (id: string, method: string, params?: unknown) => ({
     id,
@@ -202,16 +207,20 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
     },
     navSections() {
       return Array.from(
-        shell.root.shadowRoot!.querySelectorAll<HTMLElement>(".settings-nav-section-label"),
+        must(shell.root.shadowRoot).querySelectorAll<HTMLElement>(".settings-nav-section-label"),
       ).map((el) => ({ id: el.dataset.navSection, text: el.textContent }));
     },
     navButtons() {
       return Array.from(
-        shell.root.shadowRoot!.querySelectorAll<HTMLButtonElement>("button.settings-nav-button"),
+        must(shell.root.shadowRoot).querySelectorAll<HTMLButtonElement>(
+          "button.settings-nav-button",
+        ),
       );
     },
     contentRoot() {
-      return shell.root.shadowRoot!.querySelector<HTMLElement>(".settings-page__content")!;
+      return must(
+        must(shell.root.shadowRoot).querySelector<HTMLElement>(".settings-page__content"),
+      );
     },
   };
 }
@@ -259,9 +268,9 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
       { id: "plugins", text: "插件" },
       { id: "other", text: "其他" },
     ]);
-    const pluginButton = harness
-      .navButtons()
-      .find((btn) => btn.dataset.extensionId === "aurora.dashboard")!;
+    const pluginButton = must(
+      harness.navButtons().find((btn) => btn.dataset.extensionId === "aurora.dashboard"),
+    );
     expect(pluginButton).toBeDefined();
     expect(pluginButton.textContent).toBe("极光看板");
 
@@ -270,11 +279,11 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     expect(harness.shell.activePageId).toBe(pluginButton.dataset.pageId);
     expect(harness.contentRoot().textContent).toContain("Custom Studio (zh-CN)");
     expect(mountedContext).not.toBeNull();
-    await expect(mountedContext!.assets.readDataUrl("hero.png")).resolves.toEqual({
+    await expect(must(mountedContext).assets.readDataUrl("hero.png")).resolves.toEqual({
       mimeType: "image/png",
       dataUrl: "data:image/png;base64,hero.png",
     });
-    await expect(mountedContext!.backend.invoke("ping", { n: 1 })).resolves.toEqual({
+    await expect(must(mountedContext).backend.invoke("ping", { n: 1 })).resolves.toEqual({
       id: "aurora.dashboard",
       method: "ping",
       params: { n: 1 },
@@ -339,18 +348,20 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     await vi.waitFor(() => expect(harness.contentRoot().textContent).toContain("声明式主题"));
 
     // Open extension detail modal -> verify "打开设置" button appears and jumps directly to the plugin page.
-    const card = harness
-      .contentRoot()
-      .querySelector<HTMLElement>('article[data-extension-id="schema-theme"]')!;
+    const card = must(
+      harness.contentRoot().querySelector<HTMLElement>('article[data-extension-id="schema-theme"]'),
+    );
     card.click();
 
-    const detailDialog = harness
-      .contentRoot()
-      .querySelector<HTMLDialogElement>("dialog.settings-extensions-detail-dialog")!;
+    const detailDialog = must(
+      harness
+        .contentRoot()
+        .querySelector<HTMLDialogElement>("dialog.settings-extensions-detail-dialog"),
+    );
     expect(detailDialog).not.toBeNull();
-    const openSettingsButton = detailDialog.querySelector<HTMLButtonElement>(
-      'button[data-action="open-settings"]',
-    )!;
+    const openSettingsButton = must(
+      detailDialog.querySelector<HTMLButtonElement>('button[data-action="open-settings"]'),
+    );
     expect(openSettingsButton).not.toBeNull();
     expect(openSettingsButton.textContent).toContain("打开设置");
 
@@ -366,18 +377,22 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
       expect(textInput?.value).toBe("assets/custom.png");
     });
 
-    const boolInput = harness
-      .contentRoot()
-      .querySelector<HTMLInputElement>('input[data-setting-key="enabledBlur"]')!;
-    const numberInput = harness
-      .contentRoot()
-      .querySelector<HTMLInputElement>('input[data-setting-key="refreshInterval"]')!;
-    const rangeInput = harness
-      .contentRoot()
-      .querySelector<HTMLInputElement>('input[data-setting-key="opacity"]')!;
-    const selectInput = harness
-      .contentRoot()
-      .querySelector<HTMLSelectElement>('select[data-setting-key="preset"]')!;
+    const boolInput = must(
+      harness
+        .contentRoot()
+        .querySelector<HTMLInputElement>('input[data-setting-key="enabledBlur"]'),
+    );
+    const numberInput = must(
+      harness
+        .contentRoot()
+        .querySelector<HTMLInputElement>('input[data-setting-key="refreshInterval"]'),
+    );
+    const rangeInput = must(
+      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
+    );
+    const selectInput = must(
+      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
+    );
 
     expect(boolInput.checked).toBe(false);
     expect(numberInput.value).toBe("60");
@@ -431,7 +446,7 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
       },
     ]);
 
-    const pluginPageId = harness.pluginPages.getPageIdForExtension("aurora.dashboard")!;
+    const pluginPageId = must(harness.pluginPages.getPageIdForExtension("aurora.dashboard"));
     harness.shell.openSettings(undefined, pluginPageId);
     expect(harness.shell.activePageId).toBe(pluginPageId);
     expect(harness.contentRoot().textContent).toContain("Custom Page v1");
@@ -468,7 +483,7 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     // Schema extension running in host + cached in installedSchemaExtensions:
     // 1) Updating schema remounts the open schema page with new fields.
     // 2) Disabling via host evicts the cached declarative page and falls back to desktop-extensions.
-    const initialSchema: readonly DesktopExtensionSettingField[] = [SAMPLE_SCHEMA[0]!];
+    const initialSchema: readonly DesktopExtensionSettingField[] = [must(SAMPLE_SCHEMA[0])];
     await harness.host.reconcile([
       {
         id: "schema-theme",
@@ -497,15 +512,15 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
       },
     ]);
 
-    const schemaPageId = harness.pluginPages.getPageIdForExtension("schema-theme")!;
+    const schemaPageId = must(harness.pluginPages.getPageIdForExtension("schema-theme"));
     expect(harness.shell.navigateToPage(schemaPageId)).toBe(true);
     expect(cleanupV2).toHaveBeenCalledTimes(1);
     expect(harness.contentRoot().querySelector('select[data-setting-key="preset"]')).toBeNull();
 
     // Hot-reload schema extension with an extra field -> remounts with the new control.
     const updatedSchema: readonly DesktopExtensionSettingField[] = [
-      SAMPLE_SCHEMA[0]!,
-      SAMPLE_SCHEMA[4]!,
+      must(SAMPLE_SCHEMA[0]),
+      must(SAMPLE_SCHEMA[4]),
     ];
     await harness.host.reconcile([
       {
@@ -544,7 +559,7 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
         },
       },
     ]);
-    const externalPageId = harness.pluginPages.getPageIdForExtension("external-schema-ext")!;
+    const externalPageId = must(harness.pluginPages.getPageIdForExtension("external-schema-ext"));
     expect(harness.shell.navigateToPage(externalPageId)).toBe(true);
     expect(harness.shell.activePageId).toBe(externalPageId);
 
@@ -591,24 +606,30 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
       },
     ]);
 
-    const schemaPageId = harness.pluginPages.getPageIdForExtension("schema-theme")!;
+    const schemaPageId = must(harness.pluginPages.getPageIdForExtension("schema-theme"));
     harness.shell.openSettings(undefined, schemaPageId);
 
-    const boolInput = harness
-      .contentRoot()
-      .querySelector<HTMLInputElement>('input[data-setting-key="enabledBlur"]')!;
-    const textInput = harness
-      .contentRoot()
-      .querySelector<HTMLInputElement>('input[data-setting-key="wallpaperUrl"]')!;
-    const numberInput = harness
-      .contentRoot()
-      .querySelector<HTMLInputElement>('input[data-setting-key="refreshInterval"]')!;
-    const rangeInput = harness
-      .contentRoot()
-      .querySelector<HTMLInputElement>('input[data-setting-key="opacity"]')!;
-    const selectInput = harness
-      .contentRoot()
-      .querySelector<HTMLSelectElement>('select[data-setting-key="preset"]')!;
+    const boolInput = must(
+      harness
+        .contentRoot()
+        .querySelector<HTMLInputElement>('input[data-setting-key="enabledBlur"]'),
+    );
+    const textInput = must(
+      harness
+        .contentRoot()
+        .querySelector<HTMLInputElement>('input[data-setting-key="wallpaperUrl"]'),
+    );
+    const numberInput = must(
+      harness
+        .contentRoot()
+        .querySelector<HTMLInputElement>('input[data-setting-key="refreshInterval"]'),
+    );
+    const rangeInput = must(
+      harness.contentRoot().querySelector<HTMLInputElement>('input[data-setting-key="opacity"]'),
+    );
+    const selectInput = must(
+      harness.contentRoot().querySelector<HTMLSelectElement>('select[data-setting-key="preset"]'),
+    );
 
     // Before initial settings/get resolves, all controls stay disabled and edits cannot overwrite disk.
     expect(boolInput.disabled).toBe(true);

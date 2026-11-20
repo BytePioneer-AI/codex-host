@@ -310,6 +310,49 @@ describe("AppServerHost output failure", () => {
     }
   });
 
+  it("resumes the native Session for the next Turn after a successful Turn and EOF", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const first = await startPiTurn(fixture, threadId);
+      const { adapter } = fixture;
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      session.succeedTurn();
+      expect(
+        await fixture.collector.waitFor((msg) => turnEvent(msg, "turn/completed", first)),
+      ).toMatchObject({ params: { turn: { status: "completed" } } });
+      await session.close();
+
+      const restored = new FakeHarnessSession(
+        adapter.harnessId,
+        adapter.catalog,
+        undefined,
+        session.initialState.nativeRef,
+        session.persistedSnapshot(),
+        true,
+        session.cwd,
+      );
+      const open = vi.spyOn(adapter, "open").mockResolvedValueOnce({ ok: true, value: restored });
+      const staleExecute = vi.spyOn(session, "execute");
+      const next = await startPiTurn(fixture, threadId, 3);
+      expect(open).toHaveBeenCalledOnce();
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "resume",
+          nativeRef: session.initialState.nativeRef,
+        }),
+      );
+      expect(staleExecute).not.toHaveBeenCalled();
+      restored.succeedTurn();
+      expect(
+        await fixture.collector.waitFor((msg) => turnEvent(msg, "turn/completed", next)),
+      ).toMatchObject({ params: { turn: { status: "completed" } } });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   const endings = ["active EOF", "active error", "settled EOF"] as const;
   it.each(endings)("retires running Subagents after parent output ends (%s)", async (ending) => {
     const permissionModes = harnessPermissionModeCatalogSchema.parse({

@@ -6111,6 +6111,9 @@ export class AppServerHost {
           this.#projectHarnessOutput(thread, output),
         );
       }
+      // Even an idle Session cannot deliver the next Turn's events after EOF.
+      thread.sessionUnavailable = true;
+      thread.stateObserver.fault(new Error("External Harness output ended"));
     } catch (error) {
       this.#externalRuntime.idleRelease.outputFailed(thread);
       this.#diagnose(

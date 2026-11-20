@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { JsonObject } from "@codexhost/protocol-core";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import {
@@ -247,6 +247,60 @@ describe("AppServerHost background terminals", () => {
         state: "busy",
         reason: "background",
       });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("allows a parent follow-up while a subagent remains in the background", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = await startPiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const child = {
+        subagentId: "child",
+        nativeSubagentId: "native-child",
+        description: "Background child",
+        role: "worker",
+        background: true,
+        status: "running" as const,
+      };
+      const itemId = session.startSubagentDelegation(child);
+      await fixture.collector.waitFor((message) => message.method === "thread/started");
+      session.replaceSubagents(itemId, [{ ...child, status: "completed" }]);
+      session.completeItem(itemId, { status: "succeeded" });
+      Object.assign(session, { hasBackgroundWork: () => true });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      const followUp = await startPiTurn(fixture, threadId, 3);
+      expect(followUp).not.toBe(turnId);
+      writeRequest(fixture.desktopInput, {
+        id: 4,
+        method: "thread/queue/add",
+        params: { threadId, input: [{ type: "text", text: "queued after child" }] },
+      });
+      await fixture.collector.waitFor((message) => requestId(message, 4));
+      const previousStarts = fixture.collector.messages.filter(
+        (message) => message.method === "turn/started",
+      ).length;
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", followUp));
+      await vi.waitFor(
+        () =>
+          expect(
+            fixture.collector.messages.filter((message) => message.method === "turn/started"),
+          ).toHaveLength(previousStarts + 1),
+        { timeout: 2_000 },
+      );
+      const queuedStart = fixture.collector.messages
+        .filter((message) => message.method === "turn/started")
+        .at(-1);
+      if (!queuedStart) throw new Error("Queued Turn did not start");
+      const queuedTurnId = ((queuedStart.params as JsonObject).turn as JsonObject).id as string;
+      expect(queuedTurnId).not.toBe(followUp);
     } finally {
       await stopFixture(fixture);
     }

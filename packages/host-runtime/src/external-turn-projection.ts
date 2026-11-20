@@ -7,8 +7,8 @@ import {
 } from "@codexhost/protocol-core";
 import {
   THREAD_MANUAL_COMPACTION_STARTED_METHOD,
-  type HostInteractionId,
   type HostItemId,
+  type HostInteractionId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 
@@ -72,8 +72,13 @@ export interface ExternalTurnProjectionHost {
   ): Promise<Error | null>;
   resolveDesktopApproval(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
   resolveDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
-  retireSharedQuestions(thread: ExternalThread, turnId: HostTurnId): void;
+  retireSharedQuestions(
+    thread: ExternalThread,
+    turnId: HostTurnId,
+    hasOpenDetachedTool: (itemId?: HostItemId) => boolean,
+  ): void;
   setThreadStatus(thread: ExternalThread, status: ExternalThreadStatus): Promise<void>;
+  refreshExternalThreadActivity(thread: ExternalThread): Promise<void>;
   forgetQueuedTurnStart(threadId: string): void;
   signalActiveWorkChanged(): void;
   hasRunningSubagents(parentThreadId: string): boolean;
@@ -133,9 +138,9 @@ export class ExternalTurnProjection {
       event.type === "interaction.closed" &&
       thread.ignoredInteractionIds.delete(event.interactionId)
     ) {
+      await this.#host.refreshExternalThreadActivity(thread);
       return;
     }
-    if (event.type === "turn.completed") this.#host.retireSharedQuestions(thread, event.turnId);
     if (event.type === "interaction.closed") {
       await this.#host.resolveDesktopApproval(event.interactionId, thread);
       await this.#host.resolveDesktopQuestion(event.interactionId, thread);
@@ -174,6 +179,14 @@ export class ExternalTurnProjection {
         };
       }
     }
+    if (event.type === "turn.completed")
+      this.#host.retireSharedQuestions(
+        thread,
+        event.turnId,
+        event.outcome.status === "succeeded"
+          ? (itemId) => projection.projector.hasOpenDetachedTool(itemId)
+          : () => false,
+      );
     const result = projection.projector.project(event as ProjectableHostEvent);
     if (
       event.type === "item.background.started" ||
@@ -267,7 +280,7 @@ export class ExternalTurnProjection {
     if (event.type === "turn.completed") {
       await this.#host.setThreadStatus(
         thread,
-        this.#host.hasRunningSubagents(thread.id)
+        this.#host.hasRunningSubagents(thread.id) || thread.session.hasBackgroundWork?.()
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
       );
@@ -283,6 +296,8 @@ export class ExternalTurnProjection {
         }
       }
     }
+    if (event.type === "item.completed" || event.type === "interaction.closed")
+      await this.#host.refreshExternalThreadActivity(thread);
   }
 
   /** Keep only Turn projections that can still receive output: the active one,

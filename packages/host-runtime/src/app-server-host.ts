@@ -1240,8 +1240,10 @@ export class AppServerHost {
         this.#resolveDesktopApproval(interactionId, thread),
       resolveDesktopQuestion: (interactionId, thread) =>
         this.#resolveDesktopQuestion(interactionId, thread),
-      retireSharedQuestions: (thread, turnId) => this.#retireSharedQuestions(thread, turnId),
+      retireSharedQuestions: (thread, turnId, hasOpenDetachedTool) =>
+        this.#retireSharedQuestions(thread, turnId, hasOpenDetachedTool),
       setThreadStatus: (thread, status) => this.#setThreadStatus(thread, status),
+      refreshExternalThreadActivity: (thread) => this.#refreshExternalThreadActivity(thread),
       forgetQueuedTurnStart: (threadId) => this.#queuedTurnStarts.delete(threadId),
       signalActiveWorkChanged: () => this.#signalActiveWorkChanged(),
       hasRunningSubagents: (parentThreadId) => this.#hasRunningSubagents(parentThreadId),
@@ -6409,7 +6411,7 @@ export class AppServerHost {
     }
     if (event.type === "session.faulted") {
       this.#queuedTurnStarts.delete(thread.id);
-      this.#retireSharedQuestions(thread);
+      this.#retireSharedQuestions(thread, undefined, () => false);
       this.#externalSteering.fault(thread.id, new Error(event.error.message));
       thread.stateObserver.fault(new Error(event.error.message));
       this.#externalRuntime.markSessionUnavailable(thread);
@@ -6769,14 +6771,25 @@ export class AppServerHost {
     return requestId;
   }
 
-  #retireSharedQuestions(thread: ExternalThread, turnId?: HostTurnId): void {
+  #retireSharedQuestions(
+    thread: ExternalThread,
+    turnId: HostTurnId | undefined,
+    hasOpenDetachedTool: (itemId?: HostItemId) => boolean,
+  ): void {
     for (const pending of [...this.#pendingDesktopQuestions.values()]) {
       if (
         pending.shared &&
         pending.thread === thread &&
         (turnId === undefined || pending.interaction.turnId === turnId)
-      )
+      ) {
+        if (
+          turnId !== undefined &&
+          pending.interaction.itemId !== undefined &&
+          hasOpenDetachedTool(pending.interaction.itemId)
+        )
+          continue;
         this.#retireDesktopQuestion(pending.interaction.interactionId, thread);
+      }
     }
   }
 
@@ -6796,7 +6809,6 @@ export class AppServerHost {
         (pending) =>
           pending.shared &&
           pending.thread === thread &&
-          pending.interaction.turnId === thread?.activeTurnId &&
           (!Number.isFinite(Date.parse(pending.interaction.expiresAt ?? "")) ||
             Date.parse(pending.interaction.expiresAt ?? "") > Date.now()),
       );
@@ -7097,6 +7109,15 @@ export class AppServerHost {
       emittedAtMs: Date.now(),
       params: { threadId: thread.id, status },
     });
+  }
+
+  async #refreshExternalThreadActivity(thread: ExternalThread): Promise<void> {
+    const busy = this.#externalThreadBusy(thread) || this.#hasRunningSubagents(thread.id);
+    await this.#setThreadStatus(
+      thread,
+      busy ? { type: "active", activeFlags: [] } : { type: "idle" },
+    );
+    if (!busy) void this.#startNextQueuedExternalTurn(thread);
   }
 
   #latestCompletedTurnId(thread: ExternalThread): HostTurnId | null {

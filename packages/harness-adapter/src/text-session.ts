@@ -561,7 +561,7 @@ export interface ItemCompletedEvent {
 }
 
 /**
- * The Item keeps running after its Turn completes (a native background command).
+ * A native command or tool keeps running or awaiting input after its Turn completes.
  * It settles later with `item.updated` / `item.completed` on the same Turn.
  */
 export interface ItemDetachedEvent {

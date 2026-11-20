@@ -30,6 +30,7 @@ import {
   type AntigravityOpenAcpSessionInput,
   type AntigravityPromptInputPart,
   type AntigravityPromptResult,
+  type AntigravitySessionInteractionHandler,
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
@@ -90,6 +91,7 @@ class FakeTransport implements AntigravityAcpTransportLike {
     return this.options.skipPermissions === true;
   }
   eventHandler: AntigravitySessionEventHandler | null = null;
+  interactionHandler: AntigravitySessionInteractionHandler | null = null;
   queuedSessionEvents: AntigravityAcpEvent[] = [];
   handler?: AntigravityActivePromptHandler;
   parts?: readonly AntigravityPromptInputPart[];
@@ -103,6 +105,9 @@ class FakeTransport implements AntigravityAcpTransportLike {
   setSessionEventHandler(handler: AntigravitySessionEventHandler | null) {
     this.eventHandler = handler;
     if (handler) for (const event of this.queuedSessionEvents.splice(0)) handler(event);
+  }
+  setSessionInteractionHandler(handler: AntigravitySessionInteractionHandler | null) {
+    this.interactionHandler = handler;
   }
   openSession = vi.fn(async (input: AntigravityOpenAcpSessionInput) => {
     this.sessionId = input.sessionId ?? randomUUID();
@@ -1156,6 +1161,87 @@ describe("ACP interaction round trips", () => {
         response: { type: "approval", actionId: "allow" },
       }),
     ).toMatchObject({ ok: false });
+  });
+
+  it("keeps a completed Turn owner for a later permission callback", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 10" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({ type: "item.detached", turnId: "t1" }),
+    );
+
+    const reply = transport.interactionHandler?.onPermission({
+      sessionId: required(transport.sessionId),
+      toolCall: { toolCallId: "background-tool", name: "run_command", kind: "execute" },
+      options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+    });
+    await vi.waitFor(() =>
+      expect(outputs.some((output) => output.kind === "interaction")).toBe(true),
+    );
+    const interaction = required(outputs.find((output) => output.kind === "interaction"));
+    if (interaction.kind !== "interaction") throw new Error("Missing interaction");
+    expect(
+      await session.execute({
+        type: "interaction.respond",
+        interactionId: interaction.interaction.interactionId,
+        response: { type: "approval", actionId: "allow" },
+      }),
+    ).toMatchObject({ ok: true });
+    await expect(reply).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow" },
+    });
+    expect(session.hasBackgroundWork?.()).toBe(true);
+  });
+
+  it("projects a detached command update and releases its known tool owner", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-command",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(session.hasBackgroundWork?.()).toBe(true);
+
+    transport.eventHandler?.({
+      type: "tool.update",
+      toolCallId: "background-command",
+      status: "completed",
+      rawOutput: "done",
+    });
+    await vi.waitFor(() =>
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: expect.objectContaining({
+            item: expect.objectContaining({ type: "commandExecution" }),
+          }),
+        }),
+      ),
+    );
+    expect(session.hasBackgroundWork?.()).toBe(false);
   });
 });
 

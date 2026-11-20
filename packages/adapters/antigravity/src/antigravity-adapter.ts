@@ -278,6 +278,7 @@ interface ActiveTurn {
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
   tracker?: AntigravityToolTracker;
+  detachedToolCallIds: Set<string>;
   textItem?:
     | {
         type: "agentMessage" | "reasoning";
@@ -287,6 +288,8 @@ interface ActiveTurn {
     | undefined;
 }
 interface PendingInteraction {
+  owner: ActiveTurn;
+  toolCallId?: string;
   interaction: HostInteraction;
   respond(
     command: InteractionRespondCommand,
@@ -327,6 +330,7 @@ export class AntigravitySession implements HarnessSession {
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   #turnCount = 0;
   #active: ActiveTurn | undefined;
+  #toolOwners = new Map<string, ActiveTurn>();
   #lastCompletedTurnId: HostTurnId | undefined;
   #background: BackgroundEpisode | undefined;
   #postPromptBackground: Array<{ type: "agentMessage" | "reasoning"; text: string }> = [];
@@ -367,10 +371,21 @@ export class AntigravitySession implements HarnessSession {
     return this.#state.nativeRef;
   }
   get isActive(): boolean {
-    return !!this.#active || !!this.#opening || this.#configuring || this.#subagents.running;
+    return (
+      !!this.#active ||
+      !!this.#opening ||
+      this.#configuring ||
+      this.#subagents.running ||
+      this.#pending.size > 0 ||
+      [...this.#toolOwners.values()].some((turn) => turn.detachedToolCallIds.size > 0)
+    );
   }
   hasBackgroundWork(): boolean {
-    return this.#subagents.running;
+    return (
+      this.#subagents.running ||
+      this.#pending.size > 0 ||
+      [...this.#toolOwners.values()].some((turn) => turn.detachedToolCallIds.size > 0)
+    );
   }
   reserveHistoryOperation(): (() => void) | null {
     if (this.isActive || this.#historyOperation || this.#closed || this.#faulted) return null;
@@ -462,6 +477,10 @@ export class AntigravitySession implements HarnessSession {
       transport.setSessionEventHandler((event) => {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
+      });
+      transport.setSessionInteractionHandler({
+        onPermission: (request) => this.#sessionPermission(request),
+        onElicitation: (request) => this.#sessionQuestion(request),
       });
       if (this.#requested.model) {
         const applied = await this.#setModelConfig(
@@ -636,6 +655,11 @@ export class AntigravitySession implements HarnessSession {
     this.#applyConfig(confirmed);
   }
   #sessionEvent(event: AntigravityAcpEvent): void {
+    if (event.type === "tool.call" || event.type === "tool.update") {
+      const turn = this.#toolOwners.get(event.toolCallId);
+      if (turn?.detachedToolCallIds.has(event.toolCallId)) this.#handleToolEvent(turn, event);
+      return;
+    }
     if (event.type === "agent.text" || event.type === "agent.thought") {
       this.#appendBackgroundText(
         event.type === "agent.text" ? "agentMessage" : "reasoning",
@@ -793,7 +817,7 @@ export class AntigravitySession implements HarnessSession {
             return err("invalidRequest", "Turn is not active");
           if (!turn.cancelled) {
             turn.cancelled = true;
-            this.#closeInteractions("cancelled");
+            this.#closeInteractions("cancelled", turn);
             try {
               if (turn.promptPhase === "submitted") await this.#transport?.cancel();
             } catch (error) {
@@ -835,6 +859,7 @@ export class AntigravitySession implements HarnessSession {
         cancelled: false,
         ended: false,
         promptPhase: "notSubmitted",
+        detachedToolCallIds: new Set(),
       };
       this.#active = turn;
       // A successor prompt ends the idle-output window of the previous Turn
@@ -911,6 +936,7 @@ export class AntigravitySession implements HarnessSession {
           };
           this.#settleBackground({ status: "succeeded" });
           old.setSessionEventHandler(null);
+          old.setSessionInteractionHandler(null);
           await old.close();
           this.#transport = undefined;
           try {
@@ -970,7 +996,7 @@ export class AntigravitySession implements HarnessSession {
             : {}),
         },
         emit: (event) => {
-          if (this.#isCurrent(turn)) this.#emit(event);
+          if (this.#isCurrent(turn) || turn.detachedToolCallIds.size > 0) this.#emit(event);
         },
         onSubagentSpawned: (id, item) => this.#subagents.track(id, item),
       });
@@ -994,17 +1020,29 @@ export class AntigravitySession implements HarnessSession {
               event.text,
             );
           } else if (event.type === "tool.call" || event.type === "tool.update") {
+            const owner = this.#toolOwners.get(event.toolCallId);
+            if (owner && owner !== turn) {
+              if (event.type === "tool.update") this.#handleToolEvent(owner, event);
+              // A repeated tool.call cannot claim an existing owner's ID.
+              return;
+            }
             turn.hasToolCalls = true;
             turn.firstOutputAtMs ??= Date.now();
             this.#completeText(turn, { status: "succeeded" });
-            turn.tracker?.handleToolEvent(event);
+            this.#handleToolEvent(turn, event);
           } else this.#sessionEvent(event);
         },
         onPermission: (request) => {
+          const owner = this.#toolOwners.get(request.toolCall.toolCallId);
+          if (owner && owner !== turn) return this.#permission(owner, request);
           turn.hasToolCalls = true;
           return this.#permission(turn, request);
         },
         onElicitation: (request) => {
+          if ("toolCallId" in request && typeof request.toolCallId === "string") {
+            const owner = this.#toolOwners.get(request.toolCallId);
+            if (owner && owner !== turn) return this.#question(owner, request);
+          }
           turn.hasToolCalls = true;
           return this.#question(turn, request);
         },
@@ -1097,6 +1135,24 @@ export class AntigravitySession implements HarnessSession {
   #isCurrent(turn: ActiveTurn): boolean {
     return this.#active === turn && !turn.ended;
   }
+  #handleToolEvent(
+    turn: ActiveTurn,
+    event: Extract<AntigravityAcpEvent, { type: "tool.call" | "tool.update" }>,
+  ): void {
+    if (
+      !event.toolCallId ||
+      !turn.tracker ||
+      (turn.ended && !turn.detachedToolCallIds.has(event.toolCallId))
+    )
+      return;
+    this.#toolOwners.set(event.toolCallId, turn);
+    turn.hasToolCalls = true;
+    turn.tracker.handleToolEvent(event);
+    if (event.status === "completed" || event.status === "failed") {
+      turn.detachedToolCallIds.delete(event.toolCallId);
+      this.#toolOwners.delete(event.toolCallId);
+    }
+  }
   #appendText(turn: ActiveTurn, type: "agentMessage" | "reasoning", text: string): void {
     if (!text) return;
     if (turn.textItem?.type !== type) this.#completeText(turn, { status: "succeeded" });
@@ -1184,9 +1240,22 @@ export class AntigravitySession implements HarnessSession {
   }
   #finish(turn: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (!this.#isCurrent(turn)) return;
-    this.#closeInteractions("cancelled");
     this.#completeText(turn, outcome);
+    const pendingToolCallIds = new Set(
+      [...this.#pending.values()]
+        .filter((pending) => pending.owner === turn && pending.toolCallId !== undefined)
+        .map((pending) => pending.toolCallId as string),
+    );
+    turn.detachedToolCallIds =
+      outcome.status === "succeeded"
+        ? (turn.tracker?.detachPending(pendingToolCallIds) ?? new Set())
+        : new Set();
+    this.#closeInteractions("cancelled", turn, outcome.status === "succeeded");
     turn.tracker?.finishPending(outcome);
+    for (const [toolCallId, owner] of this.#toolOwners) {
+      if (owner === turn && !turn.detachedToolCallIds.has(toolCallId))
+        this.#toolOwners.delete(toolCallId);
+    }
     turn.ended = true;
     this.#active = undefined;
     // Only a Turn present in native history can own later idle output.
@@ -1214,11 +1283,13 @@ export class AntigravitySession implements HarnessSession {
     request: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
     const ref = this.nativeRef;
+    const toolCallId = request.toolCall.toolCallId;
     if (
-      !this.#isCurrent(turn) ||
       turn.cancelled ||
       !ref ||
-      request.sessionId !== ref.nativeSessionId
+      request.sessionId !== ref.nativeSessionId ||
+      (!this.#isCurrent(turn) &&
+        (typeof toolCallId !== "string" || !turn.detachedToolCallIds.has(toolCallId)))
     )
       return Promise.resolve({ outcome: { outcome: "cancelled" } });
     const interactionId = hostInteractionIdSchema.parse(randomUUID());
@@ -1231,6 +1302,8 @@ export class AntigravitySession implements HarnessSession {
     });
     return new Promise((resolve) => {
       this.#pending.set(interactionId, {
+        owner: turn,
+        toolCallId,
         interaction: projected.interaction,
         cancelValue: { outcome: { outcome: "cancelled" } },
         resolve: (value) => resolve(value as RequestPermissionResponse),
@@ -1246,23 +1319,31 @@ export class AntigravitySession implements HarnessSession {
       this.#channel.emit({ kind: "interaction", interaction: projected.interaction });
     });
   }
+  #sessionPermission(request: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    const toolCallId = request.toolCall.toolCallId;
+    const turn = typeof toolCallId === "string" ? this.#toolOwners.get(toolCallId) : undefined;
+    return turn
+      ? this.#permission(turn, request)
+      : Promise.resolve({ outcome: { outcome: "cancelled" } });
+  }
   #question(
     turn: ActiveTurn,
     request: CreateElicitationRequest,
   ): Promise<CreateElicitationResponse> {
     const ref = this.nativeRef;
-    if (
-      !this.#isCurrent(turn) ||
-      turn.cancelled ||
-      !ref ||
-      ("sessionId" in request && request.sessionId !== ref.nativeSessionId)
-    )
-      return Promise.resolve({ action: "cancel" });
-    const interactionId = hostInteractionIdSchema.parse(randomUUID());
     const toolCallId =
       "toolCallId" in request && typeof request.toolCallId === "string"
         ? request.toolCallId
         : undefined;
+    if (
+      turn.cancelled ||
+      !ref ||
+      ("sessionId" in request && request.sessionId !== ref.nativeSessionId) ||
+      (!this.#isCurrent(turn) &&
+        (toolCallId === undefined || !turn.detachedToolCallIds.has(toolCallId)))
+    )
+      return Promise.resolve({ action: "cancel" });
+    const interactionId = hostInteractionIdSchema.parse(randomUUID());
     const itemId = toolCallId ? turn.tracker?.activeToolItemId(toolCallId) : undefined;
     const rawInput = toolCallId ? turn.tracker?.rawToolInput(toolCallId) : undefined;
     const rawQuestions =
@@ -1279,6 +1360,8 @@ export class AntigravitySession implements HarnessSession {
     });
     return new Promise((resolve) => {
       this.#pending.set(interactionId, {
+        owner: turn,
+        ...(toolCallId ? { toolCallId } : {}),
         interaction: projected.interaction,
         cancelValue: { action: "cancel" },
         resolve: (value) => resolve(value as CreateElicitationResponse),
@@ -1294,10 +1377,18 @@ export class AntigravitySession implements HarnessSession {
       this.#channel.emit({ kind: "interaction", interaction: projected.interaction });
     });
   }
+  #sessionQuestion(request: CreateElicitationRequest): Promise<CreateElicitationResponse> {
+    const toolCallId =
+      "toolCallId" in request && typeof request.toolCallId === "string"
+        ? request.toolCallId
+        : undefined;
+    const turn = toolCallId ? this.#toolOwners.get(toolCallId) : undefined;
+    return turn ? this.#question(turn, request) : Promise.resolve({ action: "cancel" });
+  }
   #respond(command: InteractionRespondCommand): HarnessResult<InteractionRespondAccepted> {
     const pending = this.#pending.get(command.interactionId);
-    if (!pending || !this.#active || this.#active.cancelled)
-      return err("invalidRequest", "Interaction is no longer active");
+    if (!pending || pending.owner.cancelled || this.#closed || this.#faulted)
+      return err("invalidState", "Interaction is no longer active");
     const interaction = pending.interaction;
     let error: HarnessError | null;
     if (interaction.type === "approval" && command.response.type === "approval")
@@ -1317,8 +1408,16 @@ export class AntigravitySession implements HarnessSession {
     });
     return ok({ accepted: true });
   }
-  #closeInteractions(reason: "cancelled"): void {
+  #closeInteractions(reason: "cancelled", owner?: ActiveTurn, preserveDetached = false): void {
     for (const [id, pending] of this.#pending) {
+      if (owner && pending.owner !== owner) continue;
+      if (
+        preserveDetached &&
+        pending.toolCallId !== undefined &&
+        pending.owner.detachedToolCallIds.has(pending.toolCallId)
+      )
+        continue;
+      this.#pending.delete(id);
       pending.resolve(pending.cancelValue);
       this.#emit({
         type: "interaction.closed",
@@ -1327,7 +1426,15 @@ export class AntigravitySession implements HarnessSession {
         reason,
       });
     }
-    this.#pending.clear();
+  }
+  #settleDetachedOwners(outcome: HostItemOutcome): void {
+    const owners = new Set(this.#toolOwners.values());
+    for (const owner of owners) {
+      if (owner.detachedToolCallIds.size === 0) continue;
+      owner.tracker?.finishDetached(outcome);
+      for (const toolCallId of owner.detachedToolCallIds) this.#toolOwners.delete(toolCallId);
+      owner.detachedToolCallIds.clear();
+    }
   }
   handleTransportFault(error: AntigravityTransportError): void {
     if (this.#closed || this.#faulted) return;
@@ -1337,6 +1444,7 @@ export class AntigravitySession implements HarnessSession {
     this.#closeInteractions("cancelled");
     if (this.#active)
       this.#finish(this.#active, { status: "failed", error: normalizeAntigravityError(error) });
+    this.#settleDetachedOwners({ status: "failed", error: normalizeAntigravityError(error) });
     // Delivered idle output is real work; settle it before the fault closes
     // the stream so it is not swept to failed.
     this.#settleBackground({ status: "succeeded" });
@@ -1360,8 +1468,10 @@ export class AntigravitySession implements HarnessSession {
     this.#settleBackground({ status: "succeeded" });
     const active = this.#active;
     if (active) this.#finish(active, { status: "cancelled", reason: "Session closed" });
+    this.#settleDetachedOwners({ status: "cancelled", reason: "Session closed" });
     this.#channel.end();
     this.#transport?.setSessionEventHandler(null);
+    this.#transport?.setSessionInteractionHandler(null);
     if (active) await this.#transport?.cancel().catch(() => undefined);
     await Promise.all([this.#transport?.close(), this.#subagents.close()]);
     this.#options.onClosed(this);

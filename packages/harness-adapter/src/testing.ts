@@ -546,12 +546,12 @@ export class FakeHarnessSession implements HarnessSession {
     return item.itemId;
   }
 
-  /** The command keeps running after its Turn; native history records its start result. */
+  /** A command or tool keeps running after its Turn; native history records its start result. */
   detachItem(itemId: HostItemId): void {
     const active = this.#requireActive();
     const item = active.items.get(itemId);
-    if (item?.type !== "commandExecution") {
-      throw new Error("Fake Harness Item is not a Command Execution");
+    if (item?.type !== "commandExecution" && item?.type !== "toolExecution") {
+      throw new Error("Fake Harness Item is not a detachable command or tool");
     }
     active.items.delete(itemId);
     active.completedItems.push({ item, outcome: { status: "succeeded" } });

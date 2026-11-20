@@ -880,6 +880,7 @@ export class CodexTurnProjector {
   readonly #threadId: string;
   readonly #turnId: HostTurnId;
   #completed = false;
+  #terminalOutcome: TurnCompletedEvent["outcome"] | null = null;
   #started = false;
   /** Items allowed to outlive the Turn terminal; they settle later on this Turn. */
   readonly #detached = new Set<HostItemId>();
@@ -912,7 +913,28 @@ export class CodexTurnProjector {
 
   /** A completed Turn still owns detached Items that have not settled. */
   get hasOpenDetachedItems(): boolean {
-    return [...this.#detached].some((itemId) => this.#items.get(itemId)?.outcome === null);
+    return (
+      [...this.#detached].some((itemId) => this.#items.get(itemId)?.outcome === null) ||
+      this.#interactions.size > 0
+    );
+  }
+
+  /** True only for a registered, unfinished detached command/tool owner. */
+  hasOpenDetachedTool(itemId?: HostItemId): boolean {
+    const syntheticItemIds = new Set(
+      [...this.#interactions.values()].flatMap((interaction) =>
+        interaction.type === "question" && interaction.syntheticItem ? [interaction.itemId] : [],
+      ),
+    );
+    return [...this.#detached].some((detachedId) => {
+      if (itemId !== undefined && detachedId !== itemId) return false;
+      const projected = this.#items.get(detachedId);
+      return (
+        projected?.outcome === null &&
+        (projected.item.type === "commandExecution" || projected.item.type === "toolExecution") &&
+        !syntheticItemIds.has(detachedId)
+      );
+    });
   }
 
   /**
@@ -1061,7 +1083,8 @@ export class CodexTurnProjector {
       !(
         event.type === "item.background.started" ||
         (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
-        (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId))
+        (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId)) ||
+        (event.type === "interaction.closed" && this.#interactions.has(event.interactionId))
       )
     ) {
       throw new Error("Host output follows the Turn terminal event");
@@ -1078,8 +1101,10 @@ export class CodexTurnProjector {
           return started;
         }
       case "item.detached":
-        if (this.#activeItem(event.itemId).item.type !== "commandExecution") {
-          throw new Error("Only a command Item can outlive its Turn");
+        if (
+          !["commandExecution", "toolExecution"].includes(this.#activeItem(event.itemId).item.type)
+        ) {
+          throw new Error("Only a command or tool Item can outlive its Turn");
         }
         this.#detached.add(event.itemId);
         return { messages: [] };
@@ -1106,7 +1131,7 @@ export class CodexTurnProjector {
       throw new Error("Host Interaction references another Turn");
     }
     this.#requireStarted();
-    if (this.#completed) throw new Error("Host Interaction follows the Turn terminal event");
+    this.#requireTerminalInteraction();
     if (this.#interactions.has(interaction.interactionId)) {
       throw new Error("Host Interaction opened more than once");
     }
@@ -1128,7 +1153,7 @@ export class CodexTurnProjector {
       throw new Error("Host Interaction references another Turn");
     }
     this.#requireStarted();
-    if (this.#completed) throw new Error("Host Interaction follows the Turn terminal event");
+    this.#requireTerminalInteraction(interaction.itemId);
     if (this.#interactions.has(interaction.interactionId)) {
       throw new Error("Host Interaction opened more than once");
     }
@@ -1160,6 +1185,7 @@ export class CodexTurnProjector {
         ...this.#startItem({ type: "item.started", turnId: this.#turnId, item }, emittedAtMs)
           .messages,
       );
+      if (this.#completed) this.#detached.add(itemId);
     }
     this.#interactions.set(interaction.interactionId, {
       type: "question",
@@ -1473,14 +1499,20 @@ export class CodexTurnProjector {
 
   #completeTurn(event: TurnCompletedEvent, completedAtMs: number): CodexTurnProjection {
     this.#requireStarted();
-    if (this.#interactions.size > 0) {
-      throw new Error("Host Turn completed with pending Interactions");
+    for (const interaction of this.#interactions.values()) {
+      const hasOwner =
+        interaction.type === "question"
+          ? !interaction.syntheticItem && this.hasOpenDetachedTool(interaction.itemId)
+          : this.hasOpenDetachedTool();
+      if (event.outcome.status !== "succeeded" || !hasOwner)
+        throw new Error("Host Turn completed with pending Interactions");
     }
     const active = [...this.#items.values()].filter(
       ({ item, outcome }) => outcome === null && !this.#detached.has(item.itemId),
     );
     if (active.length > 0) throw new Error("Host Turn completed with active Items");
     this.#completed = true;
+    this.#terminalOutcome = event.outcome;
     const completedAt = Math.floor(completedAtMs / 1000);
     const error = turnError(event.outcome);
     const lastWireItemId = this.#wireItemOrder.at(-1);
@@ -1774,6 +1806,14 @@ export class CodexTurnProjector {
         },
       },
     ];
+  }
+
+  #requireTerminalInteraction(itemId?: HostItemId): void {
+    if (!this.#completed) return;
+    if (this.#terminalOutcome?.status !== "succeeded")
+      throw new Error("Host Interaction follows a non-successful Turn terminal event");
+    if (!this.hasOpenDetachedTool(itemId))
+      throw new Error("Host Interaction follows the Turn terminal event");
   }
 
   #activeItem(itemId: HostItemId): ProjectedItem {

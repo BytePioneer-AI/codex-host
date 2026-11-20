@@ -1,0 +1,71 @@
+name: Desktop extension registry
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths: [sources.json]
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: node validate-and-build-catalog.mjs --check-only
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - if: always()
+        run: if test -f safety-report.md; then cat safety-report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-report
+          path: safety-report.md
+
+  sync:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency: registry-sync
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: node validate-and-build-catalog.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          STATS_URL: ${{ vars.STATS_URL }}
+      - if: always()
+        run: if test -f safety-report.md; then cat safety-report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-report
+          path: safety-report.md
+      - name: Publish catalog if changed
+        run: |
+          git add -- catalog.json
+          git diff --cached --quiet -- catalog.json && exit 0
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: sync Desktop extensions catalog'
+          git push origin HEAD:main

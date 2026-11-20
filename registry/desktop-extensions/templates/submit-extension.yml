@@ -1,0 +1,12 @@
+name: Submit a Desktop extension
+description: Add a Desktop UI extension to the codexhost catalog.
+title: "[Desktop extension] "
+body:
+  - type: input
+    id: repository
+    attributes:
+      label: GitHub repository URL
+      description: Link to the public repository with a Release ZIP or with manifest.json and the built JavaScript entry on its default branch.
+      placeholder: https://github.com/owner/repository
+    validations:
+      required: true

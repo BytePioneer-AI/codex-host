@@ -210,6 +210,29 @@ describe("source boundary checks", () => {
     ).toEqual([]);
   });
 
+  it.each([
+    ['import type { DesktopExtensionDefine } from "@codexhost/shared-contracts";', true],
+    ['import { status } from "./status.js"; export * from "../tree.js";', true],
+    ['import "node:fs";', false],
+    ['import fs = require("fs");', false],
+    ['export * from "@openai/codex-sdk";', false],
+    ['type T = import("@codexhost/shared-contracts/private").T;', false],
+    ['const tree = import("@codexhost/host-runtime");', false],
+    ["const state = import(moduleName);", false],
+    ['import "/repo/packages/desktop-extensions/sidebar/src/tree.js";', false],
+    ['import "../../../../shared-contracts/src/index.js";', false],
+  ])("checks Desktop extension imports: %s", (sourceText, allowed) => {
+    const violations = findSourceBoundaryViolations({
+      filePath: "/repo/packages/desktop-extensions/sidebar/src/nested/index.ts",
+      packageRoot: "/repo/packages/desktop-extensions",
+      packagesDirectory,
+      sourceText,
+    });
+    if (allowed) expect(violations).toEqual([]);
+    else
+      expect(violations).toEqual([expect.stringContaining("Desktop extensions can only import")]);
+  });
+
   it("allows imports through public Workspace package names", () => {
     const violations = findSourceBoundaryViolations({
       filePath: "/repo/packages/protocol-core/src/index.ts",

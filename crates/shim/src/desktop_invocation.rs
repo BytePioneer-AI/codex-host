@@ -3,8 +3,12 @@
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 use codexhost_platform::ProcessSnapshot;
+#[cfg(any(target_os = "windows", test))]
+use codexhost_platform::node_entrypoint_path;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+use std::ffi::{OsStr, OsString};
 #[cfg(any(target_os = "macos", test))]
-use std::{ffi::OsStr, ffi::OsString, path::Path};
+use std::path::Path;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum DesktopCaller {
@@ -38,7 +42,10 @@ pub(crate) fn classify_desktop_caller(
         else {
             return DesktopCaller::Unknown;
         };
-        if is_helper_descendant(std::process::id(), launcher_id, |id| {
+        let desktop_app_server = has_local_app_server_signature(_arguments)
+            && std::env::var_os(super::INTERNAL_ORIGINATOR_OVERRIDE_ENV).as_deref()
+                == Some(OsStr::new(super::DESKTOP_ORIGINATOR));
+        if is_helper_descendant(std::process::id(), launcher_id, desktop_app_server, |id| {
             codexhost_platform::process_snapshot(id).ok()
         }) {
             DesktopCaller::Helper
@@ -92,7 +99,7 @@ fn macos_desktop_installation(
 /// The Desktop local app-server's stdio builder adds the codex-app-tools override
 /// after its base flags and other config overrides. The startup probe shares the
 /// base flags, and plugin helpers can also run app-server over stdio.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn has_local_app_server_signature(arguments: &[OsString]) -> bool {
     let [config, code_mode, subcommand, analytics, overrides @ ..] = arguments else {
         return false;
@@ -179,14 +186,15 @@ fn classify_macos_caller(
 fn is_helper_descendant(
     shim_id: u32,
     launcher_id: u32,
+    desktop_app_server: bool,
     mut inspect: impl FnMut(u32) -> Option<ProcessSnapshot>,
 ) -> bool {
     let Some(mut child) = inspect(shim_id) else {
         return false;
     };
-    // Windows launch is launcher -> Desktop -> shim. Only a positively observed
-    // deeper descendant is a helper; stale/missing launch metadata keeps the
-    // existing explicit Host/remote invocation behavior. Bound ancestry work.
+    // Desktop 26.1117 can launch its main app-server through an Electron
+    // utility that uses the same ChatGPT.exe image as the Desktop root.
+    let mut same_desktop_image = false;
     for depth in 1..=32 {
         if child.parent_id == 0 || child.parent_id == child.id {
             return false;
@@ -198,7 +206,15 @@ fn is_helper_descendant(
             return false; // Parent PID was reused.
         }
         if parent.id == launcher_id {
-            return depth > 2;
+            return depth > 2 && !(depth == 3 && same_desktop_image);
+        }
+        if depth == 2 && desktop_app_server {
+            same_desktop_image = parent.executable.file_name().is_some_and(|name| {
+                name.eq_ignore_ascii_case(OsStr::new("ChatGPT.exe"))
+                    && node_entrypoint_path(&parent.executable)
+                        .as_os_str()
+                        .eq_ignore_ascii_case(node_entrypoint_path(&child.executable).as_os_str())
+            });
         }
         child = parent;
     }
@@ -329,26 +345,44 @@ mod tests {
 
     #[test]
     fn distinguishes_desktop_from_nested_helpers() {
-        let inspect = |id| (id >= 1).then(|| snapshot(id, id - 1));
-        assert!(!is_helper_descendant(3, 1, inspect));
-        assert!(is_helper_descendant(4, 1, inspect));
-        assert!(is_helper_descendant(5, 1, inspect));
-        assert!(!is_helper_descendant(3, 99, inspect));
+        let inspect = |id| {
+            (id >= 1).then(|| {
+                let mut process = snapshot(id, id - 1);
+                if matches!(id, 2..=4) {
+                    process.executable = "desktop/ChatGPT.exe".into();
+                }
+                process
+            })
+        };
+        assert!(!is_helper_descendant(3, 1, false, inspect));
+        assert!(is_helper_descendant(4, 1, false, inspect));
+        assert!(!is_helper_descendant(4, 1, true, inspect));
+        assert!(is_helper_descendant(5, 1, true, inspect));
+        assert!(!is_helper_descendant(3, 99, false, inspect));
+        assert!(is_helper_descendant(4, 1, true, |id| {
+            let mut process = inspect(id)?;
+            if id == 3 {
+                process.executable = "different/ChatGPT.exe".into();
+            }
+            Some(process)
+        }));
     }
 
     #[test]
     fn rejects_missing_reused_and_unbounded_ancestry() {
-        assert!(!is_helper_descendant(4, 1, |_| None));
-        assert!(!is_helper_descendant(4, 1, |id| {
+        assert!(!is_helper_descendant(4, 1, false, |_| None));
+        assert!(!is_helper_descendant(4, 1, false, |id| {
             let mut value = snapshot(id, id - 1);
             if id == 2 {
                 value.started_at_micros = 99;
             }
             Some(value)
         }));
-        assert!(!is_helper_descendant(4, 1, |id| Some(snapshot(id, id))));
+        assert!(!is_helper_descendant(4, 1, false, |id| Some(snapshot(
+            id, id
+        ))));
         let mut calls = 0;
-        assert!(!is_helper_descendant(100, 1, |id| {
+        assert!(!is_helper_descendant(100, 1, false, |id| {
             calls += 1;
             Some(snapshot(id, id - 1))
         }));

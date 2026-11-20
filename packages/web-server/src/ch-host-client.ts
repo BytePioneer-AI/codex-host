@@ -29,6 +29,8 @@ import { RpcError } from "./transport.ts";
 export interface ChHostClient {
   request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
   projects(threadIds: string[]): Promise<ChProjectSnapshot>;
+  /** Desktop owns native project membership and legacy catalog updates. */
+  removeProject?(projectId: string, path: string): Promise<void>;
   /** Shared Host native sections; returns the confirmed official and External pin order. */
   pins(change?: ChPinChange): Promise<string[]>;
   close(): void;
@@ -237,6 +239,24 @@ export class DesktopChHostClient implements ChHostClient {
     }
   }
 
+  async removeProject(projectId: string, path: string): Promise<void> {
+    const client = await this.connect();
+    const reply = await client.evaluate<{ ok: boolean; error?: string }>(`(async () => {
+      const api = window.__codexhostRendererBindingProbeV1;
+      if (typeof api?.removeLocalProject !== 'function')
+        return {ok:false,error:'Native project removal requires an updated, running codexhost Desktop.'};
+      try {
+        await api.removeLocalProject(${JSON.stringify(projectId)}, ${JSON.stringify(path)});
+        return {ok:true};
+      } catch (error) { return {ok:false,error:String(error?.message ?? error)}; }
+    })()`);
+    if (!reply.ok)
+      throw new RpcError(
+        "workspace/native-delete-failed",
+        reply.error ?? "Native project removal failed.",
+      );
+  }
+
   pins(change?: ChPinChange): Promise<string[]> {
     return requestPins((method, params) => this.request(method, params), change);
   }
@@ -313,6 +333,7 @@ export async function createChHostClient(
       endpoint?.owner === "service"
         ? channel.request<ClientWorkspaceSnapshot>("codexhost/workspace/read", { threadIds: ids })
         : desktop.projects(ids),
+    removeProject: (id, path) => desktop.removeProject(id, path),
     pins: (change) => requestPins((method, params) => channel.request(method, params), change),
     close() {
       channel.close();

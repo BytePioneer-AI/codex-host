@@ -20,6 +20,16 @@ export class FakeChHost implements ChHostClient {
   async projects(): Promise<ChProjectSnapshot> {
     return structuredClone(this.projectSnapshot);
   }
+  async removeProject(projectId: string): Promise<void> {
+    this.projectSnapshot.projects = this.projectSnapshot.projects.filter(
+      (item) => item.id !== projectId,
+    );
+    for (const [id, assigned] of Object.entries(this.projectSnapshot.assignments)) {
+      if (assigned !== projectId) continue;
+      delete this.projectSnapshot.assignments[id];
+      this.projectSnapshot.projectless.push(id);
+    }
+  }
   pinnedIds: string[] = [];
   pinError: string | undefined;
   readonly pinWrites: ChPinChange[] = [];
@@ -343,7 +353,7 @@ export class FakeChHost implements ChHostClient {
 /** Browser acceptance reaches the production Desktop transport through an isolated fake CDP peer. */
 export async function startFakeChDebugger(
   host: FakeChHost,
-  options: { rpc?: boolean; pinServiceAvailable?: boolean } = {},
+  options: { rpc?: boolean; pinServiceAvailable?: boolean; projectRemoval?: boolean } = {},
 ) {
   const server = createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
@@ -393,9 +403,12 @@ export async function startFakeChDebugger(
               },
             };
       const window = {
-        __codexhostRendererBindingProbeV1: options.rpc
-          ? { pinnedThreads: async () => pinService }
-          : {},
+        __codexhostRendererBindingProbeV1: {
+          ...(options.rpc ? { pinnedThreads: async () => pinService } : {}),
+          ...(options.projectRemoval
+            ? { removeLocalProject: (id: string) => host.removeProject(id) }
+            : {}),
+        },
         __codexhostHostRoutingV1: {
           knownHostIds: () => ["local"],
           forHost: () => ({

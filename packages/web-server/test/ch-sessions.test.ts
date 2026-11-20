@@ -652,30 +652,193 @@ it("workspace mirror: migrates legacy project names on Web roots and preserves c
   assert.equal(writes.mock.callCount(), 0, "the migration is idempotent");
 });
 
-it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
+it("workspace deletion: removes the native project and survives sync and Web restart", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-delete-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  const path = join(root, "missing-project-directory");
+  const thread = host.add("thread", path);
+  const history = structuredClone(thread);
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const workspace = workspaces.byPath(path);
+  assert.ok(workspace);
+  // Native ownership is determined by the current project catalog, not origin:
+  // a Web submission may have promoted a mirrored root to origin=web.
+  workspaces.selectReferenceWorkspace(path);
+  const result = await rpc.dispatch("workspace/delete", {
+    args: { request: { workspaceId: workspace.workspaceId } },
+  });
+  assert.ok(result.ok);
+  assert.deepEqual(host.projectSnapshot.projects, []);
+  assert.equal(workspaces.byPath(path), undefined);
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  assert.equal(workspaces.byPath(path), undefined);
+  assert.equal(new Workspaces(data, root).byPath(path), undefined);
+  assert.deepEqual(thread, history, "removal preserves execution cwd and native history");
+  assert.equal(existsSync(path), false, "missing folders are not recreated");
+});
+
+it("workspace deletion: retains the workspace when native removal is unavailable or rejected", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-delete-failure-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  host.projectSnapshot.projects.push({ id: "empty", name: "Empty", rootPaths: [root] });
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const workspace = workspaces.byPath(root);
+  assert.ok(workspace);
+  const before = data.readJson("workspaces.json", {});
+  const request = { args: { request: { workspaceId: workspace.workspaceId } } };
+  const removal = t.mock.method(host, "removeProject", async () => {
+    throw new Error("Native project removal unavailable");
+  });
+  assert.equal((await rpc.dispatch("workspace/delete", request)).ok, false);
+  assert.deepEqual(data.readJson("workspaces.json", {}), before);
+  removal.mock.restore();
+  // An accepted request without a confirmed owner change must not delete Web state.
+  t.mock.method(host, "removeProject", async () => {});
+  assert.equal((await rpc.dispatch("workspace/delete", request)).ok, false);
+  assert.deepEqual(data.readJson("workspaces.json", {}), before);
+  t.mock.restoreAll();
+  assert.ok((await rpc.dispatch("workspace/delete", request)).ok);
+  assert.deepEqual(host.projectSnapshot.projects, [], "empty projects are removed too");
+  assert.equal(existsSync(root), true, "project deletion never removes the folder");
+});
+
+it("workspace deletion: refuses to silently remove sibling folders or overlapping projects", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-delete-scope-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  host.projectSnapshot.projects.push({
+    id: "multi",
+    name: "Multi",
+    rootPaths: [root, join(root, "extra")],
+  });
   const workspaces = new Workspaces(new DataDir(root), root);
-  const extraRoot = join(root, "extra");
-  const projects = [{ name: "Native", rootPaths: [join(root, "first"), extraRoot] }];
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const extra = workspaces.byPath(extraRoot);
-  assert.ok(extra);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const workspace = workspaces.byPath(root)!;
+  const request = { args: { request: { workspaceId: workspace.workspaceId } } };
+  assert.equal((await rpc.dispatch("workspace/delete", request)).ok, false);
+  assert.equal(host.projectSnapshot.projects.length, 1);
+  host.projectSnapshot.projects[0]!.rootPaths = [root];
+  host.projectSnapshot.projects.push({ id: "overlap", name: "Overlap", rootPaths: [root] });
+  assert.equal((await rpc.dispatch("workspace/delete", request)).ok, false);
+  assert.equal(host.projectSnapshot.projects.length, 2);
+});
+
+it("workspace deletion: does not replay an older catalog snapshot after native removal", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-delete-race-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  host.projectSnapshot.projects.push({ id: "empty", name: "Empty", rootPaths: [root] });
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
+  const rpc = new RpcRegistry();
+  const streams = new StreamRegistry();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  assert.ok((await rpc.dispatch("session/list", { args: {} })).ok);
+  const workspace = workspaces.byPath(root)!;
+  const stale = structuredClone(host.projectSnapshot);
+  let release!: () => void;
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  t.mock.method(host, "projects", async () => {
+    if (first) {
+      first = false;
+      started();
+      await held;
+      return stale;
+    }
+    return structuredClone(host.projectSnapshot);
+  });
+  const pending = rpc.dispatch("session/list", { args: {} });
+  await ready;
+  assert.ok(
+    (
+      await rpc.dispatch("workspace/delete", {
+        args: { request: { workspaceId: workspace.workspaceId } },
+      })
+    ).ok,
+  );
+  release();
+  assert.ok((await pending).ok);
+  assert.equal(workspaces.byPath(root), undefined);
+});
+
+it("workspace deletion: removes Web-only rows without invoking native project removal", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-delete-web-only-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const host = new FakeChHost();
+  host.removeProject = async () => {
+    throw new Error("No native project should be removed");
+  };
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const workspace = workspaces.create(root).workspace;
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(() => sessions.close());
   const rpc = new RpcRegistry();
   workspaces.register(rpc, new StreamRegistry());
   assert.ok(
     (
       await rpc.dispatch("workspace/delete", {
-        args: { request: { workspaceId: extra.workspaceId } },
+        args: { request: { workspaceId: workspace.workspaceId } },
       })
     ).ok,
   );
-  assert.equal(workspaces.byPath(extra.path), undefined);
-  workspaces.syncReferencedSessions([], new Map(), new Set(), projects);
-  const recreated = workspaces.byPath(extra.path);
-  assert.ok(recreated);
-  assert.equal(recreated.title, "extra");
-  assert.notEqual(recreated.workspaceId, extra.workspaceId);
+  assert.equal(workspaces.byPath(root), undefined);
+  assert.equal(existsSync(root), true);
+});
+
+it("workspace deletion: uses the Desktop removal bridge and fails closed for older Desktop", async (t) => {
+  const host = new FakeChHost();
+  host.projectSnapshot.projects.push({ id: "project", name: "Project", rootPaths: ["/missing"] });
+  const oldDebugger = await startFakeChDebugger(host);
+  const oldClient = new DesktopChHostClient(oldDebugger.endpoint);
+  const debuggerServer = await startFakeChDebugger(host, { projectRemoval: true });
+  const client = new DesktopChHostClient(debuggerServer.endpoint);
+  t.after(async () => {
+    oldClient.close();
+    client.close();
+    await oldDebugger.close();
+    await debuggerServer.close();
+  });
+  await assert.rejects(oldClient.removeProject("project", "/missing"), /updated, running/);
+  assert.equal(host.projectSnapshot.projects.length, 1);
+  await client.removeProject("project", "/missing");
+  assert.deepEqual(host.projectSnapshot.projects, []);
+  host.removeProject = async () => {
+    throw new Error("Native removal failed");
+  };
+  await assert.rejects(client.removeProject("project", "/missing"), /Native removal failed/);
 });
 
 it("projectRootTitles: falls back to the full path when the basename is empty or conflicts", () => {

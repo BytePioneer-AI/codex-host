@@ -23,6 +23,7 @@ import type { Inspection } from "./harnesses.ts";
 import { nativePermissionView } from "./session-presentation.ts";
 import { projectGroupRoot } from "./ch-project-groups.ts";
 import { projectRootTitles } from "./workspaces.ts";
+import { ChProjectRemoval } from "./ch-project-removal.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { ChThreadHistory } from "./ch-thread-history.ts";
 import { WebThreadStates, type UsageLoad } from "./web-thread-state.ts";
@@ -105,6 +106,7 @@ export class ChSessions {
   private readonly interactions: ChInteractions | undefined;
   private hostOnline = true;
   private hostEpoch: string | undefined;
+  private readonly projectRemoval: ChProjectRemoval;
   constructor(
     private readonly host: ChHostClient,
     private readonly workspaces: Workspaces,
@@ -157,6 +159,8 @@ export class ChSessions {
     });
     this.pins = new ChPinnedThreads(host, workspaces);
     this.tree = new ChThreadTree(host);
+    this.projectRemoval = new ChProjectRemoval(host);
+    workspaces.setProjectRemoval((workspace) => this.projectRemoval.remove(workspace));
     workspaces.setReferenceArchives([]);
     this.interactions = host.realtime
       ? new ChInteractions(host.realtime, events, (id, message) => {
@@ -258,6 +262,7 @@ export class ChSessions {
     archiveChanges: ReadonlyMap<string, boolean>,
     cursor?: string,
   ): Promise<CatalogPage | undefined> {
+    const workspaceRevision = this.projectRemoval.revision;
     const known = new Set(this.rows.keys());
     const [{ page: snapshot }, definitions] = await Promise.all([
       readSessionPage(this.host, timing, includeArchived, cursor, () =>
@@ -324,7 +329,7 @@ export class ChSessions {
     this.threads.replaceHarnesses(ownership);
     this.rows = rows;
     timing.count("visibleRows", rows.size);
-    await this.syncWorkspace(timing, projects);
+    await this.syncWorkspace(timing, projects, workspaceRevision);
     if (this.closed) return;
     // Notifications received during catalog or ancestor reads supersede their membership.
     for (const [id, archived] of archiveChanges) {
@@ -341,10 +346,18 @@ export class ChSessions {
   private async syncWorkspace(
     timing = new SessionListTiming(),
     snapshot?: ChProjectSnapshot,
+    revision = this.projectRemoval.revision,
   ): Promise<void> {
-    const projects =
-      snapshot ??
-      (await timing.measure("projects", () => this.host.projects([...this.rows.keys()])));
+    let projects = snapshot;
+    // Catalog reads may have started before a deletion. Re-read rather than
+    // applying a stale project snapshot after the removal was confirmed.
+    do {
+      if (revision !== this.projectRemoval.revision) projects = undefined;
+      revision = this.projectRemoval.revision;
+      projects ??= await timing.measure("projects", () =>
+        this.host.projects([...this.rows.keys()]),
+      );
+    } while (revision !== this.projectRemoval.revision);
     timing.count("projects", projects.projects.length);
     if (this.closed) return;
     timing.measureSync("workspace_sync", () => {

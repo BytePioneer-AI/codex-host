@@ -297,7 +297,7 @@ function sampleList(
           desktopApi: 1,
           desktop: { script: "desktop.js", style: "desktop.css" },
           slots: ["sidebar.thread-layout", "sidebar.thread-badge"],
-          categories: ["sidebar", "workflow"],
+          categories: ["interface", "workflow"],
         },
       },
       {
@@ -313,7 +313,7 @@ function sampleList(
           desktopApi: 1,
           desktop: { script: "desktop.js" },
           slots: ["sidebar.thread-badge"],
-          categories: ["sidebar"],
+          categories: ["interface"],
         },
       },
       {
@@ -483,7 +483,7 @@ describe("Desktop extensions settings page", () => {
     const treeCategoriesText = descendants(treeCard).find(
       (el) => el.className === "settings-extensions-card__categories-text",
     )!;
-    expect(textOf(treeCategoriesText)).toBe("侧栏 · 多会话协作");
+    expect(textOf(treeCategoriesText)).toBe("界面增强 · 效率与协作");
     expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
     expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
     expect(descendants(treeCard).filter((el) => el.className.includes("__icon"))).toHaveLength(0);
@@ -523,7 +523,7 @@ describe("Desktop extensions settings page", () => {
           (el) => el.className === "settings-extensions-card__categories-text",
         )!,
       ),
-    ).toBe("Sidebar · Workflow");
+    ).toBe("Interface · Workflow");
     enMount.dispose();
   });
 
@@ -607,7 +607,7 @@ describe("Desktop extensions settings page", () => {
             desktopApi: 1,
             desktop: { script: "desktop.js" },
             slots: [],
-            categories: ["composer"],
+            categories: ["analytics"],
           },
         },
       ],
@@ -695,7 +695,7 @@ describe("Desktop extensions settings page", () => {
             desktopApi: 1,
             desktop: { script: "desktop.js" },
             slots: ["sidebar.thread-layout"],
-            categories: ["workflow", "sidebar"],
+            categories: ["workflow", "interface"],
           },
         },
         {
@@ -742,15 +742,15 @@ describe("Desktop extensions settings page", () => {
       );
     expect(findPills().map((pill) => textOf(pill))).toEqual([
       "全部",
-      "侧栏",
       "外观主题",
-      "多会话协作",
+      "界面增强",
+      "效率与协作",
     ]);
     expect(findPills()[0]!.getAttribute("aria-pressed")).toBe("true");
 
     // Click "外观主题" -> only ext-theme remains in a flat grid without group headings.
-    findPills()[2]!.dispatch("click");
-    expect(findPills()[2]!.getAttribute("aria-pressed")).toBe("true");
+    findPills()[1]!.dispatch("click");
+    expect(findPills()[1]!.getAttribute("aria-pressed")).toBe("true");
     const themeCards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
     );
@@ -772,7 +772,7 @@ describe("Desktop extensions settings page", () => {
     ]);
     mounted.dispose();
 
-    // No filter bar is rendered when no extension declares categories.
+    // No filter bar (not even "全部") is rendered when no extension declares categories.
     const uncategorized = mountPage("zh-CN", () => ({
       listDesktopExtensions: vi.fn(async () => ({
         ...categorizedList,
@@ -783,11 +783,21 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() =>
       expect(textOf(uncategorized.content)).toContain("Uncategorized Extension"),
     );
+    const categorySlot = descendants(uncategorized.content).find(
+      (el) => el.className === "settings-extensions__category-slot",
+    )!;
+    expect(categorySlot.hidden).toBe(true);
     expect(
       descendants(uncategorized.content).filter((el) =>
         el.className.includes("settings-extensions__filters"),
       ),
     ).toHaveLength(0);
+    expect(
+      descendants(uncategorized.content).filter((el) =>
+        el.className.includes("settings-extensions-filter-pill"),
+      ),
+    ).toHaveLength(0);
+    expect(textOf(categorySlot)).toBe("");
     uncategorized.dispose();
   });
 
@@ -900,8 +910,8 @@ describe("Desktop extensions settings page", () => {
     expect(textOf(dialog)).toContain("作者：codexhost");
     expect(textOf(dialog)).toContain("v0.1.0");
     expect(textOf(dialog)).toContain("运行中");
-    expect(textOf(dialog)).toContain("侧栏");
-    expect(textOf(dialog)).toContain("多会话协作");
+    expect(textOf(dialog)).toContain("界面增强");
+    expect(textOf(dialog)).toContain("效率与协作");
 
     const repoLink = descendants(dialog).find((el) => el.tagName === "a")!;
     expect(repoLink).toBeDefined();
@@ -1389,7 +1399,7 @@ describe("Desktop extensions settings page", () => {
       descendants(mounted.content)
         .filter((el) => el.className.includes("settings-extensions-filter-pill"))
         .map((pill) => textOf(pill));
-    expect(filterLabels()).toEqual(["All", "Sidebar", "Workflow"]);
+    expect(filterLabels()).toEqual(["All", "Interface", "Workflow"]);
 
     const treeCardEn = descendants(mounted.content).find(
       (el) => el.tagName === "article" && el.dataset.extensionId === "sidebar-thread-tree",
@@ -1402,7 +1412,7 @@ describe("Desktop extensions settings page", () => {
           (el) => el.className === "settings-extensions-card__categories-text",
         )!,
       ),
-    ).toBe("Sidebar · Workflow");
+    ).toBe("Interface · Workflow");
 
     // Detail modal reflects the selected English content locale.
     treeCardEn.dispatch("click");
@@ -1415,7 +1425,7 @@ describe("Desktop extensions settings page", () => {
       descendants(detailDialog)
         .filter((el) => el.className.includes("settings-extensions-category-chip"))
         .map((chip) => textOf(chip)),
-    ).toEqual(["Sidebar", "Workflow"]);
+    ).toEqual(["Interface", "Workflow"]);
     detailDialog.close();
 
     // Switch back to Simplified Chinese, then Follow system.
@@ -1425,7 +1435,7 @@ describe("Desktop extensions settings page", () => {
       .dispatch("click");
     expect(textOf(localeButton)).toBe("中");
     expect(storage.get("codexhost.desktopExtensions.contentLocale")).toBe("zh-CN");
-    expect(filterLabels()).toEqual(["全部", "侧栏", "多会话协作"]);
+    expect(filterLabels()).toEqual(["全部", "界面增强", "效率与协作"]);
 
     localeButton.dispatch("click");
     descendants(localeMenu)

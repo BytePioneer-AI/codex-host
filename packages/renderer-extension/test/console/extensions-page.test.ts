@@ -82,7 +82,7 @@ const listing: DesktopExtensionsListResult = {
         desktopApi: 1,
         desktop: { script: "desktop.js" },
         slots: ["sidebar.thread-badge", "sidebar.thread-layout"],
-        categories: ["sidebar", "workflow"],
+        categories: ["interface", "workflow"],
       },
     },
     {

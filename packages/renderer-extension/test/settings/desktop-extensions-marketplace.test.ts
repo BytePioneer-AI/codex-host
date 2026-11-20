@@ -257,7 +257,7 @@ const CATALOG_TREE: DesktopExtensionCatalogEntry = {
   repository: "https://github.com/BytePioneer-AI/codex-host",
   stars: 1200,
   downloads: 3200,
-  categories: ["sidebar", "workflow", "tools"],
+  categories: ["interface", "workflow", "tools"],
   trustTier: "official",
   screenshots: ["https://cdn.example.com/tree-preview.png", "javascript:alert(1)"],
   downloadUrl: "https://github.com/BytePioneer-AI/registry/releases/download/v1/tree.zip",
@@ -273,7 +273,7 @@ const CATALOG_BADGES: DesktopExtensionCatalogEntry = {
   description: { en: "Shows child badges beside icons.", "zh-CN": "在图标旁展示子任务角标。" },
   author: "codexhost",
   repository: "https://github.com/BytePioneer-AI/codex-host",
-  categories: ["sidebar"],
+  categories: ["interface"],
   trustTier: "official",
   downloadUrl: "https://github.com/BytePioneer-AI/registry/releases/download/v1/badges.zip",
   sha256: HASH_B,
@@ -321,7 +321,7 @@ function sampleInstalledList(): DesktopExtensionsListResult {
           desktopApi: 1,
           desktop: { script: "desktop.js" },
           slots: ["sidebar.thread-layout", "sidebar.thread-badge"],
-          categories: ["sidebar", "workflow"],
+          categories: ["interface", "workflow"],
         },
       },
       {
@@ -337,7 +337,7 @@ function sampleInstalledList(): DesktopExtensionsListResult {
           desktopApi: 1,
           desktop: { script: "desktop.js" },
           slots: ["sidebar.thread-badge"],
-          categories: ["sidebar"],
+          categories: ["interface"],
         },
       },
     ],
@@ -522,7 +522,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
           (el) => el.className === "settings-extensions-card__categories-text",
         )!,
       ),
-    ).toBe("侧栏 · 多会话协作");
+    ).toBe("界面增强 · 效率与协作");
     expect(textOf(treeMarketCard)).toContain("更新");
     expect(textOf(treeMarketCard)).not.toContain("sidebar.thread-layout");
 
@@ -1083,7 +1083,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     const pillLabels = descendants(mounted.content)
       .filter((el) => el.className.includes("settings-extensions-filter-pill"))
       .map((pill) => textOf(pill));
-    expect(pillLabels).toEqual(["All", "Sidebar", "Appearance", "Tools", "Workflow"]);
+    expect(pillLabels).toEqual(["All", "Appearance", "Interface", "Workflow", "Tools"]);
 
     themeCard.dispatch("click");
     const detailDialog = descendants(mounted.content).find(
@@ -1092,6 +1092,66 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     expect(textOf(detailDialog)).toContain("Nord Palette");
     expect(textOf(detailDialog)).toContain("Community theme tuned for dark mode.");
     detailDialog.close();
+
+    mounted.dispose();
+  });
+
+  it("hides the category filter bar completely and resets selection when Marketplace entries declare no categories", async () => {
+    const uncategorizedCatalog = sampleCatalog({
+      extensions: [
+        { ...CATALOG_TREE, categories: undefined },
+        { ...CATALOG_THEME, categories: undefined },
+      ],
+    });
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => sampleInstalledList()),
+      listDesktopExtensionCatalog: vi.fn(async () => uncategorizedCatalog),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (2)"));
+
+    // Select a category on the Installed tab first.
+    const findWorkflowPill = () =>
+      descendants(mounted.content).find(
+        (el) =>
+          el.className.includes("settings-extensions-filter-pill") &&
+          el.dataset.category === "workflow",
+      )!;
+    findWorkflowPill().dispatch("click");
+    expect(findWorkflowPill().getAttribute("aria-pressed")).toBe("true");
+
+    // Switch to Marketplace where no entries declare categories: filter bar is hidden completely
+    // (not even "全部"), selectedCategory resets to all, and both cards remain visible.
+    descendants(mounted.content)
+      .find((el) => el.tagName === "button" && el.dataset.tab === "marketplace")!
+      .dispatch("click");
+
+    const categorySlot = descendants(mounted.content).find(
+      (el) => el.className === "settings-extensions__category-slot",
+    )!;
+    expect(categorySlot.hidden).toBe(true);
+    expect(
+      descendants(mounted.content).filter((el) =>
+        el.className.includes("settings-extensions__filters"),
+      ),
+    ).toHaveLength(0);
+    expect(
+      descendants(mounted.content).filter((el) =>
+        el.className.includes("settings-extensions-filter-pill"),
+      ),
+    ).toHaveLength(0);
+    expect(textOf(categorySlot)).toBe("");
+
+    const marketCards = descendants(mounted.content).filter(
+      (el) =>
+        el.tagName === "article" &&
+        el.className === "settings-extensions-card" &&
+        el.dataset.cardKind === "marketplace",
+    );
+    expect(marketCards.map((card) => card.dataset.extensionId)).toEqual([
+      "sidebar-thread-tree",
+      "nord-palette",
+    ]);
 
     mounted.dispose();
   });

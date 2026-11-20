@@ -41,15 +41,12 @@ export interface DesktopExtensionAttentionDetail {
 }
 
 export const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
-  "sidebar",
-  "composer",
-  "conversation",
   "appearance",
-  "tools",
+  "interface",
   "workflow",
-  "usage-analytics",
-  "memory-knowledge",
+  "analytics",
   "integrations",
+  "tools",
 ];
 
 const SAFE_SCREENSHOT_DATA_URL_PATTERN =

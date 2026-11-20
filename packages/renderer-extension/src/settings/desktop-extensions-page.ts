@@ -635,13 +635,14 @@ export function createDesktopExtensionsSettingsPage(
         const availableCategories = CATEGORY_ORDER.filter((category) =>
           presentCategories.has(category),
         );
-        if (selectedCategory && !presentCategories.has(selectedCategory)) {
-          selectedCategory = null;
-        }
         if (availableCategories.length === 0) {
+          selectedCategory = null;
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           return;
+        }
+        if (selectedCategory && !availableCategories.includes(selectedCategory)) {
+          selectedCategory = null;
         }
 
         const filterBar = createEl(document, "div", "settings-extensions__filters");
@@ -780,6 +781,7 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
         if (listing.extensions.length === 0) {
+          selectedCategory = null;
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           renderEmptyBox(copy.emptyTitle, copy.emptyDescription, copy.emptyPathHint);
@@ -932,6 +934,7 @@ export function createDesktopExtensionsSettingsPage(
         const prefixNodes = fallbackNotice ? [fallbackNotice] : [];
 
         if (catalog.extensions.length === 0) {
+          selectedCategory = null;
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           const empty = createEl(

@@ -240,6 +240,8 @@ describe("client scopes and networks", () => {
     for (const blocked of [
       "/v1/delegate/start",
       "/v1/thread/send",
+      "/v1/thread/answer",
+      "/v1/thread/export",
       "/v1/thread/cancel",
       "/v1/thread/watch",
     ])

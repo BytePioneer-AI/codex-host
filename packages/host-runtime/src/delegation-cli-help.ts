@@ -16,7 +16,7 @@ Read a file explicitly linked in the latest final report, inside the Thread work
 Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
 Names use lowercase letters, digits and hyphens; local-cli is reserved.
---scope read allows reading, listing, waiting and events only; dispatch (default) also allows delegate start, thread send, cancel and watch.
+--scope read allows reading, listing, waiting and events only; dispatch (default) also allows delegate start, thread send, answer, export, cancel and watch.
 --network lists where the client may connect from: local (127.0.0.1, default), tailnet (this machine's Tailscale address), public (the Tailscale Funnel URL). Turn the tailnet and public listeners on with codexhost client access.`,
   "client set": `codexhost client set <name> [--scope read|dispatch] [--network local,tailnet,public]
 Change a client's scope or networks. Takes effect on its next request; event streams on networks it may no longer use are closed.`,

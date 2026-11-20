@@ -38,6 +38,8 @@ function ownOrigin(client: string, value: unknown, field: string): string {
 const DISPATCH_ROUTES = new Set([
   "/v1/delegate/start",
   "/v1/thread/send",
+  "/v1/thread/answer",
+  "/v1/thread/export",
   "/v1/thread/cancel",
   "/v1/thread/watch",
 ]);

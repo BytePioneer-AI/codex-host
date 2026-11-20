@@ -171,7 +171,7 @@ CLI 用 `codexhost thread file <thread> --path <文件> --offset <位置> --limi
 
 ## 权限范围与网络
 
-- 每个客户端有权限范围 `read`（读取、列举、等待、watch 列表、事件）或 `dispatch`（另含委派、发送、取消、注册 watch），以及允许的网络 `local`、`tailnet`、`public`。没有这两个字段的旧登记视为 `dispatch` + `local`。`client add|set --scope --network` 修改，下一次请求生效。
+- 每个客户端有权限范围 `read`（读取、列举、等待、watch 列表、事件）或 `dispatch`（另含委派、发送、回答问题、导出、取消、注册 watch），以及允许的网络 `local`、`tailnet`、`public`。没有这两个字段的旧登记视为 `dispatch` + `local`。`client add|set --scope --network` 修改，下一次请求生效。
 - 请求的网络由它到达的监听决定，不看请求内容。不允许的网络返回与未知令牌相同的 `UNAUTHORIZED`；`read` 客户端调用派发路由返回 `FORBIDDEN`（HTTP 403，MCP 中为工具错误）。事件流在心跳时检查网络，收窄后关闭。
 - 客户端通过校验的请求会记录最近访问网络与时间（`lastAccess`，按 5 秒节流写入 `external-clients.json`），供 `client list` 与控制台展示。
 - 登记、权限修改、撤销与访问时间回写使用同一跨进程文件事务；访问记录不会恢复已删除的客户端或覆盖收紧后的权限。

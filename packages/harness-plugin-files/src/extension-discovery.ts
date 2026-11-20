@@ -23,6 +23,8 @@ export type DesktopExtensionInstallation = { id: string } & (
   | { state: "invalid" | "incompatible"; error: string }
 );
 
+export const DESKTOP_EXTENSION_CONFIGURATION_LOCK = ".enabled.lock";
+
 export function desktopExtensionsRoot(dataDirectory: string): string {
   return path.join(dataDirectory, "extensions");
 }
@@ -114,7 +116,11 @@ export async function discoverDesktopExtensions(configuredRoot: string): Promise
   try {
     const root = await privateExtensionDirectory(configuredRoot);
     const names = (await readdir(root, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+      .filter(
+        (entry) =>
+          entry.name !== DESKTOP_EXTENSION_CONFIGURATION_LOCK &&
+          (entry.isDirectory() || entry.isSymbolicLink()),
+      )
       .map((entry) => entry.name)
       .sort();
     if (names.length > DESKTOP_EXTENSION_LIMIT)

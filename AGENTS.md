@@ -62,6 +62,7 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 | Quickly trying a feature in a Web or Desktop run with its own data directory | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
 | Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |
 | Auditing comments and docs for reasoning-transcript leakage | [codexhost-trim-cot-leakage](.agents/skills/codexhost-trim-cot-leakage/SKILL.md) |
+| Developing, packaging, or troubleshooting a Desktop UI extension | [codexhost-add-desktop-extension](.agents/skills/codexhost-add-desktop-extension/SKILL.md) |
 
 ## Implementation Principles
 

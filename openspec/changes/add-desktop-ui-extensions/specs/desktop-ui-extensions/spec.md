@@ -176,6 +176,21 @@ Console SHALL 列出全部已发现的扩展，显示其保存的选择和运行
 - **WHEN** Desktop 未打开时用户在 Console 中启用一个扩展
 - **THEN** 选择被保存，状态显示为等待 Desktop；下次打开 Desktop 后扩展生效
 
+### Requirement: 本机设置连接的扩展管理
+
+Desktop 的本机设置连接和通过身份验证的同源 Web 设置连接 SHALL 能列出扩展、启用或禁用单个扩展，并保存禁用全部的恢复请求。两条连接与 Console SHALL 共用选择和修订号；设置请求 MUST NOT 指定任意 Host、目录、窗口或扩展代码。
+
+#### Scenario: 多个管理入口修改相同选择
+
+- **WHEN** 用户提交的修订号已过期，或启用会占用另一个已启用扩展的槽位
+- **THEN** 设置接口 SHALL 保留已保存的选择，并返回当前修订号或冲突槽位的占用者
+
+#### Scenario: Desktop Controller 不在线
+
+- **WHEN** 用户通过本机设置接口禁用全部并重载，但 Desktop Controller 不在线
+- **THEN** 设置接口 SHALL 保存空启用列表及本次恢复请求，但不得声称已重载窗口
+- **AND** 独立 Console 的恢复功能 SHALL 不依赖 Host 或 Desktop 页面可用
+
 ### Requirement: 适用范围与执行边界
 
 v1 扩展 SHALL 只在通过 codexhost 打开、且已建立界面控制的 Codex Desktop 主窗口中运行，不在 Web、其他 Desktop 窗口或未经 codexhost 启动的 Desktop 中运行。启用或运行扩展 MUST NOT 改变 Harness 执行、Thread 归属与持久化、置顶、归档或官方 Codex 流量，也 MUST NOT 启动额外进程。

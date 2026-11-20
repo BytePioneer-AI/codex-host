@@ -1,4 +1,16 @@
 import {
+  DESKTOP_EXTENSIONS_LIST_METHOD,
+  DESKTOP_EXTENSIONS_ENABLE_METHOD,
+  DESKTOP_EXTENSIONS_DISABLE_METHOD,
+  DESKTOP_EXTENSIONS_RECOVER_METHOD,
+  desktopExtensionsListResultSchema,
+  desktopExtensionMutationResultSchema,
+  desktopExtensionSelectionParamsSchema,
+  desktopExtensionsRecoveryParamsSchema,
+  type DesktopExtensionsListResult,
+  type DesktopExtensionMutationResult,
+  type DesktopExtensionSelectionParams,
+  type DesktopExtensionsRecoveryParams,
   SKILLS_LIST_METHOD,
   SKILLS_CHANGED_METHOD,
   skillsListParamsSchema,
@@ -248,6 +260,17 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
+  /** Use the local Host client, independent of the active Composer. */
+  listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;
+  enableDesktopExtension?(
+    input: DesktopExtensionSelectionParams,
+  ): Promise<DesktopExtensionMutationResult>;
+  disableDesktopExtension?(
+    input: DesktopExtensionSelectionParams,
+  ): Promise<DesktopExtensionMutationResult>;
+  disableAllDesktopExtensionsAndReload?(
+    input?: DesktopExtensionsRecoveryParams,
+  ): Promise<DesktopExtensionMutationResult>;
   currentHostId?(composer?: Element): string | null;
   knownHostIds?(): readonly string[];
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
@@ -680,6 +703,41 @@ export function createRendererModelClient(
     async updateRemote(version: string) {
       return runtimeStatusSchema.parse(
         await manager.sendRequest(REMOTE_UPDATE_METHOD, { version }),
+      );
+    },
+    async listDesktopExtensions(): Promise<DesktopExtensionsListResult> {
+      return desktopExtensionsListResultSchema.parse(
+        await manager.sendRequest(DESKTOP_EXTENSIONS_LIST_METHOD, {}),
+      );
+    },
+    async enableDesktopExtension(
+      input: DesktopExtensionSelectionParams,
+    ): Promise<DesktopExtensionMutationResult> {
+      return desktopExtensionMutationResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_ENABLE_METHOD,
+          desktopExtensionSelectionParamsSchema.parse(input),
+        ),
+      );
+    },
+    async disableDesktopExtension(
+      input: DesktopExtensionSelectionParams,
+    ): Promise<DesktopExtensionMutationResult> {
+      return desktopExtensionMutationResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_DISABLE_METHOD,
+          desktopExtensionSelectionParamsSchema.parse(input),
+        ),
+      );
+    },
+    async disableAllDesktopExtensionsAndReload(
+      input: DesktopExtensionsRecoveryParams = {},
+    ): Promise<DesktopExtensionMutationResult> {
+      return desktopExtensionMutationResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_RECOVER_METHOD,
+          desktopExtensionsRecoveryParamsSchema.parse(input),
+        ),
       );
     },
     async checkUpdate(): Promise<UpdateCheckResult | null> {

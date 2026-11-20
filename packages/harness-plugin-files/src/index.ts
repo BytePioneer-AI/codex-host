@@ -16,6 +16,11 @@ export {
   readDesktopExtensionConfiguration,
   writeDesktopExtensionConfiguration,
 } from "./extension-configuration.js";
+export {
+  DesktopExtensionSelectionError,
+  listDesktopExtensions,
+  updateDesktopExtensionSelection,
+} from "./extension-management.js";
 export { HarnessPreferencesStore, HarnessPreferenceConflict } from "./preferences.js";
 export {
   pluginResourcePath,

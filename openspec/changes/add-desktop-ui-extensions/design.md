@@ -48,11 +48,11 @@ $CODEXHOST_DATA_DIR/extensions/        （默认 ~/.codexhost/extensions/，权�
 { "version": 1, "revision": 7, "enabled": ["sidebar-thread-tree"], "reloadToken": "<uuid>" }
 ```
 
-- 唯一的程序化写入方是 console-server：写临时文件后 rename，原子替换；带 `expectedRevision` 做乐观并发，冲突时返回 409 让页面刷新。手工编辑也被接受。
+- Console 与本机 Host 设置 RPC 共用跨进程写锁：在同一事务中核对 `expectedRevision`、预检槽位并原子替换配置。修订号不符时报告当前修订号。手工编辑也被接受。
 - 文件不存在表示什么都不启用。文件无法解析时**也按什么都不启用处理**，并报告诊断：出错时选择安全的方向。
 - `enabled` 的数组顺序就是槽位优先级（见 D6）。
 - `reloadToken` 只在"禁用全部并重载"时写入（同一次原子写中 `enabled: []`），见 D7。
-- 读取方只有 Controller 和 Console。v1 的 Host 不读这个文件（没有扩展后端）。
+- Controller、Console 和本机 Host 设置 RPC 读取该文件。Host 只管理选择，不执行扩展代码。
 - 读写函数放在 `harness-plugin-files`（`extension-configuration.ts`），格式定义在 `shared-contracts`。
 
 ### D3 Controller 对账（desktop-control）
@@ -125,7 +125,7 @@ interface DesktopSidebarRow {
 - 槽位采用**声明式**：激活时由宿主统一占用 manifest 中声明的全部槽位，要么全部占用成功，要么不激活。放弃运行时动态 `api.slots.claim`，因为 Console 无法提前判断冲突。
 - 样板分配：#926 角标扩展声明 `sidebar.thread-badge`；#947 委派树扩展声明两者（树行自带子 Thread 计数），因此两者互斥。
 
-### D7 Console：管理与兜底
+### D7 管理接口与 Console 兜底
 
 - console-server 新增 `src/extensions.ts` 和以下路由，沿用现有 `request-guard`：
   - `GET /api/extensions`：返回 discover 结果、保存的选择和状态文件（Controller 进程不在时显示"等待 Desktop"）。
@@ -133,7 +133,7 @@ interface DesktopSidebarRow {
   - `POST /api/extensions/disable-all-and-reload`：原子写入 `enabled: []` 和新的 `reloadToken`。
 - Controller 发现 `reloadToken` 与状态文件中的 `handledReloadToken` 不同时，依次执行：移除快照脚本标识 → 实时对账为空集合（有超时，尽力而为）→ `Page.reload` → 记录 `handledReloadToken`，避免 Controller 重启后再次触发。若读取到令牌时已有更新的非空启用集合，则只记录令牌，按新集合对账，不重载。
 - 整个兜底流程只依赖文件和 Controller，**不依赖 Host 或 Desktop 界面可用**，Console 自身也不需要 Desktop。
-- 页面放在 `renderer-extension/src/console/pages/extensions.ts`，沿用现有 Console 页面的结构。
+- 独立 Console 页面放在 `renderer-extension/src/console/pages/extensions.ts`。Desktop 与认证同源 Web 设置通过 `codexhost/desktop/extensions/*` 的四个固定方法访问本机 Host；接口分别报告保存成功、槽位冲突或修订号冲突。该接口不是扩展宿主 API。
 
 ### D8 主干 `thread/tree/watch`（host-runtime）
 

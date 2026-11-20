@@ -8,14 +8,14 @@ Desktop 界面扩展是可选的受信任代码。它们只在通过 codexhost �
 
 ```text
 $CODEXHOST_DATA_DIR/extensions/  # 默认 ~/.codexhost/extensions/
-  enabled.json                   # Console 写入；缺失或损坏时不启用任何扩展
+  enabled.json                   # 管理入口写入；缺失或损坏时不启用任何扩展
   sidebar-thread-tree/           # 必须是实际目录，目录名与 id 一致
     manifest.json
     desktop.js
     desktop.css                  # 可选
 ```
 
-`extensions/` 独立于 Harness 插件目录。`enabled.json` 保存启用顺序和配置版本；Console 通过原子替换更新它。复制或构建扩展不会修改该文件。
+`extensions/` 独立于 Harness 插件目录。`enabled.json` 保存启用顺序和配置版本；Console 和本机 Host 设置 RPC 共用修订号并通过原子替换更新它。复制或构建扩展不会修改该文件。Web 设置连接必须通过身份验证且同源，只能管理该 Web 服务的本机 Host 上的 Desktop 扩展，不会在 Web 里运行扩展。
 
 ```json
 {

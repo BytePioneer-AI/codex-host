@@ -75,6 +75,28 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it("parses a Desktop extension slot conflict without treating it as a successful save", async () => {
+    const listing = {
+      configuration: { version: 1, revision: 7, enabled: ["layout"] },
+      desktopConnected: false,
+      diagnostics: [],
+      extensions: [],
+    };
+    const conflict = { state: "slot-conflict", conflictWith: "layout" };
+    const sendRequest = vi.fn().mockResolvedValueOnce(listing).mockResolvedValueOnce(conflict);
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client?.listDesktopExtensions || !client.enableDesktopExtension)
+      throw new Error("Missing extension client");
+    await expect(client.listDesktopExtensions()).resolves.toEqual(listing);
+    await expect(
+      client.enableDesktopExtension({ id: "badge", expectedRevision: 7 }),
+    ).resolves.toEqual(conflict);
+    expect(sendRequest.mock.calls).toEqual([
+      ["codexhost/desktop/extensions/list", {}],
+      ["codexhost/desktop/extensions/enable", { id: "badge", expectedRevision: 7 }],
+    ]);
+  });
+
   it.each(["check", "update", "install"] as const)(
     "routes Harness installation %s through the fixed Host method",
     async (action) => {
@@ -420,6 +442,9 @@ describe("Renderer fixed Model request client", () => {
     expect(Object.keys(client).sort()).toEqual([
       "checkUpdate",
       "credentialImports",
+      "disableAllDesktopExtensionsAndReload",
+      "disableDesktopExtension",
+      "enableDesktopExtension",
       "executeThreadCommand",
       "forkThread",
       "getHarnessDisplayCapabilities",
@@ -437,6 +462,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectThreadUsage",
       "installation",
       "listCodexAccounts",
+      "listDesktopExtensions",
       "listHarnessAccountSources",
       "listHarnessAccounts",
       "listHarnessPlugins",

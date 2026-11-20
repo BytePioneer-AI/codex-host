@@ -1,10 +1,11 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { DESKTOP_EXTENSION_SCRIPT_MAX_BYTES } from "@codexhost/shared-contracts";
 import {
-  DesktopExtensionRevisionConflict,
   discoverDesktopExtensions,
   readDesktopExtensionConfiguration,
   writeDesktopExtensionConfiguration,
@@ -83,23 +84,60 @@ it.skipIf(!process.getuid)("rejects another user's writable root and files on PO
   });
 });
 
-it("serializes revisions, saves recovery tokens and fails closed on damaged configuration", async () => {
+it("prevents two management processes from overwriting the same revision", async () => {
+  const source = `
+    import { once } from 'node:events';
+    import { setTimeout } from 'node:timers/promises';
+    import { DesktopExtensionRevisionConflict, writeDesktopExtensionConfiguration } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
+    const start = once(process, 'message');
+    process.send('ready');
+    await start;
+    try {
+      await writeDesktopExtensionConfiguration(process.argv[1], 0, async () => {
+        await setTimeout(250);
+        return { enabled: [process.argv[2]] };
+      });
+      process.send('saved');
+    } catch (error) {
+      if (!(error instanceof DesktopExtensionRevisionConflict)) throw error;
+      process.send('stale');
+    } finally {
+      process.disconnect();
+    }
+  `;
+  const workers = ["first", "second"].map((id) =>
+    spawn(process.execPath, ["--input-type=module", "--eval", source, root, id], {
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+    }),
+  );
+  const receive = (worker: (typeof workers)[number]) =>
+    Promise.race([
+      once(worker, "message").then(([message]) => message as unknown),
+      once(worker, "exit").then(([code]) => {
+        throw new Error(`Configuration worker exited: ${code}`);
+      }),
+    ]);
+  try {
+    await Promise.all(workers.map(receive));
+    const confirmed = Promise.all(workers.map(receive));
+    for (const worker of workers) worker.send("start");
+    const outcomes = await confirmed;
+    expect(outcomes).toEqual(expect.arrayContaining(["saved", "stale"]));
+    expect((await readDesktopExtensionConfiguration(root)).configuration).toMatchObject({
+      revision: 1,
+      enabled: [outcomes[0] === "saved" ? "first" : "second"],
+    });
+  } finally {
+    for (const worker of workers) if (worker.exitCode === null) worker.kill();
+  }
+});
+
+it("saves recovery tokens and fails closed on damaged configuration", async () => {
   expect(await readDesktopExtensionConfiguration(root)).toMatchObject({
     configuration: { enabled: [], revision: 0 },
     diagnostic: expect.any(String),
   });
-  const results = await Promise.allSettled([
-    writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["example"] })),
-    writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: [] })),
-  ]);
-  expect(results[0]).toMatchObject({
-    status: "fulfilled",
-    value: { revision: 1, enabled: ["example"] },
-  });
-  expect(results[1]).toMatchObject({
-    status: "rejected",
-    reason: expect.any(DesktopExtensionRevisionConflict),
-  });
+  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["example"] }));
   const reloadToken = "bbd3fcb4-27e1-44ad-9ed2-a384ae8b3619";
   await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: [], reloadToken }));
   expect(await readDesktopExtensionConfiguration(root)).toEqual({

@@ -41,21 +41,11 @@ test.each([
   [{ categories: [] }, "valid"],
   [
     {
-      categories: [
-        "sidebar",
-        "composer",
-        "conversation",
-        "appearance",
-        "tools",
-        "workflow",
-        "usage-analytics",
-        "memory-knowledge",
-        "integrations",
-      ],
+      categories: ["appearance", "interface", "workflow", "analytics", "integrations", "tools"],
     },
     "valid",
   ],
-  [{ categories: ["sidebar", "sidebar"] }, "invalid"],
+  [{ categories: ["interface", "interface"] }, "invalid"],
   [{ categories: ["sidebar.thread-layout"] }, "invalid"],
   [{ unexpected: true }, "invalid"],
   [{ backend: "backend.mjs" }, "invalid"],
@@ -71,6 +61,15 @@ test.each([
 ])("classifies desktop manifest with %j as %s", (patch, state) => {
   expect(parseDesktopExtensionManifest({ ...manifest, ...patch }).state).toBe(state);
 });
+
+test.each(["sidebar", "composer", "conversation", "usage-analytics", "memory-knowledge"])(
+  "rejects retired Desktop extension category %s",
+  (category) => {
+    expect(parseDesktopExtensionManifest({ ...manifest, categories: [category] }).state).toBe(
+      "invalid",
+    );
+  },
+);
 
 test("preserves optional details, author, repository, and screenshot paths", () => {
   const metadata = {

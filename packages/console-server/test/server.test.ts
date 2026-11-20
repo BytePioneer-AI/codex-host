@@ -181,7 +181,7 @@ it("serves the market offline and accepts ZIP uploads above 5 MiB only on the gu
 it("manages Desktop extensions offline and protects all selection changes", async () => {
   const root = path.join(directory, "desktop-extensions");
   const name = { en: "Sidebar layout", "zh-CN": "侧栏布局" };
-  const categories = ["sidebar", "appearance"];
+  const categories = ["interface", "appearance"];
   for (const [id, desktopApi] of [
     ["layout", 1],
     ["badge", 1],

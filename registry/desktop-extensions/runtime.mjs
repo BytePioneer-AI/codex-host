@@ -223,15 +223,12 @@ var desktopExtensionSlotSchema = z4.enum([
   "appearance.theme",
 ]);
 var desktopExtensionCategorySchema = z4.enum([
-  "sidebar",
-  "composer",
-  "conversation",
   "appearance",
-  "tools",
+  "interface",
   "workflow",
-  "usage-analytics",
-  "memory-knowledge",
+  "analytics",
   "integrations",
+  "tools",
 ]);
 var extensionName = z4.string().trim().min(1).max(128);
 function desktopExtensionScreenshotMimeType(resource) {

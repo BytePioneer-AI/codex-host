@@ -30,15 +30,12 @@ export const desktopExtensionSlotSchema = z.enum([
 export type DesktopExtensionSlot = z.infer<typeof desktopExtensionSlotSchema>;
 
 export const desktopExtensionCategorySchema = z.enum([
-  "sidebar",
-  "composer",
-  "conversation",
   "appearance",
-  "tools",
+  "interface",
   "workflow",
-  "usage-analytics",
-  "memory-knowledge",
+  "analytics",
   "integrations",
+  "tools",
 ]);
 export type DesktopExtensionCategory = z.infer<typeof desktopExtensionCategorySchema>;
 

@@ -73,15 +73,19 @@ async function syncCatalog() {
 it("writes stargazers_count for both assets using a single authenticated repository request", async () => {
   vi.stubEnv("GITHUB_TOKEN", "test-token");
   let requestsLeft = 1;
-  mockGitHub((headers) => {
-    expect(headers.get("authorization")).toBe("Bearer test-token");
-    expect(headers.get("user-agent")).toBe("codexhost-desktop-extension-registry");
-    if (requestsLeft-- <= 0) return new Response(null, { status: 429 });
-    return Response.json({ stargazers_count: 42 });
-  });
+  const categories = ["interface", "analytics"];
+  mockGitHub(
+    (headers) => {
+      expect(headers.get("authorization")).toBe("Bearer test-token");
+      expect(headers.get("user-agent")).toBe("codexhost-desktop-extension-registry");
+      if (requestsLeft-- <= 0) return new Response(null, { status: 429 });
+      return Response.json({ stargazers_count: 42 });
+    },
+    (id) => extensionZip({ id, manifest: { categories } }),
+  );
   expect(JSON.parse(await syncCatalog()).extensions).toMatchObject([
-    { id: "other", stars: 42 },
-    { id: "sample", stars: 42 },
+    { id: "other", stars: 42, categories },
+    { id: "sample", stars: 42, categories },
   ]);
 });
 

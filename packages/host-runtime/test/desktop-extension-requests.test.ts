@@ -33,7 +33,7 @@ it("shares Desktop and client-channel selection, status and recovery without exe
     const data = fixture.mappingStoreDirectory;
     const root = path.join(data, "desktop-extensions");
     const badgeName = { en: "Delegation badges", "zh-CN": "委派角标" };
-    const badgeCategories = ["sidebar", "workflow"];
+    const badgeCategories = ["interface", "workflow"];
     for (const [id, desktopApi] of [
       ["badge", 1],
       ["tree", 1],

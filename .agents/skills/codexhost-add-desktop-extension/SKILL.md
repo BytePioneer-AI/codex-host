@@ -33,7 +33,7 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-layout"],
-  "categories": ["sidebar", "workflow"],
+  "categories": ["interface", "workflow"],
   "screenshots": ["images/sidebar.png"]
 }
 ```
@@ -44,19 +44,16 @@ description: 开发、打包、验收或排查 codexhost Desktop 扩展：侧栏
 - 推荐填写双语 `details`（`{ en, "zh-CN" }`），详情弹窗会按**安全子集 Markdown** 渲染：支持 `#` / `##` / `###` 标题、无序/有序列表、`**加粗**`、`*斜体*`、`` `行内代码` ``、```` ``` ```` 围栏代码块、`>` 引用块以及 `http://` / `https://` 链接（非法协议与原始 HTML 会安全降级为纯文本）。提供时 `en` 必填，`zh-CN` 可省略，每种语言最多 16384 字符；写清用途、操作和适用范围。
 - **强烈推荐**在 `manifest.json` 中附带 `screenshots`（1–4 张界面截图，详情弹窗会自动展示截图画廊并支持点击大图预览）。将图片放在 `<source-dir>/` 下，如 `images/sidebar.png`，与示例路径一致；暂时没有截图时可省略字段。最多 4 张、不重复，每张 ≤ 512 KiB，只能用 PNG、JPEG（`.jpg` / `.jpeg`）或 WebP，扩展名须匹配文件签名。使用 `/` 分隔路径，不用绝对路径、`..`、以点或空格结尾的路径段或指向目录外的链接。工具会校验并原样复制，管理列表提供 `screenshotDataUrls` 供 `<img>` 使用。
 
-`categories` 是可选的多选标签。只选能说明扩展主要用途的项，允许跨类但不能重复；没有适合的标签时省略或填 `[]`。标签只用于归类，不授予 API 能力，也不参与槽位互斥。九个预置值如下：
+`categories` 是可选的多选标签。只选能说明扩展主要用途的项，允许跨类但不能重复；没有适合的标签时省略或填 `[]`。标签只用于归类，不授予 API 能力，也不参与槽位互斥。六个预置值如下：
 
 | 标签 | 用途 |
 | --- | --- |
-| `sidebar` | 侧栏中的行、角标、分组或导航 |
-| `composer` | 与输入区、草稿或撰写体验相关 |
-| `conversation` | 与会话内容、消息或 Turn 展示相关 |
-| `appearance` | 主题、样式、排版或视觉密度 |
-| `tools` | 工具信息展示或辅助操作入口 |
-| `workflow` | 任务流转、委派或跨 Thread 协作 |
-| `usage-analytics` | 用量、成本、额度或统计分析 |
-| `memory-knowledge` | 记忆、笔记或知识检索与展示 |
-| `integrations` | 外部工具、服务或工作空间的集成 |
+| `appearance` | 外观主题：皮肤、样式、排版或视觉密度 |
+| `interface` | 界面增强：侧栏、输入区或会话界面的操作与展示 |
+| `workflow` | 效率与协作：任务流转、委派或跨 Thread 协作 |
+| `analytics` | 数据与统计：用量、成本、额度或趋势分析 |
+| `integrations` | 外部集成：外部工具、服务或工作空间 |
+| `tools` | 实用工具：辅助操作、记忆、笔记或知识检索 |
 
 `sidebar.thread-badge` 用于角标与计数，`sidebar.thread-layout` 用于改变行布局，`appearance.theme` 用于整套皮肤（同一时间只能启用一套）。只声明实际使用的槽位；纯工具或后端可省略 `slots` 或填 `[]`。扩展必须取得全部声明的槽位才会激活。没有样式时省略 `desktop.style`；纯后端可省略 `desktop`，但至少声明 `desktop` 或 `backend` 之一。
 

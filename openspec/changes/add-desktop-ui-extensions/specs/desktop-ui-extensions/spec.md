@@ -34,11 +34,11 @@
 
 `name` SHALL 接受旧版纯字符串，或仅含 `en` 和 `zh-CN` 且两者必填的对象；每个名称去掉首尾空白后 MUST 为 1–128 字符。新扩展的作者 MUST 为 `name` 和 `description` 各提供非空的英文及简体中文文案；为兼容旧 manifest，系统 SHALL 继续接受省略 `description` 或只提供 `description.en`。管理列表返回有效 manifest 时 SHALL 保留双语对象与分类数据，不按服务端语言压平。
 
-`categories` SHALL 为可选、无重复的多选列表，值仅限 `sidebar`、`composer`、`conversation`、`appearance`、`tools`、`workflow`、`usage-analytics`、`memory-knowledge`、`integrations`。省略或空列表表示未分类。分类标签 MUST NOT 参与槽位占用或授予宿主 API 能力。
+`categories` SHALL 为可选、无重复的用途多选列表，值仅限 `appearance`、`interface`、`workflow`、`analytics`、`integrations`、`tools`。省略或空列表表示未分类。分类标签 MUST NOT 参与槽位占用或授予宿主 API 能力。
 
 #### Scenario: 发现双语扩展
 
-- **WHEN** manifest 提供了双语名称、双语描述和 `sidebar`、`workflow` 分类
+- **WHEN** manifest 提供了双语名称、双语描述和 `interface`、`workflow` 分类
 - **THEN** 管理列表保留两种语言和两个分类，供客户端按界面语言选择文案
 
 #### Scenario: 兼容旧版元数据

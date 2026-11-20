@@ -34,14 +34,14 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-badge", "sidebar.thread-layout"],
-  "categories": ["sidebar", "workflow"],
+  "categories": ["interface", "workflow"],
   "screenshots": ["images/sidebar.png"]
 }
 ```
 
 - `id` 最长 128 字符，匹配 `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`。`desktop` 和 `backend` 至少声明一个，可以同时声明；`desktop.style` 可省略。未知字段或槽位无效；更高的 `desktopApi` 报告不兼容。
 - 新扩展必须为 `name` 和 `description` 提供 `en` 和 `zh-CN` 文案。兼容旧 manifest：`name` 可用纯字符串；`description` 可省略或只提供 `en`。名称去掉首尾空白后须为 1–128 字符，描述每种语言最多 4096 字符。列表接口保留双语对象；`resolveLocalizedExtensionText(value, locale)` 在 `zh-CN` 时优先取中文，缺少中文或使用其他语言时取英文，字符串则原样返回。
-- `categories` 是可选多选标签，省略或 `[]` 均表示未分类。可选值为 `sidebar`（侧栏）、`composer`（输入区）、`conversation`（会话）、`appearance`（外观）、`tools`（工具）、`workflow`（工作流）、`usage-analytics`（用量分析）、`memory-knowledge`（记忆与知识）、`integrations`（外部集成）。未知或重复标签使 manifest 无效。标签不授予 API 能力，不参与槽位占用。
+- `categories` 是按主要用途选择的可选多选标签，省略或 `[]` 均表示未分类。可选值为 `appearance`（外观主题）、`interface`（界面增强）、`workflow`（效率与协作）、`analytics`（数据与统计）、`integrations`（外部集成）、`tools`（实用工具）。未知或重复标签使 manifest 无效。标签不授予 API 能力，不参与槽位占用。
 - `author`、`repository` 和 `details` 是可选展示字段。作者名去掉首尾空白后为 1–128 字符；仓库链接限 HTTP(S)、至多 2048 字符，推荐 GitHub HTTPS 链接；详细介绍支持多段落，`en` 必填、`zh-CN` 可选，每种语言最多 16384 字符。
 - 资源必须解析到扩展目录内的普通文件。POSIX 上，扩展根、扩展目录、资源经过的子目录和文件须归当前用户所有，且不能允许同组或其他用户写入。新建目录建议使用 `0700`。
 - `screenshots` 可选，最多 4 个不重复的相对路径（以 `/` 分隔；路径段不得以点或空格结尾）。只接受 `.png`、`.jpg`、`.jpeg`、`.webp`（扩展名不区分大小写），文件签名必须与扩展名匹配，每张最多 512 KiB，每扩展合计最多 2 MiB。缺失、越界、超限或类型不符会将扩展标为无效，并报告具体截图及原因。有效扩展的 `screenshotDataUrls` 按 `manifest.screenshots` 顺序返回，可直接作为 `<img src>`，不需要文件 URL 或额外网络请求。每次管理列表最多包含 8 MiB 原始截图（base64 编码前），按扩展目录名排序分配；剩余预算不足时省略该扩展的整组预览，给出列表诊断，不影响扩展状态。截图字节不参与热更新 hash 或注入快照。

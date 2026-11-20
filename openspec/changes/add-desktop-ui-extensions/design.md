@@ -37,13 +37,13 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  （默认 ~/.codexhost/desktop-extensio
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-layout", "sidebar.thread-badge"],
-  "categories": ["sidebar", "workflow"]
+  "categories": ["interface", "workflow"]
 }
 ```
 
 - 新增独立的 `desktopExtensionManifestSchema`（strict），放在 `shared-contracts/src/desktop-extensions.ts`。**不**扩展 `harnessPluginManifestSchema`：它是 `.strict()` 的，`kind` 已被 `"usage"` 占用，扩展混进去会进入 `isAdapter` 判断路径。
 - 新扩展提供 `en` 与 `zh-CN` 的名称和描述。`name` 的两种语言必填，兼容旧字符串；`description` 保留既有可选对象格式。发现和列表传递原有双语结构，由客户端按界面语言取值；槽位冲突继续用扩展 id 标识占用者。
-- `categories` 使用 `desktopExtensionCategorySchema` 定义的九个预置标签，沿用 `slots` 的重复项校验，省略时视为未分类，不参与槽位互斥。
+- `categories` 使用 `desktopExtensionCategorySchema` 定义的六个用途标签，沿用 `slots` 的重复项校验，省略或留空时视为未分类，不参与槽位互斥。
 - `author`、`repository` 和 `details` 是可选的展示元数据。仓库链接仅支持 HTTP(S)；`details` 保留段落和原有语言键，客户端使用与 `description` 相同的本地化规则。
 - id 规则与 Harness 插件 id 相同（`^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`，最长 128），并且**必须等于目录名**，这样无需处理重复 id。
 - 资源路径复用 Harness 的相对路径规则，并经 `pluginResourcePath` 解析。上限：manifest 128 KiB、脚本 2 MiB、样式 256 KiB、最多 64 个扩展，单次注入总量不超过 8 MiB。最多声明四张 PNG、JPEG 或 WebP 截图，每张至多 512 KiB。发现与构建共用受限读取及文件签名校验；打包保留截图的相对路径。截图字节不计入注入快照或实例 hash。

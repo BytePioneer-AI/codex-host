@@ -8,7 +8,7 @@
 
 - [x] 1.2 支持双语名称和向后兼容的字符串名称、可选的预置分类多选及重复项校验。从 `shared-contracts` 导出本地化取值 helper；覆盖发现、Console 列表及冲突、Host 设置列表和 Controller 对账；同步两个样板与作者文档。
 - [ ] 1.3 Desktop / Web 设置和 Console 页面消费双语元数据、分类标签、作者、仓库、详情和截图。
-- [x] 1.4 扩展 manifest 的可选展示字段和九种分类；打包与发现复用截图路径、权限、大小及签名校验；管理列表返回有总量上限的 `screenshotDataUrls`。覆盖无效 URL、缺失、越界、超限、伪装类型、列表上限及打包复制，更新样板 manifest 和作者 Skill。
+- [x] 1.4 扩展 manifest 的可选展示字段和六种用途分类；打包与发现复用截图路径、权限、大小及签名校验；管理列表返回有总量上限的 `screenshotDataUrls`。覆盖无效 URL、缺失、越界、超限、伪装类型、列表上限及打包复制，更新样板 manifest 和作者 Skill。
 
 ## 2. 主干 Thread 树订阅（host-runtime）
 

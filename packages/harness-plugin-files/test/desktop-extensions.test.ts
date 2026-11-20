@@ -82,9 +82,9 @@ it("discovers trusted files by content without evaluating code and rejects inval
 it("preserves bilingual metadata and diagnoses duplicate categories during discovery", async () => {
   const name = { en: "Sidebar badges", "zh-CN": "侧栏角标" };
   const description = { en: "Shows delegated Threads", "zh-CN": "显示委派的 Thread" };
-  const categories = ["sidebar", "workflow"];
+  const categories = ["interface", "workflow"];
   await install("bilingual", { name, description, categories });
-  await install("duplicate-tags", { name, categories: ["sidebar", "sidebar"] });
+  await install("duplicate-tags", { name, categories: ["interface", "interface"] });
   expect((await discoverDesktopExtensions(root)).extensions).toEqual([
     expect.objectContaining({
       id: "bilingual",

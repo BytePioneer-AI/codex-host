@@ -16,5 +16,5 @@
   "desktopApi": 1,
   "desktop": { "script": "desktop.js", "style": "desktop.css" },
   "slots": ["sidebar.thread-badge"],
-  "categories": ["sidebar", "workflow"]
+  "categories": ["interface", "workflow"]
 }

@@ -5,10 +5,9 @@ import type {
 } from "@codexhost/shared-contracts";
 
 export interface DesktopExtensionsMessages {
-  readonly directoryLabel: string;
-  readonly directoryDefaultHint: string;
-  readonly copyPath: string;
-  readonly copiedPath: string;
+  readonly moreActions: string;
+  readonly copyDirectoryMenuItem: string;
+  readonly copiedDirectoryPath: string;
   readonly copyPathFailed: string;
   readonly refresh: string;
   readonly refreshing: string;
@@ -51,8 +50,6 @@ export interface DesktopExtensionsMessages {
   readonly updating: string;
   readonly updateToVersion: string;
   readonly installedBadge: string;
-  readonly installedVersionHint: string;
-  readonly updatedAtLabel: string;
   readonly uninstall: string;
   readonly uninstalling: string;
   readonly uninstallConfirmPrompt: string;
@@ -114,9 +111,7 @@ export interface DesktopExtensionsMessages {
   readonly importErrorEmptyFile: string;
   readonly importErrorReadFailed: string;
   readonly importUnavailable: string;
-  readonly recoveryTitle: string;
-  readonly recoveryDescription: string;
-  readonly recoveryButton: string;
+  readonly recoveryMenuItem: string;
   readonly recoveryDialogTitle: string;
   readonly recoveryDialogDescription: string;
   readonly recoveryDialogOfflineNote: string;
@@ -127,10 +122,9 @@ export interface DesktopExtensionsMessages {
 }
 
 export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze({
-  directoryLabel: "Extensions directory",
-  directoryDefaultHint: "Default: ~/.codexhost/desktop-extensions/",
-  copyPath: "Copy path",
-  copiedPath: "Copied",
+  moreActions: "More actions",
+  copyDirectoryMenuItem: "Copy extensions directory path",
+  copiedDirectoryPath: "Copied extensions directory path.",
   copyPathFailed: "Copy failed",
   refresh: "Refresh",
   refreshing: "Refreshing…",
@@ -185,8 +179,6 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   updating: "Updating…",
   updateToVersion: "Update to v{version}",
   installedBadge: "Installed",
-  installedVersionHint: "Installed v{version}",
-  updatedAtLabel: "Updated {date}",
   uninstall: "Uninstall",
   uninstalling: "Uninstalling…",
   uninstallConfirmPrompt: "Remove this extension?",
@@ -265,10 +257,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   importErrorEmptyFile: "The selected .zip file is empty.",
   importErrorReadFailed: "Could not read the selected file: {message}",
   importUnavailable: "This Host does not support importing Desktop extensions.",
-  recoveryTitle: "Emergency recovery",
-  recoveryDescription:
-    "If an extension breaks the Codex Desktop sidebar or makes the window unusable, clear all enabled extensions and request the Desktop Controller to reload the window. Unsaved UI state may be lost.",
-  recoveryButton: "Disable all extensions and reload Desktop window",
+  recoveryMenuItem: "Disable all extensions & reload Desktop",
   recoveryDialogTitle: "Disable all extensions and reload Desktop window?",
   recoveryDialogDescription:
     "All enabled Desktop extensions will be cleared. The Desktop Controller will unload active extensions and reload the Codex Desktop main window. Unsaved UI state may be lost.",
@@ -281,10 +270,9 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
 });
 
 export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze({
-  directoryLabel: "扩展根目录",
-  directoryDefaultHint: "默认 ~/.codexhost/desktop-extensions/",
-  copyPath: "复制路径",
-  copiedPath: "已复制",
+  moreActions: "更多操作",
+  copyDirectoryMenuItem: "复制扩展目录路径",
+  copiedDirectoryPath: "已复制扩展目录路径。",
   copyPathFailed: "复制失败",
   refresh: "刷新",
   refreshing: "刷新中…",
@@ -323,7 +311,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
     integrations: "外部集成",
   }),
   groups: Object.freeze({
-    attention: "需要处理",
+    attention: "需关注",
     enabled: "已启用",
     disabled: "未启用",
   }),
@@ -337,8 +325,6 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   updating: "更新中…",
   updateToVersion: "更新到 v{version}",
   installedBadge: "已安装",
-  installedVersionHint: "已装 v{version}",
-  updatedAtLabel: "更新于 {date}",
   uninstall: "卸载",
   uninstalling: "卸载中…",
   uninstallConfirmPrompt: "确认卸载此扩展？",
@@ -412,10 +398,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   importErrorEmptyFile: "所选 .zip 文件为空。",
   importErrorReadFailed: "无法读取所选文件：{message}",
   importUnavailable: "当前 Host 不支持导入 Desktop 扩展。",
-  recoveryTitle: "应急恢复",
-  recoveryDescription:
-    "如果某个扩展导致 Codex Desktop 侧栏异常或无法操作，可禁用全部扩展并请求 Desktop Controller 重载窗口。未保存的界面状态可能会丢失。",
-  recoveryButton: "禁用全部扩展并重载 Desktop 窗口",
+  recoveryMenuItem: "禁用全部扩展并重载 Desktop",
   recoveryDialogTitle: "禁用全部扩展并重载 Desktop 窗口？",
   recoveryDialogDescription:
     "将清除全部已启用的 Desktop 扩展。Desktop Controller 会回收当前扩展并重载 Codex Desktop 主窗口，未保存的界面状态可能会丢失。",

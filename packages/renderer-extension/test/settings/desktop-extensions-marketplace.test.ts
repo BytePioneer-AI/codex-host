@@ -361,12 +361,12 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("市场 (3)"));
     expect(textOf(mounted.content)).toContain("已安装 (2)");
 
-    // Installed tab uses the unified 3-column grid/card structure without initial-letter avatars,
-    // shows official trust badge & lightweight update chip, and places the toggle in the card footer.
+    // Installed tab uses a single flat 3-column grid with minimalist 3-row cards:
+    // borderless official shield icon (no green pill), top-right toggle, and subtle update cue in bottom metadata.
     const installedGrids = descendants(mounted.content).filter(
       (el) => el.className === "settings-extensions-grid",
     );
-    expect(installedGrids.length).toBeGreaterThan(0);
+    expect(installedGrids).toHaveLength(1);
     const treeInstalledCard = descendants(mounted.content).find(
       (el) =>
         el.tagName === "article" &&
@@ -380,7 +380,16 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
         el.dataset.extensionId === "sidebar-delegation-badges",
     )!;
     expect(treeInstalledCard).toBeDefined();
-    expect(textOf(treeInstalledCard)).toContain("官方");
+    const treeVerified = descendants(treeInstalledCard).find(
+      (el) => el.className === "settings-extensions-card__verified",
+    )!;
+    expect(treeVerified).toBeDefined();
+    expect(treeVerified.getAttribute("aria-label")).toBe("官方");
+    expect(
+      descendants(treeInstalledCard).filter((el) =>
+        el.className.includes("settings-extensions-trust-badge"),
+      ),
+    ).toHaveLength(0);
     expect(textOf(treeInstalledCard)).toContain("codexhost · v0.1.0");
     expect(textOf(treeInstalledCard)).toContain("可更新");
     expect(textOf(badgesInstalledCard)).not.toContain("可更新");
@@ -403,8 +412,8 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
     expect(textOf(fallbackNotice)).not.toContain("offline");
 
-    // 3 marketplace cards share the exact same grid/card classes, have no avatar squares,
-    // render official/community badges, max 2 categories + overflow, and zero slot chips.
+    // 3 marketplace cards share the exact same 3-row card layout:
+    // borderless official shield icon, top-right action button, and plain middot categories (max 2, no blue chips).
     expect(
       descendants(mounted.content).filter((el) => el.className === "settings-extensions-grid"),
     ).toHaveLength(1);
@@ -423,28 +432,50 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
     ]);
     expect(
       marketCards.every(
-        (card) => descendants(card).filter((el) => el.className.includes("__icon")).length === 0,
+        (card) =>
+          descendants(card).filter(
+            (el) =>
+              el.className.includes("settings-extensions-category-chip") ||
+              el.className.includes("settings-extensions-trust-badge") ||
+              el.className === "settings-extensions-card__footer",
+          ).length === 0,
       ),
     ).toBe(true);
 
     const treeMarketCard = marketCards[0]!;
-    expect(textOf(treeMarketCard)).toContain("官方");
+    expect(
+      descendants(treeMarketCard).find(
+        (el) => el.className === "settings-extensions-card__verified",
+      ),
+    ).toBeDefined();
     expect(textOf(treeMarketCard)).toContain("codexhost · v0.2.0");
-    expect(textOf(treeMarketCard)).toContain("+1");
+    expect(
+      textOf(
+        descendants(treeMarketCard).find(
+          (el) => el.className === "settings-extensions-card__categories-text",
+        )!,
+      ),
+    ).toBe("侧栏 · 多会话协作");
     expect(textOf(treeMarketCard)).toContain("更新");
     expect(textOf(treeMarketCard)).not.toContain("sidebar.thread-layout");
-    expect(
-      descendants(treeMarketCard).filter((el) =>
-        el.className.includes("settings-extensions-slot-chip"),
-      ),
-    ).toHaveLength(0);
 
     const badgesMarketCard = marketCards[1]!;
     expect(textOf(badgesMarketCard)).toContain("已安装");
 
     const themeMarketCard = marketCards[2]!;
-    expect(textOf(themeMarketCard)).toContain("社区");
+    expect(
+      descendants(themeMarketCard).find(
+        (el) => el.className === "settings-extensions-card__verified",
+      ),
+    ).toBeUndefined();
     expect(textOf(themeMarketCard)).toContain("alice-dev · v1.0.0");
+    expect(
+      textOf(
+        descendants(themeMarketCard).find(
+          (el) => el.className === "settings-extensions-card__categories-text",
+        )!,
+      ),
+    ).toBe("外观主题");
     expect(textOf(themeMarketCard)).toContain("安装");
 
     // Category filter works on Marketplace tab.

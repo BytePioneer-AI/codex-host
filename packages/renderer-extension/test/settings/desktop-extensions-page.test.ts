@@ -162,7 +162,7 @@ class FakeDocument {
   readonly clipboardWriteText = vi.fn(async () => undefined);
   readonly defaultView: Window;
   visibilityState: DocumentVisibilityState = "visible";
-  readonly #listeners = new Map<string, Set<() => void>>();
+  readonly #listeners = new Map<string, Set<(event?: unknown) => void>>();
 
   constructor() {
     this.defaultView = {
@@ -174,14 +174,25 @@ class FakeDocument {
     return new FakeElement(tagName.toLowerCase(), this);
   }
 
-  addEventListener(name: string, listener: () => void): void {
+  addEventListener(name: string, listener: (event?: unknown) => void): void {
     const bucket = this.#listeners.get(name) ?? new Set();
     bucket.add(listener);
     this.#listeners.set(name, bucket);
   }
 
-  removeEventListener(name: string, listener: () => void): void {
+  removeEventListener(name: string, listener: (event?: unknown) => void): void {
     this.#listeners.get(name)?.delete(listener);
+  }
+
+  dispatch(name: string, event: Record<string, unknown> = {}): void {
+    const payload = {
+      preventDefault() {},
+      stopPropagation() {},
+      ...event,
+    };
+    for (const listener of [...(this.#listeners.get(name) ?? [])]) {
+      listener(payload);
+    }
   }
 }
 
@@ -355,7 +366,7 @@ describe("Desktop extensions settings page", () => {
     enMount.dispose();
   });
 
-  it("displays bilingual names, category badges, slot labels, attention-first groups, and disables invalid toggles", async () => {
+  it("displays minimalist 3-row cards, top-right toggles, plain middot categories, attention-only section, and disables invalid toggles", async () => {
     const client: RendererDesktopExtensionsClient = {
       listDesktopExtensions: vi.fn(async () => sampleList()),
       enableDesktopExtension: vi.fn(),
@@ -365,26 +376,35 @@ describe("Desktop extensions settings page", () => {
     const mounted = mountPage("zh-CN", () => client);
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
+    // Bottom directory bar and emergency recovery banner are removed; connection indicator sits in header.
+    expect(
+      descendants(mounted.content).find((el) => el.className === "settings-extensions__meta"),
+    ).toBeUndefined();
+    expect(
+      descendants(mounted.content).find((el) => el.className === "settings-extensions-recovery"),
+    ).toBeUndefined();
+    const header = descendants(mounted.content).find((el) =>
+      el.className.includes("settings-extensions__header"),
+    )!;
+    expect(textOf(header)).toContain("Desktop 已连接");
+
+    // Only Needs Attention gets a section heading; normal extensions share one flat 3-column grid.
     const groups = descendants(mounted.content).filter(
       (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
     );
-    expect(groups.map((group) => group.dataset.extensionGroup)).toEqual([
-      "attention",
-      "enabled",
-      "disabled",
-    ]);
+    expect(groups.map((group) => group.dataset.extensionGroup)).toEqual(["attention"]);
     expect(
       groups.map((group) =>
         textOf(
           descendants(group).find((el) => el.className === "settings-extensions__group-title"),
         ),
       ),
-    ).toEqual(["需要处理", "已启用", "未启用"]);
+    ).toEqual(["需关注"]);
 
     const grids = descendants(mounted.content).filter(
       (element) => element.className === "settings-extensions-grid",
     );
-    expect(grids).toHaveLength(3);
+    expect(grids).toHaveLength(2);
 
     const cards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
@@ -404,39 +424,45 @@ describe("Desktop extensions settings page", () => {
     expect(textOf(cards[0]!)).toContain("Desktop API 2 requires a newer codexhost");
     expect(textOf(cards[1]!)).toContain("Invalid manifest.json");
 
+    // Row 1 (top): title + toggle on right; Row 2: description; Row 3: borderless meta line with plain middot categories.
     const treeCard = cards[2]!;
     expect(textOf(treeCard)).toContain("侧栏委派树");
     expect(textOf(treeCard)).toContain("codexhost · v0.1.0");
     expect(textOf(treeCard)).toContain("归组委派的 Thread");
-    expect(textOf(treeCard)).toContain("运行中");
-    const treeCategoryChips = descendants(treeCard).filter((el) =>
-      el.className.includes("settings-extensions-category-chip"),
-    );
-    expect(treeCategoryChips.map((chip) => textOf(chip))).toEqual(["侧栏", "多会话协作"]);
-    // Compact card shows author · version but omits raw ID, slots, hash, and initial-letter avatar.
-    expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
-    expect(textOf(treeCard)).not.toContain("侧栏 Thread 布局");
-    expect(textOf(treeCard)).not.toContain("侧栏 Thread 角标");
-    expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
+    const treeTop = descendants(treeCard).find(
+      (el) => el.className === "settings-extensions-card__top",
+    )!;
     expect(
-      descendants(treeCard).filter((el) => el.className.includes("settings-extensions-slot-chip")),
+      descendants(treeTop).find((el) => el.tagName === "input" && el.type === "checkbox"),
+    ).toBeDefined();
+    expect(
+      descendants(treeCard).find((el) => el.className === "settings-extensions-card__footer"),
+    ).toBeUndefined();
+    expect(
+      descendants(treeCard).filter((el) =>
+        el.className.includes("settings-extensions-category-chip"),
+      ),
     ).toHaveLength(0);
+    expect(
+      descendants(treeCard).filter((el) => el.className.includes("settings-extensions-badge")),
+    ).toHaveLength(0);
+    const treeCategoriesText = descendants(treeCard).find(
+      (el) => el.className === "settings-extensions-card__categories-text",
+    )!;
+    expect(textOf(treeCategoriesText)).toBe("侧栏 · 多会话协作");
+    expect(textOf(treeCard)).not.toContain("sidebar-thread-tree");
+    expect(textOf(treeCard)).not.toContain(SAMPLE_TREE_HASH);
     expect(descendants(treeCard).filter((el) => el.className.includes("__icon"))).toHaveLength(0);
 
-    const treeFooter = descendants(treeCard).find(
-      (el) => el.className === "settings-extensions-card__footer",
-    )!;
-    expect(treeFooter).toBeDefined();
-    expect(
-      descendants(treeFooter).find((el) => el.tagName === "input" && el.type === "checkbox"),
-    ).toBeDefined();
-
+    // Disabled card omits redundant "未启用" text, status dot, and footer divider.
     const badgesCard = cards[3]!;
     expect(textOf(badgesCard)).toContain("Delegation Badges");
     expect(textOf(badgesCard)).toContain("v0.2.0");
-    // Disabled cards omit redundant neutral status badges in header.
+    expect(textOf(badgesCard)).not.toContain("未启用");
     expect(
-      descendants(badgesCard).filter((el) => el.className.includes("settings-extensions-badge")),
+      descendants(badgesCard).filter((el) =>
+        el.className.includes("settings-extensions-card__status-dot"),
+      ),
     ).toHaveLength(0);
     mounted.dispose();
 
@@ -451,21 +477,23 @@ describe("Desktop extensions settings page", () => {
           descendants(group).find((el) => el.className === "settings-extensions__group-title"),
         ),
       ),
-    ).toEqual(["Needs Attention", "Enabled", "Disabled"]);
+    ).toEqual(["Needs Attention"]);
     const enTreeCard = descendants(enMount.content).find(
       (element) => element.dataset.extensionId === "sidebar-thread-tree",
     )!;
     expect(textOf(enTreeCard)).toContain("Sidebar Thread Tree");
     expect(textOf(enTreeCard)).toContain("Groups delegated Threads");
     expect(
-      descendants(enTreeCard)
-        .filter((el) => el.className.includes("settings-extensions-category-chip"))
-        .map((chip) => textOf(chip)),
-    ).toEqual(["Sidebar", "Workflow"]);
+      textOf(
+        descendants(enTreeCard).find(
+          (el) => el.className === "settings-extensions-card__categories-text",
+        )!,
+      ),
+    ).toBe("Sidebar · Workflow");
     enMount.dispose();
   });
 
-  it("groups all attention, enabled, and disabled states in priority order and omits empty group headings", async () => {
+  it("puts attention items first and flattens enabled + disabled extensions into one grid with enabled sorted before disabled", async () => {
     const allStatesList: DesktopExtensionsListResult = {
       configuration: {
         version: 1,
@@ -557,37 +585,62 @@ describe("Desktop extensions settings page", () => {
     }));
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("主侧栏布局"));
 
+    const groupsWithAttention = descendants(mounted.content).filter(
+      (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
+    );
+    expect(groupsWithAttention.map((group) => group.dataset.extensionGroup)).toEqual(["attention"]);
+
     const cards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
     );
-    expect(cards.map((card) => card.dataset.extensionId)).toEqual([
+    expect(cards.slice(0, 2).map((card) => card.dataset.extensionId)).toEqual([
       "conflict-ext",
       "failed-ext",
-      "waiting-ext",
-      "running-ext",
-      "disabled-ext",
     ]);
+    // Enabled normal items come before disabled items in the flat grid.
+    expect(
+      cards
+        .slice(2, 4)
+        .map((card) => card.dataset.extensionId)
+        .sort(),
+    ).toEqual(["running-ext", "waiting-ext"]);
+    expect(cards[4]!.dataset.extensionId).toBe("disabled-ext");
     // Inline conflict occupant name uses localized text and failed error stays exposed inline.
     expect(textOf(cards[0]!)).toContain("主侧栏布局 (running-ext)");
     expect(textOf(cards[1]!)).toContain("activate() threw TypeError");
     mounted.dispose();
 
-    // When only running extensions exist, attention and disabled group headings are omitted.
-    const onlyRunning = mountPage("zh-CN", () => ({
+    // When only normal (enabled + disabled) extensions exist, zero group headings are rendered
+    // and all cards sit in a single 3-column grid with enabled sorted before disabled.
+    const healthyOnly = mountPage("en", () => ({
       listDesktopExtensions: vi.fn(async () => ({
         ...allStatesList,
-        extensions: [allStatesList.extensions[3]!],
+        extensions: [
+          allStatesList.extensions[0]!, // disabled-ext
+          allStatesList.extensions[1]!, // waiting-ext (enabled, "Waiting Theme")
+          allStatesList.extensions[3]!, // running-ext (enabled, "Primary Layout")
+        ],
       })),
       disableAllDesktopExtensionsAndReload: vi.fn(),
     }));
-    await vi.waitFor(() => expect(textOf(onlyRunning.content)).toContain("主侧栏布局"));
-    const renderedGroups = descendants(onlyRunning.content).filter(
-      (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
-    );
-    expect(renderedGroups.map((group) => group.dataset.extensionGroup)).toEqual(["enabled"]);
-    expect(textOf(onlyRunning.content)).not.toContain("需要处理");
-    expect(textOf(onlyRunning.content)).not.toContain("未启用");
-    onlyRunning.dispose();
+    await vi.waitFor(() => expect(textOf(healthyOnly.content)).toContain("Primary Layout"));
+    expect(
+      descendants(healthyOnly.content).filter(
+        (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
+      ),
+    ).toHaveLength(0);
+    expect(
+      descendants(healthyOnly.content).filter(
+        (element) => element.className === "settings-extensions-grid",
+      ),
+    ).toHaveLength(1);
+    expect(
+      descendants(healthyOnly.content)
+        .filter((element) => element.tagName === "article" && Boolean(element.dataset.extensionId))
+        .map((card) => card.dataset.extensionId),
+    ).toEqual(["running-ext", "waiting-ext", "disabled-ext"]);
+    expect(textOf(healthyOnly.content)).not.toContain("Needs Attention");
+    healthyOnly.dispose();
   });
 
   it("renders category filter pills only when categories exist and filters cards accurately", async () => {
@@ -661,7 +714,7 @@ describe("Desktop extensions settings page", () => {
     ]);
     expect(findPills()[0]!.getAttribute("aria-pressed")).toBe("true");
 
-    // Click "外观主题" -> only ext-theme remains and empty "已启用" group is omitted.
+    // Click "外观主题" -> only ext-theme remains in a flat grid without group headings.
     findPills()[2]!.dispatch("click");
     expect(findPills()[2]!.getAttribute("aria-pressed")).toBe("true");
     const themeCards = descendants(mounted.content).filter(
@@ -671,9 +724,9 @@ describe("Desktop extensions settings page", () => {
     const themeGroups = descendants(mounted.content).filter(
       (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
     );
-    expect(themeGroups.map((group) => group.dataset.extensionGroup)).toEqual(["disabled"]);
+    expect(themeGroups).toHaveLength(0);
 
-    // Click "全部" -> restores all 3 extensions.
+    // Click "全部" -> restores all 3 extensions (enabled first, then disabled sorted by name).
     findPills()[0]!.dispatch("click");
     const restoredCards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
@@ -1120,7 +1173,7 @@ describe("Desktop extensions settings page", () => {
     mounted.dispose();
   });
 
-  it("requires confirmation before disabling all extensions and reports pending reload accurately", async () => {
+  it("exposes directory path copy and emergency recovery inside the header more menu, with Esc/outside close and confirmation dialog", async () => {
     const listDesktopExtensions = vi
       .fn<() => Promise<DesktopExtensionsListResult>>()
       .mockResolvedValueOnce(sampleList())
@@ -1154,10 +1207,52 @@ describe("Desktop extensions settings page", () => {
     }));
     await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
-    const recoveryButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && textOf(el).includes("禁用全部扩展并重载 Desktop 窗口"),
+    const moreButton = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && el.dataset.action === "more-menu",
     )!;
-    recoveryButton.dispatch("click");
+    const moreMenu = descendants(mounted.content).find((el) => el.getAttribute("role") === "menu")!;
+    expect(moreMenu.hidden).toBe(true);
+    expect(moreButton.getAttribute("aria-expanded")).toBe("false");
+
+    // Open menu -> Escape closes it; open again -> outside click closes it.
+    moreButton.dispatch("click");
+    expect(moreMenu.hidden).toBe(false);
+    expect(moreButton.getAttribute("aria-expanded")).toBe("true");
+    mounted.document.dispatch("keydown", { key: "Escape" });
+    expect(moreMenu.hidden).toBe(true);
+
+    moreButton.dispatch("click");
+    expect(moreMenu.hidden).toBe(false);
+    mounted.document.dispatch("click", { target: mounted.content });
+    expect(moreMenu.hidden).toBe(true);
+
+    // Copy extensions directory path from menu.
+    moreButton.dispatch("click");
+    const copyMenuItem = descendants(moreMenu).find(
+      (el) => el.tagName === "button" && el.dataset.action === "copy-directory",
+    )!;
+    expect(textOf(copyMenuItem)).toContain("复制扩展目录路径");
+    expect(textOf(copyMenuItem)).toContain("$CODEXHOST_DATA_DIR/desktop-extensions/");
+    copyMenuItem.dispatch("click");
+    expect(moreMenu.hidden).toBe(true);
+    await vi.waitFor(() =>
+      expect(mounted.document.clipboardWriteText).toHaveBeenCalledWith(
+        "$CODEXHOST_DATA_DIR/desktop-extensions/",
+      ),
+    );
+    const banner = descendants(mounted.content).find((el) =>
+      el.className.includes("settings-extensions__banner"),
+    )!;
+    expect(textOf(banner)).toBe("已复制扩展目录路径。");
+
+    // Trigger emergency recovery from menu -> opens confirmation dialog.
+    moreButton.dispatch("click");
+    const recoveryMenuItem = descendants(moreMenu).find(
+      (el) => el.tagName === "button" && el.dataset.action === "open-recovery",
+    )!;
+    expect(textOf(recoveryMenuItem)).toContain("禁用全部扩展并重载 Desktop");
+    recoveryMenuItem.dispatch("click");
+    expect(moreMenu.hidden).toBe(true);
 
     // Confirmation dialog opens; RPC is not sent until confirmed.
     expect(disableAllDesktopExtensionsAndReload).not.toHaveBeenCalled();
@@ -1169,10 +1264,6 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() => expect(disableAllDesktopExtensionsAndReload).toHaveBeenCalledTimes(1));
     expect(disableAllDesktopExtensionsAndReload).toHaveBeenCalledWith({ expectedRevision: 4 });
     await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(2));
-
-    const banner = descendants(mounted.content).find((el) =>
-      el.className.includes("settings-extensions__banner"),
-    )!;
     expect(textOf(banner)).toBe("恢复指令已保存，等待 Desktop Controller 重载窗口。");
     mounted.dispose();
   });
@@ -1186,10 +1277,10 @@ describe("Desktop extensions settings page", () => {
     await vi.waitFor(() =>
       expect(textOf(mounted.content)).toContain("Desktop extension management is unavailable"),
     );
-    const recoveryButton = descendants(mounted.content).find(
-      (el) => el.tagName === "button" && textOf(el).includes("Disable all extensions"),
+    const recoveryMenuItem = descendants(mounted.content).find(
+      (el) => el.tagName === "button" && el.dataset.action === "open-recovery",
     )!;
-    expect(recoveryButton.disabled).toBe(true);
+    expect(recoveryMenuItem.disabled).toBe(true);
     mounted.dispose();
   });
 });

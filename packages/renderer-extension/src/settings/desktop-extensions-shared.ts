@@ -70,12 +70,12 @@ export function errorMessage(error: unknown): string {
 export function isWithinElement(target: EventTarget | null, container: HTMLElement): boolean {
   if (!target) return false;
   if (target === container) return true;
-  if (
-    typeof container.contains === "function" &&
-    typeof Node !== "undefined" &&
-    target instanceof Node
-  ) {
-    return container.contains(target);
+  if (typeof container.contains === "function") {
+    try {
+      return container.contains(target as Node);
+    } catch {
+      return false;
+    }
   }
   return false;
 }

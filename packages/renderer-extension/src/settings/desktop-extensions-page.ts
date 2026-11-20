@@ -35,12 +35,12 @@ import {
   formatSlotLabel,
   hasCatalogUpdate,
   isToggleBlocked,
+  isWithinElement,
   matchesCatalogSearchQuery,
   matchesInstalledSearchQuery,
   overlappingSlots,
   resolveAttentionDetail,
   type DesktopExtensionFeedback,
-  type DesktopExtensionGroupId,
   type DesktopExtensionItem,
   type DesktopExtensionMutationAction,
 } from "./desktop-extensions-shared.js";
@@ -49,7 +49,6 @@ import type { RendererSettingsMessages } from "./localization.js";
 import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
 
 const POLL_INTERVAL_MS = 5_000;
-const COPY_FEEDBACK_MS = 2_000;
 const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/desktop-extensions/";
 
 type ActiveTab = "installed" | "marketplace";
@@ -76,12 +75,6 @@ export interface RendererDesktopExtensionsClient {
   ): Promise<DesktopExtensionMutationResult>;
 }
 
-const EXTENSION_GROUP_ORDER: readonly DesktopExtensionGroupId[] = [
-  "attention",
-  "enabled",
-  "disabled",
-];
-
 function resolveAvailableClient(
   getClient: () => RendererDesktopExtensionsClient | null,
 ): RendererDesktopExtensionsClient | null {
@@ -103,16 +96,23 @@ export function createDesktopExtensionsSettingsPage(
       const ownerWindow = document.defaultView;
       const root = createEl(document, "div", "settings-extensions");
 
-      // Header: title on left, compact Import + Refresh on right.
-      const header = createEl(document, "div", "settings-remote__header");
-      const headerCopy = createEl(document, "div");
+      // Header: title + lightweight Desktop connection indicator on left;
+      // compact Import + Refresh + More ("...") menu on right.
+      const header = createEl(
+        document,
+        "div",
+        "settings-remote__header settings-extensions__header",
+      );
+      const headerLeft = createEl(document, "div", "settings-extensions__header-left");
       const title = createEl(
         document,
         "h1",
         "settings-section-label",
         messages.pageLabels["desktop-extensions"],
       );
-      headerCopy.append(title);
+      const connectionBadge = createEl(document, "span", "settings-extensions__connection");
+      connectionBadge.hidden = true;
+      headerLeft.append(title, connectionBadge);
 
       const toolbar = createEl(document, "div", "settings-remote__toolbar");
       const importButton = createEl(
@@ -136,8 +136,62 @@ export function createDesktopExtensionsSettingsPage(
       refreshButton.title = copy.refresh;
       refreshButton.setAttribute("aria-label", copy.refresh);
       refreshButton.append(createRendererSettingsIcon("refresh", 16));
-      toolbar.append(importButton, refreshButton);
-      header.append(headerCopy, toolbar);
+
+      const moreWrap = createEl(document, "div", "settings-extensions__more");
+      const moreButton = createEl(
+        document,
+        "button",
+        "settings-icon-button settings-extensions__more-button",
+      );
+      moreButton.type = "button";
+      moreButton.dataset.action = "more-menu";
+      moreButton.title = copy.moreActions;
+      moreButton.setAttribute("aria-label", copy.moreActions);
+      moreButton.setAttribute("aria-haspopup", "menu");
+      moreButton.setAttribute("aria-expanded", "false");
+      moreButton.append(createRendererSettingsIcon("ellipsis", 16));
+
+      const moreMenu = createEl(document, "div", "settings-extensions-menu");
+      moreMenu.setAttribute("role", "menu");
+      moreMenu.hidden = true;
+
+      const copyDirectoryMenuItem = createEl(document, "button", "settings-extensions-menu__item");
+      copyDirectoryMenuItem.type = "button";
+      copyDirectoryMenuItem.setAttribute("role", "menuitem");
+      copyDirectoryMenuItem.dataset.action = "copy-directory";
+      const copyDirectoryText = createEl(document, "span", "settings-extensions-menu__item-copy");
+      copyDirectoryText.append(
+        createEl(
+          document,
+          "span",
+          "settings-extensions-menu__item-label",
+          copy.copyDirectoryMenuItem,
+        ),
+        createEl(document, "code", "settings-extensions-menu__item-sub", EXTENSIONS_ROOT_DISPLAY),
+      );
+      copyDirectoryMenuItem.append(createRendererSettingsIcon("copy", 14), copyDirectoryText);
+
+      const menuDivider = createEl(document, "div", "settings-extensions-menu__divider");
+      menuDivider.setAttribute("role", "separator");
+
+      const recoveryMenuItem = createEl(
+        document,
+        "button",
+        "settings-extensions-menu__item settings-extensions-menu__item--danger",
+      );
+      recoveryMenuItem.type = "button";
+      recoveryMenuItem.setAttribute("role", "menuitem");
+      recoveryMenuItem.dataset.action = "open-recovery";
+      recoveryMenuItem.append(
+        createRendererSettingsIcon("undo", 14),
+        createEl(document, "span", "settings-extensions-menu__item-label", copy.recoveryMenuItem),
+      );
+
+      moreMenu.append(copyDirectoryMenuItem, menuDivider, recoveryMenuItem);
+      moreWrap.append(moreButton, moreMenu);
+
+      toolbar.append(importButton, refreshButton, moreWrap);
+      header.append(headerLeft, toolbar);
 
       // Persistent top navigation row: segmented tabs (Installed / Marketplace) + search input.
       const controlsBar = createEl(document, "div", "settings-extensions__toolbar");
@@ -206,80 +260,11 @@ export function createDesktopExtensionsSettingsPage(
 
       const body = createEl(document, "div", "settings-extensions__body");
 
-      // Bottom installed-tab utilities: compact extensions root directory bar + emergency recovery card.
-      const metaBar = createEl(document, "div", "settings-extensions__meta");
-      const directoryGroup = createEl(document, "div", "settings-extensions__directory");
-      const directoryLabel = createEl(
-        document,
-        "span",
-        "settings-extensions__directory-label",
-        copy.directoryLabel,
-      );
-      const directoryCode = createEl(document, "code", "", EXTENSIONS_ROOT_DISPLAY);
-      const directoryHint = createEl(
-        document,
-        "span",
-        "settings-extensions__directory-hint",
-        copy.directoryDefaultHint,
-      );
-      const copyPathButton = createEl(document, "button", "settings-extensions__copy-button");
-      copyPathButton.type = "button";
-      let copyResetTimer: ReturnType<typeof setTimeout> | undefined;
-      const setCopyButtonLabel = (label: string): void => {
-        copyPathButton.replaceChildren(createRendererSettingsIcon("copy", 13), label);
-      };
-      setCopyButtonLabel(copy.copyPath);
-      copyPathButton.addEventListener("click", () => {
-        const clipboard = ownerWindow?.navigator?.clipboard;
-        const flash = (label: string): void => {
-          setCopyButtonLabel(label);
-          clearTimeout(copyResetTimer);
-          copyResetTimer = setTimeout(() => {
-            if (!disposed && !context.signal.aborted) setCopyButtonLabel(copy.copyPath);
-          }, COPY_FEEDBACK_MS);
-        };
-        if (!clipboard) {
-          flash(copy.copyPathFailed);
-          return;
-        }
-        void clipboard.writeText(EXTENSIONS_ROOT_DISPLAY).then(
-          () => flash(copy.copiedPath),
-          () => flash(copy.copyPathFailed),
-        );
-      });
-      directoryGroup.append(directoryLabel, directoryCode, copyPathButton, directoryHint);
-
-      const connectionBadge = createEl(document, "span", "settings-extensions__connection");
-      connectionBadge.hidden = true;
-      metaBar.append(directoryGroup, connectionBadge);
-
-      const recoverySection = createEl(document, "section", "settings-extensions-recovery");
-      const recoveryCopy = createEl(document, "div", "settings-extensions-recovery__copy");
-      const recoveryHeading = createEl(document, "h2", "", copy.recoveryTitle);
-      const recoveryDescription = createEl(document, "p", "", copy.recoveryDescription);
-      recoveryCopy.append(recoveryHeading, recoveryDescription);
-      const recoveryButton = createEl(
-        document,
-        "button",
-        "settings-command-button settings-command-button--secondary settings-command-button--danger",
-      );
-      recoveryButton.type = "button";
-      recoveryButton.append(createRendererSettingsIcon("undo", 15), copy.recoveryButton);
-      recoverySection.append(recoveryCopy, recoveryButton);
-
-      root.append(
-        header,
-        controlsBar,
-        categorySlot,
-        banner,
-        diagnosticsPanel,
-        body,
-        metaBar,
-        recoverySection,
-      );
+      root.append(header, controlsBar, categorySlot, banner, diagnosticsPanel, body);
       context.content.append(root);
 
       let disposed = false;
+      let moreMenuOpen = false;
       let activeTab: ActiveTab = "installed";
       let listing: DesktopExtensionsListResult | null = null;
       let catalog: DesktopExtensionsCatalogResult | null = null;
@@ -390,7 +375,7 @@ export function createDesktopExtensionsSettingsPage(
 
         const { canInstall, canRecover } = clientCapabilities();
         importButton.disabled = mutating || !canInstall;
-        recoveryButton.disabled = mutating || !canRecover;
+        recoveryMenuItem.disabled = mutating || !canRecover;
 
         installedTabButton.textContent = formatMessage(copy.tabInstalled, {
           count: String(listing?.extensions.length ?? 0),
@@ -542,10 +527,17 @@ export function createDesktopExtensionsSettingsPage(
         categorySlot.replaceChildren(filterBar);
       };
 
+      const setMoreMenuOpen = (open: boolean): void => {
+        moreMenuOpen = open;
+        moreMenu.hidden = !open;
+        moreButton.setAttribute("aria-expanded", String(open));
+      };
+
       const openDetailModal = (extensionId: string): void => {
         if (disposed || context.signal.aborted || activeRecoveryDialog || importModal.isOpen) {
           return;
         }
+        setMoreMenuOpen(false);
         if (detailModal.extensionId !== extensionId) {
           modalFeedbackExtensionId = null;
         }
@@ -583,30 +575,13 @@ export function createDesktopExtensionsSettingsPage(
           void toggleExtension(item, desired);
         });
 
-        let footerMeta: HTMLElement | string | null = null;
-        if (hasCatalogUpdate(item, catalogEntry) && catalogEntry) {
-          const updateChip = createEl(
-            document,
-            "span",
-            "settings-extensions-update-chip",
-            copy.updateAvailable,
-          );
-          updateChip.dataset.updateAvailable = "true";
-          updateChip.title = formatMessage(copy.updateToVersion, {
-            version: catalogEntry.version,
-          });
-          footerMeta = updateChip;
-        } else if (item.status.state === "disabled") {
-          footerMeta = copy.states.disabled;
-        } else if (item.status.state === "running") {
-          footerMeta = copy.groups.enabled;
-        } else if (item.status.state === "waiting") {
-          footerMeta = copy.states.waiting;
-        } else {
-          footerMeta = item.manifest?.version
-            ? `v${item.manifest.version}`
-            : copy.states[item.status.state];
-        }
+        const updateHint =
+          hasCatalogUpdate(item, catalogEntry) && catalogEntry
+            ? {
+                label: copy.updateAvailable,
+                title: formatMessage(copy.updateToVersion, { version: catalogEntry.version }),
+              }
+            : undefined;
 
         const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
 
@@ -620,12 +595,12 @@ export function createDesktopExtensionsSettingsPage(
           version: item.manifest?.version,
           trustTier: catalogEntry?.trustTier,
           statusState: item.status.state,
+          updateHint,
           description: extensionDescription(item, messages.locale),
           attention,
           attentionId: attention ? errorId : undefined,
           categories: item.manifest?.categories,
-          footerMeta,
-          footerAction: toggle,
+          actionControl: toggle,
           busy: activeMutationId === item.id,
           dataset: {
             extensionState: item.status.state,
@@ -636,9 +611,6 @@ export function createDesktopExtensionsSettingsPage(
       };
 
       const renderInstalledTab = (): void => {
-        metaBar.hidden = false;
-        recoverySection.hidden = false;
-
         if (!listing) {
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
@@ -679,57 +651,77 @@ export function createDesktopExtensionsSettingsPage(
           catalogById.set(entry.id, entry);
         }
 
-        const buckets: Record<DesktopExtensionGroupId, DesktopExtensionItem[]> = {
-          attention: [],
-          enabled: [],
-          disabled: [],
-        };
+        const attentionItems: DesktopExtensionItem[] = [];
+        const normalItems: DesktopExtensionItem[] = [];
         for (const item of visibleExtensions) {
-          buckets[extensionGroupOf(item.status.state)].push(item);
+          if (extensionGroupOf(item.status.state) === "attention") {
+            attentionItems.push(item);
+          } else {
+            normalItems.push(item);
+          }
+        }
+
+        normalItems.sort((left, right) => {
+          const leftRank = left.enabled ? 0 : 1;
+          const rightRank = right.enabled ? 0 : 1;
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          const nameCmp = extensionDisplayName(left, messages.locale).localeCompare(
+            extensionDisplayName(right, messages.locale),
+            messages.locale,
+          );
+          if (nameCmp !== 0) return nameCmp;
+          return left.id.localeCompare(right.id);
+        });
+
+        const buildGrid = (items: readonly DesktopExtensionItem[]): HTMLElement => {
+          const grid = createEl(document, "div", "settings-extensions-grid");
+          for (const item of items) {
+            grid.append(renderExtensionCard(item, listing!.extensions, catalogById.get(item.id)));
+          }
+          return grid;
+        };
+
+        if (attentionItems.length === 0) {
+          const grid = buildGrid(normalItems);
+          grid.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
+          body.replaceChildren(grid);
+          return;
         }
 
         const groupsContainer = createEl(document, "div", "settings-extensions__groups");
         groupsContainer.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
-        for (const groupId of EXTENSION_GROUP_ORDER) {
-          const groupItems = buckets[groupId];
-          if (groupItems.length === 0) continue;
 
-          const section = createEl(document, "section", "settings-extensions__group");
-          section.dataset.extensionGroup = groupId;
-          const headingId = preferenceId(`desktop-ext-group-${groupId}`);
-          section.setAttribute("aria-labelledby", headingId);
+        const attentionSection = createEl(document, "section", "settings-extensions__group");
+        attentionSection.dataset.extensionGroup = "attention";
+        const headingId = preferenceId("desktop-ext-group-attention");
+        attentionSection.setAttribute("aria-labelledby", headingId);
 
-          const groupHead = createEl(document, "div", "settings-extensions__group-head");
-          const groupTitle = createEl(
-            document,
-            "h2",
-            "settings-extensions__group-title",
-            copy.groups[groupId],
-          );
-          groupTitle.id = headingId;
-          const groupCount = createEl(
-            document,
-            "span",
-            "settings-extensions__group-count",
-            String(groupItems.length),
-          );
-          groupHead.append(groupTitle, groupCount);
+        const groupHead = createEl(document, "div", "settings-extensions__group-head");
+        const groupTitle = createEl(
+          document,
+          "h2",
+          "settings-extensions__group-title",
+          copy.groups.attention,
+        );
+        groupTitle.id = headingId;
+        const groupCount = createEl(
+          document,
+          "span",
+          "settings-extensions__group-count",
+          String(attentionItems.length),
+        );
+        groupHead.append(groupTitle, groupCount);
+        attentionSection.append(groupHead, buildGrid(attentionItems));
+        groupsContainer.append(attentionSection);
 
-          const list = createEl(document, "div", "settings-extensions-grid");
-          for (const item of groupItems) {
-            list.append(renderExtensionCard(item, listing.extensions, catalogById.get(item.id)));
-          }
-          section.append(groupHead, list);
-          groupsContainer.append(section);
+        if (normalItems.length > 0) {
+          groupsContainer.append(buildGrid(normalItems));
         }
 
         body.replaceChildren(groupsContainer);
       };
 
       const renderMarketplaceTab = (): void => {
-        metaBar.hidden = true;
-        recoverySection.hidden = true;
-
         if (catalogUnavailable) {
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
@@ -864,8 +856,6 @@ export function createDesktopExtensionsSettingsPage(
           controlsBar.hidden = true;
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
-          metaBar.hidden = false;
-          recoverySection.hidden = false;
           renderEmptyBox(copy.unavailableTitle, copy.unavailableDescription);
           detailModal.sync(buildDetailModalState());
           return;
@@ -1451,6 +1441,7 @@ export function createDesktopExtensionsSettingsPage(
 
       const switchTab = (next: ActiveTab): void => {
         if (activeTab === next) return;
+        setMoreMenuOpen(false);
         activeTab = next;
         setFeedback(null);
         render();
@@ -1473,6 +1464,52 @@ export function createDesktopExtensionsSettingsPage(
         }
       };
 
+      const onDocumentClick = (event?: Event): void => {
+        if (!moreMenuOpen) return;
+        if (event?.target && isWithinElement(event.target, moreWrap)) return;
+        setMoreMenuOpen(false);
+      };
+
+      const onDocumentKeyDown = (event?: Event): void => {
+        if (!moreMenuOpen) return;
+        const key = (event as KeyboardEvent | undefined)?.key;
+        if (key !== "Escape") return;
+        event?.preventDefault?.();
+        setMoreMenuOpen(false);
+        moreButton.focus?.();
+      };
+
+      moreButton.addEventListener("click", (event) => {
+        event.stopPropagation?.();
+        setMoreMenuOpen(!moreMenuOpen);
+      });
+
+      copyDirectoryMenuItem.addEventListener("click", () => {
+        setMoreMenuOpen(false);
+        const clipboard = ownerWindow?.navigator?.clipboard;
+        if (!clipboard) {
+          setFeedback({ tone: "danger", text: copy.copyPathFailed });
+          return;
+        }
+        void clipboard.writeText(EXTENSIONS_ROOT_DISPLAY).then(
+          () => {
+            if (!disposed && !context.signal.aborted) {
+              setFeedback({ tone: "success", text: copy.copiedDirectoryPath });
+            }
+          },
+          () => {
+            if (!disposed && !context.signal.aborted) {
+              setFeedback({ tone: "danger", text: copy.copyPathFailed });
+            }
+          },
+        );
+      });
+
+      recoveryMenuItem.addEventListener("click", () => {
+        setMoreMenuOpen(false);
+        openRecoveryDialog();
+      });
+
       installedTabButton.addEventListener("click", () => switchTab("installed"));
       marketplaceTabButton.addEventListener("click", () => switchTab("marketplace"));
 
@@ -1491,12 +1528,14 @@ export function createDesktopExtensionsSettingsPage(
 
       importButton.addEventListener("click", () => {
         if (mutating || !clientCapabilities().canInstall) return;
+        setMoreMenuOpen(false);
         detailModal.close();
         importModal.open();
       });
 
       refreshButton.addEventListener("click", () => {
         if (mutating) return;
+        setMoreMenuOpen(false);
         if (activeTab === "marketplace") {
           if (!catalogLoading) void loadCatalog({ forceRefresh: true, silent: false });
         } else if (!loading) {
@@ -1513,8 +1552,9 @@ export function createDesktopExtensionsSettingsPage(
         }
       });
 
-      recoveryButton.addEventListener("click", openRecoveryDialog);
       document.addEventListener?.("visibilitychange", onVisibilityChange);
+      document.addEventListener?.("click", onDocumentClick);
+      document.addEventListener?.("keydown", onDocumentKeyDown);
 
       void loadInstalled({ silent: false });
       if (resolveAvailableClient(getClient)?.listDesktopExtensionCatalog) {
@@ -1524,8 +1564,9 @@ export function createDesktopExtensionsSettingsPage(
       return () => {
         disposed = true;
         clearPollTimer();
-        clearTimeout(copyResetTimer);
         document.removeEventListener?.("visibilitychange", onVisibilityChange);
+        document.removeEventListener?.("click", onDocumentClick);
+        document.removeEventListener?.("keydown", onDocumentKeyDown);
         detailModal.dispose();
         importModal.dispose();
         activeRecoveryDialog?.remove();

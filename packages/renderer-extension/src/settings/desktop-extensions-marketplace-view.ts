@@ -8,7 +8,6 @@ import {
   catalogDisplayName,
   createEl,
   formatMessage,
-  formatShortDate,
   hasCatalogUpdate,
   type DesktopExtensionItem,
   type DesktopExtensionMutationAction,
@@ -97,18 +96,6 @@ export function renderDesktopExtensionsMarketplaceGrid(
     const installState = installed ? (updateAvailable ? "update" : "installed") : "available";
     const isBusyCard = activeMutationId === entry.id;
 
-    let footerMeta: string | null = null;
-    if (installed?.manifest?.version) {
-      footerMeta = formatMessage(copy.installedVersionHint, {
-        version: installed.manifest.version,
-      });
-    } else {
-      const dateLabel = formatShortDate(entry.updatedAt ?? entry.publishedAt);
-      if (dateLabel) {
-        footerMeta = formatMessage(copy.updatedAtLabel, { date: dateLabel });
-      }
-    }
-
     const actionButton = createEl(document, "button");
     actionButton.type = "button";
     actionButton.dataset.extensionId = entry.id;
@@ -131,7 +118,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
         "settings-command-button settings-command-button--secondary settings-extensions-card__button settings-extensions-card__button--installed";
       actionButton.dataset.action = "installed";
       actionButton.append(
-        createRendererSettingsIcon("check", 13),
+        createRendererSettingsIcon("check", 12),
         createEl(document, "span", "", copy.installedBadge),
       );
       actionButton.disabled = mutating;
@@ -164,8 +151,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
         trustTier: entry.trustTier,
         description: catalogDescription(entry, messages.locale),
         categories: entry.categories,
-        footerMeta,
-        footerAction: actionButton,
+        actionControl: actionButton,
         busy: isBusyCard,
         dataset: {
           trustTier: entry.trustTier,

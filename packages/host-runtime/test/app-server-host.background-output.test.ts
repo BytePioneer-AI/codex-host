@@ -1027,4 +1027,52 @@ describe("Host runtime idle background output on a completed Turn", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("promotes a trailing idle background agentMessage to final_answer and demotes the earlier answer", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+
+      const beforeItems = await readHistoryItems(fixture, threadId, 3);
+      const initialAnswer = beforeItems.find((item) => item.type === "agentMessage");
+      expect(initialAnswer).toMatchObject({ phase: "final_answer" });
+
+      const bgId = hostItemIdSchema.parse("bg-final-reply");
+      session.emitEvent({
+        type: "item.background.started",
+        turnId,
+        item: { type: "agentMessage", itemId: bgId, text: "" },
+      });
+      session.emitEvent({
+        type: "item.updated",
+        turnId,
+        itemId: bgId,
+        update: { type: "text.append", text: "background task finished" },
+      });
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "agentMessage", itemId: bgId, text: "background task finished" },
+          outcome: { status: "succeeded" },
+        },
+      });
+      await fixture.collector.waitFor((message) => itemCompleted(message, bgId));
+
+      const afterItems = await readHistoryItems(fixture, threadId, 4);
+      const agentMessages = afterItems.filter((item) => item.type === "agentMessage");
+      expect(agentMessages).toHaveLength(2);
+      expect(agentMessages[0]).toMatchObject({ id: initialAnswer?.id, phase: null });
+      expect(agentMessages[1]).toMatchObject({
+        id: bgId,
+        text: "background task finished",
+        phase: "final_answer",
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });

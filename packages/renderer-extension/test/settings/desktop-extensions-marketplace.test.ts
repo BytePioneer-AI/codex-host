@@ -484,7 +484,9 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       ),
     );
     expect(fallbackNotice).toBeDefined();
-    expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
+    expect(textOf(fallbackNotice)).toContain(
+      "远端市场目录暂不可达。你仍可通过链接或 ZIP 安装扩展。",
+    );
     expect(textOf(fallbackNotice)).not.toContain("offline");
 
     // 3 marketplace cards share the exact same 3-row card layout:
@@ -1109,7 +1111,9 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
         el.className.includes("settings-extensions-market__notice"),
       ),
     );
-    expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
+    expect(textOf(fallbackNotice)).toContain(
+      "远端市场目录暂不可达。你仍可通过链接或 ZIP 安装扩展。",
+    );
     expect(textOf(fallbackNotice)).not.toContain("HTTP 404");
 
     // When source is not fallback and the catalog is empty with an error, surface the error notice.

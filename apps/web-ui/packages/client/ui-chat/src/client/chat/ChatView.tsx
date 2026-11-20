@@ -255,11 +255,11 @@ export function ChatView({
     },
     [inputActions],
   );
-  // A passage attached with a note leaves the Composer unfocused, so the reader
-  // can go on selecting and commenting before writing the request.
   const attachComment = useCallback(
     (text: string, annotation: string) => {
-      return inputActions?.addResponseAnnotation({ text, annotation }) !== undefined;
+      return (
+        inputActions?.addResponseAnnotation({ text, annotation }, { focus: "end" }) !== undefined
+      );
     },
     [inputActions],
   );

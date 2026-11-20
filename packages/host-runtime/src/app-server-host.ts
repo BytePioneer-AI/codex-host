@@ -875,7 +875,7 @@ export class AppServerHost {
   #unregisterDelegationApi: (() => void) | undefined;
   /** Set by the delegation registry this Host joined; absent means delegated starts are never queued. */
   #delegationCapacity: DelegationCapacityGate | undefined;
-  #unsubscribeAccountState: (() => void) | undefined;
+  #unsubscribeOfficialState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
   /** Active reply guards by request ID; each records whether its request was answered. */
   readonly #replyGuards = new Map<unknown, Set<{ answered: boolean }>>();
@@ -926,6 +926,7 @@ export class AppServerHost {
   readonly #pluginLoadAbort = new AbortController();
   #pluginLoading: Promise<void> | undefined;
   #usagePluginsReady: Promise<void> | undefined;
+  #sharedUsageGeneration: number | undefined;
   readonly #desktopRequests = new DesktopRequestQueue();
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
@@ -1010,6 +1011,7 @@ export class AppServerHost {
             native: {
               events: this.clientEvents,
               asyncQuestions: this.#asyncQuestions,
+              refreshBeforeRequest: () => this.#officialRuntimeScope.refreshBeforeRequest(),
               request: (method: string, params: JsonObject) =>
                 this.#requestClientNative(method, params),
               respond: (
@@ -1073,6 +1075,7 @@ export class AppServerHost {
       }));
     this.#officialRuntime = new OfficialRuntimeClient({
       scope: this.#officialRuntimeScope,
+      refreshBeforeRequests: !options.externalOnly,
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
         this.#abandonQueuedClaims();
@@ -1102,8 +1105,17 @@ export class AppServerHost {
             this.#diagnose("Codex Account identity or notification could not be updated"),
         })
       : undefined;
-    this.#unsubscribeAccountState = this.#officialRuntimeScope.gate.subscribe(() => {
-      if (this.#options.externalOnly) return;
+    const { gate, owner } = this.#officialRuntimeScope;
+    let readyGeneration = gate.phase === "ready" ? owner.generation : undefined;
+    this.#unsubscribeOfficialState = gate.subscribe(() => {
+      if (this.#options.externalOnly) {
+        // Only the shared channel owner publishes catalog invalidations for the scope.
+        if (gate.phase !== "ready") return;
+        const replaced = readyGeneration !== undefined && readyGeneration !== owner.generation;
+        readyGeneration = owner.generation;
+        if (replaced) this.clientEvents.harnessInspectionChanged("codex");
+        return;
+      }
       const snapshot = this.#accountControl.snapshot();
       void this.#writer
         .json({ method: "codexhost/account/changed", params: jsonValueSchema.parse(snapshot) })
@@ -1556,8 +1568,8 @@ export class AppServerHost {
       await this.#closeAdapters();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
-      this.#unsubscribeAccountState?.();
-      this.#unsubscribeAccountState = undefined;
+      this.#unsubscribeOfficialState?.();
+      this.#unsubscribeOfficialState = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
@@ -1633,8 +1645,8 @@ export class AppServerHost {
       this.#routeObservationTracker.clear();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
-      this.#unsubscribeAccountState?.();
-      this.#unsubscribeAccountState = undefined;
+      this.#unsubscribeOfficialState?.();
+      this.#unsubscribeOfficialState = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((error) => this.#diagnose(error));
       }
@@ -2310,6 +2322,7 @@ export class AppServerHost {
     this.#threadActivity.observeOfficial(input.value);
     this.#observeOfficialForkLineage(input.value);
     if (this.#options.externalOnly) {
+      this.#observeOfficialUsage(input.value, Date.now());
       this.#client.observeNativeMessage(input.value);
       // Native children created through Delegation still have a native owner
       // and lifecycle. Their rendering stays on the GUI's native connection.
@@ -2364,15 +2377,7 @@ export class AppServerHost {
         if (forwarded === parsed) await this.#writer.frame(input.frame);
         else await this.#writer.json(forwarded);
       }
-      // Plugin startup and history I/O must never delay the official protocol. Promise
-      // callbacks preserve observation order and the original receipt timestamps.
-      void (this.#usagePluginsReady ?? Promise.resolve())
-        .then(async () => {
-          for (const threadId of this.#observedSessionUsage.observe(parsed, observedAtMs)) {
-            await this.#writer.json({ method: THREAD_USAGE_UPDATED_METHOD, params: { threadId } });
-          }
-        })
-        .catch((error: unknown) => this.#diagnose(error));
+      this.#observeOfficialUsage(parsed, observedAtMs);
     } finally {
       // A start response settles only its own request, after the response reaches Desktop.
       this.#observeOfficialTurnStartResponse(parsed);
@@ -2387,14 +2392,46 @@ export class AppServerHost {
     }
   }
 
-  async #initializeSharedOfficial(): Promise<void> {
+  #observeOfficialUsage(value: JsonValue, observedAtMs: number): void {
+    // Don't delay the native protocol while the plugin is loading.
+    void (this.#usagePluginsReady ?? Promise.resolve())
+      .then(async () => {
+        for (const threadId of this.#observedSessionUsage.observe(value, observedAtMs)) {
+          if (this.#options.externalOnly)
+            this.clientEvents.changed(threadId, THREAD_USAGE_UPDATED_METHOD);
+          else
+            await this.#writer.json({ method: THREAD_USAGE_UPDATED_METHOD, params: { threadId } });
+        }
+      })
+      .catch((error: unknown) => this.#diagnose(error));
+  }
+
+  async #initializeSharedOfficial(refresh = true): Promise<void> {
     // The independent owner starts native Codex only when native metadata or
     // an explicit native Delegation needs it, not when Web merely connects.
+    if (refresh) {
+      const refreshing = this.#officialRuntimeScope.refreshBeforeRequest();
+      if (refreshing) await refreshing;
+    }
     await this.#officialRuntime.initialize();
-    await this.#officialRuntime.initializeProtocol({
+    const generation = this.#officialRuntimeScope.owner.generation;
+    if (this.#sharedUsageGeneration === generation) return;
+    void this.#waitForPlugins();
+    await this.#usagePluginsReady;
+    const params = {
       clientInfo: { name: "codexhost-shared-threads", version: "1" },
       capabilities: { experimentalApi: true },
-    });
+    };
+    const nativeParams = {
+      ...params,
+      ...this.#observedSessionUsage.requestOptions("initialize", params),
+    };
+    await this.#officialRuntime.initializeProtocol(nativeParams);
+    // Concurrent requests share the handshake; reset in-flight timing only once.
+    if (this.#sharedUsageGeneration !== generation) {
+      this.#observedSessionUsage.initialized(nativeParams);
+      this.#sharedUsageGeneration = generation;
+    }
   }
 
   #finishOfficialTurn(value: JsonValue): void {
@@ -2408,14 +2445,15 @@ export class AppServerHost {
     this.#signalActiveWorkChanged();
   }
 
-  async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
-    if (this.#options.externalOnly) await this.#initializeSharedOfficial();
-    return this.#officialRuntime.request(method, params);
+  async #requestOfficial(method: string, params: JsonObject, refresh = true): Promise<JsonObject> {
+    if (this.#options.externalOnly) await this.#initializeSharedOfficial(refresh);
+    const options = this.#observedSessionUsage.requestOptions(method, params);
+    return this.#officialRuntime.request(method, options ? { ...params, ...options } : params);
   }
 
   async #requestClientNative(method: string, params: JsonObject): Promise<ConsoleHostReply> {
     try {
-      const response = await this.#requestOfficial(method, params);
+      const response = await this.#requestOfficial(method, params, false);
       if (isRecord(response.error)) {
         return {
           error: {
@@ -5912,7 +5950,29 @@ export class AppServerHost {
       }
       consumedEnd.set(live.type, aligned);
     }
-    return { ...turn, items: [...items, ...remaining.values()] };
+    const merged = [...items, ...remaining.values()];
+    if (turn.status === "completed") {
+      const last = merged.at(-1);
+      if (
+        last &&
+        last.type === "agentMessage" &&
+        last.phase == null &&
+        typeof last.text === "string" &&
+        last.text.trim().length > 0 &&
+        background.has(last.id as HostItemId)
+      ) {
+        return {
+          ...turn,
+          items: merged.map((item, index) => {
+            if (index === merged.length - 1) return { ...item, phase: "final_answer" };
+            return item.type === "agentMessage" && item.phase === "final_answer"
+              ? { ...item, phase: null }
+              : item;
+          }),
+        };
+      }
+    }
+    return { ...turn, items: merged };
   }
 
   #externalThreadBusy(thread: ExternalThread): boolean {

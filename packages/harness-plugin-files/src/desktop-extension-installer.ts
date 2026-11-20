@@ -218,8 +218,7 @@ export async function installFromUrl({
   });
 }
 
-export const DEFAULT_DESKTOP_EXTENSION_STATS_URL =
-  "https://codexhost-desktop-extension-stats.codexhost-worker-deploy.workers.dev";
+export const DEFAULT_DESKTOP_EXTENSION_STATS_URL = "https://ext-stats.chost.dev";
 
 export function resolveDesktopExtensionStatsUrl(
   environment: NodeJS.ProcessEnv = process.env,

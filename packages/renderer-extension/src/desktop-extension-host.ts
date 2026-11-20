@@ -3,24 +3,46 @@ import {
   type DesktopExtensionDefine,
   type DesktopExtensionDefinitionV1,
   type DesktopExtensionDispose,
+  type DesktopExtensionSettingField,
   type DesktopExtensionSlot,
   type DesktopExtensionStatus,
 } from "@codexhost/shared-contracts";
-import { createDesktopExtensionApi, type DesktopExtensionBridge } from "./desktop-extension-api.js";
+import {
+  cloneStorageValues,
+  createDesktopExtensionApi,
+  type DesktopExtensionAssetsApi,
+  type DesktopExtensionBackendApi,
+  type DesktopExtensionBridge,
+  type DesktopExtensionRuntimeApiV1,
+  type DesktopExtensionSettingsPageContribution,
+  type DesktopExtensionStorageApi,
+} from "./desktop-extension-api.js";
 
 export interface DesktopExtensionEntry {
   id: string;
   hash: string;
   slots: DesktopExtensionSlot[];
+  name?: string | { readonly en: string; readonly "zh-CN": string };
+  settingsSchema?: readonly DesktopExtensionSettingField[];
   defineScript?: (define: DesktopExtensionDefine) => void;
   style?: string;
   error?: string;
+}
+
+export interface RegisteredDesktopExtensionSettingsPage {
+  readonly extensionId: string;
+  readonly kind: "custom" | "schema";
+  readonly title?: string | { readonly en: string; readonly "zh-CN": string };
+  readonly page?: DesktopExtensionSettingsPageContribution;
+  readonly schema?: readonly DesktopExtensionSettingField[];
 }
 
 interface Instance {
   hash: string;
   state: DesktopExtensionStatus["state"];
   error?: string;
+  name?: string | { readonly en: string; readonly "zh-CN": string };
+  settingsSchema?: readonly DesktopExtensionSettingField[];
   resources?: ReturnType<typeof createDesktopExtensionApi>;
   dispose?: DesktopExtensionDispose;
   removeStyle?: () => void;
@@ -32,6 +54,14 @@ export interface DesktopExtensionHost {
   status(): Record<string, DesktopExtensionStatus>;
   disposeAll(): Promise<void>;
   bind(bridge: DesktopExtensionBridge): () => void;
+  getRegisteredSettingsPages(): readonly RegisteredDesktopExtensionSettingsPage[];
+  subscribeSettingsPages(listener: () => void): () => void;
+  createExtensionServices(extensionId: string): {
+    readonly assets: DesktopExtensionAssetsApi;
+    readonly storage: DesktopExtensionStorageApi;
+    readonly backend: DesktopExtensionBackendApi;
+  };
+  notifyStorageChange(extensionId: string, values: Record<string, unknown>): void;
 }
 
 declare global {
@@ -81,6 +111,62 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
   let pendingReady: ReturnType<typeof setTimeout> | undefined;
   const instances = new Map<string, Instance>();
   const reports = new Map<string, DesktopExtensionStatus>();
+  const customSettingsPages = new Map<string, DesktopExtensionSettingsPageContribution>();
+  const settingsPageListeners = new Set<() => void>();
+  const storageListeners = new Map<string, Set<(values: Record<string, unknown>) => void>>();
+
+  const notifySettingsPages = (): void => {
+    for (const listener of [...settingsPageListeners]) {
+      try {
+        listener();
+      } catch {
+        // One subscriber failure cannot block others.
+      }
+    }
+  };
+
+  const subscribeStorage = (
+    extensionId: string,
+    listener: (values: Record<string, unknown>) => void,
+  ): (() => void) => {
+    let bucket = storageListeners.get(extensionId);
+    if (!bucket) {
+      bucket = new Set();
+      storageListeners.set(extensionId, bucket);
+    }
+    bucket.add(listener);
+    return () => {
+      const current = storageListeners.get(extensionId);
+      current?.delete(listener);
+      if (current && current.size === 0) storageListeners.delete(extensionId);
+    };
+  };
+
+  const notifyStorageChange = (extensionId: string, values: Record<string, unknown>): void => {
+    const bucket = storageListeners.get(extensionId);
+    if (!bucket) return;
+    for (const listener of [...bucket]) {
+      try {
+        listener(cloneStorageValues(values));
+      } catch {
+        // Individual subscriber errors are isolated by the extension API wrapper.
+      }
+    }
+  };
+
+  const registerSettingsPage = (
+    extensionId: string,
+    page: DesktopExtensionSettingsPageContribution,
+  ): (() => void) => {
+    customSettingsPages.set(extensionId, page);
+    notifySettingsPages();
+    return () => {
+      if (customSettingsPages.get(extensionId) !== page) return;
+      customSettingsPages.delete(extensionId);
+      notifySettingsPages();
+    };
+  };
+
   const serialize = (operation: () => Promise<void>) => {
     const next = queue.then(operation);
     queue = next.catch(() => undefined);
@@ -89,8 +175,9 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
   const message = (error: unknown) =>
     (error instanceof Error ? error.message : String(error)).slice(0, 2048);
 
-  async function reclaim(instance: Instance): Promise<string | undefined> {
+  async function reclaim(extensionId: string, instance: Instance): Promise<string | undefined> {
     instance.resources?.stopDeliveries();
+    const hadSchemaPage = Boolean(instance.settingsSchema && instance.settingsSchema.length > 0);
     let error: string | undefined;
     try {
       if (instance.dispose) await withTimeout(instance.dispose, DISPOSE_TIMEOUT_MS, "Cleanup");
@@ -102,12 +189,19 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       delete instance.resources;
       delete instance.dispose;
       delete instance.removeStyle;
+      const hadCustomPage = customSettingsPages.delete(extensionId);
+      if (hadCustomPage || hadSchemaPage) notifySettingsPages();
     }
     return error;
   }
 
   async function start(entry: DesktopExtensionEntry, currentBridge: DesktopExtensionBridge) {
-    const instance: Instance = { hash: entry.hash, state: "waiting" };
+    const instance: Instance = {
+      hash: entry.hash,
+      state: "waiting",
+      ...(entry.name !== undefined ? { name: entry.name } : {}),
+      ...(entry.settingsSchema !== undefined ? { settingsSchema: entry.settingsSchema } : {}),
+    };
     instances.set(entry.id, instance);
     const errors: number[] = [];
     const onError = (cause: unknown) => {
@@ -120,7 +214,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       instance.error = message(cause);
       instance.resources?.stopDeliveries();
       void serialize(async () => {
-        const cleanup = await reclaim(instance);
+        const cleanup = await reclaim(entry.id, instance);
         if (cleanup) instance.error = `${instance.error}; ${cleanup}`;
       });
     };
@@ -141,10 +235,16 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       }
       if (calls !== 1 || !definition || typeof definition.activate !== "function")
         throw new Error("Desktop extension must call define exactly once with activate");
-      const resources = createDesktopExtensionApi(entry.id, currentBridge, onError);
+      const resources = createDesktopExtensionApi(entry.id, currentBridge, onError, {
+        registerSettingsPage,
+        subscribeStorage,
+        notifyStorage: notifyStorageChange,
+      });
       instance.resources = resources;
       if (entry.style) instance.removeStyle = installStyle(document, entry.style);
-      const activate = definition.activate;
+      const activate = definition.activate as (
+        api: DesktopExtensionRuntimeApiV1,
+      ) => void | DesktopExtensionDispose | Promise<void | DesktopExtensionDispose>;
       const dispose = await withTimeout(
         () => activate(resources.api),
         ACTIVATE_TIMEOUT_MS,
@@ -152,11 +252,16 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       );
       if (typeof dispose === "function") instance.dispose = dispose;
       else if (dispose !== undefined) throw new Error("Invalid Desktop extension cleanup");
-      if (instance.state !== "failed") instance.state = "running";
+      if (instance.state !== "failed") {
+        instance.state = "running";
+        if (instance.settingsSchema && instance.settingsSchema.length > 0) {
+          notifySettingsPages();
+        }
+      }
     } catch (error) {
       instance.error = message(error);
       instance.state = "failed";
-      await reclaim(instance);
+      await reclaim(entry.id, instance);
     }
   }
 
@@ -171,7 +276,7 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
     const activeIds = new Set(active);
     for (const [id, instance] of instances) {
       if (activeIds.has(id) && available.get(id)?.hash === instance.hash) continue;
-      const error = await reclaim(instance);
+      const error = await reclaim(id, instance);
       instances.delete(id);
       if (error) reports.set(id, { state: "disabled", hash: instance.hash, error });
     }
@@ -191,6 +296,73 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
       if (entries !== desired || bridge !== current) return;
     }
   }
+
+  const getRegisteredSettingsPages = (): readonly RegisteredDesktopExtensionSettingsPage[] => {
+    const pages: RegisteredDesktopExtensionSettingsPage[] = [];
+    const seen = new Set<string>();
+    for (const [extensionId, page] of customSettingsPages) {
+      const instance = instances.get(extensionId);
+      const title = page.title ?? instance?.name;
+      pages.push({
+        extensionId,
+        kind: "custom",
+        ...(title !== undefined ? { title } : {}),
+        page,
+      });
+      seen.add(extensionId);
+    }
+    for (const [extensionId, instance] of instances) {
+      if (seen.has(extensionId)) continue;
+      if (instance.state !== "running") continue;
+      if (!instance.settingsSchema || instance.settingsSchema.length === 0) continue;
+      pages.push({
+        extensionId,
+        kind: "schema",
+        ...(instance.name !== undefined ? { title: instance.name } : {}),
+        schema: instance.settingsSchema,
+      });
+    }
+    return pages;
+  };
+
+  const createExtensionServices = (extensionId: string) => {
+    const assets: DesktopExtensionAssetsApi = {
+      async readDataUrl(relativePath: string) {
+        if (!bridge?.readAsset) {
+          throw new Error("Desktop extension assets API is unavailable");
+        }
+        return bridge.readAsset(extensionId, relativePath);
+      },
+    };
+    const storage: DesktopExtensionStorageApi = {
+      async get() {
+        if (!bridge?.getSettings) {
+          throw new Error("Desktop extension storage API is unavailable");
+        }
+        return cloneStorageValues(await bridge.getSettings(extensionId));
+      },
+      async set(values: Record<string, unknown>) {
+        if (!bridge?.setSettings) {
+          throw new Error("Desktop extension storage API is unavailable");
+        }
+        const updated = await bridge.setSettings(extensionId, values);
+        notifyStorageChange(extensionId, updated);
+        return cloneStorageValues(updated);
+      },
+      onChange(listener) {
+        return subscribeStorage(extensionId, listener);
+      },
+    };
+    const backend: DesktopExtensionBackendApi = {
+      async invoke(method: string, params?: unknown) {
+        if (!bridge?.invokeBackend) {
+          throw new Error("Desktop extension backend API is unavailable");
+        }
+        return bridge.invokeBackend(extensionId, method, params);
+      },
+    };
+    return { assets, storage, backend };
+  };
 
   return {
     version: 1,
@@ -225,6 +397,15 @@ export function createDesktopExtensionHost(document: Document): DesktopExtension
         void this.disposeAll();
       };
     },
+    getRegisteredSettingsPages,
+    subscribeSettingsPages(listener) {
+      settingsPageListeners.add(listener);
+      return () => {
+        settingsPageListeners.delete(listener);
+      };
+    },
+    createExtensionServices,
+    notifyStorageChange,
   };
 }
 

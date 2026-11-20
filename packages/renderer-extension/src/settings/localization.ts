@@ -41,6 +41,7 @@ export interface RendererSettingsMessages {
   readonly starOnGitHub: string;
   readonly sectionsLabel: string;
   readonly generalSection: string;
+  readonly pluginsSection: string;
   readonly otherSection: string;
   readonly appearanceDescription: string;
   readonly appearanceGroup: string;
@@ -302,6 +303,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star to support",
   sectionsLabel: "Settings sections",
   generalSection: "General",
+  pluginsSection: "Plugins",
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
@@ -620,6 +622,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   starOnGitHub: "Star 支持",
   sectionsLabel: "设置分类",
   generalSection: "通用",
+  pluginsSection: "插件",
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",

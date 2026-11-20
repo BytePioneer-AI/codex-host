@@ -34,6 +34,7 @@ export interface DesktopExtensionDetailModalState {
   readonly extensions: readonly DesktopExtensionItem[];
   readonly catalogExtensions: readonly DesktopExtensionCatalogEntry[];
   readonly contentLocale?: DesktopExtensionContentLocale | undefined;
+  readonly hasSettingsPage?: ((extensionId: string) => boolean) | undefined;
   readonly unavailable: boolean;
   readonly canInstall: boolean;
   readonly canUninstall: boolean;
@@ -60,9 +61,20 @@ export function createDesktopExtensionDetailModal(options: {
   readonly onToggle: (item: DesktopExtensionItem, enable: boolean) => void;
   readonly onInstall?: (entry: DesktopExtensionCatalogEntry, isUpdate: boolean) => void;
   readonly onUninstall?: (item: DesktopExtensionItem) => void;
-  readonly onClose?: () => void;
+  readonly onOpenSettings?: ((extensionId: string) => void) | undefined;
+  readonly onClose?: (() => void) | undefined;
 }): DesktopExtensionDetailModalController {
-  const { document, host, signal, messages, onToggle, onInstall, onUninstall, onClose } = options;
+  const {
+    document,
+    host,
+    signal,
+    messages,
+    onToggle,
+    onInstall,
+    onUninstall,
+    onOpenSettings,
+    onClose,
+  } = options;
   const copy = messages.desktopExtensions;
 
   let dialog: HTMLDialogElement | null = null;
@@ -258,6 +270,27 @@ export function createDesktopExtensionDetailModal(options: {
       );
       modalToggle.title = blocked ? blockedToggleReason(installed, copy) : "";
       nodes.push(modalToggle);
+
+      if (onOpenSettings && state.hasSettingsPage?.(extensionId)) {
+        const openSettingsButton = createEl(
+          document,
+          "button",
+          "settings-command-button settings-command-button--secondary",
+        );
+        openSettingsButton.type = "button";
+        openSettingsButton.dataset.action = "open-settings";
+        openSettingsButton.disabled = state.mutating;
+        openSettingsButton.append(
+          createRendererSettingsIcon("settings", 13),
+          createEl(document, "span", "", copy.openExtensionSettings),
+        );
+        openSettingsButton.addEventListener("click", () => {
+          if (openSettingsButton.disabled) return;
+          dialog?.close();
+          onOpenSettings(extensionId);
+        });
+        nodes.push(openSettingsButton);
+      }
 
       if (state.canUninstall) {
         if (confirmingUninstall) {

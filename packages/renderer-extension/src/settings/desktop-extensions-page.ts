@@ -15,6 +15,7 @@ import {
 import { RendererMethodUnavailableError } from "../renderer-request-sender.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
 import { renderDesktopExtensionCard } from "./desktop-extensions-card.js";
+import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import { createDesktopExtensionDetailModal } from "./desktop-extensions-detail-modal.js";
 import { createDesktopExtensionImportModal } from "./desktop-extensions-import-modal.js";
 import {
@@ -104,6 +105,20 @@ export interface RendererDesktopExtensionsClient {
   disableAllDesktopExtensionsAndReload?(
     input?: DesktopExtensionsRecoveryParams,
   ): Promise<DesktopExtensionMutationResult>;
+  readDesktopExtensionAsset?(input: {
+    id: string;
+    path: string;
+  }): Promise<{ mimeType: string; dataUrl: string }>;
+  getDesktopExtensionSettings?(input: { id: string }): Promise<{ values: Record<string, unknown> }>;
+  setDesktopExtensionSettings?(input: {
+    id: string;
+    values: Record<string, unknown>;
+  }): Promise<{ values: Record<string, unknown> }>;
+  invokeDesktopExtensionBackend?(input: {
+    id: string;
+    method: string;
+    params?: unknown;
+  }): Promise<{ result: unknown }>;
 }
 
 function resolveAvailableClient(
@@ -116,6 +131,7 @@ function resolveAvailableClient(
 export function createDesktopExtensionsSettingsPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererDesktopExtensionsClient | null = () => null,
+  pluginPages?: RendererSettingsPluginPagesSource,
 ): RendererSettingsPageDefinition {
   const copy = messages.desktopExtensions;
   return Object.freeze<RendererSettingsPageDefinition>({
@@ -415,6 +431,9 @@ export function createDesktopExtensionsSettingsPage(
           extensions: listing?.extensions ?? [],
           catalogExtensions: catalog?.extensions ?? [],
           contentLocale: resolveContentLocale(),
+          hasSettingsPage: pluginPages
+            ? (extensionId: string) => pluginPages.hasPageForExtension(extensionId)
+            : undefined,
           unavailable,
           canInstall,
           canUninstall,
@@ -443,6 +462,12 @@ export function createDesktopExtensionsSettingsPage(
         onUninstall: (item) => {
           void uninstallExtension(item);
         },
+        onOpenSettings: pluginPages
+          ? (extensionId) => {
+              const pageId = pluginPages.getPageIdForExtension(extensionId);
+              if (pageId) context.navigateToPage?.(pageId);
+            }
+          : undefined,
         onClose: () => {
           modalFeedbackExtensionId = null;
         },
@@ -1062,6 +1087,7 @@ export function createDesktopExtensionsSettingsPage(
             loading = false;
             unavailable = false;
             listing = result;
+            pluginPages?.syncInstalledExtensions?.(result.extensions);
             if (!keepFeedback) setFeedback(null);
             render();
             schedulePoll();
@@ -1172,6 +1198,7 @@ export function createDesktopExtensionsSettingsPage(
           const result = await install({ source: { type: "catalog", id: entry.id } });
           if (disposed || context.signal.aborted) return;
           listing = result.list;
+          pluginPages?.syncInstalledExtensions?.(result.list.extensions);
           const displayName = resolveDisplayNameFromList(
             result.list,
             result.extensionId,
@@ -1225,6 +1252,7 @@ export function createDesktopExtensionsSettingsPage(
           const result = await install({ source });
           if (disposed || context.signal.aborted) return;
           listing = result.list;
+          pluginPages?.syncInstalledExtensions?.(result.list.extensions);
           activeTab = "installed";
           selectedCategory = null;
           searchQuery = "";
@@ -1267,6 +1295,7 @@ export function createDesktopExtensionsSettingsPage(
           const result = await uninstall({ id: item.id });
           if (disposed || context.signal.aborted) return;
           listing = result.list;
+          pluginPages?.syncInstalledExtensions?.(result.list.extensions);
           detailModal.close();
           setFeedback({
             tone: "success",
@@ -1328,6 +1357,7 @@ export function createDesktopExtensionsSettingsPage(
                   entry.id === item.id ? { ...entry, enabled: enable } : entry,
                 ),
               };
+              pluginPages?.syncInstalledExtensions?.(listing.extensions);
             }
             setFeedback(
               {
@@ -1524,6 +1554,7 @@ export function createDesktopExtensionsSettingsPage(
                       enabled: false,
                     })),
                   };
+                  pluginPages?.syncInstalledExtensions?.(listing.extensions);
                 }
                 setFeedback({
                   tone: "info",
@@ -1713,6 +1744,13 @@ export function createDesktopExtensionsSettingsPage(
         }
       });
 
+      const unsubscribePluginPages =
+        pluginPages?.subscribe(() => {
+          if (!disposed && !context.signal.aborted) {
+            detailModal.sync(buildDetailModalState());
+          }
+        }) ?? null;
+
       document.addEventListener?.("visibilitychange", onVisibilityChange);
       document.addEventListener?.("click", onDocumentClick);
       document.addEventListener?.("keydown", onDocumentKeyDown);
@@ -1725,6 +1763,7 @@ export function createDesktopExtensionsSettingsPage(
       return () => {
         disposed = true;
         clearPollTimer();
+        unsubscribePluginPages?.();
         document.removeEventListener?.("visibilitychange", onVisibilityChange);
         document.removeEventListener?.("click", onDocumentClick);
         document.removeEventListener?.("keydown", onDocumentKeyDown);

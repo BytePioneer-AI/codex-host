@@ -81,6 +81,12 @@ export interface DesktopExtensionsMessages {
   readonly previousScreenshot: string;
   readonly nextScreenshot: string;
   readonly closePreview: string;
+  readonly openExtensionSettings: string;
+  readonly extensionSettingsSaving: string;
+  readonly extensionSettingsSaved: string;
+  readonly extensionSettingsLoadFailed: string;
+  readonly extensionSettingsSaveFailed: string;
+  readonly extensionSettingsReset: string;
   readonly slots: Readonly<Record<DesktopExtensionSlot, string>>;
   readonly states: Readonly<Record<DesktopExtensionStatus["state"], string>>;
   readonly toggleLabel: string;
@@ -216,9 +222,16 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   previousScreenshot: "Previous screenshot",
   nextScreenshot: "Next screenshot",
   closePreview: "Close preview",
+  openExtensionSettings: "Open settings",
+  extensionSettingsSaving: "Saving…",
+  extensionSettingsSaved: "Saved",
+  extensionSettingsLoadFailed: "Could not load extension settings: {message}",
+  extensionSettingsSaveFailed: "Could not save extension settings: {message}",
+  extensionSettingsReset: "Reset to defaults",
   slots: Object.freeze({
     "sidebar.thread-layout": "Sidebar thread layout",
     "sidebar.thread-badge": "Sidebar thread badge",
+    "appearance.theme": "Appearance theme",
   }),
   states: Object.freeze({
     running: "Running",
@@ -362,9 +375,16 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   previousScreenshot: "上一张截图",
   nextScreenshot: "下一张截图",
   closePreview: "收起大图",
+  openExtensionSettings: "打开设置",
+  extensionSettingsSaving: "保存中…",
+  extensionSettingsSaved: "已保存",
+  extensionSettingsLoadFailed: "无法读取扩展设置：{message}",
+  extensionSettingsSaveFailed: "无法保存扩展设置：{message}",
+  extensionSettingsReset: "恢复默认",
   slots: Object.freeze({
     "sidebar.thread-layout": "侧栏 Thread 布局",
     "sidebar.thread-badge": "侧栏 Thread 角标",
+    "appearance.theme": "外观主题",
   }),
   states: Object.freeze({
     running: "运行中",

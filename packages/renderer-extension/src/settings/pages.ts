@@ -40,6 +40,7 @@ import {
   createDesktopExtensionsSettingsPage,
   type RendererDesktopExtensionsClient,
 } from "./desktop-extensions-page.js";
+import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
 import type { LoadedSessionsClient } from "./loaded-sessions-table.js";
 import { createReleaseNotesElement } from "./release-notes.js";
 import { createAccountsSettingsPage, type RendererCodexAccountClient } from "./accounts-page.js";
@@ -704,6 +705,7 @@ export function createDefaultRendererSettingsPages(
   usageStatisticsHosts?: RendererUsageStatisticsHostsProvider,
   harnessSchedules?: HarnessSchedulesPageOptions,
   getDesktopExtensionsClient: () => RendererDesktopExtensionsClient | null = () => null,
+  pluginPages?: RendererSettingsPluginPagesSource,
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
@@ -727,7 +729,7 @@ export function createDefaultRendererSettingsPages(
       usageStatisticsHosts,
     ),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
-    createDesktopExtensionsSettingsPage(messages, getDesktopExtensionsClient),
+    createDesktopExtensionsSettingsPage(messages, getDesktopExtensionsClient, pluginPages),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),
   ]);

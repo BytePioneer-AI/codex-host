@@ -3561,6 +3561,26 @@ export function installRendererBindingProbe(
           (await modelClientForHost("local")?.hasDesktopThread?.(threadId)) === true,
         openCodexThread,
       ),
+    readAsset: async (id, path) => {
+      const reader = modelClientForHost("local")?.readDesktopExtensionAsset;
+      if (!reader) throw new Error("Desktop extension assets RPC is unavailable");
+      return reader({ id, path });
+    },
+    getSettings: async (id) => {
+      const reader = modelClientForHost("local")?.getDesktopExtensionSettings;
+      if (!reader) throw new Error("Desktop extension settings RPC is unavailable");
+      return (await reader({ id })).values;
+    },
+    setSettings: async (id, values) => {
+      const writer = modelClientForHost("local")?.setDesktopExtensionSettings;
+      if (!writer) throw new Error("Desktop extension settings RPC is unavailable");
+      return (await writer({ id, values })).values;
+    },
+    invokeBackend: async (id, method, params) => {
+      const invoker = modelClientForHost("local")?.invokeDesktopExtensionBackend;
+      if (!invoker) throw new Error("Desktop extension backend RPC is unavailable");
+      return (await invoker({ id, method, ...(params !== undefined ? { params } : {}) })).result;
+    },
   });
   const api: RendererBindingProbeApi = {
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),

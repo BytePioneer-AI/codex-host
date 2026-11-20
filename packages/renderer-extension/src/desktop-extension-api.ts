@@ -4,6 +4,8 @@ import type {
   ThreadTreeSnapshot,
 } from "@codexhost/shared-contracts";
 import type { SidebarAgentIconRow } from "./renderer-sidebar-agent-icons.js";
+import type { RendererSettingsIconName } from "./settings/icons.js";
+import type { RendererSettingsLocale } from "./settings/localization.js";
 
 type ObservableSidebarRow = Pick<
   SidebarAgentIconRow,
@@ -17,12 +19,68 @@ type WatchTree = (receive: ReceiveTree) => () => void;
 // same attribute. Claim each attribute on each element before writing it.
 const markerOwners = new WeakMap<Element, Map<string, string>>();
 
+export interface DesktopExtensionAssetsApi {
+  readDataUrl(relativePath: string): Promise<{ mimeType: string; dataUrl: string }>;
+}
+
+export interface DesktopExtensionStorageApi {
+  get(): Promise<Record<string, unknown>>;
+  set(values: Record<string, unknown>): Promise<Record<string, unknown>>;
+  onChange(listener: (values: Record<string, unknown>) => void): () => void;
+}
+
+export interface DesktopExtensionBackendApi {
+  invoke(method: string, params?: unknown): Promise<unknown>;
+}
+
+export interface DesktopExtensionSettingsPageContext {
+  readonly locale: RendererSettingsLocale;
+  readonly storage: DesktopExtensionStorageApi;
+  readonly assets: DesktopExtensionAssetsApi;
+  readonly backend: DesktopExtensionBackendApi;
+}
+
+export interface DesktopExtensionSettingsPageContribution {
+  readonly title?: string | { readonly en: string; readonly "zh-CN": string };
+  readonly icon?: RendererSettingsIconName;
+  mount(container: HTMLElement, context: DesktopExtensionSettingsPageContext): void | (() => void);
+}
+
+export interface DesktopExtensionSettingsApi {
+  registerPage(page: DesktopExtensionSettingsPageContribution): () => void;
+}
+
+export interface DesktopExtensionRuntimeApiV1 extends DesktopExtensionApiV1 {
+  readonly assets: DesktopExtensionAssetsApi;
+  readonly storage: DesktopExtensionStorageApi;
+  readonly backend: DesktopExtensionBackendApi;
+  readonly settings: DesktopExtensionSettingsApi;
+}
+
 export interface DesktopExtensionBridge {
   ready(): boolean;
   sidebar: { rows(): readonly ObservableSidebarRow[]; observe(onChange: () => void): () => void };
   watchTree: WatchTree;
   describe(harnessId: string): { name: string; icon?: string } | undefined;
   openThread(id: string, signal: AbortSignal): Promise<void>;
+  readAsset?(id: string, relativePath: string): Promise<{ mimeType: string; dataUrl: string }>;
+  getSettings?(id: string): Promise<Record<string, unknown>>;
+  setSettings?(id: string, values: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokeBackend?(id: string, method: string, params?: unknown): Promise<unknown>;
+}
+
+export interface DesktopExtensionApiHostHooks {
+  registerSettingsPage?(id: string, page: DesktopExtensionSettingsPageContribution): () => void;
+  subscribeStorage?(id: string, listener: (values: Record<string, unknown>) => void): () => void;
+  notifyStorage?(id: string, values: Record<string, unknown>): void;
+}
+
+export function cloneStorageValues(values: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return structuredClone(values);
+  } catch {
+    return { ...values };
+  }
 }
 
 /** Renderer-page relay: there is one Host subscription for all enabled extensions. */
@@ -90,12 +148,15 @@ export function createDesktopExtensionApi(
   id: string,
   bridge: DesktopExtensionBridge,
   onError: (error: unknown) => void,
+  hooks: DesktopExtensionApiHostHooks = {},
 ) {
   const abort = new AbortController();
   const navigation = new AbortController();
   const teardowns = new Set<() => void>();
   const nodes = new Set<Element>();
   const marked = new Map<Element, Map<string, string | null>>();
+  const localStorageListeners = new Set<(values: Record<string, unknown>) => void>();
+  let unregisterSettingsPage: (() => void) | null = null;
   const removeMark = (target: Element, key: string) => {
     const names = marked.get(target);
     if (!names?.has(key)) return;
@@ -131,7 +192,7 @@ export function createDesktopExtensionApi(
       throw new Error("Invalid Desktop extension marker name");
     return `data-cx-${id}-${name}`;
   };
-  const api: DesktopExtensionApiV1 = {
+  const api: DesktopExtensionRuntimeApiV1 = {
     id,
     apiVersion: 1,
     signal: abort.signal,
@@ -218,6 +279,87 @@ export function createDesktopExtensionApi(
         removeMark(target, attribute(name));
       },
     },
+    assets: {
+      async readDataUrl(relativePath: string) {
+        guard();
+        if (!bridge.readAsset) {
+          throw new Error("Desktop extension assets API is unavailable");
+        }
+        const result = await bridge.readAsset(id, relativePath);
+        guard();
+        return result;
+      },
+    },
+    storage: {
+      async get() {
+        guard();
+        if (!bridge.getSettings) {
+          throw new Error("Desktop extension storage API is unavailable");
+        }
+        const values = await bridge.getSettings(id);
+        guard();
+        return cloneStorageValues(values);
+      },
+      async set(values: Record<string, unknown>) {
+        guard();
+        if (!bridge.setSettings) {
+          throw new Error("Desktop extension storage API is unavailable");
+        }
+        const updated = await bridge.setSettings(id, values);
+        guard();
+        if (hooks.notifyStorage) {
+          hooks.notifyStorage(id, updated);
+        } else {
+          for (const listener of [...localStorageListeners]) {
+            delivery(listener, cloneStorageValues(updated));
+          }
+        }
+        return cloneStorageValues(updated);
+      },
+      onChange(listener: (values: Record<string, unknown>) => void) {
+        guard();
+        if (hooks.subscribeStorage) {
+          return track(
+            hooks.subscribeStorage(id, (values) => delivery(listener, cloneStorageValues(values))),
+          );
+        }
+        localStorageListeners.add(listener);
+        return track(() => {
+          localStorageListeners.delete(listener);
+        });
+      },
+    },
+    backend: {
+      async invoke(method: string, params?: unknown) {
+        guard();
+        if (!bridge.invokeBackend) {
+          throw new Error("Desktop extension backend API is unavailable");
+        }
+        const result = await bridge.invokeBackend(id, method, params);
+        guard();
+        return result;
+      },
+    },
+    settings: {
+      registerPage(page: DesktopExtensionSettingsPageContribution) {
+        guard();
+        if (!page || typeof page.mount !== "function") {
+          throw new Error("Desktop extension settings page must provide a mount function");
+        }
+        unregisterSettingsPage?.();
+        unregisterSettingsPage = null;
+        if (!hooks.registerSettingsPage) {
+          return () => undefined;
+        }
+        const removeFromHost = hooks.registerSettingsPage(id, page);
+        const disposePage = track(() => {
+          if (unregisterSettingsPage === disposePage) unregisterSettingsPage = null;
+          removeFromHost();
+        });
+        unregisterSettingsPage = disposePage;
+        return disposePage;
+      },
+    },
     track(teardown) {
       track(teardown);
     },
@@ -232,6 +374,8 @@ export function createDesktopExtensionApi(
       stopping = true;
       navigation.abort();
       abort.abort();
+      unregisterSettingsPage = null;
+      localStorageListeners.clear();
       for (const teardown of teardowns) {
         try {
           void Promise.resolve(teardown()).catch(onError);

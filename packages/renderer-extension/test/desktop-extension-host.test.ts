@@ -9,6 +9,7 @@ import {
   createDesktopTreeRelay,
   openLocalExtensionThread,
   type DesktopExtensionBridge,
+  type DesktopExtensionRuntimeApiV1,
 } from "../src/desktop-extension-api.js";
 
 const fixtures: Array<ReturnType<typeof createDesktopExtensionHost>> = [];
@@ -39,6 +40,21 @@ function setup() {
     draftId: () => null,
     isConnected: () => row.isConnected,
   };
+  const readAsset = vi.fn(async (_id: string, relativePath: string) => ({
+    mimeType: "image/png",
+    dataUrl: `data:image/png;base64,${relativePath}`,
+  }));
+  let storedSettings: Record<string, Record<string, unknown>> = {};
+  const getSettings = vi.fn(async (id: string) => storedSettings[id] ?? {});
+  const setSettings = vi.fn(async (id: string, values: Record<string, unknown>) => {
+    storedSettings = { ...storedSettings, [id]: { ...values } };
+    return storedSettings[id]!;
+  });
+  const invokeBackend = vi.fn(async (id: string, method: string, params?: unknown) => ({
+    id,
+    method,
+    params,
+  }));
   const bridge: DesktopExtensionBridge = {
     ready: () => true,
     sidebar: {
@@ -51,6 +67,10 @@ function setup() {
     watchTree: tree.subscribe,
     describe: () => undefined,
     openThread: vi.fn(),
+    readAsset,
+    getSettings,
+    setSettings,
+    invokeBackend,
   };
   host.bind(bridge);
   return {
@@ -58,6 +78,10 @@ function setup() {
     row,
     watch,
     stopWatch,
+    readAsset,
+    getSettings,
+    setSettings,
+    invokeBackend,
     update() {
       nextThreadId += "-next";
       for (const callback of listen) callback();
@@ -219,4 +243,77 @@ it("blocks remote and unknown Thread navigation", async () => {
   expect(navigate).not.toHaveBeenCalled();
   await openLocalExtensionThread("delegated-child", signal, [], exists, navigate);
   expect(navigate).toHaveBeenCalledWith("delegated-child", signal);
+});
+
+it("exposes assets, storage (with onChange fan-out & cleanup), backend invoke, and single-page settings registration", async () => {
+  const { host, readAsset, getSettings, setSettings, invokeBackend } = setup();
+  const pageEvents = vi.fn();
+  const stopListeningPages = host.subscribeSettingsPages(pageEvents);
+  const storageEventsA = vi.fn();
+  const storageEventsB = vi.fn();
+  let runtimeApi: DesktopExtensionRuntimeApiV1 | undefined;
+
+  await host.reconcile([
+    {
+      ...entry("aurora", "hash-1", (api) => {
+        const ext = api as DesktopExtensionRuntimeApiV1;
+        runtimeApi = ext;
+        ext.storage.onChange(storageEventsA);
+        ext.storage.onChange(storageEventsB);
+        // Repeated registerPage replaces the previous registration (at most 1 page per extension).
+        ext.settings.registerPage({
+          title: { en: "Old Title", "zh-CN": "旧标题" },
+          mount: () => undefined,
+        });
+        ext.settings.registerPage({
+          title: { en: "Aurora Theme", "zh-CN": "极光主题" },
+          icon: "appearance" as never,
+          mount: () => undefined,
+        });
+      }),
+      slots: ["appearance.theme"],
+    },
+  ]);
+
+  expect(host.getRegisteredSettingsPages()).toHaveLength(1);
+  expect(host.getRegisteredSettingsPages()[0]).toMatchObject({
+    extensionId: "aurora",
+    kind: "custom",
+    title: { en: "Aurora Theme", "zh-CN": "极光主题" },
+  });
+  expect(pageEvents).toHaveBeenCalled();
+
+  await expect(runtimeApi!.assets.readDataUrl("wallpapers/bg.png")).resolves.toEqual({
+    mimeType: "image/png",
+    dataUrl: "data:image/png;base64,wallpapers/bg.png",
+  });
+  expect(readAsset).toHaveBeenCalledWith("aurora", "wallpapers/bg.png");
+
+  await expect(runtimeApi!.storage.get()).resolves.toEqual({});
+  expect(getSettings).toHaveBeenCalledWith("aurora");
+
+  await expect(runtimeApi!.storage.set({ opacity: 0.8 })).resolves.toEqual({ opacity: 0.8 });
+  expect(setSettings).toHaveBeenCalledWith("aurora", { opacity: 0.8 });
+  expect(storageEventsA).toHaveBeenCalledWith({ opacity: 0.8 });
+  expect(storageEventsB).toHaveBeenCalledWith({ opacity: 0.8 });
+
+  await expect(runtimeApi!.backend.invoke("theme.scan", { dir: "wallpapers" })).resolves.toEqual({
+    id: "aurora",
+    method: "theme.scan",
+    params: { dir: "wallpapers" },
+  });
+  expect(invokeBackend).toHaveBeenCalledWith("aurora", "theme.scan", { dir: "wallpapers" });
+
+  // Disabling the extension automatically unregisters its settings page and cleans up storage listeners.
+  pageEvents.mockClear();
+  storageEventsA.mockClear();
+  await host.reconcile([]);
+  expect(host.getRegisteredSettingsPages()).toEqual([]);
+  expect(pageEvents).toHaveBeenCalled();
+
+  host.notifyStorageChange("aurora", { opacity: 0.5 });
+  expect(storageEventsA).not.toHaveBeenCalled();
+  await expect(runtimeApi!.storage.get()).rejects.toThrow();
+
+  stopListeningPages();
 });

@@ -10,6 +10,10 @@ import {
   type RendererSettingsLocale,
 } from "./settings/localization.js";
 import {
+  createDesktopExtensionPluginPagesSource,
+  type RendererSettingsPluginPagesSource,
+} from "./settings/desktop-extension-settings-pages.js";
+import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
   type RendererCodexAccountClient,
@@ -58,6 +62,7 @@ export function installRendererSettingsLifecycle(
   const lifecycleController = new AbortController();
   let locale = resolveRendererSettingsLocale(ownerWindow.navigator.languages);
   let shell: RendererSettingsShell | null = null;
+  let pluginPages: RendererSettingsPluginPagesSource | null = null;
   let trigger: RendererSettingsRailTriggerControl | null = null;
   let localeRequest: Promise<void> | null = null;
   let checkedUpdateClient: RendererUpdateClient | null = null;
@@ -75,6 +80,12 @@ export function installRendererSettingsLifecycle(
   } => {
     const messages = rendererSettingsMessages(locale);
     const schedules = options.harnessSchedules;
+    const getDesktopExtensionsClient = options.getDesktopExtensionsClient ?? (() => null);
+    const nextPluginPages = createDesktopExtensionPluginPagesSource({
+      messages,
+      getHost: () => ownerWindow.__codexhostDesktopExtensionsV1 ?? null,
+      getClient: getDesktopExtensionsClient,
+    });
     const definitions = createDefaultRendererSettingsPages(
       messages,
       options.getUpdateClient ?? (() => null),
@@ -100,11 +111,21 @@ export function installRendererSettingsLifecycle(
             },
           }
         : undefined,
-      options.getDesktopExtensionsClient ?? (() => null),
+      getDesktopExtensionsClient,
+      nextPluginPages,
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
+      pluginPages: nextPluginPages,
       onOpenChange(open) {
         trigger?.setSelected(open);
+        if (open) {
+          void getDesktopExtensionsClient()
+            ?.listDesktopExtensions?.()
+            .then((result) => {
+              if (!disposed) nextPluginPages.syncInstalledExtensions?.(result.extensions);
+            })
+            .catch(() => undefined);
+        }
       },
     });
     const nextTrigger = installRendererSettingsRailTrigger({
@@ -126,6 +147,7 @@ export function installRendererSettingsLifecycle(
     });
     nextTrigger.setUpdateAvailable(updateAvailable);
     shell = nextShell;
+    pluginPages = nextPluginPages;
     trigger = nextTrigger;
     return { shell: nextShell, trigger: nextTrigger };
   };
@@ -139,8 +161,10 @@ export function installRendererSettingsLifecycle(
     locale = nextLocale;
     trigger?.dispose();
     shell?.dispose();
+    pluginPages?.dispose?.();
     trigger = null;
     shell = null;
+    pluginPages = null;
     const mounted = mount();
     options.onLocaleChange?.(locale);
 
@@ -264,8 +288,10 @@ export function installRendererSettingsLifecycle(
       clearUpdateRetry();
       trigger?.dispose();
       shell?.dispose();
+      pluginPages?.dispose?.();
       trigger = null;
       shell = null;
+      pluginPages = null;
     },
   };
 }

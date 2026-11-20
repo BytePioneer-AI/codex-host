@@ -4316,6 +4316,102 @@ dialog.settings-account-dialog.settings-extensions-import-dialog::backdrop {
   border-radius: 8px;
 }
 
+.settings-extension-plugin-page {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.settings-extension-plugin-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-extension-plugin-page__header .settings-section-label {
+  padding-bottom: 0;
+}
+
+.settings-extension-plugin-page__status {
+  flex: none;
+  color: var(--settings-subtle);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.settings-extension-plugin-page__status[hidden] {
+  display: none;
+}
+
+.settings-extension-plugin-page__status[data-tone="success"] {
+  color: var(--settings-success);
+}
+
+.settings-extension-plugin-page__status[data-tone="danger"] {
+  color: var(--settings-danger);
+}
+
+.settings-extension-schema__input,
+.settings-extension-schema__select {
+  height: 32px;
+  padding: 4px 10px;
+  color: var(--settings-text);
+  font-size: 12.5px;
+  line-height: 20px;
+  background: var(--settings-surface);
+  border: 1px solid var(--settings-border);
+  border-radius: 7px;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.settings-extension-schema__input--text,
+.settings-extension-schema__select {
+  width: min(220px, 46vw);
+  min-width: 140px;
+}
+
+.settings-extension-schema__input--number {
+  width: 96px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-extension-schema__input:focus-visible,
+.settings-extension-schema__select:focus-visible {
+  outline: 2px solid var(--settings-focus);
+  outline-offset: 1px;
+  border-color: var(--settings-focus);
+}
+
+.settings-extension-schema__input[data-invalid="true"] {
+  border-color: var(--settings-danger);
+}
+
+.settings-extension-schema__range {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 10px;
+}
+
+.settings-extension-schema__slider {
+  width: 148px;
+  accent-color: var(--settings-focus);
+  cursor: pointer;
+}
+
+.settings-extension-schema__range-value {
+  min-width: 36px;
+  color: var(--settings-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 @media (max-width: 820px) {
   .settings-extensions-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -506,6 +506,7 @@ describe("Renderer fixed Model request client", () => {
       "enableDesktopExtension",
       "executeThreadCommand",
       "forkThread",
+      "getDesktopExtensionSettings",
       "getHarnessDisplayCapabilities",
       "getHarnessDisplaySettings",
       "getHarnessLaunchSettings",
@@ -521,6 +522,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectThreadUsage",
       "installDesktopExtension",
       "installation",
+      "invokeDesktopExtensionBackend",
       "listCodexAccounts",
       "listDesktopExtensionCatalog",
       "listDesktopExtensions",
@@ -537,12 +539,14 @@ describe("Renderer fixed Model request client", () => {
       "openWeb",
       "patchHarnessPreferences",
       "readDelegationThread",
+      "readDesktopExtensionAsset",
       "readUpdateStatus",
       "refreshCodexAccounts",
       "runtimeStatus",
       "selectThreadModel",
       "selectThreadPermissionMode",
       "selectThreadThinking",
+      "setDesktopExtensionSettings",
       "setHarnessDisplaySettings",
       "setHarnessLaunchSettings",
       "setIdleReleaseSettings",
@@ -1057,5 +1061,68 @@ describe("Renderer fixed Model request client", () => {
       "Invalid params",
     );
     expect(sendRequest).toHaveBeenCalledOnce();
+  });
+
+  it("validates and sends Desktop extension asset, settings, and backend invoke RPCs", async () => {
+    const sendRequest = vi.fn(async (method: string, params: unknown) => {
+      if (method === "codexhost/desktop/extensions/asset") {
+        return { mimeType: "image/png", dataUrl: "data:image/png;base64,AAAA" };
+      }
+      if (method === "codexhost/desktop/extensions/settings/get") {
+        return { values: { opacity: 0.85, theme: "aurora" } };
+      }
+      if (method === "codexhost/desktop/extensions/settings/set") {
+        return { values: (params as { values: Record<string, unknown> }).values };
+      }
+      if (method === "codexhost/desktop/extensions/backend/invoke") {
+        return { result: { ok: true, echoed: (params as { params?: unknown }).params } };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const client = createRendererModelClient([{ sendRequest }]);
+    if (!client) throw new Error("Synthetic Desktop extension client was not created");
+
+    await expect(
+      client.readDesktopExtensionAsset?.({ id: "aurora-theme", path: "assets/wallpaper.png" }),
+    ).resolves.toEqual({
+      mimeType: "image/png",
+      dataUrl: "data:image/png;base64,AAAA",
+    });
+    await expect(
+      client.readDesktopExtensionAsset?.({ id: "aurora-theme", path: "../secret.png" }),
+    ).rejects.toThrow();
+
+    await expect(client.getDesktopExtensionSettings?.({ id: "aurora-theme" })).resolves.toEqual({
+      values: { opacity: 0.85, theme: "aurora" },
+    });
+
+    await expect(
+      client.setDesktopExtensionSettings?.({
+        id: "aurora-theme",
+        values: { opacity: 0.6, darkBlur: true },
+      }),
+    ).resolves.toEqual({
+      values: { opacity: 0.6, darkBlur: true },
+    });
+
+    await expect(
+      client.invokeDesktopExtensionBackend?.({
+        id: "aurora-theme",
+        method: "stats.summary",
+        params: { range: "7d" },
+      }),
+    ).resolves.toEqual({
+      result: { ok: true, echoed: { range: "7d" } },
+    });
+    await expect(
+      client.invokeDesktopExtensionBackend?.({ id: "aurora-theme", method: "   " }),
+    ).rejects.toThrow();
+
+    expect(sendRequest.mock.calls.map(([method]) => method)).toEqual([
+      "codexhost/desktop/extensions/asset",
+      "codexhost/desktop/extensions/settings/get",
+      "codexhost/desktop/extensions/settings/set",
+      "codexhost/desktop/extensions/backend/invoke",
+    ]);
   });
 });

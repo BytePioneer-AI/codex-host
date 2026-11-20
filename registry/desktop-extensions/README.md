@@ -2,7 +2,7 @@
 
 这是可独立部署的市场元数据仓库，不负责构建第三方代码。`sources.json` 是审核过的来源清单；`catalog.json` 是客户端读取的生成结果。作者使用 Issue Form **只提交公开 GitHub 仓库 URL**；管理员从 Release ZIP 或默认分支的 `manifest.json` 读取扩展 ID，以 `community` 身份把来源加入 PR。首次上架的目标是人工花 10 秒查看 Actions 安检报告再点 Merge：确认仓库、作者、ID、档位与包都符合预期；遇到警告、可疑代码或不熟悉的发布者，应进一步审查而不是盲点 Merge。`official` 只由维护者赋予自己管理的来源。
 
-合并后，每 6 小时自动检查已登记来源，也可以手动运行 `Desktop extension registry`。优先使用最新稳定 Release 的 ZIP 资产；没有 Release 或没有 ZIP 资产时，验证默认分支的源码 zipball，并将索引的下载链接固定到已校验的 commit。若配置了 `sources[].asset`，则要求该 Release 资产存在，不回退。只有所有来源通过校验才更新索引；任何失败都保留上一份有效索引，维护者可从运行记录下载 `safety-report.md` 定位失败的来源。此流程只更新索引，**不会自动在用户设备上更新或启用扩展**。SHA-256 校验下载完整性，不证明代码可信；静态检查不是代码审计或沙箱。
+每 30 分钟自动同步已登记来源的最新版本和 GitHub Star 数。`main` 上的 `sources.json` 发生变更时立即触发同步，也可手动运行 `Desktop extension registry`。Star 数取自 `sources.json` 登记的仓库；无法读取有效计数时省略 `stars`，不影响扩展包校验。优先使用最新稳定 Release 的 ZIP 资产；没有 Release 或没有 ZIP 资产时，验证默认分支的源码 zipball，并将索引的下载链接固定到已校验的 commit。若配置了 `sources[].asset`，则要求该 Release 资产存在，不回退。只有所有来源的扩展包通过校验且 `catalog.json` 内容确有变化时才提交并推送；校验失败时保留上一份有效索引，维护者可从运行记录下载 `safety-report.md` 定位失败的来源。此流程只更新索引，**不会自动在用户设备上更新或启用扩展**。SHA-256 校验下载完整性，不证明代码可信；静态检查不是代码审计或沙箱。
 
 ## 作者发布要求
 
@@ -26,4 +26,4 @@
 3. 以 Node 24 执行 `npm ci --ignore-scripts`、`node validate-and-build-catalog.mjs --check-only`，检查报告。去掉 `--check-only` 时才生成 `catalog.json`，无变化则不改其时间戳。提交来源变更的 PR 使用只读 token，不要改成 `pull_request_target` 执行投稿代码。为定时工作流允许专用机器人账号写 `main` 上的生成索引（若分支保护禁止机器人提交，需要调整仓库发布策略）。
 4. 触发一次同步并确认 `catalog.json` 可从 `raw.githubusercontent.com/.../main/catalog.json` 公开读取。客户端以 jsDelivr 为备用，可用 `CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL` 指向测试索引。
 
-`sources.json` 每一项登记 `id`、公开的 `repository`、可选的精确 `asset` 文件名、可选 `trustTier`（默认 `community`）和 `minCodexHostVersion`。要下架扩展，审查后从清单移除并手动触发同步；已安装的副本由用户自行卸载。
+`sources.json` 每一项登记 `id`、公开的 `repository`、可选的精确 `asset` 文件名、可选 `trustTier`（默认 `community`）和 `minCodexHostVersion`。要下架扩展，审查后从清单移除；合并到 `main` 后会自动同步，已安装的副本由用户自行卸载。

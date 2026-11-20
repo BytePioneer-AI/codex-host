@@ -322,6 +322,7 @@ var desktopExtensionCatalogEntrySchema = z3.strictObject({
   details: localizedText(z3.string().trim().min(1).max(16384)).optional(),
   author: z3.string().trim().min(1).max(128),
   repository: desktopExtensionHttpUrlSchema,
+  stars: z3.number().int().min(0).optional(),
   categories: categoriesSchema.optional(),
   trustTier: desktopExtensionTrustTierSchema.default("community"),
   screenshots: z3

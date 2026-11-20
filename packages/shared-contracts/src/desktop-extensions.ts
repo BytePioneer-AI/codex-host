@@ -224,6 +224,7 @@ export const desktopExtensionCatalogEntrySchema = z.strictObject({
   details: localizedText(z.string().trim().min(1).max(16384)).optional(),
   author: z.string().trim().min(1).max(128),
   repository: desktopExtensionHttpUrlSchema,
+  stars: z.number().int().min(0).optional(),
   categories: categoriesSchema.optional(),
   trustTier: desktopExtensionTrustTierSchema.default("community"),
   screenshots: z

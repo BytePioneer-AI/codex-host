@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import { Script } from "node:vm";
 import { z } from "zod";
 import {
@@ -128,13 +129,25 @@ function validateScreenshot(bytes, path) {
   if (!valid) throw new Error(`Screenshot type does not match ${path}`);
 }
 
-async function selectPackage(source, owner, repo, headers) {
-  const api = `https://api.github.com/repos/${owner}/${repo}`;
-  const loadJson = async (path, missingOk = false) => {
-    const bytes = await download(`${api}/${path}`, 1024 * 1024, { headers, missingOk });
-    return bytes === undefined ? undefined : JSON.parse(utf8.decode(bytes));
-  };
-  const release = await loadJson("releases/latest", true);
+async function loadGitHubJson(url, headers, missingOk = false) {
+  const bytes = await download(url, 1024 * 1024, { headers, missingOk });
+  return bytes === undefined ? undefined : JSON.parse(utf8.decode(bytes));
+}
+
+async function readRepositoryStars(api, headers) {
+  try {
+    const metadata = await loadGitHubJson(api, headers);
+    const { data } = desktopExtensionCatalogEntrySchema.shape.stars.safeParse(
+      metadata?.stargazers_count,
+    );
+    return data;
+  } catch {
+    return undefined;
+  }
+}
+
+async function selectPackage(source, { owner, repo, api, headers }) {
+  const release = await loadGitHubJson(`${api}/releases/latest`, headers, true);
   if (release !== undefined) {
     if (
       release.draft ||
@@ -163,7 +176,7 @@ async function selectPackage(source, owner, repo, headers) {
   if (source.asset) throw new Error(`Expected Release .zip asset ${source.asset}`);
 
   // Pin the catalog to the commit we validate, not a moving default branch.
-  const [head] = await loadJson("commits?per_page=1");
+  const [head] = await loadGitHubJson(`${api}/commits?per_page=1`, headers);
   const sha = z
     .string()
     .regex(/^[a-f0-9]{40}$/u)
@@ -175,15 +188,17 @@ async function selectPackage(source, owner, repo, headers) {
   };
 }
 
-async function validateSource(source, previous) {
+async function validateSource(source, previous, starsByRepository) {
   const [, owner, repositoryName] = github.exec(source.repository);
   const repo = repositoryName.replace(/\.git$/iu, "");
+  const api = `https://api.github.com/repos/${owner}/${repo}`;
   const headers = { ...githubHeaders };
-  if (process.env.GH_TOKEN) headers.authorization = `Bearer ${process.env.GH_TOKEN}`;
-  const selected = await selectPackage(source, owner, repo, headers);
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (token) headers.authorization = `Bearer ${token}`;
+  const selected = await selectPackage(source, { owner, repo, api, headers });
   const { asset, release, date } = selected;
   const downloadUrl = desktopExtensionZipUrlSchema.parse(selected.downloadUrl);
-  // The catalog URL must work for unauthenticated users, even when metadata uses GH_TOKEN.
+  // The catalog URL must work for unauthenticated users, even when metadata uses a token.
   const zip = await download(
     downloadUrl,
     DESKTOP_EXTENSION_ZIP_MAX_BYTES,
@@ -240,6 +255,10 @@ async function validateSource(source, previous) {
       throw new Error(`Published screenshot differs from ZIP: ${path}`);
     screenshots.push(url);
   }
+  // Multiple sources can publish distinct assets from the same GitHub repository.
+  const repositoryKey = api.toLowerCase();
+  if (!starsByRepository.has(repositoryKey))
+    starsByRepository.set(repositoryKey, await readRepositoryStars(api, headers));
   return desktopExtensionCatalogEntrySchema.parse({
     id: manifest.id,
     version: manifest.version,
@@ -248,6 +267,7 @@ async function validateSource(source, previous) {
     details: manifest.details,
     author: manifest.author,
     repository: manifest.repository ?? source.repository,
+    stars: starsByRepository.get(repositoryKey),
     categories: manifest.categories,
     slots: manifest.slots,
     trustTier: source.trustTier,
@@ -268,59 +288,67 @@ function inline(text) {
     .slice(0, 800);
 }
 
-const args = process.argv.slice(2);
-if (args.length > 1 || (args.length && args[0] !== "--check-only"))
-  throw new Error("Usage: node validate-and-build-catalog.mjs [--check-only]");
-const report = [
-  "# Desktop extension safety report",
-  "",
-  "ZIP integrity, bundle layout, metadata, screenshots and static patterns only. Passing is not a code audit or sandbox.",
-  "",
-];
-const catalogPath = new URL("catalog.json", import.meta.url);
-const entries = [];
-let previous;
-try {
-  const { sources } = sourcesSchema.parse(
-    JSON.parse(await readFile(new URL("sources.json", import.meta.url), "utf8")),
-  );
-  previous = await readFile(catalogPath, "utf8")
-    .then((data) => desktopExtensionCatalogSchema.parse(JSON.parse(data)))
-    .catch((error) => {
-      if (error.code !== "ENOENT") throw error;
-      return undefined;
-    });
-  const existing = new Map(previous?.extensions.map((entry) => [entry.id, entry]));
-  for (const source of [...sources].sort((a, b) => a.id.localeCompare(b.id, "en"))) {
-    try {
-      const entry = await validateSource(source, existing.get(source.id));
-      entries.push(entry);
-      report.push(
-        `- PASS — ${inline(entry.id)} ${inline(entry.version)} (${entry.trustTier}) · ${inline(source.repository)} · ${inline(entry.downloadUrl)} · SHA-256: ${entry.sha256}`,
-      );
-    } catch (error) {
-      process.exitCode = 1;
-      report.push(`- FAIL — ${inline(source.id)}: ${inline(error.message)}`);
+export async function buildCatalog({
+  directory = new URL("./", import.meta.url),
+  checkOnly = false,
+} = {}) {
+  const report = [
+    "# Desktop extension safety report",
+    "",
+    "ZIP integrity, bundle layout, metadata, screenshots and static patterns only. Passing is not a code audit or sandbox.",
+    "",
+  ];
+  const catalogPath = new URL("catalog.json", directory);
+  const entries = [];
+  const starsByRepository = new Map();
+  let failed = false;
+  try {
+    const { sources } = sourcesSchema.parse(
+      JSON.parse(await readFile(new URL("sources.json", directory), "utf8")),
+    );
+    const previous = await readFile(catalogPath, "utf8")
+      .then((data) => desktopExtensionCatalogSchema.parse(JSON.parse(data)))
+      .catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+        return undefined;
+      });
+    const existing = new Map(previous?.extensions.map((entry) => [entry.id, entry]));
+    for (const source of [...sources].sort((a, b) => a.id.localeCompare(b.id, "en"))) {
+      try {
+        const entry = await validateSource(source, existing.get(source.id), starsByRepository);
+        entries.push(entry);
+        report.push(
+          `- PASS — ${inline(entry.id)} ${inline(entry.version)} (${entry.trustTier}) · ${inline(source.repository)} · ${inline(entry.downloadUrl)} · SHA-256: ${entry.sha256}`,
+        );
+      } catch (error) {
+        failed = true;
+        report.push(`- FAIL — ${inline(source.id)}: ${inline(error.message)}`);
+      }
     }
+    if (!failed && !checkOnly && JSON.stringify(entries) !== JSON.stringify(previous?.extensions)) {
+      const catalog = desktopExtensionCatalogSchema.parse({
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        extensions: entries,
+      });
+      const temporary = new URL("catalog.json.tmp", directory);
+      await writeFile(temporary, `${JSON.stringify(catalog, null, 2)}\n`);
+      await rename(temporary, catalogPath);
+    }
+  } catch (error) {
+    failed = true;
+    report.push(`- FAIL — ${inline(error.message)}`);
   }
-  if (
-    !process.exitCode &&
-    !args.length &&
-    JSON.stringify(entries) !== JSON.stringify(previous?.extensions)
-  ) {
-    const catalog = desktopExtensionCatalogSchema.parse({
-      schemaVersion: 1,
-      generatedAt: new Date().toISOString(),
-      extensions: entries,
-    });
-    const temporary = new URL("catalog.json.tmp", import.meta.url);
-    await writeFile(temporary, `${JSON.stringify(catalog, null, 2)}\n`);
-    await rename(temporary, catalogPath);
-  }
-} catch (error) {
-  process.exitCode = 1;
-  report.push(`- FAIL — ${inline(error.message)}`);
+  const markdown = `${report.join("\n")}\n`;
+  await writeFile(new URL("safety-report.md", directory), markdown);
+  return { failed, markdown };
 }
-const markdown = `${report.join("\n")}\n`;
-await writeFile(new URL("safety-report.md", import.meta.url), markdown);
-console.log(markdown);
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length && args[0] !== "--check-only"))
+    throw new Error("Usage: node validate-and-build-catalog.mjs [--check-only]");
+  const { failed, markdown } = await buildCatalog({ checkOnly: args.length > 0 });
+  if (failed) process.exitCode = 1;
+  console.log(markdown);
+}

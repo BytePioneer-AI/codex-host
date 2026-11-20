@@ -3,8 +3,11 @@ name: Desktop extension registry
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+    paths: [sources.json]
   schedule:
-    - cron: "20 */6 * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +27,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: node validate-and-build-catalog.mjs --check-only
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
       - if: always()
         run: if test -f safety-report.md; then cat safety-report.md >> "$GITHUB_STEP_SUMMARY"; fi
       - if: always()
@@ -41,13 +44,15 @@ jobs:
     concurrency: registry-sync
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: npm ci --ignore-scripts
       - run: node validate-and-build-catalog.mjs
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
       - if: always()
         run: if test -f safety-report.md; then cat safety-report.md >> "$GITHUB_STEP_SUMMARY"; fi
       - if: always()
@@ -57,9 +62,9 @@ jobs:
           path: safety-report.md
       - name: Publish catalog if changed
         run: |
-          git diff --quiet -- catalog.json && exit 0
+          git add -- catalog.json
+          git diff --cached --quiet -- catalog.json && exit 0
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- catalog.json
           git commit -m 'chore: sync Desktop extensions catalog'
           git push origin HEAD:main

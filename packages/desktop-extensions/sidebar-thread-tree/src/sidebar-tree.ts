@@ -1,504 +1,538 @@
 import type {
   DesktopExtensionApiV1,
   DesktopSidebarRow,
+  ThreadTreeNode,
   ThreadTreeSnapshot,
   ThreadTreeStatus,
 } from "@codexhost/shared-contracts";
 import {
-  collectSidebarIcons,
-  createRowIconObserverManager,
-  createThreadIcon,
-  findSidebarAgentIcon,
-  isZhDocument,
-  markExtensionNode,
-  openThread,
-  stopRowPointerPropagation,
-  threadAccessibleTitle,
-} from "../../src/presentation.js";
-import { planThreadTree, type DisplayThread } from "./tree.js";
+  SIDEBAR_TREE_OWNED_SELECTOR,
+  canRenderSidebarThreadTree,
+  clearSidebarThreadTree,
+  clearSidebarThreadTreeRow,
+  measureSidebarThreadTreeRows,
+  renderSidebarThreadTreeRoot,
+  renderSidebarThreadTreeVirtual,
+  setSidebarThreadTreeRowHidden,
+  type SidebarHarnessIcon,
+  type SidebarThreadTreeDisplay,
+  type SidebarThreadTreeHandlers,
+  type SidebarThreadTreeLabels,
+  type SidebarThreadTreeView,
+} from "./dom.js";
+import {
+  cancelSidebarThreadTreeMotion,
+  captureSidebarThreadTreeMotion,
+  playSidebarThreadTreeMotion,
+} from "./motion.js";
+import {
+  planSidebarThreadTree,
+  type SidebarThreadTreeRoot,
+  type SidebarThreadTreeRowInput,
+  type SidebarThreadTreeRowPlan,
+  type SidebarThreadTreeStatus,
+  type SidebarThreadTreeThread,
+} from "./tree.js";
 
-type TreeMark =
-  "hidden" | "replaced" | "root-row" | "icon-anchor" | "icon-expanded" | "icon-collapsed";
+/**
+ * Shows the Threads a sidebar Thread delegated under it, as the Web sidebar tree does.
+ *
+ * The parent relation and Thread states come from `api.threads.watchTree`, and mounted sidebar
+ * rows come from `api.sidebar.observeRows`. Rows of other Hosts are untouched.
+ */
 
-interface ListRowMetrics {
-  rowHeight: number;
-  borderRadius: string;
-  fontSize: string;
-  rowOffsetLeft: number;
-  rowOffsetRight: number;
-  iconSize: number;
-  iconOffset: number;
-  gap: number;
-}
+const SIDEBAR_SELECTOR = "[data-app-action-sidebar-scroll]";
+const AGENT_ICON_ATTRIBUTE = "data-codexhost-sidebar-agent-icon";
+const ACTIVE_ATTRIBUTE = "data-app-action-sidebar-thread-active";
+const TITLE_ATTRIBUTE = "data-app-action-sidebar-thread-title";
+/** Desktop marks the Composer of the open Thread with its id. */
+const COMPOSER_THREAD_ATTRIBUTE = "data-above-composer-conversation-id";
+/** Nodes whose arrival or removal changes what the tree shows. */
+const WATCHED_SELECTOR = `${SIDEBAR_SELECTOR}, [${COMPOSER_THREAD_ATTRIBUTE}]`;
+const MAX_REMEMBERED_EXPANDED = 500;
+const PLAIN: SidebarThreadTreeRowPlan = { kind: "plain" };
+export const SIDEBAR_THREAD_TREE_EXPANDED_KEY = "codexhost.sidebar-thread-tree.expanded.v1";
 
-const DEFAULT_METRICS: ListRowMetrics = {
-  rowHeight: 32,
-  borderRadius: "8px",
-  fontSize: "13px",
-  rowOffsetLeft: 0,
-  rowOffsetRight: 0,
-  iconSize: 14,
-  iconOffset: 10,
-  gap: 8,
-};
+export type SidebarTreeLocale = "en" | "zh-CN";
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function measureRowMetrics(
-  rowElement: HTMLElement,
-  itemElement: HTMLElement,
-): ListRowMetrics | null {
-  const rowRect = rowElement.getBoundingClientRect();
-  if (rowRect.height <= 0 || rowRect.width <= 0) return null;
-  const itemRect = itemElement.getBoundingClientRect();
-  const view = rowElement.ownerDocument.defaultView;
-  const rowStyle = view?.getComputedStyle(rowElement);
-  const icon = findSidebarAgentIcon(rowElement);
-  const title = rowElement.querySelector<HTMLElement>("[data-thread-title]");
-  const titleStyle = title ? view?.getComputedStyle(title) : undefined;
-
-  const iconRect = icon?.getBoundingClientRect();
-  const titleRect = title?.getBoundingClientRect();
-
-  const iconSize =
-    iconRect && iconRect.width > 0
-      ? clamp(Math.round(iconRect.width), 12, 20)
-      : DEFAULT_METRICS.iconSize;
-  const iconOffset =
-    iconRect && iconRect.width > 0
-      ? clamp(Math.round(iconRect.left - rowRect.left), 2, 40)
-      : DEFAULT_METRICS.iconOffset;
-  const gap =
-    iconRect && titleRect && iconRect.width > 0 && titleRect.width > 0
-      ? clamp(Math.round(titleRect.left - iconRect.right), 4, 16)
-      : DEFAULT_METRICS.gap;
-
-  const borderRadius =
-    rowStyle?.borderRadius && rowStyle.borderRadius !== "0px"
-      ? rowStyle.borderRadius
-      : DEFAULT_METRICS.borderRadius;
-  const fontSize =
-    (titleStyle?.fontSize && titleStyle.fontSize !== "0px" ? titleStyle.fontSize : undefined) ??
-    (rowStyle?.fontSize && rowStyle.fontSize !== "0px" ? rowStyle.fontSize : undefined) ??
-    DEFAULT_METRICS.fontSize;
-
+/** The wording of the Web sidebar tree. */
+export function sidebarThreadTreeLabels(locale: SidebarTreeLocale): SidebarThreadTreeLabels {
+  const chinese = locale === "zh-CN";
   return {
-    rowHeight: clamp(Math.round(rowRect.height), 24, 48),
-    borderRadius,
-    fontSize,
-    rowOffsetLeft: itemRect.width > 0 ? clamp(Math.round(rowRect.left - itemRect.left), 0, 32) : 0,
-    rowOffsetRight:
-      itemRect.width > 0 ? clamp(Math.round(itemRect.right - rowRect.right), 0, 32) : 0,
-    iconSize,
-    iconOffset,
-    gap,
+    expand: (count) => (chinese ? `展开 ${count} 个子会话` : `Expand ${count} child sessions`),
+    collapse: (count) => (chinese ? `收起 ${count} 个子会话` : `Collapse ${count} child sessions`),
+    status: (status) =>
+      status === "pending"
+        ? chinese
+          ? "等待处理"
+          : "Waiting for you"
+        : status === "running"
+          ? chinese
+            ? "正在运行"
+            : "Running"
+          : status === "unknown"
+            ? chinese
+              ? "状态未知"
+              : "Unknown"
+            : "",
+    children: (count) => (chinese ? `${count} 个子会话` : `${count} child sessions`),
+    running: (count) => (chinese ? `${count} 运行中` : `${count} running`),
+    pending: (count) => (chinese ? `${count} 待批准` : `${count} needs approval`),
+    expandSummary: (title, summary) =>
+      chinese ? `${title}，${summary}，展开` : `${title}, ${summary}, expand`,
   };
 }
 
-function applyListMetrics(panel: HTMLElement, metrics: ListRowMetrics): void {
-  panel.style.setProperty("--cx-tree-row-height", `${metrics.rowHeight}px`);
-  panel.style.setProperty("--cx-tree-row-radius", metrics.borderRadius);
-  panel.style.setProperty("--cx-tree-font-size", metrics.fontSize);
-  panel.style.setProperty("--cx-tree-row-inset-start", `${metrics.rowOffsetLeft}px`);
-  panel.style.setProperty("--cx-tree-row-inset-end", `${metrics.rowOffsetRight}px`);
-  panel.style.setProperty("--cx-tree-icon-size", `${metrics.iconSize}px`);
-  panel.style.setProperty("--cx-tree-icon-offset", `${metrics.iconOffset}px`);
-  panel.style.setProperty("--cx-tree-gap", `${metrics.gap}px`);
+export interface ExpandedStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
 }
 
-function createChevronSvg(doc: Document): SVGSVGElement {
-  const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 12 12");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("class", "cx-tree-chevron");
-  const path = doc.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", "M3 4.5L6 7.5L9 4.5");
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "currentColor");
-  path.setAttribute("stroke-width", "1.5");
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  svg.append(path);
-  return svg;
+export interface SidebarThreadTreeOptions {
+  /** Whether Desktop lays out a row's list; a collapsed project keeps its rows mounted. */
+  isRowListVisible?(row: HTMLElement): boolean;
+  storage?: ExpandedStorage | null;
+  root?: Document;
 }
 
-function toggleLabel(descendants: number, open: boolean, zh: boolean): string {
-  if (zh) return `${open ? "收起" : "展开"} ${descendants} 个子会话`;
-  const noun = descendants === 1 ? "child" : "children";
-  return `${open ? "Collapse" : "Expand"} ${descendants} ${noun}`;
-}
-
-function createStatusIndicator(doc: Document, status: ThreadTreeStatus): HTMLElement | null {
-  if (status === "idle") return null;
-  const indicator = doc.createElement("span");
-  indicator.className = "cx-tree-status";
-  indicator.dataset.state = status;
-  indicator.setAttribute("aria-hidden", "true");
-  return indicator;
-}
-
-function buildSummaryButton(
-  doc: Document,
-  thread: DisplayThread,
-  depth: number,
-  zh: boolean,
-): HTMLButtonElement {
-  const { descendants, running, waiting } = thread.activity;
-  const button = doc.createElement("button");
-  button.type = "button";
-  button.className = "cx-tree-summary";
-  button.dataset.branch = thread.id;
-  button.style.setProperty("--cx-tree-depth", String(Math.min(depth, 3)));
-  button.setAttribute("aria-expanded", "false");
-
-  const baseText = zh
-    ? `${descendants} 个子会话`
-    : `${descendants} ${descendants === 1 ? "child" : "children"}`;
-  const parts: string[] = [baseText];
-
-  const baseSpan = doc.createElement("span");
-  baseSpan.className = "cx-tree-summary-count";
-  baseSpan.textContent = baseText;
-  button.append(baseSpan);
-
-  const appendSegment = (text: string, activity: "running" | "waiting") => {
-    parts.push(text);
-    const sep = doc.createElement("span");
-    sep.className = "cx-tree-summary-sep";
-    sep.textContent = " · ";
-    const span = doc.createElement("span");
-    span.className = "cx-tree-summary-activity";
-    span.dataset.activity = activity;
-    span.textContent = text;
-    button.append(sep, span);
-  };
-
-  if (running > 0) appendSegment(zh ? `${running} 运行中` : `${running} running`, "running");
-  if (waiting > 0) appendSegment(zh ? `${waiting} 待批准` : `${waiting} waiting`, "waiting");
-
-  const label = `${parts.join(" · ")} · ${toggleLabel(descendants, false, zh)}`;
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  return button;
-}
-
-function addMark(map: Map<HTMLElement, Set<TreeMark>>, element: HTMLElement, mark: TreeMark): void {
-  let set = map.get(element);
-  if (!set) {
-    set = new Set();
-    map.set(element, set);
+function readExpanded(storage: ExpandedStorage | null): Set<string> {
+  try {
+    const value: unknown = JSON.parse(storage?.getItem(SIDEBAR_THREAD_TREE_EXPANDED_KEY) ?? "[]");
+    if (Array.isArray(value))
+      return new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0));
+  } catch {
+    // An unreadable preference starts collapsed.
   }
-  set.add(mark);
+  return new Set();
 }
 
-export function activate(api: DesktopExtensionApiV1): void {
-  let rows: readonly DesktopSidebarRow[] = [];
-  let snapshot: ThreadTreeSnapshot | undefined;
-  let marks = new Map<HTMLElement, Set<TreeMark>>();
-  const panels = new Map<HTMLElement, HTMLElement>();
-  const nativeToggles = new Map<HTMLElement, HTMLButtonElement>();
-  const expanded = new Set<string>();
+function detectLocale(doc: Document): SidebarTreeLocale {
+  const lang = doc.documentElement.lang.trim() || doc.defaultView?.navigator.language || "";
+  return /^zh\b/iu.test(lang) ? "zh-CN" : "en";
+}
 
-  const iconObserver = createRowIconObserverManager(api, () => render());
+function mapTreeStatus(status: ThreadTreeStatus): SidebarThreadTreeStatus {
+  if (status === "waiting") return "pending";
+  if (status === "running") return "running";
+  if (status === "unknown") return "unknown";
+  return "idle";
+}
 
-  function toggleBranch(branchId: string, focusContainer?: ParentNode): void {
-    const nextOpen = !expanded.has(branchId);
-    if (nextOpen) expanded.add(branchId);
-    else expanded.delete(branchId);
-    render();
-    if (!focusContainer) return;
-    for (const button of focusContainer.querySelectorAll<HTMLButtonElement>(
-      "button[data-branch]",
-    )) {
-      if (button.dataset.branch === branchId) {
-        button.focus({ preventScroll: true });
-        break;
-      }
+function defaultIsRowListVisible(row: HTMLElement): boolean {
+  const list = row.closest('[role="listitem"]')?.parentElement;
+  if (!list) return false;
+  if (list.getClientRects().length > 0) return true;
+  // In non-layout environments (e.g. jsdom), no element reports client rects unless mocked.
+  const doc = row.ownerDocument;
+  return (doc.body ?? doc.documentElement).getClientRects().length === 0;
+}
+
+function collectSampledIcons(rows: readonly DesktopSidebarRow[]): Map<string, Element> {
+  const icons = new Map<string, Element>();
+  for (const row of rows) {
+    if (!row.isConnected()) continue;
+    const host = row.element.querySelector<HTMLElement>(`[${AGENT_ICON_ATTRIBUTE}]`);
+    if (!host) continue;
+    const harnessId = host.getAttribute(AGENT_ICON_ATTRIBUTE);
+    if (!harnessId || icons.has(harnessId)) continue;
+    const graphic = host.querySelector(":scope > img, :scope > svg");
+    if (graphic) icons.set(harnessId, graphic);
+  }
+  return icons;
+}
+
+function iconSignature(sampled: Element | undefined, iconUrl: string | undefined): string {
+  if (sampled) {
+    const tag = sampled.tagName.toLowerCase();
+    if (tag === "img") {
+      const img = sampled as HTMLImageElement;
+      return `img:${img.getAttribute("src") ?? ""}:${img.style.borderRadius}:${img.style.background}:${img.style.padding}`;
     }
+    if (tag === "svg") return `svg:${sampled.innerHTML}`;
   }
+  if (iconUrl) return `url:${iconUrl}`;
+  return "fallback";
+}
 
-  function nativeToggleFor(rowElement: HTMLElement, item: HTMLElement): HTMLButtonElement {
-    const existing = nativeToggles.get(rowElement);
-    if (existing) return existing;
-    const doc = rowElement.ownerDocument;
-    const toggle = markExtensionNode(doc.createElement("button"));
-    toggle.type = "button";
-    toggle.className = "cx-tree-icon-toggle";
-    toggle.append(createChevronSvg(doc));
-    stopRowPointerPropagation(toggle, api.signal);
-    toggle.addEventListener(
-      "keydown",
-      (event) => {
-        if (event.key === "Enter" || event.key === " ") event.stopPropagation();
-      },
-      { signal: api.signal },
-    );
-    toggle.addEventListener(
-      "click",
-      (event) => {
-        event.stopPropagation();
-        event.preventDefault();
-        const branchId = toggle.dataset.branch;
-        if (branchId) toggleBranch(branchId, item);
-      },
-      { signal: api.signal },
-    );
-    nativeToggles.set(rowElement, toggle);
-    return toggle;
-  }
+/** A local Thread row Desktop has mounted. */
+interface MountedRow {
+  element: HTMLElement;
+  threadId: string;
+}
 
-  function panelFor(item: HTMLElement): HTMLElement {
-    const existing = panels.get(item);
-    if (existing) return existing;
-    const panel = markExtensionNode(item.ownerDocument.createElement("div"));
-    panel.className = "cx-sidebar-tree";
-    stopRowPointerPropagation(panel, api.signal);
-    panel.addEventListener(
-      "click",
-      (event) => {
-        event.stopPropagation();
-        if (!(event.target instanceof Element)) return;
-        const button = event.target.closest<HTMLButtonElement>("button");
-        const { thread, branch } = button?.dataset ?? {};
-        if (thread) {
-          void openThread(api, thread);
+export function activate(
+  api: DesktopExtensionApiV1,
+  options: SidebarThreadTreeOptions = {},
+): () => void {
+  const root = options.root ?? document;
+  const view = root.defaultView ?? window;
+  const storage =
+    options.storage !== undefined
+      ? options.storage
+      : (() => {
+          try {
+            return view.localStorage;
+          } catch {
+            return null;
+          }
+        })();
+  const isRowListVisible = options.isRowListVisible ?? defaultIsRowListVisible;
+
+  let disposed = false;
+  let observedRows: readonly DesktopSidebarRow[] = [];
+  let snapshot: ThreadTreeSnapshot | undefined;
+  const expanded = readExpanded(storage);
+  /** The open Thread whose ancestors were already expanded for it. */
+  let expandedForThreadId: string | null = null;
+  let applyScheduled = false;
+  let rafId: number | undefined;
+  const listIds = new WeakMap<Element, string>();
+  let nextListId = 0;
+  let lastTouchedRows = new Set<HTMLElement>();
+
+  const saveExpanded = (): void => {
+    try {
+      storage?.setItem(
+        SIDEBAR_THREAD_TREE_EXPANDED_KEY,
+        JSON.stringify([...expanded].slice(-MAX_REMEMBERED_EXPANDED)),
+      );
+    } catch {
+      // The choice still holds for this window.
+    }
+  };
+
+  const localMountedRows = (): {
+    mounted: MountedRow[];
+    sharedItems: Set<HTMLElement>;
+  } => {
+    const itemCounts = new Map<HTMLElement, number>();
+    for (const row of observedRows) {
+      if (!row.isConnected()) continue;
+      const item = row.element.closest<HTMLElement>('[role="listitem"]');
+      if (item) itemCounts.set(item, (itemCounts.get(item) ?? 0) + 1);
+    }
+    const sharedItems = new Set<HTMLElement>();
+    for (const [item, count] of itemCounts) {
+      if (count !== 1) sharedItems.add(item);
+    }
+    const mounted: MountedRow[] = [];
+    for (const row of observedRows) {
+      if (!row.isLocal || !row.threadId || !row.isConnected()) continue;
+      mounted.push({ element: row.element, threadId: row.threadId });
+    }
+    return { mounted, sharedItems };
+  };
+
+  const byThread = (rows: readonly MountedRow[]): Map<string, HTMLElement[]> => {
+    const map = new Map<string, HTMLElement[]>();
+    for (const { element, threadId } of rows) {
+      const list = map.get(threadId);
+      if (list) list.push(element);
+      else map.set(threadId, [element]);
+    }
+    return map;
+  };
+
+  /** The sidebar list a row belongs to; each list shows a tree once. */
+  const listOf = (row: HTMLElement): string => {
+    const list = row.closest('[role="listitem"]')?.parentElement ?? row;
+    let id = listIds.get(list);
+    if (id === undefined) listIds.set(list, (id = String((nextListId += 1))));
+    return id;
+  };
+
+  const navigate = (threadId: string): void => {
+    void api.navigate.openThread(threadId).catch((error: unknown) => {
+      if (!api.signal.aborted) console.warn("codexhost could not open the delegated Thread", error);
+    });
+  };
+
+  /** The open Thread: the Composer names it even when it has no sidebar row. */
+  const openThreadId = (rows: ReadonlyMap<string, HTMLElement[]>): string | null => {
+    const shown = new Set<string>();
+    const all = new Set<string>();
+    for (const portal of root.querySelectorAll(`[${COMPOSER_THREAD_ATTRIBUTE}]`)) {
+      const threadId = portal.getAttribute(COMPOSER_THREAD_ATTRIBUTE);
+      if (!threadId) continue;
+      all.add(threadId);
+      if (portal.getClientRects().length > 0) shown.add(threadId);
+    }
+    // A hidden Composer of an earlier view may still name its own Thread.
+    const composers = shown.size > 0 ? shown : all;
+    if (composers.size === 1) return [...composers][0] ?? null;
+    for (const [threadId, list] of rows) {
+      if (list.some((row) => row.getAttribute(ACTIVE_ATTRIBUTE) === "true")) return threadId;
+    }
+    return null;
+  };
+
+  const cancelScheduledApply = (): void => {
+    if (!applyScheduled) return;
+    applyScheduled = false;
+    if (rafId !== undefined && typeof view.cancelAnimationFrame === "function") {
+      view.cancelAnimationFrame(rafId);
+      rafId = undefined;
+    }
+  };
+
+  const toggle = (threadId: string, source: Element): void => {
+    if (disposed || api.signal.aborted) return;
+    const item = source.closest<HTMLElement>('[role="listitem"]');
+    const motion = item ? captureSidebarThreadTreeMotion(item) : null;
+    if (expanded.has(threadId)) expanded.delete(threadId);
+    else expanded.add(threadId);
+    saveExpanded();
+    // Laid out now, so the motion can start from the positions just recorded.
+    apply();
+    if (motion) {
+      playSidebarThreadTreeMotion(motion, (overlay, viewport) =>
+        api.dom.mount(overlay, viewport, "append"),
+      );
+    }
+  };
+
+  // A row press only opens: on the Web it also folds the open Thread, but on Desktop the first
+  // press of a double-click on the open row's title is the start of a rename.
+  const handlers: SidebarThreadTreeHandlers = { toggle, open: navigate };
+
+  const apply = (): void => {
+    cancelScheduledApply();
+    if (disposed || api.signal.aborted || !snapshot) return;
+
+    const parents: Readonly<Record<string, string>> = snapshot.parents;
+    const nodes: Readonly<Record<string, ThreadTreeNode>> = snapshot.nodes;
+    const { mounted, sharedItems } = localMountedRows();
+    const rows = byThread(mounted);
+    const sampledIcons = collectSampledIcons(observedRows);
+
+    const current = openThreadId(rows);
+    // Opening a Thread expands its ancestors once; they can be collapsed again afterwards.
+    // The Thread stays pending until the tree places it: it may be open before the tree is read.
+    if (current === null || !Object.hasOwn(parents, current)) expandedForThreadId = null;
+    else if (current !== expandedForThreadId) {
+      expandedForThreadId = current;
+      let changed = false;
+      const seen = new Set<string>([current]);
+      for (
+        let parentId: string | undefined = parents[current];
+        parentId !== undefined && !seen.has(parentId);
+        parentId = Object.hasOwn(parents, parentId) ? parents[parentId] : undefined
+      ) {
+        seen.add(parentId);
+        if (!expanded.has(parentId)) {
+          expanded.add(parentId);
+          changed = true;
+        }
+      }
+      if (changed) saveExpanded();
+    }
+
+    // Rows of collapsed lists are left to Desktop until they are shown again.
+    const planned: (MountedRow & SidebarThreadTreeRowInput & { renderable: boolean })[] = [];
+    for (const row of mounted) {
+      if (!isRowListVisible(row.element)) continue;
+      const item = row.element.closest<HTMLElement>('[role="listitem"]');
+      const renderable =
+        item !== null &&
+        item !== row.element &&
+        item.parentElement !== null &&
+        !sharedItems.has(item) &&
+        canRenderSidebarThreadTree(row.element);
+      planned.push({
+        ...row,
+        key: String(planned.length),
+        list: listOf(row.element),
+        renderable,
+      });
+    }
+
+    const threads = new Map<string, SidebarThreadTreeThread>();
+    for (const [threadId, node] of Object.entries(nodes)) {
+      threads.set(threadId, {
+        status: mapTreeStatus(node.status),
+        archived: node.archived,
+        order: 0,
+      });
+    }
+    const plans = planSidebarThreadTree({
+      parents,
+      threads,
+      rows: planned,
+      expanded: (threadId) => expanded.has(threadId),
+    });
+    // A tree whose place is a row it cannot be attached to shows nothing in that list, so
+    // nothing may be hidden for it there.
+    const broken = new Set<string>();
+    for (const row of planned) {
+      const plan = plans.get(row.key);
+      if (!row.renderable && (plan?.kind === "root" || plan?.kind === "virtual"))
+        broken.add(`${row.list}\u0000${plan.tree.threadId}`);
+    }
+
+    const harnessInfo = (harnessId: string): SidebarHarnessIcon => {
+      const described = api.harnesses.describe(harnessId);
+      const name = described?.name ?? (harnessId === "codex" ? "Codex" : harnessId);
+      const sampled = sampledIcons.get(harnessId);
+      const iconUrl = described?.icon;
+      return {
+        name,
+        ...(iconUrl ? { iconUrl } : {}),
+        ...(sampled ? { sampled } : {}),
+        signature: `${harnessId}|${name}|${iconSignature(sampled, iconUrl)}`,
+      };
+    };
+
+    const nativeTitle = (threadId: string): string | undefined =>
+      rows.get(threadId)?.[0]?.getAttribute(TITLE_ATTRIBUTE)?.trim() || undefined;
+    const display = (threadId: string): SidebarThreadTreeDisplay => {
+      const node = Object.hasOwn(nodes, threadId) ? nodes[threadId] : undefined;
+      const harnessId = node?.harnessId ?? "codex";
+      const harness = harnessInfo(harnessId);
+      return {
+        title: nativeTitle(threadId) ?? (node?.title?.trim() || undefined) ?? harness.name,
+        agent: harnessId,
+        harness,
+        current: threadId === current,
+      };
+    };
+    const viewOf = (tree: SidebarThreadTreeRoot): SidebarThreadTreeView => ({
+      ...tree,
+      nodes: tree.nodes.map((node) => ({ ...node, ...display(node.threadId) })),
+      root: display(tree.threadId),
+    });
+    const locale = detectLocale(root);
+    const labels = sidebarThreadTreeLabels(locale);
+
+    const resolved = planned.map((row) => {
+      const plan = plans.get(row.key) ?? PLAIN;
+      return !row.renderable ||
+        (plan.kind === "hidden" && broken.has(`${row.list}\u0000${plan.rootId}`))
+        ? { row, plan: PLAIN }
+        : { row, plan };
+    });
+    // Every list that shows a tree is measured before anything is written.
+    measureSidebarThreadTreeRows(
+      api.id,
+      resolved
+        .filter(({ plan }) => plan.kind === "root" || plan.kind === "virtual")
+        .map(({ row }) => row.element),
+    );
+
+    const touched = new Set<HTMLElement>();
+    for (const { row, plan } of resolved) {
+      touched.add(row.element);
+      if (plan.kind === "root" || plan.kind === "virtual") {
+        setSidebarThreadTreeRowHidden(api, row.element, false);
+        const render =
+          plan.kind === "root" ? renderSidebarThreadTreeRoot : renderSidebarThreadTreeVirtual;
+        render(api, row.element, viewOf(plan.tree), labels, handlers, locale);
+        continue;
+      }
+      clearSidebarThreadTreeRow(api, row.element);
+      setSidebarThreadTreeRowHidden(api, row.element, plan.kind === "hidden");
+    }
+    for (const { element } of mounted) {
+      if (touched.has(element)) continue;
+      clearSidebarThreadTreeRow(api, element);
+      setSidebarThreadTreeRowHidden(api, element, false);
+    }
+    for (const previous of lastTouchedRows) {
+      if (touched.has(previous) || !previous.isConnected) continue;
+      clearSidebarThreadTreeRow(api, previous);
+      setSidebarThreadTreeRowHidden(api, previous, false);
+    }
+    lastTouchedRows = touched;
+  };
+
+  const scheduleApply = (): void => {
+    if (disposed || api.signal.aborted || applyScheduled) return;
+    applyScheduled = true;
+    if (typeof view.requestAnimationFrame === "function") {
+      rafId = view.requestAnimationFrame(() => {
+        rafId = undefined;
+        apply();
+      });
+    } else {
+      queueMicrotask(apply);
+    }
+  };
+
+  const ObserverCtor = view.MutationObserver ?? globalThis.MutationObserver;
+  const observer = ObserverCtor
+    ? new ObserverCtor((mutations) => {
+        if (disposed || api.signal.aborted) return;
+        for (const mutation of mutations) {
+          const target =
+            mutation.target instanceof view.Element
+              ? mutation.target
+              : mutation.target.parentElement;
+          if (!target) continue;
+          // The module's own nodes must not start another pass.
+          if (target.closest(SIDEBAR_TREE_OWNED_SELECTOR)) continue;
+          if (mutation.attributeName === COMPOSER_THREAD_ATTRIBUTE) {
+            scheduleApply();
+            return;
+          }
+          const touchesSidebar =
+            target.closest(SIDEBAR_SELECTOR) !== null ||
+            target.closest('[role="listitem"]') !== null ||
+            [...mutation.addedNodes, ...mutation.removedNodes].some(
+              (node) =>
+                node instanceof view.Element &&
+                !node.matches(SIDEBAR_TREE_OWNED_SELECTOR) &&
+                (node.matches(WATCHED_SELECTOR) || node.querySelector(WATCHED_SELECTOR) !== null),
+            );
+          if (!touchesSidebar) continue;
+          if (
+            mutation.type === "childList" &&
+            [...mutation.addedNodes, ...mutation.removedNodes].every(
+              (node) => node instanceof view.Element && node.matches(SIDEBAR_TREE_OWNED_SELECTOR),
+            )
+          )
+            continue;
+          scheduleApply();
           return;
         }
-        if (branch) toggleBranch(branch, item);
-      },
-      { signal: api.signal },
-    );
-    api.dom.mount(panel, item);
-    panels.set(item, panel);
-    return panel;
-  }
+      })
+    : null;
 
-  function renderBranch(
-    doc: Document,
-    thread: DisplayThread,
-    depth: number,
-    renderHeader: boolean,
-    zh: boolean,
-    sidebarIcons: ReadonlyMap<string, Element>,
-  ): HTMLElement {
-    const hasChildren = thread.children.length > 0;
-    const open = hasChildren && expanded.has(thread.id);
-    const node = doc.createElement("div");
-    node.className = "cx-tree-node";
-    node.dataset.depth = String(depth);
-    node.style.setProperty("--cx-tree-depth", String(Math.min(depth, 3)));
+  observer?.observe(root.documentElement, {
+    attributes: true,
+    attributeFilter: [
+      ACTIVE_ATTRIBUTE,
+      TITLE_ATTRIBUTE,
+      COMPOSER_THREAD_ATTRIBUTE,
+      AGENT_ICON_ATTRIBUTE,
+      "data-app-action-sidebar-project-collapsed",
+      "data-app-action-sidebar-section-collapsed",
+    ],
+    childList: true,
+    subtree: true,
+  });
 
-    if (renderHeader) {
-      const row = doc.createElement("div");
-      row.className = "cx-tree-row";
-      row.dataset.depth = String(depth);
-      row.dataset.state = thread.node.status;
-      if (hasChildren) {
-        row.dataset.hasChildren = "true";
-        row.dataset.expanded = String(open);
-      }
+  const cleanup = (): void => {
+    if (disposed) return;
+    disposed = true;
+    cancelScheduledApply();
+    observer?.disconnect();
+    clearSidebarThreadTree(api, root);
+    lastTouchedRows.clear();
+  };
 
-      const title = doc.createElement("span");
-      title.className = "cx-tree-title";
-      title.textContent = thread.node.title || thread.id;
-      const accessible = threadAccessibleTitle(api, thread.id, thread.node, zh);
-      const statusIndicator = createStatusIndicator(doc, thread.node.status);
-
-      if (hasChildren) {
-        const lead = doc.createElement("span");
-        lead.className = "cx-tree-lead";
-        lead.append(createThreadIcon(api, doc, thread.node.harnessId, sidebarIcons));
-
-        const toggle = doc.createElement("button");
-        toggle.type = "button";
-        toggle.className = "cx-tree-row-toggle";
-        toggle.dataset.branch = thread.id;
-        toggle.setAttribute("aria-expanded", String(open));
-        const label = toggleLabel(thread.activity.descendants, open, zh);
-        toggle.title = label;
-        toggle.setAttribute("aria-label", label);
-        toggle.append(createChevronSvg(doc));
-        lead.append(toggle);
-
-        const main = doc.createElement("button");
-        main.type = "button";
-        main.className = "cx-tree-row-main";
-        main.dataset.thread = thread.id;
-        main.title = accessible;
-        main.setAttribute("aria-label", accessible);
-        main.append(title);
-        if (statusIndicator) main.append(statusIndicator);
-
-        row.append(lead, main);
-      } else {
-        const main = doc.createElement("button");
-        main.type = "button";
-        main.className = "cx-tree-row-main cx-tree-row-leaf";
-        main.dataset.thread = thread.id;
-        main.title = accessible;
-        main.setAttribute("aria-label", accessible);
-        main.append(createThreadIcon(api, doc, thread.node.harnessId, sidebarIcons), title);
-        if (statusIndicator) main.append(statusIndicator);
-        row.append(main);
-      }
-
-      node.append(row);
-    }
-
-    if (!hasChildren) return node;
-
-    if (!open) {
-      node.append(buildSummaryButton(doc, thread, depth, zh));
-      return node;
-    }
-
-    const children = doc.createElement("div");
-    children.className = "cx-tree-children";
-    children.style.setProperty("--cx-tree-depth", String(Math.min(depth + 1, 3)));
-    for (const child of thread.children) {
-      children.append(renderBranch(doc, child, depth + 1, true, zh, sidebarIcons));
-    }
-    node.append(children);
-    return node;
-  }
-
-  function render(): void {
-    if (api.signal.aborted || !snapshot) return;
-    const nextMarks = new Map<HTMLElement, Set<TreeMark>>();
-    const usedPanels = new Set<HTMLElement>();
-    const usedNativeToggles = new Set<HTMLElement>();
-    const observedRootRows = new Set<HTMLElement>();
-    const sidebarIcons = collectSidebarIcons(rows);
-
-    const mounted = rows.map((row) => ({
-      row,
-      item: row.element.closest<HTMLElement>('[role="listitem"], li'),
-    }));
-    const counts = new Map<HTMLElement, number>();
-    for (const { item } of mounted) if (item) counts.set(item, (counts.get(item) ?? 0) + 1);
-
-    const candidates = mounted.flatMap(({ row, item }) => {
-      // Don't hide an item shared with another row, e.g. a remote Host row.
-      if (
-        !row.isLocal ||
-        !row.threadId ||
-        !row.isConnected() ||
-        !item?.parentElement ||
-        item === row.element ||
-        counts.get(item) !== 1
-      ) {
-        return [];
-      }
-      return [
-        { key: { row: row.element, item }, list: item.parentElement, threadId: row.threadId },
-      ];
-    });
-
-    const placements = planThreadTree(snapshot, candidates);
-    const replacedOrHiddenRows = new Set<HTMLElement>();
-    for (const [{ row }, placement] of placements) {
-      if (placement.kind === "hidden" || placement.kind === "virtual") {
-        replacedOrHiddenRows.add(row);
-      }
-    }
-
-    const metricsByList = new Map<HTMLElement, ListRowMetrics>();
-    let fallbackMetrics: ListRowMetrics | undefined;
-    for (const { row, item } of mounted) {
-      if (!row.isConnected() || !item?.parentElement || replacedOrHiddenRows.has(row.element)) {
-        continue;
-      }
-      const list = item.parentElement;
-      if (metricsByList.has(list) && fallbackMetrics) continue;
-      const measured = measureRowMetrics(row.element, item);
-      if (!measured) continue;
-      if (!metricsByList.has(list)) metricsByList.set(list, measured);
-      if (!fallbackMetrics) fallbackMetrics = measured;
-    }
-
-    for (const [{ row, item }, placement] of placements) {
-      if (placement.kind === "hidden") {
-        addMark(nextMarks, item, "hidden");
-        continue;
-      }
-
-      const doc = item.ownerDocument;
-      const zh = isZhDocument(doc);
-      const open = expanded.has(placement.tree.id);
-      const list = item.parentElement;
-      const metrics =
-        (placement.kind === "root" ? measureRowMetrics(row, item) : null) ??
-        (list ? metricsByList.get(list) : undefined) ??
-        fallbackMetrics ??
-        DEFAULT_METRICS;
-
-      if (placement.kind === "root") {
-        observedRootRows.add(row);
-        addMark(nextMarks, row, "root-row");
-        const icon = findSidebarAgentIcon(row);
-        if (icon) {
-          addMark(nextMarks, icon, "icon-anchor");
-          addMark(nextMarks, icon, open ? "icon-expanded" : "icon-collapsed");
-          const toggle = nativeToggleFor(row, item);
-          toggle.dataset.branch = placement.tree.id;
-          toggle.setAttribute("aria-expanded", String(open));
-          const label = toggleLabel(placement.tree.activity.descendants, open, zh);
-          toggle.title = label;
-          toggle.setAttribute("aria-label", label);
-          if (toggle.parentElement !== icon) api.dom.mount(toggle, icon, "append");
-          usedNativeToggles.add(row);
-        }
-      } else {
-        addMark(nextMarks, row, "replaced");
-      }
-
-      const panel = panelFor(item);
-      if (panel.parentElement !== item) api.dom.mount(panel, item);
-      panel.dataset.rootKind = placement.kind;
-      applyListMetrics(panel, metrics);
-      panel.replaceChildren(
-        renderBranch(doc, placement.tree, 0, placement.kind === "virtual", zh, sidebarIcons),
-      );
-      usedPanels.add(item);
-    }
-
-    for (const [element, priorMarks] of marks) {
-      const next = nextMarks.get(element);
-      for (const mark of priorMarks) {
-        if (!next?.has(mark)) api.dom.unmark(element, mark);
-      }
-    }
-    for (const [element, next] of nextMarks) {
-      const prior = marks.get(element);
-      for (const mark of next) {
-        if (!prior?.has(mark)) api.dom.mark(element, mark);
-      }
-    }
-    marks = nextMarks;
-
-    for (const [rowElement, toggle] of nativeToggles) {
-      if (usedNativeToggles.has(rowElement)) continue;
-      toggle.remove();
-      nativeToggles.delete(rowElement);
-    }
-
-    for (const [item, panel] of panels) {
-      if (usedPanels.has(item)) continue;
-      panel.remove();
-      panels.delete(item);
-    }
-
-    iconObserver.sync(observedRootRows);
-  }
+  api.track(() => {
+    cancelScheduledApply();
+    observer?.disconnect();
+    cancelSidebarThreadTreeMotion();
+  });
 
   api.sidebar.observeRows((current) => {
-    rows = current;
-    render();
+    observedRows = current;
+    apply();
   });
   api.threads.watchTree((current) => {
     snapshot = current;
-    render();
+    apply();
   });
+
+  return cleanup;
 }

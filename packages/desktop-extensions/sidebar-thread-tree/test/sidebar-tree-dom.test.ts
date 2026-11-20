@@ -8,7 +8,19 @@ import {
   type ThreadTreeNode,
   type ThreadTreeSnapshot,
 } from "@codexhost/shared-contracts";
-import { activate } from "../src/sidebar-tree.js";
+import {
+  SIDEBAR_TREE_CHILDREN_ATTRIBUTE,
+  SIDEBAR_TREE_EXPAND_ATTRIBUTE,
+  SIDEBAR_TREE_NODE_ATTRIBUTE,
+  SIDEBAR_TREE_SUMMARY_ATTRIBUTE,
+  SIDEBAR_TREE_TOGGLE_ATTRIBUTE,
+  SIDEBAR_TREE_VIRTUAL_ATTRIBUTE,
+} from "../src/dom.js";
+import {
+  SIDEBAR_THREAD_TREE_EXPANDED_KEY,
+  activate,
+  type SidebarThreadTreeOptions,
+} from "../src/sidebar-tree.js";
 
 const PI = harnessIdSchema.parse("pi");
 const CODEX = harnessIdSchema.parse("codex");
@@ -19,9 +31,10 @@ afterEach(() => {
   for (const stop of cleanups.splice(0)) stop();
   document.body.replaceChildren();
   document.documentElement.lang = "";
+  window.localStorage.removeItem(SIDEBAR_THREAD_TREE_EXPANDED_KEY);
 });
 
-function createHarness() {
+function createHarness(options: SidebarThreadTreeOptions = {}) {
   const abort = new AbortController();
   const teardowns = new Set<() => void>();
   const mounted = new Set<Element>();
@@ -81,7 +94,10 @@ function createHarness() {
     },
   };
 
+  const stopActivate = activate(api, { storage: null, ...options });
+
   const dispose = () => {
+    stopActivate();
     abort.abort();
     for (const fn of teardowns) fn();
     teardowns.clear();
@@ -93,8 +109,6 @@ function createHarness() {
     marks.clear();
   };
   cleanups.push(dispose);
-
-  activate(api);
 
   return {
     api,
@@ -118,18 +132,23 @@ function makeListRow(
   list: HTMLElement,
   threadId: string,
   titleText: string,
-): { item: HTMLElement; row: DesktopSidebarRow; icon: HTMLElement } {
+  options: { hostId?: string; isLocal?: boolean; agentIcon?: string } = {},
+): { item: HTMLElement; row: DesktopSidebarRow; trigger: HTMLElement; icon: HTMLElement } {
   const item = document.createElement("div");
   item.setAttribute("role", "listitem");
 
   const rowElement = document.createElement("div");
   rowElement.setAttribute("role", "button");
+  rowElement.setAttribute("data-app-action-sidebar-thread-row", "");
+  rowElement.setAttribute("data-app-action-sidebar-thread-title", titleText);
 
   const trigger = document.createElement("div");
   trigger.setAttribute("data-thread-title-trigger", "");
+  trigger.style.display = "flex";
+  trigger.style.alignItems = "center";
 
   const icon = document.createElement("span");
-  icon.setAttribute("data-codexhost-sidebar-agent-icon", "pi");
+  icon.setAttribute("data-codexhost-sidebar-agent-icon", options.agentIcon ?? "pi");
   const img = document.createElement("img");
   img.src = "data:image/png;base64,AA==";
   icon.append(img);
@@ -145,11 +164,12 @@ function makeListRow(
 
   return {
     item,
+    trigger,
     icon,
     row: {
       element: rowElement,
-      hostId: "local",
-      isLocal: true,
+      hostId: options.hostId ?? "local",
+      isLocal: options.isLocal ?? true,
       threadId,
       draftId: null,
       isConnected: () => rowElement.isConnected,
@@ -166,30 +186,36 @@ function makeNode(
 }
 
 describe("sidebar-thread-tree DOM behavior", () => {
-  it("shows localized summary only while collapsed, removes summary on expand, and renders no status for idle rows", () => {
+  it("renders PR #947 native root chrome, hides children via api.dom.mark, and navigates via api.navigate.openThread", () => {
     document.documentElement.lang = "zh-CN";
     const harness = createHarness();
+    const scroll = document.createElement("div");
+    scroll.setAttribute("data-app-action-sidebar-scroll", "");
     const list = document.createElement("div");
-    document.body.append(list);
+    scroll.append(list);
+    document.body.append(scroll);
 
-    const parent = makeListRow(list, "parent", "梳理侧栏会话交互");
+    const parent = makeListRow(list, "parent", "梳理侧栏会话交互", { agentIcon: "codex" });
     const childWait = makeListRow(list, "child-wait", "确认规则");
     const childRun = makeListRow(list, "child-run", "核对状态");
+    const childUnknown = makeListRow(list, "child-unknown", "未知状态");
     const childIdle = makeListRow(list, "child-idle", "整理术语");
 
-    harness.setRows([parent.row, childWait.row, childRun.row, childIdle.row]);
+    harness.setRows([parent.row, childWait.row, childRun.row, childUnknown.row, childIdle.row]);
     harness.setTree({
       revision: 1,
       truncated: false,
       parents: {
         "child-wait": "parent",
         "child-run": "parent",
+        "child-unknown": "parent",
         "child-idle": "parent",
       },
       nodes: {
         parent: makeNode(CODEX, "idle", "梳理侧栏会话交互"),
         "child-wait": makeNode(PI, "waiting", "确认规则"),
         "child-run": makeNode(CODEX, "running", "核对状态"),
+        "child-unknown": makeNode(PI, "unknown", "未知状态"),
         "child-idle": makeNode(PI, "idle", "整理术语"),
       },
     });
@@ -197,42 +223,86 @@ describe("sidebar-thread-tree DOM behavior", () => {
     // Native children are hidden strictly via host-managed markers, never inline style.
     expect(childWait.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(true);
     expect(childWait.item.getAttribute("style")).toBeNull();
+    expect(parent.item.hasAttribute("data-cx-sidebar-thread-tree-root-collapsed")).toBe(true);
 
-    // Native root retains its row and gets chevron toggle on its Agent icon.
-    const iconToggle = parent.icon.querySelector<HTMLButtonElement>(".cx-tree-icon-toggle");
-    expect(iconToggle).not.toBeNull();
-    expect(parent.icon.hasAttribute("data-cx-sidebar-thread-tree-icon-collapsed")).toBe(true);
+    // Native root places .cxh-tree-toggle right before the Agent icon without touching icon attrs.
+    const toggle = parent.row.element.querySelector<HTMLButtonElement>(
+      `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle?.nextElementSibling).toBe(parent.icon);
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(parent.icon.getAttribute("style")).toBeNull();
 
-    // Collapsed state renders the localized summary line and no children yet.
-    const summary = parent.item.querySelector<HTMLButtonElement>(".cx-tree-summary");
-    expect(summary?.textContent).toBe("3 个子会话 · 1 运行中 · 1 待批准");
-    expect(parent.item.querySelector(".cx-tree-children")).toBeNull();
+    // Collapsed state renders PR #947 summary line + expand button, and no children group yet.
+    const summaryLine = parent.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_SUMMARY_ATTRIBUTE}="parent"]`,
+    );
+    const summaryButton = summaryLine?.querySelector<HTMLButtonElement>(
+      `[${SIDEBAR_TREE_EXPAND_ATTRIBUTE}="parent"]`,
+    );
+    expect(summaryButton?.textContent).toBe("4 个子会话 · 1 运行中 · 1 待批准");
+    expect(parent.item.querySelector(`[${SIDEBAR_TREE_CHILDREN_ATTRIBUTE}]`)).toBeNull();
 
-    // Clicking the icon toggle expands without bubbling to the native row.
+    // Clicking the summary line outside the summary button opens the parent via api.navigate.openThread.
+    summaryLine!.click();
+    expect(harness.openThread).toHaveBeenCalledWith("parent");
+
+    // Clicking the toggle expands without bubbling to the native row.
     const rowClicks: string[] = [];
     parent.row.element.addEventListener("click", () => rowClicks.push("click"));
-    iconToggle!.click();
+    toggle!.click();
     expect(rowClicks).toEqual([]);
 
-    // Expanded state removes the summary bar completely and renders child rows directly.
-    expect(parent.item.querySelector(".cx-tree-summary")).toBeNull();
-    expect(parent.icon.hasAttribute("data-cx-sidebar-thread-tree-icon-expanded")).toBe(true);
+    // Expanded state marks root-expanded, removes summary line, and mounts guided children.
+    expect(parent.item.hasAttribute("data-cx-sidebar-thread-tree-root-expanded")).toBe(true);
+    expect(parent.item.hasAttribute("data-cx-sidebar-thread-tree-root-collapsed")).toBe(false);
+    expect(parent.item.querySelector(`[${SIDEBAR_TREE_SUMMARY_ATTRIBUTE}]`)).toBeNull();
+    const childrenGroup = parent.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_CHILDREN_ATTRIBUTE}="parent"]`,
+    );
+    expect(childrenGroup?.hasAttribute("data-guide")).toBe(true);
 
-    const waitRow = parent.item.querySelector('[data-thread="child-wait"]');
-    const runRow = parent.item.querySelector('[data-thread="child-run"]');
-    const idleRow = parent.item.querySelector('[data-thread="child-idle"]');
-    expect(waitRow?.querySelector('.cx-tree-status[data-state="waiting"]')).not.toBeNull();
-    expect(runRow?.querySelector('.cx-tree-status[data-state="running"]')).not.toBeNull();
-    expect(idleRow?.querySelector(".cx-tree-status")).toBeNull();
+    const waitRow = parent.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_NODE_ATTRIBUTE}="child-wait"]`,
+    );
+    const runRow = parent.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_NODE_ATTRIBUTE}="child-run"]`,
+    );
+    const unknownRow = parent.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_NODE_ATTRIBUTE}="child-unknown"]`,
+    );
+    const idleRow = parent.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_NODE_ATTRIBUTE}="child-idle"]`,
+    );
+
+    expect(waitRow?.querySelector('.cxh-tree-status[data-status="pending"]')).not.toBeNull();
+    expect(runRow?.querySelector('.cxh-tree-status[data-status="running"] > svg')).not.toBeNull();
+    expect(unknownRow?.querySelector('.cxh-tree-status[data-status="unknown"]')).not.toBeNull();
+    expect(idleRow?.querySelector(".cxh-tree-status")).toBeNull();
+
+    // Clicking a child row calls api.navigate.openThread.
+    waitRow!.click();
+    expect(harness.openThread).toHaveBeenCalledWith("child-wait");
+
+    // Keyboard Enter on a child row also navigates.
+    runRow!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(harness.openThread).toHaveBeenCalledWith("child-run");
+
+    // Disposing restores all marks and removes all extension nodes.
+    harness.dispose();
+    expect(childWait.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(false);
+    expect(parent.item.hasAttribute("data-cx-sidebar-thread-tree-root-expanded")).toBe(false);
+    expect(parent.item.querySelector(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}]`)).toBeNull();
+    expect(parent.item.querySelector(`[${SIDEBAR_TREE_CHILDREN_ATTRIBUTE}]`)).toBeNull();
   });
 
-  it("renders virtual root with icon-slot toggle and hides the native row via api.dom.mark", () => {
+  it("renders virtual root with anchor mark when child precedes parent, and moves focus on summary expand", () => {
     document.documentElement.lang = "en";
     const harness = createHarness();
     const list = document.createElement("div");
     document.body.append(list);
 
-    // Child appears before parent in the list -> virtual root.
     const child = makeListRow(list, "child-1", "Child task");
     const parent = makeListRow(list, "parent", "Parent task");
 
@@ -247,20 +317,101 @@ describe("sidebar-thread-tree DOM behavior", () => {
       },
     });
 
-    expect(child.row.element.hasAttribute("data-cx-sidebar-thread-tree-replaced")).toBe(true);
+    expect(child.item.hasAttribute("data-cx-sidebar-thread-tree-anchor")).toBe(true);
     expect(child.row.element.getAttribute("style")).toBeNull();
     expect(parent.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(true);
 
-    const virtualToggle = child.item.querySelector<HTMLButtonElement>(".cx-tree-row-toggle");
-    expect(virtualToggle).not.toBeNull();
-    expect(child.item.querySelector(".cx-tree-summary")?.textContent).toBe("1 child · 1 running");
+    const virtual = child.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_VIRTUAL_ATTRIBUTE}="parent"]`,
+    );
+    expect(virtual).not.toBeNull();
+    const summaryBtn = virtual?.querySelector<HTMLButtonElement>(
+      `[${SIDEBAR_TREE_EXPAND_ATTRIBUTE}="parent"]`,
+    );
+    expect(summaryBtn?.textContent).toBe("1 child sessions · 1 running");
 
-    virtualToggle!.click();
-    expect(child.item.querySelector(".cx-tree-summary")).toBeNull();
-    expect(child.item.querySelector('[data-thread="child-1"]')).not.toBeNull();
+    // Focusing summary button then clicking moves focus to the root toggle after expand.
+    summaryBtn!.focus();
+    summaryBtn!.click();
+    expect(virtual?.querySelector(`[${SIDEBAR_TREE_EXPAND_ATTRIBUTE}]`)).toBeNull();
+    const rootToggle = virtual?.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
+    );
+    expect(document.activeElement).toBe(rootToggle);
+    expect(virtual?.querySelector(`[${SIDEBAR_TREE_NODE_ATTRIBUTE}="child-1"]`)).not.toBeNull();
   });
 
-  it("re-mounts the native root chevron toggle when the Agent icon is replaced in place", async () => {
+  it("auto-expands ancestors for the currently open Thread and marks it aria-current=page", () => {
+    const harness = createHarness();
+    const list = document.createElement("div");
+    document.body.append(list);
+
+    const portal = document.createElement("div");
+    portal.setAttribute("data-above-composer-conversation-id", "grandchild");
+    document.body.append(portal);
+
+    const parent = makeListRow(list, "parent", "Parent");
+    const child = makeListRow(list, "child", "Child");
+    const grandchild = makeListRow(list, "grandchild", "Grandchild");
+
+    harness.setRows([parent.row, child.row, grandchild.row]);
+    harness.setTree({
+      revision: 1,
+      truncated: false,
+      parents: { child: "parent", grandchild: "child" },
+      nodes: {
+        parent: makeNode(CODEX, "idle", "Parent"),
+        child: makeNode(PI, "idle", "Child"),
+        grandchild: makeNode(PI, "running", "Grandchild"),
+      },
+    });
+
+    const activeRow = parent.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_NODE_ATTRIBUTE}="grandchild"]`,
+    );
+    expect(activeRow?.getAttribute("aria-current")).toBe("page");
+
+    // User can still collapse the parent afterwards without auto-expand overriding it.
+    parent.row.element
+      .querySelector<HTMLButtonElement>(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`)!
+      .click();
+    expect(parent.item.hasAttribute("data-cx-sidebar-thread-tree-root-collapsed")).toBe(true);
+  });
+
+  it("leaves remote rows, shared listitems, and nodes omitted from truncated snapshots untouched", () => {
+    const harness = createHarness();
+    const list = document.createElement("div");
+    document.body.append(list);
+
+    const remoteParent = makeListRow(list, "parent", "Remote parent", {
+      hostId: "remote-1",
+      isLocal: false,
+    });
+    const localParent = makeListRow(list, "parent", "Local parent");
+    const localChild = makeListRow(list, "child", "Local child");
+    const omittedRow = makeListRow(list, "omitted", "Omitted in truncated snapshot");
+
+    harness.setRows([remoteParent.row, localParent.row, localChild.row, omittedRow.row]);
+    harness.setTree({
+      revision: 1,
+      truncated: true,
+      parents: { child: "parent" },
+      nodes: {
+        parent: makeNode(CODEX, "idle", "Local parent"),
+        child: makeNode(PI, "idle", "Local child"),
+      },
+    });
+
+    expect(remoteParent.item.hasAttribute("data-cx-sidebar-thread-tree-root-collapsed")).toBe(
+      false,
+    );
+    expect(remoteParent.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(false);
+    expect(localParent.item.hasAttribute("data-cx-sidebar-thread-tree-root-collapsed")).toBe(true);
+    expect(localChild.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(true);
+    expect(omittedRow.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(false);
+  });
+
+  it("keeps toggle aligned when the native Agent icon is replaced in place", async () => {
     const harness = createHarness();
     const list = document.createElement("div");
     document.body.append(list);
@@ -279,17 +430,19 @@ describe("sidebar-thread-tree DOM behavior", () => {
       },
     });
 
-    expect(parent.icon.querySelector(".cx-tree-icon-toggle")).not.toBeNull();
+    const toggle = parent.row.element.querySelector(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`);
+    expect(toggle?.nextElementSibling).toBe(parent.icon);
 
     const replacement = document.createElement("span");
     replacement.setAttribute("data-codexhost-sidebar-agent-icon", "codex");
     parent.icon.replaceWith(replacement);
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(replacement.querySelector(".cx-tree-icon-toggle")).not.toBeNull();
-    expect(replacement.hasAttribute("data-cx-sidebar-thread-tree-icon-anchor")).toBe(true);
-    expect(parent.icon.hasAttribute("data-cx-sidebar-thread-tree-icon-anchor")).toBe(false);
+    const updatedToggle = parent.row.element.querySelector(
+      `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
+    );
+    expect(updatedToggle).not.toBeNull();
+    expect(updatedToggle?.nextElementSibling).toBe(replacement);
   });
 });

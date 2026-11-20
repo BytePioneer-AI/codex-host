@@ -116,11 +116,7 @@ export class RequestTrust {
       ? lastHeaderValue(request.headers["x-forwarded-host"])
       : undefined;
     try {
-      const url = new URL(origin);
-      return (
-        url.host === (forwardedHost ?? request.headers.host) &&
-        url.protocol === (this.secure(request) ? "https:" : "http:")
-      );
+      return new URL(origin).host === (forwardedHost ?? request.headers.host);
     } catch {
       return false;
     }

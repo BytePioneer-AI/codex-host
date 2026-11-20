@@ -4,6 +4,7 @@ import {
   THREAD_QUESTIONS_LIST_METHOD,
   THREAD_QUESTION_RESPOND_METHOD,
   hostItemIdSchema,
+  hostTurnIdSchema,
   threadQuestionsResultSchema,
   type JsonObject,
 } from "@codexhost/shared-contracts";
@@ -35,11 +36,13 @@ const fixtures: ReturnType<typeof createFixture>[] = [];
 afterEach(async () => {
   for (const fixture of fixtures.splice(0)) await stopFixture(fixture);
 });
-async function setup(options: { expiresInMs?: number; detachedOwner?: boolean } = {}) {
+async function setup(
+  options: { expiresInMs?: number; detachedOwner?: boolean; multiple?: boolean } = {},
+) {
   const fixture = createFixture();
   fixtures.push(fixture);
   const threadId = await startPiThread(fixture);
-  const turnId = await startPiTurn(fixture, threadId);
+  const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
   const session = fixture.adapter.sessions[0];
   if (!session) throw new Error("Expected fake Session");
   const detachedOwner = options.detachedOwner
@@ -52,17 +55,24 @@ async function setup(options: { expiresInMs?: number; detachedOwner?: boolean } 
     return fixture.collector.waitFor((message) => requestId(message, request));
   };
   if (detachedOwner) session.detachItem(detachedOwner);
-  const interactionId = session.askQuestion(choice, {
-    ...(detachedOwner ? { itemId: detachedOwner } : {}),
-    ...(options.expiresInMs === undefined
-      ? {}
-      : { expiresAt: new Date(Date.now() + options.expiresInMs).toISOString() }),
-  });
+  const interactionId = session.askQuestion(
+    { ...choice, multiple: options.multiple ?? true },
+    {
+      ...(detachedOwner ? { itemId: detachedOwner } : {}),
+      ...(options.expiresInMs === undefined
+        ? {}
+        : { expiresAt: new Date(Date.now() + options.expiresInMs).toISOString() }),
+    },
+  );
   const list = async () =>
     threadQuestionsResultSchema.parse(
       (await rpc(THREAD_QUESTIONS_LIST_METHOD, { threadId })).result,
     ).questions;
-  await vi.waitFor(async () => expect(await list()).toHaveLength(1));
+  const nativeRequest =
+    options.multiple === false
+      ? await fixture.collector.waitFor((message) => method(message, "item/tool/requestUserInput"))
+      : undefined;
+  if (!nativeRequest) await vi.waitFor(async () => expect(await list()).toHaveLength(1));
   const respond = (overrides: JsonObject = {}) =>
     rpc(THREAD_QUESTION_RESPOND_METHOD, {
       threadId,
@@ -97,10 +107,44 @@ async function setup(options: { expiresInMs?: number; detachedOwner?: boolean } 
     list,
     respond,
     finishReply,
+    nativeRequest,
   };
 }
 
 describe("shared multi-select Questions", () => {
+  it("keeps an owned single-choice Question answerable and its background owner active", async () => {
+    const t = await setup({ detachedOwner: true, multiple: false });
+    Object.assign(t.session, { hasBackgroundWork: () => true });
+    const nativeRef = t.session.state.nativeRef;
+    if (!nativeRef || typeof t.nativeRequest?.id !== "number")
+      throw new Error("Expected native question fixture");
+    await t.finishReply();
+    t.session.emitEvent({
+      type: "turn.completed",
+      turnId: t.turnId,
+      nativeTurnRef: { ...nativeRef, nativeTurnKey: "owned-single-question" },
+      outcome: { status: "succeeded" },
+    });
+    await t.fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", t.turnId));
+    const statuses = () =>
+      t.fixture.collector.messages.filter((message) => method(message, "thread/status/changed"));
+    await vi.waitFor(() =>
+      expect(statuses().at(-1)).toMatchObject({ params: { status: { type: "active" } } }),
+    );
+    const beforeAnswer = statuses().length;
+    writeRequest(t.fixture.desktopInput, {
+      id: t.nativeRequest.id,
+      result: { answers: { platform: { answers: ["macOS"] } } },
+    });
+    await vi.waitFor(() => expect(t.session.interactionResponses).toHaveLength(1));
+    expect(t.session.interactionResponses[0]?.response).toMatchObject({
+      type: "question",
+      answers: { platform: ["mac"] },
+    });
+    await vi.waitFor(() => expect(statuses().length).toBeGreaterThan(beforeAnswer));
+    expect(statuses().at(-1)).toMatchObject({ params: { status: { type: "active" } } });
+  });
+
   it("keeps an owned shared Question answerable after its Turn succeeds", async () => {
     const t = await setup({ detachedOwner: true });
     const nativeRef = t.session.state.nativeRef;

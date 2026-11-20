@@ -657,7 +657,7 @@ export class AntigravitySession implements HarnessSession {
   #sessionEvent(event: AntigravityAcpEvent): void {
     if (event.type === "tool.call" || event.type === "tool.update") {
       const turn = this.#toolOwners.get(event.toolCallId);
-      if (turn?.detachedToolCallIds.has(event.toolCallId)) this.#handleToolEvent(turn, event);
+      if (turn) this.#handleToolEvent(turn, event);
       return;
     }
     if (event.type === "agent.text" || event.type === "agent.thought") {

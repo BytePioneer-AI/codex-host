@@ -6433,9 +6433,16 @@ export class AppServerHost {
     }
 
     if (event.type === "turn.completed") {
-      await this.#questions.closeWhere(
-        (request) => request.threadId === thread.id && request.turnId === event.turnId,
-      );
+      await this.#questions.closeWhere((request) => {
+        if (request.threadId !== thread.id || request.turnId !== event.turnId) return false;
+        const interaction = request.client?.interaction;
+        const itemId = interaction?.type === "question" ? interaction.itemId : undefined;
+        return !(
+          event.outcome.status === "succeeded" &&
+          itemId !== undefined &&
+          thread.projectedTurns.get(event.turnId)?.projector.hasOpenDetachedTool(itemId)
+        );
+      });
     }
     if (event.type === "interaction.closed") {
       await this.#questions.closeWhere(
@@ -7115,7 +7122,9 @@ export class AppServerHost {
     const busy = this.#externalThreadBusy(thread) || this.#hasRunningSubagents(thread.id);
     await this.#setThreadStatus(
       thread,
-      busy ? { type: "active", activeFlags: [] } : { type: "idle" },
+      busy || thread.session.hasBackgroundWork?.()
+        ? { type: "active", activeFlags: [] }
+        : { type: "idle" },
     );
     if (!busy) void this.#startNextQueuedExternalTurn(thread);
   }

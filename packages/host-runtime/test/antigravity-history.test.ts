@@ -98,6 +98,7 @@ it("reads cold agy history from SQLite and connects ACP only for the first write
         };
       },
       setSessionEventHandler: () => {},
+      setSessionInteractionHandler: () => {},
       setMode: async () => {},
       setConfigOption: async (id, value) => {
         config = config.map((entry) =>
@@ -246,6 +247,7 @@ it("reflects a catalog Skill reply in live agy history without moving local comm
       skipPermissions: false,
       initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
       openSession: async () => ({ opened: { sessionId } }),
+      setSessionInteractionHandler: () => {},
       setSessionEventHandler: (handler) =>
         handler?.({
           type: "commands.update",

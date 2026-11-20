@@ -2152,7 +2152,10 @@ describe("Codex UI projector", () => {
 
   it.each([
     { status: "succeeded" as const },
-    { status: "failed" as const, error: { code: "failed", message: "failed" } },
+    {
+      status: "failed" as const,
+      error: { code: "nativeFailure" as const, message: "failed", retryable: false },
+    },
     { status: "cancelled" as const, reason: "cancelled" },
   ])("rejects a post-terminal Question without a detached owner (%s)", (outcome) => {
     const value = projector();

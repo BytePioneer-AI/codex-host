@@ -1082,6 +1082,9 @@ export class CodexTurnProjector {
       this.#completed &&
       !(
         event.type === "item.background.started" ||
+        (event.type === "item.started" &&
+          this.#terminalOutcome?.status === "succeeded" &&
+          this.#hasDetachedFileChangeOwner(event.item)) ||
         (event.type === "item.updated" && this.#detached.has(event.itemId)) ||
         (event.type === "item.completed" && this.#detached.has(event.snapshot.item.itemId)) ||
         (event.type === "interaction.closed" && this.#interactions.has(event.interactionId))
@@ -1102,7 +1105,10 @@ export class CodexTurnProjector {
         }
       case "item.detached":
         if (
-          !["commandExecution", "toolExecution"].includes(this.#activeItem(event.itemId).item.type)
+          !["commandExecution", "toolExecution"].includes(
+            this.#activeItem(event.itemId).item.type,
+          ) &&
+          !this.#hasDetachedFileChangeOwner(this.#activeItem(event.itemId).item)
         ) {
           throw new Error("Only a command or tool Item can outlive its Turn");
         }
@@ -1111,6 +1117,7 @@ export class CodexTurnProjector {
       case "turn.started":
         return this.#startTurn();
       case "item.started":
+        if (this.#completed) this.#detached.add(event.item.itemId);
         return this.#startItem(event, emittedAtMs);
       case "item.updated":
         return this.#updateItem(event, emittedAtMs);
@@ -1806,6 +1813,14 @@ export class CodexTurnProjector {
         },
       },
     ];
+  }
+
+  #hasDetachedFileChangeOwner(item: HostItem): boolean {
+    return (
+      item.type === "fileChange" &&
+      !!item.sourceItemIds?.length &&
+      item.sourceItemIds.every((itemId) => this.hasOpenDetachedTool(itemId))
+    );
   }
 
   #requireTerminalInteraction(itemId?: HostItemId): void {

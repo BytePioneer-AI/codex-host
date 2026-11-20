@@ -596,6 +596,12 @@ export class AntigravityToolTracker {
       state.detached = true;
       detached.add(state.event.toolCallId);
       this.#emit({ type: "item.detached", turnId: this.options.turnId, itemId: state.item.itemId });
+      if (state.diffItem && !state.diffSnapshot)
+        this.#emit({
+          type: "item.detached",
+          turnId: this.options.turnId,
+          itemId: state.diffItem.itemId,
+        });
     }
     return detached;
   }

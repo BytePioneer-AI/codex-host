@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { HostCommandExecutionItem } from "@codexhost/harness-adapter";
+import type { HostCommandExecutionItem, HostFileChangeItem } from "@codexhost/harness-adapter";
 import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 
 import { CodexTurnProjector } from "../src/index.js";
@@ -25,6 +25,65 @@ function startedProjector(): CodexTurnProjector {
 }
 
 describe("Codex UI projector detached command Items", () => {
+  it.each(["before", "after"] as const)(
+    "keeps a tool-owned diff first reported %s Turn completion",
+    (timing) => {
+      const projector = startedProjector();
+      const diff: HostFileChangeItem = {
+        type: "fileChange",
+        itemId: hostItemIdSchema.parse("bash-1-diff"),
+        sourceItemIds: [command.itemId],
+        changes: [{ path: "a.ts", kind: "update", unifiedDiff: "-before\n+after" }],
+      };
+      if (timing === "before") projector.project({ type: "item.started", turnId, item: diff });
+      projector.project({ type: "item.detached", turnId, itemId: command.itemId });
+      if (timing === "before")
+        projector.project({ type: "item.detached", turnId, itemId: diff.itemId });
+      expect(
+        projector.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } })
+          .completedTurn,
+      ).toMatchObject({ status: "completed" });
+      if (timing === "after") projector.project({ type: "item.started", turnId, item: diff });
+      projector.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: command, outcome: { status: "succeeded" } },
+      });
+      expect(projector.hasOpenDetachedItems).toBe(true);
+      projector.project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item: diff, outcome: { status: "succeeded" } },
+      });
+      expect(projector.hasOpenDetachedItems).toBe(false);
+      expect(() =>
+        projector.project({
+          type: "item.started",
+          turnId,
+          item: { ...diff, itemId: hostItemIdSchema.parse("late-diff") },
+        }),
+      ).toThrow(/follows the Turn terminal/u);
+    },
+  );
+
+  it("rejects an unrelated file change after Turn completion", () => {
+    const projector = startedProjector();
+    projector.project({ type: "item.detached", turnId, itemId: command.itemId });
+    projector.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(() =>
+      projector.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "fileChange",
+          itemId: hostItemIdSchema.parse("unowned-diff"),
+          sourceItemIds: [hostItemIdSchema.parse("unknown-tool")],
+          changes: [],
+        },
+      }),
+    ).toThrow(/follows the Turn terminal/u);
+  });
+
   it("completes the Turn while a detached command keeps running, then settles it", () => {
     const projector = startedProjector();
     projector.project({ type: "item.detached", turnId, itemId: command.itemId }, 1_200);

@@ -30,6 +30,8 @@ Prompt completion does not by itself withdraw a request owned by a known, unfini
 
 An answer is delivered at most once to the original callback. A successor prompt does not move an old request to the new Turn. Failed or cancelled work, transport faults and Session closure settle the affected interactions and detached tools with their actual outcome. Idle requests without an established tool owner are cancelled instead of being assigned to the latest Turn.
 
+File-change items derived from a registered detached tool follow that tool's lifetime, including diffs first reported after prompt completion. This does not admit unrelated tools or file changes after a Turn ends. Ordinary single-choice/text questions and shared multi-select cards both retain their registered owner.
+
 These rules cover registered tool and interaction lifetimes. They do not establish a complete planner end signal or a native background-stop API. The local stdio and Host tests use a fake ACP process; installed Desktop approval and question cards still require separate UI acceptance.
 
 ## Native Question Elicitation

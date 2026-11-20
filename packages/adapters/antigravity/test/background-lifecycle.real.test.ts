@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
+import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import { AntigravityAcpTransport } from "../src/acp-transport.js";
 import type { AntigravityAcpTransportLike } from "../src/acp-types.js";
@@ -55,6 +56,13 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   }
   if (request.method === 'session/prompt') {
     const text = request.params.prompt[0].text;
+    if (text === 'terminal-tail') {
+      update({sessionUpdate:'tool_call',toolCallId:'old',name:'run_command',kind:'execute',rawInput:{command:'pwd'},status:'in_progress'});
+      return process.stdout.write([
+        {id:request.id,result:{stopReason:'end_turn'}},
+        {method:'session/update',params:{sessionId,update:{sessionUpdate:'tool_call_update',toolCallId:'old',status:'completed',rawOutput:'finished'}}},
+      ].map(value => JSON.stringify({jsonrpc:'2.0',...value})+'\\n').join(''));
+    }
     if (['first','pending','pending-edit','ask'].includes(text)) {
       update({sessionUpdate:'tool_call',toolCallId:'old',name:text === 'ask' ? 'ask_question' : text === 'pending-edit' ? 'edit_file' : 'run_command',kind:text === 'ask' || text === 'pending-edit' ? 'other' : 'execute',rawInput:{command:'sleep 10'},status:'in_progress'});
       if (text === 'pending') permission();
@@ -118,7 +126,11 @@ async function startAndWait(
   text: string,
 ) {
   expect(
-    await session.execute({ type: "turn.start", turnId, input: [{ type: "text", text }] }),
+    await session.execute({
+      type: "turn.start",
+      turnId: hostTurnIdSchema.parse(turnId),
+      input: [{ type: "text", text }],
+    }),
   ).toMatchObject({ ok: true });
   await waitFor(
     () =>
@@ -144,6 +156,22 @@ afterEach(async () => {
 });
 
 describe("real ACP background owner lifecycle", () => {
+  it("keeps a known tool terminal delivered immediately after the prompt response", async () => {
+    const fixture = await openReal();
+    await startAndWait(fixture.session, fixture.outputs, "t1", "terminal-tail");
+    expect(fixture.session.hasBackgroundWork?.()).toBe(false);
+    expect(events(fixture.outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        turnId: "t1",
+        snapshot: expect.objectContaining({
+          item: expect.objectContaining({ type: "commandExecution", output: "finished" }),
+          outcome: { status: "succeeded" },
+        }),
+      }),
+    );
+  });
+
   it("routes known old tool updates and interactions during a successor prompt", async () => {
     const fixture = await openReal();
     await startAndWait(fixture.session, fixture.outputs, "t1", "first");

@@ -1,10 +1,12 @@
-import type {
-  DesktopExtensionMutationResult,
-  DesktopExtensionSelectionParams,
-  DesktopExtensionSlot,
-  DesktopExtensionStatus,
-  DesktopExtensionsListResult,
-  DesktopExtensionsRecoveryParams,
+import {
+  resolveLocalizedExtensionText,
+  type DesktopExtensionCategory,
+  type DesktopExtensionMutationResult,
+  type DesktopExtensionSelectionParams,
+  type DesktopExtensionSlot,
+  type DesktopExtensionStatus,
+  type DesktopExtensionsListResult,
+  type DesktopExtensionsRecoveryParams,
 } from "@codexhost/shared-contracts";
 import { RendererMethodUnavailableError } from "../renderer-request-sender.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
@@ -32,6 +34,33 @@ export interface RendererDesktopExtensionsClient {
 
 type DesktopExtensionItem = DesktopExtensionsListResult["extensions"][number];
 type BannerTone = "info" | "success" | "warning" | "danger";
+type ExtensionGroupId = "attention" | "enabled" | "disabled";
+
+const CATEGORY_ORDER: readonly DesktopExtensionCategory[] = [
+  "sidebar",
+  "composer",
+  "conversation",
+  "appearance",
+  "tools",
+  "workflow",
+];
+
+const EXTENSION_GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
+
+function extensionGroupOf(state: DesktopExtensionStatus["state"]): ExtensionGroupId {
+  switch (state) {
+    case "failed":
+    case "conflict":
+    case "invalid":
+    case "incompatible":
+      return "attention";
+    case "running":
+    case "waiting":
+      return "enabled";
+    case "disabled":
+      return "disabled";
+  }
+}
 
 interface FeedbackBanner {
   readonly tone: BannerTone;
@@ -59,8 +88,11 @@ function createEl<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
-function extensionDisplayName(item: DesktopExtensionItem): string {
-  return item.manifest?.name ?? item.id;
+function extensionDisplayName(
+  item: DesktopExtensionItem,
+  locale: RendererSettingsMessages["locale"],
+): string {
+  return item.manifest ? resolveLocalizedExtensionText(item.manifest.name, locale) : item.id;
 }
 
 function extensionDescription(
@@ -69,8 +101,11 @@ function extensionDescription(
 ): string | null {
   const description = item.manifest?.description;
   if (!description) return null;
-  const preferred = locale === "zh-CN" ? (description["zh-CN"] ?? description.en) : description.en;
-  const trimmed = preferred.trim();
+  const localized =
+    description["zh-CN"] !== undefined
+      ? { en: description.en, "zh-CN": description["zh-CN"] }
+      : { en: description.en };
+  const trimmed = resolveLocalizedExtensionText(localized, locale).trim();
   return trimmed.length > 0 ? trimmed : null;
 }
 
@@ -90,9 +125,12 @@ function formatSlotLabel(slot: DesktopExtensionSlot, copy: DesktopExtensionsMess
 function describeOtherExtension(
   conflictWithId: string,
   extensions: readonly DesktopExtensionItem[],
+  locale: RendererSettingsMessages["locale"],
 ): string {
   const other = extensions.find((item) => item.id === conflictWithId);
-  const name = other?.manifest?.name;
+  const name = other?.manifest
+    ? resolveLocalizedExtensionText(other.manifest.name, locale)
+    : undefined;
   return name && name !== conflictWithId ? `${name} (${conflictWithId})` : conflictWithId;
 }
 
@@ -262,6 +300,7 @@ export function createDesktopExtensionsSettingsPage(
       let activeMutationId: string | null = null;
       let pollTimer: ReturnType<typeof setTimeout> | undefined;
       let activeDialog: HTMLDialogElement | null = null;
+      let selectedCategory: DesktopExtensionCategory | null = null;
 
       const setFeedback = (next: FeedbackBanner | null): void => {
         if (!next) {
@@ -360,7 +399,7 @@ export function createDesktopExtensionsSettingsPage(
         const identity = createEl(document, "div", "settings-extensions-card__identity");
 
         const titleRow = createEl(document, "div", "settings-extensions-card__title");
-        const displayName = extensionDisplayName(item);
+        const displayName = extensionDisplayName(item, messages.locale);
         const nameEl = createEl(document, "h3", "", displayName);
         titleRow.append(nameEl);
 
@@ -392,6 +431,21 @@ export function createDesktopExtensionsSettingsPage(
         const desc = extensionDescription(item, messages.locale);
         if (desc) {
           identity.append(createEl(document, "p", "settings-extensions-card__description", desc));
+        }
+
+        if (item.manifest?.categories && item.manifest.categories.length > 0) {
+          const categoriesRow = createEl(document, "div", "settings-extensions-categories");
+          for (const category of item.manifest.categories) {
+            const chip = createEl(
+              document,
+              "span",
+              "settings-extensions-category-chip",
+              copy.categories[category] ?? category,
+            );
+            chip.dataset.category = category;
+            categoriesRow.append(chip);
+          }
+          identity.append(categoriesRow);
         }
 
         if (item.manifest) {
@@ -448,7 +502,11 @@ export function createDesktopExtensionsSettingsPage(
         let detailMessage: string | null = null;
         let detailTone: "warning" | "danger" = "danger";
         if (item.status.conflictWith) {
-          const other = describeOtherExtension(item.status.conflictWith, allExtensions);
+          const other = describeOtherExtension(
+            item.status.conflictWith,
+            allExtensions,
+            messages.locale,
+          );
           const shared = overlappingSlots(item, item.status.conflictWith, allExtensions);
           detailMessage =
             shared.length > 0
@@ -498,12 +556,101 @@ export function createDesktopExtensionsSettingsPage(
           renderEmptyBox(copy.emptyTitle, copy.emptyDescription, copy.emptyPathHint);
           return;
         }
-        const list = createEl(document, "div", "settings-extensions__list");
-        list.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
+
+        const presentCategories = new Set<DesktopExtensionCategory>();
         for (const item of listing.extensions) {
-          list.append(renderExtensionCard(item, listing.extensions));
+          for (const category of item.manifest?.categories ?? []) {
+            presentCategories.add(category);
+          }
         }
-        body.replaceChildren(list);
+        const availableCategories = CATEGORY_ORDER.filter((category) =>
+          presentCategories.has(category),
+        );
+        if (selectedCategory && !presentCategories.has(selectedCategory)) {
+          selectedCategory = null;
+        }
+
+        const bodyChildren: HTMLElement[] = [];
+        if (availableCategories.length > 0) {
+          const filterBar = createEl(document, "div", "settings-extensions__filters");
+          filterBar.setAttribute("role", "group");
+          filterBar.setAttribute("aria-label", copy.categoryFilterLabel);
+
+          const addFilterPill = (
+            label: string,
+            category: DesktopExtensionCategory | null,
+          ): void => {
+            const pill = createEl(document, "button", "settings-extensions-filter-pill", label);
+            pill.type = "button";
+            pill.dataset.category = category ?? "all";
+            pill.setAttribute("aria-pressed", String(selectedCategory === category));
+            pill.addEventListener("click", () => {
+              if (selectedCategory === category) return;
+              selectedCategory = category;
+              render();
+            });
+            filterBar.append(pill);
+          };
+
+          addFilterPill(copy.categoryAll, null);
+          for (const category of availableCategories) {
+            addFilterPill(copy.categories[category], category);
+          }
+          bodyChildren.push(filterBar);
+        }
+
+        const visibleExtensions = selectedCategory
+          ? listing.extensions.filter((item) =>
+              item.manifest?.categories?.includes(selectedCategory!),
+            )
+          : listing.extensions;
+
+        const buckets: Record<ExtensionGroupId, DesktopExtensionItem[]> = {
+          attention: [],
+          enabled: [],
+          disabled: [],
+        };
+        for (const item of visibleExtensions) {
+          buckets[extensionGroupOf(item.status.state)].push(item);
+        }
+
+        const groupsContainer = createEl(document, "div", "settings-extensions__groups");
+        groupsContainer.setAttribute("aria-label", messages.pageLabels["desktop-extensions"]);
+        for (const groupId of EXTENSION_GROUP_ORDER) {
+          const groupItems = buckets[groupId];
+          if (groupItems.length === 0) continue;
+
+          const section = createEl(document, "section", "settings-extensions__group");
+          section.dataset.extensionGroup = groupId;
+          const headingId = preferenceId(`desktop-ext-group-${groupId}`);
+          section.setAttribute("aria-labelledby", headingId);
+
+          const groupHead = createEl(document, "div", "settings-extensions__group-head");
+          const groupTitle = createEl(
+            document,
+            "h2",
+            "settings-extensions__group-title",
+            copy.groups[groupId],
+          );
+          groupTitle.id = headingId;
+          const groupCount = createEl(
+            document,
+            "span",
+            "settings-extensions__group-count",
+            String(groupItems.length),
+          );
+          groupHead.append(groupTitle, groupCount);
+
+          const list = createEl(document, "div", "settings-extensions__list");
+          for (const item of groupItems) {
+            list.append(renderExtensionCard(item, listing.extensions));
+          }
+          section.append(groupHead, list);
+          groupsContainer.append(section);
+        }
+
+        bodyChildren.push(groupsContainer);
+        body.replaceChildren(...bodyChildren);
       };
 
       const clearPollTimer = (): void => {
@@ -592,7 +739,7 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
         const expectedRevision = listing?.configuration.revision ?? 0;
-        const displayName = extensionDisplayName(item);
+        const displayName = extensionDisplayName(item, messages.locale);
         mutating = true;
         activeMutationId = item.id;
         clearPollTimer();
@@ -627,7 +774,11 @@ export function createDesktopExtensionsSettingsPage(
 
           if (result.state === "slot-conflict") {
             const allExtensions = listing?.extensions ?? [];
-            const other = describeOtherExtension(result.conflictWith, allExtensions);
+            const other = describeOtherExtension(
+              result.conflictWith,
+              allExtensions,
+              messages.locale,
+            );
             const shared = overlappingSlots(item, result.conflictWith, allExtensions);
             setFeedback({
               tone: "warning",

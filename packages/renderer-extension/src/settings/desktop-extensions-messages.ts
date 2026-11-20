@@ -1,4 +1,8 @@
-import type { DesktopExtensionSlot, DesktopExtensionStatus } from "@codexhost/shared-contracts";
+import type {
+  DesktopExtensionCategory,
+  DesktopExtensionSlot,
+  DesktopExtensionStatus,
+} from "@codexhost/shared-contracts";
 
 export interface DesktopExtensionsMessages {
   readonly description: string;
@@ -20,6 +24,14 @@ export interface DesktopExtensionsMessages {
   readonly emptyTitle: string;
   readonly emptyDescription: string;
   readonly emptyPathHint: string;
+  readonly categoryAll: string;
+  readonly categoryFilterLabel: string;
+  readonly categories: Readonly<Record<DesktopExtensionCategory, string>>;
+  readonly groups: Readonly<{
+    attention: string;
+    enabled: string;
+    disabled: string;
+  }>;
   readonly noExclusiveSlots: string;
   readonly slots: Readonly<Record<DesktopExtensionSlot, string>>;
   readonly states: Readonly<Record<DesktopExtensionStatus["state"], string>>;
@@ -69,6 +81,21 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   emptyDescription:
     "Copy an extension folder containing manifest.json and desktop.js into the directory below, then refresh.",
   emptyPathHint: "$CODEXHOST_DATA_DIR/desktop-extensions/<id>/",
+  categoryAll: "All",
+  categoryFilterLabel: "Filter by category",
+  categories: Object.freeze({
+    sidebar: "Sidebar",
+    composer: "Composer",
+    conversation: "Conversation",
+    appearance: "Appearance",
+    tools: "Tools",
+    workflow: "Workflow",
+  }),
+  groups: Object.freeze({
+    attention: "Needs Attention",
+    enabled: "Enabled",
+    disabled: "Disabled",
+  }),
   noExclusiveSlots: "No exclusive slots",
   slots: Object.freeze({
     "sidebar.thread-layout": "Sidebar thread layout",
@@ -133,6 +160,21 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   emptyTitle: "尚未发现 Desktop 扩展",
   emptyDescription: "请将包含 manifest.json 和 desktop.js 的扩展目录放到以下路径，然后点击刷新：",
   emptyPathHint: "$CODEXHOST_DATA_DIR/desktop-extensions/<id>/",
+  categoryAll: "全部",
+  categoryFilterLabel: "按分类筛选",
+  categories: Object.freeze({
+    sidebar: "侧栏",
+    composer: "输入框",
+    conversation: "对话流",
+    appearance: "外观主题",
+    tools: "效率工具",
+    workflow: "多会话协作",
+  }),
+  groups: Object.freeze({
+    attention: "需要处理",
+    enabled: "已启用",
+    disabled: "未启用",
+  }),
   noExclusiveSlots: "无独占槽位",
   slots: Object.freeze({
     "sidebar.thread-layout": "侧栏 Thread 布局",

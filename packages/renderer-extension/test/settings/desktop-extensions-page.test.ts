@@ -199,12 +199,13 @@ function sampleList(
         manifest: {
           manifestVersion: 1,
           id: "sidebar-thread-tree",
-          name: "Sidebar Thread Tree",
+          name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
           version: "0.1.0",
           description: { en: "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
           desktopApi: 1,
           desktop: { script: "desktop.js", style: "desktop.css" },
           slots: ["sidebar.thread-layout", "sidebar.thread-badge"],
+          categories: ["sidebar", "workflow"],
         },
       },
       {
@@ -220,6 +221,7 @@ function sampleList(
           desktopApi: 1,
           desktop: { script: "desktop.js" },
           slots: ["sidebar.thread-badge"],
+          categories: ["sidebar"],
         },
       },
       {
@@ -285,7 +287,7 @@ describe("Desktop extensions settings page", () => {
     enMount.dispose();
   });
 
-  it("displays extension cards, status badges, slot labels, and disables incompatible/invalid toggles", async () => {
+  it("displays bilingual names, category badges, slot labels, attention-first groups, and disables invalid toggles", async () => {
     const client: RendererDesktopExtensionsClient = {
       listDesktopExtensions: vi.fn(async () => sampleList()),
       enableDesktopExtension: vi.fn(),
@@ -293,32 +295,319 @@ describe("Desktop extensions settings page", () => {
       disableAllDesktopExtensionsAndReload: vi.fn(),
     };
     const mounted = mountPage("zh-CN", () => client);
-    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Sidebar Thread Tree"));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const groups = descendants(mounted.content).filter(
+      (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
+    );
+    expect(groups.map((group) => group.dataset.extensionGroup)).toEqual([
+      "attention",
+      "enabled",
+      "disabled",
+    ]);
+    expect(
+      groups.map((group) =>
+        textOf(
+          descendants(group).find((el) => el.className === "settings-extensions__group-title"),
+        ),
+      ),
+    ).toEqual(["需要处理", "已启用", "未启用"]);
 
     const cards = descendants(mounted.content).filter(
       (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
     );
     expect(cards.map((card) => card.dataset.extensionId)).toEqual([
-      "sidebar-thread-tree",
-      "sidebar-delegation-badges",
       "future-extension",
       "broken-extension",
+      "sidebar-thread-tree",
+      "sidebar-delegation-badges",
     ]);
 
-    const treeCard = cards[0]!;
+    const incompatibleSwitch = descendants(cards[0]!).find((el) => el.tagName === "input")!;
+    const invalidSwitch = descendants(cards[1]!).find((el) => el.tagName === "input")!;
+    expect(incompatibleSwitch.disabled).toBe(true);
+    expect(invalidSwitch.disabled).toBe(true);
+    expect(textOf(cards[0]!)).toContain("Desktop API 2 requires a newer codexhost");
+    expect(textOf(cards[1]!)).toContain("Invalid manifest.json");
+
+    const treeCard = cards[2]!;
+    expect(textOf(treeCard)).toContain("侧栏委派树");
     expect(textOf(treeCard)).toContain("v0.1.0");
     expect(textOf(treeCard)).toContain("归组委派的 Thread");
+    const treeCategoryChips = descendants(treeCard).filter((el) =>
+      el.className.includes("settings-extensions-category-chip"),
+    );
+    expect(treeCategoryChips.map((chip) => textOf(chip))).toEqual(["侧栏", "多会话协作"]);
     expect(textOf(treeCard)).toContain("侧栏 Thread 布局");
     expect(textOf(treeCard)).toContain("侧栏 Thread 角标");
     expect(textOf(treeCard)).toContain("运行中");
 
-    const incompatibleSwitch = descendants(cards[2]!).find((el) => el.tagName === "input")!;
-    const invalidSwitch = descendants(cards[3]!).find((el) => el.tagName === "input")!;
-    expect(incompatibleSwitch.disabled).toBe(true);
-    expect(invalidSwitch.disabled).toBe(true);
-    expect(textOf(cards[2]!)).toContain("Desktop API 2 requires a newer codexhost");
-    expect(textOf(cards[3]!)).toContain("Invalid manifest.json");
+    const badgesCard = cards[3]!;
+    expect(textOf(badgesCard)).toContain("Delegation Badges");
     mounted.dispose();
+
+    const enMount = mountPage("en", () => client);
+    await vi.waitFor(() => expect(textOf(enMount.content)).toContain("Sidebar Thread Tree"));
+    const enGroups = descendants(enMount.content).filter(
+      (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
+    );
+    expect(
+      enGroups.map((group) =>
+        textOf(
+          descendants(group).find((el) => el.className === "settings-extensions__group-title"),
+        ),
+      ),
+    ).toEqual(["Needs Attention", "Enabled", "Disabled"]);
+    const enTreeCard = descendants(enMount.content).find(
+      (element) => element.dataset.extensionId === "sidebar-thread-tree",
+    )!;
+    expect(textOf(enTreeCard)).toContain("Sidebar Thread Tree");
+    expect(textOf(enTreeCard)).toContain("Groups delegated Threads");
+    expect(
+      descendants(enTreeCard)
+        .filter((el) => el.className.includes("settings-extensions-category-chip"))
+        .map((chip) => textOf(chip)),
+    ).toEqual(["Sidebar", "Workflow"]);
+    enMount.dispose();
+  });
+
+  it("groups all attention, enabled, and disabled states in priority order and omits empty group headings", async () => {
+    const allStatesList: DesktopExtensionsListResult = {
+      configuration: {
+        version: 1,
+        revision: 2,
+        enabled: ["running-ext", "waiting-ext", "failed-ext", "conflict-ext"],
+      },
+      desktopConnected: true,
+      diagnostics: [],
+      extensions: [
+        {
+          id: "disabled-ext",
+          enabled: false,
+          status: { state: "disabled" },
+          manifest: {
+            manifestVersion: 1,
+            id: "disabled-ext",
+            name: { en: "Disabled Tool", "zh-CN": "未启用工具" },
+            version: "1.0.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: [],
+            categories: ["tools"],
+          },
+        },
+        {
+          id: "waiting-ext",
+          enabled: true,
+          status: { state: "waiting" },
+          manifest: {
+            manifestVersion: 1,
+            id: "waiting-ext",
+            name: { en: "Waiting Theme", "zh-CN": "等待中的外观" },
+            version: "1.0.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: [],
+            categories: ["appearance"],
+          },
+        },
+        {
+          id: "conflict-ext",
+          enabled: true,
+          status: { state: "conflict", conflictWith: "running-ext" },
+          manifest: {
+            manifestVersion: 1,
+            id: "conflict-ext",
+            name: { en: "Conflict Layout", "zh-CN": "冲突布局" },
+            version: "1.0.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: ["sidebar.thread-layout"],
+          },
+        },
+        {
+          id: "running-ext",
+          enabled: true,
+          status: { state: "running" },
+          manifest: {
+            manifestVersion: 1,
+            id: "running-ext",
+            name: { en: "Primary Layout", "zh-CN": "主侧栏布局" },
+            version: "1.0.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: ["sidebar.thread-layout"],
+          },
+        },
+        {
+          id: "failed-ext",
+          enabled: true,
+          status: { state: "failed", error: "activate() threw TypeError" },
+          manifest: {
+            manifestVersion: 1,
+            id: "failed-ext",
+            name: { en: "Broken Composer", "zh-CN": "异常输入框" },
+            version: "1.0.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: [],
+            categories: ["composer"],
+          },
+        },
+      ],
+    };
+
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => allStatesList),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("主侧栏布局"));
+
+    const cards = descendants(mounted.content).filter(
+      (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
+    );
+    expect(cards.map((card) => card.dataset.extensionId)).toEqual([
+      "conflict-ext",
+      "failed-ext",
+      "waiting-ext",
+      "running-ext",
+      "disabled-ext",
+    ]);
+    // Inline conflict occupant name uses localized text and failed error stays exposed inline.
+    expect(textOf(cards[0]!)).toContain("主侧栏布局 (running-ext)");
+    expect(textOf(cards[1]!)).toContain("activate() threw TypeError");
+    mounted.dispose();
+
+    // When only running extensions exist, attention and disabled group headings are omitted.
+    const onlyRunning = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => ({
+        ...allStatesList,
+        extensions: [allStatesList.extensions[3]!],
+      })),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(onlyRunning.content)).toContain("主侧栏布局"));
+    const renderedGroups = descendants(onlyRunning.content).filter(
+      (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
+    );
+    expect(renderedGroups.map((group) => group.dataset.extensionGroup)).toEqual(["enabled"]);
+    expect(textOf(onlyRunning.content)).not.toContain("需要处理");
+    expect(textOf(onlyRunning.content)).not.toContain("未启用");
+    onlyRunning.dispose();
+  });
+
+  it("renders category filter pills only when categories exist and filters cards accurately", async () => {
+    const categorizedList: DesktopExtensionsListResult = {
+      configuration: { version: 1, revision: 1, enabled: ["ext-sidebar"] },
+      desktopConnected: true,
+      diagnostics: [],
+      extensions: [
+        {
+          id: "ext-sidebar",
+          enabled: true,
+          status: { state: "running" },
+          manifest: {
+            manifestVersion: 1,
+            id: "ext-sidebar",
+            name: { en: "Sidebar Tree", "zh-CN": "侧栏树" },
+            version: "0.1.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: ["sidebar.thread-layout"],
+            categories: ["workflow", "sidebar"],
+          },
+        },
+        {
+          id: "ext-theme",
+          enabled: false,
+          status: { state: "disabled" },
+          manifest: {
+            manifestVersion: 1,
+            id: "ext-theme",
+            name: { en: "Nord Theme", "zh-CN": "极光主题" },
+            version: "0.1.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: [],
+            categories: ["appearance"],
+          },
+        },
+        {
+          id: "ext-legacy",
+          enabled: false,
+          status: { state: "disabled" },
+          manifest: {
+            manifestVersion: 1,
+            id: "ext-legacy",
+            name: "Uncategorized Extension",
+            version: "0.1.0",
+            desktopApi: 1,
+            desktop: { script: "desktop.js" },
+            slots: [],
+          },
+        },
+      ],
+    };
+
+    const mounted = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => categorizedList),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏树"));
+
+    const findPills = () =>
+      descendants(mounted.content).filter((el) =>
+        el.className.includes("settings-extensions-filter-pill"),
+      );
+    expect(findPills().map((pill) => textOf(pill))).toEqual([
+      "全部",
+      "侧栏",
+      "外观主题",
+      "多会话协作",
+    ]);
+    expect(findPills()[0]!.getAttribute("aria-pressed")).toBe("true");
+
+    // Click "外观主题" -> only ext-theme remains and empty "已启用" group is omitted.
+    findPills()[2]!.dispatch("click");
+    expect(findPills()[2]!.getAttribute("aria-pressed")).toBe("true");
+    const themeCards = descendants(mounted.content).filter(
+      (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
+    );
+    expect(themeCards.map((card) => card.dataset.extensionId)).toEqual(["ext-theme"]);
+    const themeGroups = descendants(mounted.content).filter(
+      (element) => element.tagName === "section" && Boolean(element.dataset.extensionGroup),
+    );
+    expect(themeGroups.map((group) => group.dataset.extensionGroup)).toEqual(["disabled"]);
+
+    // Click "全部" -> restores all 3 extensions.
+    findPills()[0]!.dispatch("click");
+    const restoredCards = descendants(mounted.content).filter(
+      (element) => element.tagName === "article" && Boolean(element.dataset.extensionId),
+    );
+    expect(restoredCards.map((card) => card.dataset.extensionId)).toEqual([
+      "ext-sidebar",
+      "ext-theme",
+      "ext-legacy",
+    ]);
+    mounted.dispose();
+
+    // No filter bar is rendered when no extension declares categories.
+    const uncategorized = mountPage("zh-CN", () => ({
+      listDesktopExtensions: vi.fn(async () => ({
+        ...categorizedList,
+        extensions: [categorizedList.extensions[2]!],
+      })),
+      disableAllDesktopExtensionsAndReload: vi.fn(),
+    }));
+    await vi.waitFor(() =>
+      expect(textOf(uncategorized.content)).toContain("Uncategorized Extension"),
+    );
+    expect(
+      descendants(uncategorized.content).filter((el) =>
+        el.className.includes("settings-extensions__filters"),
+      ),
+    ).toHaveLength(0);
+    uncategorized.dispose();
   });
 
   it("passes expectedRevision, blocks duplicate clicks while mutating, and updates state on save", async () => {
@@ -343,12 +632,11 @@ describe("Desktop extensions settings page", () => {
       disableDesktopExtension,
       disableAllDesktopExtensionsAndReload: vi.fn(),
     }));
-    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Sidebar Thread Tree"));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
     const findTreeSwitch = () =>
       descendants(mounted.content).find(
-        (el) =>
-          el.tagName === "input" && el.getAttribute("aria-label")?.includes("Sidebar Thread Tree"),
+        (el) => el.tagName === "input" && el.getAttribute("aria-label")?.includes("侧栏委派树"),
       )!;
 
     const initialSwitch = findTreeSwitch();
@@ -373,7 +661,7 @@ describe("Desktop extensions settings page", () => {
     });
 
     await vi.waitFor(() => expect(listDesktopExtensions).toHaveBeenCalledTimes(2));
-    expect(textOf(mounted.content)).toContain("已禁用“Sidebar Thread Tree”。");
+    expect(textOf(mounted.content)).toContain("已禁用“侧栏委派树”。");
     expect(findTreeSwitch().checked).toBe(false);
     mounted.dispose();
   });
@@ -412,18 +700,18 @@ describe("Desktop extensions settings page", () => {
           el.tagName === "input" && el.getAttribute("aria-label")?.includes("Delegation Badges"),
       )!;
 
-    // 1) slot-conflict reports occupied slot and conflicting extension name
+    // 1) slot-conflict reports occupied slot and localized conflicting extension name
     const firstSwitch = findBadgeSwitch();
     firstSwitch.checked = true;
     firstSwitch.dispatch("change");
 
-    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Sidebar Thread Tree"));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
     const banner = descendants(mounted.content).find((el) =>
       el.className.includes("settings-extensions__banner"),
     )!;
     expect(banner.hidden).toBe(false);
     expect(textOf(banner)).toContain("sidebar.thread-badge");
-    expect(textOf(banner)).toContain("Sidebar Thread Tree (sidebar-thread-tree)");
+    expect(textOf(banner)).toContain("侧栏委派树 (sidebar-thread-tree)");
     expect(findBadgeSwitch().checked).toBe(false);
 
     // 2) revision-conflict automatically reloads latest list and asks user to retry
@@ -468,7 +756,7 @@ describe("Desktop extensions settings page", () => {
       disableDesktopExtension: vi.fn(),
       disableAllDesktopExtensionsAndReload,
     }));
-    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("Sidebar Thread Tree"));
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
 
     const recoveryButton = descendants(mounted.content).find(
       (el) => el.tagName === "button" && textOf(el).includes("禁用全部扩展并重载 Desktop 窗口"),

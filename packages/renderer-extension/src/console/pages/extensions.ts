@@ -1,7 +1,8 @@
-import type {
-  DesktopExtensionConfiguration,
-  DesktopExtensionManifest,
-  DesktopExtensionStatus,
+import {
+  resolveLocalizedExtensionText,
+  type DesktopExtensionConfiguration,
+  type DesktopExtensionManifest,
+  type DesktopExtensionStatus,
 } from "@codexhost/shared-contracts";
 import type { RendererSettingsPageDefinition } from "../../settings/core.js";
 import { consoleGet, consolePost } from "../api.js";
@@ -22,6 +23,7 @@ interface Listing {
 
 export function createExtensionsPage(locale: string): RendererSettingsPageDefinition {
   const zh = locale.startsWith("zh");
+  const resolvedLocale = zh ? "zh-CN" : "en";
   const label = zh ? "Desktop 扩展" : "Desktop extensions";
   const states: Record<DesktopExtensionStatus["state"], string> = zh
     ? {
@@ -61,8 +63,28 @@ export function createExtensionsPage(locale: string): RendererSettingsPageDefini
         diagnostics.replaceChildren(
           ...next.diagnostics.map((entry) => h(document, "p", {}, entry)),
         );
+        const describeConflictOwner = (conflictWithId: string): string => {
+          const other = next.extensions.find((entry) => entry.id === conflictWithId);
+          const otherName = other?.manifest
+            ? resolveLocalizedExtensionText(other.manifest.name, resolvedLocale)
+            : undefined;
+          return otherName && otherName !== conflictWithId
+            ? `${otherName} (${conflictWithId})`
+            : conflictWithId;
+        };
         list.replaceChildren(
           ...next.extensions.map(({ id, manifest, enabled, status }) => {
+            const displayName = manifest
+              ? resolveLocalizedExtensionText(manifest.name, resolvedLocale)
+              : id;
+            const description = manifest?.description
+              ? resolveLocalizedExtensionText(
+                  manifest.description["zh-CN"] !== undefined
+                    ? { en: manifest.description.en, "zh-CN": manifest.description["zh-CN"] }
+                    : { en: manifest.description.en },
+                  resolvedLocale,
+                ).trim()
+              : "";
             const control = button(
               document,
               enabled ? (zh ? "禁用" : "Disable") : zh ? "启用" : "Enable",
@@ -73,8 +95,8 @@ export function createExtensionsPage(locale: string): RendererSettingsPageDefini
             control.disabled = !enabled && !manifest;
             const detail = status.conflictWith
               ? zh
-                ? `槽位占用者：${status.conflictWith}`
-                : `Slot occupied by ${status.conflictWith}`
+                ? `槽位占用者：${describeConflictOwner(status.conflictWith)}`
+                : `Slot occupied by ${describeConflictOwner(status.conflictWith)}`
               : status.error;
             const identity = h(
               document,
@@ -84,7 +106,10 @@ export function createExtensionsPage(locale: string): RendererSettingsPageDefini
                 document,
                 "div",
                 {},
-                h(document, "strong", {}, manifest?.name ?? id),
+                h(document, "strong", {}, displayName),
+                description
+                  ? h(document, "div", { className: "console-muted" }, description)
+                  : null,
                 manifest
                   ? h(
                       document,

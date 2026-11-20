@@ -15,6 +15,12 @@ Web 侧栏把本机 Host 的 Thread 显示成可以展开、收起的树。树�
 
 委派关系由 Mapping Store 的委派记录保存，`codexhost thread list --parent` 的结果与之一致。旧版本保存的手动放置文件 `thread-tree-placements.json` 不再读取，也不会被删除。
 
+### Desktop 只读订阅
+
+`codexhost/thread/tree/watch {}` 返回 `{subscriptionId, snapshot}`；后续 `codexhost/thread/tree/snapshot` 通知使用相同结构。快照包含 `revision`、同 `tree/read` 语义的 `parents`、关系端点的 `nodes`（Harness、已知标题、实时状态及归档标记）和 `truncated`。每次推送替换整份快照；Host 合并短时间内的变化，最多返回 5000 个节点且不会留下悬空关系。`codexhost/thread/tree/unwatch {subscriptionId}` 或连接断开释放订阅。Web 的读取和变化通知保持不变。
+
+前端 Host 的订阅共享一条到执行所有者的订阅。所有者快照通知不会穿透到 Desktop，前端 Host 用自己的订阅标识和版本号推送。无法联系所有者或对方不支持订阅时，归该所有者的 Thread 状态为 `unknown`。官方 Codex Thread 初次进入树时可以用有界的只读 `thread/read` 初始化，不会 resume；未加载、错误或不能确认执行所有者时为 `unknown`。后续 Turn 和待处理交互覆盖该初始状态。
+
 ## Web Server
 
 - 每次刷新列表都读取完整的 `parents`。本机 CH 会话摘要的投影 `threadTreeParent` 为显示父 Thread ID 或 `null`；草稿和远程 Host 会话没有该字段。

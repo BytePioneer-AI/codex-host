@@ -156,10 +156,10 @@ function sidebarAgentIconAnchor(titleTrigger: HTMLElement, title: HTMLElement): 
   return anchor;
 }
 
-class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
+export class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   #scheduledThread: string | null | undefined;
 
-  constructor(private readonly element: HTMLElement) {}
+  constructor(readonly element: HTMLElement) {}
 
   isConnected(): boolean {
     return this.element.isConnected;
@@ -246,7 +246,7 @@ class BrowserSidebarAgentIconRow implements SidebarAgentIconRow {
   }
 }
 
-class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
+export class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
   readonly #rowsByElement = new WeakMap<HTMLElement, BrowserSidebarAgentIconRow>();
   readonly #trackedRows = new Set<BrowserSidebarAgentIconRow>();
 
@@ -264,7 +264,7 @@ class BrowserSidebarAgentIconDom implements SidebarAgentIconDom {
     return row;
   }
 
-  rows(): readonly SidebarAgentIconRow[] {
+  rows(): readonly BrowserSidebarAgentIconRow[] {
     for (const row of this.#trackedRows) {
       if (!row.isConnected()) this.#trackedRows.delete(row);
     }

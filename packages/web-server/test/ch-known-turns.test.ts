@@ -79,14 +79,16 @@ it("asks for fingerprints first, then skips completed Turns it already holds", a
   assert.ok(view.ownerSnapshot?.turnsPage.data.every((value) => value.items.length === 3));
 });
 
-it("re-sends a changed completed Turn and rebuilds its finished projection", async () => {
+it("re-sends a completed Turn with idle background output even when updatedAt is unchanged", async () => {
   const { host, row, view } = fixture();
   await view.refresh();
   const edited = row.turns.at(-1);
   assert.ok(edited);
-  // A late native refresh may add an Item to a settled Turn.
+  // Background output can arrive in the same second as Turn completion.
+  assert.equal(row.status.type, "idle");
+  assert.equal(row.updatedAt, view.thread.updatedAt);
   edited.items.push({ id: "late", type: "agentMessage", text: "late" });
-  await assert.rejects(view.refresh(true), { code: "host/items-replaced" });
+  await assert.rejects(view.refresh(), { code: "host/items-replaced" });
   assert.deepEqual(host.snapshotPlaceholders, [0, 4]);
   const rebuilt = new ChThreadHistory(host, row, "fake", () => {});
   await rebuilt.refresh();

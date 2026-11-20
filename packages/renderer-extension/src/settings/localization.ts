@@ -3,6 +3,11 @@ import {
   credentialImportChinese,
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
+import {
+  desktopExtensionsEnglish,
+  desktopExtensionsChinese,
+  type DesktopExtensionsMessages,
+} from "./desktop-extensions-messages.js";
 import type { DefaultRendererSettingsPageId } from "./pages.js";
 import {
   harnessVersionEnglish,
@@ -29,12 +34,14 @@ export interface RendererSettingsLanguageControl {
 
 export interface RendererSettingsMessages {
   readonly credentialImports: CredentialImportMessages;
+  readonly desktopExtensions: DesktopExtensionsMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
   readonly close: string;
   readonly starOnGitHub: string;
   readonly sectionsLabel: string;
   readonly generalSection: string;
+  readonly pluginsSection: string;
   readonly otherSection: string;
   readonly appearanceDescription: string;
   readonly appearanceGroup: string;
@@ -289,12 +296,14 @@ export interface RendererSettingsMessages {
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportEnglish,
+  desktopExtensions: desktopExtensionsEnglish,
   locale: "en",
   title: "Settings",
   close: "Close settings",
   starOnGitHub: "Star to support",
   sectionsLabel: "Settings sections",
   generalSection: "General",
+  pluginsSection: "Plugins",
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
@@ -595,6 +604,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
     "mobile-web": "Phone & browser",
     "remote-connections": "Other computers (SSH)",
     appearance: "General",
+    "desktop-extensions": "Desktop Extensions",
     accounts: "Accounts",
     "session-import": "Session Import",
     "usage-statistics": "Usage statistics",
@@ -605,12 +615,14 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportChinese,
+  desktopExtensions: desktopExtensionsChinese,
   locale: "zh-CN",
   title: "设置",
   close: "关闭设置",
   starOnGitHub: "Star 支持",
   sectionsLabel: "设置分类",
   generalSection: "通用",
+  pluginsSection: "插件",
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
@@ -892,6 +904,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
     "mobile-web": "手机与浏览器",
     "remote-connections": "其他电脑（SSH）",
     appearance: "通用",
+    "desktop-extensions": "Desktop 扩展",
     accounts: "账号",
     "session-import": "会话导入",
     "usage-statistics": "用量统计",

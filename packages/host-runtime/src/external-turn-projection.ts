@@ -8,6 +8,7 @@ import {
 import {
   THREAD_MANUAL_COMPACTION_STARTED_METHOD,
   type HostInteractionId,
+  type HostItemId,
   type HostTurnId,
 } from "@codexhost/shared-contracts";
 
@@ -61,6 +62,7 @@ export interface ExternalTurnProjectionHost {
   readonly queue: Pick<ExternalThreadQueue, "pause">;
   /** Turns started by an explicit /compact command, announced when compaction begins. */
   readonly manualCompactionTurns: WeakMap<ExternalThread, HostTurnId>;
+  foldSettledItem(turn: JsonObject, projector: CodexTurnProjector, itemId: HostItemId): JsonObject;
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
@@ -138,9 +140,22 @@ export class ExternalTurnProjection {
       await this.#host.resolveDesktopApproval(event.interactionId, thread);
       await this.#host.resolveDesktopQuestion(event.interactionId, thread);
     }
+    // agy uses the same ACP prompt for slash commands and conversation. Only
+    // promote output backed by a new native user Turn, not local command text.
+    const conversationalCommand =
+      event.type === "turn.completed" &&
+      thread.clientCommand?.turn.id === event.turnId &&
+      thread.harnessId === "antigravity" &&
+      this.#host.manualCompactionTurns.get(thread) !== event.turnId &&
+      event.outcome.status === "succeeded" &&
+      event.nativeTurnRef !== undefined &&
+      [...projection.projector.foregroundWireItems().values()].some(
+        (item) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim(),
+      );
     const ephemeralTurn =
       event.type === "turn.completed" &&
-      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
+      (event.ephemeral === true ||
+        (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand));
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#host.persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -160,6 +175,15 @@ export class ExternalTurnProjection {
       }
     }
     const result = projection.projector.project(event as ProjectableHostEvent);
+    if (
+      event.type === "item.background.started" ||
+      (projection.projector.completed &&
+        (event.type === "item.updated" || event.type === "item.completed"))
+    ) {
+      const updatedAt = Math.floor(Date.now() / 1000);
+      thread.thread.updatedAt = updatedAt;
+      thread.thread.recencyAt = updatedAt;
+    }
     if (event.type === "turn.started") {
       if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
         thread.clientCommand.subsequentTurnId ??= event.turnId;
@@ -171,13 +195,16 @@ export class ExternalTurnProjection {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
       const completedAt = Math.floor(Date.now() / 1000);
-      if (ephemeralTurn) {
-        if (thread.clientCommand?.turn.id === event.turnId)
-          thread.clientCommand.turn = projection.projector.snapshotTurn(result.completedTurn);
-        thread.ephemeralTurnIds.delete(event.turnId);
+      const turn = projection.projector.snapshotTurn(result.completedTurn);
+      if (thread.ephemeralTurnIds.delete(event.turnId)) {
+        if (thread.clientCommand?.turn.id === event.turnId) {
+          // Settle an already visible command card without repeating the reply in it.
+          thread.clientCommand.turn = ephemeralTurn ? turn : { ...turn, items: [] };
+        }
         this.#host.manualCompactionTurns.delete(thread);
-      } else {
-        thread.turns.push(projection.projector.snapshotTurn(result.completedTurn));
+      }
+      if (!ephemeralTurn) {
+        thread.turns.push(turn);
         thread.projectedTerminalTurnId = event.turnId;
         thread.thread.updatedAt = completedAt;
         thread.thread.recencyAt = completedAt;
@@ -218,20 +245,22 @@ export class ExternalTurnProjection {
         params: { threadId: thread.id, turnId: event.turnId },
       });
     }
-    if (
-      event.type === "item.completed" &&
-      projection.projector.completed &&
-      !projection.projector.hasOpenDetachedItems
-    ) {
-      // Fold the settled Item into the stored Turn snapshot for served history.
-      const index = thread.turns.findIndex(
-        (turn) => (turn as { id?: unknown }).id === event.turnId,
-      );
-      if (index >= 0) {
-        const existing = thread.turns[index];
-        if (existing) thread.turns[index] = projection.projector.snapshotTurn(existing);
+    if (event.type === "item.completed" && projection.projector.completed) {
+      const index = thread.turns.findIndex((turn) => turn.id === event.turnId);
+      const existing = thread.turns[index];
+      if (existing) {
+        // A stale cache may still contain native-only Items from an earlier read.
+        thread.turns[index] = this.#host.foldSettledItem(
+          existing,
+          projection.projector,
+          event.snapshot.item.itemId,
+        );
+        thread.historyHydrated = false;
       }
-      if (event.turnId !== thread.projectedTerminalTurnId)
+      if (
+        !projection.projector.hasOpenDetachedItems &&
+        event.turnId !== thread.projectedTerminalTurnId
+      )
         thread.projectedTurns.delete(event.turnId);
     }
     for (const message of result.messages) await this.#host.writeJson(message);

@@ -38,13 +38,18 @@ function packageRootFor(filePath) {
   return undefined;
 }
 
+function isDesktopExtensionSource(filePath, packagesDirectory) {
+  const root = resolve(packagesDirectory, "desktop-extensions");
+  return isInside(filePath, root) && relative(root, dirname(filePath)).split(sep).includes("src");
+}
+
 function moduleSpecifiers(sourceText, filePath) {
   const sourceFile = ts.createSourceFile(
     filePath,
     sourceText,
     ts.ScriptTarget.Latest,
     true,
-    filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    filePath.endsWith(".tsx") || filePath.endsWith(".jsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const specifiers = [];
 
@@ -55,10 +60,18 @@ function moduleSpecifiers(sourceText, filePath) {
   function visit(node) {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       addStringLiteral(node.moduleSpecifier);
+    } else if (ts.isExternalModuleReference(node)) {
+      addStringLiteral(node.expression);
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      addStringLiteral(node.argument.literal);
     } else if (ts.isCallExpression(node)) {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
-      if (isDynamicImport || isRequire) addStringLiteral(node.arguments[0]);
+      if (isDynamicImport || isRequire) {
+        const argument = node.arguments[0];
+        if (argument && ts.isStringLiteralLike(argument)) addStringLiteral(argument);
+        else specifiers.push(null);
+      }
     }
 
     ts.forEachChild(node, visit);
@@ -91,8 +104,22 @@ export function findSourceBoundaryViolations({
   sharedContractsDirectory = sharedContractsRoot,
 }) {
   const violations = [];
+  const isExtension = isDesktopExtensionSource(filePath, packagesDirectory);
 
   for (const specifier of moduleSpecifiers(sourceText, filePath)) {
+    if (isExtension && specifier !== "@codexhost/shared-contracts") {
+      const isLocal =
+        specifier !== null &&
+        /^(\.\.?)[/]/u.test(specifier) &&
+        isInside(resolve(dirname(filePath), specifier), packageRoot);
+      if (!isLocal) {
+        violations.push(
+          `${filePath}: Desktop extensions can only import local paths and '@codexhost/shared-contracts', not ${specifier === null ? "a computed specifier" : `'${specifier}'`}`,
+        );
+        continue;
+      }
+    }
+    if (specifier === null) continue;
     if (
       isInside(filePath, resolve(packagesDirectory, "host-runtime", "src")) &&
       specifier.startsWith("@codexhost/adapter-")
@@ -162,7 +189,11 @@ async function sourceFiles(directory) {
     if (entry.isDirectory()) {
       if (entry.name === "dist" || entry.name === "node_modules") continue;
       files.push(...(await sourceFiles(entryPath)));
-    } else if (entry.isFile() && /\.tsx?$/u.test(entry.name)) {
+    } else if (
+      entry.isFile() &&
+      (/\.tsx?$/u.test(entry.name) ||
+        (isDesktopExtensionSource(entryPath, packagesRoot) && /\.[cm]?[jt]sx?$/u.test(entry.name)))
+    ) {
       files.push(entryPath);
     }
   }

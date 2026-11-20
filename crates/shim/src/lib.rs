@@ -868,7 +868,8 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let mut desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
+    let desktop_caller = desktop_invocation::classify_desktop_caller(&stock_codex_path, arguments);
+    let mut desktop_helper = desktop_caller == desktop_invocation::DesktopCaller::Helper;
     let mut local_host_runtime = !desktop_helper
         && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()
@@ -879,7 +880,7 @@ pub fn run_proxy_with_observer(
         let data_directory = PathBuf::from(
             env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
         );
-        match admit_local_runtime(&data_directory, &stock_codex_path)? {
+        match admit_local_runtime(&data_directory, &desktop_caller)? {
             LocalRuntimeAdmission::Owner(lease) => local_runtime_lease = Some(lease),
             LocalRuntimeAdmission::OfficialCli(reason) => {
                 eprintln!(

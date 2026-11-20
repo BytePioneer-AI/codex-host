@@ -7,6 +7,9 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
-  "references": [{ "path": "../shared-contracts/tsconfig.json" }],
+  "references": [
+    { "path": "../shared-contracts/tsconfig.json" },
+    { "path": "../harness-plugin-files/tsconfig.json" }
+  ],
   "include": ["src/**/*.ts"]
 }

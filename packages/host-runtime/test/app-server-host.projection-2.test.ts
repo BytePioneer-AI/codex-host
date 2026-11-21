@@ -16,6 +16,7 @@ import {
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
   hostThreadIdSchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
@@ -481,6 +482,116 @@ describe("AppServerHost HarnessAdapter projection", () => {
     expect(storedItems.filter((item) => item.type === "userMessage")).toHaveLength(1);
     expect(new Set(storedItems.map((item) => item.id)).size).toBe(storedItems.length);
     await stopFixture(fixture);
+  });
+
+  it("keeps a delegated first Turn's streamed Item IDs across native history reads", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const starting = delegationApi.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const started = await starting;
+      const { threadId } = started;
+      const turnId = hostTurnIdSchema.parse(started.turnId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Delegated Session was not opened");
+      const liveItems = [
+        { type: "reasoning", itemId: hostItemIdSchema.parse("live-r-1"), text: "Checking auth\n" },
+        {
+          type: "agentMessage",
+          itemId: hostItemIdSchema.parse("live-a-1"),
+          text: "Auth is correct.",
+        },
+      ] as const;
+      const outcome = { status: "succeeded" } as const;
+      const readSnapshot = session.readSnapshot.bind(session);
+      vi.spyOn(session, "readSnapshot").mockImplementation(async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        return {
+          ok: true,
+          value: {
+            ...snapshot.value,
+            turns: snapshot.value.turns.map((turn) => ({
+              ...turn,
+              items: [
+                {
+                  item: { ...liveItems[0], itemId: hostItemIdSchema.parse("turn-0-item-0") },
+                  outcome,
+                },
+                {
+                  item: {
+                    ...liveItems[1],
+                    itemId: hostItemIdSchema.parse("turn-0-item-1"),
+                    phase: "final_answer",
+                  },
+                  outcome,
+                },
+              ],
+            })),
+          },
+        };
+      });
+      for (const item of liveItems) {
+        session.emitEvent({ type: "item.started", turnId, item });
+        session.emitEvent({ type: "item.completed", turnId, snapshot: { item, outcome } });
+      }
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      const liveIds = fixture.collector.messages
+        .filter((message) => turnEvent(message, "item/started", turnId))
+        .map((message) => (messageParams(message).item as JsonObject).id)
+        .filter((id) => id !== `${turnId}-user`);
+      expect(liveIds).toEqual(["live-r-1-summary", "live-r-1", "live-a-1"]);
+
+      const rpc = async (id: number, method: string, params: JsonObject = {}) => {
+        writeRequest(fixture.desktopInput, { id, method, params: { threadId, ...params } });
+        return fixture.collector.waitFor((message) => requestId(message, id));
+      };
+      const items = [`${turnId}-user`, ...liveIds].map((id) => ({ id }));
+      await expect(delegationApi.read({ threadId, view: "result" })).resolves.toMatchObject({
+        status: "completed",
+        result: { availability: "available", text: "Auth is correct." },
+      });
+      // Inspect the stored history before resume triggers another native read.
+      await expect(rpc(1058, "thread/turns/list", { itemsView: "full" })).resolves.toMatchObject({
+        result: { data: [{ id: turnId, items }] },
+      });
+      const resumed = await rpc(1059, "thread/resume", {
+        excludeTurns: true,
+        initialTurnsPage: { itemsView: "full" },
+      });
+      expect(resumed).toMatchObject({
+        result: { initialTurnsPage: { data: [{ id: turnId, items }] } },
+      });
+      await expect(rpc(1060, "thread/turns/list", { itemsView: "full" })).resolves.toMatchObject({
+        result: { data: [{ id: turnId, items }] },
+      });
+      await expect(rpc(1061, "thread/items/list", { turnId })).resolves.toMatchObject({
+        result: { data: items.map((item) => ({ turnId, item })) },
+      });
+      const cursor = (resumed.result as JsonObject).itemsBackwardsCursor;
+      if (typeof cursor !== "string") throw new Error("Paginated resume omitted the Item cursor");
+      await expect(
+        rpc(1062, "thread/items/list", { turnId, cursor, sortDirection: "desc" }),
+      ).resolves.toMatchObject({
+        result: { data: items.toReversed().map((item) => ({ turnId, item })) },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("inherits cwd from a native Codex parent when delegation omits cwd", async () => {

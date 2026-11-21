@@ -203,7 +203,12 @@ describe("UsageMeter completeness", () => {
 
   it("strips Host-only fields an Adapter tried to publish", () => {
     const usage = new UsageMeter().derive(
-      { outputTokens: 1, sessionCacheHitRatePercent: 50, timeToFirstOutputMs: 3 },
+      {
+        outputTokens: 1,
+        sessionCacheHitRatePercent: 50,
+        timeToFirstOutputMs: 3,
+        latestRequestTimeToFirstOutputMs: 2,
+      },
       prices,
     );
     expect(usage).toEqual({ outputTokens: 1 });
@@ -275,6 +280,16 @@ describe("UsageMeter timing", () => {
       request("b", { outputTokens: 50, startedAtMs: 20_000, completedAtMs: 21_000 }),
       "turn-1",
     );
+    meter.recordRequestTiming(
+      { requestId: "a", requestStartedAtMs: 9_000, timeToFirstOutputMs: 1_000 },
+      "turn-1",
+    );
+    expect(meter.derive(null, prices)?.latestRequestTimeToFirstOutputMs).toBe(1_000);
+    meter.recordRequestTiming(
+      { requestId: "b", requestStartedAtMs: 19_500, timeToFirstOutputMs: 500 },
+      "turn-1",
+    );
+    expect(meter.derive(null, prices)?.latestRequestTimeToFirstOutputMs).toBe(500);
     // Excluded from speed: no timing, zero duration, historical.
     meter.recordRequest(request("c", { outputTokens: 999 }), "turn-1");
     meter.recordRequest(
@@ -285,7 +300,36 @@ describe("UsageMeter timing", () => {
       request("e", { historical: true, outputTokens: 999, startedAtMs: 1, completedAtMs: 2 }),
       "turn-1",
     );
+    for (const [requestId, requestStartedAtMs] of [
+      ["a", 25_000],
+      ["d", 8_000],
+      ["e", 30_000],
+    ] as const)
+      meter.recordRequestTiming(
+        { requestId, requestStartedAtMs, timeToFirstOutputMs: 9_999 },
+        "turn-1",
+      );
+    const before = meter.derive(null, prices);
+    expect(before?.latestRequestTimeToFirstOutputMs).toBe(500);
+    expect(before?.outputTokensPerSecond).toBe(50);
     meter.turnCompleted("turn-1");
+    meter.recordRequestTiming(
+      {
+        requestId: "c",
+        requestStartedAtMs: 9_000,
+        timeToFirstOutputMs: 9_999,
+        output: { outputTokens: 100, startedAtMs: 22_000, completedAtMs: 23_000 },
+      },
+      "turn-1",
+    );
+    const late = meter.derive(null, prices);
+    expect(late?.latestRequestTimeToFirstOutputMs).toBe(500);
+    expect(late?.outputTokensPerSecond).toBe(62.5);
+    expect(late?.totalCostUsd).toBe(before?.totalCostUsd);
+    expect(meter.measurementSnapshot().outputTimings?.at(-1)).toMatchObject({
+      requestId: "c",
+      turnId: "turn-1",
+    });
     // Arrives after the Turn ended.
     meter.recordRequest(
       request("f", { outputTokens: 999, startedAtMs: 1, completedAtMs: 2 }),
@@ -293,7 +337,8 @@ describe("UsageMeter timing", () => {
     );
     const usage = meter.derive(null, prices);
     expect(usage?.timeToFirstOutputMs).toBe(800);
-    expect(usage?.outputTokensPerSecond).toBe(50);
+    expect(usage?.latestRequestTimeToFirstOutputMs).toBe(500);
+    expect(usage?.outputTokensPerSecond).toBe(62.5);
   });
 
   it("updates speed after every timed request while the Turn runs", () => {
@@ -303,6 +348,7 @@ describe("UsageMeter timing", () => {
       request("a", { outputTokens: 100, startedAtMs: 0, completedAtMs: 1_000 }),
       "turn-1",
     );
+    meter.recordRequest(request("late-turn-1", { outputTokens: 80 }), "turn-1");
     meter.turnCompleted("turn-1");
     meter.turnStarted("turn-2", 0);
     // Until the new Turn has a timed request, the previous Turn's speed stays.
@@ -317,8 +363,29 @@ describe("UsageMeter timing", () => {
       "turn-2",
     );
     expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(60);
+    meter.recordRequestTiming(
+      { requestId: "c", requestStartedAtMs: 800, timeToFirstOutputMs: 200 },
+      "turn-2",
+    );
+    const before = meter.derive(null, prices);
+    const late = {
+      requestId: "late-turn-1",
+      requestStartedAtMs: 900,
+      timeToFirstOutputMs: 100,
+      output: { outputTokens: 80, startedAtMs: 1_000, completedAtMs: 2_000 },
+    };
+    meter.recordRequestTiming(late, "turn-1");
+    meter.recordRequestTiming(late, "turn-1");
     meter.turnCompleted("turn-2");
-    expect(meter.derive(null, prices)?.outputTokensPerSecond).toBe(60);
+    expect(meter.derive(null, prices)).toMatchObject({
+      outputTokensPerSecond: 60,
+      latestRequestTimeToFirstOutputMs: 200,
+      sessionOutputTokensPerSecond: 75,
+      totalCostUsd: before?.totalCostUsd,
+    });
+    expect(
+      meter.measurementSnapshot().outputTimings?.find((t) => t.requestId === "late-turn-1"),
+    ).toMatchObject({ turnId: "turn-1", outputTokens: 80 });
   });
 
   it("keeps the last speed for a Turn without timed requests", () => {

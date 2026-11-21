@@ -311,6 +311,11 @@ function summarizeHostFiles(
 
 type CodexPlanStepStatus = "pending" | "inProgress" | "completed";
 
+export interface TodoPlan {
+  explanation: string | null;
+  plan: { step: string; status: CodexPlanStepStatus }[];
+}
+
 function isTodoTool(toolName: string): boolean {
   const compact = compactToolName(toolName);
   return compact.includes("todo") || ["updateplan", "updatetodolist"].includes(compact);
@@ -351,7 +356,9 @@ function planFromTodoValue(
   const list = coerceTodoList(
     record.todos ?? record.items ?? record.plan ?? record.tasks ?? record.entries,
   );
-  if (!list || list.length === 0) return planFromChecklistText(explanation);
+  if (!list) return planFromChecklistText(explanation);
+  // An explicit empty list clears the plan, e.g. after every task is deleted.
+  if (list.length === 0) return planFromChecklistText(explanation) ?? { explanation, plan: [] };
   const plan: { step: string; status: CodexPlanStepStatus }[] = [];
   for (const entry of list) {
     if (typeof entry === "string" && entry.trim().length > 0) {
@@ -749,7 +756,10 @@ function historicalStatus(outcome: HistoricalTurnOutcome): "completed" | "interr
   return "completed";
 }
 
-export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): JsonObject {
+export function projectHistoricalTurn(
+  input: HistoricalTurnProjectionInput,
+  plansByTurnId?: Map<string, TodoPlan>,
+): JsonObject {
   const { turnId, cwd, snapshot } = input;
   const files = summarizeHostFiles(snapshot.items, cwd);
   const startedAtMs = snapshot.startedAtMs;
@@ -800,6 +810,17 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         ];
   };
   const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
+  // Codex history has no Todo Item; collect the last plan separately from the wire Turn.
+  if (plansByTurnId) {
+    const latestPlan = snapshot.items
+      .map(({ item, outcome }) => {
+        if (item.type !== "toolExecution" || !isTodoTool(item.toolName)) return null;
+        const plan = planFromTodoValue(item.arguments) ?? planFromTodoValue(item.output);
+        return plan && (plan.plan.length > 0 || outcome.status === "succeeded") ? plan : null;
+      })
+      .findLast((plan) => plan !== null);
+    if (latestPlan) plansByTurnId.set(turnId, latestPlan);
+  }
   const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
   const finalAnswer = inferredFinalAnswer(
     lastVisible,
@@ -810,12 +831,16 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     status: historicalStatus(snapshot.outcome),
     ...(snapshot.outcome.status === "unknown" ? { codexhostTurnOutcome: snapshot.outcome } : {}),
     items: [
-      {
-        id: `${turnId}-user`,
-        type: "userMessage",
-        clientId: null,
-        content: projectUserInput(snapshot.input),
-      },
+      ...(snapshot.input.length === 0
+        ? []
+        : [
+            {
+              id: `${turnId}-user`,
+              type: "userMessage",
+              clientId: null,
+              content: projectUserInput(snapshot.input),
+            },
+          ]),
       ...entries.flatMap(({ entry, projected }) =>
         finalAnswer && entry === lastVisible
           ? projected.map((item) =>
@@ -838,6 +863,24 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
       ({ item, outcome }) => projectItem(item, outcome, cwd, true, input.threadId ?? ""),
     ),
   };
+}
+
+/**
+ * Codex Desktop keeps a plan only from turn/plan/updated, so a reopened Thread
+ * receives the latest historical plan again on the Turn that produced it.
+ */
+export function historicalPlanUpdate(
+  threadId: string,
+  turns: readonly JsonObject[],
+  plansByTurnId: ReadonlyMap<string, TodoPlan>,
+): JsonObject | null {
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turnId = turns[index]?.id;
+    if (typeof turnId !== "string") continue;
+    const plan = plansByTurnId.get(turnId);
+    if (plan) return { method: "turn/plan/updated", params: { threadId, turnId, ...plan } };
+  }
+  return null;
 }
 
 function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
@@ -1242,7 +1285,7 @@ export class CodexTurnProjector {
     if (event.item.type === "toolExecution") {
       if (isTodoTool(event.item.toolName)) {
         const plan = planFromTodoValue(event.item.arguments);
-        return { messages: plan ? [this.#planUpdated(plan)] : [] };
+        return { messages: plan?.plan.length ? [this.#planUpdated(plan)] : [] };
       }
       const changes = fileChangeFromTool(event.item.toolName, event.item.arguments);
       if (changes) {
@@ -1431,7 +1474,12 @@ export class CodexTurnProjector {
         if (isTodoTool(projected.item.toolName)) {
           const plan =
             planFromTodoValue(projected.item.arguments) ?? planFromTodoValue(projected.item.output);
-          return { messages: plan ? [this.#planUpdated(plan, emittedAtMs)] : [] };
+          return {
+            messages:
+              plan && (plan.plan.length > 0 || projected.outcome.status === "succeeded")
+                ? [this.#planUpdated(plan, emittedAtMs)]
+                : [],
+          };
         }
       }
       return { messages: [] };

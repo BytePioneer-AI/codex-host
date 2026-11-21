@@ -363,6 +363,7 @@ import { USAGE_STATISTICS_METHOD } from "@codexhost/shared-contracts";
 import {
   CodexTurnProjector,
   decodeCreateRoute,
+  historicalPlanUpdate,
   decodeExternalTransportSelection,
   encodeExternalTransportSelection,
   decodeThreadListRequest,
@@ -1202,8 +1203,19 @@ export class AppServerHost {
       {
         listHarnesses: () =>
           this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
-        inspect: (input) =>
-          this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
+        inspect: async (input) => {
+          await this.#waitForPlugins();
+          try {
+            return await this.#delegationCoordinator.inspect(input);
+          } finally {
+            if (
+              input.refresh === true &&
+              (input.harnessId === "codex" || this.#externalAdapters.has(input.harnessId))
+            ) {
+              this.clientEvents.harnessInspectionChanged(input.harnessId);
+            }
+          }
+        },
         start: (input) =>
           maintenanceOperation(async () => {
             if (options.sharedDelegation && input.harnessId !== "codex") {
@@ -5259,7 +5271,10 @@ export class AppServerHost {
         },
       }),
     );
-    if (includeTurns) this.#markExternalHistoryRead(thread, readTurns);
+    if (includeTurns) {
+      this.#markExternalHistoryRead(thread, readTurns);
+      await this.#replayExternalPlan(thread);
+    }
     await this.#replayExternalUsage(thread);
   }
 
@@ -5376,7 +5391,9 @@ export class AppServerHost {
             : "External Thread history projection failed",
         ),
       );
+      return;
     }
+    await this.#replayExternalPlan(thread);
   }
 
   #externalHistoryTurns(thread: ExternalThread, forClient = false): JsonObject[] {
@@ -6390,6 +6407,50 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "turn.autonomous.completed") {
+      let turn: JsonObject | undefined;
+      try {
+        if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+          await this.#notifyExternalThreadStarted(thread.thread);
+        }
+        turn = await this.#externalRuntime.appendAutonomousTurn(thread, event.snapshot);
+      } catch (error) {
+        // The committed native Turn can be recovered by a history read. It does not own the
+        // foreground Turn or the output stream.
+        this.#diagnose(
+          `External autonomous Turn could not be recorded (threadId=${thread.id}): ${errorMessage(error)}`,
+        );
+        return;
+      }
+      if (!turn) {
+        // A concurrent native-history read may already have installed this Turn.
+        this.clientEvents.changed(thread.id, "turn/completed");
+        return;
+      }
+      const threadId = thread.id;
+      const turnId = hostTurnIdSchema.parse(turn.id);
+      const items = Array.isArray(turn.items) ? turn.items : [];
+      await this.#writer.json({
+        method: "turn/started",
+        params: {
+          threadId,
+          turn: {
+            ...turn,
+            items: items.filter((item) => isRecord(item) && item.type === "userMessage"),
+            status: "inProgress",
+            completedAt: null,
+            durationMs: null,
+          },
+        },
+      });
+      for (const item of items) {
+        if (isRecord(item) && item.type === "userMessage") continue;
+        await this.#writer.json({ method: "item/started", params: { threadId, turnId, item } });
+        await this.#writer.json({ method: "item/completed", params: { threadId, turnId, item } });
+      }
+      await this.#writer.json({ method: "turn/completed", params: { threadId, turn } });
+      return;
+    }
     if (thread.sessionUnavailable && "turnId" in event) {
       const projector = thread.projectedTurns.get(event.turnId)?.projector;
       if (!projector) return;
@@ -6501,9 +6562,15 @@ export class AppServerHost {
       });
       return;
     }
-    if (event.type === "usage.request" || event.type === "usage.history") {
+    if (
+      event.type === "usage.request" ||
+      event.type === "usage.request.timing" ||
+      event.type === "usage.history"
+    ) {
       if (this.#externalRuntime.get(thread.id) !== thread) return;
-      if (event.type === "usage.request") {
+      if (event.type === "usage.request.timing") {
+        if (!thread.usageMeter.recordRequestTiming(event.timing, event.turnId)) return;
+      } else if (event.type === "usage.request") {
         const changed = thread.usageMeter.recordRequest(event.request, thread.activeTurnId);
         // Replayed history is announced once by the following usage.history.
         if (!changed || event.request.historical === true) return;
@@ -7285,6 +7352,22 @@ export class AppServerHost {
   #meterTurnTiming(thread: ExternalThread, event: HostEvent): boolean {
     if (this.#externalRuntime.get(thread.id) !== thread) return false;
     return thread.usageMeter.observeTurn(event);
+  }
+
+  /**
+   * Desktop restores a plan only from turn/plan/updated, never from Thread history. Only a
+   * Harness whose plan outlives its Turn gets it replayed; other plans stay with their Turn.
+   */
+  async #replayExternalPlan(thread: ExternalThread): Promise<void> {
+    if (thread.session.capabilities.persistentPlan !== true) return;
+    const update = thread.livePlan
+      ? { method: "turn/plan/updated", params: thread.livePlan }
+      : historicalPlanUpdate(
+          thread.id,
+          ownTurns(thread.record, thread.turns),
+          thread.historicalPlans,
+        );
+    if (update) await this.#writer.json(update);
   }
 
   async #replayExternalUsage(thread: ExternalThread): Promise<void> {

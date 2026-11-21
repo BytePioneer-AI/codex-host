@@ -34,7 +34,17 @@ async function readAntigravityRequestTimings(
     ? null
     : new Map(
         [...metadata].flatMap(([step, facts]) =>
-          facts.timing ? [[step, facts.timing] as const] : [],
+          facts.timing
+            ? [
+                [
+                  step,
+                  {
+                    startedAtMs: facts.timing.startedAtMs,
+                    completedAtMs: facts.timing.completedAtMs,
+                  },
+                ] as const,
+              ]
+            : [],
         ),
       );
 }
@@ -83,6 +93,8 @@ describe("Antigravity native request timings", () => {
       const facts = (await readAntigravityRequestMetadata("session", home, all))?.get(1);
       expect(facts?.reasoningOutputTokens).toBe(thought);
       expect(facts?.timing).toEqual({
+        requestStartedAtMs: 1794763967637,
+        timeToFirstOutputMs: 12882,
         startedAtMs: 1794763980519,
         completedAtMs: 1794763991282,
       });
@@ -123,7 +135,12 @@ describe("Antigravity native request timings", () => {
     expect(await read()).toEqual(new Map([[1, { startedAtMs: 3000, completedAtMs: 5000 }]]));
     expect((await readAntigravityRequestMetadata("session", home, requests))?.get(1)).toEqual({
       reasoningOutputTokens: 0,
-      timing: { startedAtMs: 3000, completedAtMs: 5000 },
+      timing: {
+        requestStartedAtMs: 1000,
+        timeToFirstOutputMs: 2000,
+        startedAtMs: 3000,
+        completedAtMs: 5000,
+      },
     });
   });
 

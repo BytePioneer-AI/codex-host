@@ -310,6 +310,10 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 通过 ACP `session/set_config_option` 切换模型与推理档位，并按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 逐请求计费，后续配置选择不会重标已完成请求。
 
+## 已结算的自主 Turn
+
+原生只在提交后才能确认边界的 Adapter，可以在 `outputs` 上发送 `turn.autonomous.completed`，携带与原生 `readSnapshot()` 一致的 `HostTurnSnapshot`（无用户输入用 `[]`）。同一个原生 Turn 不应再发送流式自主 Turn 生命周期。Host 按 `nativeTurnRef` 对齐和去重，把快照作为独立历史 Turn 追加，不占用前台执行位，也不改写前一轮的回答。自主快照无法写入映射或投影时记录诊断，可由后续历史读取恢复，不终止输出流或结算前台 Turn。能观测完整实时生命周期的插件继续使用 `turn.autonomous.started` 和普通 Item/终态事件。
+
 ## 运行中调整方向
 
 外部 Thread 的「调整方向」使用公共 `turn.cancel` → 等待旧轮终态 → `turn.start`，不要求插件新增 steer 命令。Host 负责替换协调，Renderer 复用正常发送展示；官方 Codex Thread 保留原生 steer。执行、版本化绑定、输入限制和验证边界见[外部 Thread 调整方向](external-thread-steering.md)。

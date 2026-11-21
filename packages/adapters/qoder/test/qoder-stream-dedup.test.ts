@@ -44,7 +44,12 @@ async function projectTurns(turns: unknown[][], variant: QoderVariant) {
         if (next.value.kind !== "event") continue;
         const event = next.value.event;
         events.push(event);
-        if ("turnId" in event && event.type !== "turn.autonomous.started") projector.project(event);
+        if (
+          "turnId" in event &&
+          event.type !== "turn.autonomous.started" &&
+          event.type !== "usage.request.timing"
+        )
+          projector.project(event);
         if (event.type === "turn.completed") break;
       }
     }

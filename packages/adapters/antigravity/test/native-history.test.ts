@@ -8,6 +8,8 @@ import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import {
   answerStep,
   createNativeHistoryDatabase,
+  runField,
+  systemStep,
   textField,
   userStep,
 } from "./support/native-history-fixture.js";
@@ -95,10 +97,13 @@ describe("native session history", () => {
 
       const snapshot = await opened.value.readSnapshot();
       assert(snapshot.ok);
-      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef)).toEqual(knownTurnRefs);
-      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
         "turn-0",
+        "turn-2",
+      ]);
+      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
         "turn-1",
+        "turn-2",
       ]);
       expect(snapshot.value.turns.map((turn) => turn.input)).toEqual([
         [{ type: "text", text: "First question" }],
@@ -138,6 +143,111 @@ describe("native session history", () => {
         { item: { type: "agentMessage", text: "Second reply" } },
       ]);
       expect(await opened.value.readSnapshot()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["legacy-0", "legacy-1"],
+    ["turn-0", "turn-1"],
+  ])(
+    "splits committed wakes without changing known foreground identities (%s, %s)",
+    async (firstKey, nextKey) => {
+      const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+      try {
+        const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?)");
+        userStep(db, 0, "你好", "user-1");
+        systemStep(db, 1, "user-1");
+        answerStep(db, 2, "你好！👋", "user-1");
+        systemStep(db, 3, "wake-1");
+        systemStep(db, 4, "wake-1");
+        insert.run(
+          5,
+          15,
+          3,
+          Buffer.concat([
+            runField("wake-1"),
+            bytes(20, call("read", "view_file", { path: "notes" })),
+          ]),
+        );
+        insert.run(6, 132, 3, result("read", "done"));
+        answerStep(db, 7, "定时器已触发", "wake-1");
+        systemStep(db, 8, "no-output");
+        userStep(db, 9, "next", "user-2");
+        userStep(db, 10, " input", "user-2");
+        answerStep(db, 11, "next answer", "user-2");
+        systemStep(db, 12, "unsettled");
+        insert.run(
+          13,
+          15,
+          8,
+          Buffer.concat([runField("unsettled"), bytes(20, textField(1, "partial"))]),
+        );
+
+        const knownTurnRefs = [firstKey, "wake-3", nextKey].map((nativeTurnKey) =>
+          nativeTurnRefSchema.parse({ ...nativeRef, nativeTurnKey }),
+        );
+        const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home, knownTurnRefs });
+        assert(opened.ok);
+        const snapshot = await opened.value.readSnapshot();
+        assert(snapshot.ok);
+        expect(
+          snapshot.value.turns.map(({ input, items, nativeTurnRef, checkpoint }) => ({
+            input: input.map(({ text }) => text),
+            items: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+            key: nativeTurnRef.nativeTurnKey,
+            checkpoint: checkpoint?.checkpointId,
+          })),
+        ).toEqual([
+          { input: ["你好"], items: ["你好！👋"], key: firstKey, checkpoint: "turn-0" },
+          {
+            input: [],
+            items: ["toolExecution", "定时器已触发"],
+            key: "wake-3",
+            checkpoint: "wake-3",
+          },
+          { input: ["next input"], items: ["next answer"], key: nextKey, checkpoint: "turn-2" },
+        ]);
+        expect(await opened.value.readSnapshot()).toEqual(snapshot);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("keeps a committed wake unchanged while a second wake is generating", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      userStep(db, 0, "set two timers", "user");
+      answerStep(db, 1, "timers set", "user");
+      systemStep(db, 2, "first-wake");
+      answerStep(db, 3, "first timer expired", "first-wake");
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const first = await opened.value.readSnapshot();
+      assert(first.ok);
+      expect(first.value.turns).toHaveLength(2);
+
+      systemStep(db, 4, "second-wake");
+      const payload = Buffer.concat([
+        runField("second-wake"),
+        bytes(20, textField(1, "second timer expired")),
+      ]);
+      db.prepare("INSERT INTO steps VALUES (5, 15, 8, ?)").run(payload);
+      expect(await opened.value.readSnapshot()).toEqual(first);
+
+      db.exec("UPDATE steps SET status = 3 WHERE idx = 5");
+      const both = await opened.value.readSnapshot();
+      assert(both.ok);
+      expect(both.value.turns.slice(0, 2)).toEqual(first.value.turns);
+      expect(both.value.turns.slice(2)).toMatchObject([
+        {
+          nativeTurnRef: { nativeTurnKey: "wake-4" },
+          input: [],
+          items: [{ item: { type: "agentMessage", text: "second timer expired" } }],
+        },
+      ]);
     } finally {
       db.close();
     }

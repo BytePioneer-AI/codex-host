@@ -158,6 +158,79 @@ describe("Codex UI projector detached command Items", () => {
     expect(projector.hasOpenDetachedItems).toBe(false);
   });
 
+  it("reads the accumulated file summary across a late detached file change", () => {
+    const projector = startedProjector();
+    const messages: JsonObject[] = [];
+    const project = (event: Parameters<CodexTurnProjector["project"]>[0]) => {
+      const projection = projector.project(event);
+      messages.push(...projection.messages);
+      return projection;
+    };
+    const firstDiff: HostFileChangeItem = {
+      type: "fileChange",
+      itemId: hostItemIdSchema.parse("bash-1-diff"),
+      sourceItemIds: [command.itemId],
+      changes: [{ path: "a.ts", kind: "update", unifiedDiff: "-a\n+a" }],
+    };
+    const secondCommand: HostCommandExecutionItem = {
+      ...command,
+      itemId: hostItemIdSchema.parse("bash-2"),
+    };
+    const secondDiff: HostFileChangeItem = {
+      type: "fileChange",
+      itemId: hostItemIdSchema.parse("bash-2-diff"),
+      sourceItemIds: [secondCommand.itemId],
+      changes: [{ path: "b.ts", kind: "update", unifiedDiff: "-b\n+b" }],
+    };
+    project({ type: "item.started", turnId, item: secondCommand });
+    project({ type: "item.detached", turnId, itemId: command.itemId });
+    project({ type: "item.started", turnId, item: firstDiff });
+    project({ type: "item.detached", turnId, itemId: firstDiff.itemId });
+    project({ type: "item.detached", turnId, itemId: secondCommand.itemId });
+    project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    project({ type: "item.started", turnId, item: secondDiff });
+
+    const changePaths = (item: JsonObject | undefined): string[] =>
+      ((item as { changes?: { path: string }[] } | undefined)?.changes ?? []).map(
+        ({ path }) => path,
+      );
+    // Live notification, snapshot read, and detached/foreground read-back all
+    // agree on the accumulated summary under the first file Item's stable id.
+    expect(
+      messages.filter(({ method }) => method === "item/fileChange/patchUpdated").at(-1),
+    ).toMatchObject({
+      params: { itemId: firstDiff.itemId, changes: [{ path: "a.ts" }, { path: "b.ts" }] },
+    });
+    const snapshotItems = projector.snapshotTurn().items as JsonObject[];
+    expect(changePaths(snapshotItems.find(({ id }) => id === firstDiff.itemId))).toEqual([
+      "a.ts",
+      "b.ts",
+    ]);
+    expect(changePaths(projector.openDetachedWireItems().get(firstDiff.itemId))).toEqual([
+      "a.ts",
+      "b.ts",
+    ]);
+    expect(changePaths(projector.foregroundWireItems().get(firstDiff.itemId))).toEqual([
+      "a.ts",
+      "b.ts",
+    ]);
+    // Later file Items fold into the summary instead of owning a wire slot.
+    expect(projector.foregroundWireItems().has(secondDiff.itemId)).toBe(false);
+
+    for (const item of [command, firstDiff, secondCommand, secondDiff]) {
+      project({
+        type: "item.completed",
+        turnId,
+        snapshot: { item, outcome: { status: "succeeded" } },
+      });
+    }
+    expect(projector.openDetachedWireItems()).toEqual(new Map());
+    expect(changePaths(projector.foregroundWireItems().get(firstDiff.itemId))).toEqual([
+      "a.ts",
+      "b.ts",
+    ]);
+  });
+
   it("rejects an unrelated file change after Turn completion", () => {
     const projector = startedProjector();
     projector.project({ type: "item.detached", turnId, itemId: command.itemId });

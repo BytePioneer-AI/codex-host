@@ -987,6 +987,8 @@ export class CodexTurnProjector {
   /**
    * Wire format of detached Items that have not settled: `inProgress` with the
    * output accumulated so far. History projection overlays these by Item id.
+   * The file summary Item keeps its first id but always carries the accumulated
+   * changes, matching snapshotTurn() and the live patch notifications.
    */
   openDetachedWireItems(): ReadonlyMap<HostItemId, JsonObject> {
     const items = new Map<HostItemId, JsonObject>();
@@ -994,7 +996,16 @@ export class CodexTurnProjector {
       if (!this.#detached.has(itemId)) continue;
       const projected = this.#items.get(itemId);
       if (!projected || projected.outcome) continue;
-      items.set(itemId, projectItem(projected.item, null, this.#cwd, true, this.#threadId));
+      items.set(
+        itemId,
+        projectItem(
+          itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
+          null,
+          this.#cwd,
+          true,
+          this.#threadId,
+        ),
+      );
     }
     return items;
   }
@@ -1014,7 +1025,14 @@ export class CodexTurnProjector {
     for (const itemId of this.#wireItemOrder) {
       if (this.#background.has(itemId)) continue;
       const projected = this.#items.get(itemId);
-      if (projected) items.set(itemId, this.#projectItem(projected.item, projected.outcome));
+      if (projected)
+        items.set(
+          itemId,
+          this.#projectItem(
+            itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
+            projected.outcome,
+          ),
+        );
     }
     return items;
   }

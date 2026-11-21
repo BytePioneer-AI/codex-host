@@ -76,11 +76,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
       update({sessionUpdate:'tool_call',toolCallId:'old',name:'run_command',kind:'execute',status:'in_progress'});
       permission();
       question();
-      return setTimeout(() => {
-        update({sessionUpdate:'tool_call_update',toolCallId:'old',status:'completed',rawOutput:'done'});
-        update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'after-old-update'}});
-        result(request.id, {stopReason:'end_turn'});
-      }, 150);
+      update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'after-old-update'}});
+      return setTimeout(() => result(request.id, {stopReason:'end_turn'}), 150);
     }
   }
   if (request.method === 'session/cancel') return result(request.id, {stopReason:'cancelled'});
@@ -189,13 +186,6 @@ describe("real ACP background owner lifecycle", () => {
 
     const interactions = fixture.outputs.filter((output) => output.kind === "interaction");
     expect(interactions).toHaveLength(2);
-    expect(events(fixture.outputs)).toContainEqual(
-      expect.objectContaining({
-        type: "item.completed",
-        turnId: "t1",
-        snapshot: expect.objectContaining({ outcome: { status: "succeeded" } }),
-      }),
-    );
     expect(
       events(fixture.outputs).filter(
         (event) => event.type === "item.started" && event.turnId === "t1",
@@ -359,8 +349,7 @@ describe("real ACP background owner lifecycle", () => {
         response: { type: "question", answers: { answer: ["yes"] } },
       }),
     ).toMatchObject({ ok: true });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(fixture.session.hasBackgroundWork?.()).toBe(false);
+    await waitFor(() => fixture.session.hasBackgroundWork?.() === false, "ask owner released");
     expect(events(fixture.outputs)).toContainEqual(
       expect.objectContaining({
         type: "item.completed",

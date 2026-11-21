@@ -310,6 +310,16 @@ interface PendingInteraction {
   resolve(value: RequestPermissionResponse | CreateElicitationResponse): void;
   cancelValue: RequestPermissionResponse | CreateElicitationResponse;
 }
+interface BackgroundEpisode {
+  turnId: HostTurnId;
+  textItem:
+    | {
+        type: "agentMessage" | "reasoning";
+        itemId: ReturnType<typeof hostItemIdSchema.parse>;
+        text: string;
+      }
+    | undefined;
+}
 export class AntigravitySession implements HarnessSession {
   readonly harnessId = harnessId;
   readonly capabilities = antigravitySessionCapabilities;
@@ -379,7 +389,7 @@ export class AntigravitySession implements HarnessSession {
       !!this.#active ||
       !!this.#opening ||
       !!this.#configurationQueue ||
-      this.#configuring ||
+      !!this.#configurationQueue ||
       this.#subagents.running ||
       this.#pending.size > 0 ||
       [...this.#toolOwners.values()].some((turn) => turn.detachedToolCallIds.size > 0)
@@ -725,6 +735,11 @@ export class AntigravitySession implements HarnessSession {
       event.type === "tool.update"
     ) {
       if (this.#opening || this.#historyOperation || this.#active?.cancelled) return;
+      if (event.type === "agent.text" || event.type === "agent.thought")
+        this.#appendBackgroundText(
+          event.type === "agent.text" ? "agentMessage" : "reasoning",
+          event.text,
+        );
       // The response boundary can precede completion of user Turn accounting.
       if (this.#active?.promptPhase === "returned") this.#postPromptWake = true;
       else if (this.#active?.promptPhase !== "submitted") this.#wakes?.observe();
@@ -1118,6 +1133,7 @@ export class AntigravitySession implements HarnessSession {
             thinkingOptionId: this.#state.effectiveThinkingOptionId,
             permissionModeId: command.permissionModeId,
           };
+          this.#settleBackground({ status: "succeeded" });
           old.setSessionEventHandler(null);
           old.setSessionInteractionHandler(null);
           await old.close();
@@ -1216,8 +1232,8 @@ export class AntigravitySession implements HarnessSession {
           turn.promptPhase = "returned";
         },
         onEvent: (event) => {
-          if (!this.#isCurrent(turn) || turn.cancelled) return;
           if (event.type === "agent.text" || event.type === "agent.thought") {
+            if (!this.#isCurrent(turn) || turn.cancelled) return;
             turn.firstOutputAtMs ??= Date.now();
             this.#appendText(
               turn,
@@ -1231,11 +1247,15 @@ export class AntigravitySession implements HarnessSession {
               // A repeated tool.call cannot claim an existing owner's ID.
               return;
             }
+            if (!this.#isCurrent(turn) || turn.cancelled) return;
             turn.hasToolCalls = true;
             turn.firstOutputAtMs ??= Date.now();
             this.#completeText(turn, { status: "succeeded" });
             this.#handleToolEvent(turn, event);
-          } else this.#sessionEvent(event);
+          } else {
+            if (!this.#isCurrent(turn) || turn.cancelled) return;
+            this.#sessionEvent(event);
+          }
         },
         onPermission: (request) => {
           const owner = this.#toolOwners.get(request.toolCall.toolCallId);
@@ -1343,7 +1363,7 @@ export class AntigravitySession implements HarnessSession {
       return;
     this.#toolOwners.set(event.toolCallId, turn);
     turn.hasToolCalls = true;
-    if (event.status === "failed")
+    if (event.status === "completed" || event.status === "failed")
       this.#closeInteractions("cancelled", turn, false, event.toolCallId);
     turn.tracker.handleToolEvent(event);
     if (event.status === "completed" || event.status === "failed") {
@@ -1421,6 +1441,8 @@ export class AntigravitySession implements HarnessSession {
     }
     turn.ended = true;
     this.#active = undefined;
+    if (nativeTurnRef) this.#lastCompletedTurnId = turn.turnId;
+    this.#settleBackground({ status: "succeeded" });
     this.#emit({
       type: "turn.completed",
       turnId: turn.turnId,
@@ -1433,6 +1455,10 @@ export class AntigravitySession implements HarnessSession {
     });
     if (this.#postPromptWake && !this.#closed && !this.#faulted) this.#wakes?.observe();
     this.#postPromptWake = false;
+    if (outcome.status === "succeeded" && !turn.cancelled && !this.#closed && !this.#faulted) {
+      for (const entry of this.#postPromptBackground.splice(0))
+        this.#appendBackgroundText(entry.type, entry.text);
+    } else this.#postPromptBackground.length = 0;
   }
   #permission(
     turn: ActiveTurn,

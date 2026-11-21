@@ -480,6 +480,28 @@ describe("tool lifecycle and file changes", () => {
       ["fileChange", "succeeded"],
     ]);
   });
+  it("detaches a diff that first arrives after its tool", () => {
+    const { tools, events } = tracker();
+    tools.handleToolEvent({
+      type: "tool.call",
+      toolCallId: "edit",
+      name: "edit_file",
+      status: "in_progress",
+    });
+    expect(tools.detachPending(new Set(["edit"]))).toEqual(new Set(["edit"]));
+    tools.handleToolEvent({
+      type: "tool.update",
+      toolCallId: "edit",
+      status: "in_progress",
+      content: [{ type: "diff", path: "/repo/a.ts", oldText: "before", newText: "after" }],
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "item.started",
+      "item.detached",
+      "item.detached",
+    ]);
+    expect(tools.completedSnapshots()).toEqual([]);
+  });
   it("emits generic tool output and closes pending items on cancellation", () => {
     const { tools, events } = tracker();
     tools.handleToolEvent({

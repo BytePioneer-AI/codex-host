@@ -37,6 +37,7 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
+import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
@@ -910,6 +911,44 @@ describe("Antigravity ACP Session", () => {
         .map((event) => event.snapshot.item),
     ).toMatchObject([{ text: "new" }]);
   });
+  it("routes a detached tool update after cancelling its successor Turn", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "background-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+    expect(session.hasBackgroundWork?.()).toBe(true);
+
+    transport.result = deferred();
+    const nextTransport = await start(session, transports, "t2");
+    await session.execute({ type: "turn.cancel", turnId: turnId("t2") });
+    nextTransport.handler?.onEvent({
+      type: "tool.update",
+      toolCallId: "background-tool",
+      status: "completed",
+      rawOutput: "done",
+    });
+    await vi.waitFor(() => expect(session.hasBackgroundWork?.()).toBe(false));
+    nextTransport.result.resolve({ stopReason: "cancelled" });
+    await completed(outputs, "t2");
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({
+        type: "item.completed",
+        turnId: "t1",
+        snapshot: expect.objectContaining({ outcome: { status: "succeeded" } }),
+      }),
+    );
+  });
   it("waits for config confirmation before publishing the effective selection", async () => {
     const { adapter, transports } = fixture();
     const { session } = await sessionOf(await adapter.open({ kind: "create", cwd: process.cwd() }));
@@ -1736,6 +1775,39 @@ describe("ACP interaction round trips", () => {
       }),
     ).toMatchObject({ ok: true });
     await expect(otherReply).resolves.toEqual({ action: "accept", content: { answer: "yes" } });
+  });
+
+  it("cancels a pending interaction when its tool completes", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "completed-tool",
+      name: "ask_question",
+      status: "in_progress",
+    });
+    const reply = required(transport.handler).onElicitation({
+      mode: "form",
+      sessionId: required(transport.sessionId),
+      toolCallId: "completed-tool",
+      message: "Complete?",
+      requestedSchema: { type: "object", properties: {} },
+    });
+    await vi.waitFor(() =>
+      expect(outputs.some((output) => output.kind === "interaction")).toBe(true),
+    );
+    transport.handler?.onEvent({
+      type: "tool.update",
+      toolCallId: "completed-tool",
+      status: "completed",
+    });
+    await expect(reply).resolves.toEqual({ action: "cancel" });
+    expect(events(outputs)).toContainEqual(
+      expect.objectContaining({ type: "interaction.closed", reason: "cancelled" }),
+    );
   });
 
   it("keeps a completed Turn owner for a later permission callback", async () => {
@@ -2659,7 +2731,7 @@ describe("Antigravity idle wake Turns", () => {
     const transport = await start(session, transports);
     const countGate = deferred<number>();
     const readCount = vi
-      .spyOn(nativeBoundaries, "readNativeTurnCount")
+      .spyOn(nativeBoundaries, "observeNativeTurnCount")
       .mockReturnValue(countGate.promise);
     transport.handler?.onEvent({
       type: "tool.call",

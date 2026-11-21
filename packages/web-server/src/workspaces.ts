@@ -77,6 +77,11 @@ export class Workspaces {
   private referenceArchives: string[] | undefined;
   private remoteArchives: readonly string[] = [];
   private remoteGroups: WorkspaceView[] = [];
+  private removeNativeProject: ((workspace: WorkspaceView) => Promise<void>) | undefined;
+
+  setProjectRemoval(handler: (workspace: WorkspaceView) => Promise<void>): void {
+    this.removeNativeProject = handler;
+  }
 
   setRemoteGroups(groups: WorkspaceView[]): void {
     const previous = new Map(this.remoteGroups.map((group) => [group.workspaceId, group]));
@@ -483,11 +488,14 @@ export class Workspaces {
     });
     rpc.register("workspace/delete", async (args) => {
       const request = requestOf<{ workspaceId: string }>(args);
-      this.require(request.workspaceId);
-      this.state.items = this.state.items.filter(
-        (item) => item.workspaceId !== request.workspaceId,
-      );
-      this.save();
+      const workspace = this.require(request.workspaceId);
+      await this.removeNativeProject?.(workspace);
+      const state = {
+        ...this.state,
+        items: this.state.items.filter((item) => item.workspaceId !== request.workspaceId),
+      };
+      this.data.writeJson(FILE, state);
+      this.state = state;
       this.broadcast({ type: "remove", workspaceId: request.workspaceId });
       return { deleted: true };
     });

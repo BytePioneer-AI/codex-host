@@ -88,7 +88,7 @@ export const zh = {
   "field.sessionName": "会话名称",
   "delete.workspace": "删除工作区",
   "delete.desc":
-    "将把“{name}”从工作区列表中移除。文件夹与会话记录会保留，其会话将显示在“未分组”下。",
+    "将把“{name}”从工作区列表中移除；如果它对应 Codex 本地项目，也会一并移除该项目。文件夹与会话记录会保留，其会话将显示在“未分组”下。",
   "delete.pending": "正在删除工作区…",
   "menu.copySessionLink": "复制会话链接",
   "menu.referenceSession": "引用会话",
@@ -275,7 +275,7 @@ export const en = {
   "field.sessionName": "Session name",
   "delete.workspace": "Delete workspace",
   "delete.desc":
-    "This removes “{name}” from the workspace list. The folder and session logs will be kept. Its sessions will appear under Ungrouped.",
+    "This removes “{name}” from the workspace list and its corresponding local Codex project, if any. The folder and session logs will be kept. Its sessions will appear under Ungrouped.",
   "delete.pending": "Deleting workspace…",
   "menu.copySessionLink": "Copy session link",
   "menu.referenceSession": "Reference session",

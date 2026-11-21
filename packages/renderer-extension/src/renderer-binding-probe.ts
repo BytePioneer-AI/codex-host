@@ -124,6 +124,7 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
+import { removeCodexProject } from "./codex-project-removal.js";
 import { openCodexSchedules, openCodexThread } from "./codex-schedule-navigation.js";
 import { createDesktopTreeRelay, openLocalExtensionThread } from "./desktop-extension-api.js";
 import { installDesktopExtensionHost } from "./desktop-extension-host.js";
@@ -314,6 +315,7 @@ type ApplyAdapterAgent = (
 ) => boolean;
 
 export interface RendererBindingProbeApi {
+  removeLocalProject(projectId: string, path: string): Promise<void>;
   remoteConnections(request: unknown): Promise<unknown>;
   status(): RendererBindingProbeStatus;
   currentThreadId(): string | null;
@@ -3588,6 +3590,7 @@ export function installRendererBindingProbe(
     },
   });
   const api: RendererBindingProbeApi = {
+    removeLocalProject: (projectId, path) => removeCodexProject(window, projectId, path),
     remoteConnections: (request) => handleRemoteConnectionsRequest(remoteConnections, request),
     currentThreadId() {
       // The app routinely keeps several composer roots connected (hidden leftovers included), so

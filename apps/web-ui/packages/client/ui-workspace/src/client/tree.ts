@@ -25,6 +25,7 @@ declare module "@deepseek-ai/dsh-session-projection/types" {
   interface SessionProjectionMap {
     threadReference: { hostId: string; threadId?: string } | null;
     threadTreeParent: string | null;
+    archiveForkParent: string | null;
     remoteHost: { hostId: string; displayName: string; state: string } | null;
   }
 }

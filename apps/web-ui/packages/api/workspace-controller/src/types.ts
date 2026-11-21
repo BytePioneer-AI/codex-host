@@ -125,6 +125,7 @@ export interface WorkspaceInsertSessionBeforeRequest {
 /** Session requested for archival from Workspace grouping surfaces. */
 export interface WorkspaceArchiveSessionRequest {
   readonly sessionId: SessionId;
+  readonly scope?: "single";
   /**
    * Stop the Session's running work — its turn, subagent descendants, owned
    * background jobs, and active schedules — instead of refusing the archive
@@ -138,6 +139,7 @@ export interface WorkspaceArchiveSessionRequest {
 /** Session requested for restoration from the archived Session list. */
 export interface WorkspaceUnarchiveSessionRequest {
   readonly sessionId: SessionId;
+  readonly scope?: "single";
 }
 
 /** Complete archived Session set after a mutation. */

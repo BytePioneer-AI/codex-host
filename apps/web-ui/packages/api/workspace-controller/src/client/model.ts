@@ -214,6 +214,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
         try {
           const result = await this.remote.archiveSession({
             sessionId,
+            scope: "single",
             ...(options.stopActivity === true ? { stopActivity: true } : {}),
           });
           if (result.ok && this.pendingArchives.get(sessionId) === request && !request.observed) {
@@ -247,7 +248,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     const requestSeq = ++this.archiveRequestSeq;
     this.pendingArchives.delete(sessionId);
     this.invalidate();
-    const result = await this.remote.unarchiveSession({ sessionId });
+    const result = await this.remote.unarchiveSession({ sessionId, scope: "single" });
     if (result.ok && requestSeq === this.archiveRequestSeq) {
       this.installArchived(result.value.archivedSessionIds);
     }

@@ -39,6 +39,8 @@ import type {} from "@deepseek-ai/dsh-client-ui-layout/client";
 // Type-only: pulls the Session root standard-hook merge.
 import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import {
+  type ArchiveChildrenInjected,
+  type ArchiveChildrenRequest,
   type ArchiveSessionInjected,
   type CopySessionLinkInjected,
   type ForkSessionInjected,
@@ -65,6 +67,7 @@ import {
   ArchiveSessionRowButton,
   SessionArchiveConfirmDialog,
 } from "./session-actions/ArchiveSession.tsx";
+import { ArchiveChildrenDialog } from "./session-actions/ArchiveChildrenDialog.tsx";
 import { derive } from "./session-actions/derived.ts";
 import { ForkSessionMenuItem } from "./session-actions/ForkSession.tsx";
 import { CopySessionLinkMenuItem } from "./session-actions/CopySessionLink.tsx";
@@ -77,11 +80,7 @@ import { RenameSessionMenuItem, SessionRenameDialog } from "./session-actions/Re
 import { RowActionToast } from "./session-actions/RowActionToast.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { en, zh, type WorkspaceKey } from "./locales.ts";
-import {
-  isLocalThreadTreeMember,
-  runningSubagentsInThreadSubtree,
-  runningThreadSubtree,
-} from "./thread-tree-catalog.ts";
+import { archiveCandidates, runningSubagentsInThreadSubtree } from "./thread-tree-catalog.ts";
 
 export { ReferenceSessionMenuItem } from "./session-actions/ReferenceSession.tsx";
 export type { StartSessionOptions, UiWorkspace } from "./navigation.ts";
@@ -230,6 +229,7 @@ export function apply(ctx: Context): void {
   // its bound hook.
   const renameRequest = derive(shortcutControls.state, (state) => state.renameTarget);
   const archiveRequest = createSnapshotStore<SessionArchiveConfirmRequest | null>(null);
+  const archiveChildrenRequest = createSnapshotStore<ArchiveChildrenRequest | null>(null);
   const requestSessionRename = shortcutControls.rename;
   const unarchiveSession = (sessionId: SessionId): void => {
     uiWorkspace.unarchiveSession(sessionId).catch((reason: unknown) => {
@@ -266,57 +266,104 @@ export function apply(ctx: Context): void {
       });
     },
   });
+  const runArchive = async (
+    sessionId: SessionId,
+    children: readonly SessionId[],
+    stopActivity = false,
+  ): Promise<void> => {
+    await uiWorkspace.archiveSession(sessionId, { stopActivity });
+    let failedChildren = 0;
+    for (const child of children) {
+      if (workspaces.list.getSnapshot().archivedSessionIds.includes(child)) continue;
+      try {
+        const list = sessions.list.getSnapshot();
+        if (list.byId[child]?.running || runningSubagentsInThreadSubtree(list, child, []).length)
+          throw new Error("Child Session is active");
+        await uiWorkspace.archiveSession(child);
+      } catch {
+        failedChildren++;
+      }
+    }
+    notify({ kind: stopActivity ? "stoppedAndArchived" : "archived", sessionId, failedChildren });
+  };
+  const requestArchive = (sessionId: SessionId, children: readonly SessionId[]): void => {
+    const list = sessions.list.getSnapshot();
+    const summary = list.byId[sessionId];
+    const displayTitle = summary?.displayTitle ?? sessionId;
+    const subagents = runningSubagentsInThreadSubtree(list, sessionId, []);
+    if (summary?.running || subagents.length > 0) {
+      archiveRequest.set({
+        sessionId,
+        displayTitle,
+        children,
+        activity: subagents.length ? [{ kind: "subagent", items: subagents }] : [],
+        ...(summary?.running ? { runningThreads: [{ id: sessionId, title: displayTitle }] } : {}),
+      });
+      return;
+    }
+    void runArchive(sessionId, children).catch((reason: unknown) => {
+      const activity = activeSessionRefusal(reason);
+      if (activity !== undefined) {
+        archiveRequest.set({ sessionId, displayTitle, activity, children });
+      } else {
+        notify({
+          kind: "archiveFailed",
+          message: reason instanceof Error ? reason.message : String(reason),
+        });
+      }
+    });
+  };
   const archiveInjected = (): ArchiveSessionInjected => ({
     hooks: { archived: archivedSet },
-    // Archive preserves the log and the account position, so a quiet Session
-    // needs no confirmation; the notice offers undo and the archived filter.
-    // The Host's refusal for running work is the one case that asks first:
-    // the confirmation names that work and offers to stop it.
     archiveSession: (sessionId) => {
+      const preference = workspacePreferences.getSnapshot().value?.archiveChildren ?? "ask";
       const list = sessions.list.getSnapshot();
-      const summary = list.byId[sessionId];
-      const runningThreads = runningThreadSubtree(list, sessionId);
-      const subagents = runningSubagentsInThreadSubtree(list, sessionId);
-      if (isLocalThreadTreeMember(summary) && (runningThreads.length > 0 || subagents.length > 0)) {
-        archiveRequest.set({
-          sessionId,
-          displayTitle: summary?.displayTitle ?? sessionId,
-          activity: subagents.length === 0 ? [] : [{ kind: "subagent", items: subagents }],
-          runningThreads,
-        });
+      const rows = document.querySelectorAll<HTMLElement>(
+        "[data-sidebar-session-list] [data-sidebar-session-id]",
+      );
+      const visible = [...rows].flatMap((row) =>
+        row.getClientRects().length && row.dataset.sidebarSessionId
+          ? [row.dataset.sidebarSessionId]
+          : [],
+      );
+      const children = archiveCandidates(list, sessionId, visible, archivedSet.getSnapshot());
+      if (!children.length || preference !== "ask") {
+        requestArchive(sessionId, preference === "always" ? children.map(({ id }) => id) : []);
         return;
       }
-      uiWorkspace
-        .archiveSession(sessionId)
-        .then(() => {
-          notify({ kind: "archived", sessionId });
-        })
-        .catch((reason: unknown) => {
-          const activity = activeSessionRefusal(reason);
-          if (activity === undefined) {
-            notify({
-              kind: "archiveFailed",
-              message: reason instanceof Error ? reason.message : String(reason),
-            });
-            return;
-          }
-          const displayTitle =
-            sessions.list.getSnapshot().byId[sessionId]?.displayTitle ?? sessionId;
-          archiveRequest.set({ sessionId, displayTitle, activity });
-        });
+      archiveChildrenRequest.set({
+        sessionId,
+        title: list.byId[sessionId]?.displayTitle ?? sessionId,
+        children,
+      });
     },
     unarchiveSession,
   });
   installWorkspaceShortcuts(ctx, uiWorkspace, shortcutControls, archiveInjected().archiveSession);
+  const chooseArchiveScope = (): ArchiveChildrenInjected => ({
+    hooks: { archiveChildrenRequest },
+    dismiss: () => archiveChildrenRequest.set(null),
+    async choose(request, includeChildren, remember) {
+      if (archiveChildrenRequest.getSnapshot() !== request) return;
+      if (
+        remember &&
+        !(await workspacePreferences.set("archiveChildren", includeChildren ? "always" : "never"))
+      )
+        throw new Error("Archive preference could not be saved");
+      if (archiveChildrenRequest.getSnapshot() !== request) return;
+      archiveChildrenRequest.set(null);
+      requestArchive(
+        request.sessionId,
+        includeChildren ? request.children.map(({ id }) => id) : [],
+      );
+    },
+  });
   const archiveConfirmInjected = (): SessionArchiveConfirmInjected => ({
     hooks: { archiveRequest },
     settleSessionArchive: () => {
       archiveRequest.set(null);
     },
-    stopAndArchiveSession: async (sessionId) => {
-      await uiWorkspace.archiveSession(sessionId, { stopActivity: true });
-      notify({ kind: "stoppedAndArchived", sessionId });
-    },
+    stopAndArchiveSession: (sessionId, children = []) => runArchive(sessionId, children, true),
   });
   const forkInjected = (): ForkSessionInjected => ({
     forkSession: (sessionId) => {
@@ -550,6 +597,15 @@ export function apply(ctx: Context): void {
         inject: archiveConfirmInjected,
       },
       SessionArchiveConfirmDialog,
+    );
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "workspace.archive-children",
+        locale: NS,
+        inject: chooseArchiveScope,
+      },
+      ArchiveChildrenDialog,
     );
     // The toast shares the browser's viewing store: it reads the archived
     // filter to drop the archived notice's filter action once rows are visible.

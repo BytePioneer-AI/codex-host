@@ -155,7 +155,7 @@ function ArchiveConfirmForm({
   const confirm = () => {
     setArchiving(true);
     setError(null);
-    stopAndArchiveSession(request.sessionId)
+    stopAndArchiveSession(request.sessionId, request.children)
       .then(() => {
         setArchiving(false);
         onSettle();

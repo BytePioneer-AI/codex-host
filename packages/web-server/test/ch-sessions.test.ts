@@ -873,6 +873,46 @@ it("uses existing Desktop routing without installing code, and does not retry re
   await assert.rejects(client.request("shell/execute", {}), /Unsupported CH method/);
 });
 
+it("archive and undo with single scope affect only the confirmed Thread", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-archive-single-"));
+  const host = new FakeChHost();
+  const parent = host.add("parent", root);
+  const child = host.add("child", root);
+  const futureChild = host.add("future-child", root);
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/tree/read"
+      ? ({ parents: { [child.id]: parent.id, [futureChild.id]: parent.id } } as T)
+      : request<T>(method, params);
+  const sessions = new ChSessions(
+    host,
+    new Workspaces(new DataDir(root), root),
+    new EventHub(root),
+  );
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const rpc = new RpcRegistry();
+  sessions.register(rpc, new StreamRegistry());
+  for (const [method, sessionId, expected] of [
+    ["archiveSession", parent.id, [parent.id]],
+    ["archiveSession", child.id, [child.id, parent.id]],
+    ["unarchiveSession", parent.id, [child.id]],
+  ] as const) {
+    const result = await rpc.dispatch(`workspace/${method}`, {
+      args: { request: { sessionId, scope: "single" } },
+    });
+    assert.deepEqual(result, { ok: true, value: { archivedSessionIds: expected } });
+  }
+  assert.deepEqual([...host.archivedIds], [child.id]);
+  assert.ok(
+    !host.requests.some(
+      ({ method, params }) => method === "thread/archive" && params.threadId === futureChild.id,
+    ),
+  );
+});
+
 it("projects native archive confirmation through the legacy Desktop transport", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-desktop-archive-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

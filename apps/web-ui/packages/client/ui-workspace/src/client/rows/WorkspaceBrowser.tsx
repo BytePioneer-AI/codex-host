@@ -1904,7 +1904,7 @@ function WorkspaceBrowserContent({
 
       {/* Always-mounted seat keeps the region's flex slot while the list
           itself is wide-only. */}
-      <div className={css.listArea}>
+      <div className={css.listArea} data-sidebar-session-list>
         {wide && list.phase === "pending" && (
           <div className={css.empty} role="status">
             {t("sessions.loading")}

@@ -8,19 +8,25 @@ import {
   type RecentNavigationSettings,
 } from "./recent-navigation-settings.ts";
 import { ThreadTreeStyleRow } from "./ThreadTreeStyleRow.tsx";
+import { ArchiveChildrenPreferenceRow } from "./ArchiveChildrenPreferenceRow.tsx";
 
 export type ThreadTreeCollapseStyle = "summary" | "ring";
+export const archiveChildrenModes = ["ask", "always", "never"] as const;
+export type ArchiveChildrenMode = (typeof archiveChildrenModes)[number];
 export interface WorkspacePreferences extends RecentNavigationSettings {
   threadTreeCollapseStyle: ThreadTreeCollapseStyle;
+  archiveChildren: ArchiveChildrenMode;
 }
 export const WORKSPACE_PREFERENCES_NAMESPACE = "ui-workspace";
 export const workspacePreferenceDefaults: WorkspacePreferences = {
   ...recentNavigationDefaults,
   threadTreeCollapseStyle: "summary",
+  archiveChildren: "ask",
 };
 export const workspacePreferenceSchema = z.object({
   ...recentNavigationFields,
   threadTreeCollapseStyle: z.union(["summary", "ring"]).default("summary"),
+  archiveChildren: z.union([...archiveChildrenModes]).default("ask"),
 });
 
 export function hasExplicitTreeStyle(user: unknown): boolean {
@@ -49,6 +55,21 @@ export function registerWorkspacePreferences(ctx: Context): ConfigForm<Workspace
         }),
       },
       ThreadTreeStyleRow,
+    ),
+  );
+  ctx.slots.inject("settings.general.item", () =>
+    ctx.slots.register(
+      {
+        name: "settings.general.item",
+        id: "workspace.archive-children",
+        order: 11.6,
+        locale: "workspace",
+        inject: () => ({
+          hooks: { preference },
+          setMode: (mode: ArchiveChildrenMode) => preference.set("archiveChildren", mode),
+        }),
+      },
+      ArchiveChildrenPreferenceRow,
     ),
   );
   return preference;

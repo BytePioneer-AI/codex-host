@@ -53,6 +53,7 @@ export interface ChThread {
   turns: ChTurn[];
   historyMode?: "legacy" | "paginated";
   parentThreadId?: string | null;
+  forkedFromId?: string | null;
   canAcceptDirectInput?: boolean;
   codexhostImportSource?: ClientThreadImportSource | undefined;
 }

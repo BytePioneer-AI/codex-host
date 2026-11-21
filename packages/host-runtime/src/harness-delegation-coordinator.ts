@@ -488,6 +488,7 @@ export class HarnessDelegationCoordinator {
     try {
       await this.#startExternalTurn(thread, input.message, turnId);
     } catch (error) {
+      if (error instanceof DelegationControlError) throw error;
       throw new DelegationControlError(
         "DELEGATION_FAILED",
         error instanceof Error ? error.message : String(error),

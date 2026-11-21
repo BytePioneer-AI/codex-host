@@ -31,6 +31,7 @@ function watchOutput(watch: DelegationStartResult["watch"]): { watch?: unknown }
       state: watch.state,
       notify: targetLink(watch.notifyThreadId),
       timeoutMs: watch.timeoutMs,
+      ...(watch.stallAfterMs !== undefined ? { stallAfterMs: watch.stallAfterMs } : {}),
       ...(watch.pendingQuestions?.length ? { pendingQuestions: watch.pendingQuestions } : {}),
     },
   };
@@ -77,6 +78,7 @@ function snapshotOutput(
       : threadLink(snapshot.threadId),
     harnessId: snapshot.harnessId,
     status: snapshot.status,
+    ...(snapshot.queue ? { queuePosition: snapshot.queue.position } : {}),
     ...(snapshot.timedOut !== undefined ? { timedOut: snapshot.timedOut } : {}),
     ...(snapshot.pendingQuestions !== undefined
       ? { pendingQuestions: snapshot.pendingQuestions }
@@ -131,6 +133,7 @@ export function compactDelegationOutput(
         thread: result.deepLink,
         harnessId: result.harnessId,
         status: result.status,
+        ...(result.queue ? { queuePosition: result.queue.position } : {}),
         ...(result.cwd ? { cwd: result.cwd } : {}),
         ...(result.worktree ? { worktree: result.worktree } : {}),
         ...(result.parentThreadId
@@ -183,6 +186,7 @@ export function compactDelegationOutput(
         state: result.state,
         status: result.status,
         timeoutMs: result.timeoutMs,
+        ...(result.stallAfterMs !== undefined ? { stallAfterMs: result.stallAfterMs } : {}),
         ...(result.pendingQuestions?.length ? { pendingQuestions: result.pendingQuestions } : {}),
       };
     }
@@ -201,6 +205,7 @@ export function compactDelegationOutput(
             taskName,
             threadStatus,
             watchedForMs,
+            stallAfterMs,
           }) => ({
             thread: threadLink(threadId),
             notify: targetLink(notifyThreadId),
@@ -212,6 +217,7 @@ export function compactDelegationOutput(
             ...(taskName ? { taskName } : {}),
             ...(threadStatus ? { threadStatus } : {}),
             ...(watchedForMs !== undefined ? { watchedForMs } : {}),
+            ...(stallAfterMs !== undefined ? { stallAfterMs } : {}),
           }),
         ),
       };
@@ -219,10 +225,11 @@ export function compactDelegationOutput(
     case "thread list": {
       const result = body as DelegationThreadListResult;
       return {
-        threads: result.threads.map(({ deepLink, harnessId, status, title, cwd }) => ({
+        threads: result.threads.map(({ deepLink, harnessId, status, queue, title, cwd }) => ({
           thread: deepLink,
           harnessId,
           status,
+          ...(queue ? { queuePosition: queue.position } : {}),
           ...(title ? { title } : {}),
           ...(cwd ? { cwd } : {}),
         })),

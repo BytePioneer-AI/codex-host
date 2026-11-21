@@ -27,6 +27,7 @@ function manager(hostId: string) {
     if (method === "codexhost/harness/inspect") return ready;
     if (method === "codexhost/thread/inspect") return { owner: "codex", locked: true };
     if (method === "codexhost/settings/idle-release/set") return params;
+    if (method === "codexhost/settings/delegation-capacity/set") return params;
     return { threadId: "thread-test", usage: null };
   });
   const requestClient = {
@@ -132,6 +133,10 @@ it.each(["local", remoteId])(
       }
       expect(fixture.remote.nativeSend).not.toHaveBeenCalledWith(
         "codexhost/settings/idle-release/set",
+        expect.anything(),
+      );
+      expect(fixture.remote.nativeSend).not.toHaveBeenCalledWith(
+        "codexhost/settings/delegation-capacity/set",
         expect.anything(),
       );
     } finally {

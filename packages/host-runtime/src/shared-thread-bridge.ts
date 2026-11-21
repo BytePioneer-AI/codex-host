@@ -14,6 +14,7 @@ import {
   IDLE_RELEASE_SETTINGS_METHOD,
   USAGE_STATISTICS_METHOD,
   SKILLS_LIST_METHOD,
+  DELEGATION_CAPACITY_SETTINGS_METHOD,
 } from "@codexhost/shared-contracts";
 import {
   storedSectionPlacementV1Schema,
@@ -279,6 +280,7 @@ export class SharedThreadBridge {
         IDLE_RELEASE_SETTINGS_METHOD,
         USAGE_STATISTICS_METHOD,
         SKILLS_LIST_METHOD,
+        DELEGATION_CAPACITY_SETTINGS_METHOD,
       ].some((value) => value === method)
     );
   }

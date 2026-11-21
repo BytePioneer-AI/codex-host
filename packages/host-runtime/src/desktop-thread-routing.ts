@@ -159,6 +159,8 @@ export interface DesktopThreadRoutingHost {
     params: JsonObject,
     historyFresh: boolean,
   ): Promise<void>;
+  listQueuedOfficialHistory(request: JsonRpcRequest, params: JsonObject): Promise<boolean>;
+  readOrResumeQueuedOfficialThread(request: JsonRpcRequest, params: JsonObject): Promise<boolean>;
   startExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
   steerExternalTurn(request: JsonRpcRequest, thread: ExternalThread): Promise<void>;
   interruptExternalTurn(
@@ -543,6 +545,7 @@ export class DesktopThreadRouting {
         );
         return true;
       }
+      if (await this.#host.listQueuedOfficialHistory(request, params)) return true;
     }
     if (request.method === "turn/start") {
       const params = routingParams(request);
@@ -614,6 +617,11 @@ export class DesktopThreadRouting {
         return true;
       }
       if (location.kind === "official") {
+        if (
+          params.includeTurns === true &&
+          (await this.#host.readOrResumeQueuedOfficialThread(request, params))
+        )
+          return true;
         await this.#host.forwardOfficialRequest(request, frame);
         return true;
       }
@@ -653,6 +661,11 @@ export class DesktopThreadRouting {
         }
         return true;
       }
+      if (
+        request.method === "thread/resume" &&
+        (await this.#host.readOrResumeQueuedOfficialThread(request, params))
+      )
+        return true;
     }
     if (request.method === "thread/unsubscribe") {
       const params = routingParams(request);

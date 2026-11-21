@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 
+import { DelegationCapacityQueue } from "./delegation-capacity-queue.js";
+import type { DelegationQueueStore } from "./delegation-capacity-store.js";
 import {
   DelegationControlError,
+  type DelegationCapacityGate,
   type DelegationControlApi,
   type DelegationControlRegistration,
+  type DelegationStartIdentity,
   type DelegationStartInput,
   type DelegationWatchApi,
   type HarnessInspectInput,
@@ -52,6 +56,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   #harnessCatalog: DelegationControlRegistration | undefined;
   // Watches sit above the sessions so either end may belong to any registered session.
   readonly #watchService: DelegationWatchService;
+  // So does the capacity limit: it counts the running Threads of every session.
+  readonly #capacity: DelegationCapacityQueue;
 
   readonly #remoteRead:
     ((input: ThreadReadInput) => ReturnType<DelegationControlApi["read"]>) | undefined;
@@ -64,6 +70,12 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       watchStore?: DelegationWatchStore;
       refs?: ThreadRefsStore;
       clientEvents?: ClientEventSink;
+      capacity?: {
+        store?: DelegationQueueStore;
+        diagnose?: (error: unknown) => void;
+        pollIntervalMs?: number;
+        settingsGraceMs?: number;
+      };
     } = {},
   ) {
     this.#remoteRead = options.remoteRead;
@@ -73,10 +85,34 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       ...(options.watchStore ? { store: options.watchStore } : {}),
       ...(options.clientEvents ? { clientEvents: options.clientEvents } : {}),
     });
+    this.#capacity = new DelegationCapacityQueue(
+      {
+        runningThreadIds: () =>
+          [...this.#registrations].flatMap(
+            (registration) => registration.runningThreadIds?.() ?? [],
+          ),
+        canStart: () => this.#registrations.size > 0,
+        start: (input, identity) => this.#startQueued(input, identity),
+        // A waiting Thread has no Turn or Delegation yet, so no session claims to own it.
+        adopt: async (queued) => {
+          for (const registration of [...this.#registrations]) {
+            const begun = await registration.adoptQueued?.(queued);
+            if (begun !== undefined) return begun;
+          }
+          return undefined;
+        },
+      },
+      options.capacity,
+    );
   }
 
   get size(): number {
     return this.#registrations.size;
+  }
+
+  /** The capacity limit sessions apply to delegated starts and the settings request configures. */
+  get capacity(): DelegationCapacityGate {
+    return this.#capacity;
   }
 
   register(
@@ -84,12 +120,18 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     options: { harnessCatalog?: boolean } = {},
   ): () => void {
     this.#registrations.add(registration);
+    const unsubscribeActivity = registration.subscribeActivity?.((threadIds) =>
+      this.#watchService.noteActivity(threadIds),
+    );
+    registration.useCapacity?.(this.#capacity);
     this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
     const unsubscribeIdle = registration.onThreadIdle?.((threadId) =>
       this.#watchService.nudge(threadId),
     );
+    this.#capacity.refresh();
     return () => {
+      unsubscribeActivity?.();
       unsubscribeIdle?.();
       if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
       if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
@@ -136,6 +178,16 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         "INVALID_ARGUMENT",
         "steer and interrupt are mutually exclusive",
       );
+    const queued = await this.#capacity.peek(input.threadId);
+    if (queued) {
+      throw new DelegationControlError(
+        "THREAD_BUSY",
+        queued.status === "queued" ? "Thread is queued and has not started" : "Thread is starting",
+        { status: queued.status, ...(queued.position ? { queuePosition: queued.position } : {}) },
+      );
+    }
+    if (await this.#neverStarted({ threadId: input.threadId, view: "result" }))
+      throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was never started");
     const registration = await this.#registrationForThread(input.threadId);
     if (!input.interrupt) return registration.send(input);
     const send = { threadId: input.threadId, message: input.message };
@@ -145,9 +197,19 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {
-    return this.#watchService.cancel(input.threadId, async () =>
-      (await this.#registrationForThread(input.threadId)).cancel(input),
-    );
+    return this.#watchService.cancel(input.threadId, async () => {
+      const removed = await this.#capacity.cancel(input.threadId);
+      if (removed) return removed;
+      const finished = await this.#neverStarted({ threadId: input.threadId, view: "result" });
+      if (finished)
+        return {
+          threadId: input.threadId,
+          turnId: null,
+          harnessId: finished.harnessId,
+          cancelled: false,
+        };
+      return (await this.#registrationForThread(input.threadId)).cancel(input);
+    });
   }
 
   async read(input: ThreadReadInput) {
@@ -182,6 +244,8 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         );
       return this.#remoteRead(read);
     }
+    const queued = (await this.#capacity.read(read)) ?? (await this.#neverStarted(read));
+    if (queued) return queued;
     return (await this.#registrationForThread(read.threadId)).read(read);
   }
 
@@ -196,12 +260,33 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   async wait(input: ThreadWaitInput) {
     if (input.hostId !== undefined && input.hostId !== "local")
       throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
-    const snapshot = await (await this.#registrationForThread(input.threadId)).wait(input);
+    const snapshot = await this.#wait(input);
     return withRefs(snapshot, (await this.#refs?.get(snapshot.threadId)) ?? []);
   }
 
   async answer(input: ThreadAnswerInput) {
     return (await this.#registrationForThread(input.threadId)).answer(input);
+  }
+
+  /** A queued Thread is waited for through the queue first, then through its session. */
+  async #wait(input: ThreadWaitInput) {
+    let timeoutMs = input.timeoutMs;
+    if (await this.#capacity.peek(input.threadId)) {
+      if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
+        throw new DelegationControlError(
+          "INVALID_ARGUMENT",
+          "timeoutMs must be a positive integer",
+        );
+      const deadline = Date.now() + input.timeoutMs;
+      if (!(await this.#capacity.settled(input.threadId, input.timeoutMs))) {
+        const queued = await this.#capacity.read(input);
+        if (queued) return { ...queued, timedOut: true };
+      }
+      timeoutMs = Math.max(1, deadline - Date.now());
+    }
+    const finished = await this.#neverStarted(input);
+    if (finished) return { ...finished, timedOut: false };
+    return (await this.#registrationForThread(input.threadId)).wait({ ...input, timeoutMs });
   }
 
   async watch(input: ThreadWatchInput) {
@@ -212,9 +297,10 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return this.#watchService.watches();
   }
 
-  /** Stops watching in this process; stored watches resume in the next Runtime. */
-  close(): void {
+  /** Stops watching and starting queued work in this process; both resume in the next Runtime. */
+  close(): Promise<void> {
     this.#watchService.close();
+    return this.#capacity.close();
   }
 
   async list(input: ThreadListInput) {
@@ -225,9 +311,22 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
         "--client and --parent cannot be combined",
       );
     if (ref !== undefined) return this.#listByRef(ref, rest);
-    const page = await this.#list(
-      client !== undefined ? { ...rest, parentThreadId: clientOrigin(client) } : rest,
-    );
+    const scoped = client !== undefined ? { ...rest, parentThreadId: clientOrigin(client) } : rest;
+    const listed = await this.#list(scoped);
+    // Queued Threads exist only in the queue; they lead the first page, beyond its limit.
+    const queued = scoped.cursor ? [] : await this.#capacity.list(scoped);
+    const page =
+      queued.length > 0
+        ? {
+            ...listed,
+            threads: [
+              ...queued,
+              ...listed.threads.filter(
+                (thread) => !queued.some((entry) => entry.threadId === thread.threadId),
+              ),
+            ],
+          }
+        : listed;
     if (!this.#refs) return page;
     const refs = this.#refs;
     return {
@@ -342,6 +441,34 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       matches,
       "Parent Thread cannot be inferred uniquely; pass --parent-thread explicitly",
     );
+  }
+
+  /**
+   * A queued start may run after its parent's Turn ended, so a session that no
+   * longer recognizes the parent still takes it as the catalog or the only one.
+   */
+  async #startQueued(input: DelegationStartInput, identity: DelegationStartIdentity) {
+    const matches = originClientName(input.parentThreadId)
+      ? []
+      : await this.#matching((registration) => registration.canHandleStart(input));
+    const registration =
+      matches.length === 1
+        ? (matches[0] as DelegationControlRegistration)
+        : (this.#harnessCatalog ??
+          only(
+            [...this.#registrations],
+            "A queued delegation needs exactly one active Host Runtime session",
+          ));
+    return registration.start(input, identity);
+  }
+
+  /** A queued start that never became a Thread, unless a session holds the Thread after all. */
+  async #neverStarted(input: ThreadReadInput) {
+    const finished = await this.#capacity.finished(input);
+    if (!finished) return undefined;
+    // A start cut off by a restart may have created its Thread before the Runtime stopped.
+    const owners = await this.#matching((registration) => registration.ownsThread(input.threadId));
+    return owners.length === 0 ? finished : undefined;
   }
 
   #selectExplicitThreadRegistration(

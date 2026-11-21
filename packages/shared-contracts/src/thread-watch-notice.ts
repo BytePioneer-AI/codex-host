@@ -19,6 +19,7 @@ export const THREAD_WATCH_NOTICE_OUTCOMES = [
   "interrupted",
   "needsInput",
   "timedOut",
+  "stalled",
   "unreadable",
   "notFound",
 ] as const;

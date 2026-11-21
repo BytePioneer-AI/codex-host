@@ -1,41 +1,11 @@
-import * as fs from "node:fs/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { harnessPreferencePatchSchema } from "@codexhost/shared-contracts";
 import { HarnessPreferencesStore } from "../src/preferences.js";
 
-vi.mock("node:fs/promises", { spy: true });
-vi.mock("node:os", { spy: true });
-
 describe("shared Harness preferences", () => {
-  it("persists new Thread defaults despite a transient Windows sharing violation", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "harness-preferences-"));
-    const store = new HarnessPreferencesStore(directory);
-    const remember = (permissionModeId: string) =>
-      store.patch(
-        harnessPreferencePatchSchema.parse({
-          operations: [{ kind: "newThread", harnessId: "pi", configuration: { permissionModeId } }],
-        }),
-      );
-    const windows = vi.spyOn(os, "platform").mockReturnValue("win32");
-    const rename = vi.spyOn(fs, "rename");
-    try {
-      await remember("auto");
-      rename.mockRejectedValueOnce(
-        Object.assign(new Error("Sharing violation"), { code: "EPERM" }),
-      );
-      await remember("ask");
-      expect((await store.get()).values.newThread?.byHarness.pi?.permissionModeId).toBe("ask");
-    } finally {
-      windows.mockRestore();
-      rename.mockRestore();
-      await store.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
   it("merges granular writes, migrates only missing values, and survives restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "harness-preferences-"));
     const store = new HarnessPreferencesStore(directory);

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   DESKTOP_EXTENSION_ASSET_MAX_BYTES,
   DESKTOP_EXTENSION_SETTINGS_MAX_BYTES,
@@ -15,7 +16,6 @@ import {
   privateExtensionDirectory,
   readExtensionResource,
 } from "./extension-discovery.js";
-import { replaceFile } from "./replace-file.js";
 
 export async function readDesktopExtensionAsset({
   dataDir,
@@ -37,6 +37,26 @@ export async function readDesktopExtensionAsset({
 
 type SettingsLocation = { dataDir: string; id: string };
 const SETTINGS_FILE = "settings.json";
+const WINDOWS_RENAME_DELAYS_MS = [10, 30, 70, 150, 300] as const;
+
+async function replaceSettingsFile(temporary: string, destination: string) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(temporary, destination);
+      return;
+    } catch (error) {
+      const wait = WINDOWS_RENAME_DELAYS_MS[attempt];
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        process.platform !== "win32" ||
+        wait === undefined ||
+        !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")
+      )
+        throw error;
+      await delay(wait);
+    }
+  }
+}
 
 export async function desktopExtensionDataDirectory(
   { dataDir, id }: SettingsLocation,
@@ -81,7 +101,7 @@ export async function writeDesktopExtensionSettings({
   const temporary = path.join(directory, `.settings-${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
-    await replaceFile(temporary, path.join(directory, SETTINGS_FILE));
+    await replaceSettingsFile(temporary, path.join(directory, SETTINGS_FILE));
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }

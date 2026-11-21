@@ -26,6 +26,11 @@ function nativeManager(legacy = false, external = false) {
   let activeTurnId = "active-turn";
   let readOnly = false;
   let failHistory = false;
+  const header: { modelProvider: string; cliVersion: string; historyMode?: string } = {
+    modelProvider: external ? "codexhost" : "openai",
+    cliVersion: external ? "codexhost" : "0.0.0-test",
+    ...(external ? { historyMode: "paginated" } : {}),
+  };
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   const queue: { id: string; clientUserMessageId: unknown; input: unknown }[] = [];
   const turns = () => [
@@ -35,8 +40,7 @@ function nativeManager(legacy = false, external = false) {
   const row = () => ({
     id: identity.threadId,
     cwd: "/remote",
-    modelProvider: external ? "codexhost" : "openai",
-    ...(external ? { historyMode: "paginated" } : {}),
+    ...header,
     createdAt: 1,
     updatedAt: 2,
     status: { type: active ? "active" : "idle" },
@@ -103,6 +107,7 @@ function nativeManager(legacy = false, external = false) {
   };
   return {
     manager,
+    header,
     queue,
     writes: () =>
       calls.filter(
@@ -319,8 +324,41 @@ it("begins only the newly admitted idle item and does not skip existing queued i
   );
 });
 
+it("uses native steering and idle queue start for a paginated Codex Thread", async (t) => {
+  const f = await fixture(t);
+  f.native.header.historyMode = "paginated";
+  f.native.header.modelProvider = "codexhost";
+  assert.deepEqual(await f.prompt("steer", "native-steer"), applied);
+  f.native.idle();
+  assert.deepEqual(await f.prompt("queue", "native-idle"), applied);
+  assert.deepEqual(f.native.writes(), [
+    {
+      method: "turn/steer",
+      params: {
+        threadId: identity.threadId,
+        expectedTurnId: "active-turn",
+        clientUserMessageId: "native-steer",
+        input: [{ ...content[0], text_elements: [] }],
+      },
+    },
+    {
+      method: "thread/queue/add",
+      params: {
+        threadId: identity.threadId,
+        clientUserMessageId: "native-idle",
+        input: [{ ...content[0], text_elements: [] }],
+      },
+    },
+    {
+      method: "thread/queue/start",
+      params: { threadId: identity.threadId, queuedSubmissionId: "queued-native-idle" },
+    },
+  ]);
+});
+
 it("lets the owning external Host guard an idle automatic start without a second write", async (t) => {
   const f = await fixture(t, true);
+  delete f.native.header.historyMode;
   f.native.idle();
   assert.deepEqual(await f.prompt("queue", "external-idle"), applied);
   assert.deepEqual(f.native.writes(), [

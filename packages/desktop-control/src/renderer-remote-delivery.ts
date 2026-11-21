@@ -89,7 +89,8 @@ export async function rendererRemoteDelivery(
     return {
       status,
       readOnly: thread.canAcceptDirectInput === false,
-      external: thread.historyMode === "legacy" || thread.historyMode === "paginated",
+      // The Host reserves both markers on its external Thread projections.
+      external: thread.modelProvider === "codexhost" && thread.cliVersion === "codexhost",
     };
   };
   const readOnly = () =>

@@ -3034,7 +3034,7 @@ export class AppServerHost {
     };
     const decoded = decodeThreadListRequest(request);
     if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
-    const { records } = await this.#localThreadCatalog();
+    const { records, sharedOwners } = await this.#localThreadCatalog();
     const result = await aggregateThreadList({
       query: decoded,
       records,
@@ -3058,7 +3058,7 @@ export class AppServerHost {
           rememberNativeListSeconds(
             {
               threadId: entry.id,
-              harnessId: record ? (record.harnessId as ExternalHarnessId) : "codex",
+              harnessId: sharedOwners?.get(entry.id) ?? record?.harnessId ?? "codex",
               deepLink: `codex://threads/${entry.id}`,
               status,
               ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
@@ -3235,6 +3235,7 @@ export class AppServerHost {
   async #localThreadCatalog(): Promise<{
     records: StoredThreadSummaryV1[];
     placements: StoredSectionPlacementV1[];
+    sharedOwners?: ReadonlyMap<string, string>;
   }> {
     const [records, placements] = await Promise.all([
       this.#repository.listSummaries(),
@@ -3243,23 +3244,24 @@ export class AppServerHost {
     const shared = this.#options.sharedThreads;
     if (!shared) return { records, placements };
     const ids = [...new Set([...records, ...placements].map((entry) => entry.hostThreadId))];
-    const sharedIds = new Set<string>();
+    const sharedOwners = new Map<string, string>();
     try {
       for (let offset = 0; offset < ids.length; offset += THREAD_OWNERSHIP_LIST_MAX_LENGTH) {
         const owners = await shared.ownership(
           ids.slice(offset, offset + THREAD_OWNERSHIP_LIST_MAX_LENGTH),
         );
-        for (const id of owners.keys()) sharedIds.add(id);
+        for (const [id, harnessId] of owners) sharedOwners.set(id, harnessId);
       }
     } catch (error) {
       // Without the shared Host the local store is the only catalog left.
       this.#diagnose(error);
       return { records, placements };
     }
-    if (sharedIds.size === 0) return { records, placements };
+    if (sharedOwners.size === 0) return { records, placements };
     return {
-      records: records.filter((record) => !sharedIds.has(record.hostThreadId)),
-      placements: placements.filter((placement) => !sharedIds.has(placement.hostThreadId)),
+      records: records.filter((record) => !sharedOwners.has(record.hostThreadId)),
+      placements: placements.filter((placement) => !sharedOwners.has(placement.hostThreadId)),
+      sharedOwners,
     };
   }
 

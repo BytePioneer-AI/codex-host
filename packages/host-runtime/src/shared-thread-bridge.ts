@@ -52,7 +52,6 @@ const SHARED_LIST_REUSE_MS = 5_000;
 /** A GUI keeps its native Codex connection and forwards only shared external Threads. */
 export class SharedThreadBridge {
   readonly #known = new Set<string>();
-  readonly #localKnown = new Set<string>();
   #localProbe: ((threadId: string) => Promise<boolean>) | undefined;
 
   setLocalOwnershipProbe(probe: (threadId: string) => Promise<boolean>): void {
@@ -143,7 +142,7 @@ export class SharedThreadBridge {
   }
 
   async ownership(threadIds: string[]): Promise<Map<string, string>> {
-    if (threadIds.every((id) => this.#localKnown.has(id) && !this.#known.has(id))) return new Map();
+    if (threadIds.length === 0) return new Map();
     try {
       const peer = await this.#connect();
       if (!peer) throw new Error("Shared Thread Host is disconnected");
@@ -159,11 +158,9 @@ export class SharedThreadBridge {
       return owners;
     } catch (error) {
       if (threadIds.some((id) => this.#known.has(id))) throw error;
-      // A failed remote lookup is not proof of native ownership. Only an
-      // authoritative local store/native read can admit this fallback.
+      // A local read permits fallback for this lookup only; it may be a copy of a shared Thread.
       const probe = this.#localProbe;
       if (probe && (await Promise.all(threadIds.map((id) => probe(id)))).every(Boolean)) {
-        for (const id of threadIds) this.#localKnown.add(id);
         return new Map();
       }
       if (this.options.delegateCreates) throw error;

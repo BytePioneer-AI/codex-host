@@ -8,12 +8,14 @@ import { MappingStore } from "@codexhost/mapping-store";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { AppServerHost } from "../src/app-server-host.js";
+import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
 import {
   SharedThreadBridge,
   connectSharedThreads,
   sharedThreadSocketPath,
 } from "../src/shared-thread-bridge.js";
+import type { SharedThreadPeer } from "../src/shared-thread-peer.js";
 import {
   createRemoteAppServerWebSocketListener,
   prepareRemoteAppServerSocketDirectory,
@@ -70,12 +72,17 @@ function setup() {
   });
   function front(
     delegateCreates: boolean,
-    connect = async () => owner.connect(),
+    connect: () => Promise<SharedThreadPeer | null> = async () => owner.connect(),
     mappingStoreDirectory?: string,
   ) {
     const bridge = new SharedThreadBridge({ connect, delegateCreates, diagnose: () => undefined });
+    let delegationApi!: DelegationControlRegistration;
     const fixture = createFixture({
       sharedThreads: bridge,
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
       ...(mappingStoreDirectory ? { mappingStoreDirectory } : {}),
     });
     const official = new JsonLineCollector(fixture.official.stdin);
@@ -94,7 +101,7 @@ function setup() {
       await fixture.running;
       rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
     });
-    return fixture;
+    return { ...fixture, delegationApi };
   }
   return { owner, adapter, open, front, host, directory, diagnosticOutput };
 }
@@ -296,7 +303,7 @@ describe("shared external Threads", () => {
   });
 
   it("does not revive an archived shared Thread from a pinned legacy copy after reconnecting", async () => {
-    const { front, directory } = setup();
+    const { front, directory, owner } = setup();
     const ssh = front(true);
     const threadId = await startPiThread(ssh);
     // A viewer's own Mapping Store can still hold a pre-sharing copy of the same Thread.
@@ -322,7 +329,12 @@ describe("shared external Threads", () => {
     );
     await rpc(ssh, 40, "thread/name/set", { threadId, name: "canonical title" });
     await rpc(ssh, 41, "thread/archive", { threadId });
-    let viewer = front(true, undefined, legacyDirectory);
+    let online = false;
+    let viewer = front(true, async () => (online ? owner.connect() : null), legacyDirectory);
+    expect(await rpc(viewer, 39, "thread/list", {})).toMatchObject({
+      result: { data: [{ id: threadId }] },
+    });
+    online = true;
     const pinnedList = { sectionId: pinned, sortKey: "section_position" };
     for (let reconnect = 0; reconnect < 2; reconnect++) {
       expect(await rpc(viewer, 42, "thread/list", {})).toMatchObject({ result: { data: [] } });
@@ -355,6 +367,11 @@ describe("shared external Threads", () => {
     });
     expect(await rpc(viewer, 49, "thread/list", pinnedList)).toMatchObject({
       result: { data: [] },
+    });
+    await expect(
+      viewer.delegationApi.list({ limit: 25, sort: "updated-desc" }),
+    ).resolves.toMatchObject({
+      threads: [{ threadId, harnessId: "pi", title: "canonical title" }],
     });
   });
 

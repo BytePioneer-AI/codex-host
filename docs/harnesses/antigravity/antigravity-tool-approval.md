@@ -32,7 +32,7 @@ An answer is delivered at most once to the original callback. A successor prompt
 
 File-change items derived from a registered detached tool follow that tool's lifetime, including diffs first reported after prompt completion. This does not admit unrelated tools or file changes after a Turn ends. Ordinary single-choice/text questions and shared multi-select cards both retain their registered owner.
 
-These rules cover registered tool and interaction lifetimes. They do not establish a complete planner end signal or a native background-stop API. The local stdio and Host tests use a fake ACP process; installed Desktop approval and question cards still require separate UI acceptance.
+These rules cover registered tool and interaction lifetimes. They do not establish a complete planner end signal or a native background-stop API. Cross-Turn Approval and Question display and response additionally require the Host Runtime detached-interaction support from #1006; #1007's Adapter changes alone do not make those interactions answerable after the owning Turn ends. The local stdio and Host tests use a fake ACP process; installed Desktop approval and question cards still require separate UI acceptance.
 
 ## Native Question Elicitation
 

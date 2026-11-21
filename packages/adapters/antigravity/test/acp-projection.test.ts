@@ -498,6 +498,7 @@ describe("tool lifecycle and file changes", () => {
     expect(events.map((event) => event.type)).toEqual([
       "item.started",
       "item.detached",
+      "item.started",
       "item.detached",
     ]);
     expect(tools.completedSnapshots()).toEqual([]);

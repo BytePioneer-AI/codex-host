@@ -532,13 +532,15 @@ export class AntigravityToolTracker {
       changes: [...byPath.values()],
     };
     if (!previous) {
-      if (state.detached)
+      if (state.detached) {
+        this.#emit({ type: "item.started", turnId: this.options.turnId, item: state.diffItem });
         this.#emit({
           type: "item.detached",
           turnId: this.options.turnId,
           itemId: state.diffItem.itemId,
         });
-      else this.#emit({ type: "item.started", turnId: this.options.turnId, item: state.diffItem });
+      } else
+        this.#emit({ type: "item.started", turnId: this.options.turnId, item: state.diffItem });
     } else
       this.#emit({
         type: "item.updated",

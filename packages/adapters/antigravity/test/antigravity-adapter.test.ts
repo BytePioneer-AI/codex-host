@@ -949,6 +949,51 @@ describe("Antigravity ACP Session", () => {
       }),
     );
   });
+  it("does not complete a cancelled current Turn from a session-level tool update", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    const transport = await start(session, transports);
+    transport.handler?.onEvent({
+      type: "tool.call",
+      toolCallId: "cancelled-tool",
+      name: "run_command",
+      kind: "execute",
+      args: { command: "sleep 1" },
+      status: "in_progress",
+    });
+    await session.execute({ type: "turn.cancel", turnId: turnId("t1") });
+    transport.eventHandler?.({
+      type: "tool.update",
+      toolCallId: "cancelled-tool",
+      status: "completed",
+      rawOutput: "late success",
+    });
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).some(
+          (event) =>
+            event.type === "item.completed" &&
+            event.turnId === "t1" &&
+            event.snapshot.item.type === "commandExecution" &&
+            event.snapshot.outcome.status === "succeeded",
+        ),
+      ).toBe(false),
+    );
+    transport.result.resolve({ stopReason: "cancelled" });
+    await completed(outputs);
+    await vi.waitFor(() =>
+      expect(
+        events(outputs).some(
+          (event) =>
+            event.type === "item.completed" &&
+            event.turnId === "t1" &&
+            event.snapshot.outcome.status === "cancelled",
+        ),
+      ).toBe(true),
+    );
+  });
   it("waits for config confirmation before publishing the effective selection", async () => {
     const { adapter, transports } = fixture();
     const { session } = await sessionOf(await adapter.open({ kind: "create", cwd: process.cwd() }));
@@ -2533,6 +2578,7 @@ describe("Antigravity idle wake Turns", () => {
         nativeTurnRef: { nativeTurnKey: "wake-2" },
         items: [{ item: { type: "agentMessage", text: "wake answer" } }],
       });
+      expect(events(outputs).some(({ type }) => type === "item.background.started")).toBe(false);
       transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
       transport.result = deferred();
       await start(session, [transport], "t2");

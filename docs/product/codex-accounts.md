@@ -28,6 +28,16 @@ ChatGPT 登录的 Codex 订阅额度耗尽时，Desktop 在 Renderer 中用两�
 
 门按其 selector 实际读取的字段识别，不依赖压缩名或 hook 序号。兼容直接 `[store, atom]` 订阅及 Desktop 26.928 的 readonly signal adapter / lazy snapshot wrapper：以成对的订阅 effect 和原生快照一致性验证 wrapper，限量重放 readonly 布尔 selector 的依赖以识别间接 reserve 门；拒绝循环依赖、追踪型 render、混合门和快照不匹配。Desktop 26.1002 的 Account 门可读取 reserve `active` 作为豁免，并同时由 submit owner 和编辑器到 owner 之间的子组件订阅；这些订阅按组件分别投影。每次重试从 React 当前已提交树重新发现作用域，包括 alternate 切换后才挂载的子组件；无法确认当前作用域时恢复原生限制。释放时分别恢复 subscriber 与 React instance 原来的 getter，不把 wrapper 替换成另一个函数。无法唯一识别时保留原生限制，并在 Agent 控件悬停提示中说明。升级后的诊断步骤见 [Desktop 更新兼容性诊断手册](../operations/codex-desktop-upgrade-diagnosis-playbook.md#检查-codex-额度门)。
 
+### 原生 Codex 的独立 Provider
+
+原生 Codex 也可以使用与官方订阅额度无关的 custom Provider。Renderer 通过同一 Host 的 `config/read` 核验有效配置，要求非官方 HTTP(S) endpoint，以及显式独立 bearer、环境 Key 或 `requires_openai_auth=false`。`openai`、`cc-switch-official`、Host 的外部投影 Provider、官方 endpoint 和未知配置保留原生额度门。不根据 `gpt-*` 模型名或 ChatGPT 登录状态猜测 Billing Source，也不重置或伪造官方额度。
+
+已有 Thread 先通过同一 Host 的 `thread/read` 核验真实 `modelProvider`，避免把新 Thread 的默认 custom 配置用于历史官方 Thread；历史 Thread 不会因默认 Provider 改变而迁移，仍按其真实 Provider 判定。判定缓存绑定 Host 客户端与 Thread。就绪的原生 Composer 每 5 秒自动复核；同一 Host/Thread 的已确认结果在最多 5 秒的复核期间保持，避免周期性撤销额度隔离而闪烁。返回官方配置、读取失败或复核超时立即撤销；Host/Thread 切换、ownership 加载/错误及切换中不复用旧结果。Composer 移除和扩展卸载清除定时器，过期响应不能恢复旧投影。Renderer 状态只保留布尔判定，不保存凭据。空输入、附件等其他提交限制不变。独立 Provider 自身的额度或认证失败仍由真实后端处理。
+
+额度隔离成功的 Composer 同时隐藏其原生「Codex 和工作使用额度已用完」横幅。`renderer-native-provider-usage-banner.ts` 只识别该 Composer 内 `aside[role="status"]` 的已提交 React 祖先中明确的 `banner.banner_type`（`rate_limit_reached` 及套餐前缀），不按翻译文案、模型名或 CSS 压缩类名隐藏。局部 MutationObserver 在绘制前处理原生节点替换及样式重写，不等待下一 animation frame。其他警告与未知横幅保持原样；隔离撤销、Composer 移除或扩展卸载时恢复原来的可见性与样式。账号设置与额度入口继续展示真实官方余额。
+
+使用独立代理凭据时可保留 `requires_openai_auth=true` 和官方账号展示，官方已用额度不会因此变成可用。此判定复用已有组件局部额度门适配，无法识别门控形态时保留原生限制，不能仅凭独立 Provider 判定绕过。
+
 ## 其他 Harness 的只读账号额度
 
 统一列表中展示 Grok Build、agy（Antigravity）、Claude Code、Cursor、Kimi Code、Qoder、DeepSeek Harness（DSH）和 Pi 当前原生认证可读取的真实额度或预付费余额。导入 Pi 的入口位于账号信息下方，不单独占列；原生管理边界保留在账号信息的说明中。这不是多账号管理：不提供添加、删除、切换、设为默认或重置卡操作，也不修改 Codex 当前账号。搜索和已用/剩余切换作用于所有行，刷新按钮重新查询两类额度。各 Harness 独立并行查询，任一有效结果返回后立即显示，不等待其他 Harness；全局刷新期间同样逐项恢复。

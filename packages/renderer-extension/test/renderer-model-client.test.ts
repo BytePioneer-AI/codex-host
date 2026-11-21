@@ -559,6 +559,7 @@ describe("Renderer fixed Model request client", () => {
       "subscribeThreadUsage",
       "uninstallDesktopExtension",
       "updateRemote",
+      "usesIndependentNativeInference",
       "watchThreadTree",
     ]);
 

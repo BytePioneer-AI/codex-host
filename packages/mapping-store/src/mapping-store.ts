@@ -862,6 +862,11 @@ export class MappingStore {
     return this.#update(hostThreadId, (current) => ({ ...current, title }));
   }
 
+  /** Marks conversation activity that changes nothing else in the record, such as a Turn starting or ending. */
+  async touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (current) => current);
+  }
+
   async setTransportModelId(
     hostThreadId: HostThreadId,
     transportModelId: string,

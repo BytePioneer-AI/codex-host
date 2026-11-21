@@ -113,6 +113,21 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** The same Turns in the same order; what the Harness records about each may differ. */
+function sameTurns(left: StoredTurnMappingV1[], right: StoredTurnMappingV1[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((mapping, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        mapping.hostTurnId === other.hostTurnId &&
+        sameJson(mapping.nativeTurnRef, other.nativeTurnRef)
+      );
+    })
+  );
+}
+
 /** Records must not persist credentials, such as a token embedded in a Git remote URL. */
 function withoutUrlCredentials(value: string): string {
   let url: URL;
@@ -794,7 +809,7 @@ export class MappingStore {
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => {
+    const reconcile = (current: StoredThreadRecordV1): StoredThreadRecordV1 | null => {
       if (current.state !== "ready" || !current.nativeSessionRef) {
         throw new MappingStoreError(
           "MAPPING_CONFLICT",
@@ -834,7 +849,13 @@ export class MappingStore {
       });
 
       return sameJson(current.turnMappings, ordered) ? null : { ...current, turnMappings: ordered };
-    });
+    };
+    // Clients sort by updatedAt. Rewriting what the Harness records about the same Turns, such as
+    // checkpoints a newer Harness version writes, is not conversation activity; adding, removing
+    // or reordering Turns is.
+    return this.#update(hostThreadId, reconcile, (current, next) =>
+      sameTurns(current.turnMappings, next.turnMappings),
+    );
   }
 
   async setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
@@ -1069,7 +1090,8 @@ export class MappingStore {
   async #update(
     hostThreadId: HostThreadId,
     change: (current: StoredThreadRecordV1) => StoredThreadRecordV1 | null,
-    preserveUpdatedAt = false,
+    preserveUpdatedAt:
+      boolean | ((current: StoredThreadRecordV1, next: StoredThreadRecordV1) => boolean) = false,
   ): Promise<StoredThreadRecordV1> {
     this.#requireInitialized();
     let result: StoredThreadRecordV1 | null = null;
@@ -1082,10 +1104,14 @@ export class MappingStore {
         result = cloneRecord(current);
         return;
       }
+      const preserve =
+        typeof preserveUpdatedAt === "function"
+          ? preserveUpdatedAt(current, changed)
+          : preserveUpdatedAt;
       const next = storedThreadRecordV1Schema.parse({
         ...changed,
         revision: current.revision + 1,
-        updatedAt: preserveUpdatedAt ? current.updatedAt : this.#now().toISOString(),
+        updatedAt: preserve ? current.updatedAt : this.#now().toISOString(),
       }) as StoredThreadRecordV1;
       this.#validateGlobal(next, hostThreadId);
       await this.#replaceFile(this.#recordPath(hostThreadId), next, true);

@@ -23,6 +23,7 @@ import {
   type InspectDocument,
 } from "./installation.js";
 import { buildDiagnosticReport, issueUrl, serializeDiagnosticReport } from "./diagnostic-report.js";
+import { createConsoleExternalClients, type ConsoleExternalClients } from "./external-clients.js";
 import { ConsoleHarnessError, type ConsoleHarnesses } from "./harnesses.js";
 import { INSTALL, extensionsRoute } from "./extensions.js";
 import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
@@ -46,6 +47,7 @@ export interface ConsoleServerOptions {
   paths: ConsolePaths;
   updates: ConsoleUpdates;
   harnesses: ConsoleHarnesses;
+  externalClients?: ConsoleExternalClients;
   /** The console page bundle. */
   pageScript: string;
   /** The running Host's settings channel, when codexhost runs. */
@@ -135,6 +137,12 @@ function defaultLaunch(command: string, args: string[]): void {
 
 export function startConsoleServer(options: ConsoleServerOptions): Promise<RunningConsoleServer> {
   const environment = options.environment ?? process.env;
+  const externalClients =
+    options.externalClients ??
+    createConsoleExternalClients({
+      ...environment,
+      CODEXHOST_DATA_DIR: options.paths.dataDirectory,
+    });
   const inspect = options.inspect ?? inspectInstallation;
   const launch = options.launch ?? defaultLaunch;
   const loadAnnouncement = options.announcement ?? readAnnouncement;
@@ -512,6 +520,31 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
     }
     if (route === "GET /api/harnesses") {
       sendJson(response, 200, { harnesses: await options.harnesses.list() });
+      return;
+    }
+    if (route === "GET /api/external-clients") {
+      sendJson(response, 200, await externalClients.get());
+      return;
+    }
+    if (route === "POST /api/external-clients/access") {
+      const tailnet = body.tailnet;
+      const publicAccess = body.public;
+      if (
+        (tailnet !== undefined && typeof tailnet !== "boolean") ||
+        (publicAccess !== undefined && typeof publicAccess !== "boolean") ||
+        (tailnet === undefined && publicAccess === undefined)
+      ) {
+        sendJson(response, 400, { error: "Expected { tailnet?: boolean, public?: boolean }" });
+        return;
+      }
+      sendJson(
+        response,
+        200,
+        await externalClients.setAccess({
+          ...(tailnet !== undefined ? { tailnet } : {}),
+          ...(publicAccess !== undefined ? { public: publicAccess } : {}),
+        }),
+      );
       return;
     }
     if (route === "POST /api/harnesses/launch-path") {

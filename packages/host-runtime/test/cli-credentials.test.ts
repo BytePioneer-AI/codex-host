@@ -173,7 +173,11 @@ describe("automatic local CLI credentials", () => {
     const second = await start();
     expect(second.cliToken).not.toBe(first.cliToken);
     expect(await second.clients.authenticate(first.cliToken)).toBeUndefined();
-    expect(await second.clients.authenticate(registered.token)).toBe("bot");
+    expect(await second.clients.authenticate(registered.token)).toEqual({
+      name: "bot",
+      scope: "dispatch",
+      networks: ["local"],
+    });
     expect((await cli(["harness", "list"], environment)).code).toBe(0);
   });
 
@@ -222,7 +226,11 @@ describe("automatic local CLI credentials", () => {
       code: "INVALID_ARGUMENT",
     });
     const registered = await f.clients.add("bot");
-    expect(await f.clients.authenticate(registered.token)).toBe("bot");
+    expect(await f.clients.authenticate(registered.token)).toEqual({
+      name: "bot",
+      scope: "dispatch",
+      networks: ["local"],
+    });
   });
 
   it.skipIf(process.platform === "win32")(

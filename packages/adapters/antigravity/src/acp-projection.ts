@@ -325,6 +325,7 @@ interface ToolState {
   event: ToolEvent;
   item: HostItem | null;
   snapshot?: HostItemSnapshot;
+  detached?: boolean;
   diffItem?: Extract<HostItem, { type: "fileChange" }>;
   diffSnapshot?: HostItemSnapshot;
 }
@@ -530,9 +531,17 @@ export class AntigravityToolTracker {
       sourceItemIds: [state.item.itemId],
       changes: [...byPath.values()],
     };
-    if (!previous)
-      this.#emit({ type: "item.started", turnId: this.options.turnId, item: state.diffItem });
-    else
+    if (!previous) {
+      if (state.detached) {
+        this.#emit({ type: "item.started", turnId: this.options.turnId, item: state.diffItem });
+        this.#emit({
+          type: "item.detached",
+          turnId: this.options.turnId,
+          itemId: state.diffItem.itemId,
+        });
+      } else
+        this.#emit({ type: "item.started", turnId: this.options.turnId, item: state.diffItem });
+    } else
       this.#emit({
         type: "item.updated",
         turnId: this.options.turnId,
@@ -561,7 +570,7 @@ export class AntigravityToolTracker {
 
   finishPending(outcome: HostItemOutcome): void {
     for (const state of this.#tools.values()) {
-      if (state.snapshot) continue;
+      if (state.snapshot || state.detached) continue;
       if (state.item?.type === "subagentDelegation")
         state.item = {
           ...state.item,
@@ -578,6 +587,42 @@ export class AntigravityToolTracker {
       this.#complete(state, outcome);
     }
   }
+
+  detachPending(pendingToolCallIds: ReadonlySet<string> = new Set()): Set<string> {
+    const detached = new Set<string>();
+    for (const state of this.#tools.values()) {
+      if (
+        state.snapshot ||
+        state.detached ||
+        (state.item?.type !== "commandExecution" &&
+          !(
+            state.item?.type === "toolExecution" &&
+            (state.item.toolName === "ask_question" ||
+              pendingToolCallIds.has(state.event.toolCallId))
+          ))
+      )
+        continue;
+      state.detached = true;
+      detached.add(state.event.toolCallId);
+      this.#emit({ type: "item.detached", turnId: this.options.turnId, itemId: state.item.itemId });
+      if (state.diffItem && !state.diffSnapshot)
+        this.#emit({
+          type: "item.detached",
+          turnId: this.options.turnId,
+          itemId: state.diffItem.itemId,
+        });
+    }
+    return detached;
+  }
+
+  finishDetached(outcome: HostItemOutcome): void {
+    for (const state of this.#tools.values()) {
+      if (!state.detached || state.snapshot) continue;
+      this.#complete(state, outcome);
+      state.detached = false;
+    }
+  }
+
   completedSnapshots(): HostItemSnapshot[] {
     return [...this.#tools.values()].flatMap((state) => [
       ...(state.snapshot ? [state.snapshot] : []),

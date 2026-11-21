@@ -243,6 +243,7 @@ export async function executeExternalThreadFork(input: {
       sessionId: source.sessionId,
       thread,
       turns: aligned.turns,
+      historicalPlans: aligned.historicalPlans,
       ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       ...(inheritedPermissionModeId
         ? { requestedPermissionModeId: inheritedPermissionModeId }

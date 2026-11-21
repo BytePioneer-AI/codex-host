@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DESKTOP_EXTENSION_MANAGEMENT_METHODS } from "./desktop-extension-management.js";
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "./harness-models.js";
 import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
 import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
@@ -60,7 +61,8 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/session-import/sources",
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
-  // Settings pages shared with the console and GUI (connections, accounts, usage, updates, idle release).
+  // Host settings shared across Desktop and Web.
+  ...DESKTOP_EXTENSION_MANAGEMENT_METHODS,
   "codexhost/harness/installation",
   "codexhost/harness/installation/start",
   "codexhost/harness/installation/status",

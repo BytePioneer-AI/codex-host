@@ -1226,6 +1226,35 @@ describe("Pi HarnessAdapter Session", () => {
     await adapter.close();
   });
 
+  it("does not publish Thinking support from an older cwd after a refresh", async () => {
+    const { adapter, dependencies, transports } = fixture();
+    const pending = Promise.withResolvers<null>();
+    const stale = adapter.inspect({ cwd: "/synthetic" });
+    transports[0]?.getAvailableThinkingLevels.mockReturnValueOnce(pending.promise);
+
+    const refreshed = await adapter.inspect({ cwd: "/other", refresh: true });
+    expect(refreshed).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    pending.resolve(null);
+    await expect(stale).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: false } },
+    });
+    await expect(adapter.inspect({ cwd: "/other" })).resolves.toBe(refreshed);
+    await expect(adapter.open({ kind: "create", cwd: "/other" })).resolves.toMatchObject({
+      ok: true,
+      value: { capabilities: { configuration: { selectThinkingOption: true } } },
+    });
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    expect(dependencies.createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
   it("falls back inspect cwd when Host omits cwd or supplies the filesystem root", async () => {
     const { adapter, dependencies } = fixture();
     const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/");

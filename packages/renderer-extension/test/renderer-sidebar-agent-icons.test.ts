@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import {
   harnessIdSchema,
   type HarnessPluginDescriptor,
@@ -12,6 +13,7 @@ import type { RendererModelClient } from "../src/renderer-model-client.js";
 import { RendererMethodUnavailableError } from "../src/renderer-request-sender.js";
 import {
   installRendererSidebarAgentIcons,
+  SIDEBAR_AGENT_ICON_ATTRIBUTE,
   draftIdFromSidebarRowElement,
   rendererAgentForThreadOwnership,
   threadIdFromSidebarRowElement,
@@ -163,6 +165,51 @@ describe("Renderer sidebar Agent ownership", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  it.each([
+    ["button", "data-interactive-row-button"],
+    ["a", "data-interactive-row-link"],
+  ])(
+    "puts the icon in the native leading position for a title %s",
+    async (tag, interactiveAttribute) => {
+      const row = document.createElement("div");
+      row.setAttribute("data-app-action-sidebar-thread-row", "");
+      row.setAttribute("data-app-action-sidebar-thread-id", "local:client-new-thread:fixture");
+      row.setAttribute("data-app-action-sidebar-thread-host-id", "local");
+      row.innerHTML = `
+      <div style="display: flex">
+        <div style="display: flex; align-items: center; gap: 0.5rem">
+          <div data-thread-title-trigger style="display: flex; gap: 0.5rem">
+            <${tag} ${interactiveAttribute} style="display: flex">
+              <span data-thread-title>Long thread title</span>
+            </${tag}>
+          </div>
+        </div>
+        <span role="status"></span>
+      </div>`;
+      document.body.append(row);
+      const titleTrigger = row.querySelector("[data-thread-title-trigger]");
+      const action = row.querySelector(`[${interactiveAttribute}]`);
+      const status = row.querySelector('[role="status"]');
+      const control = installRendererSidebarAgentIcons({
+        getClient: () => null,
+        getLocalAgent: () => "codex",
+      });
+      try {
+        await settle();
+
+        const icon = row.querySelector(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`);
+        expect(icon).not.toBeNull();
+        expect(icon?.nextElementSibling).toBe(titleTrigger);
+        expect(action?.firstElementChild?.matches("[data-thread-title]")).toBe(true);
+        expect(titleTrigger?.parentElement?.nextElementSibling).toBe(status);
+      } finally {
+        control.dispose();
+        row.remove();
+      }
+      expect(row.querySelector(`[${SIDEBAR_AGENT_ICON_ATTRIBUTE}]`)).toBeNull();
+    },
+  );
 
   it("resolves the draft key separately from the Fiber conversation identity", () => {
     const attributes = {

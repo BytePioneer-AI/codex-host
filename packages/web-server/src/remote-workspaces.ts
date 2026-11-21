@@ -3,9 +3,15 @@ import type { WorkspaceView } from "./workspaces.ts";
 export interface RemoteWorkspaceHost {
   hostId: string;
   online: boolean;
+  epoch?: string | undefined;
   displayName?: string | undefined;
   state?: string | undefined;
   projects?: Array<{ id: string; name: string; path: string; threadIds: string[] }> | undefined;
+}
+export function remoteWorkspaceId(hostId: string, projectId: string | null): string {
+  return (
+    "remote-workspace:" + Buffer.from(JSON.stringify([hostId, projectId])).toString("base64url")
+  );
 }
 export function remoteHostDisplayName(
   host: Pick<RemoteWorkspaceHost, "hostId" | "displayName">,
@@ -20,7 +26,13 @@ export function remoteHostDisplayName(
 /** Group only within a native registered remote project; never resolve remote paths locally. */
 export function remoteWorkspaceGroups(
   hosts: Iterable<RemoteWorkspaceHost>,
-  threads: Iterable<{ sessionId: string; hostId: string; threadId: string; cwd: string }>,
+  threads: Iterable<{
+    sessionId: string;
+    hostId: string;
+    threadId: string;
+    cwd: string;
+    projectId?: string | undefined;
+  }>,
 ): WorkspaceView[] {
   const rows = [...threads];
   return [...hosts].flatMap((host) => {
@@ -47,6 +59,7 @@ export function remoteWorkspaceGroups(
       const cwd = normalize(row.cwd);
       const match =
         exact ??
+        projects.find((project) => project.id === row.projectId) ??
         projects
           .filter((project) => {
             const root = normalize(project.path);
@@ -58,9 +71,7 @@ export function remoteWorkspaceGroups(
     return groups
       .filter((group) => group.project || group.ids.length || projects.length === 0)
       .map(({ project, ids }) => ({
-        workspaceId:
-          "remote-workspace:" +
-          Buffer.from(JSON.stringify([host.hostId, project?.id ?? null])).toString("base64url"),
+        workspaceId: remoteWorkspaceId(host.hostId, project?.id ?? null),
         path: project?.path ?? "",
         title: project?.name ?? remote.displayName,
         sessionIds: ids,

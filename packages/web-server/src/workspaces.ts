@@ -20,6 +20,8 @@ export interface WorkspaceView {
 }
 
 interface WorkspaceState {
+  /** Web-created assignments keyed by the Host-qualified Web Session ID. */
+  remoteProjectIds?: Record<string, string>;
   items: WorkspaceView[];
   archivedSessionIds: string[];
   pinnedSessionIds: string[];
@@ -163,6 +165,15 @@ export class Workspaces {
     this.data.writeJson(FILE, this.state);
   }
 
+  rememberRemoteProject(sessionId: string, projectId: string): void {
+    (this.state.remoteProjectIds ??= {})[sessionId] = projectId;
+    this.save();
+  }
+
+  remoteProjectId(sessionId: string): string | undefined {
+    return this.state.remoteProjectIds?.[sessionId];
+  }
+
   private broadcast(frame: unknown): void {
     for (const sink of this.followers) sink.push(frame);
   }
@@ -277,7 +288,7 @@ export class Workspaces {
     if (this.remoteGroups.some((group) => group.workspaceId === workspaceId))
       throw new RpcError(
         "workspace/remote-read-only",
-        "Open an existing remote Thread; remote project creation and local tools are unavailable.",
+        "This operation requires a local workspace; remote project paths belong to their Host.",
       );
     return this.state.items.find((item) => item.workspaceId === workspaceId);
   }

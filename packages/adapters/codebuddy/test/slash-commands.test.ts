@@ -143,6 +143,14 @@ describe("CodeBuddy native slash commands", () => {
         ]),
       },
     });
+    expect(native.clients).toHaveLength(1);
+    expect(
+      await session.commands?.execute({
+        turnId: hostTurnIdSchema.parse("after-stop"),
+        commandId: "codebuddy.cost",
+      }),
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(terminal()).toHaveLength(4));
     native.clients
       .at(-1)
       ?.update({ sessionUpdate: "available_commands_update", availableCommands: [] });

@@ -273,10 +273,11 @@ describe("native Session branch restoration", () => {
       expect(await events.completed()).toMatchObject([
         { event: { outcome: { status: "cancelled" } } },
       ]);
+      expect(native.clients).toHaveLength(1);
+      expect(await session.execute(turn("after-cancel"))).toMatchObject({ ok: true });
       expect(native.clients[1]?.rollback).toHaveBeenCalledTimes(
         input === "hold-before-write" ? 1 : 0,
       );
-      await session.execute(turn("after-cancel"));
       expect((await events.completed(2))[1]).toMatchObject({
         event: { outcome: { status: "succeeded" } },
       });
@@ -325,7 +326,7 @@ describe("native Session branch restoration", () => {
     expect(wrongIdentity.clients[0]?.rollback).not.toHaveBeenCalled();
   });
 
-  it("faults cancellation recovery rather than accepting prompts on an unconfirmed branch", async () => {
+  it("rejects a follow-up on an unconfirmed branch without failing the cancelled Turn", async () => {
     const native = setup("kept-result", (client, index) => {
       if (index === 1) client.rollback = async () => ({ applied: false });
     });
@@ -337,9 +338,21 @@ describe("native Session branch restoration", () => {
       type: "turn.cancel",
       turnId: hostTurnIdSchema.parse("hold-before-write"),
     });
-    await events.closed;
-    expect(await events.completed()).toMatchObject([{ event: { outcome: { status: "failed" } } }]);
-    expect(await session.execute(turn("late"))).toMatchObject({ error: { code: "invalidState" } });
+    expect(await events.completed()).toMatchObject([
+      { event: { outcome: { status: "cancelled" } } },
+    ]);
+    expect(await session.execute(turn("blocked"))).toMatchObject({
+      error: {
+        code: "nativeFailure",
+        message: expect.stringContaining("rewind was not confirmed"),
+      },
+    });
     expect(native.clients[1]?.prompt).not.toHaveBeenCalled();
+    expect(await inputs(session)).toEqual(["kept-user"]);
+    expect(await session.execute(turn("retry"))).toMatchObject({ ok: true });
+    expect((await events.completed(2))[1]).toMatchObject({
+      event: { outcome: { status: "succeeded" } },
+    });
+    expect(await inputs(session)).toEqual(["kept-user", "retry"]);
   });
 });

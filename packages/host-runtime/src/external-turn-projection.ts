@@ -142,8 +142,8 @@ export class ExternalTurnProjection {
       await this.#host.resolveDesktopQuestion(event.interactionId, thread);
     }
     const ephemeralTurn =
-      event.type === "turn.completed" &&
-      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
+      thread.ephemeralTurnIds.has(event.turnId) ||
+      (event.type === "turn.completed" && event.ephemeral === true);
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#host.persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -173,18 +173,17 @@ export class ExternalTurnProjection {
       thread.thread.recencyAt = updatedAt;
     }
     if (event.type === "turn.started") {
-      if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
+      if (thread.clientCommand && !ephemeralTurn)
         thread.clientCommand.subsequentTurnId ??= event.turnId;
       // A successor Turn ends the attribution window of every earlier Turn.
       this.#dropSettledTurnProjections(thread, event.turnId);
       // Not awaited: the write must not delay the Turn's first output.
-      void this.#host.touchThread(thread);
+      if (!ephemeralTurn) void this.#host.touchThread(thread);
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
-      const completedAt = Math.floor(Date.now() / 1000);
       if (ephemeralTurn) {
         if (thread.clientCommand?.turn.id === event.turnId)
           thread.clientCommand.turn = projection.projector.snapshotTurn(result.completedTurn);
@@ -193,14 +192,12 @@ export class ExternalTurnProjection {
       } else {
         thread.turns.push(projection.projector.snapshotTurn(result.completedTurn));
         thread.projectedTerminalTurnId = event.turnId;
-        thread.thread.updatedAt = completedAt;
-        thread.thread.recencyAt = completedAt;
       }
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
       // Before any completion message, so a client acting on it reads the touched record.
-      await this.#host.touchThread(thread);
+      if (!ephemeralTurn) await this.#host.touchThread(thread);
       // Detached Items (native background commands) and idle background output
       // settle on the completed Turn later; keep its projector so late events
       // still project instead of failing on a missing Turn.

@@ -127,14 +127,13 @@ pub struct ProcessEntry {
 }
 
 impl ProcessEntry {
-    pub fn has_executable_name(&self, name: &std::ffi::OsStr) -> bool {
-        use std::os::windows::ffi::OsStringExt;
+    pub fn has_executable_name(&self, name: &str) -> bool {
         let end = self
             .executable_name
             .iter()
             .position(|&c| c == 0)
             .unwrap_or(260);
-        name.eq_ignore_ascii_case(std::ffi::OsString::from_wide(&self.executable_name[..end]))
+        name.eq_ignore_ascii_case(&String::from_utf16_lossy(&self.executable_name[..end]))
     }
 }
 
@@ -208,8 +207,7 @@ pub fn process_entries() -> io::Result<Vec<ProcessEntry>> {
         }
         let error = io::Error::last_os_error();
         CloseHandle(snapshot);
-        if error.raw_os_error() != Some(18) {
-            // ERROR_NO_MORE_FILES
+        if error.raw_os_error() != Some(windows::Win32::Foundation::ERROR_NO_MORE_FILES.0 as i32) {
             return Err(error);
         }
         Ok(entries)
@@ -222,25 +220,20 @@ pub fn process_image_path(process_id: u32) -> io::Result<PathBuf> {
         if process.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let result = process_image_path_from_handle(process);
+        let mut buffer = vec![0_u16; 32_768];
+        let mut length = buffer.len() as u32;
+        let result = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        let error = (result == 0).then(io::Error::last_os_error);
         CloseHandle(process);
-        result
+        if let Some(error) = error {
+            return Err(error);
+        }
+        buffer.truncate(length as usize);
+        Ok(PathBuf::from(String::from_utf16_lossy(&buffer)))
     }
 }
 
-pub(crate) unsafe fn process_image_path_from_handle(process: Handle) -> io::Result<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
-    let mut buffer = vec![0_u16; 32_768];
-    let mut length = buffer.len() as u32;
-    if unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(PathBuf::from(std::ffi::OsString::from_wide(
-        &buffer[..length as usize],
-    )))
-}
-
-pub(crate) fn process_started_at_micros_from_handle(process: Handle) -> io::Result<u64> {
+fn process_started_at_micros_from_handle(process: Handle) -> io::Result<u64> {
     let mut creation_time = FileTime::default();
     let mut exit_time = FileTime::default();
     let mut kernel_time = FileTime::default();

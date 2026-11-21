@@ -48,9 +48,6 @@ mod system_proxy;
 mod windows_desktop;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
-mod windows_desktop_watch;
-#[cfg(target_os = "windows")]
-#[allow(unsafe_code)]
 mod windows_installer;
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
@@ -63,8 +60,6 @@ mod windows_proxy;
 mod windows_ui;
 
 pub use background::{configure_detached_service_command, detach_from_terminal};
-#[cfg(target_os = "windows")]
-pub use desktop_launch::launch_windows_managed_desktop;
 pub use desktop_launch::{
     DesktopProcess, launch_desktop, launch_stock_desktop, open_external_url,
     open_latest_codexhost_release, reveal_file,
@@ -77,6 +72,8 @@ pub use installation::discover_codex_desktop;
 pub use installation::discover_codex_desktop_from_root;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use installation::discover_desktop_managed_codex_cli;
+#[cfg(target_os = "windows")]
+pub use installation::discover_registered_codex_desktop;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
 pub use macos_native_harness_broker::{
@@ -117,8 +114,6 @@ pub use system_proxy::{SystemProxySettings, system_proxy_settings};
 #[cfg(target_os = "windows")]
 pub use windows_desktop::resume_packaged_application;
 #[cfg(target_os = "windows")]
-pub use windows_desktop_watch::{WindowsDesktopWatch, require_no_windows_desktop};
-#[cfg(target_os = "windows")]
 pub use windows_installer::shutdown_processes_for_executables;
 #[cfg(target_os = "windows")]
 pub use windows_ui::{
@@ -149,6 +144,9 @@ pub const CUSTOM_INSTALL_ROOT_ENV: &str = "CODEXHOST_INSTALL_ROOT";
 pub enum DesktopLaunchMode {
     LaunchServices,
     DirectExecutable,
+    /// Spawn the registered Store executable instead of activating its AUMID.
+    #[cfg(target_os = "windows")]
+    WindowsDirect,
 }
 
 impl DesktopLaunchMode {
@@ -157,6 +155,8 @@ impl DesktopLaunchMode {
         match self {
             Self::LaunchServices => "launch-services",
             Self::DirectExecutable => "direct-executable",
+            #[cfg(target_os = "windows")]
+            Self::WindowsDirect => "windows-direct",
         }
     }
 }

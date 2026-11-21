@@ -34,32 +34,9 @@ pub(super) struct RuntimeControl {
     pub(super) nonce: String,
 }
 
-#[cfg(any(not(target_os = "windows"), test))]
 pub(super) fn allocate_runtime_control() -> Result<RuntimeControl, Box<dyn Error>> {
-    allocate_runtime_control_avoiding(None)
-}
-
-pub(super) fn allocate_runtime_control_avoiding(
-    previous: Option<&RuntimeControl>,
-) -> Result<RuntimeControl, Box<dyn Error>> {
-    let mut excluded = Vec::new();
-    let mut allocate = || -> std::io::Result<TcpListener> {
-        loop {
-            let listener = TcpListener::bind(("127.0.0.1", 0))?;
-            let address = listener.local_addr()?;
-            if previous.is_some_and(|previous| {
-                previous.attachment_port == address.port()
-                    || previous.renderer_cdp_endpoint == format!("http://{address}")
-            }) {
-                // Keep excluded listeners bound while looking for new ports.
-                excluded.push(listener);
-            } else {
-                return Ok(listener);
-            }
-        }
-    };
-    let renderer_cdp = allocate()?;
-    let attachment = allocate()?;
+    let renderer_cdp = TcpListener::bind(("127.0.0.1", 0))?;
+    let attachment = TcpListener::bind(("127.0.0.1", 0))?;
     let renderer_cdp_port = renderer_cdp.local_addr()?.port();
     let attachment_port = attachment.local_addr()?.port();
     drop(attachment);
@@ -121,12 +98,6 @@ pub(super) fn acquire_launcher_ownership(
     Err("another codexhost Launcher did not become attachable before timeout".into())
 }
 
-#[cfg(target_os = "windows")]
-pub(super) fn acquire_clean_launcher_ownership() -> Result<LauncherGuard, Box<dyn Error>> {
-    try_acquire_launcher_guard(&default_guard_path()?)?
-        .ok_or_else(|| "a codexhost Desktop is starting or running; completely quit it before requesting a direct launch".into())
-}
-
 pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(
         &format!("127.0.0.1:{port}")
@@ -137,7 +108,6 @@ pub(super) fn endpoint_ready(port: u16, timeout: Duration) -> bool {
     .is_ok()
 }
 
-#[cfg(not(target_os = "windows"))]
 pub(super) fn wait_for_host_chain(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
@@ -168,40 +138,15 @@ pub(super) fn host_runtime_node_candidates(
     nodes
 }
 
-#[cfg(not(target_os = "windows"))]
 pub(super) fn wait_for_host_chain_with_nodes(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
     nodes: &[PathBuf],
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
-    wait_for_host_chain_with_inspector(
-        desktop,
-        &options.shim,
-        nodes,
-        timeout,
-        || Ok(()),
-        |node| descendant_executable_pair_exists(desktop, &options.shim, node),
-    )
-}
-
-#[cfg(target_os = "windows")]
-pub(super) fn wait_for_host_chain_during_startup(
-    desktop: &ProcessSnapshot,
-    options: &ResolvedLaunchOptions,
-    timeout: Duration,
-    check_startup: impl FnMut() -> Result<(), Box<dyn Error>>,
-) -> Result<bool, Box<dyn Error>> {
-    let nodes =
-        host_runtime_node_candidates(options.node.clone(), env::var_os(crate::NPM_NODE_PATH_ENV));
-    wait_for_host_chain_with_inspector(
-        desktop,
-        &options.shim,
-        &nodes,
-        timeout,
-        check_startup,
-        |node| descendant_executable_pair_exists(desktop, &options.shim, node),
-    )
+    wait_for_host_chain_with_inspector(desktop, &options.shim, nodes, timeout, |node| {
+        descendant_executable_pair_exists(desktop, &options.shim, node)
+    })
 }
 
 fn wait_for_host_chain_with_inspector(
@@ -209,7 +154,6 @@ fn wait_for_host_chain_with_inspector(
     shim: &Path,
     nodes: &[PathBuf],
     timeout: Duration,
-    mut check_startup: impl FnMut() -> Result<(), Box<dyn Error>>,
     mut inspect: impl FnMut(&Path) -> Result<bool, PlatformError>,
 ) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
@@ -221,7 +165,6 @@ fn wait_for_host_chain_with_inspector(
     let mut unresolved_error = None;
     let mut last_error = None;
     while started.elapsed() < timeout {
-        check_startup()?;
         let mut round_error = None;
         for node in nodes {
             match inspect(node) {
@@ -792,7 +735,6 @@ mod tests {
             Path::new("/fixture/shim"),
             &[PathBuf::from("/fixture/node")],
             Duration::from_millis(350),
-            || Ok(()),
             |_| {
                 calls += 1;
                 results(calls)

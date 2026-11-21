@@ -135,15 +135,15 @@ codexhost launcher: Codex Desktop did not start the codexhost Host chain before 
 
 对应 issue：#637、#566、#532、#361。
 
-**默认启动与自动回退。** 对已注册的 Store 包，Launcher 仍优先走 AppX 激活。只有确认本次激活的根进程在早期启动窗口内、尚未观察到可见窗口时退出，且包调试已关闭、Controller 和已知后代清理完成、未发现外部或替代实例，才会用同一安装直接启动一次。根进程仍存活、普通超时或观测不完整都不触发回退。控制台的 Launcher 启动时间线会标明所选路径以及未回退的原因。
-
-**显式直接启动。** 若进程持续存活但未收到托管环境（如 #361），先完整退出 Codex Desktop（包括托盘实例）和托管 Launcher，然后在 Windows 终端运行：
+**显式直接启动。** 已注册的 Store 安装默认使用 AppX 激活，不会自动回退。如果 AppX 启动提前退出（如 #637），或未收到托管环境（如 #361），先完整退出 Codex Desktop（包括托盘实例）和托管 Launcher，再在 Windows 终端运行：
 
 ```powershell
 codexhost launch --windows-direct
 ```
 
-此选项只允许干净启动，不会附加或强制结束已有实例。Launcher 仍从已选安装发现 exe，并保留该安装的官方 CLI 缓存、托管环境和临时 loopback CDP 参数。不要把 `CODEXHOST_STOCK_CODEX_PATH` 指向 GUI exe（它是官方 CLI 路径，也不是启动方式开关），也不要写死随 Store 更新变化的 `WindowsApps` 目录。#718 的现场记录证明直接启动在 Desktop `26.1027.6604.0` 的受测环境可用，不代表所有 Store 版本的权限、包标识或数据目录行为都相同。
+此选项仅使用当前用户已注册的 Store 安装，不可与 `--custom-install` 混用，也不使用 `CODEXHOST_INSTALL_ROOT` 等安装覆盖。它直接启动发现的 exe，跳过 `EnableDebugging` 和 AUMID 激活，保留该安装的官方 CLI、托管环境和 loopback CDP 参数。发现已有 Store 实例时会拒绝启动，不会附加或强制结束外部实例。
+
+`CODEXHOST_STOCK_CODEX_PATH` 指向官方 CLI，不是启动方式开关，不要将它设为 GUI exe。直启是绕行方式，不是 AppX 生命周期修复；不同 Store 版本的权限、包标识及数据目录行为仍需在 Windows 实机验证。
 
 ## 三、第二步：建立最小的真实反馈闭环
 

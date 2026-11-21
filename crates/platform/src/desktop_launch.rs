@@ -405,12 +405,20 @@ fn desktop_launch_command(
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     let mut command = {
-        if mode != DesktopLaunchMode::DirectExecutable {
-            return Err(PlatformError::Unsupported(
-                "LaunchServices is available on macOS only",
-            ));
-        }
-        let mut command = Command::new(&installation.desktop_executable);
+        let program = match mode {
+            DesktopLaunchMode::LaunchServices => {
+                return Err(PlatformError::Unsupported(
+                    "LaunchServices is available on macOS only",
+                ));
+            }
+            #[cfg(target_os = "linux")]
+            DesktopLaunchMode::DirectExecutable => &installation.desktop_executable,
+            #[cfg(target_os = "windows")]
+            DesktopLaunchMode::DirectExecutable => &installation.desktop_launcher,
+            #[cfg(target_os = "windows")]
+            DesktopLaunchMode::WindowsDirect => &installation.desktop_executable,
+        };
+        let mut command = Command::new(program);
         command.args(additional_arguments);
         #[cfg(target_os = "linux")]
         super::background::start_in_new_session(&mut command);
@@ -458,6 +466,28 @@ pub fn launch_desktop(
     additional_arguments: &[OsString],
     additional_environment: &[(OsString, OsString)],
 ) -> Result<DesktopProcess, PlatformError> {
+    if mode == DesktopLaunchMode::WindowsDirect {
+        if !matches!(
+            &installation.identity,
+            DesktopIdentity::WindowsPackage {
+                appx_activation: Some(_),
+                ..
+            }
+        ) {
+            return Err(PlatformError::Invalid(
+                "--windows-direct requires a registered Codex Desktop Store installation".into(),
+            ));
+        }
+        let mut command = desktop_launch_command(
+            installation,
+            shim_path,
+            mode,
+            additional_arguments,
+            additional_environment,
+        )?;
+        super::process::require_no_running_store_desktop(installation)?;
+        return Ok(DesktopProcess::from_child(command.spawn()?));
+    }
     if mode != DesktopLaunchMode::DirectExecutable {
         return Err(PlatformError::Unsupported(
             "Windows packaged Desktop requires AppX activation",
@@ -480,7 +510,6 @@ pub fn launch_desktop(
                 &appx_activation.app_user_model_id,
                 additional_arguments,
                 &environment,
-                None,
             )
         }
         None => {
@@ -498,42 +527,6 @@ pub fn launch_desktop(
             ))
         }
     }
-}
-
-/// Production Windows launch. Direct launch keeps the selected installation's
-/// identity and runnable official CLI, even for a registered Store package.
-#[cfg(target_os = "windows")]
-pub fn launch_windows_managed_desktop(
-    installation: &DesktopInstallation,
-    shim_path: &Path,
-    direct: bool,
-    arguments: &[OsString],
-    environment: &[(OsString, OsString)],
-) -> Result<DesktopProcess, PlatformError> {
-    if !direct
-        && let DesktopIdentity::WindowsPackage {
-            appx_activation: Some(identity),
-            ..
-        } = &installation.identity
-    {
-        let environment = managed_desktop_environment(installation, shim_path, environment)?;
-        return super::windows_desktop::activate_packaged_desktop(
-            &identity.package_full_name,
-            &identity.app_user_model_id,
-            arguments,
-            &environment,
-            Some(installation),
-        );
-    }
-    let mut command = desktop_launch_command(
-        installation,
-        shim_path,
-        DesktopLaunchMode::DirectExecutable,
-        arguments,
-        environment,
-    )?;
-    super::require_no_windows_desktop(installation)?;
-    Ok(DesktopProcess::from_child(command.spawn()?))
 }
 
 #[cfg(target_os = "linux")]

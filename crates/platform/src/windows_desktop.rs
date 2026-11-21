@@ -1,7 +1,6 @@
 use std::ffi::OsString;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::ExitStatusExt;
 use std::process::{Child, ExitStatus};
 use std::thread;
@@ -26,7 +25,7 @@ use windows::Win32::UI::Shell::{
 use windows::core::{HSTRING, Owned};
 
 use super::process::desktop_root_process_ids;
-use super::{APPX_RESUME_ARGUMENT, DesktopInstallation, PlatformError, ProcessSnapshot};
+use super::{APPX_RESUME_ARGUMENT, PlatformError};
 
 fn windows_error(context: &str, error: windows::core::Error) -> PlatformError {
     PlatformError::Invalid(format!("{context}: {error}"))
@@ -135,7 +134,6 @@ pub struct WindowsDesktopProcess {
     process_id: u32,
     process: WindowsDesktopBacking,
     status: Option<ExitStatus>,
-    managed_root: Option<ProcessSnapshot>,
 }
 
 impl WindowsDesktopProcess {
@@ -144,33 +142,12 @@ impl WindowsDesktopProcess {
             process_id: child.id(),
             process: WindowsDesktopBacking::Child(child),
             status: None,
-            managed_root: None,
         }
     }
 
     #[must_use]
     pub fn id(&self) -> u32 {
         self.process_id
-    }
-
-    /// Query creation time and image through the retained handle, not the PID.
-    pub fn snapshot(&self) -> Result<ProcessSnapshot, PlatformError> {
-        if let Some(snapshot) = &self.managed_root {
-            return Ok(snapshot.clone());
-        }
-        let handle = match &self.process {
-            WindowsDesktopBacking::Child(child) => child.as_raw_handle(),
-            WindowsDesktopBacking::Activated(handle) => handle.0,
-        };
-        Ok(ProcessSnapshot {
-            id: self.id(),
-            parent_id: super::parent_process_id(self.id())?.unwrap_or(0),
-            process_group_id: self.id(),
-            executable: unsafe { super::windows_process::process_image_path_from_handle(handle)? },
-            started_at_micros: super::windows_process::process_started_at_micros_from_handle(
-                handle,
-            )?,
-        })
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
@@ -385,11 +362,7 @@ pub fn activate_packaged_desktop(
     app_user_model_id: &str,
     arguments: &[OsString],
     environment: &[(OsString, OsString)],
-    managed_installation: Option<&DesktopInstallation>,
 ) -> Result<WindowsDesktopProcess, PlatformError> {
-    if let Some(installation) = managed_installation {
-        super::require_no_windows_desktop(installation)?;
-    }
     let _apartment = ComApartment::initialize()?;
     let environment = windows_environment_block(environment)?;
     let mut package_environment = PackageEnvironment::enable(package_full_name, &environment)?;
@@ -401,49 +374,18 @@ pub fn activate_packaged_desktop(
         )
     }
     .map_err(|error| windows_error("cannot initialize AppX activation manager", error))?;
-    let app_id = HSTRING::from(app_user_model_id);
-    let arguments = HSTRING::from(windows_command_line(arguments).to_string_lossy().as_ref());
-    if let Some(installation) = managed_installation {
-        super::require_no_windows_desktop(installation)?;
+    let activation_process_id = unsafe {
+        manager.ActivateApplication(
+            &HSTRING::from(app_user_model_id),
+            &HSTRING::from(windows_command_line(arguments).to_string_lossy().as_ref()),
+            ACTIVATEOPTIONS(0),
+        )
     }
-    let activation_floor = windows_time_micros()?;
-    let activation_process_id =
-        unsafe { manager.ActivateApplication(&app_id, &arguments, ACTIVATEOPTIONS(0)) }
-            .map_err(|error| windows_error("cannot activate Codex Desktop AppX package", error))?;
-    let mut desktop = supervise_desktop(activation_process_id)?;
-    if let Some(installation) = managed_installation {
-        // ActivateApplication may return an existing process. Do not arm a kill
-        // guard on that handle until it identifies a new matching instance.
-        let root = desktop.snapshot()?;
-        if root.started_at_micros <= activation_floor
-            || super::process::windows_executable_key(&root.executable)
-                != super::process::windows_executable_key(&installation.desktop_executable)
-        {
-            return Err(PlatformError::UnmanagedDesktopConflict);
-        }
-        desktop.managed_root = Some(root);
-        let guard = ActivatedProcessGuard::new(desktop);
-        // Keep the handle on success even if the root has already exited: only
-        // an owned, signaled handle can qualify for a startup retry.
-        package_environment.disable()?;
-        return Ok(guard.disarm());
-    }
-    let guard = ActivatedProcessGuard::new(desktop);
+    .map_err(|error| windows_error("cannot activate Codex Desktop AppX package", error))?;
+    let desktop = ActivatedProcessGuard::new(supervise_desktop(activation_process_id)?);
     wait_for_desktop_root(activation_process_id, Duration::from_secs(5))?;
     package_environment.disable()?;
-    Ok(guard.disarm())
-}
-
-fn windows_time_micros() -> Result<u64, PlatformError> {
-    // GetProcessTimes is measured from 1601-01-01, not the Unix epoch.
-    const EPOCH_OFFSET_MICROS: u64 = 11_644_473_600_000_000;
-    let elapsed = std::time::UNIX_EPOCH
-        .elapsed()
-        .map_err(|_| PlatformError::Invalid("cannot establish the AppX activation time".into()))?;
-    Ok(EPOCH_OFFSET_MICROS
-        + u64::try_from(elapsed.as_micros()).map_err(|_| {
-            PlatformError::Invalid("the AppX activation time is out of range".into())
-        })?)
+    Ok(desktop.disarm())
 }
 
 pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, PlatformError> {
@@ -459,7 +401,6 @@ pub fn supervise_desktop(process_id: u32) -> Result<WindowsDesktopProcess, Platf
         process_id,
         process: WindowsDesktopBacking::Activated(unsafe { Owned::new(process) }),
         status: None,
-        managed_root: None,
     })
 }
 
@@ -570,17 +511,9 @@ mod tests {
             .expect("spawn supervised process fixture");
         let mut process = supervise_desktop(child.id()).expect("supervise process fixture");
 
-        assert_eq!(
-            process.snapshot().expect("inspect the retained handle").id,
-            child.id()
-        );
         let status = process.wait().expect("read supervised process exit status");
         let _ = child.wait();
 
-        assert_eq!(
-            process.try_wait().expect("poll the exited fixture"),
-            Some(status)
-        );
         assert_eq!(status.code(), Some(7));
     }
 }

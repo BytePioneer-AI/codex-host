@@ -453,26 +453,6 @@ mod tests {
     }
 
     #[test]
-    fn directly_spawned_store_desktop_keeps_its_utility_app_server_out_of_helper_routing() {
-        let desktop = "C:/WindowsApps/OpenAI.Codex_fixture/app/ChatGPT.exe";
-        let inspect = |id| {
-            let (parent_id, executable) = match id {
-                40 => (30, "codexhost-shim.exe"),
-                30 => (20, desktop),
-                20 => (10, desktop),
-                10 => (1, "codexhost.exe"),
-                _ => return None,
-            };
-            Some(ProcessSnapshot {
-                executable: executable.into(),
-                ..snapshot(id, parent_id)
-            })
-        };
-        assert!(!is_helper_descendant(40, 10, true, inspect));
-        assert!(is_helper_descendant(40, 10, false, inspect));
-    }
-
-    #[test]
     fn rejects_missing_reused_and_unbounded_ancestry() {
         assert!(!is_helper_descendant(4, 1, false, |_| None));
         assert!(!is_helper_descendant(4, 1, false, |id| {

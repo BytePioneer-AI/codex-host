@@ -991,6 +991,119 @@ describe("Harness installation actions", () => {
 });
 
 describe("Renderer Connections page", () => {
+  it.each([
+    { hostId: "local", directoryUnsupported: true, showsGuidance: true },
+    { hostId: "remote-test", directoryUnsupported: true, showsGuidance: false },
+    { hostId: "local", directoryUnsupported: false, showsGuidance: false },
+  ])(
+    "scopes WSL guidance to missing local Harness RPCs (%j)",
+    ({ hostId, directoryUnsupported, showsGuidance }) => {
+      const directoryError = directoryUnsupported
+        ? "codexhost/harness/plugins/list is unsupported on this Host connection"
+        : "Connection timed out";
+      const local = {
+        hostId: "local",
+        active: hostId === "local",
+        agents: [],
+      };
+      const failedHost = {
+        hostId,
+        active: true,
+        directoryError,
+        directoryUnsupported,
+        agents: [],
+      };
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: hostId === "local" ? [failedHost] : [local, failedHost],
+        }),
+        refresh: vi.fn(async () => undefined),
+        subscribe: () => () => undefined,
+      };
+      const store = createAgentGroupPreferenceStore(null);
+      store.setSyncStatus("error");
+      const page = createConnectionsSettingsPage(
+        rendererSettingsMessages("en"),
+        () => diagnostics,
+        store,
+      );
+      const document = new FakeDocument("Win32");
+      const content = document.createElement("main");
+      const scope = new RendererSettingsPageScope();
+      const cleanup = page.mount({
+        content: content as unknown as HTMLElement,
+        signal: scope.signal,
+        runLatest: (op, handlers) => scope.runLatest(op, handlers),
+      });
+      const text = visibleText(content);
+      expect(text).toContain("Renderer adapter");
+      expect(text).toContain(directoryError);
+      if (showsGuidance) {
+        expect(text).toMatch(/if .*Agent environment.*WSL/i);
+        expect(text).toContain("Remote SSH");
+        expect(text).not.toContain("Could not sync Harness order");
+      } else {
+        expect(text).not.toContain("WSL");
+        expect(text).toContain("Could not sync Harness order");
+      }
+      expect(elementWithClass(content, "settings-connection-stderr").textContent).toContain(
+        `retryable: ${!directoryUnsupported}`,
+      );
+      cleanup?.();
+      scope.dispose();
+    },
+  );
+
+  it("keeps the last confirmed Harness order read-only when its local owner lacks the RPCs", () => {
+    const diagnostics: RendererConnectionDiagnostics = {
+      snapshot: () => ({
+        adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+        hosts: [
+          { hostId: "local", active: false, agents: [], directoryUnsupported: true },
+          {
+            hostId: "remote-test",
+            active: true,
+            agents: [
+              { agent: "pi", plugin: pluginDescriptor("pi"), availability: "ready", error: null },
+            ],
+          },
+        ],
+      }),
+      refresh: vi.fn(async () => undefined),
+      subscribe: () => () => undefined,
+    };
+    const store = createAgentGroupPreferenceStore(null);
+    store.replace([{ agent: "pi", section: "more" }]);
+    store.setSyncStatus("error");
+    const write = vi.fn();
+    store.setWriter(write);
+    const page = createConnectionsSettingsPage(
+      rendererSettingsMessages("en"),
+      () => diagnostics,
+      store,
+    );
+    const content = new FakeDocument().createElement("main");
+    const scope = new RendererSettingsPageScope();
+    const cleanup = page.mount({
+      content: content as unknown as HTMLElement,
+      signal: scope.signal,
+      runLatest: (op, handlers) => scope.runLatest(op, handlers),
+    });
+    const reset = elementWithClass(content, "settings-connection-group-reset");
+    expect(reset.disabled).toBe(true);
+    expect(
+      descendants(content).find(({ dataset }) => dataset.connectionItem === "pi")?.dataset
+        .connectionGroupSection,
+    ).toBe("more");
+    expect(visibleText(content)).toContain("Harness order is read-only");
+    expect(visibleText(content)).not.toContain("WSL");
+    reset.dispatch("click");
+    expect(write).not.toHaveBeenCalled();
+    cleanup?.();
+    scope.dispose();
+  });
+
   it("starts all eligible updates concurrently on the original Host and isolates failures", async () => {
     const first = deferred<{
       currentVersion: string;

@@ -239,6 +239,8 @@ export interface RendererSettingsMessages {
   readonly connectionGroupLoading: string;
   readonly connectionGroupSaving: string;
   readonly connectionGroupSyncFailed: string;
+  readonly connectionGroupUnavailable: string;
+  readonly connectionLocalHarnessUnsupported: string;
   readonly pickerMoreAgentsLabel: string;
   readonly pickerManageLink: string;
   readonly pickerHideUnusedAgentsCta: string;
@@ -536,6 +538,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "Saving shared Harness order…",
   connectionGroupSyncFailed:
     "Could not sync Harness order. The last confirmed order is shown; check codexhost and retry your change.",
+  connectionGroupUnavailable:
+    "Harness order is read-only because the local connection does not support it. The last confirmed order is kept.",
+  connectionLocalHarnessUnsupported:
+    "This local connection does not support codexhost Harnesses. You can still use Codex. On Windows, if Agent environment is set to WSL, switch it to Windows in Codex Settings → General, then restart Desktop through codexhost. To use Harnesses installed in WSL, connect to WSL through Remote SSH instead.",
   pickerMoreAgentsLabel: "More agents",
   pickerManageLink: "Manage",
   pickerHideUnusedAgentsCta: "Hide unused agents",
@@ -840,6 +846,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "正在保存共享 Harness 排序…",
   connectionGroupSyncFailed:
     "Harness 排序同步失败，当前显示上次确认的顺序。请确认 codexhost 正常运行后重试修改。",
+  connectionGroupUnavailable: "本地连接不支持修改 Harness 排序，已保留上次确认的顺序。",
+  connectionLocalHarnessUnsupported:
+    "此本地连接不支持 codexhost Harness，仍可使用原生 Codex。在 Windows 上，如果 Agent environment 设为 WSL，请在 Codex「设置 → 常规」中切换到 Windows，再通过 codexhost 重启 Desktop。若要使用安装在 WSL 内的 Harness，请改用 Remote SSH 连接 WSL。",
   pickerMoreAgentsLabel: "更多 Agent",
   pickerManageLink: "管理",
   pickerHideUnusedAgentsCta: "收起不常用的 Agent",

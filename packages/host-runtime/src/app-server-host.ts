@@ -147,6 +147,7 @@ import {
   threadSteeringContextSchema,
   THREAD_STEERING_CONTEXT_PARAM,
   THREAD_STEER_DELIVERY_PARAM,
+  THREAD_STEER_STRICT_TARGET_PARAM,
   REASONING_TRANSCRIPT_COMMAND,
   permissionModeFixedAtCreate,
   updateCheckResultSchema,
@@ -6025,6 +6026,7 @@ export class AppServerHost {
     const params = requestObject(request);
     if (
       !asStart &&
+      params[THREAD_STEER_STRICT_TARGET_PARAM] !== true &&
       String(request.id).startsWith(this.#clientRequestPrefix) &&
       (!thread.running || !thread.activeTurnId || this.#externalSteering.hasPending(thread.id))
     ) {

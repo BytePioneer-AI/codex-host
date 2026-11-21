@@ -452,6 +452,8 @@ export const threadSteeringInspectParamsSchema = z
  * it instead of deciding again: `activeTurn` inserts natively, `newTurn` stops and restarts.
  */
 export const THREAD_STEER_DELIVERY_PARAM = "codexhostSteerDelivery";
+/** A Web steer may only be accepted while its selected Turn can still take the steer. */
+export const THREAD_STEER_STRICT_TARGET_PARAM = "codexhostSteerStrictTarget";
 /** Native RPC preparation retains additionalContext across its start/steer choice. */
 export const THREAD_STEERING_CONTEXT_PARAM = "codexhost_external_steering";
 export const threadSteeringContextSchema = z

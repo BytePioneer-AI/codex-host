@@ -372,6 +372,8 @@ export interface SessionPromptRequest {
   readonly requestId: SessionRequestId;
   readonly sessionId: SessionId;
   readonly mode: "queue" | "steer";
+  /** Host Turn observed at the send gesture. Null means no target was observed. */
+  readonly expectedTurnId?: string | null;
   /** At least one non-whitespace text part or attachment. */
   readonly content: readonly PromptContentPart[];
   readonly clientTimeZone?: string;

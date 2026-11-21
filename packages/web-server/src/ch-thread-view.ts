@@ -1,6 +1,7 @@
 /** In-memory projection of the CH protocol onto the existing Web UI wire format. */
 import {
   REASONING_TRANSCRIPT_COMMAND,
+  WEB_ACTIVE_TURN_PROJECTION,
   type ClientFileOperation,
   type ClientThreadImportSource,
   type ClientThreadSnapshot,
@@ -395,6 +396,12 @@ export class ChThreadView {
     } finally {
       this.log.clock = undefined;
     }
+    this.log.setProjection(
+      WEB_ACTIVE_TURN_PROJECTION,
+      thread.status.type === "active"
+        ? (thread.turns.findLast((turn) => !finished(turn.status))?.id ?? null)
+        : null,
+    );
     this.log.setProjection("codexhostToolOutput", Object.fromEntries(this.liveOutput));
     this.publishMessageTimes();
     this.publishFileChanges();

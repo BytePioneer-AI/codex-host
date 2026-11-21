@@ -286,7 +286,7 @@ it("searches the displayed title at every fallback level", async (t) => {
   }
 });
 
-it("starts a late steer directly when CH is already idle, preserving its delivery policy", async (t) => {
+it("rejects an explicit steer when CH cannot identify an active Turn", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-late-steer-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const host = new FakeChHost();
@@ -309,16 +309,12 @@ it("starts a late steer directly when CH is already idle, preserving its deliver
       },
     },
   });
-  assert.ok(result.ok, result.ok ? undefined : result.error.message);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error.code, "remote/turn-changed");
   assert.equal(
-    host.requests.some((request) => request.method === "turn/steer"),
+    host.requests.some((request) => request.method.startsWith("turn/")),
     false,
   );
-  assert.deepEqual(host.requests.find((request) => request.method === "turn/start")?.params, {
-    threadId: "idle-thread",
-    input: [{ type: "text", text: "keep this message", text_elements: [] }],
-    clientUserMessageId: "late-steer",
-  });
 });
 
 it("shares one native history read across concurrent browser consumers", async (t) => {

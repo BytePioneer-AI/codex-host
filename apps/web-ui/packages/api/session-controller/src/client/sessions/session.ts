@@ -2,6 +2,7 @@
 
 import type { Context } from "@deepseek-ai/cordis";
 import {
+  WEB_ACTIVE_TURN_PROJECTION,
   WEB_FOLLOW_PROJECTION_KEYS,
   type WebToolOutputReference,
 } from "@codexhost/shared-contracts";
@@ -162,6 +163,7 @@ export class Session implements SessionFace {
     SessionRequestId,
     {
       readonly placement: PendingSubmission["placement"];
+      readonly expectedTurnId: string | null;
       /** Latest received Inbox position; null means removed from that queue. */
       receipt?: {
         readonly target: InboxTarget;
@@ -289,6 +291,7 @@ export class Session implements SessionFace {
     ];
     this.submissionSettlements.set(requestId, {
       placement,
+      expectedTurnId: input.mode === "steer" ? this.activeTurnForSteering() : null,
       onRetire: input.onRetire,
       retiring: false,
     });
@@ -302,6 +305,11 @@ export class Session implements SessionFace {
         this.retireFailedSubmission(requestId);
       },
     };
+  }
+
+  private activeTurnForSteering(): string | null {
+    const value = this.projections.get(WEB_ACTIVE_TURN_PROJECTION);
+    return typeof value === "string" ? value : null;
   }
 
   /**
@@ -333,11 +341,19 @@ export class Session implements SessionFace {
       let result: RemoteResult<{ accepted: true }>;
       if (this.address === undefined) {
         const clientTimeZone = resolvedClientTimeZone();
+        const submission = this.submissionSettlements.get(submittedRequestId);
         result = await this.remote.session.prompt(
           {
             requestId: submittedRequestId,
             sessionId: this.sessionId,
             mode,
+            ...(mode === "steer"
+              ? {
+                  expectedTurnId: submission
+                    ? submission.expectedTurnId
+                    : this.activeTurnForSteering(),
+                }
+              : {}),
             content,
             clientTimeZone,
           },

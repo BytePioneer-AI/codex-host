@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_STEER_STRICT_TARGET_PARAM,
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
@@ -1279,6 +1280,7 @@ export class ChSessions {
         requestId?: string;
         content: Array<{ type: string; text?: string }>;
         mode?: string;
+        expectedTurnId?: string | null;
       }>(args);
       if (!this.images && request.content.some((part) => part.type !== "text"))
         throw new RpcError(
@@ -1286,7 +1288,19 @@ export class ChSessions {
           "Shared CH input currently accepts text only.",
         );
       const draft = this.drafts.get(request.sessionId);
-      if (!draft || draft.canonicalId) await this.owner(request.sessionId);
+      let expectedTurnId = request.expectedTurnId;
+      if (request.mode === "steer") {
+        if (expectedTurnId === undefined && (!draft || draft.canonicalId)) {
+          const view = await this.view(request.sessionId, true);
+          expectedTurnId =
+            view.ownerSnapshot?.activeTurnId ??
+            view.thread.turns.findLast((turn) => turn.status === "inProgress")?.id;
+        }
+        if (typeof expectedTurnId !== "string" || !expectedTurnId || (draft && !draft.canonicalId))
+          throw new RpcError("remote/turn-changed", "The selected Turn has ended or changed.");
+      }
+      const existingOwner =
+        !draft || draft.canonicalId ? await this.owner(request.sessionId) : undefined;
       // Validate/save before creating a native Thread. Only native path context crosses the Host channel.
       const prepared = this.fileInputs
         ? await this.fileInputs.prepare(this.id(request.sessionId), request.content)
@@ -1309,26 +1323,15 @@ export class ChSessions {
               .join("\n"),
           )
         : this.id(request.sessionId);
-      await this.owner(threadId);
+      const owner = existingOwner ?? (await this.owner(threadId));
       if (request.mode === "steer") {
-        const view = await this.view(threadId, true);
-        const expectedTurnId =
-          view.ownerSnapshot?.activeTurnId ??
-          view.thread.turns.find((turn) => turn.status === "inProgress")?.id;
-        if (expectedTurnId) {
-          await this.host.request("turn/steer", {
-            threadId,
-            expectedTurnId,
-            input,
-            ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
-          });
-        } else {
-          await this.host.request("turn/start", {
-            threadId,
-            input,
-            ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
-          });
-        }
+        await this.host.request("turn/steer", {
+          threadId,
+          expectedTurnId,
+          input,
+          ...(owner.owner === "external" ? { [THREAD_STEER_STRICT_TARGET_PARAM]: true } : {}),
+          ...(request.requestId ? { clientUserMessageId: request.requestId } : {}),
+        });
       } else {
         await this.host.request("turn/start", {
           threadId,
@@ -1362,9 +1365,7 @@ export class ChSessions {
         }
       }
       this.fileInputs?.accepted(threadId, request.content);
-      try {
-        await this.view(threadId);
-      } catch {
+      const syncing = this.view(threadId).catch(() => {
         // A failed read cannot turn an acknowledged write into a rejected send.
         if (this.realtime) {
           this.threads.view(threadId)?.log.setProjection("nativeConnection", {
@@ -1373,7 +1374,8 @@ export class ChSessions {
           });
           this.realtime.invalidate(threadId);
         }
-      }
+      });
+      if (!existingOwner) await syncing;
       return { accepted: true };
     });
     rpc.register("session/toolOutput", async (args) => {

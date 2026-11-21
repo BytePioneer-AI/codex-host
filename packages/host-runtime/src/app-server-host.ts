@@ -6335,23 +6335,24 @@ export class AppServerHost {
         thread.id,
         new Error("External Harness output ended before replacement"),
       );
-      if (!this.#closeRequested && (thread.running || thread.activeTurnId)) {
-        // Readonly snapshot Subagent Sessions (for example Claude Code native
-        // subagents restored through ReadonlySnapshotSession) never end their
-        // output stream, so their Host-side "active" status is only retired
-        // when the parent's own output stream ends here. Retire them before
-        // the Turn settles so the settled status can go idle.
-        await this.#retireRunningSubagents(thread);
-        // A Session that died (for example a Harness subagent that was killed
-        // natively) can end its output stream without a terminal Turn event.
-        // Without settling here the Thread stays busy forever and every later
-        // submission fails with "External Thread already has an active Turn".
-        await settleExternalOutputFailure(
-          thread,
-          new Error("External Harness output ended before the active Turn settled"),
-          (output) => this.#projectHarnessOutput(thread, output),
-          (failure) => this.#diagnose(failure),
-        );
+      const needsSettlement = thread.running || thread.activeTurnId !== null;
+      // A readonly Subagent can outlive the Turn without ever ending its own
+      // output stream. Retire it when the parent stream ends, even if the Turn settled.
+      if (!this.#closeRequested && (needsSettlement || this.#hasRunningSubagents(thread.id))) {
+        if (needsSettlement) {
+          // Retire Subagents before projecting failure so the parent can go idle.
+          await this.#retireRunningSubagents(thread);
+          // A Session that died (for example a Harness subagent that was killed
+          // natively) can end its output stream without a terminal Turn event.
+          // Without settling here the Thread stays busy forever and every later
+          // submission fails with "External Thread already has an active Turn".
+          await settleExternalOutputFailure(
+            thread,
+            new Error("External Harness output ended before the active Turn settled"),
+            (output) => this.#projectHarnessOutput(thread, output),
+            (failure) => this.#diagnose(failure),
+          );
+        }
         // Completed Turn projections can remain for late background output;
         // only active work should prevent the final status cleanup.
         if (!thread.running && !thread.activeTurnId) {
@@ -6378,11 +6379,10 @@ export class AppServerHost {
           }
         }
         this.#signalActiveWorkChanged();
-        // A settled Turn that ends as a failure already pauses the queue with
-        // "failed" and publishes once from the Turn projection; only pause with
-        // "outcome-unknown" when no pause was published, so the Desktop never
-        // receives two inconsistent pause notifications.
+        // Subagent cleanup alone does not pause or start queued work. Only an
+        // unfinished Turn needs the fallback, unless its failure already paused the queue.
         if (
+          needsSettlement &&
           !this.#externalQueue.isPaused(thread.id) &&
           this.#externalQueue.pause(thread.id, "outcome-unknown")
         ) {

@@ -79,7 +79,12 @@ async function replay(events: KimiTransportEvent[], terminal = "succeeded") {
       if (output.kind !== "event") continue;
       const event = output.event;
       emitted.push(event);
-      if (!("turnId" in event) || event.type === "turn.autonomous.started") continue;
+      if (
+        !("turnId" in event) ||
+        event.type === "turn.autonomous.started" ||
+        event.type === "usage.request.timing"
+      )
+        continue;
       const result = projector.project(event);
       if (result.completedTurn) return { events: emitted, turn: result.completedTurn };
     }

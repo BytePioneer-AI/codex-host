@@ -77,7 +77,11 @@ async function projectUpdates(updates: unknown[], command = false) {
     for await (const output of session.outputs) {
       if (output.kind !== "event") continue;
       events.push(output.event);
-      if ("turnId" in output.event && output.event.type !== "turn.autonomous.started")
+      if (
+        "turnId" in output.event &&
+        output.event.type !== "turn.autonomous.started" &&
+        output.event.type !== "usage.request.timing"
+      )
         projector.project(output.event);
       if (output.event.type === "turn.completed") break;
     }

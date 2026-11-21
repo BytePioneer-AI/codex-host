@@ -104,7 +104,11 @@ it("projects a real CodeBuddy autonomous completion through the Host without per
     client.update({ sessionUpdate: "session_end", stopReason: "end_turn" });
     await opened.value.close();
     for await (const output of opened.value.outputs) {
-      if (output.kind === "event" && "turnId" in output.event)
+      if (
+        output.kind === "event" &&
+        "turnId" in output.event &&
+        output.event.type !== "usage.request.timing"
+      )
         await projection.project(thread, output.event);
     }
     expect(messages).toContainEqual(

@@ -21,6 +21,35 @@ const handlers = () => ({
   fault: vi.fn(),
 });
 describe("CodeBuddy ACP process retirement", () => {
+  it("delivers native session_end, which ACP SDK 1.3 does not define, in wire order", async () => {
+    state.scenario = "session-end";
+    const callbacks = handlers();
+    const client = new CodeBuddyAcpClient({
+      cwd: process.cwd(),
+      environment: process.env,
+      ephemeral: true,
+      handlers: callbacks,
+    });
+    try {
+      await client.initialize();
+      await client.open(process.cwd());
+      await client.prompt("native", "hi");
+      await vi.waitFor(() => expect(callbacks.update).toHaveBeenCalledTimes(3));
+      expect(callbacks.update.mock.calls.map(([notification]) => notification.update)).toEqual([
+        expect.objectContaining({ sessionUpdate: "agent_message_chunk" }),
+        {
+          sessionUpdate: "session_end",
+          stopReason: "end_turn",
+          _meta: { "codebuddy.ai/requestId": "drain" },
+        },
+        expect.objectContaining({ sessionUpdate: "agent_message_chunk" }),
+      ]);
+      expect(callbacks.fault).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      state.scenario = "normal";
+    }
+  });
   it("initializes a server-mode ACP process without parsing its native banner", async () => {
     state.scenario = "serve-banner";
     const callbacks = handlers();

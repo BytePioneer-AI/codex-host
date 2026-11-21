@@ -21,6 +21,25 @@ for await (const line of createInterface({ input: process.stdin })) {
     message.method.includes("resolveInterruption")
   )
     continue;
-  else if (message.method === "session/prompt") result = { stopReason: "end_turn" };
+  else if (message.method === "session/prompt" && scenario === "session-end") {
+    const update = (update) =>
+      process.stdout.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId: "native", update },
+        }) + "\n",
+      );
+    const chunk = (text) =>
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    chunk("before");
+    update({
+      sessionUpdate: "session_end",
+      stopReason: "end_turn",
+      _meta: { "codebuddy.ai/requestId": "drain" },
+    });
+    chunk("after");
+    result = { stopReason: "end_turn" };
+  } else if (message.method === "session/prompt") result = { stopReason: "end_turn" };
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + "\n");
 }

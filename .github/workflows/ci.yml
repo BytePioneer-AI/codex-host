@@ -179,6 +179,13 @@ jobs:
       - name: Test independent Host lifecycle
         run: npm run test:shared-host
 
+      - name: Test Unix Desktop Controller recovery
+        if: runner.os != 'Windows'
+        run: |
+          export CODEXHOST_TEST_CONTROLLER_BUNDLE="$RUNNER_TEMP/desktop-controller.mjs"
+          npm run build:release -w @codexhost/desktop-control -- --output "$CODEXHOST_TEST_CONTROLLER_BUNDLE"
+          cargo test -p codexhost-launcher --locked --bin codexhost -- recovers_release_controller --ignored
+
       # Rust formatting is already covered by the Linux x64 formatting step.
       - name: Check Rust
         run: >

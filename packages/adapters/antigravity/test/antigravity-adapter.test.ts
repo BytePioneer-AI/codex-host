@@ -5,7 +5,7 @@ import { setImmediate } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
@@ -36,15 +36,15 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
-import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
   createNativeHistoryDatabase,
   systemStep,
+  textField,
   userStep,
 } from "./support/native-history-fixture.js";
-import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+import { bytes, nanoseconds, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof fs>();
@@ -803,11 +803,18 @@ describe("Antigravity ACP Session", () => {
   );
 
   it("streams ordered text/reasoning, usage and stable Turn identity", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-stream-turn-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
     const transport = await start(session, transports);
+    const db = await createNativeHistoryDatabase(home, required(transport.sessionId));
+    try {
+      userStep(db, 0, "hello", "prompt");
+      answerStep(db, 1, "hello", "prompt");
+    } finally {
+      db.close();
+    }
     const handler = required(transport.handler);
     handler.onEvent({ type: "agent.thought", text: "reason" });
     handler.onEvent({ type: "agent.text", text: "hel" });
@@ -1733,6 +1740,390 @@ describe("inspection and errors", () => {
   );
 });
 
+describe("Antigravity foreground native commits", () => {
+  async function setup() {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-turn-commit-"));
+    directories.push(home);
+    const nativeRef = ref();
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    db.exec(`PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;
+      ALTER TABLE steps ADD COLUMN metadata BLOB;
+      CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+      CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);`);
+    db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
+      randomUUID(),
+      nativeRef.nativeSessionId,
+    );
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", nativeRef, cwd: home }),
+    );
+    const transport = await start(session, transports);
+    return { adapter, home, nativeRef, session, outputs, transport, db };
+  }
+
+  function nextRead() {
+    const get = StatementSync.prototype.get;
+    const firstRead = deferred<number>();
+    const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+      this: StatementSync,
+      ...params: Parameters<StatementSync["get"]>
+    ) {
+      const row = get.apply(this, params);
+      if (this.sourceSQL.includes("count(*) AS n FROM steps WHERE step_type = 14")) {
+        spy.mockRestore();
+        firstRead.resolve(Number(row?.n));
+      }
+      return row;
+    });
+    return firstRead.promise;
+  }
+
+  function stampInput(db: DatabaseSync, idx: number, atMs: number) {
+    db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+      bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
+      idx,
+    );
+  }
+
+  const terminal = (outputs: HarnessOutput[], id = "t1") =>
+    required(
+      events(outputs).find((event) => event.type === "turn.completed" && event.turnId === id),
+    );
+
+  it("publishes a durable Turn when the WAL commits at 200ms", async () => {
+    const { session, outputs, transport, db } = await setup();
+    const firstRead = nextRead();
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      userStep(db, 0, "hello", "prompt");
+      answerStep(db, 1, "hello there", "prompt");
+      required(transport.handler).onEvent({ type: "agent.text", text: "hello there" });
+      transport.result.resolve({ stopReason: "end_turn" });
+      expect(await firstRead).toBe(0);
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      db.exec("COMMIT");
+      await completed(outputs);
+      expect(terminal(outputs)).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-0" },
+        outcome: { status: "succeeded", checkpoint: { checkpointId: "turn-0" } },
+      });
+      expect(await session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" } }] },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["no write", "unreadable"])(
+    "does not fabricate an identity for success with %s",
+    async (mode) => {
+      const { outputs, transport, db } = await setup();
+      try {
+        if (mode === "unreadable") db.exec("ALTER TABLE steps RENAME TO unavailable_steps");
+        required(transport.handler).onEvent({
+          type: "agent.text",
+          text: "output is not a boundary",
+        });
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs);
+        expect(terminal(outputs)).toEqual({
+          type: "turn.completed",
+          turnId: "t1",
+          ephemeral: true,
+          outcome: { status: "succeeded" },
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each(["cancel", "close", "fault"])(
+    "settles only once on %s during the commit wait",
+    async (action) => {
+      const { session, outputs, transport, db } = await setup();
+      const firstRead = nextRead();
+      try {
+        required(transport.handler).onResponse?.();
+        transport.result.resolve({ stopReason: "end_turn" });
+        expect(await firstRead).toBe(0);
+        if (action === "cancel") {
+          expect(await session.execute({ type: "turn.cancel", turnId: turnId("t1") })).toEqual({
+            ok: true,
+            value: { cancellationRequested: true },
+          });
+          expect(transport.cancel).not.toHaveBeenCalled();
+        } else if (action === "close") await session.close();
+        else
+          transport.options.onFault?.(new AntigravityTransportError("processExited", "ACP exited"));
+        userStep(db, 0, "hello", "prompt");
+        await completed(outputs);
+        expect(terminal(outputs)).toMatchObject({
+          outcome: { status: action === "fault" ? "failed" : "cancelled" },
+        });
+        expect(terminal(outputs)).not.toHaveProperty("nativeTurnRef");
+        expect(terminal(outputs)).not.toHaveProperty("ephemeral");
+        if (action !== "fault") expect(transport.cancel).not.toHaveBeenCalled();
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("settles a cancellation during usage collection without dropping the committed identity", async () => {
+    const { session, outputs, transport, db } = await setup();
+    const gate =
+      deferred<
+        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+      >();
+    const collect = vi
+      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+      .mockReturnValueOnce(gate.promise);
+    try {
+      userStep(db, 0, "hello", "prompt");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await vi.waitFor(() => expect(collect).toHaveBeenCalled());
+      expect(await session.execute({ type: "turn.cancel", turnId: turnId("t1") })).toMatchObject({
+        ok: true,
+      });
+      gate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      await completed(outputs);
+      expect(terminal(outputs)).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-0" },
+        outcome: { status: "cancelled", checkpoint: { checkpointId: "turn-0" } },
+      });
+      expect(transport.cancel).not.toHaveBeenCalled();
+    } finally {
+      gate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      db.close();
+    }
+  });
+
+  it.each(["refusal", "cancelled"])(
+    "preserves the native identity of a committed %s",
+    async (stopReason) => {
+      const { session, outputs, transport, db } = await setup();
+      try {
+        userStep(db, 0, "hello", "prompt");
+        if (stopReason === "cancelled")
+          await session.execute({ type: "turn.cancel", turnId: turnId("t1") });
+        transport.result.resolve({ stopReason });
+        await completed(outputs);
+        expect(terminal(outputs)).toMatchObject({
+          nativeTurnRef: { nativeTurnKey: "turn-0" },
+          outcome: { status: stopReason === "refusal" ? "failed" : "cancelled" },
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "does not claim the prior Turn's late commit (successor commits: %s)",
+    async (commits) => {
+      const { session, outputs, transport, db } = await setup();
+      const firstCreatedAt = Date.now();
+      try {
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs);
+        expect(terminal(outputs)).toMatchObject({ ephemeral: true });
+        transport.result = deferred();
+        await start(session, [transport], "t2");
+        await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+        // Native creation must be strictly after submission at millisecond precision.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        // Both prompts have the same input; text equality alone cannot prove ownership.
+        userStep(db, 0, "hello", "first");
+        stampInput(db, 0, firstCreatedAt);
+        answerStep(db, 1, "first answer", "first");
+        const secondCreatedAt = Date.now();
+        const firstRead = nextRead();
+        transport.result.resolve({ stopReason: "end_turn" });
+        expect(await firstRead).toBe(1);
+        if (commits) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
+          userStep(db, 2, "hello", "second");
+          stampInput(db, 2, secondCreatedAt);
+          answerStep(db, 3, "second answer", "second");
+        }
+        await completed(outputs, "t2");
+        if (commits) {
+          expect(terminal(outputs, "t2")).toMatchObject({
+            nativeTurnRef: { nativeTurnKey: "turn-1" },
+          });
+        } else {
+          expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
+        }
+        const snapshot = await session.readSnapshot();
+        assert(snapshot.ok);
+        expect(snapshot.value.turns[0]).toMatchObject({
+          nativeTurnRef: { nativeTurnKey: "turn-0" },
+          items: [{ item: { text: "first answer" } }],
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("does not claim a prior Turn's second late input when count advances by one", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      const firstInputAt = Date.now();
+      userStep(db, 0, "first-a", "first");
+      stampInput(db, 0, firstInputAt);
+      const secondLateInputAt = Date.now();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      expect(terminal(outputs, "t1")).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-0" },
+      });
+
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      // Turn A's second native input commits late during Turn B while Turn B has not written yet.
+      userStep(db, 1, "first-b", "first");
+      stampInput(db, 1, secondLateInputAt);
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
+      expect(terminal(outputs, "t2").outcome).not.toHaveProperty("checkpoint");
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["quick Stop", "tool-only output"])(
+    "recovers live identity and Fork after %s without a committed input",
+    async (previous) => {
+      const { adapter, home, nativeRef, session, outputs, transport, db } = await setup();
+      try {
+        if (previous === "quick Stop") {
+          await session.execute({ type: "turn.cancel", turnId: turnId("t1") });
+          transport.result.resolve({ stopReason: "cancelled" });
+        } else {
+          required(transport.handler).onEvent({
+            type: "tool.call",
+            toolCallId: "call",
+            name: "Tool",
+          });
+          required(transport.handler).onEvent({
+            type: "tool.update",
+            toolCallId: "call",
+            status: "completed",
+          });
+          transport.result.resolve({ stopReason: "end_turn" });
+        }
+        await completed(outputs);
+        expect(terminal(outputs)).not.toHaveProperty("nativeTurnRef");
+        transport.result = deferred();
+        await start(session, [transport], "t2");
+        await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        userStep(db, 0, "hello", "second");
+        stampInput(db, 0, Date.now());
+        // Commit a generic tool without a planner reply.
+        const tool = bytes(4, Buffer.concat([textField(1, "next"), textField(2, "Tool")]));
+        db.prepare(
+          "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (1, 132, 3, ?)",
+        ).run(Buffer.concat([bytes(5, tool), bytes(140, bytes(2, textField(1, "result")))]));
+        required(transport.handler).onEvent({
+          type: "tool.call",
+          toolCallId: "next",
+          name: "Tool",
+        });
+        required(transport.handler).onEvent({
+          type: "tool.update",
+          toolCallId: "next",
+          status: "completed",
+        });
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs, "t2");
+        const end = terminal(outputs, "t2");
+        expect(end).toMatchObject({ nativeTurnRef: { nativeTurnKey: "turn-0" } });
+        expect(await session.readSnapshot()).toMatchObject({
+          ok: true,
+          value: {
+            turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" }, items: [expect.anything()] }],
+          },
+        });
+        transport.result = deferred();
+        await start(session, [transport], "t3");
+        await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(3));
+        userStep(db, 2, "hello", "third");
+        expect(
+          await adapter.open({
+            kind: "fork",
+            cwd: home,
+            sourceRef: nativeRef,
+            checkpoint: required(end.outcome.checkpoint),
+          }),
+        ).toMatchObject({ ok: true });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("uses the last native input for a merged Turn and publishes a committed wake after it", async () => {
+    const { session, outputs, transport, db } = await setup();
+    const firstRead = nextRead();
+    try {
+      const createdAtMs = Date.now();
+      required(transport.handler).onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      expect(await firstRead).toBe(0);
+      db.exec("BEGIN IMMEDIATE");
+      userStep(db, 0, "hel", "prompt");
+      userStep(db, 1, "lo", "prompt");
+      stampInput(db, 1, createdAtMs);
+      answerStep(db, 2, "hello there", "prompt");
+      systemStep(db, 3, "wake");
+      answerStep(db, 4, "wake answer", "wake");
+      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      db.exec("COMMIT");
+      await completed(outputs);
+      expect(terminal(outputs)).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+        outcome: { checkpoint: { checkpointId: "turn-1" } },
+      });
+      await vi.waitFor(() => {
+        expect(
+          events(outputs).filter(
+            ({ type }) => type === "turn.completed" || type === "turn.autonomous.completed",
+          ),
+        ).toMatchObject([
+          { type: "turn.completed", turnId: "t1" },
+          {
+            type: "turn.autonomous.completed",
+            snapshot: { nativeTurnRef: { nativeTurnKey: "wake-3" }, input: [] },
+          },
+        ]);
+      });
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(
+        snapshot.value.turns.map(({ nativeTurnRef, input }) => [
+          nativeTurnRef.nativeTurnKey,
+          input,
+        ]),
+      ).toEqual([
+        ["turn-1", [{ type: "text", text: "hello" }]],
+        ["wake-3", []],
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("Antigravity idle wake Turns", () => {
   const wakes = (outputs: HarnessOutput[]) =>
     events(outputs).filter((event) => event.type === "turn.autonomous.completed");
@@ -1937,15 +2328,12 @@ describe("Antigravity idle wake Turns", () => {
   it("observes updates after the wire response without publishing ahead of the user terminal", async () => {
     const { session, outputs, transport, db } = await setup();
     try {
-      const gate = deferred<number>();
-      vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockReturnValueOnce(gate.promise);
       transport.handler?.onResponse?.();
-      transport.result.resolve({ stopReason: "end_turn" });
       systemStep(db, 2, "wake");
       answerStep(db, 3, "wake answer", "wake");
       transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
       expect(wakes(outputs)).toEqual([]);
-      gate.resolve(1);
+      transport.result.resolve({ stopReason: "end_turn" });
       await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
       const all = events(outputs);
       expect(all.findIndex((event) => event.type === "turn.autonomous.completed")).toBeGreaterThan(

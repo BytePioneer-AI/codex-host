@@ -42,6 +42,8 @@ import { SessionStateObserver } from "./session-state-observer.js";
 import { DesktopRequestQueue } from "./desktop-request-queue.js";
 import { ExternalThreadIdleRelease } from "./external-thread-idle-release.js";
 import { projectExternalTurn } from "./external-subagent-threads.js";
+import { withFailedTurns, type LiveFailedTurn } from "./external-turn-projection.js";
+import { ownTurns } from "./external-thread-side-chat.js";
 import { reconcileExternalTurnItemIds } from "./external-turn-item-ids.js";
 import {
   ExternalSessionReleaseError,
@@ -236,6 +238,7 @@ export class ExternalThreadRuntime {
   readonly #steeredTurnIds = new Map<string, Set<HostTurnId>>();
   readonly #subagentRunning: (threadId: string) => boolean;
   readonly #threads = new Map<string, ExternalThread>();
+  readonly #liveFailures = new Map<string, Map<string, LiveFailedTurn>>();
   // Only completed snapshots mutate this ledger; never hold this gate while
   // closing a Session (close drains its outputs).
   readonly #historyWrites = new DesktopRequestQueue();
@@ -297,6 +300,7 @@ export class ExternalThreadRuntime {
   }
 
   remove(threadId: string): void {
+    this.#liveFailures.delete(threadId);
     this.#threads.delete(threadId);
     this.#steeredTurnIds.delete(threadId);
   }
@@ -316,6 +320,7 @@ export class ExternalThreadRuntime {
   }
 
   clear(): void {
+    this.#liveFailures.clear();
     this.#threads.clear();
     this.#steeredTurnIds.clear();
   }
@@ -512,8 +517,33 @@ export class ExternalThreadRuntime {
       this.#diagnose(error);
     }
     await this.#retireSubagents(current, true);
+    const live = this.#liveFailures.get(current.id);
+    if (live) {
+      const undone = new Set<string>(
+        current.record.turnMappings
+          .slice(input.record.turnMappings.length)
+          .map(({ hostTurnId }) => hostTurnId),
+      );
+      for (const [id, entry] of live) {
+        const { afterTurnId } = entry.failure;
+        if (undone.has(id) || (afterTurnId && undone.has(afterTurnId))) {
+          live.delete(id);
+        } else {
+          entry.failure = {
+            ...entry.failure,
+            nativeTurnRef: input.record.turnMappings.find(({ hostTurnId }) => hostTurnId === id)
+              ?.nativeTurnRef,
+          };
+        }
+      }
+    }
+    const turns = this.#mergeFailedTurns(input.record, input.turns);
     this.#threads.delete(current.id);
-    return this.register(input);
+    return this.register({
+      ...input,
+      turns,
+      thread: { ...input.thread, turns: ownTurns(input.record, turns) },
+    });
   }
 
   async #retireSubagents(parent: ExternalThread, bestEffort = false): Promise<void> {
@@ -666,11 +696,15 @@ export class ExternalThreadRuntime {
         await this.#historyWrites.run(thread.id, async () => {
           // A live append may have installed newer history. Retry instead of losing either
           // that mapping or older native Turns discovered by this read.
-          if (thread.record.turnMappings !== recordAtRead.turnMappings) {
+          if (thread.record.revision !== recordAtRead.revision) {
             stale = true;
             return;
           }
-          const aligned = await this.#repository.alignSnapshot(thread.record, read);
+          const aligned = await this.#repository.alignSnapshot(
+            thread.record,
+            read,
+            this.#failedTurns(thread.record),
+          );
           // Before native identity exists, an empty Snapshot cannot reconcile the
           // failed or cancelled Turns retained only in this loaded Host Thread.
           const turns =
@@ -678,7 +712,10 @@ export class ExternalThreadRuntime {
             !aligned.record.nativeSessionRef &&
             read.turns.length === 0
               ? thread.turns
-              : this.#reconcileHistoryTurns(thread, aligned.turns);
+              : this.#reconcileHistoryTurns(
+                  thread,
+                  this.#mergeFailedTurns(aligned.record, aligned.turns),
+                );
           thread.record = aligned.record;
           if (turns !== thread.turns) {
             thread.livePlan = null;
@@ -702,6 +739,40 @@ export class ExternalThreadRuntime {
       code: -32081,
       message: "External Thread history changed during read; retry the request",
     };
+  }
+
+  #failedTurns(record: StoredThreadRecordV1) {
+    const durable = record.failedTurns ?? [];
+    const live = this.#liveFailures.get(record.hostThreadId);
+    if (!live?.size) return durable;
+    // Keep the durable prefix and live tail in order even if a live write failed.
+    return [
+      ...durable.filter(({ hostTurnId }) => !live.has(hostTurnId)),
+      ...Array.from(live.values(), ({ failure }) => failure),
+    ];
+  }
+
+  #mergeFailedTurns(record: StoredThreadRecordV1, native: JsonObject[]): JsonObject[] {
+    return withFailedTurns(
+      native,
+      this.#failedTurns(record),
+      this.#liveFailures.get(record.hostThreadId),
+    );
+  }
+
+  /** Native mapping positions count toward the range even if their contents are unavailable. */
+  async retainedFailure(threadId: string) {
+    const loaded = this.get(threadId);
+    const record = loaded?.record ?? (await this.#repository.find(threadId));
+    if (!record || loaded?.activeTurnId) return;
+    const turns = this.#mergeFailedTurns(
+      record,
+      record.turnMappings.map(({ hostTurnId }) => ({ id: hostTurnId })),
+    );
+    const latest = turns.at(-1);
+    if (latest?.status !== "failed" || (loaded && loaded.projectedTerminalTurnId !== latest.id))
+      return;
+    return { record, turns: turns.map((turn) => (turn.status === "failed" ? turn : undefined)) };
   }
 
   #reconcileHistoryTurns(thread: ExternalThread, turns: JsonObject[]): JsonObject[] {
@@ -770,7 +841,11 @@ export class ExternalThreadRuntime {
         await this.#dropIdleSession(thread);
         return mapExternalThreadHarnessError(snapshot.error, "read");
       }
-      let aligned = await this.#repository.alignSnapshot(thread.record, snapshot.value);
+      let aligned = await this.#repository.alignSnapshot(
+        thread.record,
+        snapshot.value,
+        this.#failedTurns(thread.record),
+      );
       if (this.#threads.get(thread.id) !== thread) {
         await this.#lifecycle.release(thread.id, session, Promise.resolve());
         return { code: -32076, message: "External Thread recovery failed" };
@@ -819,7 +894,10 @@ export class ExternalThreadRuntime {
         ...(effectiveThinkingOptionId ? { effectiveThinkingOptionId } : {}),
         ...(effectivePermissionModeId ? { effectivePermissionModeId } : {}),
       };
-      const turns = this.#reconcileHistoryTurns(thread, aligned.turns);
+      const turns = this.#reconcileHistoryTurns(
+        thread,
+        this.#mergeFailedTurns(aligned.record, aligned.turns),
+      );
       thread.session = session;
       thread.record = aligned.record;
       thread.turns = turns;
@@ -855,24 +933,17 @@ export class ExternalThreadRuntime {
     }
   }
 
-  /** Persist first accepted input before replying, never on the output/token path. */
-  async capturePreview(thread: ExternalThread, turn: JsonObject): Promise<void> {
-    // A Side Chat's first own Turn follows the history it inherited.
-    const inherited = thread.record.attachedToThreadId
-      ? (thread.record.inheritedTurnCount ?? 0)
-      : 0;
+  /** Only confirmed successful work may provide a durable live preview. */
+  async captureCompletedPreview(thread: ExternalThread, turn: JsonObject): Promise<void> {
     if (
       thread.record.preview !== undefined ||
-      thread.record.turnMappings.length !== inherited ||
-      thread.turns.length !== inherited
+      thread.record.turnMappings.at(-1)?.hostTurnId !== turn.id
     )
       return;
     try {
       thread.record = await this.#repository.updatePreview(thread.record, [turn]);
       thread.thread.preview = thread.record.preview ?? "";
     } catch (error) {
-      // A display hint must not turn accepted native work into a rejected send.
-      // A later native history read can backfill it.
       this.#diagnose(error);
     }
   }
@@ -979,6 +1050,47 @@ export class ExternalThreadRuntime {
     } catch (error) {
       this.#diagnose(error);
     }
+  }
+
+  async retainFailedTurn(
+    thread: ExternalThread,
+    event: TurnCompletedEvent,
+    turn: JsonObject,
+  ): Promise<void> {
+    if (event.outcome.status !== "failed") return;
+    const code = event.outcome.error.code;
+    const error = code === "authenticationRequired" ? "authenticationRequired" : "executionFailed";
+    await this.#historyWrites.run(thread.id, async () => {
+      const afterTurnId = thread.record.turnMappings.findLast(
+        ({ hostTurnId }) => hostTurnId !== event.turnId,
+      )?.hostTurnId;
+      const nativeTurnRef =
+        thread.record.turnMappings.find(({ hostTurnId }) => hostTurnId === event.turnId)
+          ?.nativeTurnRef ?? event.nativeTurnRef;
+      const failure = { hostTurnId: event.turnId, afterTurnId, nativeTurnRef, error } as const;
+      const live = this.#liveFailures.get(thread.id) ?? new Map<string, LiveFailedTurn>();
+      const items = Array.isArray(turn.items)
+        ? turn.items.filter(
+            (item): item is JsonObject =>
+              item !== null &&
+              typeof item === "object" &&
+              !Array.isArray(item) &&
+              (item.type === "userMessage" || item.type === "agentMessage"),
+          )
+        : [];
+      live.set(event.turnId, { failure, items });
+      this.#liveFailures.set(thread.id, live);
+      this.#diagnose(
+        `External Turn failed (harnessId=${thread.harnessId}, threadId=${thread.id}, turnId=${event.turnId}, phase=execute, code=${code})`,
+      );
+      try {
+        thread.record = await this.#repository.saveFailedTurn(thread.record, failure);
+      } catch {
+        this.#diagnose(
+          `Failed Turn metadata could not be saved (threadId=${thread.id}, turnId=${event.turnId})`,
+        );
+      }
+    });
   }
 
   async persistTerminalIdentity(
@@ -1103,7 +1215,11 @@ export class ExternalThreadRuntime {
       if (!snapshot.ok) {
         throw new ExternalThreadOpenError(mapExternalThreadHarnessError(snapshot.error, "read"));
       }
-      let aligned = await this.#repository.alignSnapshot(record, snapshot.value);
+      let aligned = await this.#repository.alignSnapshot(
+        record,
+        snapshot.value,
+        this.#failedTurns(record),
+      );
       const restoredState = snapshot.value.state;
       const effectiveModel = restoredState
         ? restoredState.effectiveModel
@@ -1138,16 +1254,13 @@ export class ExternalThreadRuntime {
         }
       }
       const sessionId = await this.#repository.sessionTreeId(aligned.record);
+      const turns = this.#mergeFailedTurns(aligned.record, aligned.turns);
       return this.register({
         record: aligned.record,
         session,
         sessionId,
-        thread: externalThreadValue({
-          record: aligned.record,
-          turns: aligned.turns,
-          sessionId,
-        }),
-        turns: aligned.turns,
+        thread: externalThreadValue({ record: aligned.record, turns, sessionId }),
+        turns,
         historicalPlans: aligned.historicalPlans,
         ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
         ...(effectiveThinkingOptionId

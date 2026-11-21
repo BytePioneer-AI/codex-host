@@ -144,7 +144,7 @@ export function projectDelegationThreadSnapshot(input: {
   threadId: string;
   harnessId: RoutedHarnessId;
   thread: JsonObject;
-  turns: readonly JsonObject[];
+  turns: readonly (JsonObject | undefined)[];
   running: boolean;
   view: "result" | "messages";
   from?: number;
@@ -169,7 +169,7 @@ export function projectDelegationThreadSnapshot(input: {
       : [];
   const result = input.running
     ? ({ availability: "pending" } as const)
-    : final
+    : final && status === "completed"
       ? ({ availability: "available", text: final.text } as const)
       : ({
           availability: "unavailable",

@@ -13,13 +13,17 @@ function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-export const QODER_DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
+function isContextWindow(value: unknown): value is number {
+  return isNonNegativeSafeInteger(value) && value > 0;
+}
 
-export function resolveQoderContextWindow(modelId?: string, reportedWindow?: number): number {
-  if (reportedWindow && reportedWindow > 0) return reportedWindow;
-  if (modelId && /gemini/iu.test(modelId)) return 1_048_576;
-  if (modelId && /gpt-5\.6/iu.test(modelId)) return 252_000;
-  return QODER_DEFAULT_CONTEXT_WINDOW_TOKENS;
+/** The CLI reports bare model IDs and the built-in `qoder/` spelling interchangeably. */
+function modelAlias(modelId: string): string | undefined {
+  const prefix = "qoder/";
+  const namespaced = modelId.startsWith(prefix);
+  const id = namespaced ? modelId.slice(prefix.length) : modelId;
+  if (!id || id.includes("/") || /\s/u.test(id)) return undefined;
+  return namespaced ? id : `${prefix}${id}`;
 }
 
 export interface QoderConfiguredContextWindows {
@@ -44,17 +48,16 @@ export function parseQoderConfiguredContextWindows(
   if (!model || typeof model !== "object") return undefined;
   const { name, preferences } = model as Record<string, unknown>;
 
-  const windows: Record<string, number> = {};
+  const windows: Record<string, number> = Object.create(null) as Record<string, number>;
   if (preferences && typeof preferences === "object") {
     for (const [modelId, preference] of Object.entries(preferences as Record<string, unknown>)) {
       if (!preference || typeof preference !== "object") continue;
       const contextWindow = (preference as Record<string, unknown>).contextWindow;
-      if (isNonNegativeSafeInteger(contextWindow) && contextWindow > 0) {
+      if (isContextWindow(contextWindow)) {
         windows[modelId] = contextWindow;
       }
     }
   }
-  if (Object.keys(windows).length === 0) return undefined;
   return {
     ...(typeof name === "string" && name.length > 0 ? { defaultModelId: name } : {}),
     windows,
@@ -69,7 +72,7 @@ export class QoderUsageTracker {
   #totalCredits: number | undefined;
   #totalCostUsd: number | undefined;
   #contextUsagePercent: number | undefined;
-  #contextWindowTokens: number;
+  #reportedWindow: number | undefined;
   #contextUsedTokens: number | undefined;
   #latestInputTokens: number | undefined;
   #cacheHitRatePercent: number | undefined;
@@ -79,35 +82,37 @@ export class QoderUsageTracker {
   #modelId: string | undefined;
   readonly #configuredWindows = new Map<string, number>();
 
-  constructor(options?: {
-    modelId?: string | undefined;
-    contextWindowTokens?: number | undefined;
-  }) {
-    this.#contextWindowTokens =
-      options?.contextWindowTokens && options.contextWindowTokens > 0
-        ? options.contextWindowTokens
-        : resolveQoderContextWindow(options?.modelId);
-    this.#modelId = options?.modelId;
+  constructor(options?: { modelId?: string | undefined }) {
+    this.setModel(options?.modelId);
   }
 
-  setModel(modelId?: string, catalogWindow?: number): void {
-    if (modelId) this.#modelId = modelId;
-    if (catalogWindow && catalogWindow > 0) {
-      this.#contextWindowTokens = catalogWindow;
-    } else if (modelId) {
-      this.#contextWindowTokens =
-        this.#configuredWindows.get(modelId) ?? resolveQoderContextWindow(modelId);
+  setModel(modelId?: string): void {
+    if (!modelId || modelId === this.#modelId) return;
+    if (this.#modelId === undefined || modelAlias(modelId) !== this.#modelId) {
+      this.#reportedWindow = undefined;
+      this.#contextUsedTokens = undefined;
+      this.#contextUsagePercent = undefined;
+      this.#latestInputTokens = undefined;
     }
+    this.#modelId = modelId;
   }
 
-  /** Applies configured windows from `get_settings`; later `setModel` calls reuse them. */
+  /** A complete settings response replaces the previous settings, not the native reading. */
   setConfiguredContextWindows(configured: QoderConfiguredContextWindows): void {
+    this.#configuredWindows.clear();
     for (const [modelId, window] of Object.entries(configured.windows)) {
-      if (window > 0) this.#configuredWindows.set(modelId, window);
+      if (isContextWindow(window)) this.#configuredWindows.set(modelId, window);
     }
     this.#modelId ??= configured.defaultModelId;
-    const window = this.#modelId ? this.#configuredWindows.get(this.#modelId) : undefined;
-    if (window) this.#contextWindowTokens = window;
+  }
+
+  #configuredWindow(): number | undefined {
+    if (!this.#modelId) return undefined;
+    const alias = modelAlias(this.#modelId);
+    return (
+      this.#configuredWindows.get(this.#modelId) ??
+      (alias === undefined ? undefined : this.#configuredWindows.get(alias))
+    );
   }
 
   observeAssistant(message: SDKAssistantMessage): void {
@@ -234,9 +239,10 @@ export class QoderUsageTracker {
     if (!context || typeof context !== "object") return;
     const raw = context as Record<string, unknown>;
 
-    // Re-resolving the same model would discard a window configured via settings.
-    if (typeof raw.model === "string" && raw.model !== this.#modelId) {
-      this.setModel(raw.model);
+    if (typeof raw.model === "string" && raw.model) {
+      // Learning the native Model's ID is not a switch; keep samples already reported for it.
+      if (this.#modelId === undefined) this.#modelId = raw.model;
+      else this.setModel(raw.model);
     }
 
     const contextWindow = (raw.contextWindow ?? {}) as Record<string, unknown>;
@@ -257,9 +263,7 @@ export class QoderUsageTracker {
         : typeof raw.maxTokens === "number"
           ? raw.maxTokens
           : undefined;
-    if (isNonNegativeSafeInteger(maxTokens) && maxTokens > 0) {
-      this.#contextWindowTokens = maxTokens;
-    }
+    if (isContextWindow(maxTokens)) this.#reportedWindow = maxTokens;
 
     const totalTokens =
       typeof contextWindow.totalTokens === "number"
@@ -345,30 +349,20 @@ export class QoderUsageTracker {
       }
     }
 
-    const windowTokens = this.#contextWindowTokens;
-    let usedTokens = this.#contextUsedTokens;
-
-    if (usedTokens === undefined && this.#contextUsagePercent !== undefined && windowTokens > 0) {
-      usedTokens = Math.round((windowTokens * this.#contextUsagePercent) / 100);
-    } else if (usedTokens === undefined) {
-      usedTokens = this.#latestInputTokens;
-    }
-
-    if (usedTokens !== undefined && windowTokens > 0) {
-      candidate.contextUsedTokens = usedTokens;
-      candidate.contextWindowTokens = windowTokens;
-      if (this.#contextUsagePercent === undefined) {
-        candidate.contextUsagePercent = Math.min(
-          100,
-          Math.max(0, (usedTokens / windowTokens) * 100),
-        );
-      } else {
-        candidate.contextUsagePercent = this.#contextUsagePercent;
+    const percent = this.#contextUsagePercent;
+    if (percent !== undefined) candidate.contextUsagePercent = percent;
+    const windowTokens = this.#reportedWindow ?? this.#configuredWindow();
+    if (windowTokens !== undefined) {
+      const usedTokens =
+        this.#contextUsedTokens ??
+        (percent === undefined
+          ? this.#latestInputTokens
+          : Math.round(windowTokens * (percent / 100)));
+      if (usedTokens !== undefined) {
+        candidate.contextUsedTokens = usedTokens;
+        candidate.contextWindowTokens = windowTokens;
+        candidate.contextUsagePercent = percent ?? Math.min(100, (usedTokens / windowTokens) * 100);
       }
-    } else if (this.#contextUsagePercent !== undefined && windowTokens > 0) {
-      candidate.contextUsedTokens = Math.round((windowTokens * this.#contextUsagePercent) / 100);
-      candidate.contextWindowTokens = windowTokens;
-      candidate.contextUsagePercent = this.#contextUsagePercent;
     }
 
     if (Object.keys(candidate).length === 0) return null;

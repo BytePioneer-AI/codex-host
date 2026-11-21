@@ -101,6 +101,13 @@
   transform: scale(0.96);
 }
 
+@media (hover: none), (pointer: coarse) {
+  .field {
+    font-size: 16px;
+    line-height: 22px;
+  }
+}
+
 @keyframes selection-comment-in {
   from {
     opacity: 0;

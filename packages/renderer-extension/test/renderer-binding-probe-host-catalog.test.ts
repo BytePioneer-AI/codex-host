@@ -10,6 +10,8 @@ import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import type * as RendererComposerDom from "../src/renderer-composer-dom.js";
 import {
   createRendererModelClient,
+  HARNESS_PLUGIN_LIST_METHOD,
+  THREAD_INSPECT_METHOD,
   THREAD_USAGE_INSPECT_METHOD,
   THREAD_USAGE_UPDATED_METHOD,
 } from "../src/renderer-model-client.js";
@@ -384,6 +386,165 @@ describe("Renderer binding native draft routing", () => {
     expect(submissions).toEqual([
       { composerId: selection.composerId, agent: "codex", trigger: "click" },
     ]);
+  });
+});
+
+describe("Renderer binding Harness directory diagnostics", () => {
+  it("keeps stock Codex usable and probes a replacement local connection", async () => {
+    installFakeBrowser();
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/read") {
+        return { thread: { id: "thread-a", modelProvider: "openai", cliVersion: "1" } };
+      }
+      throw Object.assign(new Error("Method not found"), { code: -32601 });
+    });
+    let local = createRendererModelClient([{ sendRequest: request }]);
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({});
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => local } as never,
+    );
+    const diagnostics = testState.getConnectionDiagnostics?.();
+    assert(diagnostics);
+    await diagnostics.refresh("local");
+    expect(diagnostics.snapshot()).toMatchObject({
+      adapter: { state: "ready" },
+      hosts: [{ hostId: "local", directoryUnsupported: true, agents: [] }],
+    });
+    expect(request).toHaveBeenCalledWith(THREAD_INSPECT_METHOD, { threadId: "thread-a" });
+    expect(request).toHaveBeenCalledWith("thread/read", {
+      threadId: "thread-a",
+      includeTurns: false,
+    });
+    const prevented = vi.fn();
+    testState.documentListeners.get("submit")?.({
+      target: testState.composer,
+      preventDefault: prevented,
+      stopImmediatePropagation: vi.fn(),
+    } as unknown as Event);
+    expect(prevented).not.toHaveBeenCalled();
+
+    await diagnostics.refresh("local");
+    expect(
+      request.mock.calls.filter(([method]) => method === HARNESS_PLUGIN_LIST_METHOD),
+    ).toHaveLength(1);
+    local = null;
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+    expect(diagnostics.snapshot().hosts[0]?.directoryUnsupported).toBeUndefined();
+
+    local = createRendererModelClient([
+      {
+        sendRequest: async (method) => {
+          if (method === HARNESS_PLUGIN_LIST_METHOD) return { plugins: [] };
+          throw new Error(`Unexpected method: ${method}`);
+        },
+      },
+    ]);
+    window.dispatchEvent(new Event("codexhost:draft-prewarm-policy-changed"));
+    await vi.waitFor(() => {
+      expect(diagnostics.snapshot().hosts[0]).not.toHaveProperty("directoryError");
+    });
+  });
+
+  it.each(["remote-ssh-discovered:linux", "remote-control:mac"])(
+    "refreshes connection diagnostics when the local client changes while %s stays active",
+    async (hostId) => {
+      installFakeBrowser();
+      let local = createRendererModelClient([
+        {
+          sendRequest: async () => {
+            throw Object.assign(new Error("Method not found"), { code: -32601 });
+          },
+        },
+      ]);
+      const remote = {
+        listHarnessPlugins: async () => ({ plugins: [] }),
+        inspectThread: async () => ({ owner: "codex", locked: true }),
+        inspectThreadCommands: async () => ({ commands: [] }),
+        inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+      };
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({});
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        undefined,
+        {
+          currentHostId: () => hostId,
+          clientForHost: (target: string) => (target === "local" ? local : remote),
+        } as never,
+      );
+      const diagnostics = testState.getConnectionDiagnostics?.();
+      assert(diagnostics);
+      await vi.waitFor(() =>
+        expect(diagnostics.snapshot().hosts).toMatchObject([
+          { hostId: "local", active: false, directoryUnsupported: true },
+          { hostId, active: true },
+        ]),
+      );
+      let latestStatus: ReturnType<typeof diagnostics.snapshot> | undefined;
+      diagnostics.subscribe(() => {
+        latestStatus = diagnostics.snapshot();
+      });
+      const sendRequest = vi.fn(async () => ({ plugins: [] }));
+      local = createRendererModelClient([{ sendRequest }]);
+      const [localBeforeScan] = diagnostics.snapshot().hosts;
+      expect.soft(localBeforeScan).not.toHaveProperty("directoryError");
+      expect.soft(localBeforeScan).not.toHaveProperty("directoryUnsupported");
+
+      const notify = testState.notifyMutations;
+      assert(notify);
+      notify([{ type: "attributes", target: testState.editor } as MutationRecord]);
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+      expect(sendRequest).toHaveBeenCalledWith(HARNESS_PLUGIN_LIST_METHOD, {});
+      await vi.waitFor(() => {
+        expect(latestStatus?.hosts).toMatchObject([
+          { hostId: "local", active: false },
+          { hostId, active: true },
+        ]);
+        expect(latestStatus?.hosts[0]).not.toHaveProperty("directoryError");
+        expect(latestStatus?.hosts[0]).not.toHaveProperty("directoryUnsupported");
+      });
+    },
+  );
+
+  it.each([
+    { reject: Object.assign(new Error("Method not found"), { code: -32601 }), retry: false },
+    { reject: new Error("Connection timed out"), retry: true },
+  ])("only retries transient directory failures ($reject.message)", async ({ reject, retry }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      installFakeBrowser();
+      // Give the probe a directory call that does not cache RPC errors itself,
+      // so retry attempts at this seam are visible.
+      const { RendererMethodUnavailableError } = await import("../src/renderer-request-sender.js");
+      const list = vi.fn(async () => ({ plugins: [] }));
+      list.mockRejectedValueOnce(
+        retry ? reject : new RendererMethodUnavailableError(HARNESS_PLUGIN_LIST_METHOD, reject),
+      );
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({});
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        undefined,
+        { currentHostId: () => "local", listHarnessPlugins: list } as never,
+      );
+      const diagnostics = testState.getConnectionDiagnostics?.();
+      assert(diagnostics);
+      await vi.advanceTimersByTimeAsync(1000);
+      if (retry) expect(diagnostics.snapshot().hosts[0]).not.toHaveProperty("directoryError");
+      else {
+        expect(diagnostics.snapshot().hosts[0]?.directoryUnsupported).toBe(true);
+        await diagnostics.refresh("local");
+      }
+      expect(list).toHaveBeenCalledTimes(retry ? 2 : 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

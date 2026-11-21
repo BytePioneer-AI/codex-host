@@ -98,22 +98,19 @@ export class ZcodeAdapter implements HarnessAdapter {
       transport = await this.#transport(path.resolve(input.cwd ?? process.cwd()));
       const settings = await readCatalog(transport);
       const catalog = modelCatalog(settings);
-      if (!catalog.models.length)
+      if (!catalog.models.length) {
+        const issue = transport.codingPlanIssue ?? transport.credentialIssue;
         return {
           status: "unavailable",
           // A signed-in account without an active plan is not a login problem; only a signed-out
           // ZCode Desktop needs the login prompt.
-          error: !transport.signedIn
-            ? {
-                code: "authenticationRequired",
-                message:
-                  "ZCode has no available models. Sign in to ZCode Desktop with a Start Plan or Personal Coding Plan account, or add a personal provider, then re-detect ZCode. Team Coding Plan is not supported.",
-                retryable: true,
-              }
-            : transport.codingPlanIssue
+          error: issue
+            ? { code: "configurationRequired", message: issue, retryable: true }
+            : !transport.signedIn
               ? {
-                  code: "configurationRequired",
-                  message: transport.codingPlanIssue,
+                  code: "authenticationRequired",
+                  message:
+                    "ZCode has no available models. Sign in to ZCode Desktop with a Start Plan or Personal Coding Plan account, or add a personal provider, then re-detect ZCode. Team Coding Plan is not supported.",
                   retryable: true,
                 }
               : transport.startPlanChecked
@@ -131,6 +128,7 @@ export class ZcodeAdapter implements HarnessAdapter {
                     retryable: true,
                   },
         };
+      }
       return {
         status: "ready",
         catalog,

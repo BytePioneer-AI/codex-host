@@ -125,7 +125,6 @@ import {
   harnessWebUiOpenParamsSchema,
   harnessWebUiOpenResultSchema,
   harnessModelSelectionStateSchema,
-  catalogModelForRef,
   HARNESS_MODEL_LABEL_MAX_LENGTH,
   harnessThinkingOptionIdSchema,
   hostItemIdSchema,
@@ -228,6 +227,7 @@ import {
   DELEGATION_THREAD_ID_ENV,
   DelegationControlError,
 } from "./delegation-types.js";
+import type { resolveDelegationConfiguration } from "./delegation-configuration.js";
 import { HarnessDelegationCoordinator } from "./harness-delegation-coordinator.js";
 import { loadHarnessPlugins } from "./harness-plugin-loader.js";
 import type { HarnessPluginRegistry } from "./harness-plugin-registry.js";
@@ -873,6 +873,8 @@ export class AppServerHost {
   >();
   #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
+  /** Desktop `thread/delete` requests forwarded to the official runtime, by request ID. */
+  #pendingOfficialDeletes = new Map<string | number, string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
   readonly #officialRateLimits = new AccountRateLimits();
   #routeObservationTracker = new RequestRouteObservationTracker();
@@ -1062,6 +1064,7 @@ export class AppServerHost {
       refreshBeforeRequests: !options.externalOnly,
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
+        this.#pendingOfficialDeletes.clear();
         this.#activeOfficialTurns.clear();
         this.#treeWatch?.resetOfficial();
         this.#client.resetNativeSession();
@@ -1179,6 +1182,8 @@ export class AppServerHost {
       notifyThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
       notifyTreeChanged: (threadId) =>
         this.clientEvents.changed(threadId, "codexhost/thread/tree/changed"),
+      readDelegationDefault: async (harnessId) =>
+        (await this.#preferences.get("external")).values.delegation?.byHarness[harnessId],
       inspectOfficial: (input) => this.#inspectOfficialDelegationTarget(input),
       readOfficial: (input) => this.#readOfficialDelegationThread(input),
       exportOfficial: async (input) =>
@@ -1189,7 +1194,8 @@ export class AppServerHost {
         ),
       sendOfficial: (input) => this.#sendOfficialDelegationThread(input),
       cancelOfficial: (input) => this.#cancelOfficialDelegationThread(input),
-      startOfficial: (input) => this.#startOfficialDelegation(input),
+      startOfficial: (input, resolveConfiguration) =>
+        this.#startOfficialDelegation(input, resolveConfiguration),
       listOfficial: (input) => this.#listDelegationThreads(input),
       officialThreadMetadata: (threadId) => this.#readOfficialThreadMetadata(threadId),
       activeOfficialParents: () => [...this.#activeOfficialTurns.keys()],
@@ -1272,6 +1278,9 @@ export class AppServerHost {
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
       persistTerminalIdentity: (thread, event) =>
         this.#externalRuntime.persistTerminalIdentity(thread, event),
+      retainFailedTurn: (...args) => this.#externalRuntime.retainFailedTurn(...args),
+      captureCompletedPreview: (thread, turn) =>
+        this.#externalRuntime.captureCompletedPreview(thread, turn),
       touchThread: (thread) => this.#externalRuntime.touch(thread),
       resolveDesktopApproval: (interactionId, thread) =>
         this.#resolveDesktopApproval(interactionId, thread),
@@ -1678,6 +1687,33 @@ export class AppServerHost {
       this.#activeOfficialTurns.set(pending.threadId, turn.id);
     }
     this.#signalActiveWorkChanged();
+  }
+
+  #observeOfficialDeleteResponse(value: JsonValue): void {
+    if (
+      !isRecord(value) ||
+      "method" in value ||
+      (typeof value.id !== "string" && typeof value.id !== "number")
+    )
+      return;
+    const threadId = this.#pendingOfficialDeletes.get(value.id);
+    if (threadId === undefined) return;
+    this.#pendingOfficialDeletes.delete(value.id);
+    if ("result" in value && !("error" in value))
+      void this.#forgetDeletedThread(threadId).catch((error: unknown) => this.#diagnose(error));
+  }
+
+  /**
+   * Forgets a deleted Thread: its Delegations, as child and as parent, and what the Thread tree
+   * read about it. Its delegated children then stand at the top of the tree.
+   */
+  async #forgetDeletedThread(threadId: string): Promise<void> {
+    for (const delegation of await this.#repository.listDelegations()) {
+      if (delegation.childHostThreadId === threadId || delegation.parentHostThreadId === threadId)
+        await this.#repository.removeDelegation(delegation.delegationId);
+    }
+    this.#treeWatch.forget(threadId);
+    this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
   }
 
   #takeConsoleReply(value: JsonValue): boolean {
@@ -2195,9 +2231,16 @@ export class AppServerHost {
             params: { ...(isRecord(original.params) ? original.params : {}), ...options },
           });
       }
+      if (
+        request.method === "thread/delete" &&
+        isRecord(request.params) &&
+        typeof request.params.threadId === "string"
+      )
+        this.#pendingOfficialDeletes.set(request.id, request.params.threadId);
       await this.#officialRuntime.sendFrame(frame);
       this.#markDesktopRequestAnswered(request.id);
     } catch (error) {
+      this.#pendingOfficialDeletes.delete(request.id);
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
         this.#signalActiveWorkChanged();
@@ -2276,6 +2319,7 @@ export class AppServerHost {
     } finally {
       // A start response settles only its own request, after the response reaches Desktop.
       this.#observeOfficialTurnStartResponse(parsed);
+      this.#observeOfficialDeleteResponse(parsed);
       this.#finishOfficialTurn(parsed);
     }
     this.#nativeAccountObserver?.observe(parsed);
@@ -2678,22 +2722,22 @@ export class AppServerHost {
 
   async #startOfficialDelegation(
     input: DelegationStartInput & { parentThreadId: string; cwd: string; title: string },
+    resolveConfiguration: (
+      model: HarnessModelRef | undefined,
+    ) => ReturnType<typeof resolveDelegationConfiguration>,
   ): Promise<DelegationStartResult> {
-    let requestedModel: HarnessModelRef | undefined;
+    let explicitModel: HarnessModelRef | undefined;
     try {
-      requestedModel = input.model ? canonicalizeOfficialCodexModelRef(input.model) : undefined;
+      explicitModel = input.model ? canonicalizeOfficialCodexModelRef(input.model) : undefined;
     } catch {
       throw new DelegationControlError("INVALID_ARGUMENT", "Official Model Ref is invalid");
     }
-    const nativeSelection = requestedModel
-      ? decodeOfficialCodexModelSelection(requestedModel)
-      : undefined;
     const digest = createHash("sha256")
       .update(
         JSON.stringify({
           task: input.task,
           cwd: input.cwd,
-          modelId: requestedModel?.id ?? null,
+          modelId: explicitModel?.id ?? null,
           thinkingOptionId: input.thinkingOptionId ?? null,
         }),
       )
@@ -2731,35 +2775,9 @@ export class AppServerHost {
         },
       };
     }
-    if (requestedModel || input.thinkingOptionId) {
-      const inspected = await this.#inspectOfficialDelegationTarget({
-        harnessId: "codex",
-        cwd: input.cwd,
-      });
-      if (inspected.inspection.status !== "ready") {
-        throw new DelegationControlError(
-          "DELEGATION_FAILED",
-          "Official Model catalog is unavailable",
-        );
-      }
-      if (requestedModel && !catalogModelForRef(inspected.inspection.catalog, requestedModel)) {
-        throw new DelegationControlError("INVALID_ARGUMENT", "Official Model is unavailable", {
-          validModelIds: inspected.inspection.catalog.models.map((candidate) => candidate.ref.id),
-        });
-      }
-      if (input.thinkingOptionId) {
-        const selectedModel = requestedModel ?? inspected.inspection.catalog.defaultModel;
-        const selectedEntry = catalogModelForRef(inspected.inspection.catalog, selectedModel);
-        const validThinkingOptionIds = selectedEntry?.supportedThinkingOptionIds ?? [];
-        if (!validThinkingOptionIds.includes(input.thinkingOptionId)) {
-          throw new DelegationControlError(
-            "INVALID_ARGUMENT",
-            "Official Thinking option is unavailable for the selected Model",
-            { validThinkingOptionIds },
-          );
-        }
-      }
-    }
+    const selection = await resolveConfiguration(explicitModel);
+    const { model, thinkingOptionId } = selection;
+    const nativeSelection = model ? decodeOfficialCodexModelSelection(model) : undefined;
     const started = await this.#requestOfficial("thread/start", {
       cwd: input.cwd,
       ...nativeSelection,
@@ -2783,7 +2801,7 @@ export class AppServerHost {
         threadId,
         input: [{ type: "text", text: input.task }],
         ...nativeSelection,
-        ...(input.thinkingOptionId ? { effort: input.thinkingOptionId } : {}),
+        ...(thinkingOptionId ? { effort: thinkingOptionId } : {}),
       });
       const turnResult = isRecord(turn.result) ? turn.result : null;
       const turnValue = turnResult && isRecord(turnResult.turn) ? turnResult.turn : null;
@@ -2820,13 +2838,10 @@ export class AppServerHost {
         deepLink: `codex://threads/${threadId}`,
         status: pendingTerminal ?? "running",
         cwd: thread && typeof thread.cwd === "string" ? thread.cwd : input.cwd,
-        ...(requestedModel || input.thinkingOptionId
+        ...(model || thinkingOptionId
           ? {
               configuration: {
-                requested: {
-                  ...(requestedModel ? { model: requestedModel } : {}),
-                  ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
-                },
+                requested: selection,
                 effective: {
                   ...(startedResult && typeof startedResult.model === "string"
                     ? {
@@ -5266,6 +5281,9 @@ export class AppServerHost {
       method: "thread/deleted",
       params: { threadId: location.record.hostThreadId },
     });
+    await this.#forgetDeletedThread(location.record.hostThreadId).catch((error: unknown) =>
+      this.#diagnose(error),
+    );
   }
 
   async #readExternalThreadMetadata(
@@ -6274,7 +6292,6 @@ export class AppServerHost {
       });
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
       await this.#releaseInjectedText(thread, turnId, injected);
-      await this.#externalRuntime.capturePreview(thread, projection.projector.snapshotTurn());
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       restoreExecutionHost();

@@ -59,7 +59,11 @@ export class DevinTransport {
     return this.#closed || this.#fault !== undefined || this.#connection?.signal.aborted === true;
   }
 
-  async #bounded<T>(work: Promise<T>, timeout = this.options.timeoutMs ?? 30_000): Promise<T> {
+  async #bounded<T>(
+    work: Promise<T>,
+    timeout = this.options.timeoutMs ?? 30_000,
+    closeOnTimeout = true,
+  ): Promise<T> {
     if (this.#fault) throw this.#fault;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -69,7 +73,7 @@ export class DevinTransport {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             reject(new Error("Devin ACP request timed out"));
-            void this.close();
+            if (closeOnTimeout) void this.close();
           }, timeout);
         }),
       ]);
@@ -232,7 +236,12 @@ export class DevinTransport {
     if (this.#replayOverflow) throw new Error("Devin replay exceeds the supported history limit");
   }
 
-  async historyRequest(method: "listSteps" | "forkFromStep", params: Record<string, unknown> = {}) {
+  /** `optional` requests leave the connection open on timeout so the caller can continue. */
+  async historyRequest(
+    method: "listSteps" | "forkFromStep",
+    params: Record<string, unknown> = {},
+    { optional = false } = {},
+  ) {
     if (!this.nativeHistory || !this.#connection || this.#closed || !this.sessionId)
       throw new Error("Devin native history extension is unavailable");
     return this.#bounded(
@@ -240,6 +249,8 @@ export class DevinTransport {
         ...params,
         sessionId: this.sessionId,
       }),
+      undefined,
+      !optional,
     );
   }
 

@@ -102,6 +102,15 @@ successful turn must establish exactly one such ID; missing or ambiguous
 identity prevents the adapter from claiming a successful terminal state and
 never fabricates turn keys from positions or text hashes.
 
+When a turn compacts its context, Devin (`3000.14.30821`) ends it with
+`end_turn` but no `userMessageId`, while `listSteps` still holds the turn's
+prompt step. With native history negotiated, the adapter lists steps before
+each prompt and, when the response lacks the ID, takes the `userMessageId` of
+the single prompt step added during the turn, provided no earlier step carries
+it. No added step, more than one, a reused ID, or a failed earlier listing keeps
+the protocol error. The earlier listing is optional: its timeout does not close
+the connection or block the prompt.
+
 Devin locks a native session to one `devin acp` process: `session/load` for a
 session that is already open elsewhere fails with "already open in another
 process". `readSnapshot()` therefore re-replays history through the session's
@@ -112,8 +121,8 @@ A real end-to-end run on macOS (CLI `3000.10.31`, pre-authenticated, model
 `swe-2-high`, mode `accept-edits`) verified plugin load through the actual
 Loader, inspect, create, a successful turn, a live snapshot, and a fresh-process
 resume whose replayed `nativeTurnRef.nativeTurnKey` exactly matched the live
-turn's. Cancellation persistence across reload and compacted histories have not
-been established.
+turn's. Cancellation persistence across reload has not been established; compacted
+sessions keep the original prompt step in `listSteps` (observed 2026-11-21).
 
 ## History derivation
 

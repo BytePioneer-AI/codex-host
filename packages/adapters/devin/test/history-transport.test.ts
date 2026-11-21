@@ -183,6 +183,85 @@ describe("synthetic Devin native history wire", () => {
       }
     },
   );
+  it("still prompts when the optional pre-Turn step listing times out", async () => {
+    environment.DEVIN_HISTORY_SCENARIO = "pre-prompt-timeout";
+    const opened = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const done = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    try {
+      await session.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("next"),
+        input: [{ type: "text", text: "synthetic" }],
+      });
+      await vi.waitFor(
+        () =>
+          expect(outputs).toContainEqual(
+            expect.objectContaining({
+              event: expect.objectContaining({
+                type: "turn.completed",
+                outcome: expect.objectContaining({ status: "succeeded" }),
+                nativeTurnRef: expect.objectContaining({ nativeTurnKey: "next" }),
+              }),
+            }),
+          ),
+        { timeout: 4_000 },
+      );
+      expect(
+        outputs.some(
+          (output) => output.kind === "event" && output.event.type === "session.faulted",
+        ),
+      ).toBe(false);
+    } finally {
+      await session.close();
+      await done;
+    }
+  });
+  it("cancels before the prompt is sent without closing the native session", async () => {
+    environment.DEVIN_HISTORY_SCENARIO = "pre-prompt-timeout";
+    const opened = await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd: root });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const outputs: HarnessOutput[] = [];
+    const done = (async () => {
+      for await (const output of session.outputs) outputs.push(output);
+    })();
+    const completed = () =>
+      outputs.flatMap((output) =>
+        output.kind === "event" && output.event.type === "turn.completed" ? [output.event] : [],
+      );
+    try {
+      const first = hostTurnIdSchema.parse("cancelled-early");
+      await session.execute({
+        type: "turn.start",
+        turnId: first,
+        input: [{ type: "text", text: "synthetic" }],
+      });
+      expect(await session.execute({ type: "turn.cancel", turnId: first })).toMatchObject({
+        ok: true,
+      });
+      await vi.waitFor(() => expect(completed()).toHaveLength(1));
+      expect(completed()[0]).toMatchObject({ outcome: { status: "cancelled" } });
+      expect(completed()[0]).not.toHaveProperty("nativeTurnRef");
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: hostTurnIdSchema.parse("next"),
+          input: [{ type: "text", text: "synthetic" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(completed()).toHaveLength(2), { timeout: 8_000 });
+      expect(completed()[1]).toMatchObject({ outcome: { status: "succeeded" } });
+      expect((await requests()).some((request) => request.method === "session/cancel")).toBe(false);
+    } finally {
+      await session.close();
+      await done;
+    }
+  }, 10_000);
   it.each(["normal", "single"])(
     "rolls back %s history with confirmed configuration",
     async (scenario) => {

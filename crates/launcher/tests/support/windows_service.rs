@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,11 +17,18 @@ pub fn run_in_service_job() -> bool {
         }
         return false;
     }
+    // Tests in one binary run on parallel threads of the same process, so the
+    // process id and clock alone can collide; a per-process counter cannot.
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = env::temp_dir().join(format!("web-test-job-{}-{nonce}", std::process::id()));
+    let root = env::temp_dir().join(format!(
+        "web-test-job-{}-{sequence}-{nonce}",
+        std::process::id()
+    ));
     fs::create_dir(&root).unwrap();
     let admission = root.join("admitted");
     let current = thread::current();

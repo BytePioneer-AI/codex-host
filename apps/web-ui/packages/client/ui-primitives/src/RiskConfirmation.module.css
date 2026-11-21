@@ -72,3 +72,24 @@
 .confirmAction {
   min-width: 136px;
 }
+
+@media (max-width: 640px) {
+  .confirmation {
+    width: 100%;
+    max-height: 100%;
+  }
+
+  .acknowledgement {
+    min-height: 44px;
+    margin-top: 16px;
+    touch-action: manipulation;
+    user-select: none;
+  }
+
+  .modalAction,
+  .confirmAction {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+  }
+}

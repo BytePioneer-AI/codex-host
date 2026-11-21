@@ -106,6 +106,9 @@ export interface ISessions {
    */
   refreshProjections(sessionId: SessionId): Promise<void>;
 
+  /** Reopen a retained Session's history, preserving its cached display until the read succeeds. */
+  retryHistory(sessionId: SessionId): Promise<void>;
+
   /**
    * Refresh the Host-authoritative Session list.
    * @returns completion of the current or newly started Session-list refresh.

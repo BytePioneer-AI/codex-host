@@ -16,6 +16,7 @@ import type {
   StepLocation,
   TurnLocation,
 } from "../contract/conversation.ts";
+import { eventKey } from "./event-order.ts";
 
 interface OwnedLocationData {
   readonly owner: string;
@@ -204,7 +205,7 @@ function sameLocation(
 /** Session-owned Turn/Step timeline and event-to-Location index. */
 export class ConversationLocationIndex {
   private coordinates = new Map<number, Coordinates>();
-  private seqsByTurn = new Map<number, Set<number>>();
+  private eventKeysByTurn = new Map<number, Set<number>>();
   private readonly stepsByTurn = new Map<number, Map<number, StepLocation>>();
   private timeline: ConversationTimelineSnapshot = { turnOrder: [], turns: new Map() };
   private readonly turnDataStores = new Map<number, MutableLocationDataStore>();
@@ -301,13 +302,13 @@ export class ConversationLocationIndex {
    * @returns current Location, falling back to session when it has no Turn/Step affinity.
    */
   locationOf(event: SessionEventLike): ConversationLocation {
-    return this.coordinates.get(event.seq)?.location ?? SESSION_LOCATION;
+    return this.coordinates.get(eventKey(event))?.location ?? SESSION_LOCATION;
   }
 
   /**
    * Rebuild timeline facts after replace/prepend or a boundary append.
-   * @param entries - complete current window in ascending seq order.
-   * @returns seqs whose resolved Location changed.
+   * @param entries - complete current window in event order.
+   * @returns keys whose resolved Location changed.
    */
   rebuild(entries: readonly SessionEventLikeEntry[]): ReadonlySet<number> {
     const previousCoordinates = this.coordinates;
@@ -358,7 +359,7 @@ export class ConversationLocationIndex {
         explicit.session === true || event.type === "turn/start" || event.type === "turn/end"
           ? undefined
           : (explicit.step ?? (turn === currentTurn ? currentStep : undefined));
-      coordinates.set(event.seq, {
+      coordinates.set(eventKey(event), {
         ...(turn === undefined ? {} : { turn }),
         ...(turn === undefined || step === undefined ? {} : { step }),
         location: undefined,
@@ -455,24 +456,23 @@ export class ConversationLocationIndex {
       this.stepsByTurn.set(number, new Map(turn.steps.map((step) => [step.step, step])));
     }
     this.coordinates = coordinates;
-    this.seqsByTurn = new Map();
+    this.eventKeysByTurn = new Map();
     for (const { event } of entries) {
-      const coordinates = this.coordinates.get(event.seq) as Coordinates;
-      if (coordinates.turn !== undefined) this.indexTurnSeq(coordinates.turn, event.seq);
-      coordinates.location = this.resolve(event.seq);
+      const key = eventKey(event);
+      const coordinates = this.coordinates.get(key) as Coordinates;
+      if (coordinates.turn !== undefined) this.indexTurnEvent(coordinates.turn, key);
+      coordinates.location = this.resolve(key);
     }
     this.currentTurn = currentTurn;
     this.currentStep = currentStep;
 
     const changed = new Set<number>();
     for (const { event } of entries) {
+      const key = eventKey(event);
       if (
-        !sameLocation(
-          previousCoordinates.get(event.seq)?.location,
-          this.coordinates.get(event.seq)?.location,
-        )
+        !sameLocation(previousCoordinates.get(key)?.location, this.coordinates.get(key)?.location)
       ) {
-        changed.add(event.seq);
+        changed.add(key);
       }
     }
     return changed;
@@ -481,7 +481,7 @@ export class ConversationLocationIndex {
   /**
    * Append one Turn/Step boundary while revisiting only the owning Turn.
    * @param event - contiguous tail boundary event.
-   * @returns seqs whose immutable Location reference changed.
+   * @returns keys whose immutable Location reference changed.
    */
   appendBoundary(event: SessionEvent): ReadonlySet<number> {
     if (
@@ -518,7 +518,7 @@ export class ConversationLocationIndex {
       ...(stepNumber === undefined ? {} : { step: stepNumber }),
       location: this.coordinates.get(event.seq)?.location,
     });
-    this.indexTurnSeq(turnNumber, event.seq);
+    this.indexTurnEvent(turnNumber, event.seq);
 
     const previousTurn = this.timeline.turns.get(turnNumber);
     let steps = previousTurn?.steps ?? [];
@@ -569,12 +569,12 @@ export class ConversationLocationIndex {
     if (turn !== previousTurn) this.changedTurns.add(turnNumber);
 
     const changed = new Set<number>();
-    for (const seq of this.seqsByTurn.get(turnNumber) ?? []) {
-      const coordinates = this.coordinates.get(seq) as Coordinates;
+    for (const key of this.eventKeysByTurn.get(turnNumber) ?? []) {
+      const coordinates = this.coordinates.get(key) as Coordinates;
       const previous = coordinates.location;
-      const next = this.resolve(seq);
+      const next = this.resolve(key);
       coordinates.location = next;
-      if (!sameLocation(previous, next)) changed.add(seq);
+      if (!sameLocation(previous, next)) changed.add(key);
     }
 
     if (
@@ -596,9 +596,10 @@ export class ConversationLocationIndex {
    * @param event - contiguous appended event.
    */
   appendNonBoundary(event: SessionEventLike): void {
+    const key = eventKey(event);
     const explicit = payloadCoordinates(event);
     if (explicit.session === true) {
-      this.coordinates.set(event.seq, { location: SESSION_LOCATION });
+      this.coordinates.set(key, { location: SESSION_LOCATION });
       return;
     }
     if (explicit.turn !== undefined) {
@@ -616,9 +617,9 @@ export class ConversationLocationIndex {
             ...(turn === undefined || step === undefined ? {} : { step }),
             location: undefined,
           };
-    this.coordinates.set(event.seq, coordinates);
-    if (turn !== undefined) this.indexTurnSeq(turn, event.seq);
-    coordinates.location = this.resolve(event.seq);
+    this.coordinates.set(key, coordinates);
+    if (turn !== undefined) this.indexTurnEvent(turn, key);
+    coordinates.location = this.resolve(key);
   }
 
   /**
@@ -627,13 +628,14 @@ export class ConversationLocationIndex {
    */
   removeAssistantTransients(events: readonly AssistantLiveChunkEvent[]): void {
     for (const event of events) {
-      const turn = this.coordinates.get(event.seq)?.turn;
+      const key = eventKey(event);
+      const turn = this.coordinates.get(key)?.turn;
       if (turn !== undefined) {
-        const seqs = this.seqsByTurn.get(turn);
-        seqs?.delete(event.seq);
-        if (seqs?.size === 0) this.seqsByTurn.delete(turn);
+        const keys = this.eventKeysByTurn.get(turn);
+        keys?.delete(key);
+        if (keys?.size === 0) this.eventKeysByTurn.delete(turn);
       }
-      this.coordinates.delete(event.seq);
+      this.coordinates.delete(key);
     }
   }
 
@@ -650,17 +652,17 @@ export class ConversationLocationIndex {
       location: undefined,
     };
     this.coordinates.set(event.seq, coordinates);
-    this.indexTurnSeq(event.data.turn, event.seq);
+    this.indexTurnEvent(event.data.turn, event.seq);
     coordinates.location = this.resolve(event.seq);
   }
 
-  private indexTurnSeq(turn: number, seq: number): void {
-    let current = this.seqsByTurn.get(turn);
+  private indexTurnEvent(turn: number, key: number): void {
+    let current = this.eventKeysByTurn.get(turn);
     if (current === undefined) {
       current = new Set<number>();
-      this.seqsByTurn.set(turn, current);
+      this.eventKeysByTurn.set(turn, current);
     }
-    current.add(seq);
+    current.add(key);
   }
 
   private turnData(turn: number): ConversationLocationDataStore<ConversationTurnDataMap> {
@@ -702,8 +704,8 @@ export class ConversationLocationIndex {
       : this.mutableStepData(stepDataKey(data.turn, requireStep(data)));
   }
 
-  private resolve(seq: number): ConversationLocation {
-    const coordinates = this.coordinates.get(seq);
+  private resolve(key: number): ConversationLocation {
+    const coordinates = this.coordinates.get(key);
     if (coordinates?.turn === undefined) return SESSION_LOCATION;
     const turn = this.timeline.turns.get(coordinates.turn);
     if (turn === undefined) return UNRESOLVED_LOCATION;

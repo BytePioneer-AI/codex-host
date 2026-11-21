@@ -369,6 +369,12 @@ export class ClientSessions implements ISessions {
     return observer.source;
   }
 
+  async retryHistory(id: SessionId): Promise<void> {
+    const record = this.scopes.get(id);
+    if (!record?.live) throw new Error("Session history is no longer retained");
+    await record.session.resync();
+  }
+
   /**
    * Resolve an already discovered direct-parent address without opening it.
    * Feature plugins use this to avoid Agent-bound RPCs in persisted child views.

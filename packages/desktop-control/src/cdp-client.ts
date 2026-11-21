@@ -228,14 +228,14 @@ export async function waitForRendererTarget(
 }
 
 export class CdpClient {
-  readonly #commandTimeoutMs: number;
+  readonly #commandTimeoutMs: number | undefined;
   readonly #socket: CdpSocket;
   #closed = false;
   #nextId = 1;
   #pending = new Map<number, PendingCommand>();
   #listeners = new Map<string, Set<CdpEventListener>>();
 
-  private constructor(socket: CdpSocket, commandTimeoutMs: number) {
+  private constructor(socket: CdpSocket, commandTimeoutMs?: number) {
     this.#socket = socket;
     this.#commandTimeoutMs = commandTimeoutMs;
     socket.addEventListener("message", (event) => this.#onMessage(event));
@@ -274,7 +274,7 @@ export class CdpClient {
       socket.addEventListener("open", onOpen);
       socket.addEventListener("error", onError);
     });
-    return new CdpClient(socket, options.commandTimeoutMs ?? 10_000);
+    return new CdpClient(socket, options.commandTimeoutMs);
   }
 
   command(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -300,14 +300,20 @@ export class CdpClient {
     };
   }
 
-  #send(method: string, params: Record<string, unknown>, sessionId?: string): Promise<unknown> {
+  #send(
+    method: string,
+    params: Record<string, unknown>,
+    sessionId?: string,
+    // Native RPC discovery scans the live renderer heap, which can take tens of seconds.
+    timeoutMs = this.#commandTimeoutMs ?? (method === "Runtime.queryObjects" ? 60_000 : 10_000),
+  ): Promise<unknown> {
     if (this.#closed) return Promise.reject(new CdpConnectionClosedError("CDP client is closed"));
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
         reject(new Error(`CDP command '${method}' timed out`));
-      }, this.#commandTimeoutMs);
+      }, timeoutMs);
       this.#pending.set(id, { resolve, reject, timeout });
       try {
         this.#socket.send(
@@ -321,12 +327,13 @@ export class CdpClient {
     });
   }
 
-  async evaluate<T>(expression: string): Promise<T> {
-    const response = await this.command("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+  async evaluate<T>(expression: string, timeoutMs?: number): Promise<T> {
+    const response = await this.#send(
+      "Runtime.evaluate",
+      { expression, awaitPromise: true, returnByValue: true },
+      undefined,
+      timeoutMs,
+    );
     if (!isRecord(response)) throw new Error("Runtime.evaluate returned an invalid result");
     try {
       if (isRecord(response.exceptionDetails)) {

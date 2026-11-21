@@ -140,6 +140,55 @@ it("keeps later pause or resume decisions when rejected steering restores an ite
   }
 });
 
+it("keeps unknown delivery ineligible across resume, edit, reorder and rejected explicit steering", () => {
+  const queue = new ExternalThreadQueue();
+  const input = [{ type: "text", text: "uncertain" }];
+  const uncertain = queue.add("thread", input, "uncertain");
+  const safe = queue.add("thread", [{ type: "text", text: "safe" }], "safe");
+  expect(queue.canStartAutomatically("thread")).toBe(true);
+  queue.preventAutomaticStart("thread", uncertain.id);
+  queue.pause("thread", "outcome-unknown");
+  queue.resume("thread");
+  queue.update("thread", uncertain.id, input);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  expect(queue.isPaused("thread")).toBe(true);
+  expect(queue.snapshot("thread")).toEqual({
+    items: [uncertain, safe],
+    pausedReason: "outcome-unknown",
+  });
+  expect(queue.reorder("thread", [safe.id])).toBe(true);
+  expect(queue.canStartAutomatically("thread")).toBe(true);
+  expect(queue.isPaused("thread")).toBe(false);
+  expect(queue.snapshot("thread").pausedReason).toBeNull();
+  queue.delete("thread", safe.id);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  expect(queue.snapshot("thread").pausedReason).toBe("outcome-unknown");
+  const taken = queue.takeSteered("thread", "uncertain", input);
+  if (!taken) throw new Error("Missing reserved entry");
+  expect(taken.automaticStartAllowed).toBe(false);
+  queue.restore("thread", taken);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  expect(queue.isPaused("thread")).toBe(true);
+  expect(queue.snapshot("thread").pausedReason).toBe("outcome-unknown");
+  expect(queue.delete("thread", uncertain.id)).toBe(true);
+  expect(queue.snapshot("thread")).toEqual({ items: [], pausedReason: null });
+  queue.add("thread", input, "new-message");
+  expect(queue.canStartAutomatically("thread")).toBe(true);
+  queue.clear("thread");
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+});
+
+it("does not block entries restored after a definite rejection", () => {
+  const queue = new ExternalThreadQueue();
+  const input = [{ type: "text", text: "safe" }];
+  queue.add("thread", input, "safe");
+  const taken = queue.takeSteered("thread", "safe", input);
+  if (!taken) throw new Error("Missing reserved entry");
+  expect(taken.automaticStartAllowed).toBe(true);
+  queue.restore("thread", taken);
+  expect(queue.canStartAutomatically("thread")).toBe(true);
+});
+
 it("rejects an ambiguous client identity after its add receipt expires", () => {
   const queue = new ExternalThreadQueue();
   const input = [{ type: "text", text: "same" }];
@@ -148,4 +197,30 @@ it("rejects an ambiguous client identity after its add receipt expires", () => {
   queue.add("thread", input, "same-message");
   expect(() => queue.takeSteered("thread", "same-message", input)).toThrow("changed");
   expect(queue.list("thread", {}).data).toHaveLength(2);
+});
+
+it("keeps unknown input visible but blocks automatic replay across edits and later Turns", async () => {
+  const queue = new ExternalThreadQueue();
+  const input = [{ type: "text", text: "uncertain" }];
+  const target = await queue.add("thread", input, "uncertain-message", undefined, "source");
+  const taken = queue.takeSteered("thread", "uncertain-message", input);
+  if (!taken) throw new Error("Missing reservation");
+  taken.automaticStartAllowed = false;
+  queue.restore("thread", taken);
+  const next = await queue.add("thread", [{ type: "text", text: "next" }], "next-message");
+  expect(queue.snapshot("thread").items).toEqual([target, next]);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  expect(await queue.update("thread", target.id, input)).toEqual(target);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  const explicitNext = queue.takeSteered("thread", "next-message", next.input);
+  expect(explicitNext?.automaticStartAllowed).toBe(true);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  const retry = queue.takeSteered("thread", "uncertain-message", input);
+  if (!retry) throw new Error("Missing explicit retry");
+  expect(retry.sourceHostId).toBe("source");
+  queue.restore("thread", retry);
+  expect(queue.canStartAutomatically("thread")).toBe(false);
+  expect(await queue.delete("thread", target.id)).toBe(true);
+  await queue.add("thread", input, "fresh-message");
+  expect(queue.canStartAutomatically("thread")).toBe(true);
 });

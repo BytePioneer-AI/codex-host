@@ -12,8 +12,9 @@ import type { ModernJournalEvent } from "./journal.js";
  *   (`totalTokens` = input + output + cacheRead + cacheWrite), and `outputTokens` includes
  *   `reasoningTokens`.
  * - an interrupted message settles without a usage chunk; it reports no usage.
- * Timing mirrors dsh's own decode time: first non-empty reasoning, text or named tool-call delta
- * to the settled message.
+ * Timing uses the first reasoning block-start, non-empty reasoning/text or named partial
+ * tool-call delta to settlement. Known reasoning usage without any reasoning boundary has
+ * no trustworthy generation interval.
  */
 
 export type DeepSeekUsageRecord =
@@ -27,15 +28,44 @@ function count(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-function firstTokenTime(chunks: ReturnType<typeof expandAssistantStream>): number | null {
+function firstTokenTime(
+  chunks: ReturnType<typeof expandAssistantStream>,
+  reasoning: number | null,
+): number | null {
+  if (
+    reasoning !== null &&
+    reasoning > 0 &&
+    !chunks.some(
+      ({ chunk }) =>
+        (chunk.type === "block-start" && chunk.blockType === "reasoning") ||
+        (chunk.type === "reasoning-delta" &&
+          typeof chunk.text === "string" &&
+          chunk.text.length > 0),
+    )
+  )
+    return null;
   for (const { time, chunk } of chunks) {
     if (
+      (chunk.type === "block-start" && chunk.blockType === "reasoning") ||
       ((chunk.type === "reasoning-delta" || chunk.type === "text-delta") &&
         typeof chunk.text === "string" &&
-        chunk.text.length > 0) ||
-      (chunk.type === "tool-call-delta" && typeof chunk.name === "string" && chunk.name.length > 0)
+        chunk.text.length > 0)
     ) {
       return time;
+    }
+    if (
+      chunk.type === "tool-call-delta" &&
+      typeof chunk.argumentsDelta === "string" &&
+      chunk.argumentsDelta.trim().length > 0
+    ) {
+      try {
+        JSON.parse(chunk.argumentsDelta);
+      } catch {
+        if (typeof chunk.name === "string" && chunk.name.length > 0) return time;
+        continue;
+      }
+      // Complete arguments may be buffered; later text cannot recover their generation start.
+      return null;
     }
   }
   return null;
@@ -73,8 +103,8 @@ export function deepSeekUsageRecord(
   if (input === null || output === null || cacheRead === null || cacheWrite === null) {
     return { kind: "missing" };
   }
-  const startedAtMs = historical ? null : firstTokenTime(chunks);
-  const completedAtMs = typeof event.time === "number" ? event.time : null;
+  const startedAtMs = historical ? null : count(firstTokenTime(chunks, reasoning));
+  const completedAtMs = count(event.time);
   try {
     return {
       kind: "request",
@@ -87,7 +117,7 @@ export function deepSeekUsageRecord(
         cacheWriteInputTokens: cacheWrite,
         outputTokens: output,
         ...(reasoning !== null && reasoning <= output ? { reasoningOutputTokens: reasoning } : {}),
-        ...(startedAtMs !== null && completedAtMs !== null && completedAtMs >= startedAtMs
+        ...(startedAtMs !== null && completedAtMs !== null && completedAtMs > startedAtMs
           ? { startedAtMs, completedAtMs }
           : {}),
       }),

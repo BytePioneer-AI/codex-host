@@ -117,7 +117,7 @@ fn check_dimensions(width: u32, height: u32) -> Result<(), DesktopScreenshotErro
     if width == 0 || height == 0 {
         return Err(DesktopScreenshotError::CaptureFailed);
     }
-    if width > 8192 || height > 8192 || u64::from(width) * u64::from(height) > 64_000_000 {
+    if u64::from(width) * u64::from(height) > 64_000_000 {
         return Err(DesktopScreenshotError::ImageTooLarge);
     }
     Ok(())
@@ -125,7 +125,7 @@ fn check_dimensions(width: u32, height: u32) -> Result<(), DesktopScreenshotErro
 
 // Matches the Web image limit; encoding aborts before growing an oversized output buffer.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const MAX_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 struct LimitedImage(Vec<u8>);
@@ -246,10 +246,7 @@ mod tests {
             check_dimensions(0, 100),
             Err(DesktopScreenshotError::CaptureFailed)
         );
-        assert_eq!(
-            check_dimensions(9000, 100),
-            Err(DesktopScreenshotError::ImageTooLarge)
-        );
+        assert!(check_dimensions(9000, 100).is_ok());
         assert_eq!(
             check_dimensions(8192, 8192),
             Err(DesktopScreenshotError::ImageTooLarge)

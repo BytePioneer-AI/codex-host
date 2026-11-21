@@ -1,8 +1,8 @@
 //! Explicit ownership transfer for native services launched from a supervised Desktop tree.
 //! Records describe process instances, never sessions, credentials or Harness state.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use crate::ProcessSnapshot;
 use crate::{PlatformError, process_snapshot};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::{ProcessSnapshot, process_identity};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -75,7 +75,7 @@ pub(crate) fn transferred_processes(root: &ProcessSnapshot, owned: &[ProcessSnap
         return Vec::new();
     };
     let mut excluded = Vec::new();
-    for file in files.flatten().take(256) {
+    for file in files.flatten() {
         let Ok(metadata) = fs::symlink_metadata(file.path()) else {
             continue;
         };
@@ -92,6 +92,14 @@ pub(crate) fn transferred_processes(root: &ProcessSnapshot, owned: &[ProcessSnap
         else {
             continue;
         };
+        match process_identity(record.pid) {
+            Ok(live) if live.started_at_micros == record.started_at_micros => {}
+            Ok(_) | Err(PlatformError::NotFound(_)) => {
+                let _ = fs::remove_file(file.path());
+                continue;
+            }
+            Err(_) => continue,
+        }
         // This is a same-user ownership declaration, not an execution sandbox.
         // Web and Desktop may ship identical Launchers at different paths.
         if record.pid == root.id {
@@ -100,7 +108,6 @@ pub(crate) fn transferred_processes(root: &ProcessSnapshot, owned: &[ProcessSnap
         if owned.iter().any(|live| {
             live.id == record.pid
                 && live.started_at_micros == record.started_at_micros
-                && live.executable == record.executable
                 && live.process_group_id == live.id
         }) {
             excluded.push(record.pid);

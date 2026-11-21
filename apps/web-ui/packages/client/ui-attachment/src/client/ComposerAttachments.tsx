@@ -74,60 +74,77 @@ export function ComposerAttachments({
             labels={attachmentRailLabels(t)}
             renderItem={(item) => {
               const attachment = item.attachment;
-              if (attachment.kind === "file") {
-                const upload = uploads[attachment.id];
+              const upload = uploads[attachment.id];
+              if (attachment.kind === "image") {
+                const name = attachment.file.name;
                 return (
-                  <FileCard
-                    name={attachment.file.name || t("file.label")}
-                    bytes={attachment.file.size}
-                    state={
-                      upload === undefined || upload.status === "uploading"
-                        ? "uploading"
-                        : upload.status === "ready"
-                          ? "ready"
-                          : "error"
-                    }
-                    {...(upload?.status === "uploading" &&
-                    upload.total !== undefined &&
-                    upload.total > 0
-                      ? { progress: upload.loaded / upload.total }
-                      : {})}
-                    labels={fileCardLabels(t, attachment.file.name)}
-                    onRemove={() => {
-                      onRemoveAttachment(attachment.id);
-                    }}
-                    onRetry={() => {
-                      onRetryFile(attachment.id);
-                    }}
-                  />
+                  <div className={css.imageItem}>
+                    <button
+                      type="button"
+                      className={css.thumbnail}
+                      title={t("image.openOriginal")}
+                      onClick={() => {
+                        setPreview(attachment);
+                      }}
+                    >
+                      <img src={attachment.previewUrl} alt={name || t("image.pending")} />
+                    </button>
+                    {(upload === undefined || upload.status === "uploading") && (
+                      <span className={css.overlay} role="status">
+                        {upload?.total
+                          ? `${String(Math.round(Math.min(1, upload.loaded / upload.total) * 100))}%`
+                          : "…"}
+                      </span>
+                    )}
+                    {upload?.status === "error" && (
+                      <button
+                        type="button"
+                        className={`${css.overlay} ${css.failed}`}
+                        aria-label={t("file.retry", { name })}
+                        onClick={() => {
+                          onRetryFile(attachment.id);
+                        }}
+                      >
+                        {t("image.retry")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={css.remove}
+                      aria-label={t("image.remove", { name })}
+                      onClick={() => {
+                        onRemoveAttachment(attachment.id);
+                      }}
+                    >
+                      <IconCloseFillRegular size={12} />
+                    </button>
+                  </div>
                 );
               }
               return (
-                <div className={css.imageItem}>
-                  <button
-                    type="button"
-                    className={css.thumbnail}
-                    title={t("image.openOriginal")}
-                    onClick={() => {
-                      setPreview(attachment);
-                    }}
-                  >
-                    <img
-                      src={attachment.previewUrl}
-                      alt={attachment.file.name || t("image.pending")}
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    className={css.remove}
-                    aria-label={t("image.remove", { name: attachment.file.name })}
-                    onClick={() => {
-                      onRemoveAttachment(attachment.id);
-                    }}
-                  >
-                    <IconCloseFillRegular size={12} />
-                  </button>
-                </div>
+                <FileCard
+                  name={attachment.file.name || t("file.label")}
+                  bytes={attachment.file.size}
+                  state={
+                    upload === undefined || upload.status === "uploading"
+                      ? "uploading"
+                      : upload.status === "ready"
+                        ? "ready"
+                        : "error"
+                  }
+                  {...(upload?.status === "uploading" &&
+                  upload.total !== undefined &&
+                  upload.total > 0
+                    ? { progress: upload.loaded / upload.total }
+                    : {})}
+                  labels={fileCardLabels(t, attachment.file.name)}
+                  onRemove={() => {
+                    onRemoveAttachment(attachment.id);
+                  }}
+                  onRetry={() => {
+                    onRetryFile(attachment.id);
+                  }}
+                />
               );
             }}
           />

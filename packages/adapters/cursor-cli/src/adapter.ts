@@ -1,3 +1,8 @@
+import {
+  configureSubagentEvent,
+  configureSubagentSnapshot,
+  type SubagentConfiguration,
+} from "@codexhost/harness-adapter";
 import path from "node:path";
 import { fetchCursorAccount } from "./account-usage.js";
 import { CursorSessionImport } from "./session-import.js";
@@ -140,10 +145,8 @@ export class CursorAdapter implements HarnessAdapter {
   readonly harnessId = harnessIdSchema.parse("cursor-cli");
   readonly #sessions = new Set<CursorSession>();
   readonly #forks = new Map<AbortController, Promise<HarnessResult<HarnessSession>>>();
-  readonly #inspections = new Map<
-    string,
-    { pending: boolean; result: Promise<HarnessInspection> }
-  >();
+  readonly #inspections = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
   #closed = false;
   readonly sessionImport: CursorSessionImport;
   constructor(readonly options: CursorAdapterOptions = {}) {
@@ -169,7 +172,12 @@ export class CursorAdapter implements HarnessAdapter {
       };
     const cwd = path.resolve(input.cwd ?? process.cwd());
     const cached = this.#inspections.get(cwd);
-    if (cached && (cached.pending || !input.refresh)) return cached.result;
+    if (input.refresh) {
+      this.#inspections.clear();
+      if (cached && this.#inspectionTasks.has(cached)) this.#inspections.set(cwd, cached);
+    }
+    const current = this.#inspections.get(cwd);
+    if (current) return current;
     const result = (async (): Promise<HarnessInspection> => {
       const transport = new CursorTransport(this.transportOptions(cwd));
       try {
@@ -191,11 +199,9 @@ export class CursorAdapter implements HarnessAdapter {
       }
     })();
     // Keep results, including failures, until explicit refresh or Adapter shutdown.
-    const entry = { pending: true, result };
-    this.#inspections.set(cwd, entry);
-    void result.finally(() => {
-      entry.pending = false;
-    });
+    this.#inspections.set(cwd, result);
+    this.#inspectionTasks.add(result);
+    void result.finally(() => this.#inspectionTasks.delete(result));
     return result;
   }
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -449,9 +455,7 @@ export class CursorAdapter implements HarnessAdapter {
     for (const controller of this.#forks.keys()) controller.abort();
     await Promise.allSettled([importing, ...this.#forks.values()]);
     await Promise.allSettled([...this.#sessions].map((session) => session.close()));
-    await Promise.allSettled(
-      [...this.#inspections.values()].map((inspection) => inspection.result),
-    );
+    await Promise.allSettled(this.#inspectionTasks);
   }
 }
 
@@ -554,7 +558,25 @@ export class CursorSession implements HarnessSession {
     this.#unattendedApproval = true;
     return this.transport.cancel();
   }
+  #subagentConfiguration(): SubagentConfiguration {
+    const state = this.initialState;
+    const model = state.effectiveModel ? cursorModels(this.info).current : undefined;
+    return {
+      ...(model ? { model } : {}),
+      ...(state.effectiveThinkingOptionId
+        ? { reasoningEffort: state.effectiveThinkingOptionId }
+        : {}),
+    };
+  }
+
   async readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
+    const result = await this.#readSnapshot();
+    return result.ok
+      ? { ok: true, value: configureSubagentSnapshot(result.value, this.#subagentConfiguration()) }
+      : result;
+  }
+
+  async #readSnapshot(): Promise<HarnessResult<HostThreadSnapshot>> {
     if (this.#closed) return rejected("invalidState", "Cursor session is closed");
     if (this.#active || this.#configuring) return rejected("sessionBusy", "Cursor session is busy");
     this.#configuring = true;
@@ -732,7 +754,11 @@ export class CursorSession implements HarnessSession {
     let fault: HarnessError | undefined;
     const output = new CursorTurnOutput(
       command.turnId,
-      (event) => this.#channel.emit({ kind: "event", event }),
+      (event) =>
+        this.#channel.emit({
+          kind: "event",
+          event: configureSubagentEvent(event, this.#subagentConfiguration()),
+        }),
       before.length,
     );
     this.#subagentOutput = output.subagents;

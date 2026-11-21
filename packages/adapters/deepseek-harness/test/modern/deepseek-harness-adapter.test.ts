@@ -3100,4 +3100,19 @@ describe("Modern DeepSeek Harness Adapter", () => {
     await expect(adapter.close()).rejects.toThrow("process tree survived");
     expect(connection.closeCalls).toBe(1);
   });
+
+  it("keeps a cleanup failure after a connection fault for close instead of the process", async () => {
+    const { adapter, connection } = setup();
+    connection.closeError = new Error("process tree survived");
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+      await expect(adapter.close()).rejects.toThrow("process tree survived");
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
 });

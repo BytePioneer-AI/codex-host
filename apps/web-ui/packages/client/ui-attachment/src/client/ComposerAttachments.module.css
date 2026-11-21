@@ -30,6 +30,27 @@
   object-fit: cover;
 }
 
+/* Upload state covers the thumbnail only while uploading or failed. */
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-xl);
+  background: rgb(0 0 0 / 45%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.failed {
+  background: rgb(220 38 38 / 70%);
+  cursor: pointer;
+}
+
 .remove {
   position: absolute;
   top: 4px;

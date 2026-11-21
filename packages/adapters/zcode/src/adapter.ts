@@ -56,6 +56,7 @@ export class ZcodeAdapter implements HarnessAdapter {
   #sessions = new Set<ZcodeSession>();
   #transports = new Set<CliTransport>();
   #opening = new Set<string>();
+  #inflightInspect = new Map<string, Promise<HarnessInspection>>();
   // One verification page and SDK instance for the whole Host, as in ZCode Desktop.
   #verifier: ZcodeVerifier | undefined;
   #prewarmed = false;
@@ -68,7 +69,7 @@ export class ZcodeAdapter implements HarnessAdapter {
       appVersion,
       ...(this.options.openLocalPage ? { openLocalPage: this.options.openLocalPage } : {}),
     }));
-  async #transport(cwd: string, environment?: NodeJS.ProcessEnv) {
+  async #transport(cwd: string, environment?: NodeJS.ProcessEnv, retryDeniedKeychain = false) {
     if (this.#closed) throw new ZcodeError("invalidState", "ZCode Adapter is closed");
     if (!(await stat(cwd)).isDirectory())
       throw new ZcodeError("invalidRequest", "ZCode workspace is not a directory");
@@ -77,6 +78,7 @@ export class ZcodeAdapter implements HarnessAdapter {
       environment: { ...(this.options.environment ?? process.env), ...environment },
       ...(this.options.app ? { app: this.options.app } : {}),
       ...(this.options.timeoutMs ? { timeoutMs: this.options.timeoutMs } : {}),
+      ...(retryDeniedKeychain ? { retryDeniedKeychain: true } : {}),
       verifier: this.#sharedVerifier,
     };
     const transport = this.options.createTransport
@@ -93,27 +95,41 @@ export class ZcodeAdapter implements HarnessAdapter {
     }
   }
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
+    const cwd = path.resolve(input.cwd ?? process.cwd());
+    // Window-focus and startup availability checks pass refresh: true with purpose: "availability".
+    // Only an explicit full re-detect may re-prompt after a Keychain denial or timeout.
+    const retryDeniedKeychain = input.refresh === true && input.purpose !== "availability";
+    const dedupeKey = `${cwd}\0${retryDeniedKeychain ? "retry" : "normal"}`;
+    const existing = this.#inflightInspect.get(dedupeKey);
+    if (existing) return existing;
+    const task = this.#runInspect(cwd, retryDeniedKeychain);
+    this.#inflightInspect.set(dedupeKey, task);
+    try {
+      return await task;
+    } finally {
+      this.#inflightInspect.delete(dedupeKey);
+    }
+  }
+  async #runInspect(cwd: string, retryDeniedKeychain: boolean): Promise<HarnessInspection> {
     let transport: CliTransport | undefined;
     try {
-      transport = await this.#transport(path.resolve(input.cwd ?? process.cwd()));
+      transport = await this.#transport(cwd, undefined, retryDeniedKeychain);
       const settings = await readCatalog(transport);
       const catalog = modelCatalog(settings);
-      if (!catalog.models.length)
+      if (!catalog.models.length) {
+        const issue = transport.codingPlanIssue ?? transport.credentialIssue;
+        const retryable = !transport.credentialIssue;
         return {
           status: "unavailable",
           // A signed-in account without an active plan is not a login problem; only a signed-out
           // ZCode Desktop needs the login prompt.
-          error: !transport.signedIn
-            ? {
-                code: "authenticationRequired",
-                message:
-                  "ZCode has no available models. Sign in to ZCode Desktop with a Start Plan or Personal Coding Plan account, or add a personal provider, then re-detect ZCode. Team Coding Plan is not supported.",
-                retryable: true,
-              }
-            : transport.codingPlanIssue
+          error: issue
+            ? { code: "configurationRequired", message: issue, retryable }
+            : !transport.signedIn
               ? {
-                  code: "configurationRequired",
-                  message: transport.codingPlanIssue,
+                  code: "authenticationRequired",
+                  message:
+                    "ZCode has no available models. Sign in to ZCode Desktop with a Start Plan or Personal Coding Plan account, or add a personal provider, then re-detect ZCode. Team Coding Plan is not supported.",
                   retryable: true,
                 }
               : transport.startPlanChecked
@@ -131,6 +147,7 @@ export class ZcodeAdapter implements HarnessAdapter {
                     retryable: true,
                   },
         };
+      }
       return {
         status: "ready",
         catalog,
@@ -175,7 +192,7 @@ export class ZcodeAdapter implements HarnessAdapter {
     let transport: CliTransport | undefined;
     let createdId: string | undefined;
     try {
-      transport = await this.#transport(path.resolve(input.cwd), input.environment);
+      transport = await this.#transport(path.resolve(input.cwd), input.environment, true);
       let snapshot, settings;
       if (input.kind === "create") {
         settings = await readCatalog(transport);

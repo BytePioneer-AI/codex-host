@@ -98,6 +98,7 @@ it("preserves a live Claude continuation identity through refresh, reload and ex
         init: async () => ({ status: "succeeded" }),
         recap: async () => ({ status: "succeeded" }),
         runTurn: async (text, userId, onEvent) => {
+          if (typeof text !== "string") throw new Error("Expected a text Turn");
           histories.set(input.sessionId, [
             message(input.sessionId, "user", userId, text),
             message(input.sessionId, "assistant", "requested-answer", "Started background Bash"),

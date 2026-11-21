@@ -21,11 +21,20 @@ export function createConsoleConnectionDiagnostics(
   const webUi = new Map<string, boolean>();
   const listeners = new Set<() => void>();
   let pending: Promise<void> | null = null;
+  let queuedRefresh: Promise<void> | null = null;
   const publish = (): void => {
     for (const listener of [...listeners]) listener();
   };
   const inspectAll = (refresh: boolean): Promise<void> => {
-    if (pending) return pending;
+    if (pending) {
+      if (!refresh) return pending;
+      queuedRefresh ??= pending
+        .then(() => inspectAll(true))
+        .finally(() => {
+          queuedRefresh = null;
+        });
+      return queuedRefresh;
+    }
     pending = Promise.resolve()
       .then(async () => {
         try {
@@ -44,7 +53,11 @@ export function createConsoleConnectionDiagnostics(
         await Promise.all(
           plugins.map(async ({ id }) => {
             try {
-              const inspection = await client.inspectHarness({ harnessId: id, refresh });
+              const inspection = await client.inspectHarness({
+                harnessId: id,
+                refresh,
+                purpose: "availability",
+              });
               availability.set(id, inspection.status);
               webUi.set(id, inspection.status === "ready" && inspection.webUi?.open === true);
               const error = inspection.status === "ready" ? null : inspection.error;

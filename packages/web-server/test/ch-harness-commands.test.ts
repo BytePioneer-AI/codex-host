@@ -48,6 +48,22 @@ it("preserves live/static/unspecified catalogs and native metadata without creat
   );
   assert.equal(host.threads.size, 1);
 });
+it("lists a Codex draft's workspace Skills before its first message, without creating a Thread", async (t) => {
+  const { host, state, thread, dispatch, inspect } = fixture(t);
+  state.official = true;
+  const created = await dispatch("session/create", { cwd: thread.cwd });
+  assert.ok(created.ok);
+  const draft = (created.value as { sessionId: string }).sessionId;
+  host.requests.length = 0;
+  assert.deepEqual(await inspect(draft), { ok: true, value: state.draftCatalog });
+  assert.deepEqual(host.requests, [
+    {
+      method: "codexhost/harness/commands/inspect",
+      params: { harnessId: "codex", cwd: thread.cwd },
+    },
+  ]);
+  assert.equal(host.threads.size, 1);
+});
 it("allows official ownership but rejects unbound drafts, read-only children and missing Threads", async (t) => {
   const { host, thread, dispatch, inspect, execute } = fixture(t);
   const created = await dispatch("session/create", { cwd: thread.cwd });

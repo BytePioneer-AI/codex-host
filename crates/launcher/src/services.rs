@@ -54,15 +54,12 @@ fn resolve_options(
     host_node: Option<PathBuf>,
 ) -> Result<Options, Box<dyn Error>> {
     let installed = InstalledResources::from_current_executable()?;
-    let host_node = crate::select_host_node(
-        host_node,
-        desktop_root,
-        node.clone().unwrap_or(installed.node.clone()),
-    );
+    let node = node
+        .or_else(|| env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from))
+        .unwrap_or(installed.node);
+    let host_node = crate::select_host_node(host_node, desktop_root, node.clone());
     Ok(Options {
-        node: node
-            .or_else(|| env::var_os(NPM_NODE_PATH_ENV).map(PathBuf::from))
-            .unwrap_or(installed.node),
+        node,
         host_node,
         host_runtime: host.unwrap_or(installed.host_runtime),
         runtime: web.unwrap_or(installed.web_runtime),
@@ -220,6 +217,7 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
         let start = || -> Result<(), Box<dyn Error>> {
             let _guard =
                 host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
+            crate::service_update::ensure_start_allowed(&resolved.data)?;
             web_service::ensure(&resolved)
         };
         if let Err(error) = start() {
@@ -231,36 +229,58 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
     }
 }
 
-fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
-    if let Some((runtime, _)) = host_service::current_runtime(&options.data)
-        && runtime.canonicalize()? != options.host_runtime.canonicalize()?
-    {
-        return Err("The running Host belongs to a different installation".into());
+fn validate_web_and_host_installation(options: &Options) -> Result<(), Box<dyn Error>> {
+    if let Some((runtime, _)) = host_service::current_runtime(&options.data) {
+        let runtime = runtime
+            .canonicalize()
+            .map_err(|error| format!("Host: canonicalizing runtime failed: {error}"))?;
+        let expected = options
+            .host_runtime
+            .canonicalize()
+            .map_err(|error| format!("Host: canonicalizing host runtime failed: {error}"))?;
+        if runtime != expected {
+            return Err("The running Host belongs to a different installation".into());
+        }
     }
-    if let Some(owner) = web_service::owner(&options.data)?
-        && owner.runtime.canonicalize()? != options.runtime.canonicalize()?
-    {
-        return Err("The running Web belongs to a different installation".into());
-    }
-    if let Some((launcher, _)) = desktop_attachment::managed_processes(&options.data)?
-        && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
-    {
-        return Err("The running Desktop belongs to a different installation".into());
+    if let Some(owner) = web_service::owner(&options.data)? {
+        let runtime = owner
+            .runtime
+            .canonicalize()
+            .map_err(|error| format!("Web: canonicalizing running Web runtime failed: {error}"))?;
+        let expected = options.runtime.canonicalize().map_err(|error| {
+            format!("Web: canonicalizing configured Web runtime failed: {error}")
+        })?;
+        if runtime != expected {
+            return Err("The running Web belongs to a different installation".into());
+        }
     }
     Ok(())
 }
 
+fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
+    validate_web_and_host_installation(options)?;
+    desktop_attachment::running_for_update(&options.data)
+        .map_err(|error| format!("Desktop ownership check failed: {error}"))?;
+    Ok(())
+}
+
 fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
-    let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
     validate_installation(options)?;
-    desktop_attachment::stop_managed(&options.data)?;
+    // Stop Desktop before taking web-service-lifecycle.lock: the Launcher joins its
+    // background Web startup thread before exiting, and that thread waits on the same lock.
+    desktop_attachment::stop_managed(&options.data)
+        .map_err(|error| format!("stopping Desktop failed: {error}"))?;
+    let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
+    validate_web_and_host_installation(options)?;
     // The orphan cleanup must apply the installation check to the record it
     // actually cleans: validate_installation only inspects the live owner
     // record, so a Web from another installation sharing this data directory
     // would otherwise be terminated here.
-    web_service::stop(options, Some(&options.runtime))?;
+    web_service::stop(options, Some(&options.runtime))
+        .map_err(|error| format!("stopping Web failed: {error}"))?;
     if host_service::current_runtime(&options.data).is_some() {
-        host_service::run(&options.host_arguments("stop"))?;
+        host_service::run(&options.host_arguments("stop"))
+            .map_err(|error| format!("stopping Host failed: {error}"))?;
     }
     Ok(())
 }
@@ -471,6 +491,8 @@ pub fn run(action: &str, arguments: &[String]) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "windows")]
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn finishing_without_output_waits_for_web_startup() {
@@ -498,6 +520,46 @@ mod tests {
             web_browser_url(login, true),
             "http://127.0.0.1:4478/?token=fixture-secret#connect-devices"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn npm_node_is_shared_with_host_when_launch_options_omit_node() {
+        const TEST: &str =
+            "services::tests::npm_node_is_shared_with_host_when_launch_options_omit_node";
+        if let Some(npm_node) = env::var_os("CODEXHOST_NPM_NODE_TEST") {
+            let npm_node = PathBuf::from(npm_node);
+            let options = resolve_options(None, None, None, None, None).unwrap();
+            assert_eq!(options.node, npm_node);
+            assert_eq!(options.host_node, npm_node);
+
+            let explicit = PathBuf::from(r"C:\explicit\node.exe");
+            let explicit_options =
+                resolve_options(Some(explicit.clone()), None, None, None, None).unwrap();
+            assert_eq!(explicit_options.node, explicit);
+            assert_eq!(explicit_options.host_node, explicit);
+            return;
+        }
+
+        let root = env::temp_dir().join(format!(
+            "codexhost-service-npm-node-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let npm_node = root.join("node.exe");
+        fs::write(&npm_node, "fixture").unwrap();
+        let status = Command::new(env::current_exe().unwrap())
+            .args(["--exact", TEST])
+            .env("CODEXHOST_NPM_NODE_TEST", &npm_node)
+            .env(NPM_NODE_PATH_ENV, &npm_node)
+            .status()
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert!(status.success());
     }
 
     #[cfg(target_os = "macos")]

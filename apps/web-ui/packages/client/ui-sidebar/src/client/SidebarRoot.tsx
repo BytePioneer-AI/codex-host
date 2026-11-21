@@ -242,6 +242,7 @@ export function SidebarRoot({
       onPointerLeave={() => {
         armLinger();
       }}
+      data-cx-region="sidebar"
     >
       {/* macOS hiddenInset titlebar: the strip shares the row with the
           traffic lights and keeps the toggle at the sidebar's top-right. */}

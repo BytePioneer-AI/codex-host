@@ -12,12 +12,13 @@ import { fakeTailscale } from "./support/tailscale.ts";
 
 const exec = promisify(execFile);
 
-it("removes inherited Host routing and Node injection without changing the parent environment", () => {
+it("removes inherited Host routing and Node injection but keeps the external client port, without changing the parent environment", () => {
   const parent = {
     PATH: "/usr/bin",
     HOME: "/home/test",
     CODEX_HOME: "/home/test/.codex",
     ANTHROPIC_API_KEY: "test-credential",
+    CODEXHOST_EXTERNAL_CLIENT_PORT: "4402",
     CODEXHOST_RUNTIME_TOKEN: "host-token",
     CODEXHOST_CODEX_COMMAND: "/unsafe/codex",
     CODEX_CLI_PATH: "/unsafe/shim",
@@ -36,6 +37,7 @@ it("removes inherited Host routing and Node injection without changing the paren
     HOME: "/home/test",
     CODEX_HOME: "/home/test/.codex",
     ANTHROPIC_API_KEY: "test-credential",
+    CODEXHOST_EXTERNAL_CLIENT_PORT: "4402",
   });
   assert.deepEqual(parent, original);
   assert.equal(args[args.indexOf("--harness") + 1], "all");

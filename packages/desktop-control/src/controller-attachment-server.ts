@@ -9,6 +9,8 @@ import {
 } from "@codexhost/shared-contracts";
 import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
 
+import type { ControllerLifecycle } from "./controller-lifecycle.js";
+
 const MAX_REQUEST_BYTES = REMOTE_CONTROLLER_REQUEST_MAX_BYTES;
 
 export interface ControllerAttachmentServer {
@@ -19,6 +21,7 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
+  lifecycle?: ControllerLifecycle;
   openLocalPage?(url: string): Promise<LocalPageHandle>;
   remoteConnections?(request: RemoteConnectionsRequest): Promise<RemoteConnectionsReply>;
 }
@@ -75,6 +78,11 @@ export async function startControllerAttachmentServer(
       if (newline < 0) return;
       handled = true;
       const line = request.slice(0, newline).replace(/\r$/, "");
+      if (options.lifecycle && line.startsWith("LIFECYCLE ")) {
+        socket.off("data", receive);
+        options.lifecycle(socket, line, request.slice(newline + 1));
+        return;
+      }
       const remotePrefix = `REMOTE ${options.nonce} `;
       if (options.remoteConnections && line.startsWith(remotePrefix)) {
         let input;
@@ -111,7 +119,7 @@ export async function startControllerAttachmentServer(
                       code: -32094,
                       message:
                         input.action === "session"
-                          ? "Remote Thread snapshot exceeds the 16 MiB response limit; open this Thread in Codex Desktop. Paged remote snapshots are not supported."
+                          ? "Remote history reply exceeds the 16 MiB limit; update codexhost on this computer to use paged history, or open this chat in Codex Desktop."
                           : "Thread snapshot exceeds the 16 MiB response limit; reduce the message page size. Oversized individual results are not supported.",
                     },
                   }) + "\n",

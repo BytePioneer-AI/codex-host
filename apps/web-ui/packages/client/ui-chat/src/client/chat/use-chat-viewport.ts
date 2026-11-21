@@ -1,8 +1,10 @@
 /** Turn-aware DOM scrolling and geometry, without history-loading or follow policy. */
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import type { DraftResponseAnnotation } from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type { ChatScrollPosition } from "../contract/slots.ts";
 import type { ChatSnapshot } from "../contract/snapshot.ts";
 import { scrollMetrics, ScrollFollow, type ViewportMetrics } from "./use-scroll-follow.ts";
+import { locateResponseAnnotation } from "./response-selection.ts";
 export type { ViewportMetrics } from "./use-scroll-follow.ts";
 
 /** Scroll geometry attributed against the last acknowledged position. */
@@ -308,6 +310,37 @@ export class ChatViewport {
         return this.align(row, 24, candidate);
     }
     return null;
+  }
+
+  /** Align the first visible line of a rendered response annotation near the reading line. */
+  scrollToResponseAnnotation(annotation: DraftResponseAnnotation): ViewportLanding | null {
+    const elements = this.elements;
+    const anchor = annotation.anchor;
+    if (elements === null || anchor === undefined) return null;
+    const located = locateResponseAnnotation(elements.column, anchor, annotation.text);
+    if (located === undefined) return null;
+    const rect =
+      Array.from(located.range.getClientRects()).find(
+        (candidate) => candidate.width !== 0 || candidate.height !== 0,
+      ) ??
+      (() => {
+        const fallback = located.range.getBoundingClientRect();
+        return fallback.width === 0 && fallback.height === 0 ? undefined : fallback;
+      })();
+    const metrics = this.metrics();
+    if (rect === undefined || metrics === null) return null;
+    const viewportTop = elements.scroller.getBoundingClientRect().top;
+    const anchorRow = located.host.closest<HTMLElement>("[data-chat-anchor-key]");
+    const turnRow = located.host.closest<HTMLElement>("[data-chat-turn]");
+    const turnValue = turnRow?.getAttribute("data-chat-turn");
+    const turnNumber = turnValue === null || turnValue === undefined ? NaN : Number(turnValue);
+    const turn = Number.isSafeInteger(turnNumber) ? turnNumber : null;
+    const target = metrics.top + rect.top - viewportTop - metrics.height * 0.3;
+    if (anchorRow === null) return this.write(target, metrics, turn);
+    return this.write(target, metrics, turn, {
+      key: anchorRow.getAttribute("data-chat-anchor-key") ?? undefined,
+      top: anchorRow.getBoundingClientRect().top - viewportTop,
+    });
   }
 
   /**

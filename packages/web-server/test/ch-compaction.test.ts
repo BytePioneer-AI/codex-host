@@ -55,6 +55,109 @@ for (const status of ["completed", "failed", "interrupted"]) {
   });
 }
 
+for (const harnessId of ["grok", "pi"]) {
+  for (const status of ["completed", "failed", "interrupted"]) {
+    it(`does not append an old ${harnessId} compact ${status} after later Turns on reopen`, async () => {
+      const host = new FakeChChannel();
+      const row = host.add("old-compaction", "/project");
+      row.turns = Array.from({ length: 7 }, (_, index) => ({
+        id: `later-${index}`,
+        status: index === 6 ? "inProgress" : "completed",
+        items: [
+          {
+            id: `user-${index}`,
+            type: "userMessage",
+            content: [{ type: "text", text: `Later prompt ${index}` }],
+          },
+        ],
+      }));
+      const command = {
+        name: "compact",
+        turn: { id: "old-compact", status, items: [] },
+        subsequentTurnId: "later-0", // Outside the initial five-Turn page.
+      };
+      host.commands.set(row.id, command);
+      row.status = { type: "active" };
+      const view = new ChThreadHistory(host, row, harnessId, () => {});
+      await view.refresh();
+      assert.equal(view.log.events.filter((event) => event.type.startsWith("command/")).length, 0);
+      for (const turn of row.turns) turn.status = "completed";
+      row.status = { type: "idle" };
+      await view.refresh(true);
+      await view.refresh();
+      await view.loadOlder();
+      assert.equal(view.thread.turns.length, 7);
+      assert.equal(view.log.projections.compacting, false);
+      assert.equal(view.log.events.filter((event) => event.type.startsWith("command/")).length, 0);
+
+      // A new explicit command must still be reported, even after skipping an old one.
+      host.commands.set(row.id, {
+        name: "compact",
+        turn: { id: "new-compact", status: "completed", items: [] },
+      });
+      await view.refresh();
+      assert.deepEqual(
+        view.log.events.filter((event) => event.type === "command/run").map((event) => event.data),
+        [{ commandId: "new-compact", name: "compact", source: { kind: "user" } }],
+      );
+      assert.equal(view.log.events.filter((event) => event.type === "command/done").length, 1);
+    });
+  }
+}
+
+it("settles an already displayed command even if the next Turn started between snapshots", async () => {
+  const host = new FakeChChannel();
+  const row = host.add("observed-compaction", "/project");
+  row.turns = [];
+  const command = { name: "compact", turn: { id: "compact", status: "inProgress", items: [] } };
+  host.commands.set(row.id, command);
+  const view = new ChThreadHistory(host, row, "pi", () => {});
+  await view.refresh();
+  command.turn.status = "completed";
+  host.commands.set(row.id, { ...command, subsequentTurnId: "later" });
+  row.turns.push({ id: "later", status: "inProgress", items: [] });
+  row.status = { type: "active" };
+  await view.refresh(true);
+  assert.equal(view.log.projections.compacting, false);
+  assert.equal(view.log.events.filter((event) => event.type === "command/run").length, 1);
+  assert.equal(view.log.events.filter((event) => event.type === "command/done").length, 1);
+  const run = view.log.events.find((event) => event.type === "command/run");
+  const later = view.log.events.find((event) => event.type === "turn/start");
+  assert.ok(run && later && run.seq < later.seq);
+});
+
+it("closes an observed command if its result was replaced by an unobserved old command", async () => {
+  const host = new FakeChChannel();
+  const row = host.add("replaced-compaction", "/project");
+  row.turns = [];
+  host.commands.set(row.id, {
+    name: "compact",
+    turn: { id: "observed", status: "inProgress", items: [] },
+  });
+  const view = new ChThreadHistory(host, row, "pi", () => {});
+  await view.refresh();
+  host.commands.set(row.id, {
+    name: "compact",
+    turn: { id: "unobserved", status: "completed", items: [] },
+    subsequentTurnId: "later",
+  });
+  row.turns.push({ id: "later", status: "completed", items: [] });
+  await view.refresh(true);
+  await view.refresh();
+  assert.equal(view.log.projections.compacting, false);
+  assert.equal(view.log.events.filter((event) => event.type === "command/run").length, 1);
+  assert.deepEqual(
+    view.log.events.filter((event) => event.type === "command/done").map((event) => event.data),
+    [
+      {
+        commandId: "observed",
+        kind: "error",
+        text: "The Host no longer reports the outcome of this command.",
+      },
+    ],
+  );
+});
+
 it("recovers a manual command completed between snapshots, even with unchanged idle history", async () => {
   const host = new FakeChChannel();
   const row = host.add("compaction", "/project");

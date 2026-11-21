@@ -327,7 +327,9 @@ export class StreamRegistry {
           })
           .catch((error: unknown) => {
             console.error(`[mux] ${endpoint} failed`, error);
-            sink.fail("gateway/internal", error instanceof Error ? error.message : String(error));
+            if (error instanceof RpcError) sink.fail(error.code, error.message, error.details);
+            else
+              sink.fail("gateway/internal", error instanceof Error ? error.message : String(error));
           });
         return;
       }

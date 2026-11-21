@@ -12,6 +12,13 @@ without claiming or releasing that Session's writer, so an open source does not
 block it. The derived Session still needs its own unclaimed write identity;
 native checkpoint validation and cross-directory Fork limits remain Adapter-owned.
 
+Client requests remain limited to 8 MiB. Broker responses allow 32 MiB because
+the Adapter returns a complete native snapshot before the Host can page it.
+Both broker and client must load the updated response limit. A larger result is
+rejected explicitly; it is not truncated. Serialization and the size check finish
+before a response sequence is committed, so an oversized result cannot create a
+sequence gap and fault unrelated Sessions on that connection.
+
 A Session may expose `nativeWriterRef` to reserve the immutable identity it will
 write before a native Session exists. This does not confirm durable history and
 is not projected as `initialState.nativeRef`: persistence and recovery still

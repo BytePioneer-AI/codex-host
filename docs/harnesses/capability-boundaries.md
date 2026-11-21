@@ -26,7 +26,9 @@ Kimi Code ACP 的 `ExitPlanMode` 请求包含原生 `plan_approve` / `plan_opt_N
 
 Kimi 通过 ACP `configOptions` 提供当前会话、当前 Model 的 Thinking 列表和选中值。插件在创建、恢复、配置命令响应及 `config_option_update` 通知中读取这些事实，将列表保存在会话内存状态的 `availableThinkingOptions` 中，沿公共状态事件更新 Desktop；不轮询，也不在启动检查时遍历切换 Model。不同会话或 Host 不共享可变列表。
 
-启动检查只读取配置文件中的 Model 目录并检查认证。配置文件不是 Thinking 能力目录，因此草稿目录不猜测 `medium` 或 `off/on`，也不自动发送 Thinking 默认值；未显式选择时保留原生默认配置。会话建立后使用原生列表。切换 Model 以返回的新配置整体替换旧列表，不自动重放旧 Thinking；原生未提供列表时清除旧列表。当前 Model 的选项不扩散到其他 Model。
+启动检查读取配置文件中的 Model 目录并检查认证，不创建会话。草稿目录按每个 Model 明确声明的 `capabilities`、`support_efforts` 和 `default_effort` 展示 Thinking：`thinking` 提供声明的强度列表，无强度列表时提供 `off/on`；`always_thinking` 排除 `off`；未声明思考能力的 Model 不提供选项。默认值仅在当前默认 Model 的选项内有效，显式 `[thinking]` 设置优先于 `default_effort`，不将其他 Model 的档位作为默认值。配置声明不代表后端实际支持，插件不自动补写用户配置。
+
+会话建立后使用 ACP 原生列表和确认值，不以草稿默认值冒充已生效配置；未显式选择时保留原生默认配置。切换 Model 以返回的新配置整体替换旧列表，不自动重放旧 Thinking；原生未提供列表时清除旧列表。当前 Model 的选项不扩散到其他 Model。
 
 显式选择或持久化恢复的 Thinking 值不在当前原生列表中时返回错误，不将 `medium` 映射为 `on`，也不静默替换用户选择。应重新选择原生支持的值或清除旧选择。`off/on` 是部分 Model 的原生取值，不是所有 Kimi Model 的固定能力。
 
@@ -52,13 +54,17 @@ Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数
 
 依据：[Pi 官方 README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md) 的 Philosophy 与 Extensions，以及本机 `pi --help` / RPC 文档。官方核心不提供 permission popups，允许通过扩展自定义确认流程；permission-gate / plan-mode 扩展示例分别采用命令匹配和工具过滤，不是核心权限模式。
 
-## Antigravity 工具审批与压缩
+## Antigravity ACP 审批、派生、压缩与空闲唤醒
 
-已核对本机 agy `1.2.5` 的 `--help` 及 `-p /help --output-format json`。headless 输入接受 Prompt，不接受双向工具权限回答；官方说明需要交互批准的操作在 headless 下被 soft-denied。现有插件的 Skip permissions 仍是原生启动选项，官方 PreToolUse Hook 支持 allow/deny/ask 等决策，但它在工具执行前触发，并非原生审批请求/应答通道；headless 中 ask 仍被 soft-denied，不能将 Hook 拦截重建为另一套工具权限策略。提问 Hook 仅用于 ask_question，不等于普通工具审批。Python SDK 的 [ask_user policy](https://antigravity.google/docs/sdk/policies/) 是独立 runtime 的能力，不是已登录 CLI Session 的审批回传入口。
+Antigravity 通过官方 `agy acp`（要求 `agy >= 1.5.8`，已用本机 `1.5.9` 实测）接入：
 
-压缩：agy `1.2.5` 的 headless 命令目录未公布 `/compact`，当时没有接入。已核对本机 agy `1.4.12`：`--input-format stream-json` 的 print 模式会展开 `/compact`（日志 `Print mode: expanded slash command "compact"`），并以 `step_type: "checkpoint"` 的 `step_update` 报告压缩，`DONE`/`ERROR` 为完成或失败；`/compact <说明>` 压缩后继续回答。插件因此在命令目录公布 `antigravity.compact`（`/compact`），并把任一 Turn 内的 `checkpoint` 步骤（显式 `/compact` 或 agy 自动压缩）映射为 contextCompaction Item；Host 据显式 `/compact` 命令 Turn 将其标为手动压缩。不发送普通“请总结”Prompt 伪装上下文压缩。
-
-依据：[官方 Hooks 文档](https://antigravity.google/docs/hooks)、[官方 headless 文档](https://antigravity.google/docs/cli/headless/)、[官方权限文档](https://antigravity.google/docs/cli/permissions)、[现有插件权限边界](antigravity/antigravity-tool-approval.md)。此次 `/help` 原生探针返回 num_turns=0，没有发起模型请求。
+- **权限与交互**：原生提供 `default`、`accept-edits`、`auto`、`plan` 四种 ACP 模式（`session/set_mode`）及进程启动级 `dangerously-skip-permissions`；工具审批走原生 `session/request_permission`，`ask_question` 走原生客户端 `elicitation/create`（`form` 模式），不使用私有 Hook 桥。详见 [Antigravity 权限与交互](antigravity/antigravity-tool-approval.md)。
+- **历史读取**：只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`，不启动 `agy`，不走 `session/load`（ACP 回放在 stdout 受阻时会提前回复并跨轮乱序，不可作为完整来源）。活动库读取已提交的 WAL 快照并跳过仍在生成的步骤；数据库不可读或格式未知时返回“历史不可用”，不降级。连续用户输入沿用既有分组规则合并，保证已存 Turn 身份稳定。有原生调用 ID 和工具名称的已完成工具步骤没有对应 planner 调用时，仍可按所属回合恢复；工具输出字段缺失时使用已存错误信息（若有），不影响其余历史读取。
+- **前台 Turn 结算**：ACP 响应与 SQLite 提交是两个边界。结算先读取一次原生用户输入计数；成功且可能写入历史的提示若暂未看到提交，可在短预算内以新的只读快照复查，不等待 WAL checkpoint，也不把观察时间计入模型用量计时。无法确认归属时只结算实时输出，不猜测 Turn 身份或分叉检查点；已提交的内容由历史读取恢复。以上一轮已确认的计数为基线；基线缺失或计数跨越多个输入时，只读取最后一个原生输入的创建时间，确认它是在本次 ACP 提示发出后、响应返回前创建的。
+- **空闲唤醒**：定时器或后台任务唤起的独立原生运行（`step_type = 101` 系统消息起始，同一运行 ID 的连续系统消息合并）有已提交的最终回答时，作为无用户消息的独立 Turn 展示，保留上一轮的最终回答。ACP 的空闲输出通知触发有界的 SQLite 提交观察，不显示未提交的逐字流，也不占用前台执行位。已有 Turn 所属的迟到输出不创建自主 Turn；已归属的尾部后台消息仍可成为该 Turn 的最终回答。
+- **历史身份与检查点**：读取时保留每条原生用户输入的序号。合并展示的 Turn 使用其覆盖的最后一条原生用户输入生成分叉检查点，不使用界面分组下标；例如 15 条原生输入显示为 14 组，末组的检查点仍保留完整的 15 条输入。有效的已有身份可以与检查点不同，稀疏编号和非数字旧身份继续保留；没有已有映射时，依据原生边界生成身份，使首次读取与带映射重读保持一致。
+- **历史派生（Fork / Rollback）**：`agy acp` 1.5.9 未提供 `session/fork` RPC。Adapter 克隆原生 SQLite，按用户输入或已结算的独立唤醒边界裁剪并同步 `conversation_summaries.db`，再经 `session/resume` 打开派生会话。Rollback 只在空闲态可用；运行中 Fork 仅支持当前会话已确认、严格早于活动 Turn 的用户检查点，要求源库为 WAL 且无正在运行的子代理。
+- **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行；ACP 流本身不推送旧 PrintMode 专有的“进行中” `checkpoint` 通知，但 Adapter 会从原生 SQLite 已提交的 `step_type = 23`（`DONE` / `ERROR`）记录中投影已结算的 `contextCompaction` Item（包括被动自动压缩与 `/compact`，覆盖实时轮内/轮末及历史回放），不以用量回落或文本内容猜测进行中状态。
 
 ## Copilot 原生接入
 

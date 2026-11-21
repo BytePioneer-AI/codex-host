@@ -3,6 +3,7 @@ import {
   REASONING_TRANSCRIPT_COMMAND,
   type ClientFileOperation,
   type ClientThreadImportSource,
+  type ClientThreadSnapshot,
   type WebFileDiff,
   type WebTurnFileSummary,
 } from "@codexhost/shared-contracts";
@@ -30,6 +31,7 @@ export interface ChTurn {
   status: string;
   items: ChItem[];
   codexhostFileOperations?: ClientFileOperation[] | undefined;
+  codexhostTurnOutcome?: ClientThreadSnapshot["turnsPage"]["data"][number]["codexhostTurnOutcome"];
   /** Native Turn boundaries in Unix seconds. */
   startedAt?: number | null;
   completedAt?: number | null;
@@ -90,6 +92,19 @@ function hasFileChangePath(item: Extract<HostItem, { type: "fileChange" }>): boo
   return item.changes.some((change) => change.path.trim() !== "");
 }
 
+/** The text an MCP result or error carries; non-text blocks keep their JSON form. */
+function mcpResultText(item: ChItem): string {
+  if (isRecord(item.error) && typeof item.error.message === "string") return item.error.message;
+  if (!isRecord(item.result) || !Array.isArray(item.result.content)) return "";
+  return item.result.content
+    .map((block) =>
+      isRecord(block) && block.type === "text" && typeof block.text === "string"
+        ? block.text
+        : JSON.stringify(block),
+    )
+    .join("\n");
+}
+
 function itemOf(item: ChItem, reasoningPreviewIds: ReadonlySet<string>): HostItem | undefined {
   const itemId = item.id;
   switch (item.type) {
@@ -132,6 +147,21 @@ function itemOf(item: ChItem, reasoningPreviewIds: ReadonlySet<string>): HostIte
         exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
       };
     case "mcpToolCall":
+      return {
+        type: "toolExecution",
+        itemId,
+        toolName: String(item.tool ?? ""),
+        namespace: String(item.server ?? ""),
+        arguments: item.arguments ?? {},
+        output: { content: [{ type: "text", text: mcpResultText(item) }] },
+      };
+    case "webSearch":
+      return {
+        type: "toolExecution",
+        itemId,
+        toolName: "web_search",
+        arguments: { query: String(item.query ?? "") },
+      };
     case "dynamicToolCall":
       return {
         type: "toolExecution",
@@ -167,6 +197,8 @@ function finished(status: string): boolean {
   return status !== "inProgress" && status !== "running";
 }
 function outcome(turn: ChTurn): TurnOutcomeShape {
+  if (turn.status === "completed" && turn.codexhostTurnOutcome?.status === "unknown")
+    return turn.codexhostTurnOutcome;
   return turn.status === "failed"
     ? {
         status: "failed",
@@ -543,8 +575,9 @@ export class ChThreadView {
           });
         }
         view.items.set(item.id, projected);
+        // CH publishes a web search Item only once it has succeeded; it carries no status.
         const itemOutcome: HostItemOutcome | undefined =
-          item.status === "completed"
+          item.status === "completed" || item.type === "webSearch"
             ? { status: "succeeded" }
             : item.status === "failed"
               ? {

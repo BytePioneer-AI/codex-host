@@ -38,6 +38,8 @@
  * session-scoped seat would force a Session binding, which would activate and
  * retain every listed Session.
  */
+import type { ConfigFormSnapshot } from "@deepseek-ai/dsh-client-ui-settings/client";
+import type { WorkspacePreferences, ThreadTreeCollapseStyle } from "../workspace-preferences.ts";
 import type {
   HostObservable,
   InjectFace,
@@ -89,6 +91,8 @@ export interface SessionRowOwnerProps {
   sessionId: SessionId;
   /** Row display title: persisted title, or empty when the Session has none. */
   displayTitle: string;
+  /** Display-tree descendants cannot change the shared pin set from this row. */
+  threadTreeChild?: boolean;
 }
 
 /** The row menu's open state as its owner holds it: the `useState` pair. */
@@ -256,7 +260,9 @@ export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected["hooks"]
  * browsing region drives.
  */
 export type WorkspaceBrowserInjected = {
+  setThreadTreeCollapseStyle: (style: ThreadTreeCollapseStyle) => Promise<boolean>;
   hooks: DirectoryPickingInjected["hooks"] & {
+    workspacePreferences: HostObservable<ConfigFormSnapshot<WorkspacePreferences>>;
     /**
      * Fixed Host facts, reached through a hook rather than injected as values:
      * the renderer memoizes an entry's inject result for the registration's
@@ -285,6 +291,8 @@ export type WorkspaceBrowserInjected = {
   startSession: (workspaceId?: WorkspaceId) => void;
   /** Open a real Session. */
   open: (sessionId: SessionId) => void;
+  /** Acknowledge unread completion reminders for the given Sessions without opening them. */
+  markCompletionsRead?: ((sessionIds: Iterable<SessionId>) => void) | undefined;
   /**
    * Search current visible conversation messages. The Host fixes the result
    * bound; `hasMore` means the query needs narrowing.
@@ -299,7 +307,7 @@ export type WorkspaceBrowserInjected = {
   loadMoreSessions: () => void;
   /** Maximum number of merged rows rendered for one search. */
   searchResultLimit: number;
-  /** Open the Session rename dialog (a row title double-click); the rename action entry raises the same request. */
+  /** Open the Session rename dialog; row actions and keyboard commands raise this request. */
   requestSessionRename: (sessionId: SessionId, currentTitle: string) => void;
   /** Tell the user an archived row cannot be opened (a click on it). */
   notifyArchivedNotOpenable: () => void;
@@ -413,6 +421,8 @@ export interface SessionArchiveConfirmRequest {
   displayTitle: string;
   /** What the Host reported running, in family order. */
   activity: readonly SessionActivity[];
+  /** Running display-tree members, including the selected parent when active. */
+  runningThreads?: readonly { id: string; title: string }[];
 }
 
 /**

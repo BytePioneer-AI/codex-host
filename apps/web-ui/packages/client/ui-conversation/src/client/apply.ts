@@ -30,11 +30,7 @@ import type { ReferenceInsert } from "./contract/draft-editor.ts";
 import { createConversationStore, readConversationViewPreference } from "./stores.ts";
 import { formatFileMention } from "@deepseek-ai/dsh-file-reference/grammar";
 import { relativizeToCwd, workspaceTitleOf } from "@deepseek-ai/dsh-util-workspace-path";
-import {
-  ConversationController,
-  UnsupportedImageMediaTypeError,
-  isImageMediaType,
-} from "./service.ts";
+import { ConversationController, isImageMediaType } from "./service.ts";
 import type { IConversation } from "./service.ts";
 import { ComposerBlockRegistry } from "./input/blocks.ts";
 import type { ComposerBlock } from "./contract/composer-blocks.ts";
@@ -502,6 +498,10 @@ export function apply(ctx: Context, config: Config = Config({})): void {
               },
             },
             bindDraftPersistence: (write) => inputHub.shell(sessionId).bindDraftPersistence(write),
+            onRevealResponseAnnotation: (listener) => {
+              const scope = sessions.scope(sessionId);
+              return scope?.on("conversation/reveal-response-annotation", listener) ?? (() => {});
+            },
             openView,
           };
         },
@@ -517,6 +517,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
           "conversation.header.leading": { kind: "single", scope: "root" },
           "conversation.header.navigation": { kind: "single", scope: "session-maybe" },
           "conversation.header.shortcuts": { kind: "single", scope: "session-maybe" },
+          "conversation.header.trailing": { kind: "single", scope: "root" },
           "conversation.session.header": { kind: "single", scope: "session" },
         },
       },
@@ -577,6 +578,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
               removeAttachment: undefined,
               resolveDraftAttachments: undefined,
               retryFileUpload: undefined,
+              revealResponseAnnotation: undefined,
               toggleCommandMenu: undefined,
               stop: undefined,
               hooks: {
@@ -644,8 +646,6 @@ export function apply(ctx: Context, config: Config = Config({})): void {
                 }
                 return null;
               } catch (error: unknown) {
-                if (error instanceof UnsupportedImageMediaTypeError)
-                  return t("image.unsupportedType");
                 return error instanceof Error ? error.message : String(error);
               }
             },
@@ -656,6 +656,10 @@ export function apply(ctx: Context, config: Config = Config({})): void {
             retryFileUpload: (id) => {
               if (sessions.binding(sessionId) !== undefined)
                 conversation.retryFileUpload(sessionId, id);
+            },
+            revealResponseAnnotation: (id) => {
+              const scope = sessions.scope(sessionId);
+              scope?.emit(scope, "conversation/reveal-response-annotation", id);
             },
             toggleCommandMenu:
               inputTriggers === undefined

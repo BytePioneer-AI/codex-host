@@ -101,7 +101,7 @@ export function createHarnessAdapter(context: HarnessPluginContext) {
 | 预装发行 | 上一行，加上 `scripts/release/harness-plugins.json` 的 `plugins`；新增运行依赖时更新 `runtimePackages`；插件需要额外的运行资源时，核实 `packages/harness-adapter/scripts/build-plugin.mjs`、`scripts/release/prepare-payload.mjs`、`prepare-npm.mjs` 及对应 release 测试 |
 | 加载测试 | `packages/host-runtime/test/installed-harness-plugins.test.ts`（预装集合）；改动了加载机制时，还要改 `harness-plugin-loader.test.ts` |
 | 文档 | `docs/harnesses/<id>/<id>-harness-integration.md`、`docs/index.md`、`docs/harnesses/capability-boundaries.md`、README 能力表（以及 `docs/project/README.*.md`）；按需更新 `harness-plugin-runtime.md` 的安装/更新表、`docs/product/usage-metering.md` 和 `usage-statistics.md` 的「已接入」列表 |
-| 可选 | `agent-group-preference.ts` 的显示顺序、`tools/renderer-binding` 和 `tools/codex-desktop-contract-audit` 的名单、`tests/e2e/renderer-<id>.spec.ts` |
+| 可选 | `agent-group-preference.ts` 的显示顺序、`tools/renderer-binding` 和 `tools/codex-desktop-contract-audit` 的名单 |
 
 Host 包及其 tsconfig 不增加具体 Adapter 的依赖；`tools/check-boundaries.mjs` 和核心 Bundle 审计会拒绝 Adapter 或 SDK 泄漏进核心。
 
@@ -126,7 +126,7 @@ Host 包及其 tsconfig 不增加具体 Adapter 的依赖；`tools/check-boundar
 
 按改动范围执行：
 
-- 改动或新增的代码：类型检查、ESLint、Prettier（只针对修改过的文件）、边界检查、`git diff --check`。实际命令以根 `package.json` 的 scripts 为准。
+- 改动或新增的代码：类型检查（`npm run typecheck`）、针对改动文件的 `npx eslint <changed-files>` 与 `npx prettier --check <changed-files>`、边界检查（`node tools/check-boundaries.mjs`）、`git diff --check`；不在本地跑全仓 `npm run lint` 或 `npm run format:check`。
 - 指定具体文件运行测试：`vitest run --config tests/vitest.config.js <测试文件...>`。
 - 真实原生验收要记录：Harness 版本、平台、认证条件、Model、权限、运行环境（local/SSH/Remote Control），以及成功、失败、取消、恢复的结果。
 

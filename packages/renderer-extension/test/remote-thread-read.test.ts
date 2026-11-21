@@ -33,7 +33,7 @@ it("uses exactly the selected renderer Host client", async () => {
   );
   const window = { setTimeout, clearTimeout } as unknown as Window;
   const control = createRemoteConnectionsControl(window, getClient);
-  const input = { threadId: "t", view: "messages", limit: 2 };
+  const input = { threadId: "t", view: "messages", from: 2, to: 4 };
   await expect(
     handleRemoteConnectionsRequest(control, { action: "read-thread", hostId: "mac", input }),
   ).resolves.toEqual({ threadId: "t" });

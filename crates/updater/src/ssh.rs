@@ -82,11 +82,16 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         // A damaged installation is exactly what the CLI refuses to stop, so the first stop is
         // best effort; once the installation is rewritten, the second one must succeed.
         "repair" => {
-            // Uninstall removes the manifest. Read the opt-in before any service mutation;
-            // leave legacy SSH installs on the command line their CLI already supports.
-            let session = r#"CH_SESSION=$(node -e 'const fs = require("node:fs"); try { const session = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).executionSession; if (session !== undefined && session !== "ssh" && session !== "desktop") process.exit(1); if (session === "desktop") process.stdout.write(session); } catch (error) { if (error.code !== "ENOENT") process.exit(1); }' "$HOME/.codexhost/remote/manifest.json" 2>/dev/null) || exit 47; "#;
+            // Uninstall removes the manifest, so both opt-ins are read in one pass before any
+            // service mutation: a second read could see a manifest written by an install running
+            // at the same time, which does not take this lock, and mix the two revisions'
+            // options. The session opt-in stays empty for legacy SSH installs. A custom shared
+            // Host directory is otherwise recovered only from the profile environment, which a
+            // damaged installation may have lost; without it the reinstalled SSH Host would
+            // silently bridge to a different shared owner. A malformed value fails closed.
+            let opt_ins = r#"CH_OPT_INS=$(node -e 'const fs = require("node:fs"), path = require("node:path"); try { const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const session = manifest.executionSession; if (session !== undefined && session !== "ssh" && session !== "desktop") process.exit(1); const shared = manifest.sharedDataDirectory; if (shared !== undefined && (typeof shared !== "string" || !path.isAbsolute(shared) || /[\0\n\r]/.test(shared))) process.exit(1); process.stdout.write([session === "desktop" ? "desktop" : "", shared === undefined ? "" : shared].join("\n")); } catch (error) { if (error.code !== "ENOENT") process.exit(1); }' "$HOME/.codexhost/remote/manifest.json" 2>/dev/null) || exit 47; CH_SESSION=$(printf '%s\n' "$CH_OPT_INS" | sed -n 1p); CH_SHARED=$(printf '%s\n' "$CH_OPT_INS" | sed -n 2p); "#;
             Ok(format!(
-                "{node}set -e; command -v codexhost >/dev/null 2>&1 || exit 58; {lock}{session}codexhost remote stop >/dev/null 2>&1 || true; codexhost remote uninstall >/dev/null 2>&1 || exit 51; if [ \"$CH_SESSION\" = desktop ]; then codexhost remote install --session desktop; else codexhost remote install; fi >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
+                "{node}set -e; command -v codexhost >/dev/null 2>&1 || exit 58; {lock}{opt_ins}set -- remote install; [ \"$CH_SESSION\" != desktop ] || set -- \"$@\" --session desktop; [ -z \"$CH_SHARED\" ] || set -- \"$@\" --shared-data \"$CH_SHARED\"; codexhost remote stop >/dev/null 2>&1 || true; codexhost remote uninstall >/dev/null 2>&1 || exit 51; codexhost \"$@\" >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
             ))
         }
         "uninstall" => {

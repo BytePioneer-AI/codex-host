@@ -6,6 +6,7 @@ import { mkdirSync, realpathSync, lstatSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { DataDir } from "./store.ts";
 import { RpcError } from "./transport.ts";
+import { WebImages, inspectImage, WEB_IMAGE_LIMITS, type WebImageRef } from "./web-images.ts";
 
 export const WEB_FILE_INPUT = { enabled: true };
 export interface WebFileRef {
@@ -16,6 +17,7 @@ export interface WebFileRef {
 export interface SavedFile {
   path: string;
   file: WebFileRef;
+  image?: WebImageRef;
 }
 interface Receipt extends SavedFile {
   sessionId: string;
@@ -25,25 +27,52 @@ interface Receipt extends SavedFile {
 function invalid(reason: string, message: string): never {
   throw new RpcError("session/attachment-invalid", message, { reason });
 }
-function safeName(name = "attachment"): string {
-  const clean = name
-    .normalize("NFC")
-    .replace(/[\\/<>:"|?*\u0000-\u001f\u007f]/gu, "_")
-    .trim()
-    .replace(/[. ]+$/gu, "");
+const MAX_NAME_BYTES = 160;
+const MAX_EXTENSION_BYTES = 32;
+/** Longest prefix of `value` within `bytes` UTF-8 bytes, never splitting a code point. */
+function truncateBytes(value: string, bytes: number): string {
   let result = "";
-  for (const char of clean) {
-    if (Buffer.byteLength(result + char) > 160) break;
+  for (const char of value) {
+    if (Buffer.byteLength(result + char) > bytes) break;
     result += char;
   }
-  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(result)) result = "_" + result;
+  return result;
+}
+// Windows drops trailing dots and spaces. Strip dots and every `trim()` whitespace in one
+// pass, so a cut ending in "\u00a0." cannot leave a no-break space that a second pass removes.
+const trimName = (value: string): string => value.trim().replace(/[.\s]+$/u, "");
+const RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu;
+/** Fits an already trimmed name within `limit` bytes, keeping a short extension. */
+function fitName(clean: string, limit: number): string {
+  if (Buffer.byteLength(clean) <= limit) return clean;
+  // Keep a short extension so a long file name still opens as its type.
+  const extension = /\.[^. ]+$/u.exec(clean)?.[0] ?? "";
+  const kept = Buffer.byteLength(extension) <= MAX_EXTENSION_BYTES ? extension : "";
+  const stem = trimName(
+    truncateBytes(clean.slice(0, clean.length - kept.length), limit - Buffer.byteLength(kept)),
+  );
+  // A cut may end on a dot or space, which Windows drops and `trimName` removes.
+  if (stem) return `${stem}${kept}`;
+  // A stem of only dots or spaces trims away; name it so the extension survives.
+  return kept ? `attachment${kept}` : trimName(truncateBytes(clean, limit));
+}
+/** Idempotent: `reference()` accepts a stored object only when its name is already safe. */
+function safeName(name = "attachment"): string {
+  const clean = trimName(name.normalize("NFC").replace(/[\\/<>:"|?*\u0000-\u001f\u007f]/gu, "_"));
+  let result = fitName(clean, MAX_NAME_BYTES);
+  // Check device names on the final name: trimming a cut can expose one ("CON   .txt").
+  // The prefix gets its byte from the name so the result stays within the limit.
+  if (RESERVED_NAME.test(result)) result = `_${fitName(result, MAX_NAME_BYTES - 1)}`;
   return result || "attachment";
 }
 
 export class WebFiles {
   readonly directory: string;
   private readonly receipts = new Map<string, Receipt>();
-  constructor(data: DataDir) {
+  constructor(
+    data: DataDir,
+    private readonly images = new WebImages(data),
+  ) {
     const path = data.path("attachments", "files");
     mkdirSync(path, { recursive: true, mode: 0o700 });
     if (lstatSync(path).isSymbolicLink())
@@ -58,8 +87,40 @@ export class WebFiles {
     for (const [id, receipt] of this.receipts)
       if (receipt.expiresAt <= Date.now()) this.receipts.delete(id);
   }
-  async upload(sessionId: string, chunks: AsyncIterable<Uint8Array>, name?: string) {
+  async upload(
+    sessionId: string,
+    chunks: AsyncIterable<Uint8Array>,
+    name?: string,
+    imageMediaType?: string,
+  ) {
     this.prune();
+    if (imageMediaType !== undefined) {
+      const parts: Buffer[] = [];
+      let length = 0;
+      for await (const chunk of chunks) {
+        length += chunk.byteLength;
+        if (length > WEB_IMAGE_LIMITS.maxImageBytes)
+          invalid("IMAGE_TOO_LARGE", "Image exceeds 50 MiB.");
+        parts.push(Buffer.from(chunk));
+      }
+      const image = inspectImage(Buffer.concat(parts), imageMediaType);
+      const path = this.images.store(image);
+      const file = {
+        attachmentId: image.ref.attachmentId,
+        name: name || `image.${image.leaf.split(".").at(-1)}`,
+        bytes: length,
+      };
+      const receiptId = randomUUID();
+      this.receipts.set(receiptId, {
+        sessionId,
+        path,
+        file,
+        image: image.ref,
+        hash: image.leaf.slice(0, 64),
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      });
+      return { receiptId, file };
+    }
     // UUID directories isolate incomplete streams; only completed objects receive a receipt.
     const pending = join(this.directory, randomUUID());
     await mkdir(pending, { mode: 0o700 });
@@ -120,7 +181,8 @@ export class WebFiles {
       const receipt = this.receipts.get(id);
       if (!receipt || receipt.sessionId !== sessionId)
         invalid("FILE_NOT_STAGED", "File was not uploaded for this session; select it again.");
-      await this.verify(receipt.path, receipt.hash, receipt.file.bytes);
+      if (receipt.image) this.images.readBytes(receipt.image.attachmentId);
+      else await this.verify(receipt.path, receipt.hash, receipt.file.bytes);
       files.push(receipt);
     }
     return files;

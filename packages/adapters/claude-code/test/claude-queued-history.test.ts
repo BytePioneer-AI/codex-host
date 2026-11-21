@@ -254,6 +254,29 @@ describe("Claude queued human history", () => {
     });
   });
 
+  it("restores a steer with images from its text blocks", () => {
+    const base = queuedCommand("attachment-1", "input-1", "");
+    const steer = {
+      ...base,
+      attachment: {
+        ...base.attachment,
+        prompt: [
+          { type: "text", text: "look at this" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+        ],
+      },
+    };
+    const snapshot = mapClaudeSnapshot(
+      [opening, tool("one"), steer, result("one"), final],
+      "session-1",
+    );
+    expect(snapshot.turns[0]?.items.find(({ item }) => item.type === "userMessage")?.item).toEqual({
+      type: "userMessage",
+      itemId: "attachment-1",
+      input: [{ type: "text", text: "look at this" }],
+    });
+  });
+
   it.each([{ uuid: "" }, { attachment: { source_uuid: "" } }, { attachment: { prompt: [] } }])(
     "rejects malformed identified human input: %j",
     (change) => {

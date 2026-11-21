@@ -16,5 +16,7 @@ export function draftPermissionMode(
   if (inspection.status !== "ready") return undefined;
   const catalog = inspection.permissionModes;
   if (preferred && catalog?.modes.some((mode) => mode.id === preferred)) return preferred;
-  return harnessId === "codex" ? undefined : catalog?.defaultModeId;
+  if (harnessId === "codex")
+    return catalog?.modes.find((mode) => mode.id === ":danger-full-access")?.id;
+  return catalog?.defaultModeId;
 }

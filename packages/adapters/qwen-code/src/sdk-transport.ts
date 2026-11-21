@@ -13,6 +13,7 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from "@qwen-code/sdk";
+import { withNodeRuntimeOnPath } from "@codexhost/harness-discovery";
 import type { HarnessPermissionModeId } from "@codexhost/shared-contracts";
 
 import { decodeQwenCodePermissionModeId } from "./permission-modes.js";
@@ -327,7 +328,7 @@ export class QwenCodeSdkTransport {
           ...(this.#options.commandTimeoutMs
             ? { timeout: { controlRequest: this.#options.commandTimeoutMs } }
             : {}),
-          ...(environment ? { env: environment } : {}),
+          env: environment,
           abortController,
           includePartialMessages: true,
           pathToQwenExecutable: executable,
@@ -357,9 +358,13 @@ export class QwenCodeSdkTransport {
     }
   }
 
-  #environment(): Record<string, string> | undefined {
-    const environment = this.#options.environment;
-    if (!environment) return undefined;
+  /**
+   * The SDK merges `env` over `process.env`. Supplying PATH here keeps a
+   * `#!/usr/bin/env node` launcher runnable when the Host started with a
+   * minimal PATH (for example from a login item).
+   */
+  #environment(): Record<string, string> {
+    const environment = withNodeRuntimeOnPath({ ...process.env, ...this.#options.environment });
     return Object.fromEntries(
       Object.entries(environment).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",

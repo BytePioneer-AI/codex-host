@@ -5,7 +5,7 @@ declare module "web-push" {
     sendNotification(
       subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
       payload: string,
-      options?: { TTL?: number; urgency?: string },
+      options?: { TTL?: number; urgency?: string; timeout?: number; proxy?: string },
     ): Promise<unknown>;
   };
   export default webpush;

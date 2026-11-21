@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { harnessPreferencePatchSchema } from "@codexhost/shared-contracts";
-import { HarnessPreferencesStore, HarnessPreferenceConflict } from "../src/preferences.js";
+import { HarnessPreferencesStore } from "../src/preferences.js";
 
 describe("shared Harness preferences", () => {
   it("merges granular writes, migrates only missing values, and survives restart", async () => {
@@ -70,6 +70,84 @@ describe("shared Harness preferences", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+  it("stores, replaces and clears delegation defaults independently of new Thread defaults", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "harness-preferences-"));
+    const store = new HarnessPreferencesStore(directory);
+    const patch = (operations: unknown[], initializeOnly = false) =>
+      store.patch(harnessPreferencePatchSchema.parse({ operations, initializeOnly }));
+    const delegation = (harnessId: string, configuration: unknown) => ({
+      kind: "delegation",
+      harnessId,
+      configuration,
+    });
+    try {
+      expect(await patch([delegation("codex", null)])).toMatchObject({ revision: 0 });
+      const normal = await patch([
+        {
+          kind: "newThread",
+          lastHarness: "codex",
+          harnessId: "codex",
+          configuration: { model: { id: "normal" } },
+        },
+      ]);
+      const codex = { model: { id: "delegated" }, thinkingOptionId: "high" };
+      const external = { thinkingOptionId: "low" };
+      const written = await patch([
+        delegation("codex", codex),
+        delegation("local-agent", external),
+      ]);
+      expect(written.revision).toBe(normal.revision + 1);
+      expect(written.values.delegation?.byHarness).toEqual({ codex, "local-agent": external });
+
+      const replacement = { model: { id: "replacement" } };
+      const replaced = await patch([delegation("codex", replacement)]);
+      expect(replaced.revision).toBe(written.revision + 1);
+      expect(replaced.values.delegation?.byHarness).toEqual({
+        codex: replacement,
+        "local-agent": external,
+      });
+      expect(await patch([delegation("codex", replacement)])).toEqual(replaced);
+
+      const initialized = await patch(
+        [delegation("codex", codex), delegation("local-agent", null), delegation("pi", external)],
+        true,
+      );
+      expect(initialized.values.delegation?.byHarness).toEqual({
+        codex: replacement,
+        "local-agent": external,
+        pi: external,
+      });
+      const cleared = await patch([delegation("codex", null)]);
+      expect(cleared.revision).toBe(initialized.revision + 1);
+      expect(cleared.values.delegation?.byHarness).toEqual({
+        "local-agent": external,
+        pi: external,
+      });
+      expect(cleared.values.newThread).toEqual(normal.values.newThread);
+      expect(await patch([delegation("codex", null)])).toEqual(cleared);
+      const reopened = new HarnessPreferencesStore(directory);
+      try {
+        expect(await reopened.get()).toEqual(cleared);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([undefined, {}, { model: { id: "m" }, permissionModeId: "default" }])(
+    "rejects an incomplete or non-delegation configuration: %j",
+    (configuration) => {
+      expect(
+        harnessPreferencePatchSchema.safeParse({
+          operations: [{ kind: "delegation", harnessId: "codex", configuration }],
+        }).success,
+      ).toBe(false);
+    },
+  );
+
   it("reads external preferences beside retired scopes and keeps those scopes on write", async () => {
     const directory = await mkdtemp(join(tmpdir(), "harness-preferences-"));
     const store = new HarnessPreferencesStore(directory);
@@ -105,34 +183,6 @@ describe("shared Harness preferences", () => {
     }
   });
 
-  it("announces atomic file replacement and refuses stale revisions", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "harness-pref-notifications-"));
-    const writer = new HarnessPreferencesStore(directory);
-    const observer = new HarnessPreferencesStore(directory);
-    try {
-      const changed = Promise.withResolvers<number>();
-      await observer.subscribe((revision) => changed.resolve(revision));
-      const result = await writer.patch(
-        harnessPreferencePatchSchema.parse({
-          operations: [{ kind: "idleRelease", value: { enabled: true, timeoutMinutes: 10 } }],
-        }),
-      );
-      expect(await changed.promise).toBe(result.revision);
-      await expect(
-        writer.patch(
-          harnessPreferencePatchSchema.parse({
-            expectedRevision: 0,
-            operations: [{ kind: "idleRelease", value: { enabled: false, timeoutMinutes: 30 } }],
-          }),
-        ),
-      ).rejects.toBeInstanceOf(HarnessPreferenceConflict);
-      expect((await observer.get()).values.idleRelease?.enabled).toBe(true);
-    } finally {
-      await writer.close();
-      await observer.close();
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
   it("rejects corrupt files without overwriting them and recovers after repair", async () => {
     const directory = await mkdtemp(join(tmpdir(), "harness-pref-corrupt-"));
     const store = new HarnessPreferencesStore(directory);

@@ -2,7 +2,6 @@ import readline from "node:readline";
 const scenario = process.argv[2];
 const sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 let promptId;
-let authenticated = false;
 const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
 const lines = readline.createInterface({ input: process.stdin });
 lines.on("line", (line) => {
@@ -14,11 +13,19 @@ lines.on("line", (line) => {
       result: { protocolVersion: 1, agentCapabilities: { loadSession: true }, authMethods: [] },
     });
   } else if (message.method === "authenticate") {
-    if (scenario === "hang-auth") return;
-    if (scenario === "prepare-once" && authenticated) process.exit(9);
-    authenticated = true;
-    send({ id: message.id, result: {} });
+    // Interactive authentication must never be requested by the Host.
+    process.exit(9);
   } else if (message.method === "session/new" || message.method === "session/load") {
+    if (scenario === "unauthenticated") {
+      send({
+        id: message.id,
+        error: {
+          code: -32000,
+          message: "Authentication required. Run 'cursor-agent login' first.",
+        },
+      });
+      return;
+    }
     send({
       id: message.id,
       result: {

@@ -967,10 +967,27 @@ describe("ClaudeSdkTransport live autonomous continuation", () => {
         "00000000-0000-4000-8000-0000000000b1",
         (event) => events.push(event),
       );
-      pushAssistantText(value.fakeQuery, "ANSWER", "00000000-0000-4000-8000-0000000000b2");
+      const assistantId = "00000000-0000-4000-8000-0000000000b2";
+      value.fakeQuery.push({
+        type: "stream_event",
+        uuid: assistantId,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Planning" },
+        },
+      } as unknown as SDKMessage);
+      const reasoning = {
+        type: "reasoning.delta",
+        messageId: `${assistantId}:thinking:0`,
+        delta: "Planning",
+      };
+      await vi.waitFor(() => expect(events).toContainEqual(reasoning));
+      pushAssistantText(value.fakeQuery, "ANSWER", assistantId);
       completeTurn(value.fakeQuery);
       await expect(requested).resolves.toEqual({ status: "succeeded" });
       expect(texts(events)).toEqual(["ANSWER"]);
+      expect(events.filter((event) => event.type === "reasoning.delta")).toEqual([reasoning]);
       expect(turns).toEqual([]);
 
       // The next continuation starts fresh instead of inheriting the abandoned Segment.
@@ -980,6 +997,70 @@ describe("ClaudeSdkTransport live autonomous continuation", () => {
       await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
       expect(turns[0]).toMatchObject({ nativeTurnKey: "00000000-0000-4000-8000-0000000000c1" });
       expect(texts(turns[0]?.events ?? [])).toEqual(["PART-C"]);
+    } finally {
+      await value.transport.close();
+    }
+  });
+
+  it("starts an autonomous Turn on the first thinking delta and rejects requested takeover", async () => {
+    const value = fixture();
+    const turns = recordAutonomousTurns(value.transport);
+    value.transport.setThreadEventHandler(() => undefined);
+    await value.transport.start();
+    try {
+      const assistantId = "00000000-0000-4000-8000-0000000000d1";
+      value.fakeQuery.push({
+        type: "stream_event",
+        uuid: assistantId,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "pending" },
+        },
+      } as unknown as SDKMessage);
+      const prefix = {
+        type: "reasoning.delta",
+        messageId: `${assistantId}:thinking:0`,
+        delta: "pending",
+      };
+      await vi.waitFor(() => expect(turns[0]?.events).toEqual([prefix]));
+      const requestedEvents: ClaudeTurnEvent[] = [];
+      await expect(
+        value.transport.runTurn("user message", "00000000-0000-4000-8000-0000000000d2", (event) =>
+          requestedEvents.push(event),
+        ),
+      ).rejects.toThrow("Claude SDK transport is busy");
+      value.fakeQuery.push({
+        type: "stream_event",
+        uuid: assistantId,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: " summary" },
+        },
+      } as unknown as SDKMessage);
+      const suffix = { ...prefix, delta: " summary" };
+      await vi.waitFor(() => expect(turns[0]?.events).toEqual([prefix, suffix]));
+      value.fakeQuery.push({
+        type: "assistant",
+        uuid: assistantId,
+        parent_tool_use_id: null,
+        message: {
+          content: [{ type: "thinking", thinking: "pending summary", signature: "unknown" }],
+        },
+      } as unknown as SDKMessage);
+      pushAssistantText(value.fakeQuery, "ANSWER", "00000000-0000-4000-8000-0000000000d3");
+      completeTurn(value.fakeQuery);
+
+      await vi.waitFor(() => expect(ended(turns)).toHaveLength(1));
+      const events = turns[0]?.events ?? [];
+      expect(events.filter((event) => event.type.startsWith("reasoning"))).toEqual([
+        prefix,
+        suffix,
+        { type: "reasoning.completed", messageId: `${assistantId}:thinking:0` },
+      ]);
+      expect(texts(events)).toEqual(["ANSWER"]);
+      expect(requestedEvents).toEqual([]);
     } finally {
       await value.transport.close();
     }
@@ -1085,6 +1166,21 @@ describe("ClaudeSdkTransport process environment", () => {
       CLAUDE_AGENT_SDK_CLIENT_APP: "codexhost-claude-code-adapter/0.0.0",
     });
     await value.transport.close();
+  });
+
+  it("enables Claude Code task tools unless the user already chose a value", async () => {
+    const enabled = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {});
+    await enabled.transport.start();
+    expect(options(enabled).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("1");
+    expect(options(enabled).env).not.toHaveProperty("CLAUDE_CODE_ENABLE_TASKS");
+    await enabled.transport.close();
+
+    const userChoice = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: "0",
+    });
+    await userChoice.transport.start();
+    expect(options(userChoice).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("0");
+    await userChoice.transport.close();
   });
 
   it("adds the Host Node runtime to the Claude process PATH", async () => {
@@ -1501,11 +1597,69 @@ describe("ClaudeSdkTransport Question callbacks", () => {
 
     await expect(turn).resolves.toEqual({ status: "succeeded" });
     expect(events).toEqual([
-      { type: "reasoning.delta", messageId: assistantId, delta: "visible" },
-      { type: "reasoning.completed", messageId: assistantId },
+      { type: "reasoning.delta", messageId: `${assistantId}:thinking:0`, delta: "visible" },
+      { type: "reasoning.completed", messageId: `${assistantId}:thinking:0` },
       { type: "text.delta", messageId: assistantId, delta: "answer" },
       { type: "message.completed", messageId: assistantId, checkpointId: assistantId },
     ]);
+    await value.transport.close();
+  });
+
+  it("delivers streamed thinking when the native stream ends without a Result", async () => {
+    const value = fixture();
+    await value.transport.start();
+    const events: ClaudeTurnEvent[] = [];
+    const turn = value.transport.runTurn(
+      "synthetic",
+      "00000000-0000-4000-8000-000000000002",
+      (event) => events.push(event),
+    );
+    const assistantId = "00000000-0000-4000-8000-000000000003";
+    value.fakeQuery.push({
+      type: "stream_event",
+      uuid: assistantId,
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "unfinished" },
+      },
+    } as unknown as SDKMessage);
+    const expected = [
+      { type: "reasoning.delta", messageId: `${assistantId}:thinking:0`, delta: "unfinished" },
+    ];
+    await vi.waitFor(() => expect(events).toEqual(expected));
+    value.fakeQuery.close();
+
+    await expect(turn).rejects.toThrow("Claude SDK Query ended unexpectedly");
+    expect(events).toEqual(expected);
+    await value.transport.close();
+  });
+
+  it("does not replay autonomous thinking on stream failure without a Result", async () => {
+    const value = fixture();
+    const autonomous = recordAutonomousTurns(value.transport);
+    await value.transport.start();
+    const assistantId = "00000000-0000-4000-8000-000000000004";
+    value.fakeQuery.push({
+      type: "stream_event",
+      uuid: assistantId,
+      event: {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "unfinished" },
+      },
+    } as unknown as SDKMessage);
+    const expected = {
+      nativeTurnKey: expect.stringMatching(/^autonomous-/u),
+      events: [
+        { type: "reasoning.delta", messageId: `${assistantId}:thinking:0`, delta: "unfinished" },
+      ],
+    };
+    await vi.waitFor(() => expect(autonomous).toMatchObject([expected]));
+    value.fakeQuery.close();
+
+    await vi.waitFor(() => expect(value.onFault).toHaveBeenCalled());
+    expect(autonomous).toMatchObject([expected]);
     await value.transport.close();
   });
 
@@ -2278,6 +2432,8 @@ describe("Claude history replacement fence", () => {
     } as unknown as SDKMessage);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+    // The closed SDK stream alone does not permit a later close to confirm release.
+    await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
     expect(value.fakeQuery.stopTask).toHaveBeenCalledWith("still-running");
   });
 
@@ -2315,14 +2471,80 @@ describe("Claude history replacement fence", () => {
     },
   );
 
-  it("rejects close if native output cannot be drained", async () => {
+  it.skipIf(process.platform === "win32")(
+    "does not signal a reused process group when retrying a timed-out shutdown",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("Missing native process ownership hook");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: ["-e", ""],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      await once(child, "exit");
+      if (!child.pid) throw new Error("Missing spawned process ID");
+      const pgid = -child.pid;
+      const realKill = process.kill.bind(process);
+      let groupExists = true;
+      const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid !== pgid) return realKill(pid, signal);
+        if (!groupExists) throw Object.assign(new Error("No such group"), { code: "ESRCH" });
+        return true;
+      });
+      try {
+        // The original group outlives its wrapper and does not exit before the deadline.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill).toHaveBeenCalledWith(pgid, "SIGTERM");
+        kill.mockClear();
+
+        // The kernel now reports an unrelated group at the same PGID.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill.mock.calls.filter(([pid]) => pid === pgid)).toEqual([[pgid, 0]]);
+
+        groupExists = false;
+        await expect(value.transport.close()).resolves.toBeUndefined();
+      } finally {
+        kill.mockRestore();
+      }
+    },
+  );
+
+  it("rechecks a late SDK output drain after a failed close without closing the Query again", async () => {
     const value = fixture();
     await value.transport.start();
+    const finishOutput = value.fakeQuery.close.bind(value.fakeQuery);
     const close = vi.spyOn(value.fakeQuery, "close").mockImplementation(() => undefined);
     try {
+      const first = value.transport.close();
+      expect(value.transport.close()).toBe(first);
+      await expect(first).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.start()).rejects.toThrow("closing");
       await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      finishOutput();
+      const confirmed = value.transport.close();
+      await expect(confirmed).resolves.toBeUndefined();
+      expect(value.transport.close()).toBe(confirmed);
+      expect(close).toHaveBeenCalledOnce();
+      expect(value.onFault).not.toHaveBeenCalled();
     } finally {
-      close.mockRestore();
+      finishOutput();
+    }
+  });
+
+  it("retries an SDK Query close that threw before it could finish output", async () => {
+    const value = fixture();
+    await value.transport.start();
+    vi.spyOn(value.fakeQuery, "close").mockImplementationOnce(() => {
+      throw new Error("failed to close Query");
+    });
+    try {
+      await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.close()).resolves.toBeUndefined();
+    } finally {
       value.fakeQuery.close();
     }
   });
@@ -3024,6 +3246,51 @@ describe("ClaudeSdkTransport Ultracode", () => {
     expect(value.onFault).toHaveBeenCalledWith(
       new Error("Claude Code kept Ultracode on after it was cleared"),
     );
+    await value.transport.close();
+  });
+
+  it("restores the previous Thinking when a Model switch into Ultracode is not honored", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("high"));
+    await value.transport.start();
+    value.fakeQuery.getSettings
+      .mockResolvedValueOnce({
+        applied: { ultracode: false, ultracodeRequested: true, ultracodeAvailable: false },
+        effective: { enableWorkflows: true },
+      })
+      .mockResolvedValueOnce({ applied: { ultracode: false } });
+
+    await expect(value.transport.setModel("opus", ultracode)).rejects.toMatchObject({
+      name: "ClaudeUltracodeUnavailableError",
+    });
+    expect(value.fakeQuery.setModel.mock.calls).toEqual([["opus"], [undefined]]);
+    // The restored selection is read back as off.
+    expect(value.fakeQuery.getSettings).toHaveBeenCalledTimes(2);
+    expect(value.onFault).not.toHaveBeenCalled();
+    await value.transport.setThinkingOption(harnessThinkingOptionIdSchema.parse("medium"));
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [enter],
+      [{ alwaysThinkingEnabled: true, effortLevel: "high", ultracode: false }],
+      [{ alwaysThinkingEnabled: true, effortLevel: "medium" }],
+    ]);
+    await value.transport.close();
+  });
+
+  it("switches Thinking with the Model and restores the Model when that fails", async () => {
+    const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("xhigh"));
+    await value.transport.start();
+    const auto = harnessThinkingOptionIdSchema.parse("auto");
+
+    value.fakeQuery.applyFlagSettings.mockRejectedValueOnce(new Error("flag write failed"));
+    await expect(value.transport.setModel("gemini", auto)).rejects.toThrow("flag write failed");
+    expect(value.fakeQuery.setModel.mock.calls).toEqual([["gemini"], [undefined]]);
+
+    await value.transport.setModel("gemini", auto);
+    await value.transport.setModel("gemini", auto);
+    expect(value.fakeQuery.applyFlagSettings.mock.calls).toEqual([
+      [{ alwaysThinkingEnabled: true, effortLevel: null }],
+      [{ alwaysThinkingEnabled: true, effortLevel: null }],
+    ]);
+    expect(value.onFault).not.toHaveBeenCalled();
     await value.transport.close();
   });
 

@@ -46,14 +46,13 @@ Cargo.toml
 Cargo.lock
 ```
 
-3. 检查并验证：
+3. 检查版本文件 diff（默认走远端 CI 门禁时不在本地跑全套 `npm run check`；仅在用户明确选择 `skip_ci=true` 跳过远端 CI 时才在本地执行 `npm run check` 兜底）：
 
 ```powershell
 git diff
-npm run check
 ```
 
-如果 `npm run check` 被已有的、与本次版本无关的问题阻断，必须报告问题，不要顺手修改无关文件。
+若因 `skip_ci=true` 执行本地 `npm run check` 时被已有的、与本次版本无关的问题阻断，必须报告问题，不要顺手修改无关文件。
 
 4. 提交并推送版本变更：
 
@@ -63,7 +62,7 @@ git commit -m "chore: prepare v<version>"
 git push origin main
 ```
 
-默认在推送 Tag 前，必须确认该版本提交对应的 `CI`（`main` 的 push run）已成功。可以在 CI 运行期间编写 Release Notes 并等待用户确认，但不得因本地 `npm run check` 已通过而自行跳过远端 CI。Tag 触发的发布工作流也会最多等待 30 分钟；远端 CI 失败或超时仍会阻止默认发布。用户明确选择不等待且不校验 CI 时，使用下述手动发布的 `skip_ci=true`，不能通过普通 Tag push 选择跳过。
+默认在推送 Tag 前，必须确认该版本提交对应的 `CI`（`main` 的 push run）已成功。可以在 CI 运行期间编写 Release Notes 并等待用户确认。Tag 触发的发布工作流也会最多等待 30 分钟；远端 CI 失败或超时仍会阻止默认发布。用户明确选择不等待且不校验 CI 时，使用下述手动发布的 `skip_ci=true`，不能通过普通 Tag push 选择跳过。
 
 5. 编写 Release Notes 到临时文件 `.git/release-notes-v<version>.md`。正文必须非空。What's New 先写中英摘要，再按 Features / Fixes 分节；中文完整列表放在英文列表之后，不要逐条中英夹杂。用户可见条目如有明确对应的 Issue 或已合入 PR，在条目末尾添加 `#编号`。Installation 及其后的 Contributors 只写英文。例如：
 

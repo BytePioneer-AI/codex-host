@@ -7,6 +7,19 @@
   gap: 6px;
 }
 
+.noticeRow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.noticeStack {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .userStack {
   display: flex;
   flex-direction: column;
@@ -19,6 +32,13 @@
      conversation column, where the axis variable is absent. */
   max-width: min(calc(var(--dsh-chat-content-width, 748px) * 0.702), 82%);
 }
+.annotationRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .bubble {
   /* Figma's 525px cap held as a share of the width axis (525/748 ≈ 0.702) so
      the bubble widens with a user-dragged or adaptive column; percentage
@@ -37,6 +57,12 @@
      decorated single-line message stays one line. */
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+:global(body[data-codexhost-wallpaper]) .bubble {
+  background: color-mix(in srgb, var(--dsw-specific-bubble) 84%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
 }
 
 .referenceSummary {
@@ -92,6 +118,12 @@
   background: var(--dsw-alias-bg-base);
 }
 
+:global(body[data-codexhost-wallpaper]) .compactionRow:has(.compactionBody) .compactionButton {
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 78%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
 /* A fenced code block in the summary pins its banner at the scrollport top,
    where this pinned toggle already sits, and the toggle's band covers the
    banner's Copy control. Stop the banner below the toggle instead, on the same
@@ -102,22 +134,29 @@
   top: var(--dsh-compaction-header-height);
 }
 
-/* Pinned, the toggle needs an opaque hover fill: the default translucent hover
-   token below would let the scrolling prose show through the moment the pointer
-   lands on the toggle to collapse it. */
-.compactionRow:has(.compactionBody) .compactionButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
+@media (hover: hover) {
+  /* Pinned, the toggle needs an opaque hover fill: the default translucent hover
+     token below would let the scrolling prose show through the moment the pointer
+     lands on the toggle to collapse it. */
+  .compactionRow:has(.compactionBody) .compactionButton:hover {
+    background: var(--dsw-alias-interactive-bg-hover-solid);
+  }
+
+  .compactionButton:hover {
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .compactionButton:not(:disabled):hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .compactionButton:not(:disabled) {
   cursor: pointer;
 }
 
-.compactionButton:hover {
+.compactionButton:not(:disabled):active {
   color: var(--dsw-alias-label-secondary);
-}
-
-.compactionButton:not(:disabled):hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
@@ -317,9 +356,17 @@
   gap: 8px;
 }
 
+.pendingAttachment {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
 .fileCard {
   display: inline-flex;
-  flex: 0 0 240px;
+  flex: none;
   align-items: center;
   gap: 10px;
   width: 240px;

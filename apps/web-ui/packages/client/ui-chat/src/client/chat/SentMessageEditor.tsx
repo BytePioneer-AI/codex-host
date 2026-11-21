@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { composeAnnotatedMessage } from "@codexhost/shared-contracts";
 import { Button } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { ChatViewInjected, ChatViewSlotProps, SentMessageEditing } from "../contract/slots.ts";
 import css from "./MessageItem.module.css";
@@ -14,9 +15,9 @@ export function useSentMessageEditing(
   return {
     targetSeq: send && !unavailable ? targetSeq : null,
     draft,
-    begin(seq, text, content) {
+    begin(seq, text, content, responseAnnotations = []) {
       if (pending.current || unavailable || seq !== targetSeq) return;
-      setDraft({ seq, text, content, pending: false, blocked: false });
+      setDraft({ seq, text, content, responseAnnotations, pending: false, blocked: false });
     },
     change(text) {
       setDraft((d) => (d && !d.pending ? { ...d, text } : d));
@@ -25,11 +26,18 @@ export function useSentMessageEditing(
       if (!pending.current) setDraft(null);
     },
     send() {
-      if (!send || !draft || draft.blocked || pending.current || unavailable || !draft.text.trim())
+      if (
+        !send ||
+        !draft ||
+        draft.blocked ||
+        pending.current ||
+        unavailable ||
+        (!draft.text.trim() && draft.responseAnnotations.length === 0)
+      )
         return;
       pending.current = true;
       setDraft({ ...draft, pending: true, error: undefined });
-      void send(draft.seq, draft.text)
+      void send(draft.seq, composeAnnotatedMessage(draft.responseAnnotations, draft.text))
         .then(
           (receipt) => {
             if (receipt.status === "accepted") setDraft(null);
@@ -112,7 +120,10 @@ export function SentMessageEditor({
           size="sm"
           type="submit"
           disabled={
-            draft.pending || draft.blocked || !draft.text.trim() || editing.targetSeq !== draft.seq
+            draft.pending ||
+            draft.blocked ||
+            (!draft.text.trim() && draft.responseAnnotations.length === 0) ||
+            editing.targetSeq !== draft.seq
           }
         >
           {draft.pending ? t("message.edit.sending") : t("message.edit.send")}

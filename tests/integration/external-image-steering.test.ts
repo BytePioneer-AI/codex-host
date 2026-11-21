@@ -1,6 +1,7 @@
 import type { HostCommand } from "@codexhost/harness-adapter";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
 
 import {
   createFixture,
@@ -244,11 +245,41 @@ describe("Renderer image submissions through the remote attachment sender and Ho
   });
 
   it.each([false, true])(
-    "does not cancel or drop a queued follow-up when an inline image has no saved path (native: %s)",
+    "stores an inline image without a path before steering (native: %s)",
     async (native) => {
       const f = await fixture(native);
       try {
-        await expect(f.steer([image])).rejects.toMatchObject({ code: -32602 });
+        await expect(f.steer([image])).resolves.toHaveProperty("turnId");
+        const commands: HostCommand[] = f.execute.mock.calls.map(([value]) => value);
+        const command = commands.find(
+          (value) => value.type === "turn.steer" || value.type === "turn.start",
+        );
+        if (!command || (command.type !== "turn.steer" && command.type !== "turn.start"))
+          throw new Error("Missing steered input");
+        expect(command.type).toBe(native ? "turn.steer" : "turn.start");
+        const part = command.input[0];
+        if (!part || part.type !== "text") throw new Error("Missing steered text");
+        const saved = /## [^\n]+: ([^\n]+)\nImage attachment: true/u.exec(part.text)?.[1];
+        if (!saved) throw new Error("Missing saved image path");
+        expect(await readFile(saved, "utf8")).toBe("hello");
+        expect(f.manager.createFileAttachment).not.toHaveBeenCalled();
+        expect(f.queued).toEqual([
+          { id: "follow-up", pausedReason: "User paused", input: [localImage] },
+        ]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "does not cancel or drop a queued follow-up when inline image data is invalid (native: %s)",
+    async (native) => {
+      const f = await fixture(native);
+      try {
+        await expect(
+          f.steer([{ type: "image", url: "data:image/png;base64,%%%" }]),
+        ).rejects.toMatchObject({ code: -32602 });
         expect(f.execute).not.toHaveBeenCalled();
         expect(f.manager.createFileAttachment).not.toHaveBeenCalled();
         expect(f.queued).toEqual([

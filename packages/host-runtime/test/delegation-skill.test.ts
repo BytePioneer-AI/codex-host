@@ -59,6 +59,8 @@ describe("delegation Skill installation", () => {
   });
 
   it.each([
+    ["upstream v14 Skill with split CLI help", "codexhost-delegation-v14.md"],
+    ["fork v13 Skill with question instructions", "codexhost-delegation-fork-v13.md"],
     ["v4 Skill shipped in v0.4.0-v0.6.0", "codexhost-delegation-v4.md"],
     ["v8 Skill that ran codexhost from PATH", "codexhost-delegation-v8.md"],
     ["v9 Skill without child-session name guidance", "codexhost-delegation-v9.md"],
@@ -85,10 +87,13 @@ describe("delegation Skill installation", () => {
     await import("node:fs/promises").then(({ mkdir }) =>
       mkdir(path.dirname(agents), { recursive: true }),
     );
-    await writeFile(agents, "user content\n", "utf8");
+    const edited =
+      (await readFile(new URL("./fixtures/codexhost-delegation-v14.md", import.meta.url), "utf8")) +
+      "\nUser instructions\n";
+    await writeFile(agents, edited, "utf8");
     const results = await installDelegationSkills({ homeDirectory: root });
     expect(results.map((result) => result.status)).toEqual(["conflict", "installed"]);
-    await expect(readFile(agents, "utf8")).resolves.toBe("user content\n");
+    await expect(readFile(agents, "utf8")).resolves.toBe(edited);
   });
 
   it("briefly explains external integration and credentials without replacing Host access", () => {
@@ -104,14 +109,14 @@ describe("delegation Skill installation", () => {
 
   it("uses existing Threads directly and keeps viewing requests read-only", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain("For a new delegation, create an independent");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread\ndirectly");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("operate on that Thread directly");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("is ambiguous, ask the user to identify it");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session read-only");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("short task name that tells it apart");
   });
 
   it("routes natural agent requests and points execution to the authoritative help", () => {
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 11");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("version: 15");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("@agent) to independently perform a task");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("session's content, progress, or results");
     expect(CODEXHOST_DELEGATION_SKILL).toContain("Not for recapping the current conversation");
@@ -120,8 +125,18 @@ describe("delegation Skill installation", () => {
     expect(CODEXHOST_DELEGATION_SKILL).toContain('"%CODEXHOST_CLI_PATH%" delegate --help');
     expect(CODEXHOST_DELEGATION_SKILL).toContain("If CODEXHOST_CLI_PATH is unset, try");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("CODEXHOST_CLI_NODE_PATH");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up message");
-    expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel its current Turn");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("send a follow-up");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("cancel,");
     expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--timeout-ms");
+  });
+
+  it("teaches the pending-Question read, answer, and re-watch workflow", () => {
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("answer a pending question");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("stops or needs input");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("follow the answer command's help");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("After answering, read or watch again");
+    expect(CODEXHOST_DELEGATION_SKILL).toContain("additional authorization belong to");
+    expect(CODEXHOST_DELEGATION_SKILL).not.toContain("--answers-file");
+    expect(CODEXHOST_DELEGATION_SKILL).not.toContain("pendingQuestions");
   });
 });

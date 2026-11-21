@@ -21,6 +21,13 @@
   background: var(--dsw-alias-bg-base);
 }
 
+:global(body[data-codexhost-wallpaper]) .root[data-expanded] [data-open] [data-disclosure-row] {
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 76%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border-radius: var(--dsw-radius-sm, 8px);
+}
+
 .leading {
   flex-shrink: 0;
 }

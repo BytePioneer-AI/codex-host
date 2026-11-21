@@ -57,7 +57,11 @@ async function run(args: string[], candidates: readonly string[]): Promise<strin
   let missing: Error | undefined;
   for (const command of candidates) {
     try {
-      const { stdout } = await exec(command, args, { timeout: STATUS_TIMEOUT_MS });
+      // macOS Tailscale.app starts a GUI unless this is set; the official CLI ignores it.
+      const { stdout } = await exec(command, args, {
+        timeout: STATUS_TIMEOUT_MS,
+        env: { ...process.env, TAILSCALE_BE_CLI: "1" },
+      });
       return stdout;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

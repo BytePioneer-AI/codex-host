@@ -47,6 +47,13 @@ describe("Codex thread/fork protocol boundary", () => {
         params: { threadId: "thread-1", beforeTurnId: "turn-2" },
       }),
     ).toMatchObject({ beforeTurnId: "turn-2", excludeTurns: false });
+    expect(
+      decodeThreadForkRequest({
+        id: 4,
+        method: "thread/fork",
+        params: { threadId: "thread-1", attachToSource: true, excludeTurns: true },
+      }),
+    ).toMatchObject({ attachToSource: true, excludeTurns: true });
     expect(decodeThreadForkRequest({ id: 3, method: "thread/read", params: {} })).toBeNull();
   });
 
@@ -65,6 +72,13 @@ describe("Codex thread/fork protocol boundary", () => {
         params: { threadId: "thread-1", excludeTurns: "yes" },
       }),
     ).toThrow("excludeTurns must be boolean");
+    expect(() =>
+      decodeThreadForkRequest({
+        id: 3,
+        method: "thread/fork",
+        params: { threadId: "thread-1", attachToSource: true, ephemeral: true },
+      }),
+    ).toThrow("cannot combine attachToSource with ephemeral");
   });
 
   it("decodes the current paginated thread/revert boundary", () => {

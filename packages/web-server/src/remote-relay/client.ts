@@ -20,6 +20,9 @@ import {
   paths,
   registrationContent,
   streamWindowSize,
+  type CertificateAuthority,
+  type RegistrationResponse,
+  type RelayNotice,
 } from "@codexhost/remote-relay/protocol";
 import type { WebRelayState } from "@codexhost/shared-contracts";
 import type { relayIdentity } from "./identity.ts";
@@ -36,7 +39,8 @@ export function connectRelay(options: {
   name?: string;
   invite?: string;
   connecting(reason?: ConnectingReason): void;
-  registered(hostname: string): void;
+  registered(registration: RegistrationResponse): void;
+  certificateAuthority?(authority: CertificateAuthority): void;
   stopped(reason: StopReason): void;
   notice?(until: string): void;
   tcp(stream: ServerHttp2Stream, request: IncomingHttpHeaders): void;
@@ -141,8 +145,7 @@ export function connectRelay(options: {
         stream.once("end", () => {
           if (finished) return;
           try {
-            const { hostname } = JSON.parse(body) as { hostname: string };
-            options.registered(hostname);
+            options.registered(JSON.parse(body) as RegistrationResponse);
             connectingReason = undefined;
             registeredAt = performance.now();
             clearTimeout(deadline);
@@ -161,8 +164,10 @@ export function connectRelay(options: {
         stream.once("end", () => {
           if (finished) return;
           try {
-            const notice = JSON.parse(body) as { quota: string; until: string };
-            if (notice.quota === "exhausted") options.notice?.(notice.until);
+            const notice = JSON.parse(body) as RelayNotice;
+            if ("quota" in notice && notice.quota === "exhausted") options.notice?.(notice.until);
+            if ("certificateAuthority" in notice)
+              options.certificateAuthority?.(notice.certificateAuthority);
             stream.end();
           } catch {
             stream.close(constants.NGHTTP2_REFUSED_STREAM);

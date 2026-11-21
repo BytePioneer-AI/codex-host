@@ -21,28 +21,34 @@ it("saves LAN options then exits 42, and calls the Launcher's autostart contract
   assert.deepEqual(initial.directCandidates, networkAccessUrls("0.0.0.0", 4474));
   const secret = (await server.access()).secret;
   for (const method of ["codexhost/lanSet", "codexhost/autostartSet"] as const) {
-    for (const headers of [{ host: "phone.example" }, { "x-forwarded-for": "198.51.100.1" }]) {
-      const rejected = await server.call(
-        method,
-        { enabled: true },
-        { authorization: `Bearer ${secret}`, ...headers },
-      );
-      assert.equal(rejected.error.code, "auth/local-access-required");
-    }
     assert.equal((await server.call(method, { enabled: "true" })).ok, false);
   }
   assert.equal(server.autostart(), "off");
   assert.equal(readServiceOptions(server.data).host, "127.0.0.1");
-  assert.deepEqual((await server.call("codexhost/autostartSet", { enabled: true })).value, {
-    status: "on",
-  });
+  assert.deepEqual(
+    (
+      await server.call(
+        "codexhost/autostartSet",
+        { enabled: true },
+        { authorization: `Bearer ${secret}`, host: "phone.example" },
+      )
+    ).value,
+    { status: "on" },
+  );
   assert.equal(server.autostart(), "on");
   // Only registration gets npm's entrypoint; the Web environment terminals inherit does not.
   assert.deepEqual(server.launcherEnv("on"), { node: "/n", wrapper: "/w" });
   assert.deepEqual(server.launcherEnv("status"), {});
-  assert.deepEqual((await server.call("codexhost/autostartSet", { enabled: false })).value, {
-    status: "off",
-  });
+  assert.deepEqual(
+    (
+      await server.call(
+        "codexhost/autostartSet",
+        { enabled: false },
+        { authorization: `Bearer ${secret}`, "x-forwarded-for": "198.51.100.1" },
+      )
+    ).value,
+    { status: "off" },
+  );
   server.setAutostart("invalid executable missing");
   assert.deepEqual((await server.access()).background?.autostart, {
     status: "invalid",
@@ -53,13 +59,27 @@ it("saves LAN options then exits 42, and calls the Launcher's autostart contract
   assert.equal(failed.ok, false);
   assert.equal(failed.error.message, "systemd user service unavailable");
   server.setAutostart("off");
-  assert.deepEqual((await server.call("codexhost/lanSet", { enabled: false })).value, {
-    changed: false,
-  });
+  assert.deepEqual(
+    (
+      await server.call(
+        "codexhost/lanSet",
+        { enabled: false },
+        { authorization: `Bearer ${secret}`, host: "phone.example" },
+      )
+    ).value,
+    { changed: false },
+  );
   assert.deepEqual(server.exits, []);
-  assert.deepEqual((await server.call("codexhost/lanSet", { enabled: true })).value, {
-    changed: true,
-  });
+  assert.deepEqual(
+    (
+      await server.call(
+        "codexhost/lanSet",
+        { enabled: true },
+        { authorization: `Bearer ${secret}`, "x-forwarded-for": "198.51.100.1" },
+      )
+    ).value,
+    { changed: true },
+  );
   assert.equal(readServiceOptions(server.data).host, "0.0.0.0");
   for (let i = 0; !server.restarted() && i < 100; i++)
     await new Promise((done) => setTimeout(done, 50));

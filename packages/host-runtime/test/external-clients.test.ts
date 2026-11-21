@@ -13,6 +13,7 @@ import {
   startExternalClientServer,
   type ExternalClientServer,
 } from "../src/external-client-server.js";
+import { externalClientRouter } from "../src/external-client-routes.js";
 import { ExternalClientRegistry, defaultExternalClientsPath } from "../src/external-clients.js";
 
 function outputText(stream: PassThrough): string {
@@ -137,6 +138,56 @@ describe("external clients", () => {
     expect(await ok.json()).toEqual({ harnesses: [] });
     expect(callers).toEqual(["script"]);
     expect(listHarnesses).toHaveBeenCalledOnce();
+  });
+
+  it("gives plain HTTP requests the same defaults as the CLI and accepts harness for harnessId", async () => {
+    const api = {
+      start: vi.fn<DelegationControlApi["start"]>(async () => ({}) as never),
+      read: vi.fn(async () => ({})),
+      wait: vi.fn(async () => ({})),
+      list: vi.fn(async () => ({})),
+    };
+    const watch = vi.fn(async () => ({}));
+    const route = externalClientRouter({
+      api: api as unknown as DelegationControlApi,
+      watchApi: { watch, watches: vi.fn() } as never,
+    });
+    const call = { client: "script" } as Parameters<typeof route>[0];
+
+    await route(call, "/v1/delegate/start", { harness: "pi", cwd: "/work", task: "go" });
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ harnessId: "pi" }));
+    expect(api.start.mock.calls[0]?.[0]).not.toHaveProperty("harness");
+    await expect(
+      route(call, "/v1/delegate/start", { cwd: "/work", task: "go" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "harnessId is required",
+    });
+    await expect(
+      route(call, "/v1/delegate/start", { harness: "pi", harnessId: "codex", task: "go" }),
+    ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    // A malformed id is refused before any worktree could be created for it.
+    await expect(
+      route(call, "/v1/delegate/start", { harnessId: null, task: "go", worktree: "fix/x" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "harnessId must be a non-empty string",
+    });
+    expect(api.start).toHaveBeenCalledTimes(1);
+
+    await route(call, "/v1/thread/read", { threadId: "t" });
+    expect(api.read).toHaveBeenCalledWith({ threadId: "t", view: "result" });
+    await route(call, "/v1/thread/wait", { threadId: "t" });
+    expect(api.wait).toHaveBeenCalledWith({ threadId: "t", view: "result", timeoutMs: 30_000 });
+    await route(call, "/v1/thread/watch", { threadId: "t" });
+    expect(watch).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: "t", timeoutMs: 29 * 60_000 }),
+    );
+    // A missing sort used to reach the Runtime as undefined and surface as INTERNAL_ERROR.
+    await route(call, "/v1/thread/list", {});
+    expect(api.list).toHaveBeenCalledWith({ limit: 25, sort: "created-desc" });
+    await route(call, "/v1/thread/list", { limit: 3, sort: "updated-asc" });
+    expect(api.list).toHaveBeenLastCalledWith({ limit: 3, sort: "updated-asc" });
   });
 
   it("publishes a private descriptor without the token and removes it on close", async () => {

@@ -89,7 +89,7 @@ export function registerThreadReferenceDiscovery(ctx: Context): void {
               value: id,
               showAlias: false,
               section: t("discovery.sessions"),
-              description: [workspace, reference.threadId].filter(Boolean).join(" · "),
+              description: workspace,
               icon: "session" as const,
             }));
         },

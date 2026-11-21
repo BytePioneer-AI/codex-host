@@ -183,6 +183,7 @@ export async function runSharedHostService(
           stockCodex: values["stock-codex"] ?? "",
           official,
           owner,
+          desktopExtensionBackends: host.desktopExtensionBackends,
           store,
           prices,
           ...(updateCoordinator ? { updateCoordinator } : {}),

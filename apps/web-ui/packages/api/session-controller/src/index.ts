@@ -343,7 +343,11 @@ export class SessionController extends TypertRemoteService {
    * @returns provider-grouped models, the deployment default, and isolated provider failures.
    */
   @Remote("modelCatalog")
-  modelCatalog(): Promise<ModelCatalog> {
+  modelCatalog(
+    request?: { sessionId: SessionId } | { readonly refresh: true; readonly harnessId?: string },
+  ): Promise<ModelCatalog> {
+    // Web gateways route remote Session catalogs and explicit local Host refreshes.
+    void request;
     return buildModelCatalog(this.ctx);
   }
 

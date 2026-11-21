@@ -22,6 +22,11 @@ import {
   type SidebarBrowserQuality,
 } from "./sidebar-browser-tab.ts";
 
+import type { AccessAuth } from "./auth.ts";
+import type { RequestTrust } from "./request-trust.ts";
+import type { SidebarBrowserDirect } from "./sidebar-browser-direct.ts";
+import { SidebarBrowserFrameTotals } from "./sidebar-browser-frame-totals.ts";
+
 const MAX_TABS = 12;
 /** A tab without viewers keeps its page this long, so reloads and network switches reattach. */
 const DETACHED_TAB_MS = 5 * 60_000;
@@ -34,9 +39,11 @@ export interface SidebarBrowserOptions {
   /** Persistent profile directory owned by the Web server. */
   readonly profileDirectory: string;
   readonly quality?: Partial<SidebarBrowserQuality>;
+  readonly direct?: SidebarBrowserDirect;
 }
 
 export class SidebarBrowser {
+  private readonly frameTotals = new SidebarBrowserFrameTotals();
   private readonly tabs = new Map<string, SidebarBrowserTab>();
   private readonly sockets = new WebSocketServer({ noServer: true, maxPayload: 128 * 1024 });
   private readonly alive = new WeakSet<WebSocket>();
@@ -54,33 +61,52 @@ export class SidebarBrowser {
     this.sweeper.unref();
   }
 
-  /** Accept an already authenticated, same-origin upgrade. */
-  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
+  /** Admit a same-origin upgrade and route it using the same tab key. */
+  upgrade(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    trust: RequestTrust,
+    auth?: AccessAuth,
+  ): void {
     const key = new URL(request.url ?? "/", "http://local").searchParams.get(
       SIDEBAR_BROWSER_TAB_PARAM,
     );
-    if (!isSidebarBrowserTabKey(key) || this.closed) {
+    const credential = auth?.admitUpgrade(request, socket, key !== null);
+    if (auth !== undefined && credential === undefined) return;
+    const direct = this.options.direct;
+    const attachDirect =
+      key === null && direct && credential !== undefined
+        ? (ws: WebSocket) => direct.attach(ws, credential, trust.offersSidebarDirect(request))
+        : undefined;
+    if (this.closed || (key === null ? attachDirect === undefined : !isSidebarBrowserTabKey(key))) {
       socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       return;
     }
     this.sockets.handleUpgrade(request, socket, head, (ws) => {
       this.alive.add(ws);
       ws.on("pong", () => this.alive.add(ws));
+      if (key === null) {
+        attachDirect?.(ws);
+        return;
+      }
       const tab = this.tab(key);
       if (tab === undefined)
         ws.close(
           1013,
           `At most ${String(MAX_TABS)} browser tabs can be open; close one and retry.`,
         );
-      else tab.attach(ws);
+      else tab.attach(ws, (peer) => this.options.direct?.session(peer, credential));
     });
   }
 
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.sweeper);
+    this.options.direct?.close();
     await Promise.all([...this.tabs.values()].map((tab) => tab.close()));
     this.tabs.clear();
+    this.frameTotals.close();
     await this.stopBrowser();
   }
 
@@ -97,7 +123,7 @@ export class SidebarBrowser {
       }
     }
     if (this.tabs.size >= MAX_TABS) return undefined;
-    tab = new SidebarBrowserTab(key, () => this.browser(), this.quality);
+    tab = new SidebarBrowserTab(key, () => this.browser(), this.quality, this.frameTotals.add);
     this.tabs.set(key, tab);
     return tab;
   }

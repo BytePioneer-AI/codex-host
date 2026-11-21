@@ -195,6 +195,41 @@ describe("development stop", () => {
     ).rejects.toThrow("Managed services are still running");
   });
 
+  it("keeps stopping later services when one does not exit, then reports it", async () => {
+    const console = candidate(300, "/node /release/app/console-server.mjs serve");
+    let processes = [supervisor, web, console];
+    const stopped = [];
+    await expect(
+      stopDevelopment({
+        arguments_: [],
+        list: async () => processes,
+        identify,
+        log: () => {},
+        stop: async (target) => {
+          if (target.kind === "web") throw new Error(`PID ${target.pid} did not exit`);
+          stopped.push(target.kind);
+          processes = processes.filter((process) => process.pid !== target.pid);
+        },
+      }),
+    ).rejects.toThrow("Some services were not stopped: web PID 101");
+    expect(stopped).toEqual(["web-supervisor", "console"]);
+  });
+
+  it("names a connected SSH listener that restarts the shared Host", async () => {
+    const listener = candidate(400, "codexhost remote app-server listener      ");
+    const log = vi.fn();
+    await expect(
+      stopDevelopment({
+        arguments_: [],
+        list: async () => [listener, supervisor],
+        identify,
+        stop: async () => {},
+        log,
+      }),
+    ).rejects.toThrow("disconnect the SSH client");
+    expect(log.mock.calls.flat().join("\n")).toContain("remote listener PID 400");
+  });
+
   it("shows help without enumerating or stopping services", async () => {
     const list = vi.fn();
     const log = vi.fn();

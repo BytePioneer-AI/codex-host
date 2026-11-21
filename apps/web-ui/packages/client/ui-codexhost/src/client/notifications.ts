@@ -40,19 +40,24 @@ export async function notificationState(): Promise<NotificationState> {
   return subscription === null || subscription === undefined ? "off" : "on";
 }
 
+async function subscribeAndReport(): Promise<void> {
+  const worker = await registration();
+  await navigator.serviceWorker.ready;
+  let subscription = await worker.pushManager.getSubscription();
+  if (subscription === null) {
+    const { publicKey } = await pushApi.config();
+    subscription = await worker.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToBytes(publicKey),
+    });
+  }
+  await pushApi.subscribe(subscription.toJSON());
+}
+
 export async function enableNotifications(): Promise<NotificationState> {
   const permission = await Notification.requestPermission();
   if (permission !== "granted") return permission === "denied" ? "denied" : "off";
-  const worker = await registration();
-  await navigator.serviceWorker.ready;
-  const { publicKey } = await pushApi.config();
-  const subscription =
-    (await worker.pushManager.getSubscription()) ??
-    (await worker.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToBytes(publicKey),
-    }));
-  await pushApi.subscribe(subscription.toJSON());
+  await subscribeAndReport();
   return "on";
 }
 
@@ -72,17 +77,10 @@ export function ensureServiceWorker(): void {
   void registration().catch(() => undefined);
 }
 
-/**
- * Tie this browser's existing subscription to the token it is signed in with now. The server drops
- * subscriptions when their token is replaced, while the browser still holds the subscription.
- */
+/** Restore missing subscriptions and associate them with the current sign-in token. */
 export function resubmitNotifications(): void {
-  if (!("serviceWorker" in navigator) || !("Notification" in window)) return;
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window))
+    return;
   if (Notification.permission !== "granted") return;
-  void (async () => {
-    const worker = await navigator.serviceWorker.getRegistration("./");
-    const subscription = await worker?.pushManager.getSubscription();
-    if (subscription !== null && subscription !== undefined)
-      await pushApi.subscribe(subscription.toJSON());
-  })().catch(() => undefined);
+  void subscribeAndReport().catch(() => undefined);
 }

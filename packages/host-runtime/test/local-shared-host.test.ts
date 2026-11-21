@@ -7,7 +7,18 @@ import { afterEach, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import { HostClientChannel } from "@codexhost/desktop-control";
-import { encodeHarnessPluginRoute, harnessIdSchema } from "@codexhost/shared-contracts";
+import {
+  CONSOLE_OPEN_METHOD,
+  DESKTOP_EXTENSIONS_LIST_METHOD,
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
+  hostThreadIdSchema,
+  THREAD_TREE_WATCH_METHOD,
+  THREAD_TREE_SNAPSHOT_METHOD,
+  threadTreeWatchResultSchema,
+} from "@codexhost/shared-contracts";
+import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { PINNED_THREAD_SECTION_ID } from "../src/external-thread-pins.js";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { AppServerHost } from "../src/app-server-host.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
@@ -15,9 +26,17 @@ import { SharedThreadBridge } from "../src/shared-thread-bridge.js";
 import {
   connectLocalSharedHost,
   connectLocalSharedExternalHost,
+  runLocalDesktopBridge,
 } from "../src/local-shared-host.js";
+import {
+  CODEX_RUNTIME_REMOVED_MESSAGE,
+  CodexRuntimeFilesRemovedError,
+} from "../src/codex-runtime/backend-files.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import { runSharedHostService } from "../src/shared-host-service.js";
+import { sharedHostDesktop } from "../src/shared-host-desktop.js";
+import { prepareLocalCodex } from "../src/native-account-host.js";
+import { ModelPriceCatalog } from "../src/model-prices.js";
 import { readNativeWorkspaceSnapshot } from "../src/native-workspace-snapshot.js";
 import {
   createFixture,
@@ -31,7 +50,10 @@ afterEach(async () => {
   for (const run of cleanup.splice(0).reverse()) await run();
 });
 
-async function setup() {
+async function setup(
+  desktopSession?: Parameters<typeof startClientChannelServer>[0]["desktopSession"],
+  environment: NodeJS.ProcessEnv = {},
+) {
   const root = mkdtempSync(path.join(tmpdir(), "local-shared-owner-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const store = new MappingStore({ directory: path.join(root, "mapping-store") });
@@ -42,6 +64,12 @@ async function setup() {
     stockCodexPath: "/unused",
     arguments: [],
     externalOnly: true,
+    environment: {
+      HOME: root,
+      CODEX_HOME: path.join(root, ".codex"),
+      CODEXHOST_DATA_DIR: root,
+      ...environment,
+    },
     desktopInput: owner.input,
     desktopOutput: owner.output,
     diagnosticOutput: new PassThrough(),
@@ -62,7 +90,7 @@ async function setup() {
     owner: "service",
     externalSession: (streams) => owner.createSession(streams),
     shutdown: { runningTasks: () => new Set(host.runningThreadIds()).size, stop },
-    desktopSession: (streams) => owner.createSession(streams),
+    desktopSession: desktopSession ?? ((streams) => owner.createSession(streams)),
   });
   cleanup.push(() => server.close());
   const web = new HostClientChannel(path.join(root, "client-hosts"), server.descriptor);
@@ -93,6 +121,180 @@ async function setup() {
   }
   return { root, owner, adapter, host, server, web, store, gui, stop };
 }
+
+it("lists Desktop extensions through the local shared Host client channel", async () => {
+  const { web } = await setup();
+  await expect(web.request(DESKTOP_EXTENSIONS_LIST_METHOD, {})).resolves.toMatchObject({
+    configuration: { revision: 0, enabled: [] },
+    extensions: [],
+  });
+});
+
+it("rejects Desktop extension management through the SSH-managed shared Host client channel", async () => {
+  const { web } = await setup(undefined, { CODEXHOST_REMOTE_SSH_MANAGED: "1" });
+  await expect(web.request(DESKTOP_EXTENSIONS_LIST_METHOD, {})).rejects.toMatchObject({
+    code: -32601,
+    message: "Desktop extension settings are only available on the local Host",
+  });
+});
+
+it("keeps unlisted Desktop methods unavailable on the shared Host", async () => {
+  const { owner } = await setup();
+  const desktop = owner.connect();
+  cleanup.push(() => desktop.close());
+  for (const method of [CONSOLE_OPEN_METHOD, "codexhost/desktop/extensions/unknown"]) {
+    await expect(desktop.request(method, {})).resolves.toMatchObject({
+      error: { code: -32601, message: "Method is unavailable on the shared Thread service" },
+    });
+  }
+});
+
+it("returns an actionable failure when authenticated Desktop admission finds a removed runtime", async () => {
+  const register = vi.fn();
+  const connected = new Set<AppServerHost>();
+  const running = new Set<Promise<number>>();
+  const f = await setup((streams, request) => {
+    expect(request.headers["x-codexhost-desktop-context"]).toBeTypeOf("string");
+    return sharedHostDesktop(
+      {
+        environment: { CODEXHOST_DATA_DIR: f.root },
+        runtimeUrl: import.meta.url,
+        stockCodex: path.join(f.root, "codex.exe"),
+        official,
+        owner: f.owner,
+        store: f.store,
+        prices: new ModelPriceCatalog({
+          directory: path.join(f.root, "prices"),
+          diagnose: () => {},
+        }),
+        delegation: () => undefined,
+        register,
+        connected,
+        running,
+      },
+      streams,
+      request,
+    );
+  });
+  const official = await prepareLocalCodex({
+    stockCodexPath: path.join(f.root, "codex.exe"),
+    arguments: ["app-server"],
+    environment: { CODEX_HOME: path.join(f.root, "native-home"), CODEXHOST_DATA_DIR: f.root },
+    diagnosticOutput: new PassThrough(),
+    deferStart: true,
+  });
+  vi.spyOn(official, "configureStartup").mockRejectedValue(new CodexRuntimeFilesRemovedError());
+  const stdin = vi.spyOn(process.stdin, "pipe").mockImplementation((destination) => destination);
+  const pause = vi.spyOn(process.stdin, "pause");
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    const result = await runLocalDesktopBridge(
+      {
+        CODEXHOST_LAUNCHER_EXECUTABLE: path.join(f.root, "unused-launcher"),
+        CODEXHOST_DATA_DIR: f.root,
+      },
+      path.join(f.root, "unused-runtime.mjs"),
+      path.join(f.root, "codex.exe"),
+      ["app-server"],
+    );
+    expect(result).toBe(1);
+    expect(pause).toHaveBeenCalled();
+    expect(stderr.mock.calls.map(([message]) => String(message)).join("")).toContain(
+      CODEX_RUNTIME_REMOVED_MESSAGE,
+    );
+    expect(f.stop).not.toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+    expect(connected.size).toBe(0);
+    expect(running.size).toBe(0);
+    await expect(f.web.request("thread/list", {})).resolves.toMatchObject({ data: [] });
+  } finally {
+    stdin.mockRestore();
+    pause.mockRestore();
+    stderr.mockRestore();
+    await official.close();
+  }
+});
+
+it.each([true, false])("forwards current Desktop browser access (%s)", async (enabled) => {
+  const pipe = path.join(tmpdir(), "codex-app-tools-synthetic.sock");
+  const browserAccess = {
+    BROWSER_USE_ACCESS_EXECUTOR_ID: "synthetic-executor",
+    BROWSER_USE_ACCESS_PIPE_PATH: path.join(tmpdir(), "browser-access-synthetic.sock"),
+    BROWSER_USE_ACCESS_VERIFYING_IDENTITY: "synthetic-verifying-identity",
+    CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS: "[]",
+  };
+  const f = await setup((streams, request) =>
+    sharedHostDesktop(
+      {
+        environment: {
+          CODEXHOST_DATA_DIR: f.root,
+          ...Object.fromEntries(
+            Object.keys(browserAccess).map((key) => [key, "stale-service-value"]),
+          ),
+        },
+        runtimeUrl: import.meta.url,
+        stockCodex: path.join(f.root, "codex.exe"),
+        official,
+        owner: f.owner,
+        store: f.store,
+        prices: new ModelPriceCatalog({
+          directory: path.join(f.root, "prices"),
+          diagnose: () => {},
+        }),
+        delegation: () => undefined,
+        register: () => undefined,
+        connected: new Set<AppServerHost>(),
+        running: new Set<Promise<number>>(),
+      },
+      streams,
+      request,
+    ),
+  );
+  const official = await prepareLocalCodex({
+    stockCodexPath: path.join(f.root, "codex.exe"),
+    arguments: ["app-server"],
+    environment: { CODEX_HOME: path.join(f.root, "native-home"), CODEXHOST_DATA_DIR: f.root },
+    diagnosticOutput: new PassThrough(),
+    deferStart: true,
+  });
+  const configured: NodeJS.ProcessEnv[] = [];
+  vi.spyOn(official, "configureStartup").mockImplementation(async ({ environment }) => {
+    configured.push(environment);
+    // Stop after admission; only the forwarded startup environment matters here.
+    throw new CodexRuntimeFilesRemovedError();
+  });
+  const stdin = vi.spyOn(process.stdin, "pipe").mockImplementation((destination) => destination);
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    await runLocalDesktopBridge(
+      {
+        CODEXHOST_LAUNCHER_EXECUTABLE: path.join(f.root, "unused-launcher"),
+        CODEXHOST_DATA_DIR: f.root,
+        CODEX_APP_TOOLS_PIPE_PATH: pipe,
+        ...(enabled ? browserAccess : {}),
+        BROWSER_USE_ACCESS_UNRELATED: "must-not-cross",
+        NODE_OPTIONS: "must-not-cross",
+        UNRELATED_DESKTOP_SECRET: "must-not-cross",
+      },
+      path.join(f.root, "unused-runtime.mjs"),
+      path.join(f.root, "codex.exe"),
+      ["app-server"],
+    );
+    expect(configured).toHaveLength(1);
+    expect(configured[0]?.CODEX_APP_TOOLS_PIPE_PATH).toBe(pipe);
+    for (const [key, value] of Object.entries(browserAccess)) {
+      if (enabled) expect(configured[0]?.[key]).toBe(value);
+      else expect(configured[0]).not.toHaveProperty(key);
+    }
+    expect(configured[0]).not.toHaveProperty("BROWSER_USE_ACCESS_UNRELATED");
+    expect(configured[0]).not.toHaveProperty("NODE_OPTIONS");
+    expect(configured[0]).not.toHaveProperty("UNRELATED_DESKTOP_SECRET");
+  } finally {
+    stdin.mockRestore();
+    stderr.mockRestore();
+    await official.close();
+  }
+});
 
 it("SSH and local clients create and resume the same external sessions across separate stores", async () => {
   const { root, web, adapter, store } = await setup();
@@ -198,6 +400,85 @@ it.each(["Web", "Desktop"])(
   },
 );
 
+it("projects the shared owner's Turn state without forwarding owner subscription IDs", async () => {
+  const { web, adapter, store, gui } = await setup();
+  const { viewer, bridge } = gui();
+  await viewer.ready;
+  const native = vi
+    .spyOn(OfficialRuntimeClient.prototype, "request")
+    .mockImplementation(async (method, params): Promise<JsonObject> => {
+      if (method === "threadSection/list")
+        return {
+          result: {
+            data: [{ id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null }],
+            nextCursor: null,
+          },
+        };
+      if (method === "thread/read") {
+        if (typeof params.threadId !== "string") throw new Error("Missing native Thread ID");
+        return { result: { thread: { id: params.threadId, status: { type: "notLoaded" } } } };
+      }
+      return { result: { data: [], nextCursor: null } };
+    });
+  try {
+    const { thread } = await web.request<{ thread: { id: string } }>("thread/start", {
+      model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }),
+      cwd: "/synthetic",
+    });
+    const child = hostThreadIdSchema.parse(thread.id);
+    await store.createDelegation({
+      delegationId: hostThreadIdSchema.parse("delegated"),
+      parentHostThreadId: hostThreadIdSchema.parse("native-parent"),
+      childHostThreadId: child,
+      taskDigest: "a".repeat(64),
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: harnessIdSchema.parse("pi"),
+    });
+    writeRequest(viewer.desktopInput, { id: 99, method: THREAD_TREE_WATCH_METHOD, params: {} });
+    const { subscriptionId, snapshot } = threadTreeWatchResultSchema.parse(
+      (await viewer.collector.waitFor((m) => m.id === 99)).result,
+    );
+    let revision = snapshot.revision;
+    const next = async (status: string) => {
+      const msg = await viewer.collector.waitFor((m) => {
+        if (m.method !== THREAD_TREE_SNAPSHOT_METHOD) return false;
+        const result = threadTreeWatchResultSchema.parse(m.params);
+        return (
+          result.subscriptionId === subscriptionId &&
+          result.snapshot.revision > revision &&
+          result.snapshot.nodes[child]?.status === status
+        );
+      }, 1000);
+      revision = threadTreeWatchResultSchema.parse(msg.params).snapshot.revision;
+    };
+    await web.request("turn/start", {
+      threadId: child,
+      input: [{ type: "text", text: "A shared Turn" }],
+    });
+    await next("running");
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Missing shared Session");
+    session.succeedTurn();
+    await next("idle");
+    bridge.close();
+    await next("unknown");
+    expect(
+      viewer.collector.messages
+        .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+        .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+    ).toEqual(expect.arrayContaining([subscriptionId]));
+    expect(
+      new Set(
+        viewer.collector.messages
+          .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+          .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+      ),
+    ).toEqual(new Set([subscriptionId]));
+  } finally {
+    native.mockRestore();
+  }
+});
+
 it.each([0, 1])("shutdown reports %i running tasks before stopping", async (count) => {
   const { root, web, adapter, stop } = await setup();
   if (count === 1) {
@@ -253,12 +534,13 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   });
   mkdirSync(root, { recursive: true });
   const file = path.join(root, ".codex-global-state.json");
-  const text = JSON.stringify({
-    "project-order": ["selected"],
-    "local-projects": {
-      a: { id: "selected", name: "Project", rootPaths: ["/real/project"] },
-      b: { id: "hidden", name: "Hidden", rootPaths: ["/other"] },
-    },
+  const selected = { id: "selected", name: "Project", rootPaths: ["/real/project"] };
+  const first = { id: "first", name: "First", rootPaths: ["/first"] };
+  const hidden = { id: "hidden", name: "Hidden", rootPaths: ["/other"] };
+  const foreign = { id: "foreign", name: "Foreign", rootPaths: ["/foreign"] };
+  const state = {
+    "project-order": ["remote-project", "first", "selected", "first"],
+    "local-projects": { a: selected, b: hidden, c: first, duplicate: hidden, foreign },
     "thread-project-assignments": {
       thread: { projectKind: "local", projectId: "selected" },
       remote: { projectKind: "remote", projectId: "remote" },
@@ -266,15 +548,42 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     "projectless-thread-ids": ["unselected"],
     "pinned-thread-ids": ["thread"],
     privateData: "must not be projected",
-  });
+  };
+  const text = JSON.stringify(state);
   writeFileSync(file, text);
   expect(await readNativeWorkspaceSnapshot(environment)).toEqual({
-    projects: [{ id: "selected", name: "Project", rootPaths: ["/real/project"] }],
+    projects: [first, selected],
     assignments: { thread: "selected" },
     projectless: ["unselected"],
     pinned: [],
   });
   expect(readFileSync(file, "utf8")).toBe(text);
+  const migrated = {
+    ...state,
+    "app-server-project-id-by-legacy-project-id-by-host": {
+      [`local:${path.resolve(root)}`]: { hidden: "native-hidden", first: "native-first" },
+      "remote-ssh:other": { foreign: "native-foreign" },
+    },
+  };
+  writeFileSync(file, JSON.stringify(migrated));
+  expect((await readNativeWorkspaceSnapshot(environment)).projects).toEqual([
+    first,
+    selected,
+    hidden,
+  ]);
+  for (const key of ["a", "duplicate"] as const) {
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...migrated,
+        "local-projects": {
+          ...state["local-projects"],
+          [key]: { ...state["local-projects"][key], rootPaths: [123] },
+        },
+      }),
+    );
+    await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow(/rootPaths/u);
+  }
   for (const invalid of ["{bad", "[]", "null", '"wrong"', '{"project-order":[123]}']) {
     writeFileSync(file, invalid);
     await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow();

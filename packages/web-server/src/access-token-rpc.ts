@@ -1,26 +1,14 @@
-/** Access token RPCs, available only when the request is local access. */
+/** Access token RPCs, available when authentication is enabled. */
 import type { WebAccessState } from "@codexhost/shared-contracts";
 import { z } from "zod";
 import { setTailscaleServe } from "./tailscale-serve.ts";
 
 import type { AccessTokenStore } from "./access-tokens.ts";
-import { RpcError, type RpcContext, type RpcRegistry } from "./transport.ts";
-import type { RequestAuth } from "./auth.ts";
+import { RpcError, type RpcRegistry } from "./transport.ts";
 
-export function localAccessTokens(
-  tokens: AccessTokenStore | undefined,
-  auth: RequestAuth | undefined,
-  port: number,
-): AccessTokenStore {
+export function managedAccessTokens(tokens: AccessTokenStore | undefined): AccessTokenStore {
   if (tokens === undefined)
     throw new RpcError("auth/disabled", "Authentication is not enabled", {});
-  if (auth?.local !== true) {
-    throw new RpcError(
-      "auth/local-access-required",
-      "This operation is only available on this computer",
-      { url: `http://127.0.0.1:${String(port)}` },
-    );
-  }
   return tokens;
 }
 
@@ -42,24 +30,25 @@ export function registerAccessTokenRpc(
     >;
   },
 ): void {
-  const managed = (context: RpcContext): AccessTokenStore =>
-    localAccessTokens(tokens, context.auth, listener.port());
-  rpc.register("codexhost/tailscaleServeSet", async (args, context) => {
-    managed(context);
+  rpc.register("codexhost/tailscaleServeSet", async (args) => {
+    managedAccessTokens(tokens);
     const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(args);
     return setTailscaleServe(listener.port(), enabled);
   });
-  rpc.register("codexhost/accessTokenGet", async (_args, context): Promise<WebAccessState> => {
-    const store = managed(context);
+  rpc.register("codexhost/accessTokenGet", async (): Promise<WebAccessState> => {
+    const store = managedAccessTokens(tokens);
     return { ...store.current(), ...(await listener.access()) };
   });
   rpc.register(
     "codexhost/accessTokenRegenerate",
     async (_args, context): Promise<WebAccessState> => {
-      const store = managed(context);
-      // A browser may be signed in with the token it replaces; this response still reports it.
+      const store = managedAccessTokens(tokens);
+      // A browser may be signed in with the token it replaces; keep its response open and rotate
+      // its cookie so the caller stays signed in while every other session is revoked.
       context.auth?.release();
-      return { ...store.regenerate(), ...(await listener.access()) };
+      const next = store.regenerate();
+      context.auth?.renewCookie?.(next.secret);
+      return { ...next, ...(await listener.access()) };
     },
   );
 }

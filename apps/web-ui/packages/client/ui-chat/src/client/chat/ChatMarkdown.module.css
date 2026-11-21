@@ -1,0 +1,58 @@
+.linkMenu[data-menu-material] {
+  --link-menu-fill: color-mix(
+    in srgb,
+    var(--dsw-alias-bg-layer-2) 68%,
+    var(--dsw-alias-bg-overlay)
+  );
+  --dsw-menu-surface-fill: color-mix(in srgb, var(--link-menu-fill) 78%, transparent);
+  --dsw-menu-backdrop-filter: blur(20px) saturate(140%);
+  --dsw-alias-interactive-bg-hover: color-mix(in srgb, var(--dsw-alias-link) 18%, transparent);
+  --dsw-alias-menu-icon: var(--dsw-alias-label-primary);
+  min-width: 148px;
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 20%),
+    0 2px 5px rgb(0 0 0 / 10%),
+    0 9px 22px rgb(0 0 0 / 18%);
+}
+
+.linkMenu[data-menu-material] [role="menuitem"] {
+  min-height: 24px;
+  gap: 8px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font: 500 13px/18px var(--dsw-font-family);
+}
+
+.linkMenu[data-menu-material] [role="menuitem"] > span:has(> svg),
+.linkMenu[data-menu-material] [role="menuitem"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (pointer: coarse) {
+  .linkMenu[data-menu-material] [role="menuitem"] {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .linkMenu[data-menu-material] {
+    --dsw-menu-surface-fill: var(--link-menu-fill);
+    --dsw-menu-backdrop-filter: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .linkMenu[data-menu-material] {
+    --dsw-menu-surface-fill: Canvas;
+    --dsw-menu-backdrop-filter: none;
+    border-color: CanvasText;
+  }
+
+  .linkMenu[data-menu-material] [role="menuitem"]:is(:hover, :focus-visible) {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}

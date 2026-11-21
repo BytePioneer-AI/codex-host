@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -9,6 +9,7 @@ import { DataDir } from "../src/store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
+import { FakeChHost, startFakeChDebugger } from "./support/ch-host.ts";
 import { defined } from "./support/defined.ts";
 
 const busyMessage =
@@ -34,6 +35,56 @@ async function fixture(t: TestContext) {
   assert.equal((await rpc.dispatch("session/list", { args: {} })).ok, true);
   return { host, client, rpc };
 }
+
+it("uses only the running Host's projects even when Web has a different CODEX_HOME", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-host-workspace-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const webProject = { id: "web-only", name: "Web only", rootPaths: [root] };
+  writeFileSync(
+    join(root, ".codex-global-state.json"),
+    JSON.stringify({
+      "local-projects": { "web-only": webProject },
+      "app-server-project-id-by-legacy-project-id-by-host": {
+        [`local:${root}`]: { "web-only": "native-web-only" },
+      },
+    }),
+  );
+  const host = new FakeChChannel();
+  host.add("imported", join(root, "host-project"));
+  const dataDirectory = join(root, "host-data");
+  const directory = join(dataDirectory, "client-hosts");
+  const control = await startFakeChChannel(host, directory, "service");
+  t.after(() => control.close());
+  const client = await createChHostClient({
+    directory,
+    launch: { launcher: "/unused", runtime: "/unused", dataDirectory, codexHome: root },
+  });
+  t.after(() => client.close());
+  assert.deepEqual(await client.projects(["imported"]), { ...host.projectSnapshot, pinned: [] });
+});
+
+it("reads legacy CDP projects in Desktop order, omitting missing and repeated IDs", async (t) => {
+  const host = new FakeChHost();
+  const project = (id: string) => ({ id, name: id, rootPaths: [join(tmpdir(), id)] });
+  const first = project("first");
+  const second = project("second");
+  host.projectSnapshot.projects.push(first, second, project("unlisted"));
+  host.projectSnapshot.assignments = { assigned: first.id, unrequested: second.id };
+  host.projectSnapshot.projectless = ["projectless", "unrequested-projectless"];
+  const debuggerServer = await startFakeChDebugger(host, {
+    projectOrder: [second.id, "missing", first.id, second.id],
+  });
+  const client = await createChHostClient({ cdp: debuggerServer.endpoint });
+  t.after(async () => {
+    client.close();
+    await debuggerServer.close();
+  });
+  assert.deepEqual(await client.projects(["assigned", "projectless"]), {
+    projects: [second, first],
+    assignments: { assigned: first.id },
+    projectless: ["projectless"],
+  });
+});
 
 it("preserves a busy Host snapshot error in Web history and allows an explicit retry", async (t) => {
   const { host, rpc } = await fixture(t);

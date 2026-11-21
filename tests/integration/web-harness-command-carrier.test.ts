@@ -84,7 +84,7 @@ for (const attachment of ["none", "file", "image", "both"] as const)
         }
         if (attachment === "image" || attachment === "both")
           attachments.push({ type: "image", mediaType: "image/png", data: png });
-        const prepared = await inputs.prepare(threadId, [
+        const { input: prepared } = await inputs.prepare(threadId, [
           { type: "text", text: request },
           ...attachments,
         ]);
@@ -97,7 +97,7 @@ for (const attachment of ["none", "file", "image", "both"] as const)
         if (attachment !== "none") {
           expect(preparedText.startsWith("\n# Files mentioned by the user:")).toBe(true);
           // The old plain slash prefix reproduces the failure after the real preparation step.
-          const old = await inputs.prepare(threadId, [
+          const { input: old } = await inputs.prepare(threadId, [
             { type: "text", text: `${skill.invocation} ${body}` },
             ...attachments,
           ]);
@@ -165,16 +165,17 @@ for (const mode of ["queue", "steer"] as const)
         })(),
         "queued.txt",
       );
-      const prepared = await new ChFileInputs(files, new WebImages(data), async (id) => id).prepare(
-        threadId,
-        [
-          {
-            type: "text",
-            text: `${harnessCommandReference(skill.invocation).ref} ${body} ${delegation}`,
-          },
-          { type: "file", receiptId: saved.receiptId },
-        ],
-      );
+      const { input: prepared } = await new ChFileInputs(
+        files,
+        new WebImages(data),
+        async (id) => id,
+      ).prepare(threadId, [
+        {
+          type: "text",
+          text: `${harnessCommandReference(skill.invocation).ref} ${body} ${delegation}`,
+        },
+        { type: "file", receiptId: saved.receiptId },
+      ]);
       if (mode === "steer") session.completeCancellationOnRequest();
       const response = await fixture.host.handleClientRequest(
         mode === "steer" ? "turn/steer" : "turn/start",

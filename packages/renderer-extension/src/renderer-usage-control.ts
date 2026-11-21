@@ -33,6 +33,7 @@ interface RendererUsageMessages {
   readonly latestCacheHit: string;
   readonly sessionCacheHit: string;
   readonly outputSpeed: string;
+  readonly averageOutputSpeed: string;
   readonly apiOutputSpeed: string;
   readonly apiOutputSpeedDescription: string;
   readonly timeToFirstOutput: string;
@@ -59,6 +60,7 @@ const ENGLISH_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   latestCacheHit: "Latest cache hit (CH)",
   sessionCacheHit: "Average cache hit",
   outputSpeed: "Output speed (TPS)",
+  averageOutputSpeed: "Average output speed (TPS)",
   apiOutputSpeed: "API average speed",
   apiOutputSpeedDescription:
     "Output tokens / native API time, including first-token wait; not generation TPS.",
@@ -86,6 +88,7 @@ const CHINESE_USAGE_MESSAGES: RendererUsageMessages = Object.freeze({
   latestCacheHit: "最近缓存命中（CH）",
   sessionCacheHit: "平均缓存命中",
   outputSpeed: "输出速度（TPS）",
+  averageOutputSpeed: "平均输出速度（TPS）",
   apiOutputSpeed: "API 平均速度",
   apiOutputSpeedDescription: "输出 Token ÷ 原生 API 耗时，含首字等待；不是生成 TPS。",
   timeToFirstOutput: "首 token（TTFT）",
@@ -251,6 +254,7 @@ export function rendererUsageHasDisplayData(usage: ThreadUsageSnapshot | null): 
   return (
     usage?.cacheHitRatePercent !== undefined ||
     usage?.sessionCacheHitRatePercent !== undefined ||
+    usage?.sessionOutputTokensPerSecond !== undefined ||
     usage?.outputTokensPerSecond !== undefined ||
     usage?.apiOutputTokensPerSecond !== undefined ||
     usage?.timeToFirstOutputMs !== undefined ||
@@ -422,6 +426,12 @@ function renderDetails(
     session.push([
       messages.sessionCacheHit,
       formatRendererCacheHitRate(usage.sessionCacheHitRatePercent),
+    ]);
+  }
+  if (usage?.sessionOutputTokensPerSecond !== undefined) {
+    session.push([
+      messages.averageOutputSpeed,
+      formatRendererTokenRate(usage.sessionOutputTokensPerSecond, locale),
     ]);
   }
   if (usage?.cacheHitRatePercent !== undefined) {

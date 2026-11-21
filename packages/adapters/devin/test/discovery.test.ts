@@ -101,10 +101,10 @@ describe("Devin sessionless availability", () => {
     ]);
   });
 
-  it("invalidates a completed full catalog after an explicit status refresh", async () => {
+  it("invalidates the default full catalog after a project's explicit status refresh", async () => {
     const value = adapter();
     await value.inspect();
-    await value.inspect({ purpose: "availability", refresh: true });
+    await value.inspect({ cwd: root, purpose: "availability", refresh: true });
     await value.inspect();
     expect((await requests()).filter(({ method }) => method === "session/new")).toHaveLength(2);
   });

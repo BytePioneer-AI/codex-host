@@ -56,6 +56,7 @@ import {
   type ClaudeTransportTurnResult,
   type ClaudeTurnEvent,
   type ClaudeTurnTransport,
+  type ClaudeUserContent,
 } from "./transport.js";
 
 const CLIENT_APP = "codexhost-claude-code-adapter/0.0.0";
@@ -432,6 +433,7 @@ function isRootOutput(event: ClaudeTurnEvent): boolean {
     case "text.delta":
     case "reasoning.delta":
     case "reasoning.completed":
+    case "narration.completed":
     case "message.completed":
     case "tool.started":
     case "tool.progress":
@@ -462,7 +464,11 @@ function isRootOutput(event: ClaudeTurnEvent): boolean {
 
 export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly sessionId: string;
-  readonly #children: ChildProcessWithoutNullStreams[] = [];
+  readonly #children: {
+    child: ChildProcessWithoutNullStreams;
+    exited: Promise<void>;
+    fence: "unattempted" | "unconfirmed" | "confirmed";
+  }[] = [];
   readonly #abortTimeoutMs: number;
   readonly #closeTimeoutMs: number;
   readonly #command: string | undefined;
@@ -501,10 +507,13 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #threadEventHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   #idleLive = false;
   #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
+  readonly #subagentIdsByName = new Map<string, string>();
   readonly #interactions = new Map<string, PendingInteraction>();
   readonly #controlRequestIds = new Set<string>();
   readonly #workflowAgentLabels = new Map<string, string>();
+  #closing = false;
   #closePromise: Promise<void> | null = null;
+  #backgroundStop: Promise<void> | null = null;
   #consumeTask: Promise<void> | null = null;
   #stderrTail = "";
   #interactionOrdinal = 0;
@@ -556,8 +565,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   async start(): Promise<void> {
+    if (this.#closing) throw new Error("Claude SDK transport is closing");
     if (this.#started) return;
-    if (this.#closePromise) throw new Error("Claude SDK transport is closing");
     const executable = resolveClaudeCodeExecutable({
       ...(this.#command ? { command: this.#command } : {}),
       environment: this.#environment,
@@ -574,7 +583,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         // Adaptive Thinking is redacted by default: the API streams `thinking_delta`
         // frames carrying only token estimates and empty text, so no Reasoning Item
         // would ever start. Summarized display is the official channel for readable
-        // Thinking and is what Claude Code's own TUI renders.
+        // Thinking and is what Claude Code's own TUI renders. The SDK passes this as
+        // `--thinking adaptive`, which only turns Thinking on: Claude Code sends adaptive
+        // Thinking to Models that support it and a token budget to the rest. The caller
+        // fits the effort to the Model's catalog levels.
         thinking: thinking.enabled
           ? { type: "adaptive", display: "summarized" }
           : { type: "disabled" },
@@ -589,6 +601,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         includePartialMessages: true,
         forwardSubagentText: true,
         env: withNodeRuntimeOnPath({
+          // Non-interactive Claude Code omits TaskCreate/TaskGet/TaskList/TaskUpdate unless
+          // asked; they feed the Codex plan panel. A user-set value wins. CLAUDE_CODE_ENABLE_TASKS
+          // stays unset because it hides these tools again.
+          CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
           ...this.#environment,
           CLAUDE_CODE_ENTRYPOINT: SESSION_ENTRYPOINT,
           CLAUDE_AGENT_SDK_CLIENT_APP: CLIENT_APP,
@@ -610,10 +626,13 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         await this.#verifyUltracode(activeQuery);
       }
     } catch (error) {
-      activeQuery.close();
-      this.#query = null;
+      if (!this.#closing) {
+        activeQuery.close();
+        this.#query = null;
+      }
       throw error;
     }
+    if (this.#closing) throw new Error("Claude SDK transport is closing");
     this.#started = true;
     this.#consumeTask = this.#consume(activeQuery);
   }
@@ -684,42 +703,59 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   async getContextUsage(
     detail: "summary" | "full" = "full",
   ): Promise<ClaudeTransportContextUsage | null> {
-    const activeQuery = this.#query;
+    const activeQuery = this.#closing ? null : this.#query;
     if (!this.#started || !activeQuery) return null;
     return parseContextUsage(await activeQuery.getContextUsage({ detail }));
   }
 
   getPermissionMode(): ClaudePermissionMode {
-    if (!this.#started || !this.#query) throw new Error("Claude SDK transport is not started");
+    if (this.#closing || !this.#started || !this.#query)
+      throw new Error("Claude SDK transport is not started");
     return this.#permissionMode;
   }
 
-  async setModel(model?: string): Promise<void> {
-    const activeQuery = this.#query;
+  async setModel(
+    model?: string,
+    thinkingOptionId: HarnessThinkingOptionId = this.#thinkingOptionId,
+  ): Promise<void> {
+    const activeQuery = this.#closing ? null : this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
-    const thinking = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const id = parseClaudeThinkingOptionId(thinkingOptionId);
+    const previous = claudeThinkingConfiguration(this.#thinkingOptionId);
+    const thinking = claudeThinkingConfiguration(id);
     const previousModel = this.#currentModel;
     await activeQuery.setModel(model);
+    if (id !== this.#thinkingOptionId && !thinking.ultracode) {
+      try {
+        await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, previous));
+      } catch (error) {
+        await this.#restoreOrFault(() => activeQuery.setModel(previousModel));
+        throw error;
+      }
+    }
     if (thinking.ultracode) {
       try {
         await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, thinking));
         await this.#verifyUltracode(activeQuery);
       } catch (error) {
-        // Ultracode stays selected, so the Model it cannot run on is rejected instead.
+        // The Model it cannot run on is rejected; restore the previous Model and Thinking.
         await this.#restoreOrFault(async () => {
           await activeQuery.setModel(previousModel);
-          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(thinking, null));
+          await activeQuery.applyFlagSettings(claudeThinkingFlagSettings(previous, thinking));
           // A write Claude Code accepts may still not take effect; confirm the restored state.
-          await this.#verifyUltracode(activeQuery);
+          await (previous.ultracode
+            ? this.#verifyUltracode(activeQuery)
+            : this.#verifyUltracodeOff(activeQuery));
         });
         throw error;
       }
     }
     this.#currentModel = model;
+    this.#thinkingOptionId = id;
   }
 
   async setThinkingOption(thinkingOptionId: HarnessThinkingOptionId): Promise<void> {
-    const activeQuery = this.#query;
+    const activeQuery = this.#closing ? null : this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     const id = parseClaudeThinkingOptionId(thinkingOptionId);
     const previous = claudeThinkingConfiguration(this.#thinkingOptionId);
@@ -783,7 +819,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   async setPermissionMode(permissionMode: ClaudePermissionMode): Promise<void> {
-    const activeQuery = this.#query;
+    const activeQuery = this.#closing ? null : this.#query;
     if (!this.#started || !activeQuery) throw new Error("Claude SDK transport is not started");
     await activeQuery.setPermissionMode(permissionMode);
     this.#permissionMode = permissionMode;
@@ -816,26 +852,25 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   runTurn(
-    text: string,
+    content: ClaudeUserContent,
     userMessageId: string,
     onEvent: (event: ClaudeTurnEvent) => void,
   ): Promise<ClaudeTransportTurnResult> {
-    if (this.#closePromise || !this.#started || !this.#query) {
+    if (this.#closing || !this.#started || !this.#query) {
       return Promise.reject(new Error("Claude SDK transport is not started"));
     }
     if (this.#active || this.#autonomous?.live) {
       return Promise.reject(new Error("Claude SDK transport is busy"));
     }
-    // A Segment without Root output has no Turn yet. The requested Turn takes over the native
-    // stream, so the events that Segment still holds must not reappear in a later Turn.
-    const unclaimed = this.#autonomous?.events ?? [];
+    // A Segment without Root output has no Turn yet. Transfer its accumulator and held
+    // events to the requested Turn. A thinking delta is Root output, just like text.
+    const takeover = this.#autonomous;
+    const unclaimed = takeover?.events ?? [];
     this.#autonomous = null;
     const promise = new Promise<ClaudeTransportTurnResult>((resolve, reject) => {
       this.#rootToolCalls.clear();
       this.#active = {
-        accumulator: new ClaudeNativeTurnAccumulator(
-          this.#provider ? { provider: this.#provider } : {},
-        ),
+        accumulator: takeover?.accumulator ?? this.#newAccumulator(),
         onEvent,
         resolve,
         reject,
@@ -844,7 +879,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     for (const event of unclaimed) onEvent(event);
     this.#input.push({
       type: "user",
-      message: { role: "user", content: text },
+      message: { role: "user", content },
       parent_tool_use_id: null,
       session_id: this.sessionId,
       uuid: userMessageId as `${string}-${string}-${string}-${string}-${string}`,
@@ -862,8 +897,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
    * The Turn ending first therefore does not reject it, and a missing `queued` receipt resolves
    * after a bounded wait so callers that serialize requests are never held indefinitely.
    */
-  steer(text: string, messageId: string, onTakeover?: (started: boolean) => void): Promise<void> {
-    if (this.#closePromise || !this.#started || !this.#query || !this.canSteerActiveTurn()) {
+  steer(
+    content: ClaudeUserContent,
+    messageId: string,
+    onTakeover?: (started: boolean) => void,
+  ): Promise<void> {
+    if (this.#closing || !this.#started || !this.#query || !this.canSteerActiveTurn()) {
       return Promise.reject(new ClaudeSteerMissedTurnError());
     }
     const promise = new Promise<void>((resolve, reject) => {
@@ -872,7 +911,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     try {
       this.#input.push({
         type: "user",
-        message: { role: "user", content: text },
+        message: { role: "user", content },
         parent_tool_use_id: null,
         session_id: this.sessionId,
         uuid: messageId as `${string}-${string}-${string}-${string}-${string}`,
@@ -984,7 +1023,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   async abort(): Promise<void> {
     const accumulator =
       this.#active?.accumulator ?? (this.#autonomous?.live ? this.#autonomous.accumulator : null);
-    const activeQuery = this.#query;
+    const activeQuery = this.#closing ? null : this.#query;
     if (!accumulator || !activeQuery) throw new Error("Claude SDK transport has no active Turn");
     accumulator.requestCancel();
     try {
@@ -997,12 +1036,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   async abortContinuation(): Promise<void> {
     if (this.#active) return this.abort();
-    const activeQuery = this.#query;
+    const activeQuery = this.#closing ? null : this.#query;
     if (!activeQuery) throw new Error("Claude SDK transport is not running");
     // A steer takeover can interrupt on its first idle frame, before consume creates the accumulator.
-    const idle = (this.#idleAccumulator ??= new ClaudeNativeTurnAccumulator(
-      this.#provider ? { provider: this.#provider } : {},
-    ));
+    const idle = (this.#idleAccumulator ??= this.#newAccumulator());
     idle.requestCancel();
     try {
       await this.#stopRequest(activeQuery.interrupt(), INTERRUPT_TIMEOUT_MESSAGE);
@@ -1023,8 +1060,15 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   close(): Promise<void> {
-    if (!this.#closePromise) this.#closePromise = this.#close();
-    return this.#closePromise;
+    if (this.#closePromise) return this.#closePromise;
+    this.#closing = true;
+    const attempt = Promise.resolve().then(() => this.#close());
+    this.#closePromise = attempt;
+    void attempt.catch(() => {
+      // Retire only the attempt, never reopen admission to this Transport.
+      if (this.#closePromise === attempt) this.#closePromise = null;
+    });
+    return attempt;
   }
 
   #canUseTool(
@@ -1035,6 +1079,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const sink = this.#interactionSink();
     const validToolName = boundedDisplayText(toolName, APPROVAL_TITLE_MAX_LENGTH);
     if (
+      this.#closing ||
       !sink ||
       !validToolName ||
       typeof options.requestId !== "string" ||
@@ -1161,24 +1206,36 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   async #close(): Promise<void> {
-    this.#rejectPendingSteers();
     const failures: unknown[] = [];
+    this.#rejectPendingSteers();
     this.#closeInteractions("all", "cancelled");
-    try {
+    const hasOwnedProcess = this.#children.some(({ child }) => child.pid !== undefined);
+    if (this.#backgroundTasks.size > 0) {
+      // A timeout does not cancel the outstanding native request.
       const timeout = rejectAfter(this.#closeTimeoutMs, "Claude background tasks did not stop");
       try {
-        await Promise.race([this.#stopBackgroundTasks(), timeout.promise]);
+        await Promise.race([
+          (this.#backgroundStop ??= this.#stopBackgroundTasks()),
+          timeout.promise,
+        ]);
+      } catch (error) {
+        // Confirmed process-tree shutdown supersedes a missing task terminal. Without
+        // an owned process, closing the SDK stream alone cannot prove the task stopped.
+        if (!hasOwnedProcess) failures.push(error);
       } finally {
         timeout.cancel();
       }
-    } catch (error) {
-      // Confirmed process-tree shutdown below supersedes a missing task terminal. Without
-      // an owned process, closing the SDK stream alone cannot prove the task stopped.
-      if (!this.#children.some((child) => child.pid !== undefined)) failures.push(error);
     }
     const stopOwnedProcesses = async (): Promise<void> => {
       const stopped = await Promise.allSettled(
-        this.#children.map((child) => closeClaudeProcessGroup(child, this.#closeTimeoutMs)),
+        this.#children.map(async (owned) => {
+          // Do not signal a previously confirmed group again: its PID may have been reused.
+          if (owned.fence === "confirmed") return;
+          const retry = owned.fence === "unconfirmed";
+          owned.fence = "unconfirmed";
+          await closeClaudeProcessGroup(owned.child, this.#closeTimeoutMs, retry);
+          owned.fence = "confirmed";
+        }),
       );
       for (const result of stopped) if (result.status === "rejected") failures.push(result.reason);
     };
@@ -1188,6 +1245,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#input.end();
     try {
       this.#query?.close();
+      this.#query = null;
     } catch (error) {
       failures.push(error);
     }
@@ -1195,7 +1253,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const exitTimeout = rejectAfter(this.#closeTimeoutMs, "Claude SDK process did not exit");
     try {
       await Promise.race([
-        Promise.all(this.#children.map((child) => this.#waitForExit(child))),
+        Promise.all(this.#children.map(({ exited }) => exited)),
         exitTimeout.promise,
       ]);
     } catch (error) {
@@ -1214,7 +1272,6 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     } finally {
       drainTimeout.cancel();
     }
-    this.#query = null;
     const active = this.#active;
     this.#rootToolCalls.clear();
     this.#active = null;
@@ -1222,8 +1279,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     this.#idleAccumulator = null;
     this.#idleLive = false;
     active?.reject(new Error("Claude SDK transport closed"));
+    if (!hasOwnedProcess && this.#backgroundTasks.size > 0 && failures.length === 0)
+      failures.push(new Error("Claude background tasks remain active"));
     if (failures.length > 0)
       throw new AggregateError(failures, "Claude SDK shutdown could not be confirmed");
+    this.#backgroundTasks.clear();
   }
 
   hasBackgroundTasks(): boolean {
@@ -1232,12 +1292,12 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   /** The native `task_notification` that follows reports the stopped task. */
   async stopBackgroundTask(taskId: string): Promise<void> {
-    if (!this.#query) throw new Error("Claude SDK transport is not running");
+    if (this.#closing || !this.#query) throw new Error("Claude SDK transport is not running");
     await this.#stopRequest(this.#query.stopTask(taskId), "Claude background task stop timed out");
   }
 
   async stopTasks(taskIds: readonly string[]): Promise<void> {
-    const activeQuery = this.#query;
+    const activeQuery = this.#closing ? null : this.#query;
     if (!activeQuery) throw new Error("Claude SDK transport is not running");
     const ids = [...new Set(taskIds)];
     await Promise.all(
@@ -1362,6 +1422,13 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
+  #newAccumulator(): ClaudeNativeTurnAccumulator {
+    return new ClaudeNativeTurnAccumulator({
+      subagentIdsByName: this.#subagentIdsByName,
+      ...(this.#provider ? { provider: this.#provider } : {}),
+    });
+  }
+
   async #consume(activeQuery: Query): Promise<void> {
     try {
       for await (const message of activeQuery) {
@@ -1391,11 +1458,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           continue;
         }
         if (this.#idleLive && this.#idleHandler) {
-          const idle =
-            this.#idleAccumulator ??
-            (this.#idleAccumulator = new ClaudeNativeTurnAccumulator(
-              this.#provider ? { provider: this.#provider } : {},
-            ));
+          const idle = (this.#idleAccumulator ??= this.#newAccumulator());
           const interpreted = idle.consume(message);
           for (const event of interpreted.events) this.#idleHandler.onEvent(event);
           if (interpreted.terminal) {
@@ -1410,9 +1473,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         const autonomous =
           this.#autonomous ??
           (this.#autonomous = {
-            accumulator: new ClaudeNativeTurnAccumulator(
-              this.#provider ? { provider: this.#provider } : {},
-            ),
+            accumulator: this.#newAccumulator(),
             events: [],
             userMessageId: null,
             live: false,
@@ -1448,10 +1509,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           handler.onTerminal(interpreted.terminal);
         }
       }
-      if (!this.#closePromise) throw new Error("Claude SDK Query ended unexpectedly");
+      if (!this.#closing) throw new Error("Claude SDK Query ended unexpectedly");
     } catch (error) {
       const active = this.#active;
-      if (!this.#closePromise) this.#onFault(error);
+      if (!this.#closing) this.#onFault(error);
       this.#closeInteractions("all", "cancelled");
       this.#rejectPendingSteers();
       this.#rootToolCalls.clear();
@@ -1461,6 +1522,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   }
 
   #spawn(options: SpawnOptions): ChildProcessWithoutNullStreams {
+    if (this.#closing) throw new Error("Claude SDK transport is closing");
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
       env: options.env,
@@ -1472,16 +1534,15 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     child.stderr.on("data", (chunk: Buffer | string) => {
       this.#stderrTail = sanitizeDiagnosticTail(`${this.#stderrTail}${chunk.toString()}`);
     });
-    this.#children.push(child);
-    return child;
-  }
-
-  #waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
-    if (processExited(child)) return Promise.resolve();
-    return new Promise((resolve) => {
+    const exited = new Promise<void>((resolve) => {
       child.once("exit", () => resolve());
-      child.once("error", () => resolve());
+      // A spawn error can leave no process; an abort error for a real PID is not exit.
+      child.once("error", () => {
+        if (child.pid === undefined) resolve();
+      });
     });
+    this.#children.push({ child, exited, fence: "unattempted" });
+    return child;
   }
 }
 

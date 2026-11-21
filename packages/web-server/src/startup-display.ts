@@ -14,7 +14,7 @@ const KIND_LABEL: Record<WebNetworkAccessUrl["kind"], string> = {
 export function formatWebStartup(options: {
   networkUrls: readonly WebNetworkAccessUrl[];
   qrCode?: string;
-  /** The server does not listen on a local address, so the access token cannot be viewed. */
+  /** The server does not listen on a local address, so startup URLs carry no local `?token=` login. */
   localManagementUnavailable?: boolean;
 }): string {
   const lines: string[] = [];
@@ -52,8 +52,8 @@ export function formatWebStartup(options: {
   if (options.localManagementUnavailable === true) {
     lines.push(
       "",
-      "This address is not this computer's local address, so the access token cannot be viewed here.",
-      "Listen on 127.0.0.1 or 0.0.0.0 to view it.",
+      "This address is not this computer's local address, so automatic local sign-in via ?token= is unavailable.",
+      "Listen on 127.0.0.1 or 0.0.0.0 for an automatic local sign-in link.",
     );
   }
   lines.push("", "Keep access links private.", "");

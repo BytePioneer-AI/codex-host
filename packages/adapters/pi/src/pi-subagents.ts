@@ -1,3 +1,4 @@
+import { subagentConfiguration, type SubagentConfiguration } from "@codexhost/harness-adapter";
 import { createHash } from "node:crypto";
 
 import type {
@@ -38,7 +39,7 @@ function token(value: unknown): value is string {
   );
 }
 
-export interface PiSubagentNode {
+export interface PiSubagentNode extends SubagentConfiguration {
   id: string;
   kind: "subagent" | "workflow" | "step" | "host-step";
   label: string;
@@ -84,6 +85,7 @@ function node(value: unknown, depth: number, budget: { count: number }): PiSubag
     kind: value.kind as PiSubagentNode["kind"],
     label: value.label,
     state: value.state,
+    ...subagentConfiguration(value),
     ...(children.length ? { children } : {}),
   };
 }
@@ -172,6 +174,7 @@ function states(run: PiSubagentNode): HostSubagentState[] {
           subagentId: id,
           nativeSubagentId: id,
           description: entry.label,
+          ...subagentConfiguration(entry),
           background: true,
           status: statuses[entry.state] ?? "running",
         });
@@ -229,7 +232,8 @@ export class PiSubagents {
     for (const run of runs) {
       const observed = states(run);
       const retained = this.#children.get(run.id) ?? new Map<string, HostSubagentState>();
-      for (const child of observed) retained.set(child.subagentId, child);
+      for (const child of observed)
+        retained.set(child.subagentId, { ...retained.get(child.subagentId), ...child });
       this.#children.set(run.id, retained);
       const children = [...retained.values()];
       if (!publish) continue;

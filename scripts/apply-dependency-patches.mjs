@@ -3,7 +3,7 @@
  *
  * npm installs the pinned packages, then this script applies patches for ACME
  * transport errors, document preview, terminal helpers, Markdown URL boundaries,
- * and composer viewport coordinates.
+ * composer viewport coordinates, and Qwen Code SDK child stdin errors.
  * A patch already present is skipped so
  * repeated installs stay idempotent.
  */
@@ -21,6 +21,7 @@ const patches = [
   ["patches/@fortune-sheet__react@1.0.4.patch", "node_modules/@fortune-sheet/react"],
   ["patches/exceljs@4.4.0.patch", "node_modules/exceljs"],
   ["patches/node-pty@1.2.0-beta.15.patch", "node_modules/node-pty"],
+  ["patches/@qwen-code__sdk@0.1.26.patch", "node_modules/@qwen-code/sdk"],
   ["patches/lexical@0.49.0.patch", "node_modules/lexical"],
   [
     "patches/mdast-util-gfm-autolink-literal@2.0.1.patch",

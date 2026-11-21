@@ -201,6 +201,8 @@ export type TurnEndCancelCause = AgentCancelCause | { readonly kind: "legacy" };
  */
 export interface TurnEndReasonMap {
   completed: { kind: "completed" };
+  /** Native or imported history does not record how the Turn ended. */
+  unknown: { kind: "unknown" };
   /** A cancellation request interrupted the live turn. */
   aborted: { kind: "aborted"; reason: TurnEndCancelCause };
 

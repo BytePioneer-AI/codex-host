@@ -4,6 +4,7 @@ import {
   clientChannelResponseSchema,
   clientSnapshotRequestSchema,
   CLIENT_REQUEST_LIMIT_BYTES,
+  isDesktopExtensionManagementMethod,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
 import { RpcError } from "./transport.ts";
@@ -14,6 +15,7 @@ export async function serveChClientGateway(
   host: ChHostClient | undefined,
   request: IncomingMessage,
   response: ServerResponse,
+  authenticated = false,
 ): Promise<void> {
   const reply = (status: number, value: unknown) => {
     response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
@@ -97,11 +99,20 @@ export async function serveChClientGateway(
       input.params &&
       typeof input.params === "object" &&
       !Array.isArray(input.params)
-    )
+    ) {
+      if (isDesktopExtensionManagementMethod(input.method) && !authenticated) {
+        reply(403, {
+          error: {
+            code: -32000,
+            message: "Authentication must be enabled to manage Desktop extensions.",
+          },
+        });
+        return;
+      }
       reply(200, {
         result: await channel.request(input.method, input.params as Record<string, unknown>),
       });
-    else reply(404, { error: { code: -32601, message: "Not found" } });
+    } else reply(404, { error: { code: -32601, message: "Not found" } });
   } catch (error) {
     if (response.headersSent) {
       response.destroy();

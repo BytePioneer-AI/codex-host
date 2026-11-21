@@ -19,7 +19,10 @@ export function nativeCodex<T extends FakeChHost>(host: T): T {
           thinkingOptions: [{ id: "high", label: "High" }],
         },
         permissionModes: {
-          modes: [{ id: ":workspace", label: "Workspace" }],
+          modes: [
+            { id: ":workspace", label: "Workspace" },
+            { id: ":danger-full-access", label: "Full access" },
+          ],
           defaultModeId: ":workspace",
         },
         capabilities: {
@@ -43,6 +46,7 @@ export function nativeCodex<T extends FakeChHost>(host: T): T {
       );
       row.modelProvider = "openai";
       row.turns = [];
+      if (typeof params.permissions === "string") host.modes.set(row.id, params.permissions);
       return { thread: structuredClone(row) } as R;
     }
     if (method === "thread/fork") {
@@ -81,7 +85,7 @@ export function nativeCodex<T extends FakeChHost>(host: T): T {
         locked: false,
         effectiveModel: { id: "gpt-5.4" },
         effectiveThinkingOptionId: "high",
-        effectivePermissionModeId: ":workspace",
+        effectivePermissionModeId: host.modes.get(String(params.threadId)) ?? ":workspace",
         history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: false },
       } as R;
     }

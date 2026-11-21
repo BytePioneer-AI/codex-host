@@ -1,6 +1,8 @@
+import type { HarnessSessionState } from "@codexhost/harness-adapter";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   THREAD_CATALOG_READ_METHOD,
+  hostThreadIdSchema,
   threadCatalogReadResultSchema,
 } from "@codexhost/shared-contracts";
 import { afterEach, expect, it, vi } from "vitest";
@@ -87,6 +89,85 @@ it("returns external-only metadata when lazy admission is explicitly unavailable
   expect(fixture.spawnOfficial).not.toHaveBeenCalled();
   expect(request).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+  "keeps submitted Threads in the catalog while native identity is deferred (prewarm: %s)",
+  async (prewarm) => {
+    const fixture = createFixture();
+    cleanup.push(() => stopFixture(fixture));
+    await fixture.ready;
+    vi.spyOn(OfficialRuntimeClient.prototype, "request").mockResolvedValue({
+      result: { data: [], nextCursor: null },
+    });
+    let nativeState: HarnessSessionState = {};
+    const open = fixture.adapter.open.bind(fixture.adapter);
+    vi.spyOn(fixture.adapter, "open").mockImplementation(async (input) => {
+      const result = await open(input);
+      if (result.ok) {
+        nativeState = result.value.initialState;
+        Object.defineProperty(result.value, "initialState", {
+          value: { ...nativeState, nativeRef: undefined },
+        });
+        vi.spyOn(result.value, "readSnapshot").mockResolvedValue({
+          ok: true,
+          value: { turns: [] },
+        });
+      }
+      return result;
+    });
+    const started = await fixture.host.handleClientRequest("thread/start", {
+      model: "codexhost/pi-native",
+      cwd: "/synthetic",
+      ...(prewarm ? { codexhostPrewarm: true } : {}),
+    });
+    if (!("result" in started)) throw new Error("Expected external Thread");
+    const threadId = hostThreadIdSchema.parse(
+      ((started.result as JsonObject).thread as JsonObject).id,
+    );
+    const catalog = async (includeArchived = false) => {
+      const reply = await fixture.host.handleClientRequest(THREAD_CATALOG_READ_METHOD, {
+        includeArchived,
+      });
+      if (!("result" in reply)) throw new Error("Expected catalog");
+      return threadCatalogReadResultSchema.parse(reply.result);
+    };
+    expect((await catalog()).threads).toEqual([]);
+    expect(
+      await fixture.host.handleClientRequest("turn/start", {
+        threadId,
+        input: [{ type: "text", text: "first message" }],
+      }),
+    ).toHaveProperty("result");
+    expect(await fixture.mappingStore.getThread(threadId)).toMatchObject({ state: "creating" });
+    expect((await catalog()).threads).toMatchObject([{ id: threadId, status: { type: "active" } }]);
+
+    writeRequest(fixture.desktopInput, { id: 910, method: "thread/list", params: {} });
+    expect(await fixture.collector.waitFor((message) => message.id === 910)).toMatchObject({
+      result: { data: [{ id: threadId }] },
+    });
+    const session = fixture.adapter.sessions[0];
+    if (!session) throw new Error("Expected Session");
+    session.failTurn({ code: "nativeFailure", message: "Native startup failed", retryable: true });
+    await fixture.collector.waitFor((message) => message.method === "turn/completed");
+    expect((await catalog()).threads).toMatchObject([{ id: threadId, status: { type: "idle" } }]);
+
+    expect(await fixture.host.handleClientRequest("thread/archive", { threadId })).toHaveProperty(
+      "result",
+    );
+    expect(await catalog()).toMatchObject({ threads: [], archivedThreadIds: [threadId] });
+    expect((await catalog(true)).threads.map((thread) => thread.id)).toEqual([threadId]);
+    expect(await fixture.host.handleClientRequest("thread/unarchive", { threadId })).toHaveProperty(
+      "result",
+    );
+    expect((await catalog()).threads.map((thread) => thread.id)).toEqual([threadId]);
+
+    session.emitEvent({ type: "session.state.changed", state: nativeState });
+    await vi.waitFor(async () =>
+      expect(await fixture.mappingStore.getThread(threadId)).toMatchObject({ state: "ready" }),
+    );
+    expect((await catalog()).threads.map((thread) => thread.id)).toEqual([threadId]);
+  },
+);
 
 it("lazily initializes the existing managed scope on a cold external Host and reuses it across catalog reads", async () => {
   const fixture = createFixture({ externalOnly: true });

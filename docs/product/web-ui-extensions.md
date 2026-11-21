@@ -12,7 +12,7 @@ Web 设置中的「界面扩展」（Interface extensions）支持安装、启�
 
 ## 安装与生效
 
-在运行 Web 的电脑上，通过启动输出中的本机链接登录，进入「设置 → 界面扩展 → 添加扩展」。管理请求必须通过已有的[本机访问校验](standalone-web.md#访问认证)；手机、局域网和反向代理访问只显示本机管理提示。`--no-auth` 不授予插件管理权限。
+在启用访问认证的前提下，已登录的浏览会话（包括本机与远程浏览器）均可进入「设置 → 界面扩展 → 添加扩展」；`--no-auth` 不授予插件管理权限。
 
 添加弹窗沿用 DSH 的包名或地址输入方式，支持以下来源：
 
@@ -106,8 +106,6 @@ macOS、Node 24.18.0、Chromium 上，未修改的 Blackgold 1.0.0 和 Maid Atel
 
 资源设置的无插件对照复现 Host 空闲超时为 42、页面仍显示 30；主题运行也有另一页面等待超时输入框超时的失败，不能据此宣称完整设置回归通过。发行 PTY 失败发生在插件安装前，与原包热加载测试分别报告。完整验收仍需这两个问题解决后的回归。
 
-[原包测试](../../packages/web-server/test/browser/dsh-web-plugin-packages.test.ts)分别提供 `across pages and recovery` 与 `with an existing PTY` 用例；后者必须实际打开终端，不以接口存在代替存活证据。`CODEXHOST_TEST_DSH_EXTENSION_ARCHIVE`、`CODEXHOST_TEST_MAID_ARCHIVE` 指向原归档；`CODEXHOST_TEST_WEB_BUNDLE` 指向仓库外 `app/server.mjs`；`CODEXHOST_TEST_EXTENSION_SCREENSHOTS` 保存截图、阶段、原包哈希、资源状态及 PTY PID/回显记录。缺归档的跳过不算验收通过。测试数据及进程隔离，聊天使用 fake Host，不发起真实模型请求。
-
 以下各包章节还保留其重启加载、安装来源及资源兼容记录；Open Sea 的热加载未在上述矩阵中执行。
 
 ### Maid Atelier 与 Open Sea
@@ -124,8 +122,6 @@ macOS、Node 24.18.0、Chromium 上，未修改的 Blackgold 1.0.0 和 Maid Atel
 | Open Sea `plugin/client.js` | `6cced90ca2737216e053bebcfedaa574f88fa60d444eda277582e2a288e6dc2c` |
 
 Maid 验证人物、宫殿背景、边框与图片响应；Open Sea 验证 iframe 的实际海洋画布及 HTML、JS、CSS、字体响应。浏览器验收保存截图、资源状态和错误观测，未出现页面执行异常。Open Sea 使用插件自身的 Three.js 渲染路径；无头 Chromium 验收允许 SwiftShader，不代表真实 GPU、所有浏览器或移动设备均可运行。
-
-[原包浏览器测试](../../packages/web-server/test/browser/dsh-web-plugin-packages.test.ts)使用 `CODEXHOST_TEST_MAID_ARCHIVE`、`CODEXHOST_TEST_OPEN_SEA_ARCHIVE` 指向上述归档；`CODEXHOST_TEST_WEB_BUNDLE` 可指定仓库外的 `app/server.mjs`，`CODEXHOST_TEST_EXTENSION_SCREENSHOTS` 保存截图和观测。缺少归档时跳过，不能据此宣称通过。核心回归可用 `CODEXHOST_TEST_WEB_EXTENSION_DIRECTORY` 在隔离测试实例中装配未修改的已解压包。
 
 完整核心回归尚未通过：无插件基线的资源设置页也存在空闲超时跨页面更新不实时同步的问题（Host 值为 42，页面仍为 30）。原包展示及恢复验收不等于所有核心设置流程已验收。
 
@@ -144,4 +140,4 @@ macOS 上的 Chromium 浏览器验收在源码模式和仓库外的发行目录�
 
 原包另含依赖具体 SVG 和 DOM 结构的装饰 CSS，上述验收不承诺这些细节在其他页面或版本的表现。Windows、Linux、手机端及其他第三方插件尚未进行同等原包验收；自定义主题选择器和配置持久化仍不属于当前交付。验收使用隔离 Web 数据和模拟 Host，不发起真实模型请求。
 
-相关自动化入口是 [安装与持久化测试](../../packages/web-server/test/ui-extensions.test.ts)、[客户端管理测试](../../tests/dsh/web-ui-extensions.spec.ts)和[浏览器生命周期测试](../../packages/web-server/test/browser/ui-extensions.test.ts)。真实归档测试仅在设置 `CODEXHOST_TEST_DSH_EXTENSION_ARCHIVE` 时执行；真实 GitHub 来源测试通过 `CODEXHOST_TEST_DSH_EXTENSION_GITHUB` 指定上述固定地址。跳过真实来源的结果不能作为原包兼容证据。
+相关自动化入口是 [安装与持久化测试](../../packages/web-server/test/ui-extensions.test.ts)。真实归档测试仅在设置 `CODEXHOST_TEST_DSH_EXTENSION_ARCHIVE` 时执行；真实 GitHub 来源测试通过 `CODEXHOST_TEST_DSH_EXTENSION_GITHUB` 指定上述固定地址。跳过真实来源的结果不能作为原包兼容证据。

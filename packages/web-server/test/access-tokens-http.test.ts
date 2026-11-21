@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -222,44 +223,93 @@ it("signs in with links, cookies, and bearer tokens, keeping the access token ou
   );
 });
 
-it("offers the token only to local access", async (t) => {
+it("allows remote token reads and rotates the caller cookie on remote regeneration", async (t) => {
   const { base, access } = await start(t);
   const { secret } = await access();
   const get = (headers: Record<string, string>) =>
     rpcCall(base, "codexhost/accessTokenGet", {}, headers);
-
-  assert.equal(
-    (resultOf(await get(bearer(secret))).value as unknown as AccessState).secret,
-    secret,
-  );
 
   for (const headers of [
     { ...bearer(secret), host: "phone.example" },
     { ...bearer(secret), "x-forwarded-for": "198.51.100.1" },
     { ...bearer(secret), "x-forwarded-host": "127.0.0.1" },
   ]) {
-    for (const reply of [
-      await get(headers),
-      await rpcCall(base, "codexhost/accessTokenRegenerate", {}, headers),
-    ]) {
-      assert.equal(reply.body.includes(secret), false);
-      const result = resultOf(reply);
-      assert.equal(result.ok, false);
-      assert.equal(result.error?.code, "auth/local-access-required");
-      assert.equal(result.error?.details.url, `http://127.0.0.1:${base.port}`);
-    }
+    const reply = await get(headers);
+    const result = resultOf(reply);
+    assert.equal(result.ok, true);
+    assert.equal((result.value as unknown as AccessState).secret, secret);
+    assert.equal((await send(base, "/api/auth/status", { headers })).status, 200);
+    assert.deepEqual(JSON.parse((await send(base, "/api/auth/status", { headers })).body), {
+      authenticated: true,
+      local: false,
+    });
   }
   assert.equal((await access()).secret, secret);
 
-  // Replacing the token this very request used still reports the result.
-  const own = resultOf(await rpcCall(base, "codexhost/accessTokenRegenerate", {}, bearer(secret)));
-  const replacement = (own.value as unknown as AccessState).secret;
-  assert.notEqual(replacement, secret);
-  assert.equal((await send(base, "/api/auth/status", { headers: bearer(secret) })).status, 401);
-  assert.equal(
-    (await send(base, "/api/auth/status", { headers: bearer(replacement) })).status,
-    200,
+  // Remote browser signed in via cookie keeps its session after regenerating via Set-Cookie.
+  const remoteLogin = await send(base, "/api/auth/login", {
+    method: "POST",
+    headers: { host: "phone.example" },
+    body: JSON.stringify({ token: secret }),
+  });
+  assert.equal(remoteLogin.status, 200);
+  const remoteCookie = String(remoteLogin.headers["set-cookie"]).split(";")[0] ?? "";
+  assert.match(remoteCookie, /^codexhost_token=/u);
+
+  const viaCookie = await rpcCall(
+    base,
+    "codexhost/accessTokenRegenerate",
+    {},
+    {
+      host: "phone.example",
+      cookie: remoteCookie,
+    },
   );
+  const second = (resultOf(viaCookie).value as unknown as AccessState).secret;
+  assert.notEqual(second, secret);
+  const rotatedHeader = String(viaCookie.headers["set-cookie"] ?? "");
+  assert.match(rotatedHeader, /^codexhost_token=/u);
+  const rotatedCookie = rotatedHeader.split(";")[0] ?? "";
+  assert.notEqual(rotatedCookie, remoteCookie);
+  assert.equal(
+    (
+      await send(base, "/api/auth/status", {
+        headers: { host: "phone.example", cookie: remoteCookie },
+      })
+    ).status,
+    401,
+  );
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await send(base, "/api/auth/status", {
+          headers: { host: "phone.example", cookie: rotatedCookie },
+        })
+      ).body,
+    ),
+    { authenticated: true, local: false },
+  );
+
+  // Bearer callers get the new token in JSON without a cookie, and the old Bearer fails immediately.
+  const viaBearer = await rpcCall(
+    base,
+    "codexhost/accessTokenRegenerate",
+    {},
+    { ...bearer(second), host: "phone.example" },
+  );
+  assert.equal(viaBearer.headers["set-cookie"], undefined);
+  const third = (resultOf(viaBearer).value as unknown as AccessState).secret;
+  assert.notEqual(third, second);
+  assert.equal((await send(base, "/api/auth/status", { headers: bearer(second) })).status, 401);
+  assert.equal(
+    (
+      await send(base, "/api/auth/status", {
+        headers: { host: "phone.example", cookie: rotatedCookie },
+      })
+    ).status,
+    401,
+  );
+  assert.equal((await send(base, "/api/auth/status", { headers: bearer(third) })).status, 200);
 });
 
 it("gives network addresses without any token only when listening on the network", async (t) => {
@@ -281,8 +331,11 @@ it("gives network addresses without any token only when listening on the network
       401,
     );
     assert.equal(
-      resultOf(await rpcCall(lan, "codexhost/accessTokenGet", {}, bearer(secret))).error?.code,
-      "auth/local-access-required",
+      (
+        resultOf(await rpcCall(lan, "codexhost/accessTokenGet", {}, bearer(secret))).value as
+          AccessState | undefined
+      )?.secret,
+      secret,
     );
   }
 
@@ -336,17 +389,37 @@ it("trusts forwarding headers only from a configured proxy", async (t) => {
     (await send(proxied.base, "/api/auth/status", { headers: { cookie: secureCookie } })).status,
     401,
   );
-  // Trusting a proxy does not make what it forwards local.
+  // Trusting a proxy does not make what it forwards local, even when token reads are allowed.
+  assert.deepEqual(
+    JSON.parse(
+      (
+        await send(proxied.base, "/api/auth/status", {
+          headers: { ...bearer(named.secret), "x-forwarded-for": "198.51.100.1" },
+        })
+      ).body,
+    ),
+    { authenticated: true, local: false },
+  );
   assert.equal(
-    resultOf(
-      await rpcCall(
-        proxied.base,
-        "codexhost/accessTokenGet",
-        {},
-        { ...bearer(named.secret), "x-forwarded-for": "198.51.100.1" },
-      ),
-    ).error?.code,
-    "auth/local-access-required",
+    (
+      await send(proxied.base, "/api/auth/status", {
+        headers: { ...bearer(LOCAL_TOKEN), "x-forwarded-for": "198.51.100.9" },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      resultOf(
+        await rpcCall(
+          proxied.base,
+          "codexhost/accessTokenGet",
+          {},
+          { ...bearer(named.secret), "x-forwarded-for": "198.51.100.1" },
+        ),
+      ).value as unknown as AccessState
+    ).secret,
+    named.secret,
   );
 
   // Failures count per forwarded client, so one client cannot lock out another.
@@ -390,19 +463,28 @@ it(
     assert.equal(signedIn.status, 200);
     assert.match(String(signedIn.headers["set-cookie"]), /^__Host-codexhost_token=.*; Secure$/u);
     for (const headers of [forwarded, { ...forwarded, host: base.host }]) {
+      assert.deepEqual(
+        JSON.parse(
+          (await send(base, "/api/auth/status", { headers: { ...bearer(secret), ...headers } }))
+            .body,
+        ),
+        { authenticated: true, local: false },
+      );
       assert.equal(
-        resultOf(
-          await rpcCall(
-            base,
-            "codexhost/accessTokenGet",
-            {},
-            {
-              ...bearer(secret),
-              ...headers,
-            },
-          ),
-        ).error?.code,
-        "auth/local-access-required",
+        (
+          await send(base, "/api/auth/status", {
+            headers: { ...bearer(LOCAL_TOKEN), ...headers, "x-forwarded-for": "100.64.0.9" },
+          })
+        ).status,
+        401,
+      );
+      assert.equal(
+        (
+          resultOf(
+            await rpcCall(base, "codexhost/accessTokenGet", {}, { ...bearer(secret), ...headers }),
+          ).value as unknown as AccessState
+        ).secret,
+        secret,
       );
     }
     for (let failure = 0; failure < 10; failure++)
@@ -415,19 +497,12 @@ it(
     assert.equal(revoked.status, 200);
     assert.doesNotMatch(String(revoked.headers["set-cookie"]), /Secure/u);
     assert.equal((await login({ ...forwarded, origin: "https://phone.example" })).status, 403);
-    assert.equal(
-      resultOf(
-        await rpcCall(
-          base,
-          "codexhost/accessTokenGet",
-          {},
-          {
-            ...bearer(secret),
-            ...forwarded,
-          },
-        ),
-      ).error?.code,
-      "auth/local-access-required",
+    assert.deepEqual(
+      JSON.parse(
+        (await send(base, "/api/auth/status", { headers: { ...bearer(secret), ...forwarded } }))
+          .body,
+      ),
+      { authenticated: true, local: false },
     );
   },
 );
@@ -475,6 +550,64 @@ it("limits failed tokens by address without affecting signed-in devices", async 
     200,
   );
   assert.equal((await send(base, "/")).status, 401);
+});
+
+it("limits concurrent failed logins whose bodies arrive after all headers", async (t) => {
+  const { base } = await start(t);
+  const body = JSON.stringify({ token: "wrong" });
+  const continued = "HTTP/1.1 100 Continue\r\n\r\n";
+  const attempts = Array.from({ length: 30 }, () => {
+    const socket = createConnection({ host: base.hostname, port: Number(base.port) });
+    t.after(() => socket.destroy());
+    socket.setEncoding("utf8");
+    socket.setTimeout(5000, () => socket.destroy(new Error("Delayed login timed out")));
+    let response = "";
+    const ready = new Promise<void>((done, fail) => {
+      socket.on("data", (chunk) => {
+        response += chunk;
+        if (response.startsWith(continued)) done();
+      });
+      socket.once("error", fail);
+      socket.once("end", () => fail(new Error("Login ended before 100 Continue")));
+    });
+    socket.write(
+      [
+        "POST /api/auth/login HTTP/1.1",
+        `Host: ${base.host}`,
+        "Content-Type: application/json",
+        `Content-Length: ${Buffer.byteLength(body)}`,
+        "Expect: 100-continue",
+        "Connection: close",
+        "\r\n",
+      ].join("\r\n"),
+    );
+    return { socket, ready, response: () => response.slice(continued.length) };
+  });
+
+  // The server has accepted every header, but no login can finish until we send the bodies.
+  await Promise.all(attempts.map(({ ready }) => ready));
+  const replies = await Promise.all(
+    attempts.map(async ({ socket, response }) => {
+      const ended = once(socket, "end");
+      socket.write(body);
+      await ended;
+      return response();
+    }),
+  );
+  assert.deepEqual(
+    {
+      unauthorized: replies.filter((reply) => reply.startsWith("HTTP/1.1 401 ")).length,
+      limited: replies.filter((reply) => reply.startsWith("HTTP/1.1 429 ")).length,
+    },
+    { unauthorized: 10, limited: 20 },
+  );
+  for (const reply of replies) {
+    assert.match(
+      reply,
+      reply.startsWith("HTTP/1.1 429 ") ? /"auth\/rate-limited"/u : /"auth\/invalid-token"/u,
+    );
+    assert.doesNotMatch(reply, /\r\nset-cookie:/iu);
+  }
 });
 
 it("refuses management and keeps push subscriptions working with authentication off", async (t) => {

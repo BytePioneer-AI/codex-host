@@ -58,7 +58,12 @@ it("merges concurrent observers and migrates a legacy log only when saving", asy
   await writeFile(
     join(folder, key + ".jsonl"),
     [
-      JSON.stringify({ version: 1, turnId: "t", at: 10, values: { outputTokensPerSecond: 10 } }),
+      JSON.stringify({
+        version: 1,
+        turnId: "t",
+        at: 10,
+        values: { outputTokensPerSecond: 10, timeToFirstOutputMs: 60 },
+      }),
       "invalid record",
       JSON.stringify({ version: 1, turnId: "t", at: 20, values: { outputTokensPerSecond: 20 } }),
     ].join("\n") + "\n",
@@ -66,21 +71,66 @@ it("merges concurrent observers and migrates a legacy log only when saving", asy
   const a = new UsageMeasurementsStore(directory, () => {}),
     b = new UsageMeasurementsStore(directory, () => {});
   try {
-    expect(await a.read("scope", "session", new Set(["t"]))).toMatchObject({
-      outputTokensPerSecond: { value: 20 },
-    });
+    const legacy = await a.read("scope", "session", new Set(["t"]));
+    expect(legacy.outputTokensPerSecond).toBeUndefined();
+    expect(legacy.timeToFirstOutputMs).toMatchObject({ value: 60 });
     expect(await readdir(folder)).toEqual([key + ".jsonl"]);
     b.record("scope", "session", "t", 30, { timeToFirstOutputMs: 50 });
     await Promise.all([a.flush("scope", "session"), b.flush("scope", "session")]);
     const disk = JSON.parse(await readFile(join(folder, key + ".json"), "utf8"));
-    expect(disk.values).toMatchObject({
-      outputTokensPerSecond: { value: 20 },
-      timeToFirstOutputMs: { value: 50 },
-    });
+    expect(disk.values.outputTokensPerSecond).toBeUndefined();
+    expect(disk.values).toMatchObject({ timeToFirstOutputMs: { value: 50 } });
     expect(await readdir(folder)).toEqual([key + ".json"]);
   } finally {
     await a.close();
     await b.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("drops incompatible stored speed and intervals without discarding TTFT", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "usage-snapshot-version-"));
+  const folder = join(directory, "usage-measurements-v1");
+  const key = createHash("sha256")
+    .update(JSON.stringify(["scope", "session"]))
+    .digest("hex");
+  const file = join(folder, key + ".json");
+  const latency = { value: 900, turnId: "t", at: 2000 };
+  const diagnose = vi.fn();
+  const store = new UsageMeasurementsStore(directory, diagnose);
+  try {
+    await mkdir(folder);
+    const old = JSON.stringify({
+      version: 1,
+      values: {
+        outputTokensPerSecond: { version: 3, value: 120, turnId: "t", at: 2000 },
+        outputTimings: [
+          {
+            version: 3,
+            requestId: "old",
+            turnId: "t",
+            outputTokens: 120,
+            startedAtMs: 1000,
+            completedAtMs: 2000,
+          },
+        ],
+        timeToFirstOutputMs: latency,
+      },
+    });
+    await writeFile(file, old);
+    expect(await store.read("scope", "session", new Set(["t"]))).toEqual({
+      timeToFirstOutputMs: latency,
+    });
+    expect(await readFile(file, "utf8")).toBe(old);
+    expect(diagnose).not.toHaveBeenCalled();
+    store.record("scope", "session", "t", 3000, { outputTokensPerSecond: 40 });
+    await store.flush("scope", "session");
+    expect(JSON.parse(await readFile(file, "utf8")).values).toEqual({
+      outputTokensPerSecond: { version: 4, value: 40, turnId: "t", at: 3000 },
+      timeToFirstOutputMs: latency,
+    });
+  } finally {
+    await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

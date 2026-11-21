@@ -20,6 +20,15 @@ export class ChHarnessCommands {
       await this.host.request("codexhost/thread/commands/inspect", { threadId: thread.id }),
     );
   }
+  /** Draft catalog from its workspace; the Host reads it without creating a Thread. */
+  async inspectDraft(harnessId: string, cwd?: string): Promise<HarnessCommandCatalog> {
+    return harnessCommandCatalogSchema.parse(
+      await this.host.request("codexhost/harness/commands/inspect", {
+        harnessId,
+        ...(cwd ? { cwd } : {}),
+      }),
+    );
+  }
   async execute(sessionId: string, commandId: string) {
     // Resolve canonical identity before fencing duplicates; Host owns cross-client admission.
     const thread = await this.resolve(sessionId);

@@ -424,4 +424,16 @@ for (const v of variants)
         ),
       ).toThrow("not installed");
     });
+
+    it("finds a desktop-bundled CLI in its command directory", () => {
+      const home = "C:\\Users\\person";
+      const configDirectory = v.variant === "cn" ? ".qoder-cn" : ".qoder";
+      const executable = `${home}\\${configDirectory}\\bin\\${v.command}\\${v.command}.exe`;
+      expect(
+        resolveQoderExecutable(
+          { variant: v.variant, platform: "win32", homeDirectory: home, environment: {} },
+          { isExecutable: (candidate) => candidate === executable },
+        ),
+      ).toBe(executable);
+    });
   });

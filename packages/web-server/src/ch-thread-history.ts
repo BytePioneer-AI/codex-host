@@ -139,6 +139,7 @@ export class ChThreadHistory extends ChThreadView {
         });
       }
       if (
+        !snapshot &&
         !force &&
         this.loaded &&
         Date.now() - this.lastHeadReadAt < 60_000 &&
@@ -149,7 +150,7 @@ export class ChThreadHistory extends ChThreadView {
         Object.assign(this.thread, { ...thread, turns: this.thread.turns });
         this.log.setProjection("title", threadListTitle(thread));
         this.log.setProjection("codexhostImportSource", thread.codexhostImportSource ?? null);
-        this.commands.update(snapshot?.command, this.thread.turns);
+        this.commands.update(undefined, this.thread.turns);
         return;
       }
       const recent = snapshot ? snapshot.turnsPage : await this.page(null);

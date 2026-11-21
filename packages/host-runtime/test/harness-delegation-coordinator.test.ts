@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -6,12 +6,17 @@ import { PassThrough } from "node:stream";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
+import { HarnessPreferencesStore } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
-import type { ExternalHarnessId } from "@codexhost/protocol-core";
+import { CodexTurnProjector, type ExternalHarnessId } from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
   harnessModelCatalogSchema,
+  harnessModelRefSchema,
+  harnessPreferencePatchSchema,
+  harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
+  hostItemIdSchema,
   hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -19,6 +24,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
+import type { DelegationPendingQuestion, DelegationStartInput } from "../src/delegation-types.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime, type ExternalThread } from "../src/external-thread-runtime.js";
 
@@ -32,6 +38,7 @@ async function fixture(
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
+  const preferences = new HarnessPreferencesStore(directory);
   await store.initialize();
   const repository = new ExternalThreadRepository(store);
   const adapters = new Map<ExternalHarnessId, HarnessAdapter>([
@@ -39,7 +46,9 @@ async function fixture(
   ]);
   const registered: ReturnType<ExternalThreadRuntime["register"]>[] = [];
   const notifications: unknown[] = [];
+  const treeChanged = vi.fn<(threadId: string) => void>();
   const delivered: string[] = [];
+  const pending: DelegationPendingQuestion[] = [];
   const runtime = new ExternalThreadRuntime({
     adapters,
     environment,
@@ -68,9 +77,15 @@ async function fixture(
       });
       if (!result.ok) throw new Error(result.error.message);
     },
+    steerExternalTurn: async () => {
+      throw new Error("Steering belongs to the Host integration fixture");
+    },
     notifyThreadStarted: async (thread) => {
       notifications.push(thread);
     },
+    notifyTreeChanged: treeChanged,
+    readDelegationDefault: async (harnessId) =>
+      (await preferences.get()).values.delegation?.byHarness[harnessId],
     inspectOfficial: vi.fn(),
     readOfficial: vi.fn(),
     sendOfficial: vi.fn(),
@@ -83,6 +98,7 @@ async function fixture(
     },
     activeOfficialParents: () => [],
     externalThreadBusy,
+    pendingQuestions: () => [...pending],
   });
   return {
     adapter,
@@ -90,12 +106,21 @@ async function fixture(
     directory,
     delivered,
     notifications,
+    treeChanged,
+    pending,
     registered,
     repository,
     runtime,
     store,
+    setDelegationDefault: (configuration: unknown) =>
+      preferences.patch(
+        harnessPreferencePatchSchema.parse({
+          operations: [{ kind: "delegation", harnessId: adapter.harnessId, configuration }],
+        }),
+      ),
     close: async () => {
       runtime.clear();
+      await preferences.close();
       await repository.close();
       await rm(directory, { recursive: true, force: true });
     },
@@ -127,11 +152,48 @@ class FailingTurnAdapter extends FakeHarnessAdapter {
 }
 
 describe("HarnessDelegationCoordinator", () => {
+  it("invalidates the tree only after the external delegation record write completes", async () => {
+    const value = await fixture();
+    const written = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const create = value.repository.createDelegation.bind(value.repository);
+    vi.spyOn(value.repository, "createDelegation").mockImplementation(async (input) => {
+      const record = await create(input);
+      written.resolve(undefined);
+      await release.promise;
+      return record;
+    });
+    try {
+      const starting = value.coordinator.start({
+        harnessId: "pi",
+        parentThreadId: "parent",
+        cwd: "/synthetic",
+        task: "Create child",
+      });
+      await written.promise;
+      expect(value.treeChanged).not.toHaveBeenCalled();
+      release.resolve(undefined);
+      const result = await starting;
+      expect(value.treeChanged).toHaveBeenCalledExactlyOnceWith(result.threadId);
+      expect(
+        await value.repository.getDelegationByChild(hostThreadIdSchema.parse(result.threadId)),
+      ).toMatchObject({ parentHostThreadId: "parent" });
+      expect(value.notifications).toHaveLength(1);
+    } finally {
+      release.resolve(undefined);
+      await value.close();
+    }
+  });
   it("carries the display name through the real CLI HTTP endpoint and persists it separately from the task", async () => {
     const value = await fixture(undefined, async () => ({ title: "Main project" }));
     const server = await startDelegationControlServer({
       token: "test-token",
-      api: value.coordinator,
+      api: Object.assign(value.coordinator, {
+        // AppServerHost wires Questions separately; this fixture only creates Threads.
+        answer: async () => {
+          throw new Error("No Question responder in this fixture");
+        },
+      }),
     });
     try {
       const output = new PassThrough();
@@ -158,19 +220,23 @@ describe("HarnessDelegationCoordinator", () => {
           output,
         }),
       ).toBe(0);
-      const result = JSON.parse(Buffer.concat(chunks).toString()) as { threadId: string };
+      const result = JSON.parse(Buffer.concat(chunks).toString()) as {
+        threadId: string;
+        title: string;
+      };
+      expect(result.title).toBe("Protocol review");
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Protocol review · Main project",
+        title: "Protocol review",
       });
       expect(value.delivered).toEqual(["Full instructions\nwith details"]);
-      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Main project" });
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review" });
     } finally {
       await server.close();
       await value.close();
     }
   });
 
-  it("snapshots the parent title and subtask name without changing task delivery or retry identity", async () => {
+  it("saves only the subtask name without changing task delivery or retry identity", async () => {
     const value = await fixture();
     try {
       const parent = await value.repository.createProvisional({
@@ -191,17 +257,18 @@ describe("HarnessDelegationCoordinator", () => {
         requestId: "named-child",
       };
       const result = await value.coordinator.start(input);
+      expect(result.title).toBe("Protocol review");
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Protocol review · Project review",
+        title: "Protocol review",
       });
-      expect(value.notifications[0]).toMatchObject({ name: "Protocol review · Project review" });
+      expect(value.notifications[0]).toMatchObject({ name: "Protocol review" });
       await value.repository.setTitle(parent.hostThreadId, "Renamed parent");
       expect(
         await value.coordinator.start({ ...input, taskName: "Changed display name" }),
       ).toMatchObject({ threadId: result.threadId });
       expect(value.adapter.sessions).toHaveLength(1);
       expect(await value.repository.find(result.threadId)).toMatchObject({
-        title: "Protocol review · Project review",
+        title: "Protocol review",
       });
       const next = await value.coordinator.start({
         harnessId: input.harnessId,
@@ -210,14 +277,57 @@ describe("HarnessDelegationCoordinator", () => {
         requestId: "next-child",
       });
       expect(await value.repository.find(next.threadId)).toMatchObject({
-        title: "Next task · Renamed parent",
+        title: "Next task",
       });
     } finally {
       await value.close();
     }
   });
 
-  it("uses native parent metadata and keeps the subtask name first for long Unicode titles", async () => {
+  it.each([
+    { title: "", preview: "  现在有一个问题，\n帮我理解  " },
+    { title: " \n ", preview: "First message" },
+    { title: undefined, preview: "First message" },
+    { title: "Named parent", preview: "First message" },
+    { title: "", preview: " \n " },
+    { title: "", preview: undefined },
+  ])(
+    "does not append or change the parent title or preview ($title, $preview)",
+    async ({ title, preview }) => {
+      const value = await fixture();
+      try {
+        const parent = await value.repository.createProvisional({
+          hostThreadId: hostThreadIdSchema.parse("preview-parent"),
+          createRequestId: "preview-parent",
+          harnessId: harnessIdSchema.parse("pi"),
+          cwd: "/synthetic",
+          ...(title !== undefined ? { title } : {}),
+          transportModelId: "codexhost/pi-native",
+          ephemeral: false,
+          historyMode: "paginated",
+        });
+        if (preview !== undefined) {
+          await value.repository.updateMetadata(parent.hostThreadId, { preview });
+        }
+        const result = await value.coordinator.start({
+          harnessId: "pi",
+          task: "Full task instructions",
+          taskName: "删除 Skill 命令链路",
+          parentThreadId: parent.hostThreadId,
+        });
+        const childTitle = "删除 Skill 命令链路";
+        expect(result.title).toBe(childTitle);
+        expect(await value.repository.find(result.threadId)).toMatchObject({ title: childTitle });
+        expect(value.notifications[0]).toMatchObject({ name: childTitle });
+        expect((await value.repository.find(parent.hostThreadId))?.title).toBe(parent.title);
+        expect(value.delivered).toEqual(["Full task instructions"]);
+      } finally {
+        await value.close();
+      }
+    },
+  );
+
+  it("excludes long native parent titles from the subtask name", async () => {
     const value = await fixture(undefined, async () => ({ title: "🐙".repeat(150) }));
     try {
       const result = await value.coordinator.start({
@@ -227,10 +337,7 @@ describe("HarnessDelegationCoordinator", () => {
         parentThreadId: "native-parent",
       });
       const record = await value.repository.find(result.threadId);
-      expect(record?.title).toMatch(/^Tool test · /u);
-      expect(record?.title?.length).toBeLessThanOrEqual(200);
-      expect(record?.title).not.toMatch(/[\uD800-\uDBFF]$/u);
-      expect(record?.title).toBe("Tool test · " + "🐙".repeat(94));
+      expect(record?.title).toBe("Tool test");
     } finally {
       await value.close();
     }
@@ -489,45 +596,117 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  it("deduplicates explicit and implicit retries but not different task text", async () => {
-    const value = await fixture();
+  it("applies saved delegation defaults without changing explicit or implicit retry identity", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    const initial = { model: { id: "fake-model-v1.secondary" }, thinkingOptionId: "low" };
+    const updated = { model: { id: "fake-model-v1.primary" }, thinkingOptionId: "off" };
+    const input = { harnessId: "pi", cwd: "/synthetic", parentThreadId: "parent-thread" };
+    const withRequestId = { ...input, task: "task one", requestId: "request-1" };
+    const withoutRequestId = { ...input, task: "task two" };
     try {
-      const first = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task one",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-        requestId: "request-1",
-      });
-      const explicitRetry = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task one",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-        requestId: "request-1",
-      });
-      const implicit = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task two",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-      });
-      const implicitRetry = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task two",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-      });
-      const different = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task three",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-      });
+      await value.setDelegationDefault(initial);
+      const first = await value.coordinator.start(withRequestId);
+      const implicit = await value.coordinator.start(withoutRequestId);
+      expect(first.configuration?.requested).toEqual(initial);
+      expect(adapter.openInputs[0]).toMatchObject(initial);
+
+      await value.setDelegationDefault(updated);
+      const explicitRetry = await value.coordinator.start(withRequestId);
+      const implicitRetry = await value.coordinator.start(withoutRequestId);
+      const different = await value.coordinator.start({ ...input, task: "task three" });
       expect(explicitRetry.threadId).toBe(first.threadId);
       expect(implicitRetry.threadId).toBe(implicit.threadId);
       expect(different.threadId).not.toBe(implicit.threadId);
-      expect(value.adapter.sessions).toHaveLength(3);
+      expect(different.configuration?.requested).toEqual(updated);
+    } finally {
+      await value.close();
+    }
+  });
+
+  const primary = { model: harnessModelRefSchema.parse({ id: "fake-model-v1.primary" }) };
+  const secondary = { model: harnessModelRefSchema.parse({ id: "fake-model-v1.secondary" }) };
+  const retired = { model: harnessModelRefSchema.parse({ id: "retired" }) };
+  const low = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("low") };
+  const high = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") };
+  const off = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("off") };
+  const secondaryLow = { ...secondary, ...low };
+  const retiredHigh = { ...retired, ...high };
+  type Selection = Pick<DelegationStartInput, "model" | "thinkingOptionId">;
+  it.each<[string, Selection, Selection, Selection]>([
+    ["a different explicit Model", secondaryLow, primary, primary],
+    ["the same explicit Model", secondaryLow, secondary, secondaryLow],
+    ["explicit Thinking supported by the saved Model", secondary, low, secondaryLow],
+    ["explicit Thinking only supported by the native default", secondaryLow, high, high],
+    ["a retired saved Model", retiredHigh, {}, {}],
+    ["a retired saved Model with explicit Thinking", retiredHigh, high, high],
+    ["unsupported saved Thinking", { ...secondary, ...high }, {}, secondary],
+    ["saved Thinking without a saved Model", off, {}, off],
+    ["an explicit Model with only saved Thinking", off, primary, primary],
+  ])("resolves delegation selection with %s", async (_name, saved, explicit, expected) => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      await value.setDelegationDefault(saved);
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "fixture task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        ...explicit,
+      });
+      expect(result.configuration?.requested).toEqual(expected);
+      const opened = adapter.openInputs[0];
+      expect(opened?.kind).toBe("create");
+      if (opened?.kind !== "create") throw new Error("Expected a new session");
+      expect(opened.model).toEqual(expected.model);
+      expect(opened.thinkingOptionId).toEqual(expected.thinkingOptionId);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("rejects unavailable explicit selections even with valid delegation defaults", async () => {
+    const value = await fixture();
+    const input = {
+      harnessId: "pi",
+      task: "fixture task",
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+    };
+    try {
+      await value.setDelegationDefault({
+        model: { id: "fake-model-v1.primary" },
+        thinkingOptionId: "high",
+      });
+      await expect(value.coordinator.start({ ...input, ...retired })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+      await expect(
+        value.coordinator.start({
+          ...input,
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("starts natively if a preference-only catalog check fails, then uses the saved selection after recovery", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    const input = { harnessId: "pi", cwd: "/synthetic", parentThreadId: "parent-thread" };
+    const saved = { model: { id: "fake-model-v1.secondary" }, thinkingOptionId: "low" };
+    try {
+      await value.setDelegationDefault(saved);
+      vi.spyOn(adapter, "inspect").mockRejectedValueOnce(new Error("Catalog timed out"));
+      const fallback = await value.coordinator.start({ ...input, task: "catalog offline" });
+      const recovered = await value.coordinator.start({ ...input, task: "catalog recovered" });
+      expect(fallback.configuration?.requested).toEqual({});
+      expect(adapter.openInputs[0]).not.toHaveProperty("model");
+      expect(adapter.openInputs[0]).not.toHaveProperty("thinkingOptionId");
+      expect(recovered.configuration?.requested).toEqual(saved);
     } finally {
       await value.close();
     }
@@ -649,7 +828,6 @@ describe("HarnessDelegationCoordinator", () => {
         turn: { turnId: "turn-1", status: "completed" },
         progress: [],
         result: { availability: "available", text: "done" },
-        nextCursor: "cursor",
       });
       await expect(
         value.coordinator.wait({
@@ -667,7 +845,6 @@ describe("HarnessDelegationCoordinator", () => {
         turn: { turnId: "turn-1", status: "running" },
         progress: [],
         result: { availability: "pending" },
-        nextCursor: "cursor",
       });
       await expect(
         value.coordinator.wait({
@@ -707,6 +884,7 @@ describe("HarnessDelegationCoordinator", () => {
         const recoveryError = {
           code: "INTERNAL_ERROR",
           message: "External Thread read failed",
+          details: { externalThreadCode: -32076 },
         };
         await expect(
           value.coordinator.read({ threadId: started.threadId, view }),
@@ -720,6 +898,51 @@ describe("HarnessDelegationCoordinator", () => {
     },
   );
 
+  it("does not classify a pending Session release as a missing Thread", async () => {
+    const value = await fixture();
+    try {
+      const { threadId } = await value.coordinator.start({
+        harnessId: "pi",
+        task: "synthetic pending release",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      if (!thread) throw new Error("delegated Thread was not registered");
+      thread.running = false;
+      thread.activeTurnId = null;
+      value.runtime.markSessionUnavailable(thread);
+      const close = vi.spyOn(thread.session, "close").mockRejectedValue(new Error("private cause"));
+      try {
+        const error = {
+          code: "INTERNAL_ERROR",
+          message: expect.stringContaining("External Session shutdown could not be confirmed"),
+          details: { externalThreadCode: -32075 },
+        };
+        const sendError = { ...error, details: { ...error.details, notStarted: true } };
+        // Resolution first hits the release failure; the next locate hits the same blocker.
+        for (const message of ["send", "retry"]) {
+          await expect(value.coordinator.send({ threadId, message })).rejects.toMatchObject(
+            sendError,
+          );
+        }
+        expect(value.delivered).toEqual(["synthetic pending release"]);
+        for (const view of ["result", "messages"] as const) {
+          await expect(value.coordinator.read({ threadId, view })).rejects.toMatchObject(error);
+        }
+        await expect(value.coordinator.cancel({ threadId })).rejects.toMatchObject(error);
+        await expect(
+          value.coordinator.exportThread({ threadId, out: path.join(value.directory, "out.json") }),
+        ).rejects.toMatchObject(error);
+        await expect(value.repository.find(threadId)).resolves.toMatchObject({ state: "ready" });
+      } finally {
+        close.mockRestore();
+        await thread.session.close();
+      }
+    } finally {
+      await value.close();
+    }
+  });
+
   it("retains a missing-Thread error if an external mapping vanishes during resolution", async () => {
     const value = await fixture();
     try {
@@ -732,6 +955,90 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
       ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND", message: "Thread was not found" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("exports full live and historical Host items without changing the normal read view", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "work",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      if (!thread) throw new Error("delegated Thread was not registered");
+      const turnId = hostTurnIdSchema.parse(started.turnId);
+      const projector = new CodexTurnProjector({
+        threadId: thread.id,
+        turnId,
+        cwd: thread.cwd,
+        startedAtMs: Date.now(),
+        initialInput: [{ type: "text", text: "work" }],
+      });
+      projector.project({ type: "turn.started", turnId });
+      projector.project({
+        type: "item.started",
+        turnId,
+        item: { type: "reasoning", itemId: hostItemIdSchema.parse("r1"), text: "live reasoning" },
+      });
+      projector.project({
+        type: "item.started",
+        turnId,
+        item: {
+          type: "commandExecution",
+          itemId: hostItemIdSchema.parse("c1"),
+          command: "ls",
+          output: "live tool output",
+        },
+      });
+      thread.projectedTurns.set(turnId, { projector });
+      thread.turns = [
+        {
+          id: "older-turn",
+          status: "completed",
+          items: [
+            {
+              type: "mcpToolCall",
+              tool: "historical-tool",
+              result: { content: "historical output" },
+            },
+          ],
+        },
+      ];
+      const live = await value.coordinator.exportThread({
+        threadId: thread.id,
+        out: path.join(value.directory, "live.json"),
+      });
+      expect(live).toMatchObject({ harnessId: "pi", turns: 2, complete: false });
+      const document = JSON.parse(await readFile(live.path, "utf8"));
+      expect(document.turns[0]).toEqual(thread.turns[0]);
+      expect(document.turns[1]).toEqual(projector.snapshotTurn());
+      expect(document.turns[1].items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "reasoning", summary: ["live reasoning"] }),
+          expect.objectContaining({
+            type: "commandExecution",
+            command: "ls",
+            aggregatedOutput: "live tool output",
+          }),
+        ]),
+      );
+      expect(
+        await value.coordinator.read({ threadId: thread.id, view: "messages" }),
+      ).not.toHaveProperty("thread");
+      thread.running = false;
+      thread.activeTurnId = null;
+      thread.turns.push({ ...projector.snapshotTurn(), status: "completed" });
+      vi.spyOn(value.runtime, "refresh").mockResolvedValue(null);
+      const complete = await value.coordinator.exportThread({
+        threadId: thread.id,
+        out: path.join(value.directory, "complete.json"),
+      });
+      expect(complete.complete).toBe(true);
+      expect(JSON.parse(await readFile(complete.path, "utf8")).turns).toEqual(thread.turns);
     } finally {
       await value.close();
     }
@@ -756,7 +1063,7 @@ describe("HarnessDelegationCoordinator", () => {
         { id: started.turnId, status: "failed", items: [], error: { message: "process exited" } },
       ];
       thread.projectedTerminalTurnId = hostTurnIdSchema.parse(started.turnId);
-      vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
+      const readSnapshot = vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
         ok: false,
         error: { code: "nativeFailure", message: "Harness is gone", retryable: false },
       });
@@ -781,6 +1088,21 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
       ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+
+      // A failed release during refresh is not an ordinary snapshot error.
+      thread.projectedTerminalTurnId = hostTurnIdSchema.parse(started.turnId);
+      readSnapshot.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "invalidState", message: "Harness is gone", retryable: false },
+      });
+      vi.spyOn(thread.session, "close").mockRejectedValueOnce(new Error("native cleanup failed"));
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({
+        code: "INTERNAL_ERROR",
+        message: expect.stringContaining("External Session shutdown could not be confirmed"),
+        details: { externalThreadCode: -32075 },
+      });
     } finally {
       await value.close();
     }
@@ -841,9 +1163,8 @@ describe("HarnessDelegationCoordinator", () => {
       };
       const result = await value.coordinator.start(input);
       expect(result).toMatchObject({ parentThreadId: "client:grok-bot", status: "running" });
-      // No parent title exists, so the client's name takes its place.
       await expect(value.repository.find(result.threadId)).resolves.toMatchObject({
-        title: "triage issue 12 · grok-bot",
+        title: "triage issue 12",
       });
       expect(metadata).not.toHaveBeenCalled();
       // A retry from the same client within the window returns the same child.
@@ -857,6 +1178,46 @@ describe("HarnessDelegationCoordinator", () => {
           sort: "created-desc",
         }),
       ).resolves.toMatchObject({ threads: [{ threadId: result.threadId }] });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("reports pending Questions in read and returns from wait without waiting", async () => {
+    const value = await fixture();
+    try {
+      const started = await value.coordinator.start({
+        harnessId: "pi",
+        task: "work",
+        parentThreadId: "parent",
+      });
+      value.pending.push({
+        kind: "requestUserInput",
+        interactionId: "interaction-1",
+        turnId: started.turnId,
+        request: {
+          questions: [{ id: "decision", question: "Continue?", options: [{ label: "Continue" }] }],
+        },
+      });
+
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).resolves.toMatchObject({
+        status: "running",
+        pendingQuestions: [{ interactionId: "interaction-1" }],
+      });
+      // A pending Question is a ready condition, not a timeout.
+      await expect(
+        value.coordinator.wait({ threadId: started.threadId, view: "result", timeoutMs: 30_000 }),
+      ).resolves.toMatchObject({
+        timedOut: false,
+        pendingQuestions: [{ interactionId: "interaction-1" }],
+      });
+
+      value.pending.length = 0;
+      await expect(
+        value.coordinator.wait({ threadId: started.threadId, view: "result", timeoutMs: 10 }),
+      ).resolves.toMatchObject({ timedOut: true, pendingQuestions: [] });
     } finally {
       await value.close();
     }

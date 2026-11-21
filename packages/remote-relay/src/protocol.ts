@@ -6,6 +6,7 @@ export const paths = {
   tcp: "/v1/tcp",
   notice: "/v1/notice",
   authenticated: "/v1/authenticated",
+  externalAccount: "/v1/external-account",
 } as const;
 
 export const headers = {
@@ -28,6 +29,37 @@ export const closeCodes = {
   banned: 4412,
   full: 4413,
 } as const;
+
+/** Let's Encrypt production, used when the deployer configures no certificate authority. */
+export const defaultCertificateDirectory = "https://acme-v02.api.letsencrypt.org/directory";
+
+export interface CertificateAuthority {
+  directory: string;
+}
+
+/**
+ * Body of a successful registration. Relays without certificate requests through the
+ * relay omit `token` and `certificateAuthority`.
+ */
+export interface RegistrationResponse {
+  hostname: string;
+  token?: string;
+  certificateAuthority?: CertificateAuthority;
+}
+
+/** Body of `POST /v1/notice` from the relay to a registered computer. */
+export type RelayNotice =
+  { quota: "exhausted"; until: string } | { certificateAuthority: CertificateAuthority };
+
+/**
+ * Body of a successful `POST /v1/external-account`; `hmacKey` is base64url. `contact` holds
+ * the deployer's account contact URLs for authorities that require one, such as GTS.
+ */
+export interface ExternalAccount {
+  keyId: string;
+  hmacKey: string;
+  contact?: string[];
+}
 
 export const streamWindowSize = 2 * 1024 * 1024;
 export const connectionWindowSize = 8 * 1024 * 1024;

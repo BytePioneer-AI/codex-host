@@ -9,6 +9,7 @@
  */
 
 import type { Root } from "mdast";
+import { annotationDirectiveMdast, annotationDirectiveSyntax } from "./annotation-directives.ts";
 import { recoverLocalImages } from "./local-image-syntax.ts";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
@@ -31,8 +32,8 @@ const gfmOptions = { singleTilde: false };
 export function parseGfm(text: string): Root {
   return recoverLocalImages(
     fromMarkdown(text, {
-      extensions: [gfm(gfmOptions), cjkFriendlyStrong()],
-      mdastExtensions: [gfmFromMarkdown(), windowsPathDestinations()],
+      extensions: [gfm(gfmOptions), cjkFriendlyStrong(), annotationDirectiveSyntax(text)],
+      mdastExtensions: [gfmFromMarkdown(), windowsPathDestinations(), annotationDirectiveMdast()],
     }),
     text,
   );
@@ -49,8 +50,19 @@ export function parseGfmWithMath(text: string): Root {
     fromMarkdown(text, {
       // micromark dispatches the last extension first. Compatibility dollar blocks
       // keep opening-line math as content instead of upstream's fence metadata.
-      extensions: [gfm(gfmOptions), cjkFriendlyStrong(), math(), mathCompatibility()],
-      mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown(), windowsPathDestinations()],
+      extensions: [
+        gfm(gfmOptions),
+        cjkFriendlyStrong(),
+        math(),
+        mathCompatibility(),
+        annotationDirectiveSyntax(text),
+      ],
+      mdastExtensions: [
+        gfmFromMarkdown(),
+        mathFromMarkdown(),
+        windowsPathDestinations(),
+        annotationDirectiveMdast(),
+      ],
     }),
     text,
   );

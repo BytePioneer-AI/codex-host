@@ -30,12 +30,57 @@ codexhost 只对接写 Session Format V4 的 DSH，最低版本为 `0.1.7-rc.1`�
 | `0.2.1-rc.4` | `504a01a9578abc2c6f1fb896b1dc322c9fe24f66` | |
 | `0.2.1-rc.5` | `b830ec950faba0a46dda564be3e2d854afed94f1` | |
 | `0.2.2-rc.1` | `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 多键投影帧、分页回显截止点、普通 Fork 不记来源、follow 显式激活、模型 badge、授权提问 |
+| `0.2.2-rc.2` | `ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c` | 子代理目录第 3 版带名称、Team 模式记录 `team/mode`、Team 任务记录 `ownerName` |
 
 - 版本门槛只拦低版本，不拦高版本。
-- `dsh --version` 必须输出单行规范 SemVer。低于 `0.1.7-rc.1` 的版本（包括 `0.1.7-alpha.*` 等更早的预发布）在启动托管 Web 前返回 `unsupported`：stage 为 `version`，不可重试。中英双语提示依次说明当前版本低于最低版本、列出上表十个支持版本、说明高于 `0.2.2-rc.1` 的版本可以尝试连接但适配度可能有限，最后给出升级命令 `npm install -g @deepseek-ai/dsh@latest`。支持版本列表由 `generation-selector.ts` 维护；升级命令与首次安装、连接页的“更新 CLI”保持一致，跟随 npm `latest`，不因验证了 `next` 上的版本而切换安装渠道。
-- 不低于门槛但未验证的版本（例如以后的 `0.2.2` 正式版）按 V4 尝试。托管 Web、Remote、历史和流式数据仍逐项严格校验，不符合就明确失败。设置 → 连接只列出十个支持版本，并提示高于 `0.2.2-rc.1` 的版本可以尝试连接、但适配度可能有限。`0.2.0-rc.2` 与 `0.2.1-rc.1` 之间的 `0.2.1-alpha.*`、`0.2.1-rc.5` 与 `0.2.2-rc.1` 之间的 `0.2.2-alpha.*` 不低于门槛，会按 V4 尝试，但未经验证。
-- 首次安装、安装指引及连接页的“更新 CLI”均跟随 npm `latest`；保留既有安装管理策略，不因协议合并重新固定版本。安装最新版不代表已验证兼容，连接仍须通过 V4 协议校验。截至 2026-11-04，`latest` 为 `0.2.1-rc.5`，`next` 为 `0.2.2-rc.1`，`alpha` 为 `0.2.2-alpha.3`。
+- `dsh --version` 必须输出单行规范 SemVer。低于 `0.1.7-rc.1` 的版本（包括 `0.1.7-alpha.*` 等更早的预发布）在启动托管 Web 前返回 `unsupported`：stage 为 `version`，不可重试。中英双语提示依次说明当前版本低于最低版本、列出上表十一个支持版本、说明高于 `0.2.2-rc.2` 的版本可以尝试连接但适配度可能有限，最后给出升级命令 `npm install -g @deepseek-ai/dsh@latest`。支持版本列表由 `generation-selector.ts` 维护；升级命令与首次安装、连接页的“更新 CLI”保持一致，跟随 npm `latest`，不因验证了 `next` 上的版本而切换安装渠道。
+- 不低于门槛但未验证的版本（例如以后的 `0.2.2` 正式版）按 V4 尝试。托管 Web、Remote、历史和流式数据仍逐项严格校验，不符合就明确失败。设置 → 连接只列出十一个支持版本，并提示高于 `0.2.2-rc.2` 的版本可以尝试连接、但适配度可能有限。`0.2.0-rc.2` 与 `0.2.1-rc.1` 之间的 `0.2.1-alpha.*`、`0.2.1-rc.5` 与 `0.2.2-rc.1` 之间的 `0.2.2-alpha.*` 不低于门槛，会按 V4 尝试，但未经验证。
+- 首次安装、安装指引及连接页的“更新 CLI”均跟随 npm `latest`；保留既有安装管理策略，不因协议合并重新固定版本。安装最新版不代表已验证兼容，连接仍须通过 V4 协议校验。截至 2026-11-11，`latest` 与 `next` 均为 `0.2.2-rc.1`，`alpha` 为 `0.2.2-alpha.3`；`0.2.2-rc.2` 只发布了 GitHub Release（没有附件），尚未发布到 npm。
 - 旧 Session Ref 没有 locator（V0 时期）或带任意合法 SemVer locator（V3/V4 时期）时，都可以尝试恢复。Fork checkpoint 必须带 `v4-turn-end:` 前缀，且 locator 与当前 CLI 版本一致。
+
+## 0.2.2-rc.2 源码审计
+
+审计按固定 tag 进行：`dsh-v0.2.2-rc.1` → `dsh-v0.2.2-rc.2`（1568 个提交，其中 1105 个非合并提交，`0.2.2-rc.1` 是其祖先）。`session-format-catalog` 仍为 `currentVersion: 4`，迁移链没有新增版本。
+
+`docs/persistence-schema.json` 的持久化根由 65 个变为 66 个：新增 `team/mode`；`subagent/catalog`、`team/task`，以及共用消息来源的 `user/message`、`developer/message`、`agent/inbox/spliced`、`session/title-llm-request` 共六条 digest 变化，没有删除。对应五条同版本持久化变更：`2026-10-19-session-team-mode`、`2026-10-27-retry-control-input`、`2026-10-27-subagent-settlement-attribution`、`2026-11-02-subagent-catalog-names`、`2026-11-02-team-task-owner-names`。Agent Team 由实验包改为 base 组合中的 `@deepseek-ai/dsh-agent-team`，新 Session 默认关闭。
+
+| 对接点 | 0.2.2-rc.1 → 0.2.2-rc.2 | codexhost 处理 |
+| --- | --- | --- |
+| npm 包、`dsh` 命令、`--version`、`dsh web` 启动参数、就绪行、token 换 cookie、401 指纹、`HEAD /api/session.export` flush、`/api/remote.mux` | 不变：`apps/cli` 只新增安装入口并在 User-Agent 中带 profile 名；`bundle/web-app`、`client/connection` 的 `browser-auth.ts`、`api/gateway` 与导出路由源码没有改动 | 无 |
+| `session/follow`、`session/page`、`session/control`、`session/fork`、`session/list`、`session/modelCatalog`、`session/selectModel`、`session/updateQueue`、`userQuestions/answer`、`permissionPresets/catalog`、`commands/execute` | 控制器与所属插件的源码不变；session-controller 只改了 prompt、子代理归属判断，并新增一个投影 | 无 |
+| `$events` | 转发事件新增 `web/providers-changed`（emit），帧格式不变 | 无：emit 帧不按事件名处理 |
+| `session/prompt` | 空 `content` 表示“继续生成”：只在最近一个回合以可继续的模型错误结束、且没有待处理输入时接受，写入 `source.kind: "retry"`、内容为空的 `user/message`。接受判定改为从日志找回已接受的 requestId，包括已被移出队列的输入 | 无：codexhost 不发送空 prompt，也不复用 requestId；`retry` 来源通过校验，不投影为用户输入 |
+| 新增投影 `conversationContinuation` | 值为可继续的 `turn/end` 序号或 `null` | 无：control store 按通用键值保存，远低于每个 Session 256 个键的上限 |
+| 子代理归属与用户提问 | 只按 header 的 `origin: "subagent"` 判断，不再看运行时归属 | 无 |
+| 子代理工具 | `send_message`、`interrupt_agent` 的 `agent_id` 改为 `agent`，`list_agents` 的行格式改变，回执与署名使用名称 | 无：codexhost 不解析这些工具的参数与结果 |
+| `subagent/catalog` | 新建的本地与外部子代理都写第 3 版，带同级唯一的 `name`（以小写字母开头、最多 32 个字符、不能是 `lead`），mode 只有 `continuable` 与 `external`（DSH 升级指南 `v0.2.2-alpha.3/subagent-names`）。修复前模型一创建子代理，Session 就在回合中途故障 | **需要**：接受第 3 版；`name` 必填并按同一规则校验，`continuable` 必须带 `label` |
+| `team/mode` | 新增的必需日志事件 `{enabled}`，记录按 Session 保存的 Team 选择；`agent-team` 配置 `defaultEnabled: true` 时在 Agent 创建时写入（`v0.2.1-rc.2/session-team-mode`） | **需要**：列入已知事件，只允许布尔 `enabled`，不生成 Item |
+| `team/task` | 任务快照新增可选 `ownerName`，与 `ownerId` 一起记录（`v0.2.2-alpha.3/subagent-names`） | **需要**：接受 `ownerName`，必须同时带 `ownerId` 且为非空字符串 |
+| 消息来源 | 新增 `retry`；子代理结算通知新增 `stopReason`；运行时上下文的文本包在 `<system-reminder>` 中 | 无：来源只要求非空且不是 `plugin` 的 kind，只有 `kind: "user"` 投影为用户输入 |
+
+第 1 版目录项不是 rc.2 新增的：v3 → v4 会话格式迁移遇到无法还原描述的子会话时，写入 `{version: 1, mode: "unknown"}`（`session-format-v3-to-v4/src/migration.ts`），DSH 的 schema 允许第 1 版的 mode 为 `one-shot`、`continuable` 或 `unknown`。Adapter 以前只接受第 0、2 版，带这类子会话的旧会话迁移后打不开；现在按 DSH 的 schema 接受第 1 版，`continuable` 仍必须带 `label`。没有用真实 CLI 触发（需要旧版本写出、子会话描述无法还原的会话），由单元测试覆盖。
+
+## 0.2.2-rc.2 真实 CLI 验证
+
+环境同 `0.2.2-rc.1`：macOS 27.0.1（arm64）、Node.js `v24.21.0`、npm `11.19.0`、Vitest `4.1.10`。`0.2.2-rc.2` 尚未发布到 npm，GitHub Release 也没有附件，因此从 tag 源码构建：`pnpm install --frozen-lockfile`，按 official 配置构建产物（`scripts/build.ts --scope artifacts --profile official`），`pnpm run release:pack --family dsh` 打出 374 个 tarball，再参照 DSH 的 `verify-packed-install` 以 `file:` 依赖隔离安装。`dsh --version` 为 `0.2.2-rc.2`，`@deepseek-ai/dsh` 及 373 个 `dsh-*` 子包版本一致。`0.2.2-rc.1` 从 npm 隔离安装（319 个子包）。npm 11 安装脚本的处理同 `0.2.1-rc.1`；另外不能加 `--omit=optional`，否则 koffi 缺少平台预编译包，改为从源码编译并失败。全部验证都用本地 Messages SSE 模型桩和隔离的 `DSH_HOME`，不调用真实计费模型。
+
+| 验证 | 修复前 Adapter（upstream main `67a18a4f`） | 修复后 Adapter |
+| --- | --- | --- |
+| 生命周期 Gate，`0.2.2-rc.2` | 1 次通过，约 6.5 秒（Gate 不创建子代理，也不开启 Team） | 连续 10 次通过，记录耗时的 5 次约 6.5–6.7 秒 |
+| 子代理：模型调用 `subagent`（`name: "checker"`），DSH 在父会话写入第 3 版目录项 | 回合中途 Session 故障：`protocolError`，“Modern history known event has an incompatible schema”。故障后 DSH 继续执行：父回合收到工具结果并回复、子代理运行、结果投递触发下一个父回合，共 3 次模型请求；关闭 Session 报 “native execution stop was not confirmed before the Session fault”；冷恢复失败，错误同上 | 回合成功；冷恢复后有 2 个回合（第 2 个由子代理结果投递触发），之后的回合成功 |
+| Team 默认开启：`$DSH_HOME/cordis.patch.yml` 设 `agent-team` 的 `defaultEnabled: true` | 新建会话即失败：`protocolError`，“Modern history contains an unknown required event”，没有发出模型请求 | 日志首部为 `team/mode {enabled: true}`；新建、冷恢复与继续的回合都成功 |
+| 升级：在 `0.2.2-rc.1` 上委派一次（v0 目录项），换到 `0.2.2-rc.2` 冷恢复后再委派（第 3 版目录项） | — | 同一日志中两版目录项并存，冷恢复与继续委派都成功 |
+| 生命周期 Gate，`0.2.2-rc.1` | — | 连续 3 次通过，每次约 5.6–5.9 秒 |
+
+`team/task` 的 `ownerName` 没有用真实 CLI 触发（需要 Team 模式下由模型把任务分配给有名字的成员）；mode 为 `external` 的第 3 版目录项也没有。两者由单元测试与快照回放覆盖。
+
+探测是一次性脚本，没有纳入仓库：模型桩实现 Messages SSE，父回合的首个请求返回 `subagent` 工具调用；`DSH_HOME` 中的 `session.v4.jsonl.zstd` 由多个 zstd 帧组成，用 `zstd -dc` 读取。
+
+另外用 codexhost 的 V4 历史投影回放 DSH 自带的全部 `*.v4.jsonl`（包括子会话文件，所以数量与 `0.2.2-rc.1` 一节的口径不同），工具目录的占位符与工具名列表换成最小声明，补回连续序号和固定时间：
+
+- `0.2.2-rc.2`：修复前 252/295 通过，32 个卡在第 3 版目录项，8 个卡在 `team/mode`。修复后 292/295：`acp` 7/7、`web` 34/34、`session` 203/204、`sdk` 48/50。`sdk` 的 2 个是已知的 `offloadImages`；`session/web-search-account-billing` 是 `recording: authored` 的手写快照，finish reason 为 `tool-use`，DSH 的 `FinishReasonMap` 没有这个值，源码也不会写出。
+- 只绕过第 3 版目录项与 `team/mode` 时，`session/team-task-inbox` 还会卡在 `ownerName`；修复后通过。
+- `0.2.2-rc.1`：修复前后都是 265/267，另外 2 个是 `offloadImages`。
 
 ## 0.2.2-rc.1 源码审计
 
@@ -311,6 +356,30 @@ CodeRabbit 在 #412 上建议拒绝 catalog `options` 中的 `auto`，本变更�
 
 `npm run test:deepseek:coverage` 先构建 TypeScript，再运行整个 DSH Adapter。统计范围为 `packages/adapters/deepseek-harness/src/**/*.ts`，包含未执行文件，四项门槛均为 80%。HTML 与 JSON 摘要生成到 `coverage/deepseek-harness/`，不纳入 Git。
 
+### 0.2.2-rc.2 对接
+
+在本次对接的最终代码上运行：**28 个文件、1043 项测试全部通过**。
+
+| 指标 | 覆盖率 | 已覆盖 / 总数 |
+| --- | --- | --- |
+| 语句 | 88.19% | 6132 / 6953 |
+| 分支 | 83.83% | 5311 / 6335 |
+| 函数 | 93.93% | 960 / 1022 |
+| 行 | 91.12% | 5687 / 6241 |
+
+同一代码上，DSH Adapter 与设置页测试一起运行 46 个文件、1277 项通过；`npm run lint`、`npm run typecheck`、`prettier --check .`、`npm run build:renderer` 与 `git diff --check` 均通过。本机没有 Rust 工具链，未运行 `cargo fmt --check`（本次未改动 Rust）。
+
+新增的定向测试：
+
+- 子代理目录：第 3 版的 `continuable`（带 `label`）与 `external`（带或不带 `label`）被接受，名称长度到 32 个字符；缺 `name`、名称为 `lead`、含大写字母、以数字开头、含 `/`、超过 32 个字符或不是字符串、`continuable` 缺 `label`、mode 为 `one-shot` 或 `unknown`、第 2 版带 `name` 都拒绝。
+- 第 1 版目录项：mode 为 `unknown`（带或不带 `label`）、`one-shot` 与带 `label` 的 `continuable` 被接受；`continuable` 缺 `label`、mode 为 `external`、`label` 不是字符串、带 `name` 都拒绝，第 0 版的 `unknown` 也拒绝。同一日志中第 0、1、3 版目录项并存时接受。
+- `team/mode`：`true` 与 `false` 被接受；缺 `enabled`、非布尔值、多余字段都拒绝。
+- Team 任务：带 `ownerId` 与 `ownerName` 的任务被接受；只有 `ownerName`、`ownerName` 为空字符串或非字符串都拒绝。
+- 实时回合：日志先写 `team/mode`，回合中再写第 3 版目录项与带 `ownerName` 的任务，回合照常成功，Session 不故障。
+- 版本：`0.2.2-rc.2` 被识别为已验证版本，低版本提示逐字列出十一个版本。
+
+在改动前的源码上保留这些测试（Adapter 源码、manifest 与 Renderer 文案换回 upstream main），共 24 项失败：协议相关 12 项（第 3 版目录项 3、第 1 版目录项 5、`team/mode` 2、Team 任务 1、实时回合 1），版本列表相关 12 项。
+
 ### 0.2.2 对接（0.2.1-rc.3 至 0.2.2-rc.1）
 
 在本次对接的最终代码上运行：**28 个文件、1008 项测试全部通过**。
@@ -398,13 +467,14 @@ V4 回放夹具 `packages/adapters/deepseek-harness/test/fixtures/dsh-020rc2-too
 ## 未验证的边界
 
 - 未使用真实计费模型；Desktop 端到端显示（权限选择器、PTC 子调用卡片、回合继续输出时仍打开的提问、崩溃恢复后的 Thread、`unsupported` 提示）需人工在 Desktop 中验证。
-- 0.2.0 系列的真实 CLI 验证只在 Linux 上运行；`0.2.1` 系列、`0.2.2-rc.1` 以及 `0.2.0-rc.2`、`0.1.7-rc.1` 的复验只在 macOS arm64 上运行，没有在 Windows 或 Linux 上复验 `0.2.1` 与 `0.2.2` 系列。
+- 0.2.0 系列的真实 CLI 验证只在 Linux 上运行；`0.2.1` 系列、`0.2.2-rc.1`、`0.2.2-rc.2` 以及 `0.2.0-rc.2`、`0.1.7-rc.1` 的复验只在 macOS arm64 上运行，没有在 Windows 或 Linux 上复验 `0.2.1` 与 `0.2.2` 系列。
 - `0.2.1-rc.1` 的 PTC 子调用 `meta` 与外部 Agent 子代理目录项只由 DSH 快照回放和单元测试覆盖，没有用真实 CLI 触发；Desktop 中 `0.2.1` 系列会话的显示未手测。
 - `0.2.2-rc.1` 的模型 badge 与授权提问（`kind: "approval"`）只由单元测试覆盖：前者需要官方 `/models` 下发声明，后者由需手动启用、仅限 macOS 的实验性 CUA 插件发出。Desktop 的模型选择器不显示 badge。
+- `0.2.2-rc.2` 由源码打包安装，不是 npm 上发布的产物；npm 发布后的包没有复验。Team 模式只用 `defaultEnabled` 配置触发，没有在 DSH Web 中手动切换；`team/task` 的 `ownerName` 与 mode 为 `external` 的第 3 版目录项只由单元测试与快照回放覆盖。Desktop 中子代理结果投递触发的回合如何显示，没有手测。
 - `0.2.2-rc.1` 的 follow `activate` 在崩溃恢复与冷恢复后继续对话的探测中没有观察到可见差别，只按 DSH 升级指南与旧版本行为保留。
 - `0.2.1-rc.2` 的搜索探测使用默认的 `web-search-deepseek` 提供者和本地桩。新增的 DeepSeek Search/Fetch API（Web search 设置开关，默认关闭）没有用真实 CLI 触发，只有 `deepseek-fetch` 快照回放；两个版本之间的 schema 比对显示它没有新增记录类型。
-- `subagent/catalog` v1（DSH 迁移为未知子代理写入，0.1.7 起即存在）仍被拒绝，与 `0.2.1` 系列无关，未在本次对接中处理。
-- `assistant/attempt` 的失败诊断带 `offloadImages`（图片超出路由预算、DSH 需要卸载最旧图片后重试，`IMAGE_OFFLOAD_REQUIRED`）会被拒绝：`profiles/validation.ts` 只允许 `message`、`code`、`status`、`providerRetryAfterMs`、`requestId`。该成员在 DSH `0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.5`、`0.2.2-rc.1` 的源码中都存在，`sdk` 目录的 `inline-image-prompt`、`minimal-image-compaction` 快照因此回放失败；它与本次版本变化无关，未在本次对接中处理，也没有用真实 CLI 触发。
+- `subagent/catalog` 第 1 版（DSH 迁移为未知子代理写入，0.1.7 起即存在）只由单元测试覆盖，没有用真实 CLI 触发迁移出这类目录项。
+- `assistant/attempt` 的失败诊断带 `offloadImages`（图片超出路由预算、DSH 需要卸载最旧图片后重试，`IMAGE_OFFLOAD_REQUIRED`）会被拒绝：`profiles/validation.ts` 只允许 `message`、`code`、`status`、`providerRetryAfterMs`、`requestId`。该成员在 DSH `0.1.7-rc.2`、`0.2.0-rc.2`、`0.2.1-rc.1`、`0.2.1-rc.2`、`0.2.1-rc.5`、`0.2.2-rc.1`、`0.2.2-rc.2` 的源码中都存在，`sdk` 目录的 `inline-image-prompt`、`minimal-image-compaction` 快照因此回放失败；它与本次版本变化无关，未在本次对接中处理，也没有用真实 CLI 触发。
 - 原生执行可能仍在时（例如托管 `dsh web` 被杀）关闭故障的 Session，`close()` 返回的拒绝要晚一步才有处理器，Node 先报告一次未处理的 Promise 拒绝（随后提示已异步处理）。`0.2.1-rc.5` 与 `0.2.2-rc.1` 上都复现，修复前的 Adapter 同样如此；在默认设置的独立 Node 进程中，它会使进程退出。Host Runtime 中的影响没有验证，未在本次对接中处理。
 - 未用真实 CLI 触发 PTC 模式、失败的 step，以及 Fork 种子里的补写结果；Auto review 插件未启用。
 - 不把默认配置下的验证推广到任意非默认 preset 或 profile；不证明独立第三方客户端或任意后台工具进程的退出。

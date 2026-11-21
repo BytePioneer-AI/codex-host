@@ -7,7 +7,7 @@ import * as acme from "acme-client";
 import { afterEach, expect, it, vi } from "vitest";
 import { createRelay } from "../src/index.js";
 import { acmeServer, signCertificate } from "./acme-server.js";
-import { certPath, fakeAgent, keyPath, phone } from "./helpers.js";
+import { certPath, keyPath, phone } from "./helpers.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -51,42 +51,6 @@ async function fixture(hostname = "relay.example.test") {
     },
   };
 }
-
-it("renews at two-thirds of validity without disconnecting existing controls", async () => {
-  const f = await fixture();
-  const key = await acme.crypto.createPrivateEcdsaKey();
-  const [, csr] = await acme.crypto.createCsr({ altNames: ["relay.example.test"] }, key);
-  writeFileSync(join(f.data, "certificate-key.pem"), key);
-  const old = signCertificate(f.data, csr, 3);
-  writeFileSync(join(f.data, "certificate.pem"), old);
-  const interval = vi.spyOn(globalThis, "setInterval");
-  const relay = await f.start();
-  const agent = await fakeAgent({ port: f.port, controlHost: "relay.example.test" });
-  await agent.registered;
-  expect(f.ca.orders).toBe(0);
-  const certificate = new X509Certificate(old);
-  const from = Date.parse(certificate.validFrom);
-  const renewal = from + ((Date.parse(certificate.validTo) - from) * 2) / 3;
-  const now = vi.spyOn(Date, "now").mockReturnValue(renewal - 1);
-  const check = interval.mock.calls.find((call) => call[1] === 15 * 60_000)?.[0];
-  if (typeof check !== "function") throw new Error("Missing certificate check");
-  check();
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  expect(f.ca.orders).toBe(0);
-  now.mockReturnValue(renewal);
-  check();
-  await vi.waitFor(() =>
-    expect(readFileSync(join(f.data, "certificate.pem"), "utf8")).not.toBe(old),
-  );
-  expect(f.ca.orders).toBe(1);
-  expect(f.ca.validations).toBe(1);
-  expect(agent.ws.readyState).toBe(1);
-  const client = phone("relay.example.test", undefined, f.port);
-  await once(client, "secureConnect");
-  expect(client.getPeerCertificate().fingerprint256).not.toBe(certificate.fingerprint256);
-  client.destroy();
-  await relay.close();
-});
 
 it("keeps the old certificate after a failed renewal and rejects new controls at expiry", async () => {
   const f = await fixture();

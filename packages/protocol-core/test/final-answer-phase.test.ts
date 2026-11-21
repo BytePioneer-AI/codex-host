@@ -173,6 +173,7 @@ describe("final answer phase inference", () => {
 
     expect(historicalTurn([progress, command, answer], unknown)).toMatchObject({
       status: "completed",
+      codexhostTurnOutcome: unknown,
       items: [
         { type: "userMessage" },
         { id: "progress", phase: null },

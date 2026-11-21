@@ -18,10 +18,13 @@ const operations = [
   "send",
   "cancel",
   "read",
+  "exportThread",
   "wait",
+  "answer",
   "list",
 ] as const;
 type Operation = (typeof operations)[number];
+type OperationApi = Required<DelegationControlApi>;
 
 /** The SSH catalog is a proxy; legacy records still use its local coordinator. */
 export function sharedDelegationRegistration(
@@ -33,8 +36,8 @@ export function sharedDelegationRegistration(
   const generation = randomUUID();
   async function call<K extends Operation>(
     operation: K,
-    input: Parameters<DelegationControlApi[K]>[0],
-  ): Promise<Awaited<ReturnType<DelegationControlApi[K]>>> {
+    input: Parameters<OperationApi[K]>[0],
+  ): Promise<Awaited<ReturnType<OperationApi[K]>>> {
     const response = await owner.request(SHARED_DELEGATION_METHOD, {
       operation,
       input: jsonValueSchema.parse(input ?? {}),
@@ -45,7 +48,7 @@ export function sharedDelegationRegistration(
         "Shared delegation request failed; do not retry automatically",
       );
     const result = response.result as {
-      value?: Awaited<ReturnType<DelegationControlApi[K]>>;
+      value?: Awaited<ReturnType<OperationApi[K]>>;
       error?: {
         code: ConstructorParameters<typeof DelegationControlError>[0];
         message: string;
@@ -63,18 +66,18 @@ export function sharedDelegationRegistration(
         "RUNTIME_UNREACHABLE",
         "Shared delegation reply is unavailable",
       );
-    return result.value as Awaited<ReturnType<DelegationControlApi[K]>>;
+    return result.value as Awaited<ReturnType<OperationApi[K]>>;
   }
-  async function thread<K extends "send" | "cancel" | "read" | "wait">(
+  async function thread<K extends "send" | "cancel" | "read" | "wait" | "answer" | "exportThread">(
     operation: K,
-    input: Parameters<DelegationControlApi[K]>[0],
-  ): Promise<Awaited<ReturnType<DelegationControlApi[K]>>> {
+    input: Parameters<OperationApi[K]>[0],
+  ): Promise<Awaited<ReturnType<OperationApi[K]>>> {
     if ((await owner.ownership([input.threadId])).has(input.threadId))
       return call(operation, input);
     // Each operation keeps its native/local validation and error contract.
-    const handler = local[operation] as (
-      input: Parameters<DelegationControlApi[K]>[0],
-    ) => ReturnType<DelegationControlApi[K]>;
+    const handler = local[operation] as
+      ((input: Parameters<OperationApi[K]>[0]) => ReturnType<OperationApi[K]>) | undefined;
+    if (!handler) throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
     return await handler(input);
   }
   return {
@@ -124,7 +127,9 @@ export function sharedDelegationRegistration(
       (input.parentThreadId !== undefined && (await local.ownsThread(input.parentThreadId)))
         ? local.start(input)
         : call("start", input),
+    exportThread: (input) => thread("exportThread", input),
     read: (input) => thread("read", input),
+    answer: (input) => thread("answer", input),
     wait: async (input) => {
       if (!(await owner.ownership([input.threadId])).has(input.threadId)) return local.wait(input);
       if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0)
@@ -137,7 +142,10 @@ export function sharedDelegationRegistration(
       // Keep each RPC bounded even when the CLI asks to wait longer than a peer timeout.
       for (;;) {
         const snapshot = await call("read", read);
-        if (["completed", "failed", "interrupted"].includes(snapshot.status))
+        if (
+          ["completed", "failed", "interrupted"].includes(snapshot.status) ||
+          snapshot.pendingQuestions?.length
+        )
           return { ...snapshot, timedOut: false };
         const remaining = deadline - Date.now();
         if (remaining <= 0) return { ...snapshot, timedOut: true };
@@ -161,7 +169,8 @@ export async function dispatchSharedDelegation(api: DelegationControlApi, params
   }
   try {
     const operation = params.operation as Operation;
-    const handler = api[operation] as (input: unknown) => Promise<unknown>;
+    const handler = api[operation] as ((input: unknown) => Promise<unknown>) | undefined;
+    if (!handler) throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
     return { value: jsonValueSchema.parse(await handler(params.input)) };
   } catch (error) {
     return {

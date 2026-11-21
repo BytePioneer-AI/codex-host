@@ -28,12 +28,14 @@ type WorkspaceViewState = {
   orderBy: SessionOrderBy;
   /** Explicit group expansion keyed by Workspace identity, including descendants in tree mode. */
   groupExpansion: Record<string, boolean>;
+  /** Thread IDs in this browser only; absent entries are collapsed. */
+  threadExpansion?: Record<string, boolean>;
   /**
    * Section folds above the tree, keyed by section. A missing entry shows the
    * section, which also covers views persisted before sections could fold.
    */
   sectionExpansion?: Record<string, boolean>;
-  /** Saved manual order per Workspace group plus the browser-local flat-list account. */
+  /** Saved manual root order per Workspace group plus the browser-local flat-list account. */
   sessionOrderByAccount: Record<string, string[]>;
   /** Archived-row visibility for the current page; page startup resets it to 'default'. */
   archivedFilter?: ArchivedFilter;
@@ -71,6 +73,11 @@ type WorkspaceViewActions = {
     source: SessionOrderSource,
   ) => void;
   setGroupExpanded: (draft: WorkspaceViewState, key: string, expanded: boolean) => void;
+  setThreadsExpanded: (
+    draft: WorkspaceViewState,
+    ids: readonly string[],
+    expanded: boolean,
+  ) => void;
   setSectionExpanded: (draft: WorkspaceViewState, key: string, expanded: boolean) => void;
   retainAccountKeys: (draft: WorkspaceViewState, workspaceKeys: readonly string[]) => void;
   syncSessionOrders: (
@@ -140,6 +147,7 @@ export function createWorkspaceViewStore(): EngineStoreHandle<
       groupBy: "workspace",
       orderBy: "updated",
       groupExpansion: {},
+      threadExpansion: {},
       sectionExpansion: {},
       sessionOrderByAccount: {},
       archivedFilter: "default",
@@ -159,6 +167,10 @@ export function createWorkspaceViewStore(): EngineStoreHandle<
       },
       setGroupExpanded: (d, key: string, expanded: boolean) => {
         d.groupExpansion[key] = expanded;
+      },
+      setThreadsExpanded: (d, ids, expanded) => {
+        d.threadExpansion ??= {};
+        for (const id of ids) d.threadExpansion[id] = expanded;
       },
       setSectionExpanded: (d, key: string, expanded: boolean) => {
         d.sectionExpansion = { ...d.sectionExpansion, [key]: expanded };

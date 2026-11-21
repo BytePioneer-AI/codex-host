@@ -53,7 +53,7 @@ export function fileMentionSource(
           section: t("guide.title"),
         });
       }
-      if (rows.length === 0) rows.push(notice(t("mention.noMatches")));
+      if (rows.length === 0 && query === "") rows.push(notice(t("mention.noMatches")));
       return rows;
     },
     onPick({ candidate, action, trigger }) {

@@ -85,6 +85,7 @@ export async function ensureHostService(options: HostServiceLaunch): Promise<voi
     Object.entries({ ...process.env, ...options.environment }).filter(([key, value]) => {
       const upper = key.toUpperCase();
       if (upper === "CODEXHOST_WEB_SERVICE") return value === "0" || value === "1";
+      if (upper === "CODEXHOST_EXTERNAL_CLIENT_PORT") return typeof value === "string";
       if (
         [
           "CODEXHOST_NPM_NODE_PATH",

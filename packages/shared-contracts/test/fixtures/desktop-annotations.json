@@ -1,0 +1,50 @@
+{
+  "source": "Codex Desktop 26.1106 prompt assembly (H/F), executed from the installed app.asar",
+  "binary": "26.1106.51428",
+  "cases": [
+    {
+      "name": "single",
+      "annotations": [
+        {
+          "text": "keep the drain loop"
+        }
+      ],
+      "body": "Explain why.",
+      "desktop": "\n# Response annotations:\nEach item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include its inline directive `:codex-annotation{index=\"N\"}`, where N is its one-based array position (for example, `:codex-annotation{index=\"1\"}`). Do not use unstructured annotation labels.\n<response-annotations>\n[{\"text\":\"keep the drain loop\"}]\n</response-annotations>\n\n## My request:\nExplain why.\n"
+    },
+    {
+      "name": "annotation only",
+      "annotations": [
+        {
+          "text": "keep the drain loop"
+        }
+      ],
+      "body": "",
+      "desktop": "\n# Response annotations:\nEach item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include its inline directive `:codex-annotation{index=\"N\"}`, where N is its one-based array position (for example, `:codex-annotation{index=\"1\"}`). Do not use unstructured annotation labels.\n<response-annotations>\n[{\"text\":\"keep the drain loop\"}]\n</response-annotations>\n\n## My request:\n\n"
+    },
+    {
+      "name": "with a comment",
+      "annotations": [
+        {
+          "text": "first",
+          "annotation": "why?"
+        },
+        {
+          "text": "second"
+        }
+      ],
+      "body": "Explain both.",
+      "desktop": "\n# Response annotations:\nEach item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include its inline directive `:codex-annotation{index=\"N\"}`, where N is its one-based array position (for example, `:codex-annotation{index=\"1\"}`). Do not use unstructured annotation labels.\n<response-annotations>\n[{\"text\":\"first\",\"annotation\":\"why?\"},{\"text\":\"second\"}]\n</response-annotations>\n\n## My request:\nExplain both.\n"
+    },
+    {
+      "name": "multiline selection",
+      "annotations": [
+        {
+          "text": "alpha\n\nbeta"
+        }
+      ],
+      "body": "First line.\n\nSecond line.",
+      "desktop": "\n# Response annotations:\nEach item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include its inline directive `:codex-annotation{index=\"N\"}`, where N is its one-based array position (for example, `:codex-annotation{index=\"1\"}`). Do not use unstructured annotation labels.\n<response-annotations>\n[{\"text\":\"alpha\\n\\nbeta\"}]\n</response-annotations>\n\n## My request:\nFirst line.\n\nSecond line.\n"
+    }
+  ]
+}

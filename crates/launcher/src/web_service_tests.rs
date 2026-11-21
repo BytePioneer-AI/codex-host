@@ -135,8 +135,13 @@ fn stop_recovers_an_orphaned_web_child_of_a_dead_supervisor() {
             thread::sleep(Duration::from_millis(10));
         }
     };
-    let live = codexhost_platform::process_identity(spawn_orphan()).unwrap();
+    let live = codexhost_platform::process_snapshot(spawn_orphan()).unwrap();
     wait_started(Instant::now() + Duration::from_secs(10));
+    assert_eq!(
+        live.process_group_id, live.id,
+        "the fixture must lead its own process group"
+    );
+    let live = codexhost_platform::process_snapshot(live.id).unwrap();
     assert_eq!(
         live.process_group_id, live.id,
         "the fixture must lead its own process group"

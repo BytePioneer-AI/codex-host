@@ -60,6 +60,7 @@ export class CopilotAdapter implements HarnessAdapter {
   private readonly clients = new Set<CopilotClient>();
   private readonly inspections = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
   private readonly inspectionsInFlight = new Map<string, Promise<HarnessInspection>>();
+  private readonly inspectionTasks = new Set<Promise<HarnessInspection>>();
   private closed = false;
   private readonly account: CopilotAccount;
 
@@ -85,13 +86,27 @@ export class CopilotAdapter implements HarnessAdapter {
       };
     const cwd = path.resolve(input.cwd ?? this.environment.HOME ?? process.cwd());
     const pending = this.inspectionsInFlight.get(cwd);
+    if (input.refresh) {
+      this.inspections.clear();
+      this.inspectionsInFlight.clear();
+      if (pending) this.inspectionsInFlight.set(cwd, pending);
+    }
     if (pending) return pending;
     const cached = this.inspections.get(cwd);
-    if (!input.refresh && cached) return cached;
-    this.inspections.delete(cwd);
-    const inspection = this.inspectCwd(cwd);
+    if (cached) return cached;
+    const inspection = this.inspectCwd(cwd).then((result) => {
+      if (
+        !this.closed &&
+        result.status === "ready" &&
+        this.inspectionsInFlight.get(cwd) === inspection
+      )
+        this.inspections.set(cwd, result);
+      return result;
+    });
     this.inspectionsInFlight.set(cwd, inspection);
+    this.inspectionTasks.add(inspection);
     return inspection.finally(() => {
+      this.inspectionTasks.delete(inspection);
       if (this.inspectionsInFlight.get(cwd) === inspection) this.inspectionsInFlight.delete(cwd);
     });
   }
@@ -162,7 +177,6 @@ export class CopilotAdapter implements HarnessAdapter {
         status: "unavailable",
         error: { code: "invalidState", message: "Copilot Adapter is closed.", retryable: false },
       };
-    if (result.status === "ready") this.inspections.set(cwd, result);
     return result;
   }
 
@@ -426,7 +440,7 @@ export class CopilotAdapter implements HarnessAdapter {
       this.account.close(),
       ...[...this.clients].map((client) => client.forceStop()),
     ]);
-    await Promise.allSettled([...this.inspectionsInFlight.values()]);
+    await Promise.allSettled(this.inspectionTasks);
     this.inspectionsInFlight.clear();
     if (results.some((result) => result.status === "rejected"))
       throw new Error("Copilot sessions could not all be closed; retry close.");

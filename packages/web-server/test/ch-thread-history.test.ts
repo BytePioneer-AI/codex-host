@@ -81,6 +81,23 @@ it("opens only the latest five full Turns, then pages backwards without renumber
   assert.ok(host.requests.every((r) => ["thread/read", "thread/turns/list"].includes(r.method)));
 });
 
+it("keeps unknown historical outcomes distinct from success without hiding the answer", async () => {
+  const { row, view } = fixture(1);
+  defined(row.turns[0]).codexhostTurnOutcome = {
+    status: "unknown",
+    reason: "No native terminal record",
+  };
+  await view.refresh();
+  const end = defined(view.log.events.find((event) => event.type === "turn/end"));
+  assert.deepEqual((end.data as { reason: unknown }).reason, { kind: "unknown" });
+  assert.ok(
+    view.log.events.some(
+      (event) =>
+        event.type === "assistant/message" && JSON.stringify(event.data).includes("Answer 0"),
+    ),
+  );
+});
+
 it("preserves native message times across paging, refreshes and reopening", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1_800_000_000_000 });
   const { host, row, view } = fixture(12);
@@ -383,4 +400,38 @@ it("rejects repeated cursors and rewritten history rather than looping or fabric
   row.turns = turns(3);
   row.updatedAt++;
   await assert.rejects(view.refresh(), /history was rewritten/);
+});
+
+it("opens an empty history at the wire's empty cursor, then continues from the rendering origin", async () => {
+  const { row, view } = fixture(0);
+  await view.refresh();
+  const frames: Array<{ cursor: number; records: Array<{ event: { seq: number } }> }> = [];
+  const follow = () =>
+    view.log.follow(
+      {
+        id: "empty-history-follower",
+        closed: false,
+        push: (frame: unknown) => {
+          const value = frame as { type: string };
+          if (value.type === "snapshot") frames.push(frame as (typeof frames)[number]);
+        },
+        onClose: () => undefined,
+        end: () => undefined,
+        fail: () => undefined,
+      },
+      { assistantStream: true },
+    );
+  follow();
+  const empty = defined(frames.at(-1));
+  assert.equal(empty.records.length, 0);
+  assert.equal(empty.cursor, -1);
+
+  row.turns = turns(1);
+  row.updatedAt++;
+  await view.refresh();
+  follow();
+  const filled = defined(frames.at(-1));
+  assert.ok(filled.records.length > 0);
+  assert.equal(filled.cursor, defined(filled.records.at(-1)).event.seq);
+  assert.equal(defined(filled.records[0]).event.seq, 2 ** 40);
 });

@@ -480,3 +480,8 @@
   font-size: 12px;
   line-height: 18px;
 }
+
+/* A reply's citation of one annotated selection reads as its label, not code. */
+.annotationCitation {
+  white-space: nowrap;
+}

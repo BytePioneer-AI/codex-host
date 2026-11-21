@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -92,6 +93,39 @@ describe("Windows Mapping Store lock identity (simulated OS replies)", () => {
     expect(process.kill).not.toHaveBeenCalled();
   });
 
+  it.each(["win32", "darwin"])(
+    "preserves a %s owner initialized after a clock jump, even with a delayed module load",
+    async (platform) => {
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+      vi.resetModules();
+      const { MappingStore: DelayedStore } = await import("../src/index.js");
+      store = new DelayedStore({ directory, instanceId: "new-owner" });
+      await store.initialize();
+      const lock = path.join(directory, "store.lock");
+      const record = JSON.parse(await readFile(lock, "utf8"));
+      expect(Math.abs(Date.parse(record.processStartedAt) - performance.timeOrigin)).toBeLessThan(
+        1_000,
+      );
+      clock.mockReturnValue(Date.now() - 120_000);
+      const contender = new DelayedStore({ directory, instanceId: "contender" });
+      await expect(contender.initialize()).rejects.toMatchObject({ code: "STORE_LOCKED" });
+      // Exercise the OS metadata path rather than the same-PID shortcut.
+      record.pid = ownerPid === process.pid ? ownerPid + 1 : ownerPid;
+      await writeFile(lock, JSON.stringify(record));
+      vi.mocked(execFileSync).mockReturnValue(
+        platform === "win32"
+          ? JSON.stringify({
+              Path: process.execPath,
+              StartTime: new Date(performance.timeOrigin).toISOString(),
+            })
+          : new Date(performance.timeOrigin).toString(),
+      );
+      await expect(contender.initialize()).rejects.toMatchObject({ code: "STORE_LOCKED" });
+      expect(JSON.parse(await readFile(lock, "utf8"))).toEqual(record);
+    },
+  );
+
   it("preserves a live owner when only its creation time is readable", async () => {
     reply(null, recordedStart);
     await expectPreserved(await writeLock());
@@ -156,6 +190,53 @@ describe("Windows Mapping Store lock identity (simulated OS replies)", () => {
     reply(null, reusedStart);
     await writeLock();
     await expectRecovered();
+  });
+
+  it("keeps a live contender's claim link even when it runs as codexhost.exe", async () => {
+    const contenderPid = ownerPid + 2 === process.pid ? ownerPid + 3 : ownerPid + 2;
+    const contenderStart = Date.parse(recordedStart);
+    vi.mocked(execFileSync).mockImplementation((_file, args) => {
+      const query = args?.at(-1) ?? "";
+      return query.includes(`ProcessId = ${contenderPid}`)
+        ? JSON.stringify({ Path: "C:\\codexhost\\bin\\codexhost.exe", StartTime: recordedStart })
+        : JSON.stringify({ Path: nodePath, StartTime: reusedStart });
+    });
+    const content = await writeLock();
+    const lock = path.join(directory, "store.lock");
+    const claim = `${lock}.claim-${contenderPid}-${contenderStart}-contender`;
+    await link(lock, claim);
+    await expectPreserved(content);
+    expect(await readFile(claim, "utf8")).toBe(content);
+  });
+
+  it.each([
+    ["win32", "claim"],
+    ["win32", "publish"],
+    ["darwin", "claim"],
+    ["darwin", "publish"],
+  ])("preserves a live remote %s %s link after a clock jump", async (platform, kind) => {
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    const contenderPid = process.pid + 1;
+    vi.mocked(process.kill).mockImplementation((pid) => {
+      if (pid !== contenderPid)
+        throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+      return true;
+    });
+    vi.mocked(execFileSync).mockReturnValue(
+      platform === "win32"
+        ? JSON.stringify({
+            Path: "C:\\codexhost\\bin\\codexhost.exe",
+            StartTime: new Date(performance.timeOrigin).toISOString(),
+          })
+        : new Date(performance.timeOrigin).toString(),
+    );
+    const content = await writeLock();
+    const lock = path.join(directory, "store.lock");
+    const competing = `${lock}.${kind}-${contenderPid}-${Math.round(performance.timeOrigin)}-competing`;
+    await link(lock, competing);
+    await expectPreserved(content);
+    expect(await readFile(competing, "utf8")).toBe(content);
   });
 
   it("recovers a dead owner's lock without querying CIM", async () => {

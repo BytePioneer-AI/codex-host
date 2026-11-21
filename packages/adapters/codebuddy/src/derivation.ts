@@ -360,6 +360,10 @@ function referencedChildren(rows: Row[]): ReferencedChild[] {
   const children = new Map<string, ReferencedChild>();
   for (const row of rows) {
     if (row.type === "function_call" && row.name === "Agent") {
+      const data = record(row.providerData);
+      // A discarded partial stream never started a child, but remains in the parent chain.
+      if (row.status === "incomplete" && data.isPartialAborted === true && data.discard === true)
+        continue;
       const callId = text(row.callId);
       if (!callId || calls.has(callId))
         throw new CodeBuddyError("protocolError", "Agent delegation identity is ambiguous");

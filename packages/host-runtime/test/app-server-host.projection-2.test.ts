@@ -14,7 +14,9 @@ import {
   harnessIdSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
+  hostItemIdSchema,
   hostThreadIdSchema,
+  hostTurnIdSchema,
 } from "@codexhost/shared-contracts";
 import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
@@ -52,7 +54,7 @@ async function answerOfficialChildName(
 ): Promise<void> {
   const request = await readJsonLine(fixture.official.stdin);
   expect(request).toMatchObject({ method: "thread/name/set" });
-  expect(request.params).toHaveProperty("name", name ?? expect.stringContaining(" · "));
+  expect(request.params).toHaveProperty("name", name ?? expect.any(String));
   fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`);
 }
 
@@ -482,6 +484,116 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("keeps a delegated first Turn's streamed Item IDs across native history reads", async () => {
+    let delegationApi: DelegationControlApi | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        delegationApi = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!delegationApi) throw new Error("Delegation API was not registered");
+      const starting = delegationApi.start({
+        harnessId: "pi",
+        task: "review auth",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const started = await starting;
+      const { threadId } = started;
+      const turnId = hostTurnIdSchema.parse(started.turnId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Delegated Session was not opened");
+      const liveItems = [
+        { type: "reasoning", itemId: hostItemIdSchema.parse("live-r-1"), text: "Checking auth\n" },
+        {
+          type: "agentMessage",
+          itemId: hostItemIdSchema.parse("live-a-1"),
+          text: "Auth is correct.",
+        },
+      ] as const;
+      const outcome = { status: "succeeded" } as const;
+      const readSnapshot = session.readSnapshot.bind(session);
+      vi.spyOn(session, "readSnapshot").mockImplementation(async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        return {
+          ok: true,
+          value: {
+            ...snapshot.value,
+            turns: snapshot.value.turns.map((turn) => ({
+              ...turn,
+              items: [
+                {
+                  item: { ...liveItems[0], itemId: hostItemIdSchema.parse("turn-0-item-0") },
+                  outcome,
+                },
+                {
+                  item: {
+                    ...liveItems[1],
+                    itemId: hostItemIdSchema.parse("turn-0-item-1"),
+                    phase: "final_answer",
+                  },
+                  outcome,
+                },
+              ],
+            })),
+          },
+        };
+      });
+      for (const item of liveItems) {
+        session.emitEvent({ type: "item.started", turnId, item });
+        session.emitEvent({ type: "item.completed", turnId, snapshot: { item, outcome } });
+      }
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      const liveIds = fixture.collector.messages
+        .filter((message) => turnEvent(message, "item/started", turnId))
+        .map((message) => (messageParams(message).item as JsonObject).id)
+        .filter((id) => id !== `${turnId}-user`);
+      expect(liveIds).toEqual(["live-r-1-summary", "live-r-1", "live-a-1"]);
+
+      const rpc = async (id: number, method: string, params: JsonObject = {}) => {
+        writeRequest(fixture.desktopInput, { id, method, params: { threadId, ...params } });
+        return fixture.collector.waitFor((message) => requestId(message, id));
+      };
+      const items = [`${turnId}-user`, ...liveIds].map((id) => ({ id }));
+      await expect(delegationApi.read({ threadId, view: "result" })).resolves.toMatchObject({
+        status: "completed",
+        result: { availability: "available", text: "Auth is correct." },
+      });
+      // Inspect the stored history before resume triggers another native read.
+      await expect(rpc(1058, "thread/turns/list", { itemsView: "full" })).resolves.toMatchObject({
+        result: { data: [{ id: turnId, items }] },
+      });
+      const resumed = await rpc(1059, "thread/resume", {
+        excludeTurns: true,
+        initialTurnsPage: { itemsView: "full" },
+      });
+      expect(resumed).toMatchObject({
+        result: { initialTurnsPage: { data: [{ id: turnId, items }] } },
+      });
+      await expect(rpc(1060, "thread/turns/list", { itemsView: "full" })).resolves.toMatchObject({
+        result: { data: [{ id: turnId, items }] },
+      });
+      await expect(rpc(1061, "thread/items/list", { turnId })).resolves.toMatchObject({
+        result: { data: items.map((item) => ({ turnId, item })) },
+      });
+      const cursor = (resumed.result as JsonObject).itemsBackwardsCursor;
+      if (typeof cursor !== "string") throw new Error("Paginated resume omitted the Item cursor");
+      await expect(
+        rpc(1062, "thread/items/list", { turnId, cursor, sortDirection: "desc" }),
+      ).resolves.toMatchObject({
+        result: { data: items.toReversed().map((item) => ({ turnId, item })) },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("inherits cwd from a native Codex parent when delegation omits cwd", async () => {
     let delegationApi: DelegationControlApi | undefined;
     const fixture = createFixture({
@@ -520,9 +632,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     await expect(pending).resolves.toMatchObject({ harnessId: "pi", status: "running" });
     expect(fixture.adapter.sessions[0]?.cwd).toBe(path.resolve("/native-workspace"));
-    expect((await fixture.mappingStore.listThreads())[0]?.title).toBe(
-      "inherit workspace · Native project",
-    );
+    expect((await fixture.mappingStore.listThreads())[0]?.title).toBe("inherit workspace");
     fixture.adapter.sessions[0]?.succeedTurn();
     await stopFixture(fixture);
   });
@@ -1363,7 +1473,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
     fixture.official.stdout.write(
       `${JSON.stringify({ id: threadStart.id, result: { thread: { id: "native-child" } } })}\n`,
     );
-    await answerOfficialChildName(fixture, "Auth review · Main review");
+    await answerOfficialChildName(fixture, "Auth review");
     const turnStart = await readJsonLine(fixture.official.stdin);
     expect(turnStart).toMatchObject({
       method: "turn/start",
@@ -2550,6 +2660,47 @@ describe("AppServerHost HarnessAdapter projection", () => {
 
     expect(officialWrite).not.toHaveBeenCalled();
     await stopFixture(fixture);
+  });
+
+  it("resolves an official Item anchor on the first history request after a Turn completes", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        historyMode: "paginated",
+      });
+      const turnId = await completePiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const snapshot = session.persistedSnapshot();
+      const turn = snapshot.turns[0];
+      if (!turn) throw new Error("Fake Pi Session did not persist the Turn");
+      // This Item exists in native history but was not streamed to the Host.
+      const itemId = hostItemIdSchema.parse("native-history-anchor");
+      turn.items.push({
+        item: { type: "agentMessage", itemId, text: "native follow-up" },
+        outcome: { status: "succeeded" },
+      });
+      vi.spyOn(session, "readSnapshot").mockResolvedValue({ ok: true, value: snapshot });
+
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "thread/items/list",
+        params: { threadId, turnId, sortDirection: "desc", cursor: { type: "item", itemId } },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 3)),
+      ).resolves.toMatchObject({
+        result: {
+          data: [
+            { turnId, item: { type: "agentMessage", text: "answer 2" } },
+            { turnId, item: { type: "userMessage" } },
+          ],
+          nextCursor: null,
+        },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
   });
 
   it("selects an existing Pi Thread Model from ordered Session state", async () => {

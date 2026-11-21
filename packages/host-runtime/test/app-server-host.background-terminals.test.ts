@@ -104,30 +104,40 @@ function completedItem(fixture: Fixture, itemId: HostItemId): Promise<JsonObject
 }
 
 describe("AppServerHost background terminals", () => {
-  it("keeps a detached command Item alive across its Turn and settles it later", async () => {
-    const fixture = createFixture();
-    try {
-      const threadId = await startPiThread(fixture);
-      const command = await startDetachedTurn(fixture, threadId, 2);
+  it.each(["completed", "failed"])(
+    "keeps a detached command Item alive across its Turn and settles it as %s",
+    async (status) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const command = await startDetachedTurn(fixture, threadId, 2);
 
-      // The Turn completed; output and completion still arrive on it.
-      appendOutput(command, "ready\n");
-      await fixture.collector.waitFor(
-        (message) =>
-          message.method === "item/commandExecution/outputDelta" &&
-          (message.params as JsonObject)?.itemId === command.itemId,
-      );
-      settle(command);
-      const completed = await completedItem(fixture, command.itemId);
-      expect((completed.params as JsonObject)?.item).toMatchObject({
-        id: command.itemId,
-        type: "commandExecution",
-        status: "completed",
-      });
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
+        // The Turn completed; output and completion still arrive on it.
+        appendOutput(command, "ready\n");
+        await fixture.collector.waitFor(
+          (message) =>
+            message.method === "item/commandExecution/outputDelta" &&
+            (message.params as JsonObject)?.itemId === command.itemId,
+        );
+        if (status === "completed") {
+          settle(command);
+        } else {
+          command.session.emitEvent({
+            type: "session.faulted",
+            error: { code: "unavailable", message: "Connection closed", retryable: true },
+          });
+        }
+        const completed = await completedItem(fixture, command.itemId);
+        expect((completed.params as JsonObject)?.item).toMatchObject({
+          id: command.itemId,
+          type: "commandExecution",
+          status,
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("overlays an unsettled background command onto served history until it settles", async () => {
     const fixture = createFixture();

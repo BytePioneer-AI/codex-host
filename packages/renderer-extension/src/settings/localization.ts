@@ -3,6 +3,16 @@ import {
   credentialImportChinese,
   type CredentialImportMessages,
 } from "./credential-import-messages.js";
+import {
+  delegationEnglish,
+  delegationChinese,
+  type DelegationMessages,
+} from "./delegation-messages.js";
+import {
+  desktopExtensionsEnglish,
+  desktopExtensionsChinese,
+  type DesktopExtensionsMessages,
+} from "./desktop-extensions-messages.js";
 import type { DefaultRendererSettingsPageId } from "./pages.js";
 import {
   harnessVersionEnglish,
@@ -29,12 +39,15 @@ export interface RendererSettingsLanguageControl {
 
 export interface RendererSettingsMessages {
   readonly credentialImports: CredentialImportMessages;
+  readonly delegation: DelegationMessages;
+  readonly desktopExtensions: DesktopExtensionsMessages;
   readonly locale: RendererSettingsLocale;
   readonly title: string;
   readonly close: string;
   readonly starOnGitHub: string;
   readonly sectionsLabel: string;
   readonly generalSection: string;
+  readonly pluginsSection: string;
   readonly otherSection: string;
   readonly appearanceDescription: string;
   readonly appearanceGroup: string;
@@ -232,6 +245,8 @@ export interface RendererSettingsMessages {
   readonly connectionGroupLoading: string;
   readonly connectionGroupSaving: string;
   readonly connectionGroupSyncFailed: string;
+  readonly connectionGroupUnavailable: string;
+  readonly connectionLocalHarnessUnsupported: string;
   readonly pickerMoreAgentsLabel: string;
   readonly pickerManageLink: string;
   readonly pickerHideUnusedAgentsCta: string;
@@ -289,12 +304,15 @@ export interface RendererSettingsMessages {
 
 const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportEnglish,
+  delegation: delegationEnglish,
+  desktopExtensions: desktopExtensionsEnglish,
   locale: "en",
   title: "Settings",
   close: "Close settings",
   starOnGitHub: "Star to support",
   sectionsLabel: "Settings sections",
   generalSection: "General",
+  pluginsSection: "Plugin Settings",
   otherSection: "Other",
   appearanceDescription: "Conversation display and local resource management.",
   appearanceGroup: "Appearance",
@@ -481,7 +499,7 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "Visit official website",
   connectionOpenHarnessWeb: "Open DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1, 0.2.1-rc.2, 0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5 and 0.2.2-rc.1. Versions newer than 0.2.2-rc.1 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
+    "Supported DSH versions: 0.1.7-rc.1, 0.1.7-rc.2, 0.2.0-rc.1, 0.2.0-rc.2, 0.2.1-rc.1, 0.2.1-rc.2, 0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5, 0.2.2-rc.1 and 0.2.2-rc.2. Versions newer than 0.2.2-rc.2 can be tried, but compatibility may be limited; versions older than 0.1.7-rc.1 must be upgraded first.",
   connectionInstall: "Install",
   connectionInstallDescription: "This Harness was not detected.",
   connectionInstallRunning:
@@ -527,6 +545,10 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "Saving shared Harness order…",
   connectionGroupSyncFailed:
     "Could not sync Harness order. The last confirmed order is shown; check codexhost and retry your change.",
+  connectionGroupUnavailable:
+    "Harness order is read-only because the local connection does not support it. The last confirmed order is kept.",
+  connectionLocalHarnessUnsupported:
+    "This local connection does not support codexhost Harnesses. You can still use Codex. On Windows, if Agent environment is set to WSL, switch it to Windows in Codex Settings → General, then restart Desktop through codexhost. To use Harnesses installed in WSL, connect to WSL through Remote SSH instead.",
   pickerMoreAgentsLabel: "More agents",
   pickerManageLink: "Manage",
   pickerHideUnusedAgentsCta: "Hide unused agents",
@@ -592,9 +614,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "The console could not be opened",
   pageLabels: Object.freeze({
     connections: "Connections",
-    "remote-connections": "Remote connections",
+    "mobile-web": "Phone & browser",
+    "remote-connections": "Other computers (SSH)",
     appearance: "General",
+    "desktop-extensions": "Plugins",
     accounts: "Accounts",
+    delegation: "Multi-Agent",
     "session-import": "Session Import",
     "usage-statistics": "Usage statistics",
     updates: "Updates",
@@ -604,12 +629,15 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
 
 const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   credentialImports: credentialImportChinese,
+  delegation: delegationChinese,
+  desktopExtensions: desktopExtensionsChinese,
   locale: "zh-CN",
   title: "设置",
   close: "关闭设置",
   starOnGitHub: "Star 支持",
   sectionsLabel: "设置分类",
   generalSection: "通用",
+  pluginsSection: "插件设置",
   otherSection: "其他",
   appearanceDescription: "会话显示与本地资源管理。",
   appearanceGroup: "外观",
@@ -785,7 +813,7 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionOfficialWebsite: "访问官网",
   connectionOpenHarnessWeb: "打开 DeepSeek Harness Web",
   connectionDeepSeekTestedVersions:
-    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1、0.2.1-rc.2、0.2.1-rc.3、0.2.1-rc.4、0.2.1-rc.5 和 0.2.2-rc.1。高于 0.2.2-rc.1 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
+    "支持 DSH 版本：0.1.7-rc.1、0.1.7-rc.2、0.2.0-rc.1、0.2.0-rc.2、0.2.1-rc.1、0.2.1-rc.2、0.2.1-rc.3、0.2.1-rc.4、0.2.1-rc.5、0.2.2-rc.1 和 0.2.2-rc.2。高于 0.2.2-rc.2 的版本可以尝试连接，但适配度可能有限；低于 0.1.7-rc.1 的版本需要先升级。",
   connectionInstall: "安装",
   connectionInstallDescription: "尚未检测到该 Harness。",
   connectionInstallRunning: "正在所选 Host 上安装，离开页面不会中断。安装后可能仍需登录或配置。",
@@ -827,6 +855,9 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   connectionGroupSaving: "正在保存共享 Harness 排序…",
   connectionGroupSyncFailed:
     "Harness 排序同步失败，当前显示上次确认的顺序。请确认 codexhost 正常运行后重试修改。",
+  connectionGroupUnavailable: "本地连接不支持修改 Harness 排序，已保留上次确认的顺序。",
+  connectionLocalHarnessUnsupported:
+    "此本地连接不支持 codexhost Harness，仍可使用原生 Codex。在 Windows 上，如果 Agent environment 设为 WSL，请在 Codex「设置 → 常规」中切换到 Windows，再通过 codexhost 重启 Desktop。若要使用安装在 WSL 内的 Harness，请改用 Remote SSH 连接 WSL。",
   pickerMoreAgentsLabel: "更多 Agent",
   pickerManageLink: "管理",
   pickerHideUnusedAgentsCta: "收起不常用的 Agent",
@@ -888,9 +919,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   aboutConsoleFailed: "控制台打开失败",
   pageLabels: Object.freeze({
     connections: "连接",
-    "remote-connections": "远程连接",
+    "mobile-web": "手机与浏览器",
+    "remote-connections": "其他电脑（SSH）",
     appearance: "通用",
+    "desktop-extensions": "插件",
     accounts: "账号",
+    delegation: "多 Agent 协作",
     "session-import": "会话导入",
     "usage-statistics": "用量统计",
     updates: "更新",

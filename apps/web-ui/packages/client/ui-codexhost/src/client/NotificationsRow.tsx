@@ -54,29 +54,31 @@ export function NotificationsRow({ t }: NotificationsRowProps): ReactNode {
           {description}
         </div>
       </div>
-      {state === "on" && (
-        <button
-          type="button"
-          className={css.button}
-          disabled={busy}
-          onClick={() => {
-            void pushApi.test();
-          }}
-        >
-          {t("notifications.test")}
-        </button>
-      )}
       {(state === "off" || state === "on") && (
-        <button
-          type="button"
-          className={css.button}
-          disabled={busy}
-          onClick={() => {
-            run(state === "on" ? disableNotifications : enableNotifications);
-          }}
-        >
-          {state === "on" ? t("notifications.disable") : t("notifications.enable")}
-        </button>
+        <div className={css.actions}>
+          {state === "on" && (
+            <button
+              type="button"
+              className={css.button}
+              disabled={busy}
+              onClick={() => {
+                void pushApi.test();
+              }}
+            >
+              {t("notifications.test")}
+            </button>
+          )}
+          <button
+            type="button"
+            className={css.button}
+            disabled={busy}
+            onClick={() => {
+              run(state === "on" ? disableNotifications : enableNotifications);
+            }}
+          >
+            {state === "on" ? t("notifications.disable") : t("notifications.enable")}
+          </button>
+        </div>
       )}
     </div>
   );

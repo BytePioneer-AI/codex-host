@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { JsonObject } from "@codexhost/protocol-core";
-import { externalTurnInputText } from "./external-turn-input.js";
+import { externalTurnInputText, restoreExternalSkillInput } from "./external-turn-input.js";
 
 export class ExternalQueueError extends Error {
   constructor(
@@ -32,6 +32,7 @@ interface TakenSubmission {
   sourceHostId: string | undefined;
   index: number;
   pausedReason: ExternalQueuePausedReason | null;
+  automaticStartAllowed: boolean;
 }
 
 export function nativeQueuedSubmission(item: ExternalQueuedSubmission): JsonObject {
@@ -55,6 +56,7 @@ function sameInput(left: JsonObject[], right: JsonObject[]): boolean {
 export class ExternalThreadQueue {
   readonly #receipts = new Map<string, ExternalQueuedSubmission>();
   readonly #acceptedSteers = new Map<string, string>();
+  readonly #automaticStartBlocked = new Set<string>();
   readonly #states = new Map<
     string,
     { items: ExternalQueuedSubmission[]; pausedReason: ExternalQueuePausedReason | null }
@@ -64,7 +66,7 @@ export class ExternalThreadQueue {
     const state = this.#states.get(threadId);
     return {
       items: state?.items.map((item) => structuredClone(item)) ?? [],
-      pausedReason: state?.pausedReason ?? null,
+      pausedReason: this.#pausedReason(threadId),
     };
   }
 
@@ -91,6 +93,8 @@ export class ExternalThreadQueue {
     presentationInput?: JsonObject[],
     sourceHostId?: unknown,
   ): ExternalQueuedSubmission {
+    input = restoreExternalSkillInput(input);
+    if (presentationInput) presentationInput = restoreExternalSkillInput(presentationInput);
     if (clientUserMessageId) {
       const existing = this.#receipts.get(this.#receiptKey(threadId, clientUserMessageId));
       if (existing) {
@@ -129,6 +133,8 @@ export class ExternalThreadQueue {
     input: JsonObject[],
     presentationInput?: JsonObject[],
   ): ExternalQueuedSubmission | null {
+    input = restoreExternalSkillInput(input);
+    if (presentationInput) presentationInput = restoreExternalSkillInput(presentationInput);
     const state = this.#states.get(threadId);
     const item = state?.items.find((candidate) => candidate.id === itemId);
     if (!item) return null;
@@ -148,6 +154,7 @@ export class ExternalThreadQueue {
     const index = state.items.findIndex((item) => item.id === itemId);
     if (index < 0) return this.#acceptedSteers.get(itemId) === threadId;
     state.items.splice(index, 1);
+    this.#automaticStartBlocked.delete(itemId);
     this.#prune(threadId, state);
     return true;
   }
@@ -179,6 +186,17 @@ export class ExternalThreadQueue {
     return item ? structuredClone(item) : null;
   }
 
+  canStartAutomatically(threadId: string): boolean {
+    const item = this.#states.get(threadId)?.items[0];
+    return item !== undefined && !this.#automaticStartBlocked.has(item.id);
+  }
+
+  /** Unknown delivery stays visible until the user explicitly sends or removes this entry. */
+  preventAutomaticStart(threadId: string, itemId: string): void {
+    if (this.#states.get(threadId)?.items.some((item) => item.id === itemId))
+      this.#automaticStartBlocked.add(itemId);
+  }
+
   /** Reserve queued input so automatic advancement cannot deliver it during steering. */
   takeSteered(
     threadId: string,
@@ -194,6 +212,8 @@ export class ExternalThreadQueue {
     if (matches.length !== 1 || externalTurnInputText(item.input) !== externalTurnInputText(input))
       throw new ExternalQueueError(-32602, "Queued steering input changed before delivery");
     const index = state.items.indexOf(item);
+    const automaticStartAllowed = !this.#automaticStartBlocked.has(item.id);
+    this.#automaticStartBlocked.delete(item.id);
     state.items.splice(index, 1);
     this.#prune(threadId, state);
     return {
@@ -201,6 +221,7 @@ export class ExternalThreadQueue {
       sourceHostId: item.sourceHostId ?? undefined,
       index,
       pausedReason: state.pausedReason,
+      automaticStartAllowed,
     };
   }
 
@@ -219,6 +240,7 @@ export class ExternalThreadQueue {
       this.#states.set(threadId, state);
     }
     if (state.items.some((item) => item.id === taken.submission.id)) return;
+    if (!taken.automaticStartAllowed) this.#automaticStartBlocked.add(taken.submission.id);
     state.items.splice(
       Math.min(taken.index, state.items.length),
       0,
@@ -241,7 +263,7 @@ export class ExternalThreadQueue {
   }
 
   isPaused(threadId: string): boolean {
-    return this.#states.get(threadId)?.pausedReason != null;
+    return this.#pausedReason(threadId) !== null;
   }
 
   has(threadId: string): boolean {
@@ -249,12 +271,24 @@ export class ExternalThreadQueue {
   }
 
   clear(threadId: string): void {
+    for (const item of this.#states.get(threadId)?.items ?? [])
+      this.#automaticStartBlocked.delete(item.id);
     this.#states.delete(threadId);
     const prefix = `${threadId}\u0000`;
     for (const key of this.#receipts.keys()) if (key.startsWith(prefix)) this.#receipts.delete(key);
     for (const [id, owner] of this.#acceptedSteers) {
       if (owner === threadId) this.#acceptedSteers.delete(id);
     }
+  }
+
+  /** Resuming other entries cannot clear an unknown-delivery pause at the queue head. */
+  #pausedReason(threadId: string): ExternalQueuePausedReason | null {
+    const state = this.#states.get(threadId);
+    const head = state?.items[0];
+    return (
+      state?.pausedReason ??
+      (head && this.#automaticStartBlocked.has(head.id) ? "outcome-unknown" : null)
+    );
   }
 
   #receiptKey(threadId: string, clientUserMessageId: string): string {

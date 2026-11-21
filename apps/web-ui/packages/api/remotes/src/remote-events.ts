@@ -22,7 +22,9 @@ declare module "@deepseek-ai/cordis" {
     /** Replace a browser-only draft with the canonical Thread returned by the existing CH Host. */
     "codexhost/session-bound"(draftId: string, threadId: string): void;
     "codexhost/preferences-changed"(): void;
+    "codexhost/skills/changed"(cwd?: string): void;
     "codexhost/display-settings-changed"(): void;
+    "codexhost/harness-inspection-changed"(): void;
     "codexhost/preferences-error"(message: string): void;
   }
 }
@@ -30,7 +32,9 @@ declare module "@deepseek-ai/cordis" {
 export const API_REMOTE_FORWARDED_EVENTS = [
   { event: "codexhost/session-bound", mode: "emit" },
   { event: "codexhost/preferences-changed", mode: "emit" },
+  { event: "codexhost/skills/changed", mode: "emit" },
   { event: "codexhost/display-settings-changed", mode: "emit" },
+  { event: "codexhost/harness-inspection-changed", mode: "emit" },
   { event: "codexhost/preferences-error", mode: "emit" },
   { event: "agent-preset/selected", mode: "emit" },
   { event: "approval/request", mode: "waterfall" },

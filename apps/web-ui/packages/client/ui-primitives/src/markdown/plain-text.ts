@@ -37,6 +37,10 @@ function inlineText(node: MarkdownNode): string {
       return "\n";
     case "html":
       return node.value ?? "";
+    // An annotation reference is drawn by the renderer that resolves it; the
+    // projection has no annotation owner to name, so it contributes nothing.
+    case "codexAnnotation":
+      return "";
     default:
       return node.children?.map(inlineText).join("") ?? "";
   }

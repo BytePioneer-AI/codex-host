@@ -1,14 +1,30 @@
+import { createReadStream } from "node:fs";
+import type * as NodeFs from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import type * as FsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { Readable } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mapClaudeSnapshot } from "../src/claude-history.js";
 import { readClaudeTranscript } from "../src/claude-transcript.js";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFs>();
+  return { ...actual, createReadStream: vi.fn(actual.createReadStream) };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof FsPromises>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
+
 const directories: string[] = [];
 
 afterEach(async () => {
+  vi.mocked(createReadStream).mockReset();
+  vi.mocked(readFile).mockClear();
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
   );
@@ -27,7 +43,104 @@ function message(type: "user" | "assistant", uuid: string, content: unknown) {
   };
 }
 
+async function transcriptFixture(contents: string) {
+  const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-"));
+  directories.push(configDirectory);
+  const cwd = "/work/project";
+  const transcriptDirectory = path.join(configDirectory, "projects", projectDirectoryName(cwd));
+  await mkdir(transcriptDirectory, { recursive: true });
+  const file = path.join(transcriptDirectory, "session-1.jsonl");
+  await writeFile(file, contents, "utf8");
+  return {
+    file,
+    input: { cwd, environment: { CLAUDE_CONFIG_DIR: configDirectory }, sessionId: "session-1" },
+  };
+}
+
 describe("Claude transcript reader", () => {
+  it("streams long records without reading the whole transcript into a string", async () => {
+    const first = message("user", "user-1", "a".repeat(128 * 1024));
+    const reply = message("assistant", "assistant-1", "response");
+    const latest = { ...first, slug: "rewritten" };
+    const { input } = await transcriptFixture(
+      [first, reply, latest].map((entry) => JSON.stringify(entry)).join("\n"),
+    );
+    vi.mocked(readFile).mockClear();
+
+    expect(await readClaudeTranscript(input)).toEqual(
+      [latest, reply].map((entry) => ({ ...entry, session_id: "session-1" })),
+    );
+    expect(readFile).not.toHaveBeenCalled();
+    expect(vi.mocked(createReadStream).mock.results[0]?.value.destroyed).toBe(true);
+  });
+
+  it.each([1, 7])(
+    "preserves JSONL boundaries and UTF-8 with %s-byte chunks",
+    async (highWaterMark) => {
+      const first = message("user", "user-1", "中文😀\u2028line\u2029paragraph");
+      const attachment = {
+        type: "attachment",
+        uuid: "attachment-1",
+        attachment: { type: "queued_command", prompt: "continue" },
+      };
+      const reply = message("assistant", "assistant-1", "done");
+      const { input } = await transcriptFixture(
+        [
+          "",
+          " \t",
+          JSON.stringify(first),
+          "not-json",
+          "null",
+          "[]",
+          JSON.stringify({ type: "system", uuid: "system-1" }),
+          JSON.stringify({ type: "user", uuid: "missing-message" }),
+          JSON.stringify({ ...reply, uuid: 1 }),
+          `not-json\r${JSON.stringify(message("user", "bare-cr", "not a separate record"))}`,
+          JSON.stringify(attachment),
+          JSON.stringify(reply),
+        ].join("\r\n"),
+      );
+      const actual = await vi.importActual<typeof NodeFs>("node:fs");
+      vi.mocked(createReadStream).mockImplementationOnce((file, options) =>
+        actual.createReadStream(file, {
+          ...(typeof options === "string" ? { encoding: options } : options),
+          highWaterMark,
+        }),
+      );
+
+      expect(await readClaudeTranscript(input)).toEqual(
+        [first, attachment, reply].map((entry) => ({ ...entry, session_id: "session-1" })),
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "rejects stream errors instead of returning partial history (afterRecord=%s)",
+    async (afterRecord) => {
+      const record = JSON.stringify(message("user", "user-1", "continue"));
+      const { input } = await transcriptFixture(record);
+      const error = new Error("transcript read failed");
+      const stream = Readable.from(
+        (async function* () {
+          if (afterRecord) yield `${record}\n`;
+          throw error;
+        })(),
+      );
+      vi.mocked(createReadStream).mockReturnValueOnce(stream as NodeFs.ReadStream);
+
+      await expect(readClaudeTranscript(input)).rejects.toBe(error);
+      expect(stream.destroyed).toBe(true);
+    },
+  );
+
+  it("distinguishes an empty transcript from a missing file", async () => {
+    const { file, input } = await transcriptFixture("");
+
+    expect(await readClaudeTranscript(input)).toEqual([]);
+    await rm(file);
+    expect(await readClaudeTranscript(input)).toBeNull();
+  });
+
   it("preserves native API failures when restoring a Turn from the transcript", async () => {
     const configDirectory = await mkdtemp(path.join(os.tmpdir(), "codexhost-claude-"));
     directories.push(configDirectory);

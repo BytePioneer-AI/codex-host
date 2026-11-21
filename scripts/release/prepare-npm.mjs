@@ -590,8 +590,8 @@ if (userArguments.length === 0) {
 } else if (userArguments[0] === "web" || userArguments[0] === "stop") {
   launchArguments = [userArguments[0], "--node", process.execPath, "--host-runtime", hostRuntime,
     "--web-runtime", path.join(packageRoot, "app", "web-server.mjs"), ...userArguments.slice(1)];
-} else if (userArguments[0] === "host") {
-  if (userArguments[1] !== "ensure" && userArguments[1] !== "stop") fail("host expects ensure or stop");
+} else if (userArguments[0] === "host" && !["info", "--help", "-h", "help"].includes(userArguments[1])) {
+  if (userArguments[1] !== "ensure" && userArguments[1] !== "stop") fail("host expects info, ensure or stop");
   launchArguments = ["host", userArguments[1], "--node", process.execPath, "--host-runtime", hostRuntime,
     "--data", updateEnvironment.CODEXHOST_DATA_DIR || path.join(homedir(), ".codexhost"), ...userArguments.slice(2)];
 } else if (userArguments[0] === "console" || userArguments[0] === "update") {
@@ -607,6 +607,8 @@ if (userArguments.length === 0) {
   brokerArguments = userArguments.slice(1);
 } else if (
   userArguments[0] === "harness" ||
+  userArguments[0] === "host" ||
+  userArguments[0] === "project" ||
   userArguments[0] === "delegate" ||
   userArguments[0] === "thread" ||
   userArguments[0] === "client" ||
@@ -631,10 +633,12 @@ if (userArguments.length === 0) {
       "  codexhost remote install|start|stop|status|uninstall",
       "  codexhost broker install|status|stop|uninstall",
       "  codexhost host ensure|stop [--data directory]",
+      "  codexhost host info [--refresh true|false]",
+      "  codexhost project list [--query text] [--refresh true|false]",
       "  codexhost delegate --help",
       "  codexhost harness inspect ...",
       "  codexhost delegate start ...",
-      "  codexhost thread send|cancel|read|wait|watch|watches|list ...",
+      "  codexhost thread send|cancel|read|wait|watch|watches|list|file ...",
       "  codexhost client add|list|remove ...",
       "  codexhost events [--after <id>] [--limit <n>] [--follow true|false]",
       "",

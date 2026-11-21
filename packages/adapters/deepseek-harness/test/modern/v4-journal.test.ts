@@ -816,12 +816,53 @@ describe("DSH V4 durable protocol", () => {
       "subagent/catalog",
       { version: 0, childId: "child", childCreatedAt: 1, mode: "continuable", label: "worker" },
     ],
+    // The DSH v3-to-v4 Session format migration records a child it cannot describe as catalog v1.
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown" }],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown", label: "worker" },
+    ],
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "continuable", label: "worker" },
+    ],
     // DSH 0.2.1-rc.1 records an external-agent child as catalog v2.
     [
       "subagent/catalog",
       { version: 2, childId: "child", childCreatedAt: 1, mode: "external", label: "observe" },
     ],
     ["subagent/catalog", { version: 2, childId: "child", childCreatedAt: 1, mode: "external" }],
+    // DSH 0.2.2-rc.2 names every new local or external child in catalog v3.
+    [
+      "subagent/catalog",
+      {
+        version: 3,
+        childId: "child",
+        childCreatedAt: 1,
+        mode: "continuable",
+        label: "worker",
+        name: "reviewer",
+      },
+    ],
+    [
+      "subagent/catalog",
+      { version: 3, childId: "child", childCreatedAt: 1, mode: "external", name: "a-1" },
+    ],
+    [
+      "subagent/catalog",
+      {
+        version: 3,
+        childId: "child",
+        childCreatedAt: 1,
+        mode: "external",
+        label: "observe",
+        name: `a${"b".repeat(31)}`,
+      },
+    ],
+    // DSH 0.2.2-rc.2 records the per-Session Team selection.
+    ["team/mode", { enabled: true }],
+    ["team/mode", { enabled: false }],
     // DSH 0.2.1-rc.1 job lifecycle and working-directory records, as written by
     // packages/jobs/jobs-local and packages/session/working-directory.
     [
@@ -999,6 +1040,25 @@ describe("DSH V4 durable protocol", () => {
         },
       },
     ],
+    // DSH 0.2.2-rc.2 adds the owner's agent path beside ownerId.
+    [
+      "team/task",
+      {
+        version: 2,
+        teamId: "team",
+        task: {
+          id: "task",
+          revision: 2,
+          subject: "task",
+          description: "work",
+          status: "in_progress",
+          ownerId: "child",
+          ownerName: "reviewer/checker",
+          blockedBy: [],
+          writeScopes: [],
+        },
+      },
+    ],
     [
       "team/message/queued",
       {
@@ -1021,15 +1081,91 @@ describe("DSH V4 durable protocol", () => {
     expect(() => project([event(0, type, { ...data, unsupported: true })])).toThrow();
   });
 
+  it("reads a parent catalog that mixes migrated unknown children with v0 and named v3 children", () => {
+    const catalog = [
+      { version: 0, childId: "old", childCreatedAt: 1, mode: "continuable", label: "worker" },
+      { version: 1, childId: "lost", childCreatedAt: 2, mode: "unknown" },
+      {
+        version: 3,
+        childId: "new",
+        childCreatedAt: 3,
+        mode: "continuable",
+        label: "worker",
+        name: "reviewer",
+      },
+    ];
+    expect(
+      project(catalog.map((data, seq) => event(seq, "subagent/catalog", data))).snapshot.turns,
+    ).toEqual([]);
+  });
+
   it.each([
     ["feedback/record", { category: "invalid" }],
     ["feedback/record", { text: " " }],
     ["deliverables/presented", { turn: 1, callId: "call", files: [{ path: "x", description: 1 }] }],
     ["deliverables/presented", { turn: 0, callId: "call", files: [] }],
     ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "continuable" }],
-    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
+    ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "unknown" }],
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "continuable" }],
+    ["subagent/catalog", { version: 1, childId: "child", childCreatedAt: 1, mode: "external" }],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown", label: 1 },
+    ],
+    [
+      "subagent/catalog",
+      { version: 1, childId: "child", childCreatedAt: 1, mode: "unknown", name: "reviewer" },
+    ],
     ["subagent/catalog", { version: 2, childId: "child", childCreatedAt: 1, mode: "one-shot" }],
     ["subagent/catalog", { version: 0, childId: "child", childCreatedAt: 1, mode: "external" }],
+    ...[
+      { mode: "continuable", label: "worker" },
+      { mode: "continuable", label: "worker", name: "lead" },
+      { mode: "continuable", label: "worker", name: "Reviewer" },
+      { mode: "continuable", label: "worker", name: "1st" },
+      { mode: "continuable", label: "worker", name: "reviewer/checker" },
+      { mode: "continuable", label: "worker", name: `a${"b".repeat(32)}` },
+      { mode: "continuable", label: "worker", name: 1 },
+      { mode: "continuable", name: "reviewer" },
+      { mode: "one-shot", name: "reviewer" },
+      { mode: "unknown", name: "reviewer" },
+    ].map(
+      (fields) =>
+        ["subagent/catalog", { version: 3, childId: "child", childCreatedAt: 1, ...fields }] as [
+          string,
+          Record<string, unknown>,
+        ],
+    ),
+    [
+      "subagent/catalog",
+      { version: 2, childId: "child", childCreatedAt: 1, mode: "external", name: "reviewer" },
+    ],
+    ["team/mode", {}],
+    ["team/mode", { enabled: "yes" }],
+    ...[
+      { ownerName: "reviewer" },
+      { ownerId: "child", ownerName: "" },
+      { ownerId: "child", ownerName: 1 },
+    ].map(
+      (owner) =>
+        [
+          "team/task",
+          {
+            version: 2,
+            teamId: "team",
+            task: {
+              id: "task",
+              revision: 1,
+              subject: "task",
+              description: "work",
+              status: "pending",
+              blockedBy: [],
+              writeScopes: [],
+              ...owner,
+            },
+          },
+        ] as [string, Record<string, unknown>],
+    ),
     ["job/registered", { jobId: "j", owner: SESSION_ID, kind: "bash", label: 1, startedAt: 1 }],
     ["job/registered", { jobId: " ", owner: SESSION_ID, kind: "bash", label: "x", startedAt: 1 }],
     [

@@ -1,8 +1,8 @@
 import type { HarnessInstallationState } from "@codexhost/shared-contracts";
 
 import type { ExternalRendererAgent } from "../agent-selection-state.js";
-import type { RendererSettingsMessages } from "./localization.js";
 import { harnessVersionLabel, harnessVersionNote } from "./harness-version-messages.js";
+import type { RendererSettingsMessages } from "./localization.js";
 
 export interface HarnessVersionPanel {
   readonly element: HTMLElement;
@@ -11,7 +11,133 @@ export interface HarnessVersionPanel {
   update(): Promise<boolean>;
 }
 
-/** Owned by one Connections page, reused across diagnostic renders and row switches. */
+export type HarnessVersionStatusKind =
+  "checking" | "updating" | "idle" | "updated" | "failed" | "unsupported";
+
+export interface HarnessVersionSession {
+  readonly state: HarnessInstallationState | undefined;
+  readonly statusKind: HarnessVersionStatusKind;
+  readonly updating: boolean;
+  /** Prepares state for a newly mounted panel; returns true when a fresh check should be scheduled. */
+  prepareMount(): boolean;
+  check(): Promise<void>;
+  update(): Promise<boolean>;
+  subscribe(listener: (pageChange: boolean) => void): () => void;
+}
+
+function isUnsupportedInstallationError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === -32601 || error.code === -32078)
+  );
+}
+
+export function createHarnessVersionSession(
+  client: { run(action: "check" | "update"): Promise<HarnessInstallationState> },
+  options?: { readonly signal?: AbortSignal },
+): HarnessVersionSession {
+  let state: HarnessInstallationState | undefined;
+  let statusKind: HarnessVersionStatusKind = "checking";
+  let checkPromise: Promise<void> | null = null;
+  let updatePromise: Promise<boolean> | null = null;
+  const listeners = new Set<(pageChange: boolean) => void>();
+  const signal = options?.signal;
+
+  const notify = (pageChange: boolean): void => {
+    if (signal?.aborted) return;
+    for (const listener of [...listeners]) listener(pageChange);
+  };
+
+  const check = (): Promise<void> => {
+    if (signal?.aborted || updatePromise) return Promise.resolve();
+    if (checkPromise) return checkPromise;
+    statusKind = "checking";
+    notify(false);
+    checkPromise = (async () => {
+      try {
+        const result = await client.run("check");
+        if (signal?.aborted || updatePromise) return;
+        state = result;
+        statusKind = "idle";
+      } catch (error) {
+        if (signal?.aborted || updatePromise) return;
+        statusKind = isUnsupportedInstallationError(error) ? "unsupported" : "failed";
+        if (state) state = { ...state, canUpdate: false };
+      } finally {
+        checkPromise = null;
+        if (!signal?.aborted && !updatePromise) {
+          notify(true);
+        }
+      }
+    })();
+    return checkPromise;
+  };
+
+  const update = (): Promise<boolean> => {
+    if (updatePromise) return updatePromise;
+    updatePromise = (async () => {
+      if (signal?.aborted) return false;
+      if (checkPromise) await checkPromise;
+      if (
+        signal?.aborted ||
+        statusKind === "unsupported" ||
+        !state?.canUpdate ||
+        !state.updateAvailable
+      ) {
+        return false;
+      }
+      statusKind = "updating";
+      notify(true);
+      try {
+        const result = await client.run("update");
+        if (signal?.aborted) return false;
+        state = result;
+        statusKind = !result.canUpdate ? "updated" : result.updateAvailable ? "failed" : "updated";
+        return result.canUpdate && !result.updateAvailable;
+      } catch (error) {
+        if (signal?.aborted) return false;
+        statusKind = isUnsupportedInstallationError(error) ? "unsupported" : "failed";
+        if (state) state = { ...state, canUpdate: false };
+        return false;
+      } finally {
+        updatePromise = null;
+        if (!signal?.aborted) {
+          notify(true);
+        }
+      }
+    })();
+    return updatePromise;
+  };
+
+  return {
+    get state() {
+      return state;
+    },
+    get statusKind() {
+      return statusKind;
+    },
+    get updating() {
+      return statusKind === "updating";
+    },
+    prepareMount() {
+      if (updatePromise || checkPromise) return false;
+      statusKind = "checking";
+      return true;
+    },
+    check,
+    update,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+
+/** View for one Harness CLI version card; may bind to a connection-owned session across mounts. */
 export function createHarnessVersionPanel(
   document: Document,
   messages: RendererSettingsMessages,
@@ -19,7 +145,11 @@ export function createHarnessVersionPanel(
   agent: ExternalRendererAgent,
   client: { run(action: "check" | "update"): Promise<HarnessInstallationState> },
   onChange: () => void = () => undefined,
+  sharedSession?: HarnessVersionSession,
 ): HarnessVersionPanel {
+  const session = sharedSession ?? createHarnessVersionSession(client, { signal });
+  const shouldScheduleCheck = session.prepareMount();
+
   const panel = document.createElement("section");
   panel.className = "settings-harness-version";
   panel.dataset.harnessVersion = agent;
@@ -43,18 +173,33 @@ export function createHarnessVersionPanel(
   note.textContent = messages.harnessVersionNote;
   actions.append(update);
   panel.append(heading, versions, status, actions, note);
-  let state: HarnessInstallationState | undefined;
-  let busy = false;
-  let updating = false;
-  let unsupported = false;
-  let updatePromise: Promise<boolean> | null = null;
+
   const render = (): void => {
+    const state = session.state;
+    const statusKind = session.statusKind;
+    const busy = statusKind === "checking" || statusKind === "updating";
     heading.textContent =
       state?.versionKind === "application"
         ? messages.harnessVersionApplicationTitle
         : messages.harnessVersionTitle;
     current.textContent = `${messages.harnessVersionCurrent}: ${state?.currentVersion ?? "—"}`;
     latest.textContent = `${messages.harnessVersionLatest}: ${harnessVersionLabel(state, messages.harnessVersion)}`;
+    status.textContent =
+      statusKind === "checking"
+        ? messages.harnessVersionChecking
+        : statusKind === "updating"
+          ? messages.harnessVersionUpdating
+          : statusKind === "unsupported"
+            ? messages.harnessVersionUnsupported
+            : statusKind === "failed"
+              ? messages.harnessVersionFailed
+              : statusKind === "updated"
+                ? !state?.canUpdate
+                  ? messages.harnessVersionManual
+                  : messages.harnessVersionUpdated
+                : state && !state.canUpdate
+                  ? messages.harnessVersionManual
+                  : "";
     update.disabled = busy || signal.aborted || !state?.canUpdate || !state.updateAvailable;
     const manualUrl =
       !state?.canUpdate && state?.updateAvailable ? state.manualUpdateUrl : undefined;
@@ -81,92 +226,59 @@ export function createHarnessVersionPanel(
         : `${detail} ${messages.harnessVersionNote}`
       : messages.harnessVersionNote;
   };
-  const run = async (action: "check" | "update"): Promise<boolean> => {
-    if (busy || unsupported || signal.aborted) return false;
-    if (action === "update" && (!state?.canUpdate || !state.updateAvailable)) return false;
-    busy = true;
-    updating = action === "update";
-    onChange();
-    status.textContent =
-      action === "check" ? messages.harnessVersionChecking : messages.harnessVersionUpdating;
+
+  update.addEventListener("click", () => {
+    if (!signal.aborted) void session.update();
+  });
+
+  const unsubscribe = session.subscribe((pageChange) => {
+    if (signal.aborted) return;
     render();
-    try {
-      const result = await client.run(action);
-      if (signal.aborted) return false;
-      state = result;
-      status.textContent = !result.canUpdate
-        ? messages.harnessVersionManual
-        : action === "update"
-          ? result.updateAvailable
-            ? messages.harnessVersionFailed
-            : messages.harnessVersionUpdated
-          : "";
-      return result.canUpdate && !result.updateAvailable;
-    } catch (error) {
-      if (signal.aborted) return false;
-      unsupported =
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        (error.code === -32601 || error.code === -32078);
-      status.textContent = unsupported
-        ? messages.harnessVersionUnsupported
-        : messages.harnessVersionFailed;
-      if (state) state = { ...state, canUpdate: false };
-      return false;
-    } finally {
-      busy = false;
-      updating = false;
-      if (!signal.aborted) {
-        render();
-        onChange();
-      }
-    }
-  };
-  const updateVersion = (): Promise<boolean> => {
-    updatePromise ??= run("update").finally(() => {
-      updatePromise = null;
-    });
-    return updatePromise;
-  };
-  update.addEventListener("click", () => void updateVersion());
+    if (pageChange) onChange();
+  });
+
   const owner = document.defaultView;
   let checkFrame: number | null = null;
   let checkTimer: number | null = null;
   signal.addEventListener(
     "abort",
     () => {
+      unsubscribe();
       if (checkFrame !== null) owner?.cancelAnimationFrame(checkFrame);
       if (checkTimer !== null) owner?.clearTimeout(checkTimer);
       render();
     },
     { once: true },
   );
-  status.textContent = messages.harnessVersionChecking;
+
   render();
+
   // Resolving a native Host can synchronously walk React fibers. Let the
   // Connections page paint before doing that work, even when the RPC itself
   // is async. A microtask or work inside the first frame would still block it.
-  if (!signal.aborted && owner?.requestAnimationFrame) {
-    checkFrame = owner.requestAnimationFrame(() => {
-      checkFrame = null;
-      if (signal.aborted) return;
-      checkTimer = owner.setTimeout(() => {
-        checkTimer = null;
-        void run("check");
-      }, 0);
-    });
-  } else {
-    void run("check");
+  if (shouldScheduleCheck && !signal.aborted) {
+    if (owner?.requestAnimationFrame) {
+      checkFrame = owner.requestAnimationFrame(() => {
+        checkFrame = null;
+        if (signal.aborted) return;
+        checkTimer = owner.setTimeout(() => {
+          checkTimer = null;
+          if (!signal.aborted) void session.check();
+        }, 0);
+      });
+    } else {
+      void session.check();
+    }
   }
+
   return {
     element: panel,
     get state() {
-      return state;
+      return session.state;
     },
     get updating() {
-      return updating;
+      return session.updating;
     },
-    update: updateVersion,
+    update: () => (signal.aborted ? Promise.resolve(false) : session.update()),
   };
 }

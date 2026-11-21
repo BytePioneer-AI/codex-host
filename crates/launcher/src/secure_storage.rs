@@ -1,406 +1,269 @@
+use rustix::fs::{AtFlags, Mode, OFlags, mkdirat, openat};
 #[cfg(target_os = "linux")]
-use std::env;
+use std::fs;
+use std::fs::{File, Permissions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
 #[cfg(target_os = "linux")]
-use std::fs::{self, File};
-#[cfg(target_os = "linux")]
-use std::io;
-#[cfg(target_os = "linux")]
-use std::path::{Path, PathBuf};
+use std::{env, path::PathBuf};
 
-#[cfg(target_os = "linux")]
-const CODEXHOST_DIRECTORY: &str = "codexhost";
+const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
+fn denied() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "codexhost storage is not private and owned",
+    )
+}
+
+pub(super) fn open_directory(path: &Path) -> io::Result<File> {
+    Ok(File::from(rustix::fs::open(
+        path,
+        DIRECTORY_FLAGS,
+        Mode::empty(),
+    )?))
+}
+
+pub(super) fn open_child(
+    directory: &File,
+    name: impl rustix::path::Arg + Copy,
+    create: bool,
+) -> io::Result<File> {
+    if create {
+        match mkdirat(directory, name, Mode::from_raw_mode(0o700)) {
+            Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(File::from(openat(
+        directory,
+        name,
+        DIRECTORY_FLAGS,
+        Mode::empty(),
+    )?))
+}
+
+pub(super) fn verify_directory(directory: &File, forbidden: u32) -> io::Result<()> {
+    let metadata = directory.metadata()?;
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & forbidden != 0 {
+        return Err(denied());
+    }
+    Ok(())
+}
+
+pub(super) fn open_private_at(
+    directory: &File,
+    name: impl rustix::path::Arg,
+    flags: OFlags,
+) -> io::Result<File> {
+    let file = File::from(openat(
+        directory,
+        name,
+        flags | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::from_raw_mode(0o600),
+    )?);
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.nlink() != 1
+    {
+        return Err(denied());
+    }
+    if flags.contains(OFlags::CREATE) {
+        file.set_permissions(Permissions::from_mode(0o600))?;
+    } else if metadata.mode() & 0o7777 != 0o600 {
+        return Err(denied());
+    }
+    Ok(file)
+}
+
+pub(super) fn read_bounded(file: &File, limit: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "oversized codexhost storage file",
+        ));
+    }
+    Ok(bytes)
+}
+
+pub(super) fn publish_private_at(
+    directory: &File,
+    name: impl rustix::path::Arg + Copy,
+    bytes: &[u8],
+) -> io::Result<()> {
+    match open_private_at(directory, name, OFlags::RDONLY) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let temporary = format!(".{}.tmp", crate::runtime_instance::random_nonce()?);
+    let mut file = open_private_at(
+        directory,
+        temporary.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
+    )?;
+    let result = (|| {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        rustix::fs::renameat(directory, temporary.as_str(), directory, name)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = unlink_private_at(directory, &temporary);
+    }
+    result
+}
+
+pub(super) fn unlink_private_at(directory: &File, name: &str) -> io::Result<()> {
+    match rustix::fs::unlinkat(directory, name, AtFlags::empty()) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
 
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 pub(crate) enum SecureFileOpen {
     ReadExisting,
     ReadWriteCreate,
-    WriteNew,
 }
 
 #[cfg(target_os = "linux")]
-fn user_state_base() -> io::Result<PathBuf> {
-    if let Some(root) = env::var_os("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(root));
-    }
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".local").join("state"))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))
+fn parent_and_name(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
+    path.parent().zip(path.file_name()).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid codexhost storage path",
+        )
+    })
 }
 
-#[cfg(target_os = "linux")]
-fn permission_denied(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message)
-}
-
-#[cfg(target_os = "linux")]
-fn rustix_error(error: rustix::io::Errno) -> io::Error {
-    io::Error::from_raw_os_error(error.raw_os_error())
-}
-
-#[cfg(target_os = "linux")]
-fn open_directory(path: &Path) -> io::Result<File> {
-    use rustix::fs::{Mode, OFlags};
-
-    let descriptor = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(rustix_error)?;
-    Ok(File::from(descriptor))
-}
-
-#[cfg(target_os = "linux")]
-fn verify_owned_directory(directory: &File) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-    let metadata = directory.metadata()?;
-    if !metadata.file_type().is_dir() || metadata.uid() != rustix::process::geteuid().as_raw() {
-        return Err(permission_denied(
-            "codexhost storage directory is not an owned directory",
-        ));
-    }
-    if metadata.permissions().mode() & 0o777 != 0o700 {
-        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
-    }
-    let metadata = directory.metadata()?;
-    if !metadata.file_type().is_dir()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.permissions().mode() & 0o777 != 0o700
-    {
-        return Err(permission_denied(
-            "codexhost storage directory is not an owned 0700 directory",
-        ));
-    }
-    Ok(())
-}
-
-/// Creates or verifies codexhost's own directory, not its user-controlled
-/// parent. The final component is created as `0700` in the `mkdirat` call and
-/// then opened relative to the parent descriptor with `O_NOFOLLOW`; an
-/// inheriting permissive umask or a symlinked runtime/state root is never
-/// accepted.
+/// Creates or verifies the owned child, without changing its parent's mode.
 #[cfg(target_os = "linux")]
 pub(crate) fn secure_user_directory(path: &Path) -> io::Result<()> {
-    use rustix::fs::{Mode, OFlags};
-
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage directory has no parent",
-        )
-    })?;
-    let name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage directory has no name",
-        )
-    })?;
-    let parent = open_directory(parent)?;
-    match rustix::fs::mkdirat(&parent, name, Mode::from_raw_mode(0o700)) {
-        Ok(()) => {}
-        Err(error) if error == rustix::io::Errno::EXIST => {}
-        Err(error) => return Err(rustix_error(error)),
-    }
-    let directory = rustix::fs::openat(
-        &parent,
-        name,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(rustix_error)?;
-    verify_owned_directory(&File::from(directory))
+    let (parent, name) = parent_and_name(path)?;
+    tighten_directory(&open_child(&open_directory(parent)?, name, true)?)
 }
 
 #[cfg(target_os = "linux")]
-fn secure_child_directory(base: PathBuf, create_base: bool) -> io::Result<PathBuf> {
-    if create_base {
-        fs::create_dir_all(&base)?;
-        // `base` may be an existing XDG state root. Do not tighten its mode:
-        // it belongs to the user, while codexhost owns only the child below.
-        let base_descriptor = open_directory(&base)?;
-        let base_metadata = base_descriptor.metadata()?;
-        use std::os::unix::fs::MetadataExt;
-        if !base_metadata.file_type().is_dir()
-            || base_metadata.uid() != rustix::process::geteuid().as_raw()
-        {
-            return Err(permission_denied(
-                "codexhost state base is not an owned directory",
-            ));
-        }
-    } else {
-        let directory = open_directory(&base)?;
-        verify_owned_directory(&directory)?;
+fn tighten_directory(directory: &File) -> io::Result<()> {
+    verify_directory(directory, 0)?;
+    if directory.metadata()?.mode() & 0o7777 != 0o700 {
+        directory.set_permissions(Permissions::from_mode(0o700))?;
     }
-    let directory = base.join(CODEXHOST_DIRECTORY);
-    secure_user_directory(&directory)?;
-    Ok(directory)
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
 pub(crate) fn runtime_directory() -> io::Result<PathBuf> {
-    if let Some(root) = env::var_os("XDG_RUNTIME_DIR") {
-        return secure_child_directory(PathBuf::from(root), false);
-    }
-    secure_child_directory(user_state_base()?, true)
+    runtime_path(true)
 }
 
 #[cfg(target_os = "linux")]
-fn verify_private_file(file: &File, repair_mode: bool) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() || metadata.uid() != rustix::process::geteuid().as_raw() {
-        return Err(permission_denied(
-            "codexhost storage file is not an owned regular file",
-        ));
+pub(crate) fn runtime_path(create: bool) -> io::Result<PathBuf> {
+    let runtime = env::var_os("XDG_RUNTIME_DIR");
+    let base = runtime
+        .clone()
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_STATE_HOME").map(PathBuf::from))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is unavailable"))?;
+    let path = base.join("codexhost");
+    if create {
+        if runtime.is_some() {
+            tighten_directory(&open_directory(&base)?)?;
+        } else {
+            fs::create_dir_all(&base)?;
+            verify_directory(&open_directory(&base)?, 0)?;
+        }
+        secure_user_directory(&path)?;
     }
-    if repair_mode {
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.permissions().mode() & 0o777 != 0o600
-    {
-        return Err(permission_denied(
-            "codexhost storage file is not an owned 0600 regular file",
-        ));
-    }
-    Ok(())
+    Ok(path)
 }
 
-/// Opens a guard, descriptor, or replacement file only after its parent is an
-/// owned `0700` directory. The final name is resolved relative
-/// to that opened directory with `O_NOFOLLOW`, so symlinks are never accepted.
+#[cfg(target_os = "linux")]
+fn secure_file_parent(path: &Path, create: bool) -> io::Result<(File, &std::ffi::OsStr)> {
+    let (parent, name) = parent_and_name(path)?;
+    if create {
+        secure_user_directory(parent)?;
+    }
+    let directory = open_directory(parent)?;
+    verify_directory(&directory, 0o7077)?;
+    Ok((directory, name))
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn open_secure_file(path: &Path, how: SecureFileOpen) -> io::Result<File> {
-    use rustix::fs::{Mode, OFlags};
-
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage path has no parent",
-        )
-    })?;
-    secure_user_directory(parent)?;
-    let directory = open_directory(parent)?;
-    let name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage path has no file name",
-        )
-    })?;
-    let (flags, repair_mode) = match how {
-        SecureFileOpen::ReadExisting => (OFlags::RDONLY | OFlags::CLOEXEC, false),
-        SecureFileOpen::ReadWriteCreate => (OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC, true),
-        SecureFileOpen::WriteNew => (
-            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
-            true,
-        ),
-    };
-    let descriptor = rustix::fs::openat(
+    let create = matches!(how, SecureFileOpen::ReadWriteCreate);
+    let (directory, name) = secure_file_parent(path, create)?;
+    open_private_at(
         &directory,
         name,
-        flags | OFlags::NOFOLLOW,
-        Mode::from_raw_mode(0o600),
+        if create {
+            OFlags::RDWR | OFlags::CREATE
+        } else {
+            OFlags::RDONLY
+        },
     )
-    .map_err(rustix_error)?;
-    let file = File::from(descriptor);
-    verify_private_file(&file, repair_mode)?;
-    Ok(file)
 }
 
-/// Removes the exact owned private regular file that was just read through an
-/// already-open descriptor. The directory entry's device and inode must still
-/// match that descriptor before `unlinkat`, so a pathname replacement is never
-/// deleted by mistake.
+#[cfg(target_os = "linux")]
+pub(crate) fn publish_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let (directory, name) = secure_file_parent(path, true)?;
+    publish_private_at(&directory, name, bytes)
+}
+
+/// Compare with the already-open descriptor before unlinking the name.
 #[cfg(target_os = "linux")]
 pub(crate) fn remove_secure_file(path: &Path, expected: &File) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-    use rustix::fs::AtFlags;
-
-    let expected_metadata = expected.metadata()?;
-    if !expected_metadata.file_type().is_file()
-        || expected_metadata.uid() != rustix::process::geteuid().as_raw()
-        || expected_metadata.permissions().mode() & 0o777 != 0o600
-    {
-        return Err(permission_denied(
-            "codexhost storage file is not an owned 0600 regular file",
-        ));
+    let (directory, name) = secure_file_parent(path, false)?;
+    let expected = expected.metadata()?;
+    let current = open_private_at(&directory, name, OFlags::RDONLY)?.metadata()?;
+    if (current.dev(), current.ino()) != (expected.dev(), expected.ino()) {
+        return Err(denied());
     }
-    let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage path has no parent",
-        )
-    })?;
-    secure_user_directory(parent)?;
-    let directory = open_directory(parent)?;
-    let name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage path has no file name",
-        )
-    })?;
-    let current =
-        rustix::fs::statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW).map_err(rustix_error)?;
-    if rustix::fs::FileType::from_raw_mode(current.st_mode) != rustix::fs::FileType::RegularFile
-        || current.st_uid != expected_metadata.uid()
-        || current.st_mode & 0o777 != 0o600
-        || current.st_dev != expected_metadata.dev()
-        || current.st_ino != expected_metadata.ino()
-    {
-        return Err(permission_denied(
-            "codexhost storage file changed before secure removal",
-        ));
-    }
-    rustix::fs::unlinkat(&directory, name, AtFlags::empty()).map_err(rustix_error)
+    Ok(rustix::fs::unlinkat(&directory, name, AtFlags::empty())?)
 }
 
-/// Replaces a private file using two names resolved through one verified,
-/// non-symlink parent descriptor. Both components are checked before rename so
-/// an attacker cannot redirect the final write through a pathname swap.
-#[cfg(target_os = "linux")]
-pub(crate) fn replace_secure_file(temporary: &Path, target: &Path) -> io::Result<()> {
-    use rustix::fs::AtFlags;
-
-    let parent = target.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage target has no parent",
-        )
-    })?;
-    if temporary.parent() != Some(parent) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage replacement crosses directories",
-        ));
-    }
-    secure_user_directory(parent)?;
-    let directory = open_directory(parent)?;
-    let temporary_name = temporary.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage temporary path has no file name",
-        )
-    })?;
-    let target_name = target.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "codexhost storage target path has no file name",
-        )
-    })?;
-    let temporary_metadata =
-        rustix::fs::statat(&directory, temporary_name, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(rustix_error)?;
-    if rustix::fs::FileType::from_raw_mode(temporary_metadata.st_mode)
-        != rustix::fs::FileType::RegularFile
-        || temporary_metadata.st_uid != rustix::process::geteuid().as_raw()
-        || temporary_metadata.st_mode & 0o777 != 0o600
-    {
-        return Err(permission_denied(
-            "codexhost storage temporary file changed before replacement",
-        ));
-    }
-    let target_is_unsafe = rustix::fs::statat(&directory, target_name, AtFlags::SYMLINK_NOFOLLOW)
-        .is_ok_and(|target_metadata| {
-            rustix::fs::FileType::from_raw_mode(target_metadata.st_mode)
-                != rustix::fs::FileType::RegularFile
-                || target_metadata.st_uid != rustix::process::geteuid().as_raw()
-                || target_metadata.st_mode & 0o777 != 0o600
-        });
-    if target_is_unsafe {
-        return Err(permission_denied(
-            "codexhost storage target changed before replacement",
-        ));
-    }
-    let temporary_reopened =
-        rustix::fs::statat(&directory, temporary_name, AtFlags::SYMLINK_NOFOLLOW)
-            .map_err(rustix_error)?;
-    if temporary_reopened.st_dev != temporary_metadata.st_dev
-        || temporary_reopened.st_ino != temporary_metadata.st_ino
-        || temporary_reopened.st_uid != temporary_metadata.st_uid
-        || temporary_reopened.st_mode != temporary_metadata.st_mode
-    {
-        return Err(permission_denied(
-            "codexhost storage temporary file changed before replacement",
-        ));
-    }
-    rustix::fs::renameat(&directory, temporary_name, &directory, target_name).map_err(rustix_error)
-}
-
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use std::fs;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-
-    use super::{SecureFileOpen, open_secure_file, secure_user_directory};
-
-    fn fixture(label: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "codexhost-secure-storage-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock")
-                .as_nanos()
-        ));
-        fs::create_dir(&path).expect("create fixture directory");
-        path
-    }
+    use super::*;
+    use std::os::unix::fs::symlink;
 
     #[test]
-    fn makes_only_the_codexhost_directory_private() {
-        let base = fixture("private");
-        fs::set_permissions(&base, fs::Permissions::from_mode(0o755)).expect("set base mode");
+    fn private_storage_rejects_symlinks_hardlinks_and_fifos() {
+        let base = env::temp_dir().join(crate::runtime_instance::random_nonce().unwrap());
+        fs::create_dir(&base).unwrap();
+        fs::set_permissions(&base, Permissions::from_mode(0o755)).unwrap();
         let directory = base.join("codexhost");
-        let previous_umask = rustix::process::umask(rustix::fs::Mode::empty());
-        secure_user_directory(&directory).expect("secure child");
-        rustix::process::umask(previous_umask);
-        assert_eq!(
-            fs::metadata(&base)
-                .expect("base metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o755
-        );
-        assert_eq!(
-            fs::metadata(&directory)
-                .expect("child metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        fs::remove_dir_all(base).expect("remove fixture");
-    }
-
-    #[test]
-    fn rejects_a_symlinked_storage_file() {
-        let directory = fixture("symlink");
-        let target = directory.join("target");
-        fs::write(&target, b"target").expect("write target");
-        let path = directory.join("descriptor");
-        symlink(&target, &path).expect("create symlink");
-        assert!(open_secure_file(&path, SecureFileOpen::ReadExisting).is_err());
-        fs::remove_dir_all(directory).expect("remove fixture");
-    }
-
-    #[test]
-    fn opened_file_is_owned_private_regular_file() {
-        let directory = fixture("file");
-        let path = directory.join("descriptor");
-        let file = open_secure_file(&path, SecureFileOpen::WriteNew).expect("open private file");
-        let metadata = file.metadata().expect("metadata");
-        assert!(metadata.file_type().is_file());
-        assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        drop(file);
-        fs::remove_dir_all(directory).expect("remove fixture");
+        secure_user_directory(&directory).unwrap();
+        let file = directory.join("file");
+        publish_private(&file, b"private").unwrap();
+        assert_eq!(fs::metadata(&base).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&file).unwrap().mode() & 0o777, 0o600);
+        let dir = open_directory(&directory).unwrap();
+        symlink(&file, directory.join("symlink")).unwrap();
+        fs::hard_link(&file, directory.join("hardlink")).unwrap();
+        rustix::fs::mknodat(
+            &dir,
+            "fifo",
+            rustix::fs::FileType::Fifo,
+            Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        for name in ["symlink", "hardlink", "fifo"] {
+            assert!(open_private_at(&dir, name, OFlags::RDONLY).is_err());
+            assert!(publish_private_at(&dir, name, b"replacement").is_err());
+        }
+        fs::remove_dir_all(base).unwrap();
     }
 }

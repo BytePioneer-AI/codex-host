@@ -7,7 +7,7 @@
 ## Requirements
 
 ### Requirement: Tailscale 状态
-本机访问连接设备页时，Web SHALL 显示这台电脑的 Tailscale 状态：未安装、未运行、未登录、未开启 HTTPS、未转发、根路径已转发到别处或已转发到当前 Web，以及读取失败时的原因。状态检测 MUST 只读；只有用户在本机确认开启或关闭 Serve 时，Web 才 SHALL 修改 Tailscale 配置；未安装时其他连接方式不受影响。
+打开连接设备页时，Web SHALL 显示这台电脑的 Tailscale 状态：未安装、未运行、未登录、未开启 HTTPS、未转发、根路径已转发到别处或已转发到当前 Web，以及读取失败时的原因。状态检测 MUST 只读；只有用户确认开启或关闭 Serve 时，Web 才 SHALL 修改 Tailscale 配置；未安装时其他连接方式不受影响。
 
 #### Scenario: 未安装 Tailscale
 - **WHEN** 这台电脑找不到 `tailscale` 命令
@@ -94,7 +94,7 @@ Web 会话页面 SHALL 区分并提示：无网络、连接中、电脑离线、
 - **THEN** 探测超时并按无法到达处理，之后的探测继续进行
 
 ### Requirement: 远程连接说明
-本机访问连接设备页时，Web SHALL 提供默认收起的说明，介绍可以通过 Tailscale 或自备隧道从其他网络连接，并给出 Tailscale 下载地址和配置文档链接。该说明 MUST 只介绍当前可用的方式。
+连接设备页时，Web SHALL 提供默认收起的说明，介绍可以通过 Tailscale 或自备隧道从其他网络连接，并给出 Tailscale 下载地址和配置文档链接。该说明 MUST 只介绍当前可用的方式。
 
 #### Scenario: 不了解远程方式的用户
 - **WHEN** 用户展开连接设备页的远程连接说明
@@ -108,10 +108,10 @@ Web 会话页面 SHALL 区分并提示：无网络、连接中、电脑离线、
 - **THEN** 文档给出示例配置，并标明该方式是否经过实际运行验证
 
 ### Requirement: 一键开关 Tailscale Serve
-用户在本机确认后，Web SHALL 能开启和关闭 Tailscale Serve。开启前 MUST 重新读取状态，根路径已转发到别处时 MUST 不覆盖。关闭 MUST 只移除指向当前 Web 的根路径，MUST 不影响其他路径和其他端口。操作结果 MUST 以重新读取的状态为准，命令退出成功而配置未生效时 SHALL 显示失败。Web 退出、`codexhost stop` 和更新 MUST 不撤销 Serve。非本机访问 MUST 不能使用此操作。
+已认证用户确认后，Web SHALL 能开启和关闭 Tailscale Serve。开启前 MUST 重新读取状态，根路径已转发到别处时 MUST 不覆盖。关闭 MUST 只移除指向当前 Web 的根路径，MUST 不影响其他路径和其他端口。操作结果 MUST 以重新读取的状态为准，命令退出成功而配置未生效时 SHALL 显示失败。Web 退出、`codexhost stop` 和更新 MUST 不撤销 Serve。`--no-auth` 或未认证访问 MUST 不能使用此操作。
 
 #### Scenario: 开启
-- **WHEN** Tailscale 可用且根路径没有转发，用户在本机确认开启
+- **WHEN** Tailscale 可用且根路径没有转发，用户确认开启
 - **THEN** 页面显示已转发，并默认选中 Tailscale HTTPS 地址
 
 #### Scenario: 确认时根路径已被占用
@@ -130,9 +130,9 @@ Web 会话页面 SHALL 区分并提示：无网络、连接中、电脑离线、
 - **WHEN** 根路径转发到其他目标
 - **THEN** 页面不提供关闭操作
 
-#### Scenario: 非本机请求
-- **WHEN** 手机或经代理的请求调用开启或关闭
-- **THEN** 接口拒绝，返回本机访问提示，不修改配置
+#### Scenario: 远程请求
+- **WHEN** 已认证的远程或经代理的请求调用开启或关闭
+- **THEN** 按同样的状态校验与变更规则执行并同步返回结果
 
 #### Scenario: 停止服务后
 - **WHEN** 用户开启过 Serve，然后运行 `codexhost stop`

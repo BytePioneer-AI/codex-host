@@ -16,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  THREAD_ARCHIVE_CONFIRM_METHOD,
   clientThreadPinsSchema,
   type ClientThreadSnapshot,
   type ClientWorkspaceSnapshot,
@@ -52,6 +53,8 @@ export interface ChProjectSnapshot {
 
 const exec = promisify(execFile);
 const METHODS = new Set([
+  THREAD_ARCHIVE_CONFIRM_METHOD,
+  "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
@@ -67,6 +70,7 @@ const METHODS = new Set([
   "thread/resume",
   "thread/fork",
   "thread/name/set",
+  "codexhost/thread/title/generate",
   "thread/archive",
   "thread/unarchive",
   "turn/start",
@@ -89,6 +93,8 @@ const METHODS = new Set([
   "codexhost/thread/thinking/select",
   "codexhost/thread/permission-mode/select",
   "codexhost/thread/commands/inspect",
+  "codexhost/harness/commands/inspect",
+  "codexhost/skills/list",
   "codexhost/thread/command/execute",
   "codexhost/thread/fork",
   "codexhost/harness/session-import/sources",
@@ -218,7 +224,14 @@ export class DesktopChHostClient implements ChHostClient {
       if (!storage?.readGlobalState) throw new Error('Native project metadata unavailable');
       const [local, order, assigned, projectlessIds] = await Promise.all(['local-projects','project-order','thread-project-assignments','projectless-thread-ids'].map(key => storage.readGlobalState(key)));
       const ids = ${JSON.stringify(threadIds)};
-      const projects = Object.values(local ?? {}).filter(project => Array.isArray(order) && order.includes(project.id)).map(project => ({id:project.id,name:project.name,rootPaths:project.rootPaths}));
+      const stored = new Map();
+      for (const project of Object.values(local ?? {})) {
+        if (typeof project?.id === 'string' && !stored.has(project.id)) stored.set(project.id, project);
+      }
+      const projects = [...new Set(Array.isArray(order) ? order : [])].flatMap(id => {
+        const project = stored.get(id);
+        return project ? [{id:project.id,name:project.name,rootPaths:project.rootPaths}] : [];
+      });
       return {projects,assignments:Object.fromEntries(ids.flatMap(id => assigned?.[id]?.projectKind === 'local' ? [[id,assigned[id].projectId]] : [])),projectless:ids.filter(id => Array.isArray(projectlessIds) && projectlessIds.includes(id))};
     })()`;
     try {

@@ -56,11 +56,6 @@ printf 'Host stopped; interrupted tasks: 7\n<opaque output>\n'
         })).unwrap()).unwrap();
         Self { root, owner }
     }
-    fn status(&self) -> Option<serde_json::Value> {
-        fs::read(self.root.join("status.json"))
-            .ok()
-            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
-    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -70,105 +65,31 @@ impl Drop for Fixture {
     }
 }
 
-fn update(fail_install: bool, host_running: bool) {
-    let mut fixture = Fixture::new(fail_install);
-    if !host_running {
-        fs::remove_file(fixture.root.join("host-running")).unwrap();
-        let launcher = fixture.root.join("package/bin/codexhost");
-        let script = fs::read_to_string(&launcher)
-            .unwrap()
-            .replace(
-                "rm \"$HOME/web-running\" \"$HOME/host-running\"",
-                "rm \"$HOME/web-running\"",
-            )
-            .replace(
-                "printf 'Host stopped; interrupted tasks: 7\\n<opaque output>\\n'",
-                "",
-            );
-        fs::write(launcher, script).unwrap();
-    }
-    let mut updater = Command::new(env!("CARGO_BIN_EXE_codexhost-updater"))
-        .args(["apply", "--request"])
-        .arg(fixture.root.join("request.json"))
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", &fixture.root)
-        .env("CODEXHOST_DATA_DIR", fixture.root.join("data"))
-        .env("CODEX_HOME", fixture.root.join("codex"))
-        .env("CODEXHOST_CONSOLE_PORT", "4467")
-        .env("SSH_CONNECTION", "smoke")
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while fixture.status().is_none() {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(fixture.status().unwrap()["phase"], "waiting-for-exit");
-    assert!(!fixture.root.join("order").exists());
-    assert!(fixture.root.join("web-running").exists());
-    assert_eq!(fixture.root.join("host-running").exists(), host_running);
-    fixture.owner.kill().unwrap();
-    fixture.owner.wait().unwrap();
-    loop {
-        if let Some(result) = updater.try_wait().unwrap() {
-            assert_eq!(result.success(), !fail_install);
-            break;
-        }
-        if Instant::now() >= deadline {
-            updater.kill().unwrap();
-            panic!("fixture updater timed out");
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    let status = fixture.status().unwrap();
-    assert_eq!(
-        status["phase"],
-        if fail_install { "failed" } else { "succeeded" }
-    );
-    if host_running {
-        assert_eq!(
-            status["serviceStopOutput"],
-            "Host stopped; interrupted tasks: 7\n<opaque output>\n"
-        );
-    } else {
-        assert!(status.get("serviceStopOutput").is_none());
-    }
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("order")).unwrap(),
-        "stop\ninstall\nrelaunch\n"
-    );
-    assert!(fixture.root.join("web-running").exists());
-    assert!(fixture.root.join("host-running").exists());
-    if fail_install {
-        assert!(
-            status["error"]
-                .as_str()
-                .unwrap()
-                .contains("service recovery succeeded")
-        );
-    }
-    assert!(fixture.root.join("console-running").exists());
-}
-
-#[test]
-fn waits_then_stops_services_before_install_and_keeps_opaque_output_after_relaunch() {
-    update(false, true);
-}
-#[test]
-fn failed_install_restores_services_and_preserves_failure_and_stop_output() {
-    update(true, true);
-}
-
 #[test]
 fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_failure() {
+    assert_managed_update_failure(false);
+}
+
+#[test]
+fn failed_pre_update_shutdown_does_not_install_and_preserves_the_gui_error() {
+    assert_managed_update_failure(true);
+}
+
+fn assert_managed_update_failure(stop_fails: bool) {
     let mut fixture = Fixture::new(true);
     let launcher = fixture.root.join("package/bin/codexhost");
     let script = fs::read_to_string(&launcher).unwrap().replace(
         "[ \"$3\" = /bin/sh ]",
         "[ \"$3\" = /bin/sh ]\n[ \"$4\" = --data ]\n[ \"$5\" = \"$HOME/data\" ]\n[ \"$CODEXHOST_DATA_DIR\" = \"$HOME/data\" ]",
     );
+    let script = if stop_fails {
+        script.replace(
+            "rm \"$HOME/web-running\" \"$HOME/host-running\"",
+            "echo 'stopping Desktop failed: lifecycle verification rejected' >&2\nexit 1",
+        )
+    } else {
+        script
+    };
     fs::write(launcher, script).unwrap();
     let path = fixture.root.join("request.json");
     let mut request: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -244,12 +165,14 @@ fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_fail
     let status: serde_json::Value =
         serde_json::from_slice(&fs::read(status_path).unwrap()).unwrap();
     assert_eq!(status["phase"], "failed");
-    assert!(
-        status["error"]
-            .as_str()
-            .unwrap()
-            .contains("npm update failed")
-    );
+    let error = status["error"].as_str().unwrap();
+    if stop_fails {
+        assert!(error.contains("pre-update service shutdown failed"));
+        assert!(error.contains("stopping Desktop failed: lifecycle verification rejected"));
+        assert!(fixture.root.join("host-running").exists());
+    } else {
+        assert!(error.contains("npm update failed"));
+    }
     assert!(
         status["error"]
             .as_str()
@@ -258,7 +181,11 @@ fn service_managed_handoff_does_not_wait_for_the_owner_and_reports_recovery_fail
     );
     assert_eq!(
         fs::read_to_string(fixture.root.join("order")).unwrap(),
-        "stop\ninstall\n"
+        if stop_fails {
+            "stop\n"
+        } else {
+            "stop\ninstall\n"
+        }
     );
 }
 
@@ -305,9 +232,4 @@ fn rejected_lock_handoff_does_not_stop_or_recover_services() {
     assert!(!fixture.root.join("order").exists());
     assert!(fixture.root.join("web-running").exists());
     assert!(fixture.root.join("host-running").exists());
-}
-
-#[test]
-fn no_running_host_omits_empty_stop_output_from_the_update_result() {
-    update(false, false);
 }

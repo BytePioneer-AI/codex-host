@@ -8,6 +8,7 @@ import {
   type DelegationWatchApi,
   type HarnessInspectInput,
   type HarnessListInput,
+  type ThreadAnswerInput,
   type ThreadListInput,
   type ThreadReadInput,
   type ThreadWaitInput,
@@ -21,6 +22,8 @@ import {
 import { DelegationWatchService, type ClientEventSink } from "./delegation-watch.js";
 import type { DelegationWatchStore } from "./delegation-watch-store.js";
 import { clientOrigin, originClientName } from "./external-client-origin.js";
+import { interruptAndSend } from "./delegation-interrupt-send.js";
+import { validateThreadExportInput, type ThreadExportInput } from "./delegation-thread-export.js";
 import { mergeRefs, normalizeRefs, type ThreadRefsStore } from "./thread-refs.js";
 
 const REF_CURSOR_PREFIX = "ref:";
@@ -83,7 +86,11 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     this.#registrations.add(registration);
     this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
+    const unsubscribeIdle = registration.onThreadIdle?.((threadId) =>
+      this.#watchService.nudge(threadId),
+    );
     return () => {
+      unsubscribeIdle?.();
       if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
       if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
     };
@@ -120,11 +127,27 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
   }
 
   async send(input: Parameters<DelegationControlApi["send"]>[0]) {
-    return (await this.#registrationForThread(input.threadId)).send(input);
+    if (input.interrupt !== undefined && typeof input.interrupt !== "boolean")
+      throw new DelegationControlError("INVALID_ARGUMENT", "interrupt must be a boolean");
+    if (input.steer !== undefined && typeof input.steer !== "boolean")
+      throw new DelegationControlError("INVALID_ARGUMENT", "steer must be a boolean");
+    if (input.steer && input.interrupt)
+      throw new DelegationControlError(
+        "INVALID_ARGUMENT",
+        "steer and interrupt are mutually exclusive",
+      );
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!input.interrupt) return registration.send(input);
+    const send = { threadId: input.threadId, message: input.message };
+    return this.#watchService.holdNotifications(input.threadId, () =>
+      interruptAndSend(registration, send),
+    );
   }
 
   async cancel(input: Parameters<DelegationControlApi["cancel"]>[0]) {
-    return (await this.#registrationForThread(input.threadId)).cancel(input);
+    return this.#watchService.cancel(input.threadId, async () =>
+      (await this.#registrationForThread(input.threadId)).cancel(input),
+    );
   }
 
   async read(input: ThreadReadInput) {
@@ -141,9 +164,12 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
             registration.executionHostId?.(callerThreadId) === read.hostId &&
             registration.ownsThread(callerThreadId),
         );
-        if (callers.length > 1)
-          only(callers, "Calling Thread has ambiguous execution Host context");
-        if (callers.length === 1) {
+        if (callers.length > 0) {
+          this.#selectExplicitThreadRegistration(
+            callers,
+            "Calling Thread has ambiguous execution Host context",
+          );
+          // The caller identifies the Host, but the target can belong to another session.
           const { hostId, ...local } = read;
           const snapshot = await (await this.#registrationForThread(local.threadId)).read(local);
           return { ...snapshot, hostId };
@@ -159,11 +185,23 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     return (await this.#registrationForThread(read.threadId)).read(read);
   }
 
+  async exportThread(input: ThreadExportInput) {
+    validateThreadExportInput(input);
+    const registration = await this.#registrationForThread(input.threadId);
+    if (!registration.exportThread)
+      throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
+    return registration.exportThread(input);
+  }
+
   async wait(input: ThreadWaitInput) {
     if (input.hostId !== undefined && input.hostId !== "local")
       throw new DelegationControlError("INVALID_ARGUMENT", "Remote Hosts support thread read only");
     const snapshot = await (await this.#registrationForThread(input.threadId)).wait(input);
     return withRefs(snapshot, (await this.#refs?.get(snapshot.threadId)) ?? []);
+  }
+
+  async answer(input: ThreadAnswerInput) {
+    return (await this.#registrationForThread(input.threadId)).answer(input);
   }
 
   async watch(input: ThreadWatchInput) {
@@ -294,23 +332,35 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       );
     }
     const matches = await this.#matching((registration) => registration.canHandleStart(input));
+    if (input.parentThreadId) {
+      return this.#selectExplicitThreadRegistration(
+        matches,
+        "Parent Thread is not owned by exactly one active Host Runtime session",
+      );
+    }
     return only(
       matches,
-      input.parentThreadId
-        ? "Parent Thread is not owned by exactly one active Host Runtime session"
-        : "Parent Thread cannot be inferred uniquely; pass --parent-thread explicitly",
+      "Parent Thread cannot be inferred uniquely; pass --parent-thread explicitly",
     );
+  }
+
+  #selectExplicitThreadRegistration(
+    matches: readonly DelegationControlRegistration[],
+    message: string,
+  ): DelegationControlRegistration {
+    // Several attached clients can observe the catalog's same shared Thread.
+    if (matches.length > 1 && this.#harnessCatalog && matches.includes(this.#harnessCatalog))
+      return this.#harnessCatalog;
+    return only(matches, message);
   }
 
   async #registrationForThread(threadId: string): Promise<DelegationControlRegistration> {
     const registrations = [...this.#registrations];
     const matches = await this.#matching((registration) => registration.ownsThread(threadId));
-    if (matches.length === 1) return matches[0] as DelegationControlRegistration;
-    if (matches.length > 1) {
-      throw new DelegationControlError(
-        "PARENT_THREAD_AMBIGUOUS",
+    if (matches.length > 0) {
+      return this.#selectExplicitThreadRegistration(
+        matches,
         "Thread is not owned by exactly one active Host Runtime session",
-        { matchingRuntimeCount: matches.length },
       );
     }
     if (this.#harnessCatalog) return this.#harnessCatalog;

@@ -9,24 +9,30 @@ import {
 } from "../src/official-codex-model-ref.js";
 
 describe("official Codex Model refs", () => {
-  it("round-trips Fast as a selection of the same native Model with priority", () => {
-    const fast = encodeOfficialCodexModelRef("provider/model", "priority");
-    expect(fast).not.toEqual(encodeOfficialCodexModelRef("provider/model"));
-    expect(decodeOfficialCodexModelRef(fast)).toBe("provider/model");
-    expect(decodeOfficialCodexModelSelection(fast)).toEqual({
+  it.each([
+    ["priority", "codex-fast-model-v1.cHJvdmlkZXIvbW9kZWw"],
+    ["ultrafast", "codex-ultra-v1.cHJvdmlkZXIvbW9kZWw"],
+  ])("round-trips %s as a selection of the same native Model", (serviceTier, id) => {
+    const ref = encodeOfficialCodexModelRef("provider/model", serviceTier);
+    expect(ref).toEqual({ id });
+    expect(decodeOfficialCodexModelRef(ref)).toBe("provider/model");
+    expect(decodeOfficialCodexModelSelection(ref)).toEqual({
       model: "provider/model",
-      serviceTier: "priority",
+      serviceTier,
     });
-    expect(canonicalizeOfficialCodexModelRef(fast)).toEqual(fast);
-    expect(
-      decodeOfficialCodexModelSelection(encodeOfficialCodexModelRef("provider/model")),
-    ).toEqual({ model: "provider/model", serviceTier: null });
-    expect(encodeOfficialCodexModelRef("provider/model", "flex")).toEqual(
-      encodeOfficialCodexModelRef("provider/model"),
-    );
+    expect(canonicalizeOfficialCodexModelRef(ref)).toEqual(ref);
     expect(() =>
-      decodeOfficialCodexModelSelection(harnessModelRefSchema.parse({ id: `${fast.id}.` })),
+      decodeOfficialCodexModelSelection(harnessModelRefSchema.parse({ id: `${ref.id}.` })),
     ).toThrow("canonical");
+  });
+
+  it("keeps the base ref for an ordinary selection and unrecognized tiers", () => {
+    const ref = encodeOfficialCodexModelRef("provider/model");
+    expect(decodeOfficialCodexModelSelection(ref)).toEqual({
+      model: "provider/model",
+      serviceTier: null,
+    });
+    expect(encodeOfficialCodexModelRef("provider/model", "flex")).toEqual(ref);
   });
   it.each([
     ["gpt-5.6-luna", "codex-model-v1.Z3B0LTUuNi1sdW5h"],

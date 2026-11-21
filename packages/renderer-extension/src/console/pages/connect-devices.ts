@@ -55,7 +55,7 @@ export function createConnectDevicesPage(locale: string): RendererSettingsPageDe
   return {
     id: "connect-devices",
     label: t("连接设备", "Connect devices"),
-    icon: "connections",
+    icon: "mobile",
     mount({ content, signal }) {
       const document = content.ownerDocument;
       const body = h(document, "section", { className: "console-panel console-connect" });

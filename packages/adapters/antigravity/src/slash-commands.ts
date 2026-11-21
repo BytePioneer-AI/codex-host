@@ -77,8 +77,9 @@ export const ANTIGRAVITY_COMMAND_CATALOG: HarnessCommandCatalog = harnessCommand
 
 export function findAntigravityCommandDescriptor(
   commandId: string,
+  catalog: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG,
 ): HarnessCommandDescriptor | undefined {
-  return ANTIGRAVITY_COMMAND_CATALOG.commands.find(
+  return catalog.commands.find(
     (command) =>
       command.id === commandId ||
       command.invocation === commandId ||
@@ -88,8 +89,9 @@ export function findAntigravityCommandDescriptor(
 
 export function parseAndFormatAntigravityCommand(
   command: HarnessCommandInvocation,
+  catalog: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG,
 ): HarnessResult<{ prompt: string; descriptor: HarnessCommandDescriptor }> {
-  const descriptor = findAntigravityCommandDescriptor(command.commandId);
+  const descriptor = findAntigravityCommandDescriptor(command.commandId, catalog);
   if (!descriptor) {
     return {
       ok: false,
@@ -137,6 +139,16 @@ export function parseAndFormatAntigravityCommand(
   }
 
   const text = typeof args?.text === "string" ? args.text.trim() : "";
+  if (descriptor.argumentMode === "none" && text) {
+    return {
+      ok: false,
+      error: {
+        code: "invalidRequest",
+        message: "This Antigravity command takes no arguments",
+        retryable: false,
+      },
+    };
+  }
   const prompt = text.length > 0 ? `${descriptor.invocation} ${text}` : descriptor.invocation;
 
   return {

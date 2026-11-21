@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { externalTurnInputText } from "../src/external-turn-input.js";
+import {
+  externalTurnInputText,
+  isInputlessInterruptedTaskResume,
+} from "../src/external-turn-input.js";
 
 const path = "C:\\图片\\screen shot.png";
 const inline = { type: "image", url: "data:image/png;base64,aGVsbG8=" };
@@ -116,9 +119,26 @@ describe("External Turn input normalization", () => {
       [text("hello"), { type: "toolResponse", text: "not a prompt" }],
       [text("hello"), inline],
       [{ type: "text", text: 123 }],
+      [{ type: "skill", name: "native", path: "/native/SKILL.md" }],
       [null],
     ].map((input) => ({ input })),
   )("rejects input that cannot be represented faithfully: $input", ({ input }) => {
     expect(() => externalTurnInputText(input)).toThrow();
+  });
+
+  it("recognizes only Desktop's inputless interrupted-task resume", () => {
+    expect(
+      isInputlessInterruptedTaskResume({ input: [], turnTrigger: "resume_interrupted_task" }),
+    ).toBe(true);
+    expect(isInputlessInterruptedTaskResume({ input: [] })).toBe(false);
+    expect(
+      isInputlessInterruptedTaskResume({
+        input: [text("continue")],
+        turnTrigger: "resume_interrupted_task",
+      }),
+    ).toBe(false);
+    expect(isInputlessInterruptedTaskResume({ turnTrigger: "resume_interrupted_task" })).toBe(
+      false,
+    );
   });
 });

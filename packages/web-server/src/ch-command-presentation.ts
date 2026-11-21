@@ -30,12 +30,17 @@ export class ChCommandPresentation {
     if (!command) return;
     const { turn, name } = command;
     if (this.current?.id !== turn.id) {
-      if (this.current && !this.current.done)
+      if (this.current && !this.current.done) {
         this.log.append("command/done", {
           commandId: this.current.id,
           kind: "error",
           text: "The Host no longer reports the outcome of this command.",
         });
+        this.current.done = true;
+      }
+      // Retained results must not become new journal events after later conversation.
+      // Commands already displayed in this view must still receive their settlement.
+      if (!commandRunning && command.subsequentTurnId !== undefined) return;
       this.log.append("command/run", {
         commandId: turn.id,
         name,

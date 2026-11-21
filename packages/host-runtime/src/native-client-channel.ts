@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { JsonObject, JsonValue } from "@codexhost/protocol-core";
 import {
   clientThreadSnapshotSchema,
@@ -26,6 +27,8 @@ export type NativeClientReply =
 
 export interface NativeClientChannelDependencies {
   readonly events: ClientChannelEvents;
+  readonly asyncQuestions?: NativeAsyncQuestions;
+  refreshBeforeRequest?(): Promise<void> | undefined;
   request(method: string, params: JsonObject): Promise<NativeClientReply>;
   respond(
     requestId: string | number,
@@ -391,7 +394,8 @@ export class NativeClientChannel {
   readonly #resumedThreads = new Set<string>();
   readonly #configuration = new Map<string, ReturnType<typeof nativeThreadConfiguration>>();
   readonly #items = new NativeClientItems();
-  readonly #asyncQuestions = new NativeAsyncQuestions();
+  readonly #asyncQuestions: NativeAsyncQuestions;
+  readonly #ownsAsyncQuestions: boolean;
   readonly #pending = new Map<string, PendingNativeInteraction>();
   readonly #pendingNativeIds = new Map<string, string>();
   readonly #unconfirmedResponses = new Set<string>();
@@ -400,6 +404,8 @@ export class NativeClientChannel {
 
   constructor(host: NativeClientChannelDependencies) {
     this.#host = host;
+    this.#ownsAsyncQuestions = host.asyncQuestions === undefined;
+    this.#asyncQuestions = host.asyncQuestions ?? new NativeAsyncQuestions();
   }
 
   noteThread(threadId: string): void {
@@ -417,6 +423,18 @@ export class NativeClientChannel {
       if (value.method === "thread/settings/updated" && isJsonObject(params.threadSettings))
         this.#configuration.set(threadId, nativeThreadConfiguration(params.threadSettings));
       if (value.method === "thread/closed") this.#resumedThreads.delete(threadId);
+      const endedTurn =
+        value.method === "turn/completed" && isRecord(params.turn) ? params.turn.id : undefined;
+      if (value.method === "thread/closed" || typeof endedTurn === "string") {
+        for (const pending of this.#pending.values()) {
+          if (
+            pending.kind === "question" &&
+            pending.threadId === threadId &&
+            (value.method === "thread/closed" || pending.params.turnId === endedTurn)
+          )
+            this.#deletePending(pending.requestId);
+        }
+      }
       if (value.method === "turn/started") this.#interactionErrors.delete(threadId);
       this.#host.events.changed(threadId, value.method);
       if (asyncQuestionsChanged)
@@ -500,6 +518,18 @@ export class NativeClientChannel {
   }
 
   async request(method: string, params: JsonObject): Promise<NativeClientReply> {
+    const refreshing = this.#host.refreshBeforeRequest?.();
+    if (refreshing) {
+      try {
+        await refreshing;
+      } catch {
+        return { error: { code: -32090, message: "Native Codex is unavailable" } };
+      }
+    }
+    return this.#request(method, params);
+  }
+
+  async #request(method: string, params: JsonObject): Promise<NativeClientReply> {
     const generation = this.#generationToken;
     const stale = (): NativeClientReply => ({
       error: {
@@ -515,7 +545,7 @@ export class NativeClientChannel {
       return sendNativeQueuedMessage(
         (method, params) =>
           generation === this.#generationToken
-            ? this.request(method, params)
+            ? this.#request(method, params)
             : Promise.resolve(stale()),
         threadId,
         params.itemId,
@@ -524,7 +554,7 @@ export class NativeClientChannel {
     if (method === "codexhost/thread/inspect") {
       if (!threadId) return { error: { code: -32602, message: "threadId is required" } };
       if (!this.#configuration.has(threadId)) {
-        await this.request("thread/resume", { threadId, excludeTurns: true });
+        await this.#request("thread/resume", { threadId, excludeTurns: true });
       }
       return {
         result: jsonValueSchema.parse({
@@ -545,7 +575,7 @@ export class NativeClientChannel {
       return submitNativeQueuedInput(
         (method, params) =>
           generation === this.#generationToken
-            ? this.request(method, params)
+            ? this.#request(method, params)
             : Promise.resolve(stale()),
         params,
       );
@@ -555,6 +585,23 @@ export class NativeClientChannel {
       method === "thread/resume" ? { ...params, excludeTurns: true } : params,
     );
     if (generation !== this.#generationToken) return stale();
+    // Codex can expose the rollout path before its metadata is flushed. Retry
+    // only this explicit read failure; persistent errors and writes stay intact.
+    for (const delayMs of [50, 100, 200, 400]) {
+      if (
+        method !== "thread/read" ||
+        !("error" in reply) ||
+        reply.error.code !== -32603 ||
+        !/^failed to read thread: thread-store internal error: failed to read session metadata ([\s\S]+): rollout at \1 is empty$/u.test(
+          reply.error.message,
+        )
+      )
+        break;
+      await delay(delayMs);
+      if (generation !== this.#generationToken) return stale();
+      reply = await this.#host.request(method, params);
+      if (generation !== this.#generationToken) return stale();
+    }
     // A native Thread exists before its first user message materializes history.
     // Only that explicit initial-page response means empty history, not a failed read.
     if (
@@ -595,6 +642,12 @@ export class NativeClientChannel {
   }
 
   async snapshot(threadId: string, options: ClientSnapshotOptions): Promise<ClientThreadSnapshot> {
+    const refreshing = this.#host.refreshBeforeRequest?.();
+    if (refreshing) {
+      await refreshing.catch(() => {
+        throw new ClientChannelRequestError(-32090, "Native Codex is unavailable");
+      });
+    }
     const cursor = this.#host.events.cursor;
     const generation = this.#generationToken;
     const assertGeneration = () => {
@@ -604,7 +657,7 @@ export class NativeClientChannel {
     try {
       let nativeSendError: string | undefined;
       if (!this.#resumedThreads.has(threadId)) {
-        const resumed = await this.request("thread/resume", { threadId, excludeTurns: true });
+        const resumed = await this.#request("thread/resume", { threadId, excludeTurns: true });
         assertGeneration();
         if ("error" in resumed) {
           if (
@@ -617,7 +670,7 @@ export class NativeClientChannel {
           else throw new ClientChannelRequestError(resumed.error.code, resumed.error.message);
         }
       }
-      const read = await this.request("thread/read", { threadId, includeTurns: false });
+      const read = await this.#request("thread/read", { threadId, includeTurns: false });
       assertGeneration();
       if ("error" in read) throw new ClientChannelRequestError(read.error.code, read.error.message);
       const thread = resultThread(read);
@@ -625,7 +678,7 @@ export class NativeClientChannel {
         throw new Error("Native Codex did not return the requested Thread");
       if (typeof thread.modelProvider !== "string" || thread.modelProvider.length === 0)
         throw new Error("Native Codex Thread has no modelProvider");
-      const turnsReply = await this.request("thread/turns/list", {
+      const turnsReply = await this.#request("thread/turns/list", {
         threadId,
         limit: 5,
         sortDirection: "desc",
@@ -679,7 +732,7 @@ export class NativeClientChannel {
           prefix,
           (method, params) =>
             generation === this.#generationToken
-              ? this.request(method, params)
+              ? this.#request(method, params)
               : Promise.resolve({
                   error: { code: -32094, message: "Host generation changed; refresh the Thread" },
                 }),
@@ -716,7 +769,7 @@ export class NativeClientChannel {
     this.#interactionErrors.clear();
     this.#configuration.clear();
     this.#items.clear();
-    this.#asyncQuestions.clear();
+    if (this.#ownsAsyncQuestions) this.#asyncQuestions.clear();
     for (const threadId of threads) this.#host.events.changed(threadId, "thread/status/changed");
   }
 

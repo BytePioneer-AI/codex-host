@@ -49,6 +49,11 @@ export class CodeBuddySubagents {
   begin(turnId: HostTurnId) {
     this.#turnId = turnId;
   }
+  hasItem(itemId: string): boolean {
+    return [...this.#calls.values()].some(
+      (call) => call.turnId === this.#turnId && call.item.itemId === itemId,
+    );
+  }
   state(id: string) {
     return [...this.#calls.values()]
       .map((call) => call.item.subagents[0])
@@ -220,8 +225,13 @@ export class CodeBuddySubagents {
               )
             : this.#observer.read(id, "running"));
           if (this.#closed || call.observationDone) continue;
-          const observedModel = snapshot.turns.at(-1)?.model;
-          if (observedModel) this.#update(call, { model: nativeModel(observedModel) });
+          const observedModel = snapshot.turns.at(-1)?.model ?? snapshot.state?.effectiveModel;
+          const reasoningEffort = snapshot.state?.effectiveThinkingOptionId;
+          if (observedModel || reasoningEffort)
+            this.#update(call, {
+              ...(observedModel ? { model: nativeModel(observedModel) } : {}),
+              ...(reasoningEffort ? { reasoningEffort } : {}),
+            });
           const signature = JSON.stringify(snapshot);
           if (signature !== call.signature) {
             call.signature = signature;

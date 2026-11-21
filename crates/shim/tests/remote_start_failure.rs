@@ -17,6 +17,7 @@ impl Fixture {
         let directory = std::env::temp_dir().join(format!("ch-fail-{name}-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(directory.join("data")).unwrap();
         let script = directory.join("codex");
         fs::write(
             &script,
@@ -48,6 +49,7 @@ while True:
             .args(["app-server", "--listen", "unix://"])
             .env("CODEXHOST_STOCK_CODEX_PATH", self.directory.join("codex"))
             .env("CODEXHOST_REMOTE_SSH_MANAGED", "1")
+            .env("CODEXHOST_DATA_DIR", self.directory.join("data"))
             .env("CODEX_HOME", &self.directory)
             .env("FAILURE_READY", self.directory.join("ready"))
             .env_remove("CODEXHOST_LAUNCHER_PID")

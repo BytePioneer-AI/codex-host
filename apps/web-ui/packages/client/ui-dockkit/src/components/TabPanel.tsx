@@ -319,8 +319,8 @@ export function TabStrip({ state, pane, callbacks }: TabPanelProps): ReactNode {
                 // replaced — which would abandon every drag. A drag that ends
                 // elsewhere fires no click, and its own operation carries focus.
                 onPointerDown={(event) => {
-                  // A secondary press is the menu, never a drag.
-                  if (event.button === 2) return;
+                  // Touch pans the chip row; only mouse/pen presses start docking drags.
+                  if (event.pointerType === "touch" || event.button === 2) return;
                   callbacks.onTabPressed(tabId, event);
                 }}
                 onClick={(event) => {

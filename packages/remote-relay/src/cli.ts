@@ -14,6 +14,9 @@ const { values } = parseArgs({
     rate: { type: "string" },
     "daily-quota": { type: "string" },
     "max-connections": { type: "string" },
+    "ip-connection-limit": { type: "string" },
+    "ip-connection-window": { type: "string" },
+    "ip-ban-duration": { type: "string" },
   },
 });
 if (!values.domain) {
@@ -35,5 +38,14 @@ const relay = createRelay({
   ...(values["max-connections"] === undefined
     ? {}
     : { maxConnections: Number(values["max-connections"]) }),
+  ...(values["ip-connection-limit"] === undefined
+    ? {}
+    : { ipConnectionLimit: Number(values["ip-connection-limit"]) }),
+  ...(values["ip-connection-window"] === undefined
+    ? {}
+    : { ipConnectionWindow: Number(values["ip-connection-window"]) }),
+  ...(values["ip-ban-duration"] === undefined
+    ? {}
+    : { ipBanDuration: Number(values["ip-ban-duration"]) }),
 });
 relay.server.listen(Number(values.port));

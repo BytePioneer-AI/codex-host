@@ -1,33 +1,27 @@
-/** Connection setup is local-only; other devices get guidance and sign-out. */
+/** Connection setup and device access management. */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Button, Modal, relativeTime } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
-import {
-  webLocalAccessRequiredDetailsSchema,
-  type WebAccessState,
-} from "@codexhost/shared-contracts";
-import { accessTokenApi, ApiError } from "./api.ts";
-import { signOut } from "./auth-watch.ts";
+import type { WebAccessState } from "@codexhost/shared-contracts";
+import { accessTokenApi, ApiError, copyText, readWebAccessAuth } from "./api.ts";
+import { runWithTokenRenewal, signOut } from "./auth-watch.ts";
 import { AutostartControl, useDirectRestart } from "./BackgroundControls.tsx";
+import { resubmitNotifications } from "./notifications.ts";
 import { relayPreparing } from "./RelayControl.tsx";
 import { ConnectionCard } from "./ConnectionCard.tsx";
 import css from "./ConnectDevicesSection.module.css";
 
 type Translate = PropsLocale<"codexhostImport">["t"];
+type ConfirmKind = "regenerate" | "stop" | "signOut";
 type View =
   | { kind: "loading" }
   | { kind: "ready"; data: WebAccessState }
-  | { kind: "non-local"; url: string }
   | { kind: "disabled" }
   | { kind: "failed"; message: string };
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 function viewOfError(error: unknown): View {
   if (error instanceof ApiError && error.code === "auth/disabled") return { kind: "disabled" };
-  if (error instanceof ApiError && error.code === "auth/local-access-required") {
-    const details = webLocalAccessRequiredDetailsSchema.safeParse(error.details);
-    return { kind: "non-local", url: details.success ? details.data.url : "http://127.0.0.1" };
-  }
   return { kind: "failed", message: messageOf(error) };
 }
 
@@ -86,48 +80,11 @@ function Confirm({
   );
 }
 
-/** What a phone or other device sees here: where to find the token, and a way to sign out. */
-function ElsewhereNotice({ url, t }: { url: string; t: Translate }): ReactNode {
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <div className={css.page}>
-      <p className={css.notice} data-connect-notice="non-local">
-        {t("connectDevices.localOnly", { url })}
-      </p>
-      <div>
-        <Button variant="outline" onClick={() => setConfirming(true)}>
-          {t("connectDevices.signOut")}
-        </Button>
-      </div>
-      {confirming && (
-        <Confirm
-          t={t}
-          title={t("connectDevices.signOutTitle")}
-          description={t("connectDevices.signOutDescription")}
-          confirmLabel={t("connectDevices.signOutConfirm")}
-          busy={busy}
-          error={error}
-          onClose={() => setConfirming(false)}
-          onConfirm={() => {
-            setBusy(true);
-            setError(null);
-            void signOut().catch((cause: unknown) => {
-              setBusy(false);
-              setError(t("connectDevices.actionFailed", { message: messageOf(cause) }));
-            });
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
 /** One explicit action enables the chosen route; selecting it only previews its address. */
 export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): ReactNode {
   const [view, setView] = useState<View>({ kind: "loading" });
-  const [confirming, setConfirming] = useState<"regenerate" | "stop" | null>(null);
+  const [remote, setRemote] = useState(false);
+  const [confirming, setConfirming] = useState<ConfirmKind | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -142,17 +99,22 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   }, [tokenCopied]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    void readWebAccessAuth(controller.signal)
+      .then((status) => {
+        if (!controller.signal.aborted) setRemote(status.authenticated && !status.local);
+      })
+      .catch(() => undefined);
     void accessTokenApi.get().then(
       (data) => {
-        if (!cancelled) setView({ kind: "ready", data });
+        if (!controller.signal.aborted) setView({ kind: "ready", data });
       },
       (cause: unknown) => {
-        if (!cancelled) setView(viewOfError(cause));
+        if (!controller.signal.aborted) setView(viewOfError(cause));
       },
     );
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, []);
   const relayState = view.kind === "ready" ? view.data.relay?.state : undefined;
@@ -227,7 +189,6 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
   };
 
   if (view.kind === "loading") return <p className={css.meta}>{t("connectDevices.loading")}</p>;
-  if (view.kind === "non-local") return <ElsewhereNotice url={view.url} t={t} />;
   if (view.kind === "disabled")
     return (
       <p className={css.notice} data-connect-notice="disabled">
@@ -314,7 +275,7 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
               disabled={working}
               onClick={() => {
                 setError(null);
-                void navigator.clipboard.writeText(secret).then(
+                void copyText(secret).then(
                   () => setTokenCopied(true),
                   () => setError(t("connectDevices.copyFailed")),
                 );
@@ -336,6 +297,26 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
         </div>
         {background !== undefined && (
           <AutostartControl state={background} disabled={working} restored={restored} t={t} />
+        )}
+        {remote && (
+          <div className={css.manageRow}>
+            <div className={css.manageText}>
+              <span className={css.manageTitle}>{t("connectDevices.signOutRowTitle")}</span>
+              <span className={css.meta}>{t("connectDevices.signOutHint")}</span>
+            </div>
+            <div className={css.manageActions}>
+              <Button
+                variant="outline"
+                disabled={working}
+                onClick={() => {
+                  setError(null);
+                  setConfirming("signOut");
+                }}
+              >
+                {t("connectDevices.signOut")}
+              </Button>
+            </div>
+          </div>
         )}
       </section>
       {canStop && (
@@ -389,37 +370,50 @@ export function ConnectDevicesSection({ t }: PropsLocale<"codexhostImport">): Re
           </div>
         </div>
       </details>
-      {confirming !== null && (
-        <Confirm
-          t={t}
-          title={t(
-            confirming === "stop" ? "connectDevices.stopTitle" : "connectDevices.regenerateTitle",
-          )}
-          description={
+      {confirming !== null &&
+        (() => {
+          const modal =
             confirming === "stop"
-              ? `${t("connectDevices.stopDescription")}${unmanaged ? ` ${t("connectDevices.stopUnmanaged")}` : ""}`
-              : t("connectDevices.regenerateDescription")
-          }
-          confirmLabel={t(
-            confirming === "stop"
-              ? "connectDevices.stopConfirm"
-              : "connectDevices.regenerateConfirm",
-          )}
-          busy={working}
-          error={error}
-          onClose={() => setConfirming(null)}
-          onConfirm={() => {
-            void run(
-              confirming === "stop"
-                ? stop
-                : async () => {
-                    restored(await accessTokenApi.regenerate());
-                    setConfirming(null);
-                  },
-            );
-          }}
-        />
-      )}
+              ? {
+                  title: t("connectDevices.stopTitle"),
+                  description: `${t("connectDevices.stopDescription")}${unmanaged ? ` ${t("connectDevices.stopUnmanaged")}` : ""}`,
+                  confirmLabel: t("connectDevices.stopConfirm"),
+                  action: stop,
+                }
+              : confirming === "signOut"
+                ? {
+                    title: t("connectDevices.signOutTitle"),
+                    description: t("connectDevices.signOutDescription"),
+                    confirmLabel: t("connectDevices.signOutConfirm"),
+                    action: signOut,
+                  }
+                : {
+                    title: t("connectDevices.regenerateTitle"),
+                    description: t("connectDevices.regenerateDescription"),
+                    confirmLabel: t("connectDevices.regenerateConfirm"),
+                    action: async () => {
+                      await runWithTokenRenewal(async () => {
+                        restored(await accessTokenApi.regenerate());
+                        resubmitNotifications();
+                      });
+                      setConfirming(null);
+                    },
+                  };
+          return (
+            <Confirm
+              t={t}
+              title={modal.title}
+              description={modal.description}
+              confirmLabel={modal.confirmLabel}
+              busy={working}
+              error={error}
+              onClose={() => setConfirming(null)}
+              onConfirm={() => {
+                void run(modal.action);
+              }}
+            />
+          );
+        })()}
     </div>
   );
 }

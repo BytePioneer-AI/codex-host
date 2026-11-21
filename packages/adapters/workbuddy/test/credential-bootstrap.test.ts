@@ -20,6 +20,7 @@ async function fixture(
   cli: string,
   extraEnvironment: NodeJS.ProcessEnv = {},
   argumentsOverride?: string[],
+  cliVersion?: string,
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "wb-bootstrap-"));
   directories.push(directory);
@@ -36,6 +37,16 @@ async function fixture(
   const preload = path.join(directory, "binding.cjs");
   await mkdir(path.dirname(script), { recursive: true });
   await writeFile(script, cli);
+  if (cliVersion !== undefined) {
+    await writeFile(
+      path.join(path.dirname(path.dirname(script)), "package.json"),
+      JSON.stringify({
+        name: "@genie/agent-cli",
+        version: "0.0.0",
+        publishConfig: { customPackage: { version: cliVersion } },
+      }),
+    );
+  }
   await writeFile(preload, `process._linkedBinding = (name) => { ${provider} };`);
   const environment: NodeJS.ProcessEnv = Object.fromEntries(
     Object.entries(process.env).filter(
@@ -164,6 +175,54 @@ describe("WorkBuddy bundled credential startup", () => {
     expect(stdout + stderr).not.toContain("fixture-login-token");
   });
 
+  it.each([
+    ["legacy", "2.137.1", "mode", "required", undefined],
+    ["legacy with an explicit fields policy", "2.137.1", "mode", "required", "fields"],
+    ["legacy with an explicit required policy", "2.137.1", "mode", "required", "required"],
+    ["new", "2.156.0", "policy", "fields", undefined],
+    ["new", "2.161.0", "policy", "fields", undefined],
+    ["new with an explicit required policy", "2.161.0", "policy", "fields", "required"],
+    ["placeholder", "0.0.0", "policy", "fields", undefined],
+  ] as const)(
+    "selects the credential bootstrap protocol for %s (CLI %s)",
+    async (_name, version, field, value, requestedPolicy) => {
+      const secret = Buffer.alloc(32, 7).toString("base64");
+      const { stdout, stderr } = await fixture(
+        `return { loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))} };`,
+        `
+        const assert = require('node:assert/strict');
+        const net = require('node:net');
+        const env = process.env;
+        const expectedField = ${JSON.stringify(field)};
+        const expectedValue = ${JSON.stringify(value)};
+        assert.equal(env.WORKBUDDY_AT_REST_ENCRYPTION, expectedValue);
+        const server = net.createServer(socket => {
+          let data = '';
+          socket.on('data', chunk => {
+            data += chunk;
+            if (!data.includes('\\n')) return;
+            const request = JSON.parse(data);
+            assert.deepEqual(
+              Object.keys(request.bootstrap).sort(),
+              ['asymmetricUnavailable', 'symmetricKey', expectedField, 'version'].sort(),
+            );
+            assert.equal(request.bootstrap[expectedField], expectedValue);
+            socket.end(JSON.stringify({ok:true,[expectedField]:expectedValue}) + (expectedField === 'policy' ? '\\n' : ' '));
+            server.close();
+            console.log('protocol');
+          });
+        });
+        server.listen(env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);
+        `,
+        requestedPolicy === undefined ? {} : { WORKBUDDY_AT_REST_ENCRYPTION: requestedPolicy },
+        undefined,
+        version,
+      );
+      expect(stdout.trim()).toBe("protocol");
+      expect(stderr).toBe("");
+    },
+  );
+
   it("fails closed when the native server never reports readiness", async () => {
     const secret = Buffer.alloc(32, 7).toString("base64");
     await expect(
@@ -205,14 +264,14 @@ describe("WorkBuddy bundled credential startup", () => {
     expect(stderr).toBe("");
   });
 
-  it.each(["disabled", "required"])("preserves the native %s encryption policy", async (policy) => {
+  it("preserves the native disabled encryption policy", async () => {
     const { stdout, stderr } = await fixture(
       `process.stderr.write('Unexpected key provider access'); throw Error('Native policy');`,
       `const assert = require('node:assert/strict');
-      assert.equal(process.env.WORKBUDDY_AT_REST_ENCRYPTION, ${JSON.stringify(policy)});
+      assert.equal(process.env.WORKBUDDY_AT_REST_ENCRYPTION, 'disabled');
       assert.equal(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET, undefined);
       console.log('native');`,
-      { WORKBUDDY_AT_REST_ENCRYPTION: policy },
+      { WORKBUDDY_AT_REST_ENCRYPTION: "disabled" },
     );
     expect(stdout.trim()).toBe("native");
     expect(stderr).toBe("");
@@ -274,12 +333,23 @@ describe("WorkBuddy bundled credential startup", () => {
     });
   });
 
-  it("stops when the native receiver does not acknowledge credential protection", async () => {
+  it.each([
+    ["rejects credential protection", '{"ok":false}\n'],
+    ["echoes the wrong policy", '{"ok":true,"policy":"disabled"}\n'],
+    ["omits the newline in the fields protocol", '{"ok":true,"policy":"fields"} '],
+  ])("stops when the native receiver %s", async (_name, reply) => {
     const secret = Buffer.alloc(32, 7).toString("base64");
     await expect(
       fixture(
         `return {loggerGet: () => ${JSON.stringify(JSON.stringify({ version: 1, atRestSecretKey: secret }))}};`,
-        `require('node:net').createServer(socket => socket.on('data', () => socket.end('{"ok":false}\\n'))).listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
+        `const net = require('node:net');
+        const server = net.createServer(socket => {
+          socket.once('data', () => {
+            socket.end(${JSON.stringify(reply)});
+            server.close();
+          });
+        });
+        server.listen(process.env.CODEBUDDY_SIDECAR_CREDENTIAL_BOOTSTRAP_SOCKET);`,
       ),
     ).rejects.toMatchObject({
       code: 1,

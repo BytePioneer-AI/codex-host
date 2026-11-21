@@ -25,7 +25,7 @@ mod remote_lifecycle;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod remote_listener_process;
 
-use local_runtime_lease::LocalRuntimeLease;
+use local_runtime_lease::{LocalRuntimeAdmission, admit_local_runtime};
 
 pub type ShimResult<T> = Result<T, Box<dyn Error>>;
 
@@ -37,6 +37,25 @@ const LAUNCHER_PID_ENV: &str = "CODEXHOST_LAUNCHER_PID";
 const REMOTE_LISTENER_CHILD_ENV: &str = "CODEXHOST_REMOTE_LISTENER_CHILD";
 const INTERNAL_ORIGINATOR_OVERRIDE_ENV: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
 const DESKTOP_ORIGINATOR: &str = "Codex Desktop";
+/// Hidden app-server options that take several values each. Codex Desktop passes them to set
+/// process-local launch directories for stdio MCP servers:
+/// `--mcp-launch-cwd <SERVER> <EXECUTABLE> <DIRECTORY>` and
+/// `--plugin-mcp-launch-cwd <PLUGIN_ID> <SERVER> <DIRECTORY>`.
+const APP_SERVER_MULTI_VALUE_OPTIONS: &[(&str, usize)] =
+    &[("--mcp-launch-cwd", 3), ("--plugin-mcp-launch-cwd", 3)];
+
+/// Returns how many values follow a multi-value app-server option, or `None` for other arguments.
+fn app_server_multi_value_count(argument: &str) -> Option<usize> {
+    APP_SERVER_MULTI_VALUE_OPTIONS
+        .iter()
+        .find_map(|&(option, count)| (option == argument).then_some(count))
+}
+
+fn has_app_server_multi_values(arguments: &[OsString], index: usize, count: usize) -> bool {
+    arguments
+        .get(index + 1..=index + count)
+        .is_some_and(|values| values.iter().all(|value| !value.is_empty()))
+}
 
 /// Optional lifecycle hooks for diagnostics around the byte-transparent proxy core.
 pub trait ProxyObserver {
@@ -442,6 +461,13 @@ fn should_start_host_runtime_for_originator(
             index += 2;
             continue;
         }
+        if let Some(count) = app_server_multi_value_count(argument) {
+            if !has_app_server_multi_values(arguments, index, count) {
+                return false;
+            }
+            index += count + 1;
+            continue;
+        }
         if VALUE_OPTIONS.iter().any(|option| {
             argument
                 .strip_prefix(option)
@@ -506,6 +532,13 @@ fn is_default_remote_unix_listener(arguments: &[OsString]) -> bool {
                 return false;
             }
             index += 2;
+            continue;
+        }
+        if let Some(count) = app_server_multi_value_count(argument) {
+            if !has_app_server_multi_values(arguments, index, count) {
+                return false;
+            }
+            index += count + 1;
             continue;
         }
         if VALUE_OPTIONS.iter().any(|option| {
@@ -577,6 +610,27 @@ fn stop_detached_listener(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// A managed remote listener owns the remote installation's Host state. It must never run
+/// with a local Launcher session or without the remote data directory, otherwise its Host
+/// Runtime would use, and lock, the local Desktop's Mapping Store.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn ensure_remote_listener_environment() -> ShimResult<()> {
+    if let Some(launcher_id) = env::var_os(LAUNCHER_PID_ENV) {
+        return Err(format!(
+            "refusing to start the managed remote listener inside a local codexhost Desktop session (Launcher PID {}); the remote SSH bootstrap leaked into a local process, so start remote listeners only from an SSH session",
+            launcher_id.to_string_lossy()
+        )
+        .into());
+    }
+    if env::var_os(DATA_DIRECTORY_ENV).is_none_or(|value| value.is_empty()) {
+        return Err(format!(
+            "refusing to start the managed remote listener without {DATA_DIRECTORY_ENV}; reinstall the remote SSH Host so its profile exports the remote data directory"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
     use std::os::unix::net::UnixStream;
@@ -619,6 +673,7 @@ fn launch_detached_remote_listener(arguments: &[OsString]) -> ShimResult<i32> {
         // the startup timeout, so a connectable socket alone proves readiness.
         previous_socket = None;
     }
+    ensure_remote_listener_environment()?;
     let mut command = Command::new(&current_executable);
     command
         .args(arguments)
@@ -714,6 +769,9 @@ fn child_command(
     };
     if !desktop_helper && should_start_host_runtime(arguments) {
         if inherited_remote_profile {
+            if is_managed_remote_listener(arguments) {
+                return Err("managed remote listener inherited a local codexhost Launcher session; start remote listeners only from an SSH session".into());
+            }
             return Err("local Desktop inherited remote Host bootstrap; restart through codexhost with a clean local environment".into());
         }
         match host_paths {
@@ -819,6 +877,20 @@ fn resolve_stock_codex_path(
 }
 
 /// Runs the byte-transparent proxy and emits optional lifecycle observations.
+/// A child that exits before its identity is recorded leaves no process to snapshot. Its exit
+/// status and stderr are the real diagnosis, so the proxy reports them instead of the
+/// registration error; the unpublished lease is released when it drops.
+fn child_exited_during_startup(child: &mut codexhost_platform::SupervisedChild) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            _ => return false,
+        }
+    }
+}
+
 pub fn run_proxy_with_observer(
     arguments: &[OsString],
     observer: &impl ProxyObserver,
@@ -829,25 +901,50 @@ pub fn run_proxy_with_observer(
 
     let started = Instant::now();
     let shutdown_signals = ShutdownSignals::install()?;
-    let desktop_helper = desktop_invocation::is_desktop_helper(&stock_codex_path);
-    let local_host_runtime = !desktop_helper
+    let desktop_caller = desktop_invocation::classify_desktop_caller(&stock_codex_path, arguments);
+    let mut desktop_helper = desktop_caller == desktop_invocation::DesktopCaller::Helper;
+    let mut local_host_runtime = !desktop_helper
         && should_start_host_runtime(arguments)
         && host_runtime_paths_are_configured()
         && !is_managed_remote_listener(arguments)
         && env::var_os(DATA_DIRECTORY_ENV).is_some();
-    let mut local_runtime_lease = if local_host_runtime {
-        Some(LocalRuntimeLease::acquire(&PathBuf::from(
+    let mut local_runtime_lease = None;
+    if local_host_runtime {
+        let data_directory = PathBuf::from(
             env::var_os(DATA_DIRECTORY_ENV).ok_or("CODEXHOST_DATA_DIR is unavailable")?,
-        ))?)
-    } else {
-        None
-    };
+        );
+        match admit_local_runtime(&data_directory, &desktop_caller)? {
+            LocalRuntimeAdmission::Owner(lease) => local_runtime_lease = Some(lease),
+            LocalRuntimeAdmission::OfficialCli(reason) => {
+                eprintln!(
+                    "codexhost shim: {reason}; this app-server was not started by Codex Desktop, so it runs on the official CLI"
+                );
+                desktop_helper = true;
+                local_host_runtime = false;
+            }
+        }
+    }
     let mut command = child_command(
         arguments,
         &current_executable,
         &stock_codex_path,
         desktop_helper,
     )?;
+    #[cfg(target_os = "macos")]
+    if command.get_program() == stock_codex_path.as_os_str()
+        && !is_managed_remote_listener(arguments)
+        && (desktop_helper
+            || (!host_runtime_paths_are_configured()
+                && env::var_os(STOCK_CODEX_PATH_ENV).is_none()))
+        && (app_server_subcommand_index(arguments).is_some()
+            || arguments
+                .first()
+                .is_some_and(|argument| argument == "sandbox"))
+    {
+        // Native peer authorization requires the signed helper's original caller chain.
+        use std::os::unix::process::CommandExt;
+        return Err(command.exec().into());
+    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -856,6 +953,7 @@ pub fn run_proxy_with_observer(
     let child_id = child.id();
     if let Some(lease) = &mut local_runtime_lease
         && let Err(error) = lease.set_child_process_id(child_id)
+        && !child_exited_during_startup(&mut child)
     {
         let _ = child.force_terminate();
         let _ = child.wait();
@@ -895,7 +993,12 @@ pub fn run_proxy_with_observer(
     if let Some(signal) = outcome.forwarded_signal {
         eprintln!("codexhost shim: forwarded shutdown signal {signal}");
     }
-    if outcome.terminated_descendants {
+    // Normal cleanup must not replace a failed child's last stderr line with a success notice.
+    let preserve_child_error = outcome.status.code().is_some_and(|code| code != 0)
+        && outcome.forwarded_signal.is_none()
+        && !outcome.desktop_input_closed
+        && !outcome.forced;
+    if outcome.terminated_descendants && !preserve_child_error {
         eprintln!("codexhost shim: terminated official CLI descendants after root exit");
     }
     if outcome.desktop_input_closed {
@@ -1097,6 +1200,89 @@ mod tests {
             &arguments,
             Some(std::ffi::OsStr::new("Codex Desktop")),
         ));
+    }
+
+    const DESKTOP_APP_SERVER: &[&str] = &[
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    ];
+
+    fn with_desktop_app_server(extra: &[&str]) -> Vec<OsString> {
+        arguments(&[DESKTOP_APP_SERVER, extra].concat())
+    }
+
+    #[test]
+    fn starts_host_runtime_for_desktop_mcp_launch_directories() {
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[])));
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[
+            "--mcp-launch-cwd",
+            "files",
+            "/usr/bin/node",
+            "/tmp/project",
+        ])));
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[
+            "--plugin-mcp-launch-cwd",
+            "github@openai-curated",
+            "github",
+            "/tmp/project",
+        ])));
+        assert!(should_start_host_runtime(&with_desktop_app_server(&[
+            "--mcp-launch-cwd",
+            "files",
+            "/usr/bin/node",
+            "/tmp/project",
+            "--plugin-mcp-launch-cwd",
+            "github@openai-curated",
+            "github",
+            "/tmp/project",
+            "--mcp-launch-cwd",
+            "docs",
+            "/usr/bin/python3",
+            "/tmp/docs",
+        ])));
+        assert!(is_default_remote_unix_listener(&arguments(&[
+            "app-server",
+            "--listen",
+            "unix://",
+            "--mcp-launch-cwd",
+            "files",
+            "/usr/bin/node",
+            "/tmp/project",
+        ])));
+    }
+
+    #[test]
+    fn keeps_incomplete_mcp_launch_directories_and_unknown_options_on_the_stock_cli() {
+        for incomplete in [
+            &["--mcp-launch-cwd"][..],
+            &["--mcp-launch-cwd", "files", "/usr/bin/node"],
+            &["--plugin-mcp-launch-cwd", "github@openai-curated", "github"],
+            &["--mcp-launch-cwd", "files", "/usr/bin/node", ""],
+            &[
+                "--plugin-mcp-launch-cwd",
+                "github@openai-curated",
+                "github",
+                "",
+            ],
+            &["--mcp-launch-cwd=files", "/usr/bin/node", "/tmp/project"],
+        ] {
+            assert!(
+                !should_start_host_runtime(&with_desktop_app_server(incomplete)),
+                "{incomplete:?}"
+            );
+            let remote = [&["app-server", "--listen", "unix://"][..], incomplete].concat();
+            assert!(
+                !is_default_remote_unix_listener(&arguments(&remote)),
+                "{incomplete:?}"
+            );
+        }
+        assert!(!should_start_host_runtime(&with_desktop_app_server(&[
+            "--unknown-option",
+        ])));
     }
 
     #[test]

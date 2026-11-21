@@ -90,6 +90,25 @@ it("exports temporary browser builds without replacing development bundles", (t)
   );
 });
 
+it("rejects traversal from public asset paths into sibling directories or other routes", (t) => {
+  const { root, options } = fixture(t);
+  const assets = new WebAssets(packOptions(root, options));
+  write(join(root, "distribution/web-modules/server.mjs"), "server-only code");
+  write(join(assets.distRoot, "assets/app main.js"), "browser code");
+  assert.equal(assets.dist("/assets/app%20main.js")?.body.toString(), "browser code");
+
+  for (const pathname of [
+    "/assets/..%2f..%2fweb-modules%2fserver.mjs",
+    "/assets/%2e%2e/%2e%2e/web-modules/server.mjs",
+    "/assets/../../web-modules/server.mjs",
+    "/assets/..%5c..%5cweb-modules%5cserver.mjs",
+    "/assets/..%2findex.html",
+    "/assets/%",
+  ]) {
+    assert.equal(assets.dist(pathname), undefined, pathname);
+  }
+});
+
 for (const mode of ["source", "packed"] as const) {
   it(`composes original browser packages with ${mode} assets and leaves recovery built-in only`, (t) => {
     const { root, directory, options } = fixture(t);

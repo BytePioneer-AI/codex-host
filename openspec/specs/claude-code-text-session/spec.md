@@ -190,14 +190,25 @@ Every accepted Claude text Turn SHALL emit one Turn start, retain the establishe
 - **THEN** it SHALL request adaptive Thinking with summarized display
 - **AND** redacted `thinking_delta` frames carrying empty text SHALL NOT start a Reasoning Item
 
-#### Scenario: Streamed thinking has a complete Assistant counterpart
-- **WHEN** Root SDK stream events emit non-empty `thinking_delta` text for one Assistant message and the complete Assistant wrapper with the same native `message.id` contains thinking blocks
-- **THEN** the Adapter SHALL append only the `thinking_delta` text through one Reasoning Item for that message
-- **AND** it SHALL ignore the complete `thinking` blocks without appending their suffix
+#### Scenario: Thinking streams before its signature is known
+- **WHEN** a Root SDK stream emits a non-empty `thinking_delta`
+- **THEN** the Adapter SHALL immediately append it to the block's Reasoning Item without waiting for the signature or block completion
+- **AND** interruption SHALL leave emitted Reasoning intact without replaying it
+
+#### Scenario: A thinking block is confirmed as narration
+- **WHEN** `content_block_stop` confirms a thinking block whose signature metadata marks narration, or the complete Assistant wrapper supplies that confirmation as a fallback
+- **THEN** the Adapter SHALL emit a separate Agent Message with `phase: "commentary"` before the following Tool or Question, without modifying or retracting the streamed Reasoning
+- **AND** the fallback MAY include a matching complete-message suffix in commentary only, and SHALL NOT emit commentary if the stop already emitted it for that block
 
 #### Scenario: Thinking streaming is unavailable
 - **WHEN** no Root partial thinking event is emitted but a complete Assistant message contains non-empty visible thinking text
-- **THEN** the Adapter SHALL emit no Reasoning Item from the complete `thinking` blocks
+- **THEN** signed narration SHALL become a commentary Agent Message without starting a Reasoning Item
+- **AND** ordinary, unknown, or protected complete-only thinking SHALL emit no live Reasoning Item
+
+#### Scenario: History contains signed narration
+- **WHEN** `readSnapshot()` or a Subagent transcript read maps a Root or Subagent thinking block whose signature marks narration
+- **THEN** each thinking block SHALL keep its native position and its own Item: narration becomes a commentary Agent Message, and every other explicit visible thinking block remains its own Reasoning Item
+- **AND** the Root history projection SHALL reserve a Reasoning ordinal for each narration block without emitting a duplicate Reasoning Item, preserving the identities of subsequent streamed Reasoning Items
 
 #### Scenario: One Turn contains multiple Assistant messages
 - **WHEN** a Claude Tool loop or retry produces Root `thinking_delta` text in more than one native Assistant message

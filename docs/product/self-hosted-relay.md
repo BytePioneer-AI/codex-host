@@ -30,7 +30,7 @@
 
 ## 证书与数据
 
-中转通过 TLS-ALPN-01 在 443 自动申请 Let's Encrypt 控制地址证书，不申请通配符证书；每台电脑仍自行申请自己的证书。中转和用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。
+中转通过 TLS-ALPN-01 在 443 自动申请 Let's Encrypt 控制地址证书，不申请通配符证书；每台电脑仍自行申请自己的证书。自建中转给电脑下发的证书机构是 Let's Encrypt，不需要额外配置；电脑的证书请求经中转控制地址转发到 Let's Encrypt，中转只转发加密字节，因此中转服务器需要能出站访问 `acme-v02.api.letsencrypt.org:443`。中转和用户连接不能经过会终止 TLS 的 HTTP 反向代理或 CDN。
 
 容器的 `/data` 由 Compose 的 `relay-data` 数据卷持久化，存放 `acme-account.pem`、`certificate-key.pem`、`certificate.pem` 和地址名绑定文件 `names.json`。私钥权限为 0600，重启复用密钥与有效证书；不要删除数据卷或分享私钥。首次签发完成前控制连接不可用。
 
@@ -43,6 +43,8 @@
 ## 限额与更新
 
 可在 Compose 的 `command` 中追加 `--rate`、`--daily-quota`、`--max-connections`，分别限制每地址每方向的字节/秒、每地址 UTC 日双向总字节数及全部 TCP 连接数，默认均不限制。日用量只在内存中，重启会清零；这不是准入或防滥用机制。
+
+来源 IP 的连接频率限制默认开启：同一 IP 在 10 秒滑动窗口内超过 50 次新 TCP 连接时，拒绝该 IP 的新连接 10 秒，已有连接不受影响，重启清零。可用 `--ip-connection-limit`、`--ip-connection-window`、`--ip-ban-duration` 调整，后两项单位为毫秒；共享 NAT/办公网络出口共用额度，多个用户集中连接时可调高连接数阈值。
 
 更新源码到需要的版本后，在部署目录运行：
 

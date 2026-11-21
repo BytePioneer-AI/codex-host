@@ -26,7 +26,6 @@ Renderer 已经改为由插件目录驱动（2026-10 起，见 `docs/architectur
 
 - `packages/renderer-extension/src/agent-group-preference.ts` 的 `DEFAULT_AGENT_ORDER`：只影响默认的显示顺序，未列出的 ID 排在最后。
 - `tools/renderer-binding/run.mjs` 的 `RENDERER_PROBE_AGENTS`、`tools/codex-desktop-contract-audit/run.mjs`：诊断工具覆盖的名单，按实际用途维护。
-- `tests/e2e/renderer-<id>.spec.ts`：需要针对 UI 的专项回归时再加。
 
 如果验收中发现**必须**修改 Renderer 才能正确工作（例如某个 Agent 的配置展示依赖按 ID 的分支），这是公共缺口。应把它改成通用逻辑，并在报告中说明，而不是给新 ID 再加一个分支。
 

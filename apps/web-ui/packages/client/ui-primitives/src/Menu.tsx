@@ -134,7 +134,7 @@ const MEASURE_STYLE: CSSProperties = { visibility: "hidden", left: 0, top: 0 };
  * intercepted; Tab presses elsewhere on the page stay the browser's.
  * @param props.autoFocus - focus the first item on open; the arrow keys walk the list either way.
  * @param props.open - whether the list is showing (owner-controlled).
- * @param props.anchor - the trigger element (rendered in place).
+ * @param props.anchor - the trigger element, or null for a portal with an explicit anchor rectangle.
  * @param props.items - selectable data rows and optional separators (default none; with no `children` either, the list is empty).
  * @param props.selectedId - row shown as selected.
  * @param props.selectedIds - rows shown as selected when a menu contains independent option groups.
@@ -160,6 +160,7 @@ const MEASURE_STYLE: CSSProperties = { visibility: "hidden", left: 0, top: 0 };
  * the trigger (render-prop anchors, effect-positioned proxies — measuring the
  * wrapper there races the host's layout effects). Called on open, each animation
  * frame, and scroll/resize; return null to skip placement for that frame.
+ * @param props.focusReturnTarget - external trigger for a portal menu without an in-place anchor.
  * @param props.footer - rows pinned below the scrolling items area, separated
  * by a hairline; they stay visible while the items above scroll.
  * @param props.children - component rows rendered after `items` in the same
@@ -194,6 +195,7 @@ export function Menu({
   autoFocus = false,
   selection = "check",
   getAnchorRect,
+  focusReturnTarget,
   footer,
   className,
   listClassName,
@@ -224,6 +226,7 @@ export function Menu({
   compact?: boolean;
   selection?: "check" | "fill";
   getAnchorRect?: () => DOMRect | null;
+  focusReturnTarget?: HTMLElement | undefined;
   className?: string | undefined;
   listClassName?: string | undefined;
 }) {
@@ -250,9 +253,9 @@ export function Menu({
    * @param navigation - whether explicit keyboard traversal should retain its focus indicator.
    */
   const refocusAnchor = (navigation = false): void => {
-    const trigger = triggerRef.current;
+    const trigger = focusReturnTarget ?? triggerRef.current;
     const target =
-      trigger !== null && document.contains(trigger) && !(trigger as HTMLButtonElement).disabled
+      trigger !== null && trigger.isConnected && !trigger.matches(":disabled")
         ? trigger
         : rootRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
     if (target == null) return;
@@ -361,12 +364,13 @@ export function Menu({
       active instanceof HTMLElement && rootRef.current?.contains(active) === true ? active : null;
   }, [open]);
 
+  const positioned = !anchoredPortal || fixedPos !== null;
   useEffect(() => {
-    if (!open || !autoFocus) return;
+    if (!open || !autoFocus || !positioned) return;
     const first = listRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
     walkIndex.current = first === undefined || first === null ? null : 0;
     if (first != null) focusWithoutRing(first);
-  }, [open, autoFocus]);
+  }, [open, autoFocus, positioned]);
 
   useEffect(() => {
     if (!open) {
@@ -385,7 +389,7 @@ export function Menu({
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         composition.guards(e) ||
-        isBehindModal(phoneView ? listRef.current : rootRef.current) ||
+        isBehindModal(phoneView ? listRef.current : (focusReturnTarget ?? rootRef.current)) ||
         e.defaultPrevented ||
         e.ctrlKey ||
         e.altKey ||
@@ -495,7 +499,7 @@ export function Menu({
       document.removeEventListener("keydown", onEscape, true);
       window.removeEventListener("blur", onWindowBlur);
     };
-  }, [open, onClose, autoFocus, phoneView]);
+  }, [open, onClose, autoFocus, phoneView, focusReturnTarget]);
 
   // A close from selection/Escape/outside click outruns a pending grace close;
   // left armed it would shut a list reopened inside the grace window. Its own
@@ -674,6 +678,10 @@ export function Menu({
       )}
     </MenuSurface>
   );
+
+  if (anchoredPortal && anchor === null && getAnchorRect !== undefined) {
+    return open ? createPortal(list, document.body) : null;
+  }
 
   // Pointer-leave dismissal watches the WRAPPER, not the list: React's
   // enter/leave traversal runs over the React tree, so trigger and portaled

@@ -141,6 +141,8 @@ export class PushableInput<T> implements AsyncIterable<T> {
 interface ActiveTurnState {
   turnId: HostTurnId;
   userMessageUuid: string;
+  startedToolIds: Set<string>;
+  projectedTextSnapshots: Set<string>;
   lastAssistantMessageUuid?: string | undefined;
   activeStreamingMessageItemId?: HostItemId | undefined;
   accumulatedStreamingText: string;
@@ -188,7 +190,7 @@ export interface QoderSessionOptions {
   onClosed?: () => void;
 }
 
-/** Upper bound on how long a usage refresh waits for `get_settings` before using the fallback. */
+/** Upper bound on how long a usage refresh waits for `get_settings`. */
 const QODER_SETTINGS_WAIT_MS = 3_000;
 
 export class QoderSession implements HarnessSession {
@@ -220,8 +222,9 @@ export class QoderSession implements HarnessSession {
   #closed = false;
   #consumerLoopDone: Promise<void>;
   #configuredContextWindows: Promise<void> | undefined;
-  /** Set when a usage refresh stopped waiting for `get_settings` and used the fallback window. */
+  /** Set when a usage refresh stopped waiting for `get_settings`. */
   #usageRefreshedWithoutSettings = false;
+  #usageModelRevision = 0;
 
   constructor(options: QoderSessionOptions) {
     const variant = options.variant ?? "global";
@@ -392,6 +395,14 @@ export class QoderSession implements HarnessSession {
   }
 
   async #dispatchMessage(message: SDKMessage): Promise<void> {
+    if (
+      (message.type === "assistant" ||
+        message.type === "stream_event" ||
+        message.type === "user") &&
+      message.parent_tool_use_id !== null &&
+      message.parent_tool_use_id !== undefined
+    )
+      return;
     switch (message.type) {
       case "system":
         this.#handleSystemMessage(message as SDKSystemMessage);
@@ -590,7 +601,17 @@ export class QoderSession implements HarnessSession {
         (block as Record<string, unknown>).type === "tool_use",
     );
 
-    for (const block of content) {
+    for (const [index, block] of content.entries()) {
+      if (message.uuid && typeof block === "object" && block !== null) {
+        const raw = block as Record<string, unknown>;
+        const text =
+          raw.type === "text" ? raw.text : raw.type === "thinking" ? raw.thinking : undefined;
+        if (typeof text === "string") {
+          const key = JSON.stringify([message.uuid, index, raw.type, text]);
+          if (this.#activeTurn.projectedTextSnapshots.has(key)) continue;
+          this.#activeTurn.projectedTextSnapshots.add(key);
+        }
+      }
       this.#projectAssistantBlock(block, hasToolUseInMessage);
     }
   }
@@ -717,6 +738,11 @@ export class QoderSession implements HarnessSession {
         });
       }
     } else if (rawBlock.type === "tool_use") {
+      if (typeof rawBlock.id === "string" && rawBlock.id.trim()) {
+        if (this.#activeTurn.startedToolIds.has(rawBlock.id)) return;
+        this.#activeTurn.startedToolIds.add(rawBlock.id);
+      }
+
       if (this.#activeTurn.activeStreamingMessageItemId) {
         this.#emitEvent({
           type: "item.completed",
@@ -1187,8 +1213,7 @@ export class QoderSession implements HarnessSession {
 
   /**
    * `get_context_usage` may report only a percentage, so read the effective per-model
-   * `contextWindow` from `get_settings`. Best effort: unsupported or failed requests keep the
-   * built-in fallback window.
+   * `contextWindow` from `get_settings`. If no window is known, report only the measured usage.
    */
   #loadConfiguredContextWindows(): Promise<void> {
     if (typeof this.#query.request !== "function") return Promise.resolve();
@@ -1199,15 +1224,14 @@ export class QoderSession implements HarnessSession {
         const configured = parseQoderConfiguredContextWindows(settings);
         if (configured && !this.#closed && loading === this.#configuredContextWindows) {
           this.#usageTracker.setConfiguredContextWindows(configured);
-          // A refresh that already gave up waiting emitted the fallback window; refresh again
-          // so the UI picks up the configured window without waiting for the next turn.
+          // Publish the configured window even if a refresh already stopped waiting for it.
           if (this.#usageRefreshedWithoutSettings) {
             this.#usageRefreshedWithoutSettings = false;
             void this.refreshUsage();
           }
         }
       } catch {
-        // Diagnostic only; keep the fallback window.
+        // Optional telemetry; a settings failure cannot fail a Turn.
       }
     });
     this.#configuredContextWindows = loading;
@@ -1232,11 +1256,14 @@ export class QoderSession implements HarnessSession {
   }
 
   async refreshUsage(forTurnId?: HostTurnId): Promise<void> {
+    const revision = this.#usageModelRevision;
     await this.#awaitConfiguredContextWindows();
+    if (revision !== this.#usageModelRevision || this.#closed) return;
     let changed = false;
     if (this.#query.getContextUsage) {
       try {
         const usage = await this.#query.getContextUsage();
+        if (revision !== this.#usageModelRevision || this.#closed) return;
         if (usage) {
           this.#usageTracker.observeContextUsage(usage as QoderContextUsage);
           changed = true;
@@ -1248,6 +1275,7 @@ export class QoderSession implements HarnessSession {
     if (this.#query.getUsageInfo) {
       try {
         const info = await this.#query.getUsageInfo();
+        if (revision !== this.#usageModelRevision || this.#closed) return;
         if (info) {
           this.#usageTracker.observeUsageInfo(info);
           changed = true;
@@ -1256,7 +1284,7 @@ export class QoderSession implements HarnessSession {
         // Diagnostic failure only, never fails turn
       }
     }
-    if (changed && !this.#closed) {
+    if (changed && !this.#closed && revision === this.#usageModelRevision) {
       const snapshot = this.#usageTracker.snapshot();
       if (snapshot) {
         const targetTurnId = forTurnId ?? this.#activeTurn?.turnId;
@@ -1307,6 +1335,8 @@ export class QoderSession implements HarnessSession {
         this.#activeTurn = {
           turnId: command.turnId,
           userMessageUuid,
+          startedToolIds: new Set(),
+          projectedTextSnapshots: new Set(),
           accumulatedStreamingText: "",
           accumulatedStreamingReasoning: "",
         };
@@ -1569,7 +1599,9 @@ export class QoderSession implements HarnessSession {
           delete nextState.availableThinkingOptions;
         }
         this.#state = nextState;
+        this.#usageModelRevision += 1;
         this.#usageTracker.setModel(nativeModel);
+        this.#emitEvent({ type: "session.usage.changed", usage: this.#usageTracker.snapshot() });
         void this.#loadConfiguredContextWindows();
         void this.refreshUsage();
         this.#emitEvent({
@@ -1776,6 +1808,8 @@ export class QoderSession implements HarnessSession {
     this.#activeTurn = {
       turnId: command.turnId,
       userMessageUuid,
+      startedToolIds: new Set(),
+      projectedTextSnapshots: new Set(),
       accumulatedStreamingText: "",
       accumulatedStreamingReasoning: "",
       isCompaction,

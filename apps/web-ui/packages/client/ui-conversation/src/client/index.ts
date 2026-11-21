@@ -21,7 +21,7 @@ export type {
   NodeReference,
   RenderEntry,
 } from "./contract/groups.ts";
-export { ConversationController, UnsupportedImageMediaTypeError } from "./service.ts";
+export { ConversationController } from "./service.ts";
 export type { IConversation } from "./service.ts";
 export type {
   ConversationContextReader,
@@ -159,6 +159,8 @@ export type {
   DraftInitializationOptions,
   DraftInitializationResult,
   DraftReferenceInsertion,
+  DraftResponseAnnotation,
+  DraftResponseAnnotationInput,
   InputActions,
   InputState,
   InsertReferenceRequest,
@@ -169,6 +171,7 @@ export type {
   SubmitAttachment,
   SubmitOutcome,
 } from "./contract/input.ts";
+export type { ResponseAnnotationAnchor } from "./contract/response-annotation-anchor.ts";
 export type {
   ArbitrateKey,
   ArbitrateOutcome,

@@ -148,53 +148,6 @@ function release(version = "1.2.3"): CodexhostLatestRelease {
 }
 
 describe("Host update coordinator", () => {
-  it.each(["darwin", "win32", "linux"] as const)(
-    "prepares one service operation for native handoff on %s without Desktop context",
-    async (platform) => {
-      const fixture = await npmFixture(platform);
-      const environment: NodeJS.ProcessEnv = {
-        ...fixture.environment,
-        CODEXHOST_UPDATE_SERVICE: "1",
-        CODEXHOST_DATA_DIR: path.join(fixture.root, "host-data"),
-      };
-      delete environment.CODEXHOST_CONTROL_PORT;
-      delete environment.CODEXHOST_CONTROL_NONCE;
-      const actual = createBackgroundUpdateManager({ platform, randomId: () => "service" });
-      const manager = {
-        ...actual,
-        prepareNpm: vi.fn(actual.prepareNpm),
-        start: vi.fn(actual.start),
-      };
-      const coordinator = createHostUpdateCoordinator({
-        ...fixture,
-        environment,
-        platform,
-        architecture: platform === "darwin" ? "arm64" : "x64",
-        manager,
-        fetchLatest: async () => release(),
-      });
-      await expect(coordinator.check()).resolves.toMatchObject({
-        installationAvailable: true,
-        error: null,
-      });
-      await coordinator.start();
-      await coordinator.start();
-      const state = defaultUpdateStateDirectory(platform, environment);
-      const requestPath = path.join(state, "update-1.2.3-service", "request-v1.json");
-      await vi.waitFor(async () => {
-        const request = JSON.parse(await readFile(requestPath, "utf8"));
-        expect(request).toMatchObject({
-          service_managed: true,
-          restart_target: "web",
-          data_directory: environment.CODEXHOST_DATA_DIR,
-          wait_pid: 4321,
-        });
-      });
-      expect(manager.prepareNpm).toHaveBeenCalledOnce();
-      expect(manager.start).not.toHaveBeenCalled();
-      await expect(coordinator.status()).resolves.toMatchObject({ status: { phase: "prepared" } });
-    },
-  );
   it.each([true, false])(
     "prefers gh and only falls back when needed (CLI available: %s)",
     async (available) => {

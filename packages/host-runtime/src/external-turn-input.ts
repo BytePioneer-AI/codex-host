@@ -1,4 +1,8 @@
-import { restoreHarnessCommandMentions } from "@codexhost/shared-contracts";
+import type { JsonObject } from "@codexhost/protocol-core";
+import {
+  restoreDesktopSkillMentions,
+  restoreHarnessCommandMentions,
+} from "@codexhost/shared-contracts";
 
 import { isExternalCommandCandidate } from "./external-command-routing.js";
 
@@ -11,6 +15,34 @@ function absoluteFilePath(value: unknown): value is string {
     typeof value === "string" &&
     /^(?:\/|[A-Za-z]:[\\/]|\\\\)/u.test(value) &&
     !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+/** Normalize stored queue input without changing attachment items or native annotations. */
+export function restoreExternalSkillInput(input: JsonObject[]): JsonObject[] {
+  return input.map((part) =>
+    part.type === "text" && typeof part.text === "string"
+      ? { ...part, text: restoreDesktopSkillMentions(part.text) }
+      : part,
+  );
+}
+
+/** Desktop's resume control after an interrupted Turn: no input, only this trigger. */
+const RESUME_INTERRUPTED_TASK_TRIGGER = "resume_interrupted_task";
+
+export const EXTERNAL_RESUME_INTERRUPTED_UNSUPPORTED =
+  "External Harness does not support resuming an interrupted Turn; send a message to continue";
+
+/**
+ * Harnesses take text Turns only, so a resume request carries nothing to send. It is told apart
+ * from an ordinary empty submission so the caller can explain the limitation instead of
+ * rejecting it as malformed input.
+ */
+export function isInputlessInterruptedTaskResume(params: Record<string, unknown>): boolean {
+  return (
+    params.turnTrigger === RESUME_INTERRUPTED_TASK_TRIGGER &&
+    Array.isArray(params.input) &&
+    params.input.length === 0
   );
 }
 
@@ -30,6 +62,14 @@ function imageReferences(text: string): string[] {
     .filter(absoluteFilePath);
 }
 
+export class MissingExternalImagePathsError extends Error {
+  constructor() {
+    super(
+      "Inline images require complete Desktop attachment paths; save the images as local files and attach them again",
+    );
+  }
+}
+
 /**
  * Harnesses accept text. Desktop supplies local image paths both as preview items and in its
  * attachment context. Preserve that context, filling missing explicit paths without reading or
@@ -44,8 +84,10 @@ export function externalTurnInputText(input: unknown): string {
   let inlineImages = 0;
   for (const item of input) {
     if (!record(item)) throw new Error("Invalid external input item");
-    if (item.type === "text" && typeof item.text === "string") texts.push(item.text);
-    else if (item.type === "localImage" && absoluteFilePath(item.path)) localImages.push(item.path);
+    if (item.type === "text" && typeof item.text === "string") {
+      texts.push(restoreDesktopSkillMentions(item.text));
+    } else if (item.type === "localImage" && absoluteFilePath(item.path))
+      localImages.push(item.path);
     else if (item.type === "image" && typeof item.url === "string" && item.url.length > 0) {
       inlineImages++;
     } else {
@@ -82,9 +124,7 @@ export function externalTurnInputText(input: unknown): string {
     });
     // Remote fallback retains partial native context and adds paths for every inline image.
     if (!localPathsCovered || remaining.length < inlineImages) {
-      throw new Error(
-        "Inline images require complete Desktop attachment paths; save the images as local files and attach them again",
-      );
+      throw new MissingExternalImagePathsError();
     }
   }
   const missing = [...new Set(localImages)].filter((file) => !references.includes(file));

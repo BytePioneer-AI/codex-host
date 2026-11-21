@@ -6,6 +6,8 @@
 }
 
 .card {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   width: 100%;
   max-width: var(--dsh-chat-content-width);
@@ -20,6 +22,7 @@
 .strip {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 8px;
   padding: 10px 16px;
   background: var(--dsw-alias-state-warn-tertiary);
@@ -31,10 +34,13 @@
 .body {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   gap: 6px;
   box-sizing: border-box;
   max-height: var(--dsh-composer-text-max-height);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 16px 0;
 }
 
@@ -55,13 +61,91 @@
 
 .actionRow {
   display: flex;
+  flex-shrink: 0;
   justify-content: flex-end;
   gap: 8px;
   padding: 14px 16px;
 }
 
-.reject:hover:not(:disabled) {
+.reject {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.reject:active:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover-danger);
   color: var(--dsw-alias-state-error-primary);
   border-color: transparent;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .reject:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover-danger);
+    color: var(--dsw-alias-state-error-primary);
+    border-color: transparent;
+  }
+}
+
+@media (max-width: 720px) {
+  .root {
+    padding: 4px 8px 8px;
+  }
+
+  .card {
+    max-width: 100%;
+    max-height: min(76vh, 560px);
+    max-height: min(76dvh, 560px);
+    border-radius: 22px;
+  }
+
+  .strip {
+    padding: 11px 14px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .body {
+    max-height: none;
+    gap: 10px;
+    padding: 12px 14px 14px;
+  }
+
+  .headline {
+    font-size: 15px;
+    line-height: 22px;
+    font-weight: 600;
+  }
+
+  .command {
+    box-sizing: border-box;
+    max-height: 148px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 10px 12px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: var(--dsw-radius-md);
+    background: var(--dsw-alias-bg-module-platform);
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12.5px;
+    line-height: 19px;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .actionRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--dsw-alias-border-l1);
+  }
+
+  .actionRow > button {
+    width: 100%;
+    min-height: 44px;
+    font-size: 15px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
 }

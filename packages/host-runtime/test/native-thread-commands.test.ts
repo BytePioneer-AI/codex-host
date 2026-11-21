@@ -98,8 +98,34 @@ async function officialFixture() {
   await vi.waitFor(async () => expect(await fixture.mappingStore.listThreads()).toEqual([]));
   const send = (method: string, params: JsonObject = {}) =>
     fixture.host.handleClientRequest(method, { threadId: "official", ...params });
-  return { calls, failures, send };
+  const sendDraft = (params: JsonObject) =>
+    fixture.host.handleClientRequest("codexhost/harness/commands/inspect", {
+      harnessId: "codex",
+      ...params,
+    });
+  return { calls, failures, send, sendDraft };
 }
+
+it("lists workspace Skills for a Codex draft with no Thread, without reading or starting one", async () => {
+  const { calls, failures, sendDraft } = await officialFixture();
+  expect(await sendDraft({ cwd: "/workspace" })).toMatchObject({
+    result: {
+      source: "live",
+      commands: [{ id: "skill:build", kind: "skill" }, { id: "skill:test" }],
+    },
+  });
+  const requested = () =>
+    calls.filter(({ method }) => !["initialize", "initialized"].includes(method));
+  expect(requested()).toEqual([{ method: "skills/list", params: { cwds: ["/workspace"] } }]);
+  // Without a workspace there is nothing to scan; compact and review need a Thread.
+  calls.length = 0;
+  expect(await sendDraft({})).toMatchObject({ result: { commands: [] } });
+  expect(requested()).toEqual([]);
+  failures.set("skills/list", "Skills service failed");
+  expect(await sendDraft({ cwd: "/workspace" })).toMatchObject({
+    result: { commands: [], warnings: ["Codex Skills unavailable: Skills service failed"] },
+  });
+});
 
 it("loads a partial native catalog through the client route and retains compact/review when skills/list fails", async () => {
   const { calls, failures, send } = await officialFixture();

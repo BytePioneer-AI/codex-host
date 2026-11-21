@@ -36,6 +36,7 @@ export async function startRelay(
     cert: certPath,
     key: keyPath,
     heartbeatInterval,
+    ipConnectionLimit: 1_000,
     ...options,
   });
   relay.server.listen(0, "::");

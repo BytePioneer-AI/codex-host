@@ -112,6 +112,8 @@ describe("Renderer Usage native Codex snapshots", () => {
 describe("Renderer Usage Host metering", () => {
   it("shows session cache rate and time to first output on their own", () => {
     expect(rendererUsageHasDisplayData({ sessionCacheHitRatePercent: 40 })).toBe(true);
+    expect(rendererUsageHasDisplayData({ sessionOutputTokensPerSecond: 40 })).toBe(true);
+    expect(rendererUsageHasDisplayData({ sessionOutputTokensPerSecond: 0 })).toBe(true);
     expect(rendererUsageHasDisplayData({ timeToFirstOutputMs: 900 })).toBe(true);
   });
   it("formats latency in ms below one second and seconds above", () => {
@@ -125,6 +127,7 @@ describe("Renderer Usage Host metering", () => {
       sessionCacheHit: "平均缓存命中",
       timeToFirstOutput: "首 token（TTFT）",
       outputSpeed: "输出速度（TPS）",
+      averageOutputSpeed: "平均输出速度（TPS）",
     });
   });
 });

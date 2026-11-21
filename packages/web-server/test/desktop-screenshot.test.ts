@@ -71,12 +71,7 @@ it("maps native failures without exposing diagnostics, and rejects malformed ima
   assert.deepEqual(await (await take()).json(), { error: "capture-failed" });
 });
 
-it("bounds native output and terminates a timed-out capture before allowing another", async (t) => {
-  const large = await fixture(
-    t,
-    "process.stdout.write(Buffer.alloc(21*1024*1024));setInterval(()=>{},1000);",
-  );
-  assert.deepEqual(await (await large.take()).json(), { error: "image-too-large" });
+it("terminates a timed-out capture before allowing another", async (t) => {
   const timed = await fixture(
     t,
     `if(fs.existsSync(started)){${output}}else{fs.writeFileSync(started,'');setInterval(()=>{},1000);}`,

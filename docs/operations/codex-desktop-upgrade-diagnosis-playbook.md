@@ -115,6 +115,36 @@ const match = processes.match(
 const inspectorEndpoint = `http://127.0.0.1:${match[1]}`;
 ```
 
+### Windows：AppX 提前退出或 Host chain 未启动
+
+若启动在约 30 秒后以 exit code 1 结束，日志停在
+
+```text
+controller: installing Renderer Session
+launcher: waiting for Host chain
+codexhost launcher: Codex Desktop did not start the codexhost Host chain before timeout
+```
+
+且没有新的 `host-runtime-*.log`，先确认本次 Desktop 根是否仍在运行，以及真实进程是否收到托管环境。`Desktop Controller ready` 只代表 attachment server 就绪；`Host chain ready` 和 `Renderer Session installed` 是不同的成功信号。超时本身不能证明容器被销毁。
+
+按以下三步确认：
+
+1. 记录版本：`(Get-AppxPackage -Name OpenAI.Codex).Version`。已有报告涉及 `26.1023` 起的版本；当前仅实测 `26.1027.6604.0`，`26.1023` 至 `26.1026` 未逐一验证。
+2. 看存活的主进程命令行：`Get-CimInstance Win32_Process -Filter "Name='ChatGPT.exe'"`。若命令行里没有 `--remote-debugging-port=`，说明 Desktop Controller 的连接目标并不存在。
+3. 查容器生命周期：事件日志 `Microsoft-Windows-AppModel-Runtime/Admin` 的事件 217。若出现“已销毁 …OpenAI.Codex… 的桌面 AppX 容器”，且时间只比激活晚一秒左右，而 Desktop Controller 要 +1 秒才 ready，则注入窗口本来就不存在。
+
+对应 issue：#637、#566、#532、#361。
+
+**显式直接启动。** 已注册的 Store 安装默认使用 AppX 激活，不会自动回退。如果 AppX 启动提前退出（如 #637），或未收到托管环境（如 #361），先完整退出 Codex Desktop（包括托盘实例）和托管 Launcher，再在 Windows 终端运行：
+
+```powershell
+codexhost launch --windows-direct
+```
+
+此选项仅使用当前用户已注册的 Store 安装，不可与 `--custom-install` 混用，也不使用 `CODEXHOST_INSTALL_ROOT` 等安装覆盖。它直接启动发现的 exe，跳过 `EnableDebugging` 和 AUMID 激活，保留该安装的官方 CLI、托管环境和 loopback CDP 参数。发现已有 Store 实例时会拒绝启动，不会附加或强制结束外部实例。
+
+`CODEXHOST_STOCK_CODEX_PATH` 指向官方 CLI，不是启动方式开关，不要将它设为 GUI exe。直启是绕行方式，不是 AppX 生命周期修复；不同 Store 版本的权限、包标识及数据目录行为仍需在 Windows 实机验证。
+
 ## 三、第二步：建立最小的真实反馈闭环
 
 排查前先建立一个能复现用户具体症状的闭环。不要只运行单元测试或只读取 Adapter status。

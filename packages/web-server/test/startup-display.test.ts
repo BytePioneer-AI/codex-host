@@ -135,10 +135,10 @@ it(
   },
 );
 
-it("explains when a specific interface leaves the access token unavailable", () => {
+it("explains when a specific interface leaves automatic local sign-in unavailable", () => {
   const output = formatWebStartup({
     networkUrls: [{ kind: "lan", url: "http://192.168.1.2:4400/" }],
     localManagementUnavailable: true,
   });
-  assert.ok(output.includes("cannot be viewed here"));
+  assert.ok(output.includes("automatic local sign-in"));
 });

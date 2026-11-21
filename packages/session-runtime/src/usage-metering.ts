@@ -1,10 +1,15 @@
-import type { UsageMeasurementsSnapshot } from "@codexhost/shared-contracts";
+import {
+  mergeUsageOutputTimings,
+  type UsageMeasurementsSnapshot,
+  type UsageOutputTiming,
+} from "@codexhost/shared-contracts";
 import {
   hostDerivedUsageFields,
   parseHostUsage,
   parseHostUsageRequest,
   type HostUsage,
   type HostUsageRequest,
+  type HostUsageRequestTiming,
   type HostEvent,
 } from "@codexhost/harness-adapter";
 
@@ -45,6 +50,11 @@ export class UsageMeter {
   #turnOutputTokens = 0;
   #turnOutputMs = 0;
   #timeToFirstOutputMs: number | undefined;
+  #latestRequestLatency:
+    { turnId: string; requestStartedAtMs: number; timeToFirstOutputMs: number } | undefined;
+  readonly #turnOrder = new Map<string, number>();
+  readonly #latencyRequests = new Set<string>();
+  #completedTimingTurnId: string | null = null;
   #outputTokensPerSecond: number | undefined;
   #timingUnavailable = false;
   #lastOutputTurnId: string | undefined;
@@ -54,6 +64,7 @@ export class UsageMeter {
   #lastOutputLive = false;
   #lastLatencyLive = false;
   readonly #timedRequests = new Set<string>();
+  readonly #outputTimings = new Map<string, UsageOutputTiming>();
 
   get metered(): boolean {
     return this.#metered;
@@ -109,7 +120,7 @@ export class UsageMeter {
       this.recordOutputTiming(
         {
           requestId: request.requestId,
-          outputTokens: request.outputTokens,
+          outputTokens: request.timedOutputTokens ?? request.outputTokens,
           startedAtMs: request.startedAtMs ?? 0,
           completedAtMs: request.completedAtMs ?? 0,
         },
@@ -117,6 +128,41 @@ export class UsageMeter {
       );
     }
     return true;
+  }
+
+  /** Native timing supplements a live request without changing its billing record. */
+  recordRequestTiming(timing: HostUsageRequestTiming, turnId: string): boolean {
+    const { requestId, requestStartedAtMs, timeToFirstOutputMs, output } = timing;
+    const request = this.#requests.get(requestId);
+    if (!request || request.historical || !this.#turnOrder.has(turnId)) return false;
+    let latencyChanged = false;
+    if (
+      requestStartedAtMs !== undefined &&
+      [requestStartedAtMs, timeToFirstOutputMs].every(
+        (ms) => Number.isSafeInteger(ms) && ms >= 0,
+      ) &&
+      !this.#latencyRequests.has(requestId)
+    ) {
+      this.#latencyRequests.add(requestId);
+      const latest = this.#latestRequestLatency;
+      if (
+        !latest ||
+        (latest.turnId === turnId
+          ? requestStartedAtMs > latest.requestStartedAtMs
+          : this.#isLaterTurn(turnId, latest.turnId))
+      ) {
+        this.#latestRequestLatency = { turnId, requestStartedAtMs, timeToFirstOutputMs };
+        latencyChanged = true;
+      }
+    }
+    const measured = output && this.recordOutputTiming({ requestId, ...output }, turnId, true);
+    return latencyChanged || measured === true;
+  }
+
+  #isLaterTurn(turnId: string, previousTurnId: string): boolean {
+    const previous = this.#turnOrder.get(previousTurnId);
+    const current = this.#turnOrder.get(turnId);
+    return previous !== undefined && current !== undefined && current > previous;
   }
 
   /** Live timing is independent of history replacement and cannot create billing entries. */
@@ -128,11 +174,13 @@ export class UsageMeter {
       completedAtMs: number;
     },
     turnId: string,
+    supplement = false,
   ): boolean {
+    const current = turnId === this.#turnId || turnId === this.#completedTimingTurnId;
     if (
-      turnId !== this.#turnId ||
-      this.#timingUnavailable ||
-      this.#timedRequests.has(request.requestId)
+      (!current && !supplement) ||
+      (current && (this.#timingUnavailable || this.#timedRequests.has(request.requestId))) ||
+      (supplement && this.#outputTimings.has(request.requestId))
     )
       return false;
     if (
@@ -145,12 +193,43 @@ export class UsageMeter {
       this.invalidateOutputTiming(turnId);
       return false;
     }
-    this.#timedRequests.add(request.requestId);
-    this.#turnOutputTokens += request.outputTokens;
-    this.#turnOutputMs += request.completedAtMs - request.startedAtMs;
-    this.#outputTokensPerSecond = this.#turnOutputTokens / (this.#turnOutputMs / 1000);
+    if (current) this.#timedRequests.add(request.requestId);
+    this.restoreOutputTimings([
+      {
+        version: 4,
+        requestId: request.requestId,
+        turnId,
+        outputTokens: request.outputTokens,
+        startedAtMs: request.startedAtMs,
+        completedAtMs: request.completedAtMs,
+      },
+    ]);
+    if (current) {
+      this.#turnOutputTokens += request.outputTokens;
+      this.#turnOutputMs += request.completedAtMs - request.startedAtMs;
+      this.#outputTokensPerSecond = this.#turnOutputTokens / (this.#turnOutputMs / 1000);
+    } else {
+      // An older interval still contributes to session speed, but not to a newer Turn's speed.
+      if (
+        this.#lastOutputTurnId &&
+        this.#lastOutputTurnId !== turnId &&
+        !this.#isLaterTurn(turnId, this.#lastOutputTurnId)
+      )
+        return true;
+      let tokens = 0;
+      let milliseconds = 0;
+      for (const timing of this.#outputTimings.values()) {
+        if (timing.turnId !== turnId) continue;
+        tokens += timing.outputTokens;
+        milliseconds += timing.completedAtMs - timing.startedAtMs;
+      }
+      this.#outputTokensPerSecond = tokens / (milliseconds / 1000);
+    }
+    this.#lastOutputAtMs =
+      this.#lastOutputTurnId === turnId
+        ? Math.max(this.#lastOutputAtMs, request.completedAtMs)
+        : request.completedAtMs;
     this.#lastOutputTurnId = turnId;
-    this.#lastOutputAtMs = request.completedAtMs;
     this.#lastOutputLive = true;
     return true;
   }
@@ -163,8 +242,11 @@ export class UsageMeter {
   /** Discard in-flight timing across connections, but keep the last valid displayed speed. */
   resetTurnTiming(): void {
     this.#turnId = null;
+    this.#completedTimingTurnId = null;
     this.#turnStartedAtMs = null;
     this.#timeToFirstOutputMs = undefined;
+    this.#latestRequestLatency = undefined;
+    this.#latencyRequests.clear();
     this.#timedRequests.clear();
     this.#timingUnavailable = false;
     this.#lastOutputLive = false;
@@ -206,11 +288,20 @@ export class UsageMeter {
     }
   }
 
+  /** Restore completed request facts without starting a clock or changing the latest Turn TPS. */
+  restoreOutputTimings(values: readonly UsageOutputTiming[]): void {
+    for (const value of mergeUsageOutputTimings([...this.#outputTimings.values()], values))
+      this.#outputTimings.set(value.requestId, value);
+  }
+
   get outputTimingTurnId(): string | undefined {
     return this.#lastOutputTurnId;
   }
 
   retainMeasurements(turnIds: ReadonlySet<string>): void {
+    for (const [id, timing] of this.#outputTimings)
+      if (timing.turnId !== this.#turnId && !turnIds.has(timing.turnId))
+        this.#outputTimings.delete(id);
     if (
       !this.#lastOutputLive &&
       this.#lastOutputTurnId &&
@@ -233,8 +324,10 @@ export class UsageMeter {
 
   measurementSnapshot(native: HostUsage | null = null, turnId?: string): UsageMeasurementsSnapshot {
     const snapshot: UsageMeasurementsSnapshot = {};
+    if (this.#outputTimings.size) snapshot.outputTimings = [...this.#outputTimings.values()];
     if (this.#outputTokensPerSecond !== undefined && this.#lastOutputTurnId)
       snapshot.outputTokensPerSecond = {
+        version: 4,
         value: this.#outputTokensPerSecond,
         turnId: this.#lastOutputTurnId,
         at: this.#lastOutputAtMs,
@@ -261,6 +354,7 @@ export class UsageMeter {
         this.#lastOutputAtMs = Date.now();
         this.#lastOutputLive = true;
         snapshot.outputTokensPerSecond = {
+          version: 4,
           value: native.outputTokensPerSecond,
           turnId,
           at: this.#lastOutputAtMs,
@@ -295,7 +389,9 @@ export class UsageMeter {
   }
 
   turnStarted(turnId: string, nowMs: number): void {
+    if (!this.#turnOrder.has(turnId)) this.#turnOrder.set(turnId, this.#turnOrder.size);
     this.#turnId = turnId;
+    this.#completedTimingTurnId = null;
     this.#turnStartedAtMs = nowMs;
     this.#turnOutputObserved = false;
     this.#turnOutputTokens = 0;
@@ -319,7 +415,8 @@ export class UsageMeter {
 
   turnCompleted(turnId: string): void {
     if (turnId !== this.#turnId) return;
-    // No new measurement does not erase the last valid speed.
+    // Keep the completed Turn's accumulator until the next Turn starts.
+    this.#completedTimingTurnId = turnId;
     this.#turnId = null;
     this.#turnStartedAtMs = null;
   }
@@ -370,6 +467,10 @@ export class UsageMeter {
     if (this.#timeToFirstOutputMs !== undefined) {
       usage.timeToFirstOutputMs = this.#timeToFirstOutputMs;
     }
+    if (this.#latestRequestLatency)
+      usage.latestRequestTimeToFirstOutputMs = this.#latestRequestLatency.timeToFirstOutputMs;
+    const average = this.#sessionOutputTokensPerSecond();
+    if (average !== undefined) usage.sessionOutputTokensPerSecond = average;
     if (Object.keys(usage).length === 0) return null;
     try {
       return parseHostUsage(usage);
@@ -415,6 +516,34 @@ export class UsageMeter {
     }
     if (priced === 0 && unpriced.size > 0) return null;
     return { total, unpricedModels: [...unpriced].sort() };
+  }
+
+  #sessionOutputTokensPerSecond(): number | undefined {
+    const requests = new Map<
+      string,
+      {
+        outputTokens: number;
+        timedOutputTokens?: number;
+        startedAtMs?: number;
+        completedAtMs?: number;
+      }
+    >(this.#requests);
+    for (const [id, timing] of this.#outputTimings) requests.set(id, timing);
+    let tokens = 0;
+    let milliseconds = 0;
+    for (const request of requests.values()) {
+      if (
+        request.startedAtMs === undefined ||
+        request.completedAtMs === undefined ||
+        request.completedAtMs <= request.startedAtMs
+      )
+        continue;
+      tokens += request.timedOutputTokens ?? request.outputTokens;
+      milliseconds += request.completedAtMs - request.startedAtMs;
+    }
+    return milliseconds > 0 && Number.isSafeInteger(tokens) && Number.isSafeInteger(milliseconds)
+      ? tokens / (milliseconds / 1000)
+      : undefined;
   }
 
   #sessionCacheHitRatePercent(): number | null {

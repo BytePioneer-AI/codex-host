@@ -28,24 +28,27 @@ export const TurnProcessNodeView = memo(function TurnProcessNodeView({
       ? undefined
       : Math.max(1000, turn.end.time - turn.start.time);
   const duration =
-    elapsedMs === undefined || reason === "aborted" || reason === "error"
+    elapsedMs === undefined || reason === "aborted" || reason === "error" || reason === "unknown"
       ? undefined
       : formatRunDuration(elapsedMs, t);
-  // Other end reasons retain elapsed time; only cancellation and failure replace it.
   const label =
-    reason === "aborted"
-      ? t("message.stopped")
-      : reason === "error"
-        ? t("message.turnProcess.failed")
-        : duration === undefined
-          ? t("message.turnProcess.worked")
-          : t("message.turnProcess.took");
+    reason === "unknown"
+      ? t("message.turnProcess.unknown")
+      : reason === "aborted"
+        ? t("message.stopped")
+        : reason === "error"
+          ? t("message.turnProcess.failed")
+          : duration === undefined
+            ? t("message.turnProcess.worked")
+            : t("message.turnProcess.took");
   const announcement =
-    reason === "aborted"
-      ? t("message.stopped")
-      : reason === "error"
-        ? t("message.turnProcess.failed")
-        : t("message.turnProcess.worked");
+    reason === "unknown"
+      ? t("message.turnProcess.unknown")
+      : reason === "aborted"
+        ? t("message.stopped")
+        : reason === "error"
+          ? t("message.turnProcess.failed")
+          : t("message.turnProcess.worked");
   return (
     <>
       <span className={a11yCss.visuallyHidden} role="status" aria-live="polite" aria-atomic="true">

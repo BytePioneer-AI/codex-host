@@ -153,6 +153,25 @@ describe("mapping-store package", () => {
     await store.close();
   });
 
+  it("lists Thread summaries without Turn mappings as independent copies", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = new MappingStore({ directory });
+    await store.initialize();
+    await createReady(store);
+
+    const [full] = await store.listThreads();
+    const [summary] = await store.listThreadSummaries();
+    if (!full || !summary) throw new Error("expected one stored Thread");
+    const { turnMappings, ...expected } = full;
+    expect(turnMappings).toHaveLength(1);
+    expect(summary).toEqual(expected);
+    expect(summary).not.toHaveProperty("turnMappings");
+
+    summary.title = "Changed by caller";
+    await expect(store.getThread(threadId)).resolves.toMatchObject({ title: "External Thread" });
+    await store.close();
+  });
+
   it("serializes competing Native Session commits across Host Threads", async () => {
     const directory = await temporaryStoreDirectory();
     const firstReadyEntered = Promise.withResolvers<undefined>();
@@ -398,7 +417,8 @@ describe("mapping-store package", () => {
     expect(repeated).toEqual(reconciled);
     await first.close();
 
-    const second = new MappingStore({ directory });
+    let now = new Date("2026-03-01T00:00:00.000Z");
+    const second = new MappingStore({ directory, now: () => now });
     await second.initialize();
     await expect(second.getThread(threadId)).resolves.toMatchObject({
       revision: reconciled.revision,
@@ -411,12 +431,17 @@ describe("mapping-store package", () => {
       mapping(4),
     ]);
     expect(dropped.turnMappings).toEqual([mapping(1), mapping(2), mapping(4)]);
+    // Removed and reordered Turns are conversation activity.
+    expect(dropped.updatedAt).toBe(now.toISOString());
+    now = new Date("2026-03-02T00:00:00.000Z");
     const reordered = await second.reconcileTurnMappings(threadId, [
       mapping(1),
       mapping(4),
       mapping(2),
     ]);
     expect(reordered.turnMappings).toEqual([mapping(1), mapping(4), mapping(2)]);
+    expect(reordered.updatedAt).toBe(now.toISOString());
+    now = new Date("2026-03-03T00:00:00.000Z");
     const nativeCheckpoint = {
       ...mapping(1),
       nativeCheckpointRef: {
@@ -430,6 +455,11 @@ describe("mapping-store package", () => {
       mapping(2),
     ]);
     expect(adopted.turnMappings[0]).toEqual(nativeCheckpoint);
+    // A newer checkpoint for the same Turns, as a Harness upgrade writes, keeps the Thread's place.
+    expect(adopted).toMatchObject({
+      revision: reordered.revision + 1,
+      updatedAt: reordered.updatedAt,
+    });
 
     await expect(
       second.reconcileTurnMappings(threadId, [
@@ -1223,10 +1253,39 @@ describe("mapping-store package", () => {
     const first = new MappingStore({ directory, instanceId: "first" });
     const second = new MappingStore({ directory, instanceId: "second" });
     await first.initialize();
-    await expect(second.initialize()).rejects.toEqual(
-      expect.objectContaining<Partial<MappingStoreError>>({ code: "STORE_LOCKED" }),
-    );
-    await first.close();
+    try {
+      const lockPath = path.join(directory, "store.lock");
+      const lock = await readFile(lockPath, "utf8");
+      const { startedAt } = JSON.parse(lock) as { startedAt: string };
+      await expect(second.initialize()).rejects.toEqual(
+        expect.objectContaining<Partial<MappingStoreError>>({
+          code: "STORE_LOCKED",
+          message: expect.stringContaining(`PID ${process.pid}`),
+        }),
+      );
+      await expect(second.initialize()).rejects.toThrow(startedAt);
+      await expect(second.initialize()).rejects.toThrow(directory);
+      expect(await readFile(lockPath, "utf8")).toBe(lock);
+    } finally {
+      await second.close();
+      await first.close();
+    }
+  });
+
+  it("reports a live legacy lock without dumping unrelated lock fields", async () => {
+    const directory = await temporaryStoreDirectory();
+    const lockPath = path.join(directory, "store.lock");
+    const lock = JSON.stringify({ pid: process.pid, instanceId: "legacy", token: "not-for-logs" });
+    await writeFile(lockPath, lock);
+    const store = new MappingStore({ directory });
+    try {
+      await expect(store.initialize()).rejects.toThrow(
+        `Another codexhost process owns Mapping Store at ${directory} (owner PID ${process.pid}; startedAt: unknown)`,
+      );
+      expect(await readFile(lockPath, "utf8")).toBe(lock);
+    } finally {
+      await store.close();
+    }
   });
 
   it("removes lock files left aside by earlier runs", async () => {
@@ -1234,7 +1293,7 @@ describe("mapping-store package", () => {
     await mkdir(directory, { recursive: true });
     await writeFile(path.join(directory, "store.lock.stale-1"), "{}\n", "utf8");
     await writeFile(path.join(directory, "store.lock.stale-2"), "{}\n", "utf8");
-    // An unparsable lock cannot prove a live owner, so initialization renames it aside.
+    // An unparsable lock cannot prove a live owner, so initialization reclaims it.
     await writeFile(path.join(directory, "store.lock"), "not json\n", "utf8");
 
     const store = new MappingStore({ directory, instanceId: "recovered" });
@@ -1295,8 +1354,18 @@ it("stores latest measurements only in existing metadata without changing identi
   const before = await store.getThread(threadId);
   const core = await readFile(path.join(directory, "threads", `${threadId}.json`), "utf8");
   const values = {
-    outputTokensPerSecond: { value: 100, turnId: "turn-1", at: 100 },
+    outputTokensPerSecond: { version: 4 as const, value: 100, turnId: "turn-1", at: 100 },
     timeToFirstOutputMs: { value: 50, turnId: "turn-1", at: 90 },
+    outputTimings: [
+      {
+        version: 4 as const,
+        requestId: "one",
+        turnId: "turn-1",
+        outputTokens: 100,
+        startedAtMs: 1000,
+        completedAtMs: 2000,
+      },
+    ],
   };
   const saved = await store.saveUsageMeasurements(threadId, nativeRef, values);
   expect(saved).toMatchObject({

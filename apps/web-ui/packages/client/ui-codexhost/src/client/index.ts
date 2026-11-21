@@ -3,6 +3,7 @@
  * sessions each installed Harness can hand over (Claude Code, Pi, ...). Importing maps the
  * native session into a Web session; its history is replayed when the conversation opens.
  */
+import { createElement } from "react";
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
@@ -13,6 +14,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-workspace/client";
 import type { SessionId } from "@deepseek-ai/dsh-session/types";
 import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
 import { registerHarnessDiscovery } from "./harness-discovery.tsx";
+import { registerSkillLibrary } from "./skill-library.tsx";
 import { registerThreadReferenceDiscovery } from "./thread-reference-discovery.ts";
 import { registerThreadReferenceAction } from "./thread-reference-action.ts";
 import { desktopScreenshotApi, sentMessageEditApi, turnDiffsApi, voiceApi } from "./api.ts";
@@ -34,6 +36,7 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
+import { DocumentDownload, DocumentDownloadAction } from "./DocumentDownload.tsx";
 import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
@@ -53,14 +56,17 @@ import {
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
-import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSection.tsx";
+import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
 import { PwaInstallRow, type PwaInstallFace } from "./PwaInstallRow.tsx";
+import { WallpaperController } from "./wallpaper.ts";
+import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
+import { SettingsLauncher, type SettingsLauncherFace } from "./SettingsLauncher.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
 import { en, zh, type ImportLocaleKey } from "./locales.ts";
 
@@ -86,6 +92,7 @@ export const inject = [
   "workspaces",
   "sessions",
   "remote",
+  "remote.session",
   "inputTriggers",
   "theme",
   "connection",
@@ -95,6 +102,7 @@ export const inject = [
 const HOST_SETTINGS_PAGES = [
   ["accounts", "settings.accounts", 2],
   ["connections", "settings.connections", 3],
+  ["delegation", "settings.delegation", 3.5],
   ["usage-statistics", "settings.usage", 4],
   ["resources", "settings.resources", 5],
   ["updates", "settings.updates", 7],
@@ -108,6 +116,47 @@ const HOST_SETTINGS_PAGES = [
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-codexhost: dictionaries");
   const t = ctx.locale.bind(NS);
+  ctx.slots.inject("sidebar.right.tab.document.actions", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.right.tab.document.actions",
+        id: "codexhost-download",
+        inject: (sessionId) => ({
+          sessionId,
+          label: t("file.download"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
+          openFolderLabel: t("file.openFolder"),
+          openFolderFailedLabel: t("file.openFolder.failed"),
+          revealFolder: (path: string) =>
+            ctx.remote.session.openWorkspacePath({ path, action: "reveal" }),
+        }),
+      },
+      DocumentDownload,
+    ),
+  );
+  ctx.slots.inject("sidebar.right.tab.document.unpreviewable", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.right.tab.document.unpreviewable",
+        id: "codexhost-download-action",
+        inject: (sessionId) => ({
+          sessionId,
+          ctaLabel: t("file.download.cta"),
+          preparingLabel: t("file.download.preparing"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
+        }),
+      },
+      DocumentDownloadAction,
+    ),
+  );
   const installation = ctx.get("pwaInstall");
   if (installation !== undefined) {
     ctx.slots.inject("settings.general.item", () =>
@@ -123,10 +172,24 @@ export function apply(ctx: ClientContext): void {
       ),
     );
   }
+  const wallpaper = new WallpaperController();
+  ctx.effect(() => () => wallpaper.dispose(), "ui-codexhost: wallpaper");
+  ctx.slots.inject("settings.general.item", () =>
+    ctx.slots.register(
+      {
+        name: "settings.general.item",
+        id: "codexhost.wallpaper",
+        order: 10.5,
+        locale: NS,
+        inject: (): WallpaperFace => ({ wallpaper }),
+      },
+      WallpaperRow,
+    ),
+  );
   ctx.provide("chatMessageEditing", sentMessageEditApi);
   ctx.provide("chatTurnDiffs", turnDiffsApi);
+  ctx.inject(["conversation", "uiSession"], registerThreadReferenceAction);
   ctx.inject(["conversation"], (scope) => {
-    registerThreadReferenceAction(scope);
     const screenshot = new DesktopScreenshot(desktopScreenshotApi.capture);
     const conversation = scope.conversation as ConversationController;
     const drafts: DesktopScreenshotFace["drafts"] = {
@@ -218,26 +281,41 @@ export function apply(ctx: ClientContext): void {
       return () => document.removeEventListener("keydown", onKey);
     }, "ui-codexhost: voice shortcuts");
   });
-  ctx.inject(["connection", "modelDirectories", "commandUi"], (scope) =>
-    registerHarnessDiscovery(scope),
-  );
+  ctx.inject(["connection", "modelDirectories", "commandUi"], (scope) => {
+    registerHarnessDiscovery(scope);
+    registerSkillLibrary(scope);
+  });
+  const localTarget = (href: string) => {
+    const threadId = localThreadId(href);
+    if (threadId === undefined) return;
+    const sessionId = threadId as SessionId;
+    const row = ctx.sessions.list.getSnapshot().byId[sessionId];
+    const reference = row === undefined ? undefined : threadReferenceOf(row);
+    if (reference === undefined) return;
+    return { sessionId, title: reference.title };
+  };
   ctx.provide("chatLinks", {
+    describe: (href) => {
+      const target = localTarget(href);
+      if (target === undefined) return;
+      return {
+        title: target.title,
+        icon: createElement(SessionHarnessIcon, {
+          sessionId: target.sessionId,
+          list: ctx.sessions.list,
+        }),
+      };
+    },
     resolve: Object.assign(
       (href: string) => {
-        const threadId = localThreadId(href);
-        if (threadId === undefined) return;
-        const targetId = threadId as SessionId;
-        const localTarget = () => {
-          const row = ctx.sessions.list.getSnapshot().byId[targetId];
-          return row === undefined ? undefined : threadReferenceOf(row);
-        };
-        if (localTarget() === undefined) return;
+        const target = localTarget(href);
+        if (target === undefined) return;
         const destination = new URL(window.location.href);
-        destination.searchParams.set("session", targetId);
+        destination.searchParams.set("session", target.sessionId);
         return {
           href: destination.href,
           open: () => {
-            if (localTarget() !== undefined) ctx.uiWorkspace.openSession(targetId);
+            if (localTarget(href) !== undefined) ctx.uiWorkspace.openSession(target.sessionId);
           },
         };
       },
@@ -287,6 +365,19 @@ export function apply(ctx: ClientContext): void {
     ),
   );
   ctx.inject(["settingsNavigation"], (scope) => {
+    scope.slots.inject("settings.launcher", () =>
+      scope.slots.register(
+        {
+          name: "settings.launcher",
+          locale: NS,
+          inject: (): SettingsLauncherFace => ({
+            connection: scope.get("connection") as ConnectionHandle,
+            openSection: (id) => scope.settingsNavigation.openSection(id),
+          }),
+        },
+        SettingsLauncher,
+      ),
+    );
     scope.slots.inject("sidebar.primary.action", () =>
       scope.slots.register(
         {
@@ -330,9 +421,13 @@ export function apply(ctx: ClientContext): void {
         order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
-        inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
+        inject: (): PluginsSectionFace => ({
+          resolveText: (text) => ctx.locale.resolveText(text),
+          locale,
+          colorScheme,
+        }),
       },
-      WebExtensionsSection,
+      PluginsSection,
     ),
   );
   ctx.slots.inject("settings.section", () =>
@@ -388,6 +483,7 @@ export function apply(ctx: ClientContext): void {
         inject: () => ({
           list: ctx.sessions.list,
           connection: ctx.get("connection") as ConnectionHandle,
+          retryHistory: (id: SessionId) => ctx.sessions.retryHistory(id),
         }),
       },
       HostConnectionStatus,

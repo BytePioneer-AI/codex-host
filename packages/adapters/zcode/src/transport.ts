@@ -23,6 +23,8 @@ export interface TransportOptions {
   /** ZCode application location saved as the plugin launch path. */
   app?: string;
   timeoutMs?: number;
+  /** Allow retrying a previously denied/timed-out OS Keychain credential read. */
+  retryDeniedKeychain?: boolean;
   /** The Host's shared verifier for this installation; the transport never closes it. */
   verifier: (appVersion: string) => ZcodeVerifier;
 }
@@ -50,6 +52,7 @@ export class CliTransport {
   #startPlan = false;
   #signedIn = false;
   #startPlanChecked = true;
+  #credentialIssue: string | undefined;
   #codingPlan!: PersonalCodingPlanAccount;
   #fault: Error | undefined;
   #closed = false;
@@ -70,6 +73,9 @@ export class CliTransport {
   get startPlanChecked() {
     return this.#startPlanChecked;
   }
+  get credentialIssue() {
+    return this.#credentialIssue;
+  }
   get codingPlanIssue() {
     return this.#codingPlan?.issue;
   }
@@ -89,12 +95,18 @@ export class CliTransport {
       startPlan,
       signedIn,
       startPlanChecked,
+      credentialIssue,
       codingPlan,
-    } = await accountConfig(installation, this.options.environment);
+    } = await accountConfig(
+      installation,
+      this.options.environment,
+      this.options.retryDeniedKeychain ? { retryDenied: true } : undefined,
+    );
     this.#installation = installation;
     this.#startPlan = startPlan;
     this.#signedIn = signedIn;
     this.#startPlanChecked = startPlanChecked;
+    this.#credentialIssue = credentialIssue;
     this.#codingPlan = codingPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.

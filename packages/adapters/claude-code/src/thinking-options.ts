@@ -40,6 +40,71 @@ export type ClaudeThinkingFlagSettings = {
   ultracode?: boolean;
 };
 
+/** Thinking fields of one native `ModelInfo` row; Claude Code includes a flag only when true. */
+export interface ClaudeModelThinkingCapabilities {
+  supportsEffort?: boolean | undefined;
+  supportedEffortLevels?: readonly string[] | undefined;
+  supportsAdaptiveThinking?: boolean | undefined;
+  /** Reported by Claude Code but absent from the SDK `ModelInfo` type. */
+  supportsThinkingOff?: boolean | undefined;
+}
+
+/**
+ * The Thinking options one native Model accepts. Rows without any capability field come from a
+ * Claude Code that does not report them, so every option stays available.
+ *
+ * Auto only turns Thinking on: Claude Code sends adaptive Thinking to Models that support it
+ * and a token budget to the rest, so it is offered whatever `supportsAdaptiveThinking` says.
+ */
+export function claudeSupportedThinkingOptionIds(
+  model: ClaudeModelThinkingCapabilities,
+): HarnessThinkingOptionId[] {
+  if (
+    model.supportsEffort === undefined &&
+    model.supportedEffortLevels === undefined &&
+    model.supportsAdaptiveThinking === undefined &&
+    model.supportsThinkingOff === undefined
+  ) {
+    return [...CLAUDE_THINKING_OPTION_IDS];
+  }
+  const efforts = new Set<string>(
+    model.supportsEffort === false ? [] : (model.supportedEffortLevels ?? []),
+  );
+  return CLAUDE_THINKING_OPTION_IDS.filter((id) => {
+    if (id === "off") return model.supportsThinkingOff !== false;
+    if (id === "auto") return true;
+    if (id === "ultracode") return efforts.has("xhigh");
+    return efforts.has(id);
+  });
+}
+
+const CLAUDE_EFFORT_ORDER: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+
+/**
+ * The option a Session runs for `requested` on a Model that supports `supported` (undefined when
+ * unknown). An unsupported effort clamps down to the highest supported level not above it
+ * (Ultracode counts as Extra High); Auto, which every Model offers, covers the rest.
+ */
+export function fitClaudeThinkingOptionId(
+  requested: HarnessThinkingOptionId,
+  supported: readonly HarnessThinkingOptionId[] | undefined,
+): HarnessThinkingOptionId {
+  if (!supported || supported.includes(requested)) return requested;
+  const ceiling = CLAUDE_EFFORT_ORDER.indexOf(requested === "ultracode" ? "xhigh" : requested);
+  // Rank by effort, not by position: the caller's list is a set of supported
+  // levels, and its order is not part of the contract.
+  let best = CLAUDE_DEFAULT_THINKING_OPTION_ID;
+  let bestRank = -1;
+  for (const id of supported) {
+    const rank = CLAUDE_EFFORT_ORDER.indexOf(id);
+    if (rank > bestRank && rank <= ceiling) {
+      best = id;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
 export function parseClaudeThinkingOptionId(value: unknown): HarnessThinkingOptionId {
   const id = harnessThinkingOptionIdSchema.parse(value);
   if (!CLAUDE_THINKING_OPTION_IDS.includes(id)) {

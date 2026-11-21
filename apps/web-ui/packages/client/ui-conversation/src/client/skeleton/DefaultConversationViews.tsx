@@ -20,6 +20,7 @@ export function DefaultConversationViews({
   actions,
   renderSlot,
   bindDraftPersistence,
+  onRevealResponseAnnotation,
   openView,
   useInspectCall,
 }: ConversationSessionSlotProps) {
@@ -39,6 +40,11 @@ export function DefaultConversationViews({
     };
     // The Session input owns content before this persistence writer is attached.
   }, [inputActions]);
+
+  useEffect(
+    () => onRevealResponseAnnotation((id) => openView("chat", id)),
+    [onRevealResponseAnnotation, openView],
+  );
 
   if (session.blank && conversationPhase(session, conversation) === "blank") return null;
   const viewId = view ?? active?.id;

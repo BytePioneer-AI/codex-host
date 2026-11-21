@@ -14,6 +14,7 @@ export interface FileCardLabels {
   readonly remove: string;
   /** Status line while the upload is in flight. */
   readonly uploading: string;
+  readonly uploadingPercent: (percent: number) => string;
   /** Status line and retry affordance after a failed upload. */
   readonly failed: string;
   /** Retry-button label. */
@@ -44,7 +45,9 @@ export function FileCard({
   const extension = fileExtension(name).toUpperCase().slice(0, 8);
   const meta =
     state === "uploading"
-      ? labels.uploading
+      ? progress === undefined
+        ? labels.uploading
+        : labels.uploadingPercent(Math.round(Math.min(1, Math.max(0, progress)) * 100))
       : state === "error"
         ? labels.failed
         : [extension, fileSizeText(bytes)].filter((part) => part !== "").join(" ");

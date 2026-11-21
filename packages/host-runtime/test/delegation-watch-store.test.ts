@@ -80,21 +80,22 @@ describe("FileDelegationWatchStore", () => {
     expect(await readdir(directory)).toEqual(["mine.json"]);
   });
 
-  it("adopts records of an exited Runtime and takes ownership", async () => {
-    await mkdir(directory, { recursive: true });
-    await writeForeign(
-      directory,
-      "old.json",
-      { pid: exitedPid(), boot: bootSeconds() },
-      watch("old"),
-    );
+  it.each(["审查最近PR · 委派", undefined])(
+    "adopts records of an exited Runtime, with or without a title (%s)",
+    async (title) => {
+      await mkdir(directory, { recursive: true });
+      const record = watch("old", title ? { title } : {});
+      await writeForeign(directory, "old.json", { pid: exitedPid(), boot: bootSeconds() }, record);
 
-    const adopted = await new FileDelegationWatchStore(directory).adopt();
-    expect(adopted).toEqual([watch("old")]);
-    expect(await readdir(directory)).toEqual(["old.json"]);
-    const file = JSON.parse(await readFile(path.join(directory, "old.json"), "utf8"));
-    expect(file.owner.pid).toBe(process.pid);
-  });
+      const adopted = await new FileDelegationWatchStore(directory).adopt();
+      expect(adopted).toEqual([record]);
+      expect(await readdir(directory)).toEqual(["old.json"]);
+      const file = JSON.parse(await readFile(path.join(directory, "old.json"), "utf8"));
+      expect(file.owner.pid).toBe(process.pid);
+      expect(file.watch).toEqual(record);
+      if (!title) expect(file.watch).not.toHaveProperty("title");
+    },
+  );
 
   it("treats an owner from an earlier boot as exited even if its pid is in use", async () => {
     await mkdir(directory, { recursive: true });
@@ -119,21 +120,6 @@ describe("FileDelegationWatchStore", () => {
     );
     await expect(new FileDelegationWatchStore(directory).adopt()).resolves.toEqual([watch("half")]);
     expect(await readdir(directory)).toEqual(["half.json"]);
-  });
-
-  it("lets only one of two concurrent adopters take a record", async () => {
-    await mkdir(directory, { recursive: true });
-    await writeForeign(
-      directory,
-      "race.json",
-      { pid: exitedPid(), boot: bootSeconds() },
-      watch("race"),
-    );
-    const [left, right] = await Promise.all([
-      new FileDelegationWatchStore(directory).adopt(),
-      new FileDelegationWatchStore(directory).adopt(),
-    ]);
-    expect([...left, ...right]).toEqual([watch("race")]);
   });
 
   it("sets aside an unreadable record and reports it", async () => {

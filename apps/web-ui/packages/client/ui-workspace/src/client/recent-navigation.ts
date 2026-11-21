@@ -1,28 +1,26 @@
 /** Compose Workspace-owned phone navigation and its local General Settings row. */
 import type { Context } from "@deepseek-ai/cordis";
-import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
+import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-connection/client";
 import type { UiWorkspaceService } from "./navigation.ts";
+import {
+  PhoneHeaderNewSession,
+  type PhoneHeaderNewSessionInjected,
+} from "./PhoneHeaderNewSession.tsx";
 import {
   RecentNavigation,
   RecentShortcuts,
   type RecentNavigationInjected,
 } from "./RecentNavigation.tsx";
 import { RecentNavigationRow, type RecentNavigationRowInjected } from "./RecentNavigationRow.tsx";
-import {
-  RECENT_NAVIGATION_NAMESPACE,
-  recentNavigationDefaults,
-  recentNavigationSchema,
-  type RecentNavigationSettings,
-} from "./recent-navigation-settings.ts";
+import type { RecentNavigationSettings } from "./recent-navigation-settings.ts";
 
-export function registerRecentNavigation(ctx: Context, navigation: UiWorkspaceService): void {
-  const preference = ctx.configForms.registerBrowser<RecentNavigationSettings>(
-    RECENT_NAVIGATION_NAMESPACE,
-    recentNavigationSchema.toJSON(),
-    recentNavigationDefaults,
-  );
+export function registerRecentNavigation(
+  ctx: Context,
+  navigation: UiWorkspaceService,
+  preference: ConfigForm<RecentNavigationSettings>,
+): void {
   const setEnabled = (enabled: boolean): Promise<boolean> =>
     preference.set("showRecentVisits", enabled);
   const setIdleTimeout = (minutes: number): Promise<boolean> =>
@@ -79,9 +77,26 @@ export function registerRecentNavigation(ctx: Context, navigation: UiWorkspaceSe
       navigation.closeSessionTab(sessionId);
       if (navigation.recentVisits.entries.getSnapshot().length === 0) viewport.scrollLeft = 0;
     },
+    closeAll: () => {
+      navigation.closeAllSessionTabs();
+      viewport.scrollLeft = 0;
+    },
     viewport,
     setEnabled,
   });
+  ctx.slots.inject("conversation.header.trailing", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.header.trailing",
+        locale: "workspace",
+        inject: (): PhoneHeaderNewSessionInjected => ({
+          startSession: () => navigation.startSession(),
+          hooks: { shortcuts: ctx.shortcuts.catalog },
+        }),
+      },
+      PhoneHeaderNewSession,
+    ),
+  );
   ctx.slots.inject("conversation.header.navigation", () =>
     ctx.slots.register(
       {

@@ -101,7 +101,7 @@ export class CodeBuddyAdapter implements HarnessAdapter {
 
   inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const cwd = input.cwd ?? process.cwd();
-    if (input.refresh) this.#cache.delete(cwd);
+    if (input.refresh) this.#cache.clear();
     let inspection = this.#cache.get(cwd);
     if (!inspection) {
       inspection = this.#inspect(cwd);

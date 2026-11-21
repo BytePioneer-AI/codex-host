@@ -5,14 +5,10 @@ mod windows_service;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-#[cfg(windows)]
-#[path = "web_service/windows_background.rs"]
-mod windows_background;
 
 struct Fixture {
     root: PathBuf,
@@ -99,7 +95,7 @@ log('web-start');
 fs.writeFileSync(path.join(data, 'npm-entrypoint.json'), JSON.stringify({node: process.env.CODEXHOST_NPM_NODE_PATH, wrapper: process.env.CODEXHOST_NPM_LAUNCHER_PATH}));
 fs.appendFileSync(path.join(data, 'starts'), 'start\n');
 if (fs.existsSync(path.join(data, 'fail'))) {
-  console.error('first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port');
+  fs.writeSync(2, 'first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port\n');
   process.exit(1);
 }
 const ready = value('--ready-file');
@@ -189,7 +185,11 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
     }
 
     fn public_command(&self, action: &str) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost"));
+        self.public_command_at(Path::new(env!("CARGO_BIN_EXE_codexhost")), action)
+    }
+
+    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+        let mut command = Command::new(launcher);
         command
             .env_clear()
             .env("PATH", env::var_os("PATH").unwrap())
@@ -459,6 +459,44 @@ fn supervises_only_ready_web_and_serializes_ensure_and_stop() {
 }
 
 #[test]
+fn failed_supervisor_preserves_the_live_web_ready_record() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let record = fixture.root.join("web-service-ready.json");
+    assert!(fixture.run("ensure").status.success());
+    let original = fs::read(&record).unwrap();
+    fs::write(fixture.root.join("fail"), "fail").unwrap();
+    let failed_ready = fixture.root.join("failed.ready");
+    let output = fixture
+        .command("web-service", "serve")
+        .arg("--ready-file")
+        .arg(&failed_ready)
+        .output()
+        .unwrap();
+    let remaining = fs::read(&record).ok();
+    if remaining.is_none() {
+        // Keep the original supervisor reachable for fixture teardown on regression.
+        fs::write(&record, &original).unwrap();
+    }
+    assert!(output.status.success());
+    assert!(
+        fs::read_to_string(failed_ready)
+            .unwrap()
+            .contains("fixture port is occupied")
+    );
+    assert!(
+        remaining.as_deref() == Some(original.as_slice()),
+        "failed supervisor removed or changed the live Web ready record"
+    );
+
+    assert!(fixture.run("stop").status.success());
+    assert!(!record.exists());
+}
+
+#[test]
 fn connect_devices_flag_keeps_printed_login_and_ready_record_unchanged() {
     #[cfg(windows)]
     if windows_service::run_in_service_job() {
@@ -723,8 +761,22 @@ fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
             .status
             .success()
     );
+    // The missing Host path has no sibling Console entrypoint. Supply the installed
+    // fallback within this fixture rather than relying on a built console in the checkout.
+    let launcher = fixture
+        .root
+        .join("bin")
+        .join(format!("codexhost{}", std::env::consts::EXE_SUFFIX));
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_codexhost"), &launcher).unwrap();
+    fs::create_dir_all(fixture.root.join("app")).unwrap();
+    fs::copy(
+        fixture.root.join("console-server.mjs"),
+        fixture.root.join("app/console-server.mjs"),
+    )
+    .unwrap();
     let result = fixture
-        .public_command("stop")
+        .public_command_at(&launcher, "stop")
         .arg("--host-runtime")
         .arg(fixture.root.join("missing-host.mjs"))
         .output()

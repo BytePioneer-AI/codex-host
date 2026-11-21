@@ -33,6 +33,8 @@ export interface RequestAuth {
   readonly local: boolean;
   /** Keep this response alive through a revocation it caused, so it can report the result. */
   release(): void;
+  /** Replace this request's access-token cookie when it rotates the token it presented. */
+  renewCookie?(secret: string): void;
 }
 
 /** Live connections per credential, destroyed when that credential is revoked. */
@@ -169,8 +171,8 @@ export class AccessAuth {
     const presented = presentedToken(request, this.trust.secure(request));
     const credential =
       presented === undefined ? undefined : this.credentialFor(presented.token, request);
-    if (credential !== undefined) {
-      const auth = this.admit(request, response, credential);
+    if (presented !== undefined && credential !== undefined) {
+      const auth = this.admit(request, response, credential, presented.source);
       if (pathname !== "/api/auth/status") return { handled: false, auth };
       response
         .writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
@@ -194,35 +196,47 @@ export class AccessAuth {
 
   /**
    * Authenticate a WebSocket upgrade and tie the socket to its credential.
-   * @returns whether the upgrade may proceed; otherwise the socket has been answered and closed.
+   * @returns the credential; otherwise the socket has been answered and closed.
+   * A signaling upgrade tracks its session instead, so revocation stops direct writes first.
    */
-  admitUpgrade(request: IncomingMessage, socket: Duplex): boolean {
+  admitUpgrade(request: IncomingMessage, socket: Duplex, trackSocket = true): string | undefined {
     const presented = presentedToken(request, this.trust.secure(request));
     const credential =
       presented === undefined ? undefined : this.credentialFor(presented.token, request);
     if (credential !== undefined) {
-      this.connections.track(credential, socket);
+      if (trackSocket) this.connections.track(credential, socket);
       this.trust.authenticated(request);
-      return true;
+      return credential;
     }
     const status = presented === undefined ? 401 : this.countFailure(request);
     socket.write(
       `HTTP/1.1 ${status === 429 ? "429 Too Many Requests" : "401 Unauthorized"}\r\nConnection: close\r\n\r\n`,
     );
     socket.destroy();
-    return false;
+    return undefined;
   }
 
   private admit(
     request: IncomingMessage,
     response: ServerResponse,
     credential: string,
+    source: "bearer" | "cookie",
   ): RequestAuth {
     this.trust.authenticated(request);
     return {
       credential,
       local: isLocalConnection(request),
       release: this.connections.track(credential, response),
+      ...(source === "cookie" && credential !== LOCAL_CREDENTIAL
+        ? {
+            renewCookie: (secret: string): void => {
+              response.setHeader(
+                "set-cookie",
+                this.cookie(request, secret, COOKIE_MAX_AGE_SECONDS),
+              );
+            },
+          }
+        : {}),
     };
   }
 
@@ -299,6 +313,11 @@ export class AccessAuth {
         return;
       }
       chunks.push(chunk as Buffer);
+    }
+    // Other logins may exhaust the limit while this request awaits its body.
+    if (this.limit.blocked(this.trust.clientAddress(request))) {
+      fail(429, "auth/rate-limited");
+      return;
     }
     let token: unknown;
     try {

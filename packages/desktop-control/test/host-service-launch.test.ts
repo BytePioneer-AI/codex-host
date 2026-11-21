@@ -95,13 +95,14 @@ it("does not mistake a live PID or wrong epoch for a ready service", async () =>
 });
 
 it.each(["0", "1"])(
-  "boots through the native Launcher with sanitized environment and Web service preference %s",
+  "boots through the native Launcher with sanitized environment, external client port and Web service preference %s",
   async (webService) => {
     const f = await fixture();
     vi.stubEnv("CODEXHOST_RUNTIME_TOKEN", "fixture-poison");
     vi.stubEnv("NODE_OPTIONS", "--fixture-poison");
     vi.stubEnv("NODE_PATH", "/fixture-poison");
     vi.stubEnv("CODEXHOST_WEB_SERVICE", webService);
+    vi.stubEnv("CODEXHOST_EXTERNAL_CLIENT_PORT", "4402");
     const npmPaths = {
       CODEXHOST_NPM_NODE_PATH: path.join(f.root, "node"),
       CODEXHOST_NPM_CLI_PATH: path.join(f.root, "npm-cli.js"),
@@ -136,7 +137,11 @@ it.each(["0", "1"])(
       Object.fromEntries(
         Object.entries(options.env).filter(([key]) => key.startsWith("CODEXHOST_")),
       ),
-    ).toEqual({ ...npmPaths, CODEXHOST_WEB_SERVICE: webService });
+    ).toEqual({
+      ...npmPaths,
+      CODEXHOST_WEB_SERVICE: webService,
+      CODEXHOST_EXTERNAL_CLIENT_PORT: "4402",
+    });
     expect(options.env.PATH).toBe(process.env.PATH);
   },
 );

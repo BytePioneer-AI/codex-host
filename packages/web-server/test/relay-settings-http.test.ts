@@ -72,7 +72,7 @@ async function server(
   return { call };
 }
 
-it("saves the switch without restarting, rejects remote changes, and keeps both relay choices", async (t) => {
+it("saves the switch without restarting, allows authenticated remote changes, and keeps both relay choices", async (t) => {
   const data = fixture(t);
   saveServiceOptions(data, { relay: "localhost:4498" });
   assert.equal(readServiceOptions(data).relayHost, "localhost:4498");
@@ -86,12 +86,14 @@ it("saves the switch without restarting, rejects remote changes, and keeps both 
     customHost: "localhost:4498",
   });
   for (const headers of [{ host: "phone.example" }, { "x-forwarded-for": "127.0.0.1" }]) {
-    const result = await call(
-      "codexhost/relaySet",
-      { enabled: true },
-      { authorization: `Bearer ${access.secret}`, ...headers },
-    );
-    assert.equal(result.error.code, "auth/local-access-required");
+    const auth = { authorization: `Bearer ${access.secret}`, ...headers };
+    const enabled = await call("codexhost/relaySet", { enabled: true }, auth);
+    assert.equal(enabled.error, undefined);
+    assert.equal(enabled.value.status, "connecting");
+    assert.equal(readServiceOptions(data).relayEnabled, true);
+    const disabled = await call("codexhost/relaySet", { enabled: false }, auth);
+    assert.equal(disabled.error, undefined);
+    assert.equal(disabled.value.status, "off");
     assert.equal(readServiceOptions(data).relayEnabled, false);
   }
   assert.equal((await call("codexhost/relaySet", { enabled: true })).value.status, "connecting");
@@ -208,20 +210,11 @@ it("defaults to official and saves validated self-hosted settings live through t
   }
   const remote = await call(
     "codexhost/relaySet",
-    { enabled: false, kind: "self-hosted", host: "relay.example.com" },
+    { enabled: false, kind: "self-hosted", host: "RELAY.example.com" },
     { host: "phone.example", authorization: `Bearer ${initial.secret}` },
   );
-  assert.equal(remote.error.code, "auth/local-access-required");
-  assert.equal(
-    (
-      await call("codexhost/relaySet", {
-        enabled: false,
-        kind: "self-hosted",
-        host: "RELAY.example.com",
-      })
-    ).value.status,
-    "off",
-  );
+  assert.equal(remote.error, undefined);
+  assert.equal(remote.value.status, "off");
   assert.equal(readServiceOptions(data).relayHost, "relay.example.com");
   assert.equal(
     (await call<WebAccessState>("codexhost/accessTokenGet")).value.secret,

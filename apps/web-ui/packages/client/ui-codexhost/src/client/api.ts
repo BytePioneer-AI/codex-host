@@ -2,6 +2,7 @@
 import { randomUUID } from "@deepseek-ai/dsh-util-crypto";
 import {
   harnessSessionImportResultSchema,
+  updateCheckResultSchema,
   voiceStatusResultSchema,
   voiceTranscribeResultSchema,
   harnessSessionImportSourcesResultSchema,
@@ -11,6 +12,7 @@ import {
   webAutostartStateSchema,
   webRelayStateSchema,
   webTurnDiffsResultSchema,
+  skillsListResultSchema,
   type HarnessCommandCatalog,
   type ThreadCommandExecuteResult,
   type HarnessSessionImportCandidate,
@@ -62,6 +64,53 @@ async function call<T>(method: string, args: Record<string, unknown>): Promise<T
     throw new ApiError(message, code, details);
   }
   return envelope.result.value;
+}
+
+export async function checkHostUpdate(signal: AbortSignal) {
+  const response = await fetch("api/ch/v1/rpc", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method: "codexhost/update/check", params: {} }),
+    signal,
+  });
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+  const reply = (await response.json()) as {
+    result?: unknown;
+    error?: { message?: string };
+  };
+  if (reply.error) throw new Error(reply.error.message ?? "Update check failed");
+  return updateCheckResultSchema.parse(reply.result);
+}
+
+const DESKTOP_EXTENSIONS_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Probe whether the connected Host supports Desktop extension management.
+ * Non-200 responses, RPC errors (e.g. -32601), timeouts, and transport failures
+ * resolve silently to `false`.
+ */
+export async function probeDesktopExtensionsSupport(signal: AbortSignal): Promise<boolean> {
+  const probeSignal =
+    typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.any([signal, AbortSignal.timeout(DESKTOP_EXTENSIONS_PROBE_TIMEOUT_MS)])
+      : signal;
+  try {
+    const response = await fetch("api/ch/v1/rpc", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ method: "codexhost/desktop/extensions/list", params: {} }),
+      signal: probeSignal,
+    });
+    if (response.status !== 200) return false;
+    const reply = (await response.json()) as { error?: unknown } | null;
+    return (
+      reply !== null && typeof reply === "object" && !("error" in reply && reply.error != null)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export const voiceApi = {
@@ -191,16 +240,59 @@ async function captureOnce(
   }
 }
 
-/** The server's request-trust decision, also used by local-only configuration RPCs. */
-export async function isLocalWebAccess(signal: AbortSignal): Promise<boolean> {
+/** The server's request-trust decision for the current session. */
+export async function readWebAccessAuth(
+  signal: AbortSignal,
+): Promise<{ authenticated: boolean; local: boolean }> {
   const response = await fetch("api/auth/status", {
     credentials: "same-origin",
     cache: "no-store",
     signal,
   });
-  if (!response.ok) return false;
+  if (!response.ok) return { authenticated: false, local: false };
   const status = (await response.json()) as { authenticated?: unknown; local?: unknown };
-  return status.authenticated === true && status.local === true;
+  return {
+    authenticated: status.authenticated === true,
+    local: status.local === true,
+  };
+}
+
+/** Whether this session is authenticated from this computer (used for local-only shortcuts). */
+export async function isLocalWebAccess(signal: AbortSignal): Promise<boolean> {
+  const status = await readWebAccessAuth(signal);
+  return status.authenticated && status.local;
+}
+
+/**
+ * Copy text via the async Clipboard API, falling back to `execCommand` on plain HTTP origins
+ * where `navigator.clipboard` is unavailable.
+ */
+export async function copyText(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard !== undefined) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      if (typeof window !== "undefined" && window.isSecureContext) throw error;
+    }
+  }
+  if (typeof document === "undefined" || document.body === null) {
+    throw new Error("Clipboard unavailable");
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  try {
+    textarea.select();
+    textarea.setSelectionRange(0, text.length);
+    if (!document.execCommand("copy")) throw new Error("Clipboard copy rejected");
+  } finally {
+    textarea.remove();
+  }
 }
 
 export const accessTokenApi = {
@@ -267,7 +359,12 @@ export const sentMessageEditApi = {
     ),
 };
 
-/** Thread-only discovery; never falls back to a draft Harness query. */
+export const skillLibraryApi = {
+  list: async (sessionId: string) =>
+    skillsListResultSchema.parse(await call<unknown>("codexhost/skills/list", { sessionId })),
+};
+
+/** A Thread's native catalog; a draft only gets official Codex Skills from its workspace. */
 export const harnessCommandApi = {
   inspect: (sessionId: string) =>
     call<HarnessCommandCatalog>("codexhost/threadCommands", {

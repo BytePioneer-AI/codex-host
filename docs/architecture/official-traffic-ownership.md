@@ -19,6 +19,10 @@ Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树�
 
 前端通过原生 CLI 的 `mcp list --json` 读取实际启用的本地及插件工具定义。仅为识别出的第一方服务生成临时 stdio 命令覆盖，经认证的 Desktop 上下文传给共享后端，启动记录保留原始参数。`thread/start`、`thread/resume`、`thread/fork` 的显式 MCP 覆盖沿用同一转换。保留请求其余字段、工具审批设置、超时和工具选择。MCP 消息及原生请求元数据按标准传输转发。配置转换在 Desktop 前端发生，共享 Host 继续持有任务执行。
 
+## Desktop 工具配置的生命周期
+
+共享 Host 使用最近接入且仍在线的 Desktop 提供的 Browser 授权、临时 MCP 覆盖与 app tools 管道。这些配置在连接断开时失效。共享 app-server 完成正在执行的官方任务，空闲后在下一次原生请求前按仍有效的配置重建。没有在线 Desktop 时，后端沿用已记录的原生启动参数，浏览器授权由官方工具按当前环境判定。
+
 ## 原生 Codex Fork 的模型继承
 
 Desktop 可能在 `thread/fork` 中省略 Model，原生 app-server 因此使用全局默认配置，而不是来源 Thread 的配置。共享原生通道对 Desktop 与 Web 一致补齐省略的 Model、Provider、Thinking 和 Fast：来源只取当前原生进程通过 `thread/start`、`thread/resume`、`thread/fork` 响应或 `thread/settings/updated` 确认的设置，不读取 Host 的最后一次草稿选择，也不复制权限、指令或其他配置。

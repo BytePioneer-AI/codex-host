@@ -35,6 +35,7 @@ import {
   harnessPreferencePatchSchema,
   IDLE_RELEASE_SETTINGS_METHOD,
   idleReleaseSettingsSchema,
+  isDesktopExtensionManagementMethod,
   jsonValueSchema,
   LOADED_SESSIONS_METHOD,
   USAGE_STATISTICS_METHOD,
@@ -46,6 +47,8 @@ import {
 } from "@codexhost/shared-contracts";
 
 import { handleCredentialImports } from "./credential-imports.js";
+import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import { handleDesktopExtensionRequest } from "./desktop-extension-requests.js";
 import { errorMessage, rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
@@ -68,6 +71,7 @@ export interface DesktopControlRequestHost {
   waitForPlugins(): Promise<void>;
   diagnose(error: unknown): void;
   readonly environment: NodeJS.ProcessEnv;
+  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
   readonly preferences: HarnessPreferencesStore;
   readonly displaySettings: HarnessDisplaySettingsStore;
   readonly launchSettings: HarnessLaunchSettingsStore;
@@ -105,6 +109,20 @@ export class DesktopControlRequests {
 
   /** Returns false when `request` is not a control request, leaving it to Thread routing. */
   async handle(request: JsonRpcRequest): Promise<boolean> {
+    const method = request.method;
+    if (isDesktopExtensionManagementMethod(method)) {
+      this.#host.dispatchReply(request, async () => {
+        await this.#host.writeJson(
+          await handleDesktopExtensionRequest(
+            method,
+            request,
+            this.#host.environment,
+            this.#host.desktopExtensionBackends,
+          ),
+        );
+      });
+      return true;
+    }
     if (
       request.method === HARNESS_PREFERENCES_GET_METHOD ||
       request.method === HARNESS_PREFERENCES_PATCH_METHOD

@@ -365,7 +365,7 @@ describe("AppServerHost output failure", () => {
       // A running native Subagent is tracked Host-side while the child Session
       // (for example a Claude Code ReadonlySnapshotSession) never ends its own
       // output stream.
-      session.startSubagentDelegation({
+      const subagentItemId = session.startSubagentDelegation({
         subagentId: "call-child",
         nativeSubagentId: "native-child",
         description: "Child worker",
@@ -382,25 +382,29 @@ describe("AppServerHost output failure", () => {
       const childId = child.id as string;
 
       if (ending === "settled EOF") {
-        session.emitEvent({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+        session.completeItem(subagentItemId, { status: "succeeded" });
+        session.succeedTurn();
         await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
       }
 
-      // Queue one submission so the settle path pauses and publishes the queue.
-      if (ending !== "settled EOF") {
-        writeRequest(fixture.desktopInput, {
-          id: 3,
-          method: "thread/queue/add",
-          params: { threadId, input: [{ type: "text", text: "queued" }] },
-        });
-        expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
-          result: { queuedSubmission: { id: expect.any(String) } },
-        });
-        await fixture.collector.waitFor(
-          (message) =>
-            method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
-        );
-      }
+      // Queue one submission in every path so active failures pause once and
+      // settled EOF proves a non-empty queue stays unpaused without auto-starting.
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "thread/queue/add",
+        params: { threadId, input: [{ type: "text", text: "queued" }] },
+      });
+      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+        result: { queuedSubmission: { id: expect.any(String) } },
+      });
+      await fixture.collector.waitFor(
+        (message) =>
+          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
+      );
+      expect((await fixture.host.clientSnapshot(threadId)).queue).toMatchObject({
+        items: [expect.objectContaining({ input: [{ type: "text", text: "queued" }] })],
+        pausedReason: null,
+      });
       const queueChangesBeforeKill = fixture.collector.messages.filter(
         (message) =>
           method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
@@ -420,15 +424,15 @@ describe("AppServerHost output failure", () => {
 
       await fixture.collector.waitFor((message) => threadStatus(message, childId, "idle"));
       await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
-      // The Subagent must be retired even though its own output stream never ends.
-      const childStatuses = fixture.collector.messages.filter(
+      // Check the final status: failure projection can replay the running Subagent.
+      const childStatus = fixture.collector.messages.findLast(
         (message) =>
           method(message, "thread/status/changed") && messageParams(message).threadId === childId,
       );
-      expect(threadStatus(childStatuses.at(-1) ?? {}, childId, "idle")).toBe(true);
+      expect(childStatus).toMatchObject({ params: { status: { type: "idle" } } });
 
-      // Exactly one pause publication: the settled failure's "failed" pause from
-      // the Turn projection, without a second inconsistent "outcome-unknown" one.
+      // Active failures publish one "failed" pause from the Turn projection without a
+      // second "outcome-unknown" pause; settled EOF leaves the queued item unpaused.
       const queueChanges = fixture.collector.messages.filter(
         (message) =>
           method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
@@ -436,6 +440,13 @@ describe("AppServerHost output failure", () => {
       expect(queueChanges).toHaveLength(
         queueChangesBeforeKill + (ending === "settled EOF" ? 0 : 1),
       );
+      expect(
+        fixture.collector.messages.filter((message) => method(message, "turn/started")),
+      ).toHaveLength(1);
+      expect((await fixture.host.clientSnapshot(threadId)).queue).toMatchObject({
+        items: [expect.objectContaining({ input: [{ type: "text", text: "queued" }] })],
+        pausedReason: ending === "settled EOF" ? null : "failed",
+      });
     } finally {
       await stopFixture(fixture);
     }

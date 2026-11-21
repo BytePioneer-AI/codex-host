@@ -529,4 +529,26 @@ describe("DelegationWatchService", () => {
       service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 }),
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
   });
+
+  it("nudges observation and delivery immediately when a watched or notified Thread becomes idle", async () => {
+    const fake = runtime({ child: { status: "running" }, parent: { status: "running" } });
+    const service = new DelegationWatchService(fake, { pollIntervalMs: 30_000 });
+    await service.watch({ threadId: "child", notifyThreadId: "parent", timeoutMs: 60_000 });
+    fake.sendFailures.push(busy());
+
+    fake.update("child", { status: "completed" });
+    service.nudge("child");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fake.send).toHaveBeenCalledTimes(1);
+    expect(fake.sent).toEqual([]);
+    await expect(service.watches()).resolves.toMatchObject({
+      watches: [{ threadId: "child", state: "pendingDelivery", outcome: "completed" }],
+    });
+
+    fake.update("parent", { status: "completed" });
+    service.nudge("parent");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fake.sent).toHaveLength(1);
+    await expect(service.watches()).resolves.toEqual({ watches: [] });
+  });
 });

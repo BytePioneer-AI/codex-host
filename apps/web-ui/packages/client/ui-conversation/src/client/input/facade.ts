@@ -200,13 +200,7 @@ export class SessionInputShell implements SessionInput {
       if (options?.focus === "end" && !this.canInsertReferences()) return undefined;
       const id = this.addResponseAnnotation(annotation);
       if (id !== undefined && options?.focus === "end" && this.canInsertReferences()) {
-        this.editor.update(
-          () => {
-            $getRoot().selectEnd();
-          },
-          { discrete: true },
-        );
-        this.focus();
+        this.focus("end");
       }
       return id;
     },
@@ -757,13 +751,22 @@ export class SessionInputShell implements SessionInput {
   }
 
   /**
-   * Return the keyboard to the composer with the caret it last held. Lexical's
-   * own focus restores its stored selection; a bare DOM focus on the
-   * contenteditable would land the caret at the start instead.
+   * Return the keyboard to the composer, restoring its selection by default.
+   * @param placement - force the caret to the end instead.
    */
-  focus(): void {
+  focus(placement?: "end"): void {
     this.editor.getRootElement()?.focus({ preventScroll: true });
-    this.editor.focus();
+    if (placement === "end") {
+      // Native focus can put the DOM caret at the start of a replaced draft.
+      this.editor.update(
+        () => {
+          $getRoot().selectEnd();
+        },
+        { discrete: true },
+      );
+    } else {
+      this.editor.focus();
+    }
   }
 
   // ---- wiring-layer extras (not on the frozen SessionInput face) ----

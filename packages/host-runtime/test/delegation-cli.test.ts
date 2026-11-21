@@ -724,24 +724,25 @@ describe("delegation CLI", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("preserves structured Runtime errors", async () => {
+  it.each([
+    {
+      code: "THREAD_NOT_FOUND",
+      message: "Thread was not found",
+      details: { thread: "missing" },
+    },
+    {
+      code: "INTERNAL_ERROR",
+      message: "External Session shutdown could not be confirmed",
+      details: { externalThreadCode: -32075 },
+    },
+  ])("preserves structured Runtime errors: $code", async (error) => {
     const diagnosticOutput = new PassThrough();
     const fetchImpl = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              code: "THREAD_NOT_FOUND",
-              message: "Thread was not found",
-              details: { thread: "missing" },
-            },
-          }),
-          { status: 400 },
-        ),
+      async () => new Response(JSON.stringify({ error }), { status: 400 }),
     ) as unknown as typeof fetch;
     await expect(
       runDelegationCli({
-        arguments: ["thread", "read", "missing"],
+        arguments: ["thread", "read", "thread-1", "--format", "compact"],
         environment: {
           [DELEGATION_RUNTIME_ENDPOINT_ENV]: "http://127.0.0.1:4321",
           [DELEGATION_RUNTIME_TOKEN_ENV]: "token",
@@ -750,13 +751,7 @@ describe("delegation CLI", () => {
         fetchImpl,
       }),
     ).resolves.toBe(1);
-    expect(JSON.parse(outputText(diagnosticOutput))).toEqual({
-      error: {
-        code: "THREAD_NOT_FOUND",
-        message: "Thread was not found",
-        details: { thread: "missing" },
-      },
-    });
+    expect(JSON.parse(outputText(diagnosticOutput))).toEqual({ error });
   });
 
   it("reports a missing local Host without requiring injected credentials", async () => {

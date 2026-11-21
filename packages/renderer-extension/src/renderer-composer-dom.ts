@@ -57,6 +57,7 @@ import {
   type RendererHarnessCommandControl,
 } from "./renderer-harness-command-control.js";
 import { observeRendererCompactComposer } from "./renderer-trigger-chip-style.js";
+import { isNativeModelRetryButton } from "./renderer-native-model-retry.js";
 
 export { CONTROL_ATTRIBUTE };
 export type ExternalModelControlView = RendererModelControlView;
@@ -347,8 +348,15 @@ function nativePermissionModeControlForComposer(composer: Element): HTMLElement 
 
 function nativeModelControlForComposer(composer: Element): HTMLElement | null {
   const candidates = [
-    ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
-  ].filter((element) => isNativeModelControlCandidate(element));
+    ...composer.querySelectorAll<HTMLElement>(
+      'button[aria-haspopup="menu"], button[data-composer-navigation-target="reasoning"]',
+    ),
+  ].filter(
+    (button) =>
+      !isOwnedRendererControl(button) &&
+      button.closest(CODEX_COMPOSER_SELECTOR) === composer &&
+      (isNativeModelControlCandidate(button) || isNativeModelRetryButton(button, composer)),
+  );
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
@@ -472,12 +480,10 @@ function refreshNativeContextUsageControl(control: ComposerAgentControl): void {
 
 function refreshNativeModelControl(control: ComposerAgentControl): void {
   const candidate = nativeModelControlForComposer(control.composer);
-  if (!candidate) return;
-  if (candidate !== control.nativeModelControl?.element) {
-    restoreNativeControl(control.nativeModelControl);
-    control.nativeModelControl = captureNativeControl(candidate);
-    syncRendererModelTriggerClass(control.modelPicker);
-  }
+  if (candidate === (control.nativeModelControl?.element ?? null)) return;
+  restoreNativeControl(control.nativeModelControl);
+  control.nativeModelControl = captureNativeControl(candidate);
+  if (candidate) syncRendererModelTriggerClass(control.modelPicker);
 }
 
 function usagePlacementAnchor(control: ComposerAgentControl): HTMLElement | null {

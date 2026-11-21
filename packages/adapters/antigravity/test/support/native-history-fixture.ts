@@ -24,19 +24,22 @@ export function runField(run: string): Buffer {
 }
 
 export function userStep(db: DatabaseSync, idx: number, text: string, run = ""): void {
-  db.prepare("INSERT INTO steps VALUES (?, 14, 3, ?)").run(
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, 14, 3, ?)").run(
     idx,
     Buffer.concat([runField(run), bytes(19, bytes(3, textField(1, text)))]),
   );
 }
 
 export function answerStep(db: DatabaseSync, idx: number, text: string, run = ""): void {
-  db.prepare("INSERT INTO steps VALUES (?, 15, 3, ?)").run(
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, 15, 3, ?)").run(
     idx,
     Buffer.concat([runField(run), bytes(20, textField(1, text))]),
   );
 }
 
 export function systemStep(db: DatabaseSync, idx: number, run: string): void {
-  db.prepare("INSERT INTO steps VALUES (?, 101, 3, ?)").run(idx, runField(run));
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, 101, 3, ?)").run(
+    idx,
+    runField(run),
+  );
 }

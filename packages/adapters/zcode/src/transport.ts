@@ -50,6 +50,7 @@ export class CliTransport {
   #startPlan = false;
   #signedIn = false;
   #startPlanChecked = true;
+  #credentialIssue: string | undefined;
   #codingPlan!: PersonalCodingPlanAccount;
   #fault: Error | undefined;
   #closed = false;
@@ -70,6 +71,9 @@ export class CliTransport {
   get startPlanChecked() {
     return this.#startPlanChecked;
   }
+  get credentialIssue() {
+    return this.#credentialIssue;
+  }
   get codingPlanIssue() {
     return this.#codingPlan?.issue;
   }
@@ -89,12 +93,14 @@ export class CliTransport {
       startPlan,
       signedIn,
       startPlanChecked,
+      credentialIssue,
       codingPlan,
     } = await accountConfig(installation, this.options.environment);
     this.#installation = installation;
     this.#startPlan = startPlan;
     this.#signedIn = signedIn;
     this.#startPlanChecked = startPlanChecked;
+    this.#credentialIssue = credentialIssue;
     this.#codingPlan = codingPlan;
     // ZCode Desktop runs its Agent CLI on its own Electron build as Node; the CLI's native
     // plugin modules are built for that runtime. Its tool children inherit the variable, as there.

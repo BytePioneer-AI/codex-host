@@ -108,8 +108,15 @@
 
 .select:focus-visible,
 .close:focus-visible {
-  outline: 2px solid var(--dsw-alias-label-primary);
-  outline-offset: -2px;
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .select:focus-visible,
+  .close:focus-visible {
+    outline: 2px solid var(--dsw-alias-label-primary);
+    outline-offset: -2px;
+  }
 }
 
 .identity {

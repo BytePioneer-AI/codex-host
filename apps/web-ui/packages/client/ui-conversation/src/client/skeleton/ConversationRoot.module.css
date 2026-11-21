@@ -262,33 +262,38 @@ button.crumb:hover {
   top: 0;
   right: 0;
   left: 0;
-  height: calc(var(--dsh-phone-header-height) + 14px);
+  height: calc(var(--dsh-phone-header-height) + 32px);
   z-index: -1;
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 58%, transparent) 0%,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 36%, transparent) 68%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 78%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 58%, transparent) 44%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 24%, transparent) 74%,
     transparent 100%
   );
   pointer-events: none;
 }
 
-@supports (backdrop-filter: blur(10px)) or (-webkit-backdrop-filter: blur(10px)) {
+@supports (backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px)) {
   :global([data-phone]) .root[data-phase="active"] .header::before {
-    -webkit-backdrop-filter: blur(10px) saturate(130%);
-    backdrop-filter: blur(10px) saturate(130%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
     -webkit-mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 68%,
-      rgb(0 0 0 / 0.45) 86%,
+      rgb(0 0 0 / 0.92) 42%,
+      rgb(0 0 0 / 0.56) 62%,
+      rgb(0 0 0 / 0.22) 78%,
+      rgb(0 0 0 / 0.05) 91%,
       transparent 100%
     );
     mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 68%,
-      rgb(0 0 0 / 0.45) 86%,
+      rgb(0 0 0 / 0.92) 42%,
+      rgb(0 0 0 / 0.56) 62%,
+      rgb(0 0 0 / 0.22) 78%,
+      rgb(0 0 0 / 0.05) 91%,
       transparent 100%
     );
   }
@@ -297,8 +302,9 @@ button.crumb:hover {
 :global(body[data-codexhost-wallpaper] [data-phone]) .root[data-phase="active"] .header::before {
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 44%, transparent) 0%,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 24%, transparent) 68%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 64%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 42%, transparent) 44%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 16%, transparent) 74%,
     transparent 100%
   );
 }
@@ -396,8 +402,14 @@ button.crumb:hover {
 }
 
 :global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return]):focus-visible) {
-  outline: 2px solid var(--dsw-alias-label-primary);
-  outline-offset: 2px;
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return]):focus-visible) {
+    outline: 2px solid var(--dsw-alias-label-primary);
+    outline-offset: 2px;
+  }
 }
 
 :global([data-phone]) .crumbs {
@@ -788,6 +800,7 @@ button.crumb:hover {
      `.list`, ui-sidebar-files FilesBody `.body`): the bar sits 2px clear of
      the column's edge instead of flush against it. */
   margin-right: 2px;
+  overflow-x: hidden;
   overflow-y: auto;
   /* Reserved unconditionally: the composer seat rides this box's content box in
      Chat and its padding box under a view's composer overlay, so an `auto`

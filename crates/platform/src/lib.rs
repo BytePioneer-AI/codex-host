@@ -72,6 +72,8 @@ pub use installation::discover_codex_desktop;
 pub use installation::discover_codex_desktop_from_root;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 pub use installation::discover_desktop_managed_codex_cli;
+#[cfg(target_os = "windows")]
+pub use installation::discover_registered_codex_desktop;
 #[cfg(target_os = "linux")]
 pub use linux_installation::discover_codex_desktop;
 pub use macos_native_harness_broker::{
@@ -142,6 +144,9 @@ pub const CUSTOM_INSTALL_ROOT_ENV: &str = "CODEXHOST_INSTALL_ROOT";
 pub enum DesktopLaunchMode {
     LaunchServices,
     DirectExecutable,
+    /// Spawn the registered Store executable instead of activating its AUMID.
+    #[cfg(target_os = "windows")]
+    WindowsDirect,
 }
 
 impl DesktopLaunchMode {
@@ -150,6 +155,8 @@ impl DesktopLaunchMode {
         match self {
             Self::LaunchServices => "launch-services",
             Self::DirectExecutable => "direct-executable",
+            #[cfg(target_os = "windows")]
+            Self::WindowsDirect => "windows-direct",
         }
     }
 }

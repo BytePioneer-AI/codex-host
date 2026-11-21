@@ -2,8 +2,8 @@
 
 ## 1. 统一契约与文件原语（Stage 1，前置依赖）
 
-- [ ] 1.1 在 `packages/shared-contracts` 定义统一的 Host 扩展清单（含可选 `page`/`desktop`/`web`/`backend` 及 v1 兼容解析）、`HostExtensionPageApi`、`codexhost/extensions/*` RPC 与 `extensions-changed` 事件契约；更新导出并清理废弃的平行契约。验证：`npx tsc -b packages/shared-contracts` 与 `npx vitest run --config tests/vitest.config.js packages/shared-contracts/test/`。
-- [ ] 1.2 在 `packages/harness-plugin-files` 实现统一单目录（`host-extensions/` + `host-extension-data/`）发现、代次原子安装/更新/卸载、启用状态与 `settings.json` 读写、资产安全读取（禁止 `backend.entry` 与路径穿越）及 `catalog.v2.json` 并发竞速拉取。验证：`npx tsc -b packages/harness-plugin-files` 与 `npx vitest run --config tests/vitest.config.js packages/harness-plugin-files/test/`。
+- [x] 1.1 在 `packages/shared-contracts` 定义统一的 Host 扩展清单（含可选 `page`/`desktop`/`web`/`backend` 及 v1 兼容解析）、`HostExtensionPageApi`、`codexhost/extensions/*` RPC 与 `extensions-changed` 事件契约；更新导出并清理废弃的平行契约。验证：`npx tsc -b packages/shared-contracts` 与 `npx vitest run --config tests/vitest.config.js packages/shared-contracts/test/`。
+- [x] 1.2 在 `packages/harness-plugin-files` 实现统一单目录（`host-extensions/` + `host-extension-data/`）发现、代次原子安装/更新/卸载、启用状态与 `settings.json` 读写、资产安全读取（禁止 `backend.entry` 与路径穿越）及 `catalog.v2.json` 并发竞速拉取。验证：`npx tsc -b packages/harness-plugin-files` 与 `npx vitest run --config tests/vitest.config.js packages/harness-plugin-files/test/`。
 
 ## 2. 共享 Host、Web 薄代理与跨端前端（Stage 2，3 路并行）
 

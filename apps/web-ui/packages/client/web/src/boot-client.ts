@@ -85,13 +85,16 @@ export function partitionBootManifest(
   const coreIds = new Set(
     manifest.plugins.filter((row) => isCorePlugin(row.id)).map((row) => row.id),
   );
+  const external = manifest.plugins.filter((row) => !coreIds.has(row.id));
+  const externalIds = new Set(external.map((row) => row.id));
   return {
     core: {
       rev: manifest.rev,
-      modules: manifest.modules.filter((row) => coreIds.has(row.id)),
+      // Keep every shared library module (clsx, zod, dsh-util-*, etc.); only defer external plugin entries.
+      modules: manifest.modules.filter((row) => !externalIds.has(row.id)),
       plugins: manifest.plugins.filter((row) => coreIds.has(row.id)),
     },
-    external: manifest.plugins.filter((row) => !coreIds.has(row.id)),
+    external,
   };
 }
 

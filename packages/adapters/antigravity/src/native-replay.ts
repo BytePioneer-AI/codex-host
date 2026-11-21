@@ -87,8 +87,8 @@ export function decodeNativeHistory(db: DatabaseSync) {
     )
     .iterate()) {
     const idx = Number(row.idx);
-    if (row.step_type === USER_INPUT) {
-      turnCount++;
+    const nativeTurnIndex = row.step_type === USER_INPUT ? turnCount++ : undefined;
+    if (nativeTurnIndex !== undefined) {
       endWake();
       finalPlanner = false;
     }
@@ -127,7 +127,8 @@ export function decodeNativeHistory(db: DatabaseSync) {
         );
         const text = items.join("") || textField(body, 2) || textField(body, 1);
         pendingCalls.clear();
-        if (text) events.push({ type: "user.text", text });
+        if (text && nativeTurnIndex !== undefined)
+          events.push({ type: "user.text", text, nativeTurnIndex });
         break;
       }
       case PLANNER_RESPONSE: {
@@ -190,9 +191,8 @@ export function decodeNativeHistory(db: DatabaseSync) {
       }
     }
   }
-  const pendingWake = !!candidate || !!(wake && !wake.settled);
   endWake();
   const wakeWatermark =
     events.findLast((event) => event.type === "history.autonomous")?.stepIndex ?? -1;
-  return { events, turnCount, pendingWake, wakeWatermark };
+  return { events, turnCount, wakeWatermark };
 }

@@ -31,6 +31,7 @@ export type TurnScopedEvent = Exclude<
       | "session.state.changed"
       | "session.usage.changed"
       | "usage.request"
+      | "usage.request.timing"
       | "usage.history"
       | "subagent.state.changed"
       | "subagent.transcript.changed"
@@ -67,6 +68,7 @@ export interface ExternalTurnProjectionHost {
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
+  touchThread(thread: ExternalThread): Promise<void>;
   persistTerminalIdentity(
     thread: ExternalThread,
     event: Parameters<ExternalThreadRuntime["persistTerminalIdentity"]>[1],
@@ -154,9 +156,10 @@ export class ExternalTurnProjection {
         (item) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim(),
       );
     const ephemeralTurn =
-      event.type === "turn.completed" &&
-      (event.ephemeral === true ||
-        (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand));
+      event.type === "turn.completed"
+        ? event.ephemeral === true ||
+          (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand)
+        : thread.ephemeralTurnIds.has(event.turnId);
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#host.persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -186,16 +189,17 @@ export class ExternalTurnProjection {
       thread.thread.recencyAt = updatedAt;
     }
     if (event.type === "turn.started") {
-      if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
+      if (thread.clientCommand && !ephemeralTurn)
         thread.clientCommand.subsequentTurnId ??= event.turnId;
       // A successor Turn ends the attribution window of every earlier Turn.
       this.#dropSettledTurnProjections(thread, event.turnId);
+      // Not awaited: the write must not delay the Turn's first output.
+      if (!ephemeralTurn) void this.#host.touchThread(thread);
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
-      const completedAt = Math.floor(Date.now() / 1000);
       const turn = projection.projector.snapshotTurn(result.completedTurn);
       if (thread.ephemeralTurnIds.delete(event.turnId)) {
         if (thread.clientCommand?.turn.id === event.turnId) {
@@ -207,12 +211,12 @@ export class ExternalTurnProjection {
       if (!ephemeralTurn) {
         thread.turns.push(turn);
         thread.projectedTerminalTurnId = event.turnId;
-        thread.thread.updatedAt = completedAt;
-        thread.thread.recencyAt = completedAt;
       }
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
+      // Before any completion message, so a client acting on it reads the touched record.
+      if (!ephemeralTurn) await this.#host.touchThread(thread);
       // Detached Items (native background commands) and idle background output
       // settle on the completed Turn later; keep its projector so late events
       // still project instead of failing on a missing Turn.
@@ -264,7 +268,18 @@ export class ExternalTurnProjection {
       )
         thread.projectedTurns.delete(event.turnId);
     }
-    for (const message of result.messages) await this.#host.writeJson(message);
+    for (const message of result.messages) {
+      const params = message.params;
+      if (
+        message.method === "turn/plan/updated" &&
+        typeof params === "object" &&
+        params !== null &&
+        !Array.isArray(params)
+      ) {
+        thread.livePlan = params;
+      }
+      await this.#host.writeJson(message);
+    }
     if (event.type === "turn.completed") {
       await this.#host.setThreadStatus(
         thread,

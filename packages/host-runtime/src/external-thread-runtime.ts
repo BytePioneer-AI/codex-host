@@ -20,6 +20,7 @@ import {
   type ExternalHarnessId,
   type ExternalThreadRpcError,
   type JsonObject,
+  type TodoPlan,
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
@@ -69,6 +70,7 @@ export interface ExternalThread {
   thread: JsonObject;
   transportModelId: string;
   turns: JsonObject[];
+  historicalPlans: ReadonlyMap<string, TodoPlan>;
   historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
@@ -77,6 +79,8 @@ export interface ExternalThread {
   // history cannot be refreshed.
   projectedTerminalTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
+  /** turn/plan/updated params projected live since history was last loaded; newer than history. */
+  livePlan: JsonObject | null;
   /** Host metering for the current Session only; replaced with it. */
   usageMeter: UsageMeter;
   usageTurnId: HostTurnId | null;
@@ -385,6 +389,7 @@ export class ExternalThreadRuntime {
     sessionId: string;
     thread: JsonObject;
     turns: JsonObject[];
+    historicalPlans?: ReadonlyMap<string, TodoPlan>;
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
@@ -439,10 +444,12 @@ export class ExternalThreadRuntime {
         : input.thread,
       transportModelId: input.transportModelId ?? input.record.transportModelId,
       turns: input.turns,
+      historicalPlans: input.historicalPlans ?? new Map(),
       historyHydrated: true,
       running,
       activeTurnId: null,
       latestUsage: input.session.initialUsage,
+      livePlan: null,
       usageMeter: new UsageMeter(),
       usageTurnId: null,
       projectedTurns: new Map(),
@@ -484,6 +491,7 @@ export class ExternalThreadRuntime {
       sessionId: string;
       thread: JsonObject;
       turns: JsonObject[];
+      historicalPlans: ReadonlyMap<string, TodoPlan>;
       restoredState?: HarnessSessionState;
     },
   ): Promise<ExternalThread> {
@@ -633,55 +641,66 @@ export class ExternalThreadRuntime {
       const revived = await this.#reviveIdleSession(thread);
       if (revived) return revived;
     }
-    let recordAtRead = thread.record;
-    let snapshot = await thread.session.readSnapshot();
-    if (!snapshot.ok) {
-      // A faulted/closed Session stays registered until we drop it; revive in place so
-      // callers that already hold this ExternalThread keep working after restore.
-      if (
-        snapshot.error.code === "invalidState" &&
-        this.#idleForRestore(thread) &&
-        this.#threads.get(thread.id) === thread
-      ) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let recordAtRead = thread.record;
+      let snapshot = await thread.session.readSnapshot();
+      if (!snapshot.ok) {
+        // A faulted/closed Session stays registered until it can be revived in place.
+        if (
+          snapshot.error.code !== "invalidState" ||
+          !this.#idleForRestore(thread) ||
+          this.#threads.get(thread.id) !== thread
+        ) {
+          return mapExternalThreadHarnessError(snapshot.error, "read");
+        }
         const revived = await this.#reviveIdleSession(thread);
         if (revived) return revived;
         recordAtRead = thread.record;
         snapshot = await thread.session.readSnapshot();
         if (!snapshot.ok) return mapExternalThreadHarnessError(snapshot.error, "read");
-      } else {
-        return mapExternalThreadHarnessError(snapshot.error, "read");
       }
-    }
-    const read = snapshot.value;
-    let failureResult: ExternalThreadRpcError | null = null;
-    await this.#historyWrites.run(thread.id, async () => {
+      const read = snapshot.value;
+      let stale = false;
       try {
-        // A completed native Turn may have been appended while reading. Do not
-        // replace that newer ledger with an older snapshot.
-        if (thread.record.turnMappings !== recordAtRead.turnMappings) return;
-        const aligned = await this.#repository.alignSnapshot(thread.record, read);
-        // Before native identity exists, an empty Snapshot cannot reconcile the
-        // failed or cancelled Turns retained only in this loaded Host Thread.
-        const turns =
-          aligned.record.state === "creating" &&
-          !aligned.record.nativeSessionRef &&
-          read.turns.length === 0
-            ? thread.turns
-            : aligned.turns;
-        thread.record = aligned.record;
-        thread.turns = turns;
-        thread.historyHydrated = true;
-        thread.thread = externalThreadValue({
-          record: aligned.record,
-          turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
+        await this.#historyWrites.run(thread.id, async () => {
+          // A live append may have installed newer history. Retry instead of losing either
+          // that mapping or older native Turns discovered by this read.
+          if (thread.record.turnMappings !== recordAtRead.turnMappings) {
+            stale = true;
+            return;
+          }
+          const aligned = await this.#repository.alignSnapshot(thread.record, read);
+          // Before native identity exists, an empty Snapshot cannot reconcile the
+          // failed or cancelled Turns retained only in this loaded Host Thread.
+          const turns =
+            aligned.record.state === "creating" &&
+            !aligned.record.nativeSessionRef &&
+            read.turns.length === 0
+              ? thread.turns
+              : aligned.turns;
+          thread.record = aligned.record;
+          if (turns !== thread.turns) {
+            thread.livePlan = null;
+            thread.historicalPlans = aligned.historicalPlans;
+          }
+          thread.turns = turns;
+          thread.historyHydrated = true;
+          thread.thread = externalThreadValue({
+            record: aligned.record,
+            turns,
+            sessionId: thread.sessionId,
+            running: thread.running,
+          });
         });
       } catch {
-        failureResult = { code: -32081, message: "External Thread history could not be persisted" };
+        return { code: -32081, message: "External Thread history could not be persisted" };
       }
-    });
-    return failureResult;
+      if (!stale) return null;
+    }
+    return {
+      code: -32081,
+      message: "External Thread history changed during read; retry the request",
+    };
   }
 
   async #reviveIdleSession(thread: ExternalThread): Promise<ExternalThreadRpcError | null> {
@@ -783,6 +802,8 @@ export class ExternalThreadRuntime {
       thread.session = session;
       thread.record = aligned.record;
       thread.turns = aligned.turns;
+      thread.historicalPlans = aligned.historicalPlans;
+      thread.livePlan = null;
       thread.historyHydrated = true;
       thread.sessionUnavailable = false;
       thread.persistenceError = null;
@@ -921,6 +942,24 @@ export class ExternalThreadRuntime {
     return turn;
   }
 
+  /**
+   * Marks a Turn starting or ending as Thread activity. Status notifications reach only the
+   * connection that runs the Turn; other clients' thread catalogs re-read only rows whose
+   * updatedAt moved past what they have seen.
+   */
+  async touch(thread: ExternalThread): Promise<void> {
+    try {
+      thread.record = await this.#repository.touch(thread.id);
+      const updatedAt = Math.floor(Date.parse(thread.record.updatedAt) / 1_000);
+      if (typeof thread.thread.updatedAt !== "number" || updatedAt > thread.thread.updatedAt)
+        thread.thread.updatedAt = updatedAt;
+      if (typeof thread.thread.recencyAt !== "number" || updatedAt > thread.thread.recencyAt)
+        thread.thread.recencyAt = updatedAt;
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
   async persistTerminalIdentity(
     thread: ExternalThread,
     event: TurnCompletedEvent,
@@ -1013,6 +1052,7 @@ export class ExternalThreadRuntime {
         sessionId,
         thread: externalThreadValue({ record: aligned.record, turns: aligned.turns, sessionId }),
         turns: aligned.turns,
+        historicalPlans: aligned.historicalPlans,
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
@@ -1087,6 +1127,7 @@ export class ExternalThreadRuntime {
           sessionId,
         }),
         turns: aligned.turns,
+        historicalPlans: aligned.historicalPlans,
         ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
         ...(effectiveThinkingOptionId
           ? { requestedThinkingOptionId: effectiveThinkingOptionId }

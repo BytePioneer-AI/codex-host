@@ -248,24 +248,26 @@ export class SidebarDirectSession {
       .sort()
       .join(" ");
     const remoteUfrag = media.iceParams.usernameFragment;
+    let peer: Peer;
     if (offer.restart) {
+      const existing = this.peer;
       if (
-        !this.peer ||
-        this.peer.pc.signalingState !== "stable" ||
-        this.peer.fingerprint !== fingerprint ||
-        this.peer.remoteUfrag === remoteUfrag
+        !existing ||
+        existing.pc.signalingState !== "stable" ||
+        existing.fingerprint !== fingerprint ||
+        existing.remoteUfrag === remoteUfrag
       )
         throw new Error("Expected an ICE restart on the same DTLS association");
-      this.peer.remoteUfrag = remoteUfrag;
+      existing.remoteUfrag = remoteUfrag;
+      peer = existing;
     } else {
       const pc = new RTCPeerConnection({
         iceStunGatherTimeout: 1.5,
         iceServers: this.iceServers.map((urls) => ({ urls })),
       });
-      const peer = (this.peer = { fingerprint, remoteUfrag, pc });
+      peer = this.peer = { fingerprint, remoteUfrag, pc };
       pc.onDataChannel.subscribe((channel) => this.channel(peer, channel));
     }
-    const peer = this.peer!;
     const { pc } = peer;
     const iceSummary = new SidebarBrowserIceSummary();
     for (const candidate of media.iceCandidates) iceSummary.received(candidate);
@@ -416,8 +418,9 @@ export class SidebarDirectSession {
     if (
       control?.readyState !== "open" ||
       transport?.state !== "connected" ||
+      !ice ||
       !pair ||
-      !["connected", "completed"].includes(ice!.state)
+      !["connected", "completed"].includes(ice.state)
     )
       return;
     if (pair.local.type === "relay" || pair.remote.type === "relay") {

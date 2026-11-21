@@ -104,6 +104,7 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     return;
   }
   if (req.method === 'session/close') {
+    process.stderr.write('session-close-sent\\n');
     update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'late-close-notification'}});
     if (scenario === 'close-stalled') return;
     return result(req.id,{});
@@ -574,6 +575,16 @@ describe("native ACP stdio transport", () => {
     await delay(10);
     await value.close();
     expect(await pending).toContain("closed");
+  });
+  it("closes via stdin EOF without sending session/close", async () => {
+    const stderr: string[] = [];
+    const value = transport("ok");
+    await open(value);
+    const child = fixture.children.at(-1);
+    expect(child).toBeDefined();
+    child?.stderr.on("data", (chunk: Buffer) => stderr.push(chunk.toString()));
+    await value.close();
+    expect(stderr.join("")).not.toContain("session-close-sent");
   });
   it("requires a session ID for resume and prohibits overlapping sessions/prompts", async () => {
     const value = transport("stall-prompt");

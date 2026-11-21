@@ -6,7 +6,7 @@ import type {
   HostTurnSnapshot,
 } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1, StoredTurnMappingV1 } from "@codexhost/mapping-store";
-import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
+import { projectHistoricalTurn, type JsonObject, type TodoPlan } from "@codexhost/protocol-core";
 import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-contracts";
 
 import { withoutInjectedText } from "./external-thread-side-chat.js";
@@ -172,6 +172,7 @@ export async function projectExternalTurn(
   turnId: StoredTurnMappingV1["hostTurnId"],
   turn: HostTurnSnapshot,
   materialize: ReturnType<typeof subagentMaterializer>,
+  historicalPlans?: Map<string, TodoPlan>,
 ): Promise<JsonObject> {
   const items = await Promise.all(
     turn.items.map(async (entry) => {
@@ -186,12 +187,15 @@ export async function projectExternalTurn(
     }),
   );
   const injected = record.injectedTurnPrefixes?.find(({ hostTurnId }) => hostTurnId === turnId);
-  return projectHistoricalTurn({
-    threadId: record.hostThreadId,
-    turnId,
-    cwd: record.cwd,
-    snapshot: { ...turn, input: withoutInjectedText(turn.input, injected), items },
-  });
+  return projectHistoricalTurn(
+    {
+      threadId: record.hostThreadId,
+      turnId,
+      cwd: record.cwd,
+      snapshot: { ...turn, input: withoutInjectedText(turn.input, injected), items },
+    },
+    historicalPlans,
+  );
 }
 
 export async function projectExternalSnapshot(
@@ -199,13 +203,16 @@ export async function projectExternalSnapshot(
   record: StoredThreadRecordV1,
   snapshot: HostThreadSnapshot,
   previousParent?: StoredThreadRecordV1,
-): Promise<JsonObject[]> {
+): Promise<{ turns: JsonObject[]; historicalPlans: ReadonlyMap<string, TodoPlan> }> {
   const materialize = subagentMaterializer(store, record, previousParent);
   const turns: JsonObject[] = [];
+  const historicalPlans = new Map<string, TodoPlan>();
   for (const [index, turn] of snapshot.turns.entries()) {
     const mapping = record.turnMappings[index];
     if (!mapping) throw new Error("External Snapshot mapping is incomplete");
-    turns.push(await projectExternalTurn(record, mapping.hostTurnId, turn, materialize));
+    turns.push(
+      await projectExternalTurn(record, mapping.hostTurnId, turn, materialize, historicalPlans),
+    );
   }
-  return turns;
+  return { turns, historicalPlans };
 }

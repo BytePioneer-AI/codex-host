@@ -68,7 +68,7 @@ export class RequestTrust {
     const family = isIP(client);
     if (family === 4) {
       const [first, second] = client.split(".").map(Number);
-      return first !== 100 || second! < 64 || second! > 127;
+      return first !== 100 || (second !== undefined && (second < 64 || second > 127));
     }
     // Canonicalize the Serve address without changing what the auth layer trusts.
     return (

@@ -54,15 +54,11 @@ export class AntigravityWakeObserver {
   }
 
   async #read(): Promise<void> {
-    let retry = true;
     try {
       const { nativeSessionId, home, cwd, outputLimit } = this.options;
-      const { events, pendingWake } = await readNativeHistory(nativeSessionId, home);
+      const { events, wakeWatermark } = await readNativeHistory(nativeSessionId, home);
       if (this.#closed || !this.options.canPublish()) return;
-      const firstNew = events.findIndex(
-        (event) => event.type === "history.autonomous" && event.stepIndex > this.#cursor,
-      );
-      if (firstNew < 0) return;
+      if (wakeWatermark <= this.#cursor) return;
       const turns = projectReplayedEventsToTurns({
         nativeSessionId,
         cwd,
@@ -77,12 +73,12 @@ export class AntigravityWakeObserver {
         this.options.publish(turn);
         this.#cursor = idx;
       }
-      retry = pendingWake;
     } catch {
-      // Native writes may still be committing. A history read remains the
-      // recovery path if the commit outlives the observation window.
+      // A history read remains the recovery path if the commit outlives this window.
     } finally {
-      if (retry && !this.#closed && Date.now() < this.#deadline) {
+      // A notification carries no run ID. Finding a committed wake does not prove the
+      // notified wake is already in SQLite; keep polling until the deadline.
+      if (!this.#closed && Date.now() < this.#deadline) {
         this.#timer = setTimeout(() => {
           this.#timer = undefined;
           void this.#startRead();

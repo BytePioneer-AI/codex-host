@@ -644,6 +644,8 @@ class ClaudeHarnessSession implements HarnessSession {
     },
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     subagents: { observe: true, readTranscript: true },
+    // Native tasks (TaskCreate/TaskUpdate) persist across Turns of the conversation.
+    persistentPlan: true,
     // Read live: native delivery joins this Turn while a root tool call runs, or while a held
     // Turn's continuation waits on background work, on a CLI that confirms steers
     // (`msg_lifecycle_v1`). A Turn whose cancellation is in flight must not take more input;
@@ -942,13 +944,11 @@ class ClaudeHarnessSession implements HarnessSession {
         };
       }
       try {
-        return {
-          ok: true,
-          value: {
-            ...mapClaudeSnapshot(messages, this.#sessionId, this.#mcpServers),
-            state: this.#state,
-          },
-        };
+        const tasks = new ClaudeTaskTracker();
+        const snapshot = mapClaudeSnapshot(messages, this.#sessionId, this.#mcpServers, tasks);
+        // Native tasks outlive a Turn; later status-only updates apply to the restored list.
+        this.#taskTracker.replaceWith(tasks);
+        return { ok: true, value: { ...snapshot, state: this.#state } };
       } catch {
         return {
           ok: false,

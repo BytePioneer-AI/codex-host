@@ -99,7 +99,7 @@ export interface AntigravityAcpSessionOpenResult {
 }
 
 export type AntigravityAcpEvent =
-  | { type: "user.text"; text: string }
+  | { type: "user.text"; text: string; nativeTurnIndex?: number }
   | { type: "agent.text"; text: string }
   | { type: "agent.thought"; text: string }
   | {

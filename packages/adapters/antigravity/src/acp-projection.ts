@@ -594,32 +594,53 @@ export function projectReplayedEventsToTurns(params: {
   outputLimit?: number;
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
-  const knownUserRefs = params.knownTurnRefs?.filter(
-    ({ nativeTurnKey }) => !nativeTurnKey.startsWith("wake-"),
+  const knownTurnRefs = (params.knownTurnRefs ?? []).filter(
+    ({ nativeTurnKey }) => !/^wake-(0|[1-9]\d*)$/u.test(nativeTurnKey),
   );
-  const usedTurnKeys = new Set(knownUserRefs?.map(({ nativeTurnKey }) => nativeTurnKey));
-  let userIndex = 0;
+  const foregroundTurns: HostTurnSnapshot[] = [];
+  const usedTurnKeys = new Set(knownTurnRefs.map(({ nativeTurnKey }) => nativeTurnKey));
+  const knownTurnKeys = new Set(knownTurnRefs.map(({ nativeTurnKey }) => nativeTurnKey));
+  let knownRefIndex = 0;
+  const takeKnownRef = (
+    boundary: number | undefined,
+    allowUnanchored: boolean,
+  ): NativeTurnRef | undefined => {
+    const ref = knownTurnRefs[knownRefIndex];
+    if (!ref) return undefined;
+    if (boundary === undefined) {
+      knownRefIndex++;
+      return ref;
+    }
+    const match = /^turn-(0|[1-9]\d*)$/u.exec(ref.nativeTurnKey);
+    if ((allowUnanchored && !match) || (match && Number(match[1]) === boundary)) {
+      knownRefIndex++;
+      return ref;
+    }
+    return undefined;
+  };
   let active:
     { turnId: HostTurnId; turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
   let sequence = 0;
-  const begin = (wakeStep?: number) => {
+  let nativeTurnIndex: number | undefined;
+  let mergedNativeInputs = false;
+  const begin = (boundary?: number, wakeStep?: number) => {
     active?.tracker.finishPending({
       status: "cancelled",
       reason: "No terminal tool status in native history",
     });
-    const checkpointId = wakeStep === undefined ? `turn-${userIndex}` : `wake-${wakeStep}`;
-    const turnId = hostTurnIdSchema.parse(checkpointId);
-    let nativeTurnKey = checkpointId;
-    if (wakeStep === undefined) {
-      let n = userIndex++;
-      nativeTurnKey = knownUserRefs?.[n]?.nativeTurnKey ?? `turn-${n}`;
-      if (!knownUserRefs?.[n]) {
-        while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
-        usedTurnKeys.add(nativeTurnKey);
-      }
+    const index = foregroundTurns.length;
+    const wakeKey = wakeStep === undefined ? undefined : `wake-${wakeStep}`;
+    const turnId = hostTurnIdSchema.parse(wakeKey ?? `turn-${index}`);
+    const checkpointId = wakeKey ?? `turn-${boundary ?? index}`;
+    let nativeTurnKey = wakeKey ?? takeKnownRef(boundary, true)?.nativeTurnKey;
+    if (nativeTurnKey === undefined) {
+      let n = boundary ?? index;
+      nativeTurnKey = `turn-${n}`;
+      while (usedTurnKeys.has(nativeTurnKey)) nativeTurnKey = `turn-${++n}`;
     }
+    usedTurnKeys.add(nativeTurnKey);
     const turn: HostTurnSnapshot = {
       nativeTurnRef: nativeTurnRefSchema.parse({
         harnessId: "antigravity",
@@ -638,6 +659,7 @@ export function projectReplayedEventsToTurns(params: {
       outcome: { status: "unknown", reason: "Native history does not include prompt stop reasons" },
     };
     turns.push(turn);
+    if (wakeStep === undefined) foregroundTurns.push(turn);
     sequence = 0;
     const positions = new Map<string, number>();
     const tracker = new AntigravityToolTracker({
@@ -655,15 +677,48 @@ export function projectReplayedEventsToTurns(params: {
       },
     });
     textItem = undefined;
+    nativeTurnIndex = boundary;
     active = { turnId, turn, tracker };
     return active;
   };
+  const updateNativeIdentity = (turn: HostTurnSnapshot, boundary: number): void => {
+    const knownRef = takeKnownRef(boundary, false);
+    if (knownRef) {
+      if (turn.nativeTurnRef.nativeTurnKey !== knownRef.nativeTurnKey)
+        turn.nativeTurnRef = knownRef;
+      return;
+    }
+    if (knownTurnKeys.has(turn.nativeTurnRef.nativeTurnKey)) return;
+    const nativeTurnKey = `turn-${boundary}`;
+    if (usedTurnKeys.has(nativeTurnKey)) return;
+    turn.nativeTurnRef = nativeTurnRefSchema.parse({
+      harnessId: "antigravity",
+      nativeSessionId: params.nativeSessionId,
+      nativeTurnKey,
+      formatVersion: 1,
+    });
+    usedTurnKeys.add(nativeTurnKey);
+  };
   for (const event of params.events) {
     if (event.type === "history.autonomous") {
-      begin(event.stepIndex);
+      begin(undefined, event.stepIndex);
       userRun = false;
     } else if (event.type === "user.text") {
-      const { turn } = !active || !userRun ? begin() : active;
+      const { turn } = !active || !userRun ? begin(event.nativeTurnIndex) : active;
+      if (event.nativeTurnIndex !== undefined) {
+        const isNewNativeBoundary = nativeTurnIndex !== event.nativeTurnIndex;
+        nativeTurnIndex = event.nativeTurnIndex;
+        if (isNewNativeBoundary) {
+          mergedNativeInputs = true;
+          updateNativeIdentity(turn, event.nativeTurnIndex);
+        }
+        turn.checkpoint = nativeCheckpointRefSchema.parse({
+          harnessId: "antigravity",
+          nativeSessionId: params.nativeSessionId,
+          checkpointId: `turn-${event.nativeTurnIndex}`,
+          formatVersion: 1,
+        });
+      }
       const previous = turn.input[0];
       if (previous) previous.text += event.text;
       else turn.input.push({ type: "text", text: event.text });
@@ -696,6 +751,18 @@ export function projectReplayedEventsToTurns(params: {
     status: "cancelled",
     reason: "No terminal tool status in native history",
   });
+  // Legacy display-position mappings cover every group with contiguous zero-based keys.
+  // Restore those identities without changing the native checkpoints of the groups.
+  if (
+    mergedNativeInputs &&
+    knownTurnRefs.length === foregroundTurns.length &&
+    knownTurnRefs.every((ref, index) => ref.nativeTurnKey === `turn-${index}`)
+  ) {
+    for (const [index, turn] of foregroundTurns.entries()) {
+      const ref = knownTurnRefs[index];
+      if (ref) turn.nativeTurnRef = ref;
+    }
+  }
   return turns;
 }
 

@@ -21,7 +21,18 @@ export async function readNativeTurnCount(dbPath: string): Promise<number> {
 }
 
 export function nativeHistoryError(error: unknown): HarnessError {
-  const missing = (error as NodeJS.ErrnoException)?.code === "ENOENT";
+  const sqlite = error as { code?: string; errcode?: number } | undefined;
+  if (sqlite?.code === "ERR_SQLITE_ERROR" && sqlite.errcode !== undefined) {
+    const primary = sqlite.errcode & 0xff;
+    if (primary === 5 || primary === 6)
+      // SQLITE_BUSY / SQLITE_LOCKED, including extended codes
+      return {
+        code: "sessionBusy",
+        message: "Antigravity native history database is locked; retry shortly",
+        retryable: true,
+      };
+  }
+  const missing = sqlite?.code === "ENOENT";
   return {
     code: missing ? "sessionNotFound" : "nativeFailure",
     message: missing

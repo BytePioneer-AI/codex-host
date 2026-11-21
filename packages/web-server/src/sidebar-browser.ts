@@ -74,12 +74,12 @@ export class SidebarBrowser {
     );
     const credential = auth?.admitUpgrade(request, socket, key !== null);
     if (auth !== undefined && credential === undefined) return;
-    if (
-      this.closed ||
-      (key === null
-        ? credential === undefined || !this.options.direct
-        : !isSidebarBrowserTabKey(key))
-    ) {
+    const direct = this.options.direct;
+    const attachDirect =
+      key === null && direct && credential !== undefined
+        ? (ws: WebSocket) => direct.attach(ws, credential, trust.offersSidebarDirect(request))
+        : undefined;
+    if (this.closed || (key === null ? attachDirect === undefined : !isSidebarBrowserTabKey(key))) {
       socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       return;
     }
@@ -87,7 +87,7 @@ export class SidebarBrowser {
       this.alive.add(ws);
       ws.on("pong", () => this.alive.add(ws));
       if (key === null) {
-        this.options.direct!.attach(ws, credential!, trust.offersSidebarDirect(request));
+        attachDirect?.(ws);
         return;
       }
       const tab = this.tab(key);

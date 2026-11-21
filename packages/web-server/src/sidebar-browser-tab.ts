@@ -290,7 +290,7 @@ export class SidebarBrowserTab {
     delete viewer.direct;
     direct.dispose();
     for (let i = viewer.inFlight.length - 1; i >= 0; i--)
-      if (viewer.inFlight[i]!.via === "direct") viewer.inFlight.splice(i, 1);
+      if (viewer.inFlight[i]?.via === "direct") viewer.inFlight.splice(i, 1);
     viewer.delivery = new SidebarBrowserDelivery();
     return true;
   }

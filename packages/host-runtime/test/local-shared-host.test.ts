@@ -370,7 +370,7 @@ it("projects the shared owner's Turn state without forwarding owner subscription
   await viewer.ready;
   const native = vi
     .spyOn(OfficialRuntimeClient.prototype, "request")
-    .mockImplementation(async (method, params) => {
+    .mockImplementation(async (method, params): Promise<JsonObject> => {
       if (method === "threadSection/list")
         return {
           result: {
@@ -378,8 +378,10 @@ it("projects the shared owner's Turn state without forwarding owner subscription
             nextCursor: null,
           },
         };
-      if (method === "thread/read")
+      if (method === "thread/read") {
+        if (typeof params.threadId !== "string") throw new Error("Missing native Thread ID");
         return { result: { thread: { id: params.threadId, status: { type: "notLoaded" } } } };
+      }
       return { result: { data: [], nextCursor: null } };
     });
   try {

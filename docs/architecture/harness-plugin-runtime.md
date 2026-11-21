@@ -312,7 +312,7 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 ## 已结算的自主 Turn
 
-原生只在提交后才能确认边界的 Adapter，可以在 `outputs` 上发送 `turn.autonomous.completed`，携带与原生 `readSnapshot()` 一致的 `HostTurnSnapshot`（无用户输入用 `[]`）。同一个原生 Turn 不应再发送流式自主 Turn 生命周期。Host 按 `nativeTurnRef` 对齐和去重，把快照作为独立历史 Turn 追加，不占用前台执行位，也不改写前一轮的回答。能观测完整实时生命周期的插件继续使用 `turn.autonomous.started` 和普通 Item/终态事件。
+原生只在提交后才能确认边界的 Adapter，可以在 `outputs` 上发送 `turn.autonomous.completed`，携带与原生 `readSnapshot()` 一致的 `HostTurnSnapshot`（无用户输入用 `[]`）。同一个原生 Turn 不应再发送流式自主 Turn 生命周期。Host 按 `nativeTurnRef` 对齐和去重，把快照作为独立历史 Turn 追加，不占用前台执行位，也不改写前一轮的回答。自主快照无法写入映射或投影时记录诊断，可由后续历史读取恢复，不终止输出流或结算前台 Turn。能观测完整实时生命周期的插件继续使用 `turn.autonomous.started` 和普通 Item/终态事件。
 
 ## 运行中调整方向
 

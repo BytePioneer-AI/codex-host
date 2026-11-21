@@ -86,7 +86,11 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     this.#registrations.add(registration);
     this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
+    const unsubscribeIdle = registration.onThreadIdle?.((threadId) =>
+      this.#watchService.nudge(threadId),
+    );
     return () => {
+      unsubscribeIdle?.();
       if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
       if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
     };
@@ -160,9 +164,12 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
             registration.executionHostId?.(callerThreadId) === read.hostId &&
             registration.ownsThread(callerThreadId),
         );
-        if (callers.length > 1)
-          only(callers, "Calling Thread has ambiguous execution Host context");
-        if (callers.length === 1) {
+        if (callers.length > 0) {
+          this.#selectExplicitThreadRegistration(
+            callers,
+            "Calling Thread has ambiguous execution Host context",
+          );
+          // The caller identifies the Host, but the target can belong to another session.
           const { hostId, ...local } = read;
           const snapshot = await (await this.#registrationForThread(local.threadId)).read(local);
           return { ...snapshot, hostId };
@@ -325,23 +332,35 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
       );
     }
     const matches = await this.#matching((registration) => registration.canHandleStart(input));
+    if (input.parentThreadId) {
+      return this.#selectExplicitThreadRegistration(
+        matches,
+        "Parent Thread is not owned by exactly one active Host Runtime session",
+      );
+    }
     return only(
       matches,
-      input.parentThreadId
-        ? "Parent Thread is not owned by exactly one active Host Runtime session"
-        : "Parent Thread cannot be inferred uniquely; pass --parent-thread explicitly",
+      "Parent Thread cannot be inferred uniquely; pass --parent-thread explicitly",
     );
+  }
+
+  #selectExplicitThreadRegistration(
+    matches: readonly DelegationControlRegistration[],
+    message: string,
+  ): DelegationControlRegistration {
+    // Several attached clients can observe the catalog's same shared Thread.
+    if (matches.length > 1 && this.#harnessCatalog && matches.includes(this.#harnessCatalog))
+      return this.#harnessCatalog;
+    return only(matches, message);
   }
 
   async #registrationForThread(threadId: string): Promise<DelegationControlRegistration> {
     const registrations = [...this.#registrations];
     const matches = await this.#matching((registration) => registration.ownsThread(threadId));
-    if (matches.length === 1) return matches[0] as DelegationControlRegistration;
-    if (matches.length > 1) {
-      throw new DelegationControlError(
-        "PARENT_THREAD_AMBIGUOUS",
+    if (matches.length > 0) {
+      return this.#selectExplicitThreadRegistration(
+        matches,
         "Thread is not owned by exactly one active Host Runtime session",
-        { matchingRuntimeCount: matches.length },
       );
     }
     if (this.#harnessCatalog) return this.#harnessCatalog;

@@ -157,4 +157,65 @@ describe("response annotation selection anchors", () => {
     expect(selectedText(locatedRange)).toBe("same passage");
     expect(first.contains(locatedRange.startContainer)).toBe(false);
   });
+
+  it("preserves serialization consistency for multi-paragraph, list, inline-code, and table selections", () => {
+    const looseList = answer("<ul><li>\n<p>First para</p>\n<p>Second para</p>\n</li></ul>");
+    const ul = present(looseList.querySelector("ul"));
+    const looseElementRange = rangeBetween(ul, 0, ul, 1);
+    const looseText = selectedText(looseElementRange);
+    const looseAnchor = captureResponseAnnotationAnchor(looseList, looseElementRange);
+    const restoredLoose = restoreResponseAnnotationRange(
+      looseList,
+      present(looseAnchor),
+      looseText,
+    );
+    expect(looseText).toBe("First para\n\nSecond para");
+    expect(restoredLoose).toBeDefined();
+    expect(selectedText(present(restoredLoose))).toBe(looseText);
+
+    const mixed = answer(
+      "<p>Intro with <code>alpha()</code></p>\n<ol><li>First item</li><li>Second with <code>beta()</code></li></ol>\n<p>Outro</p>",
+    );
+    const introCode = textNode(present(mixed.querySelector("code")));
+    const secondItemCode = textNode(present(mixed.querySelectorAll("code")[1]));
+    const mixedRange = rangeBetween(introCode, 0, secondItemCode, secondItemCode.length);
+    const mixedText = selectedText(mixedRange);
+    const mixedAnchor = captureResponseAnnotationAnchor(mixed, mixedRange);
+    const restoredMixed = restoreResponseAnnotationRange(mixed, present(mixedAnchor), mixedText);
+    expect(restoredMixed).toBeDefined();
+    expect(selectedText(present(restoredMixed))).toBe(mixedText);
+
+    const tableHost = answer(
+      "<table><thead><tr><th>Col A</th><th>Col B</th></tr></thead><tbody><tr><td>Row 1A</td><td>Row 1B</td></tr><tr><td>Row 2A</td><td>Row 2B</td></tr></tbody></table>",
+    );
+    const wholeTableRange = rangeBetween(tableHost, 0, tableHost, 1);
+    const tableText = selectedText(wholeTableRange);
+    const tableAnchor = captureResponseAnnotationAnchor(tableHost, wholeTableRange);
+    const restoredTable = restoreResponseAnnotationRange(
+      tableHost,
+      present(tableAnchor),
+      tableText,
+    );
+    expect(tableText).toBe("Col A\tCol B\nRow 1A\tRow 1B\nRow 2A\tRow 2B");
+    expect(restoredTable).toBeDefined();
+    expect(selectedText(present(restoredTable))).toBe(tableText);
+  });
+
+  it("restores the second occurrence of repeated text inside a list", () => {
+    const host = answer(
+      "<p>duplicate phrase</p>\n<ul><li>duplicate phrase</li><li>other item</li></ul>",
+    );
+    const listItemText = textNode(present(host.querySelector("li")));
+    const original = rangeBetween(listItemText, 0, listItemText, listItemText.length);
+    const text = selectedText(original);
+    const anchor = captureResponseAnnotationAnchor(host, original);
+    const restored = restoreResponseAnnotationRange(host, present(anchor), text);
+    const restoredRange = present(restored);
+
+    expect(restoredRange.startContainer).toBe(listItemText);
+    expect(restoredRange.startOffset).toBe(0);
+    expect(restoredRange.endContainer).toBe(listItemText);
+    expect(restoredRange.endOffset).toBe(listItemText.length);
+    expect(selectedText(restoredRange)).toBe("duplicate phrase");
+  });
 });

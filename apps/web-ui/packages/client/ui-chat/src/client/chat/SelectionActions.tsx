@@ -260,15 +260,15 @@ export function SelectionActions({
       );
     };
     const clearHighlight = highlightResponseRanges([composingRange]);
-    const resize = new ResizeObserver(reposition);
-    if (card != null) resize.observe(card);
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reposition);
+    if (card != null) resize?.observe(card);
     window.addEventListener("resize", reposition);
     viewport?.addEventListener("resize", reposition);
     viewport?.addEventListener("scroll", reposition, { passive: true });
     reposition();
     return () => {
       clearHighlight();
-      resize.disconnect();
+      resize?.disconnect();
       window.removeEventListener("resize", reposition);
       viewport?.removeEventListener("resize", reposition);
       viewport?.removeEventListener("scroll", reposition);

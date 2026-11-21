@@ -319,9 +319,14 @@ export class ChatViewport {
     if (elements === null || anchor === undefined) return null;
     const located = locateResponseAnnotation(elements.column, anchor, annotation.text);
     if (located === undefined) return null;
-    const rect = Array.from(located.range.getClientRects()).find(
-      (candidate) => candidate.width !== 0 || candidate.height !== 0,
-    );
+    const rect =
+      Array.from(located.range.getClientRects()).find(
+        (candidate) => candidate.width !== 0 || candidate.height !== 0,
+      ) ??
+      (() => {
+        const fallback = located.range.getBoundingClientRect();
+        return fallback.width === 0 && fallback.height === 0 ? undefined : fallback;
+      })();
     const metrics = this.metrics();
     if (rect === undefined || metrics === null) return null;
     const viewportTop = elements.scroller.getBoundingClientRect().top;

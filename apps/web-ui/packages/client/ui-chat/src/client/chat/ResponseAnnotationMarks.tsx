@@ -14,8 +14,12 @@ const MARK_HEIGHT = 24;
 
 export function lastSelectionRect(range: Range): DOMRect | undefined {
   const rects = range.getClientRects();
-  const rect = rects[rects.length - 1] ?? range.getBoundingClientRect();
-  return rect.width === 0 && rect.height === 0 ? undefined : rect;
+  for (let index = rects.length - 1; index >= 0; index -= 1) {
+    const rect = rects[index];
+    if (rect !== undefined && (rect.width !== 0 || rect.height !== 0)) return rect;
+  }
+  const fallback = range.getBoundingClientRect();
+  return fallback.width === 0 && fallback.height === 0 ? undefined : fallback;
 }
 
 /** Paint ranges without changing the Markdown elements or native selection. */
@@ -73,6 +77,7 @@ export function ResponseAnnotationMarks({
     let ranges: Array<IndexedAnnotation & { range: Range }> = [];
     let clearHighlight = () => {};
     const place = () => {
+      if (!host.isConnected) return;
       const hostTop = host.getBoundingClientRect().top;
       const located = ranges.flatMap(({ annotation, index, range }) => {
         const rect = lastSelectionRect(range);
@@ -82,16 +87,33 @@ export function ResponseAnnotationMarks({
       });
       located.sort((a, b) => a.top - b.top);
       let nextTop = 0;
-      setMarks(
-        located.map((mark) => {
-          const top = Math.max(mark.top, nextTop);
-          nextTop = top + MARK_HEIGHT + 2;
-          return { ...mark, top };
-        }),
+      const placed =
+        located.length === 0
+          ? NO_MARKS
+          : located.map((mark) => {
+              const top = Math.max(mark.top, nextTop);
+              nextTop = top + MARK_HEIGHT + 2;
+              return { ...mark, top };
+            });
+      setMarks((previous) =>
+        previous.length === placed.length &&
+        previous.every(
+          (item, index) =>
+            item.annotation === placed[index]?.annotation &&
+            item.index === placed[index]?.index &&
+            Math.abs(item.top - placed[index]!.top) < 0.5,
+        )
+          ? previous
+          : placed,
       );
     };
     const restore = () => {
       clearHighlight();
+      if (!host.isConnected) {
+        ranges = [];
+        setMarks(NO_MARKS);
+        return;
+      }
       ranges = attached.flatMap((entry) => {
         const { anchor, text } = entry.annotation;
         const range = anchor && restoreResponseAnnotationRange(host, anchor, text);
@@ -101,12 +123,13 @@ export function ResponseAnnotationMarks({
       place();
     };
     restore();
-    const resize = new ResizeObserver(place);
-    resize.observe(host);
-    const mutations = new MutationObserver(restore);
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    resize?.observe(host);
+    const mutations =
+      typeof MutationObserver === "undefined" ? null : new MutationObserver(restore);
     const markdown = host.firstElementChild;
-    if (markdown !== null)
-      mutations.observe(markdown, {
+    if (markdown !== null && !markdown.hasAttribute("data-selection-actions"))
+      mutations?.observe(markdown, {
         childList: true,
         characterData: true,
         subtree: true,
@@ -116,8 +139,8 @@ export function ResponseAnnotationMarks({
     host.addEventListener("scroll", place, true);
     return () => {
       clearHighlight();
-      resize.disconnect();
-      mutations.disconnect();
+      resize?.disconnect();
+      mutations?.disconnect();
       host.removeEventListener("scroll", place, true);
     };
   }, [answer, attached]);

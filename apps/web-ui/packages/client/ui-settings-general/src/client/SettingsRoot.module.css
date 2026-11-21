@@ -33,10 +33,13 @@
   font-family: inherit;
   font-size: 14px;
   line-height: 22px;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.trigger:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+.trigger:active {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 /* Rail trigger: the same 36x36 box and 12px rounding as the other rail
@@ -94,6 +97,7 @@
   display: flex;
   width: 1040px;
   height: min(800px, calc(100vh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))));
+  height: min(800px, calc(100dvh - 2 * max(24px, var(--dsh-frame-overlay-top, 24px))));
   max-width: calc(100vw - 48px);
   border-radius: var(--dsw-radius-panel);
   overflow: hidden;
@@ -139,6 +143,7 @@
   flex-direction: column;
   gap: 4px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Nav cell (figma .Setting-nav-cell 501:29962): 164x40, r12, pad
@@ -160,10 +165,16 @@
   font-weight: 400;
   color: var(--dsw-alias-label-primary);
   text-align: left;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
-.navCell:hover {
-  background: var(--dsw-specific-sidebar-nav-item-hover);
+.navCell:active {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .navCell.active {
@@ -224,10 +235,14 @@
   background: transparent;
   cursor: pointer;
   color: var(--dsw-alias-label-primary);
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 120ms ease;
 }
 
-.close:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+.close:active {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 /* Options area (figma Options 501:29983): pad (24,0,24,24), scrolls. */
@@ -236,34 +251,106 @@
   min-height: 0;
   padding: 0 24px 24px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-/* On phones, section navigation sits above the full-width scrolling content. */
-@media (max-width: 600px) {
+@media (hover: hover) and (pointer: fine) {
+  .trigger:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+
+  .navCell:hover {
+    background: var(--dsw-specific-sidebar-nav-item-hover);
+  }
+
+  .close:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+/* On phones, adopt a bottom-anchored high-viewport sheet with an inset-grouped canvas and sticky capsule nav. */
+@media (max-width: 640px) {
+  .overlay {
+    align-items: flex-end;
+    box-sizing: border-box;
+    padding-top: max(12px, env(safe-area-inset-top, 0px));
+  }
+
   .panel {
+    --dsh-settings-mobile-canvas: var(--dsw-alias-bg-module-platform);
     flex-direction: column;
-    max-width: calc(100vw - 24px);
-    height: calc(100dvh - 2 * max(12px, env(safe-area-inset-top), env(safe-area-inset-bottom)));
+    width: 100%;
+    max-width: 100%;
+    height: min(92vh, calc(100vh - max(12px, env(safe-area-inset-top, 0px))));
+    height: min(92dvh, calc(100dvh - max(12px, env(safe-area-inset-top, 0px))));
+    border-top: 0.5px solid var(--dsw-alias-border-l3);
+    border-radius: 22px 22px 0 0;
+    box-shadow:
+      0 -8px 28px rgb(0 0 0 / 12%),
+      0 -2px 8px rgb(0 0 0 / 5%);
+    background: var(--dsh-settings-mobile-canvas);
+  }
+
+  :global(body[data-ds-dark-theme]) .panel {
+    --dsh-settings-mobile-canvas: var(--dsw-alias-bg-base);
+    box-shadow:
+      0 -10px 32px rgb(0 0 0 / 36%),
+      0 -2px 10px rgb(0 0 0 / 20%);
   }
 
   .nav {
+    position: relative;
+    z-index: 2;
     width: 100%;
-    gap: 12px;
-    padding: 16px 12px 8px;
+    gap: 8px;
+    padding: 8px 0 10px;
+    background: var(--dsw-alias-bg-layer-2);
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
   }
 
   .navTitle {
-    padding: 0 44px 0 4px;
+    display: flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 56px 0 16px;
+    font-size: 18px;
+    line-height: 24px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
   }
 
   .navList {
     flex-direction: row;
     overflow-x: auto;
+    overscroll-behavior-x: contain;
+    padding: 2px 14px;
+    gap: 6px;
+    scrollbar-width: none;
+  }
+
+  .navList::-webkit-scrollbar {
+    display: none;
   }
 
   .navCell {
     flex: none;
     height: 44px;
+    min-height: 44px;
+    padding: 0 14px;
+    gap: 6px;
+    border-radius: 999px;
+    corner-shape: round;
+    background: var(--dsw-alias-bg-module-platform);
+    color: var(--dsw-alias-label-secondary);
+    font-size: 13.5px;
+    line-height: 20px;
+    font-weight: 500;
+  }
+
+  .navCell.active {
+    background: var(--dsw-alias-label-primary);
+    color: var(--dsw-alias-label-primary-foreground);
+    font-weight: 600;
   }
 
   .content {
@@ -272,19 +359,28 @@
 
   .header {
     height: auto;
-    padding: 0 16px;
+    padding: 10px 14px 0;
+  }
+
+  .header:has(.actions:empty) {
+    height: 0;
+    padding: 0;
+    overflow: visible;
   }
 
   .close {
     position: absolute;
     top: 6px;
     right: 6px;
+    z-index: 3;
     width: 44px;
     height: 44px;
+    border-radius: 999px;
+    corner-shape: round;
   }
 
   .options {
-    padding: 0 16px 16px;
+    padding: 14px 14px calc(24px + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -296,6 +392,13 @@
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navCell,
+  .close {
+    transition: none;
+  }
 }
 
 /* No app-region rule here: the overlay portals beside #root (SettingsRoot), so

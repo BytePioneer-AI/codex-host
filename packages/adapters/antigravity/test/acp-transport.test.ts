@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { TransformStream } from "node:stream/web";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { ClientSideConnection } from "@agentclientprotocol/sdk";
 import type { HostEvent } from "@codexhost/harness-adapter";
 import { hostTurnIdSchema } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,15 @@ import { AntigravityAcpTransport } from "../src/acp-transport.js";
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
 import { resolveAntigravityExecutable } from "../src/command.js";
 import type { AntigravityAcpEvent, AntigravityActivePromptHandler } from "../src/acp-types.js";
+import {
+  answerStep,
+  createNativeHistoryDatabase,
+  runField,
+  systemStep,
+  textField,
+  userStep,
+} from "./support/native-history-fixture.js";
+import { bytes } from "./support/native-timing-fixture.js";
 
 const fixture = vi.hoisted(() => ({
   children: [] as ChildProcessWithoutNullStreams[],
@@ -59,6 +69,12 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     promptId=req.id;
     if (scenario === 'exit-prompt') return setTimeout(() => process.exit(8), 10);
     if (scenario === 'stall-prompt' || scenario === 'close-stalled') return;
+    if (scenario === 'same-write-permission') {
+      return process.stdout.write([
+        {id:req.id,result:{stopReason:'end_turn'}},
+        {id:'late',method:'session/request_permission',params:{sessionId:'native',toolCall:{toolCallId:'late',name:'run_command'},options:[{optionId:'deny',name:'Deny',kind:'reject_once'}]}},
+      ].map(value => JSON.stringify({jsonrpc:'2.0',...value})+'\\n').join(''));
+    }
     if (scenario === 'same-write-tail') {
       const chunk = (sessionUpdate, text) => ({method:'session/update',params:{sessionId:'native',update:{sessionUpdate,content:{type:'text',text}}}});
       return process.stdout.write([
@@ -88,6 +104,7 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
     return;
   }
   if (req.method === 'session/close') {
+    process.stderr.write('session-close-sent\\n');
     update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'late-close-notification'}});
     if (scenario === 'close-stalled') return;
     return result(req.id,{});
@@ -308,6 +325,20 @@ describe("native ACP stdio transport", () => {
       environment: { HOME: home, USERPROFILE: home, AGY_TEST_SCENARIO: "same-write-tail" },
     });
     try {
+      const db = await createNativeHistoryDatabase(home, "native");
+      try {
+        userStep(db, 0, "hello", "user");
+        answerStep(db, 1, "answer", "user");
+        systemStep(db, 2, "wake");
+        db.prepare("INSERT INTO steps VALUES (3, 15, 3, ?)").run(
+          Buffer.concat([
+            runField("wake"),
+            bytes(20, Buffer.concat([textField(3, "T1"), textField(1, "A1")])),
+          ]),
+        );
+      } finally {
+        db.close();
+      }
       const opened = await adapter.open({ kind: "create", cwd: home });
       if (!opened.ok) throw new Error(opened.error.message);
       const events: HostEvent[] = [];
@@ -324,24 +355,31 @@ describe("native ACP stdio transport", () => {
         }),
       ).toMatchObject({ ok: true });
       await vi.waitFor(() =>
-        expect(events.filter((event) => event.type === "item.updated")).toHaveLength(3),
+        expect(events.filter((event) => event.type === "turn.autonomous.completed")).toHaveLength(
+          1,
+        ),
       );
       const completedIndex = events.findIndex((event) => event.type === "turn.completed");
       expect(completedIndex).toBeGreaterThanOrEqual(0);
-      expect(
-        events.slice(0, completedIndex).filter((event) => event.type === "item.updated"),
-      ).toMatchObject([{ update: { text: "answer" } }]);
-      expect(
-        events
-          .slice(completedIndex + 1)
-          .filter((event) => event.type === "item.background.started"),
-      ).toMatchObject([
-        { turnId, item: { type: "reasoning" } },
-        { turnId, item: { type: "agentMessage" } },
+      expect(events.filter((event) => event.type === "item.updated")).toMatchObject([
+        { update: { text: "answer" } },
       ]);
-      expect(
-        events.slice(completedIndex + 1).filter((event) => event.type === "item.updated"),
-      ).toMatchObject([{ update: { text: "T1" } }, { update: { text: "A1" } }]);
+      expect(events.slice(completedIndex + 1)).toContainEqual(
+        expect.objectContaining({
+          type: "turn.autonomous.completed",
+          snapshot: expect.objectContaining({
+            input: [],
+            items: [
+              expect.objectContaining({
+                item: expect.objectContaining({ type: "reasoning", text: "T1" }),
+              }),
+              expect.objectContaining({
+                item: expect.objectContaining({ type: "agentMessage", text: "A1" }),
+              }),
+            ],
+          }),
+        }),
+      );
     } finally {
       await adapter.close();
       await rm(home, { recursive: true, force: true });
@@ -440,6 +478,32 @@ describe("native ACP stdio transport", () => {
     await value.cancel();
     expect((await pending).stopReason).toBe("cancelled");
   });
+  it("cancels a permission request sent in the same write after the prompt response", async () => {
+    const value = transport("same-write-permission");
+    await open(value);
+    const onPermission = vi.fn(handler().onPermission);
+    const prompt = ClientSideConnection.prototype.prompt;
+    // Keep the real SDK dispatching wire messages, but hold its prompt result
+    // until the callback reply so prompt()'s cleanup cannot mask the race.
+    const { promise, resolve } = Promise.withResolvers<undefined>();
+    using sdkPrompt = vi.spyOn(ClientSideConnection.prototype, "prompt");
+    sdkPrompt.mockImplementation(async function (this: ClientSideConnection, params) {
+      const response = await prompt.call(this, params);
+      await promise;
+      return response;
+    });
+    const pending = value.prompt([], { ...handler(), onPermission });
+    try {
+      await vi.waitFor(async () =>
+        expect((await replies(value)).late).toEqual({ outcome: { outcome: "cancelled" } }),
+      );
+      expect(onPermission).not.toHaveBeenCalled();
+    } finally {
+      resolve(undefined);
+      await pending;
+    }
+    expect((await pending).stopReason).toBe("end_turn");
+  });
   it.each(["cancel", "prompt-end", "close"])(
     "cleans pending callbacks on %s even when Host handlers never resolve",
     async (ending) => {
@@ -511,6 +575,16 @@ describe("native ACP stdio transport", () => {
     await delay(10);
     await value.close();
     expect(await pending).toContain("closed");
+  });
+  it("closes via stdin EOF without sending session/close", async () => {
+    const stderr: string[] = [];
+    const value = transport("ok");
+    await open(value);
+    const child = fixture.children.at(-1);
+    expect(child).toBeDefined();
+    child?.stderr.on("data", (chunk: Buffer) => stderr.push(chunk.toString()));
+    await value.close();
+    expect(stderr.join("")).not.toContain("session-close-sent");
   });
   it("requires a session ID for resume and prohibits overlapping sessions/prompts", async () => {
     const value = transport("stall-prompt");

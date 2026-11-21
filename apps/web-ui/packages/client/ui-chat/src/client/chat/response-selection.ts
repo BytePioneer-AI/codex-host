@@ -38,7 +38,12 @@ export function selectedText(range: Range): string {
   // followed by the list's own children before projecting text.
   for (const list of container.querySelectorAll("ol, ul"))
     list.replaceWith("\n", ...Array.from(list.childNodes));
-  return serialize(container).trim();
+  const common = range.commonAncestorContainer;
+  const rootParentTag =
+    common.nodeType === ELEMENT_NODE
+      ? (common as Element).tagName
+      : (common.parentElement?.tagName ?? container.tagName);
+  return serialize(container, rootParentTag).trim();
 }
 
 /**
@@ -53,7 +58,7 @@ export function captureResponseAnnotationAnchor(
 ): ResponseAnnotationAnchor | undefined {
   const answerKey = host.getAttribute("data-selection-answer");
   if (
-    answerKey === null ||
+    !answerKey ||
     range.collapsed ||
     !host.contains(range.startContainer) ||
     !host.contains(range.endContainer)
@@ -136,13 +141,13 @@ function* responseTextNodes(host: Element): Iterable<Text> {
   }
 }
 
-function serialize(parent: Element): string {
+function serialize(parent: Element, parentTag = parent.tagName): string {
   let text = "";
-  for (const child of parent.childNodes) text += serializeNode(child, parent);
+  for (const child of parent.childNodes) text += serializeNode(child, parentTag);
   return text;
 }
 
-function serializeNode(node: Node, parent: Element): string {
+function serializeNode(node: Node, parentTag: string): string {
   if (node.nodeType === TEXT_NODE) return node.textContent ?? "";
   if (node.nodeType !== ELEMENT_NODE) return "";
   const element = node as Element;
@@ -150,19 +155,19 @@ function serializeNode(node: Node, parent: Element): string {
     case "BR":
       return "\n";
     case "TABLE":
-      return Array.from(element.querySelectorAll("tr")).map(serializeRow).join("\n");
+      return `${Array.from(element.querySelectorAll("tr")).map(serializeRow).join("\n")}\n`;
     case "TD":
     case "TH":
       // A range between cell text nodes clones the cells without their row.
       return `${element.previousElementSibling?.matches("td, th") ? "\t" : ""}${serialize(element).trimEnd()}`;
     case "TR":
-      return serializeRow(element);
+      return `${serializeRow(element)}\n`;
     case "THEAD":
     case "TBODY":
     case "TFOOT":
       return serialize(element);
     case "P":
-      return serializeParagraph(element, parent);
+      return serializeParagraph(element, parentTag);
     default: {
       const text = serialize(element);
       return BLOCK_TAGS.has(element.tagName) ? `${text}\n` : text;
@@ -177,13 +182,13 @@ function serializeRow(row: Element): string {
     .join("\t");
 }
 
-function serializeParagraph(node: Element, parent: Element): string {
+function serializeParagraph(node: Element, parentTag: string): string {
   const previous = node.previousElementSibling;
   const separated =
     previous?.tagName === "P" &&
     previous.textContent?.trim() !== "" &&
     node.textContent?.trim() !== "" &&
-    parent.tagName !== "LI"
+    parentTag !== "LI"
       ? "\n"
       : "";
   return `${separated}${serialize(node)}\n`;

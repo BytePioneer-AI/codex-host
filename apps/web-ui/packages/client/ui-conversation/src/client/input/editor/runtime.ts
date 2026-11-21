@@ -277,19 +277,19 @@ export class DraftEditorRuntime {
    * @param text - pasted plain text.
    */
   paste(text: string): void {
-    const clean = text.replace(REFERENCE_PLACEHOLDER_RE, "");
+    const clean = text.replace(REFERENCE_PLACEHOLDER_RE, "").replace(/\r\n?/gu, "\n");
     if (clean === "") return;
     this.applyEdit(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
-        selection.insertText(clean);
+        selection.insertRawText(clean);
         return;
       }
       // No selection yet (never-focused surface): land at the document end,
       // growing the first paragraph when the tree is empty.
       const root = $getRoot();
       if (root.getChildrenSize() === 0) root.append($createParagraphNode());
-      root.selectEnd().insertText(clean);
+      root.selectEnd().insertRawText(clean);
     }, PASTE_TAG);
   }
 

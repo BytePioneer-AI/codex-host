@@ -2303,6 +2303,7 @@ export class PiAdapter implements HarnessAdapter {
     const updateCatalog = async (operation: Promise<void>): Promise<void> => {
       await operation;
       this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
     };
     this.credentialImports = {
       providers: imports.providers,
@@ -2344,14 +2345,20 @@ export class PiAdapter implements HarnessAdapter {
     }
     const cwd = resolvePiInspectCwd(input.cwd);
     const inFlight = this.#inspectionInFlight.get(cwd);
-    if (inFlight) return inFlight;
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
+      if (inFlight) this.#inspectionInFlight.set(cwd, inFlight);
     }
+    if (inFlight) return inFlight;
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) return cached;
 
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection) {
+        this.#inspectionCache.set(cwd, result);
+        this.#thinkingSelectionSupported = result.capabilities.configuration.selectThinkingOption;
+      }
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
@@ -2374,7 +2381,6 @@ export class PiAdapter implements HarnessAdapter {
       const models = await transport.getAvailableModels();
       stage = "capabilities";
       const thinkingLevels = await transport.getAvailableThinkingLevels();
-      this.#thinkingSelectionSupported = thinkingLevels !== null;
       const normalized = normalizePiModelCatalog(
         models,
         nativeModelFromState(transport.state),

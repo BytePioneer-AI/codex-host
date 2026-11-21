@@ -644,6 +644,8 @@ class ClaudeHarnessSession implements HarnessSession {
     },
     history: { fork: true, forkAcrossCwd: false, rollbackLastTurn: true },
     subagents: { observe: true, readTranscript: true },
+    // Native tasks (TaskCreate/TaskUpdate) persist across Turns of the conversation.
+    persistentPlan: true,
     // Read live: native delivery joins this Turn while a root tool call runs, or while a held
     // Turn's continuation waits on background work, on a CLI that confirms steers
     // (`msg_lifecycle_v1`). A Turn whose cancellation is in flight must not take more input;
@@ -942,13 +944,11 @@ class ClaudeHarnessSession implements HarnessSession {
         };
       }
       try {
-        return {
-          ok: true,
-          value: {
-            ...mapClaudeSnapshot(messages, this.#sessionId, this.#mcpServers),
-            state: this.#state,
-          },
-        };
+        const tasks = new ClaudeTaskTracker();
+        const snapshot = mapClaudeSnapshot(messages, this.#sessionId, this.#mcpServers, tasks);
+        // Native tasks outlive a Turn; later status-only updates apply to the restored list.
+        this.#taskTracker.replaceWith(tasks);
+        return { ok: true, value: { ...snapshot, state: this.#state } };
       } catch {
         return {
           ok: false,
@@ -3285,6 +3285,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
   readonly #continuationQuiescenceMs: number;
   readonly #inspectionCache = new Map<string, HarnessInspection>();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
   readonly #inspectors = new Set<ClaudeModelInspector>();
   readonly #sessions = new Set<ClaudeHarnessSession>();
   #closePromise: Promise<void> | null = null;
@@ -3381,21 +3382,27 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
       };
     }
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    if (!input.refresh) {
+    const current = this.#inspectionInFlight.get(cwd);
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
+      if (current) this.#inspectionInFlight.set(cwd, current);
+    } else {
       const cached = this.#inspectionCache.get(cwd);
       if (cached) return cached;
     }
-    const current = this.#inspectionInFlight.get(cwd);
     if (current) return current;
     const inspection = this.#inspectModels(cwd).then((result) => {
-      if (result.status === "ready") {
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection) {
         this.#inspectionCache.set(cwd, result);
         for (const session of this.#sessions) session.refitThinking(cwd);
       }
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
+    this.#inspectionTasks.add(inspection);
     void inspection.finally(() => {
+      this.#inspectionTasks.delete(inspection);
       if (this.#inspectionInFlight.get(cwd) === inspection) {
         this.#inspectionInFlight.delete(cwd);
       }
@@ -3827,7 +3834,7 @@ export class ClaudeCodeAdapter implements HarnessAdapter {
         this.#importScope.close(),
         ...[...this.#inspectors].map((inspector) => inspector.close()),
         ...[...this.#sessions].map((session) => session.close()),
-        ...this.#inspectionInFlight.values(),
+        ...this.#inspectionTasks,
       ]).then(() => undefined);
     }
     return this.#closePromise;

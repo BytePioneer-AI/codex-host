@@ -47,6 +47,7 @@ export function ConversationHeader({
       )}
       data-window-drag
       data-conversation-navigation-focus
+      data-cx-region="topbar"
       tabIndex={-1}
     >
       <div className={css.headerLeading} data-conversation-header-leading="">

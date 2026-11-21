@@ -160,8 +160,12 @@ async function upload(f: Fixture, chunks: Iterable<Buffer>, headers: Record<stri
     for await (const chunk of res) chunks.push(chunk);
     return { status: res.statusCode, text: Buffer.concat(chunks).toString() };
   });
-  for (const chunk of chunks) if (!req.write(chunk)) await once(req, "drain");
-  req.end();
+  let finalChunk: Buffer | undefined;
+  for (const chunk of chunks) {
+    if (finalChunk && !req.write(finalChunk)) await once(req, "drain");
+    finalChunk = chunk;
+  }
+  req.end(finalChunk);
   return response;
 }
 
@@ -200,7 +204,13 @@ test("streams bounded ZIP uploads and binds a single use to the authenticated cr
     );
     const chunk = Buffer.alloc(1024 * 1024);
     function* oversized() {
-      for (let i = 0; i < 65; i++) yield chunk;
+      for (
+        let remaining = DESKTOP_EXTENSION_ZIP_MAX_BYTES;
+        remaining > 0;
+        remaining -= chunk.length
+      )
+        yield chunk.subarray(0, remaining);
+      yield Buffer.alloc(1);
     }
     assert.equal((await upload(f, oversized())).status, 413);
     const install = { format: identity.format, source: await source(f, zip("1")) };

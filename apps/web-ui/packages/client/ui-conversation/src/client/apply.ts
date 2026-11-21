@@ -517,6 +517,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
           "conversation.header.leading": { kind: "single", scope: "root" },
           "conversation.header.navigation": { kind: "single", scope: "session-maybe" },
           "conversation.header.shortcuts": { kind: "single", scope: "session-maybe" },
+          "conversation.header.trailing": { kind: "single", scope: "root" },
           "conversation.session.header": { kind: "single", scope: "session" },
         },
       },

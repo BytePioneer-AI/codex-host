@@ -56,11 +56,17 @@ export function ConversationHeader({
       {sessionId === undefined ? (
         <div className={css.titleRow}>
           {renderSlot("conversation.header.navigation", { restoreNavigationFocus })}
+          <div className={css.headerCorner} data-conversation-header-corner="">
+            <span className={css.phoneTrailingAction}>
+              {renderSlot("conversation.header.trailing", {})}
+            </span>
+          </div>
         </div>
       ) : (
         renderSlot("conversation.session.header", {
           hideChrome: blank,
           titleNavigation: renderSlot("conversation.header.navigation", { restoreNavigationFocus }),
+          trailingAction: renderSlot("conversation.header.trailing", {}),
         })
       )}
       {renderSlot("conversation.header.shortcuts", { restoreNavigationFocus })}

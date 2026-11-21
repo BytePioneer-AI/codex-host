@@ -17,6 +17,81 @@ import {
 const text = (value: string) => [{ type: "text", text: value }];
 
 describe("External Thread follow-up queue", () => {
+  it("automatically starts Web input admitted to an empty idle queue", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      const added = await fixture.host.handleClientRequest("thread/queue/add", {
+        threadId,
+        input: text("new follow-up"),
+        clientUserMessageId: "new-message",
+        codexhostQueueStartIfEmpty: true,
+      });
+      expect(added).toHaveProperty("result.queuedSubmission.clientUserMessageId", "new-message");
+      await vi.waitFor(() =>
+        expect(execute).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ type: "turn.start", input: text("new follow-up") }),
+        ),
+      );
+      await vi.waitFor(async () =>
+        expect((await fixture.host.clientSnapshot(threadId)).queue?.items).toEqual([]),
+      );
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("honors the current External Thread queue order for automatic starts and allows manual selection", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const execute = vi.spyOn(session, "execute");
+      const first = await fixture.host.handleClientRequest("thread/queue/add", {
+        threadId,
+        input: text("earlier follow-up"),
+        clientUserMessageId: "earlier-message",
+      });
+      expect(first).toHaveProperty(
+        "result.queuedSubmission.clientUserMessageId",
+        "earlier-message",
+      );
+      const added = await fixture.host.handleClientRequest("thread/queue/add", {
+        threadId,
+        input: text("later follow-up"),
+        clientUserMessageId: "later-message",
+        codexhostQueueStartIfEmpty: true,
+      });
+      const queue = (await fixture.host.clientSnapshot(threadId)).queue;
+      expect(queue?.items.map((item) => item.clientUserMessageId)).toEqual([
+        "earlier-message",
+        "later-message",
+      ]);
+      expect(execute).not.toHaveBeenCalled();
+      const laterItem = queue?.items[1];
+      if (!laterItem) throw new Error("Later submission was not queued");
+      expect(added).toHaveProperty("result.queuedSubmission.id", laterItem.id);
+      await expect(
+        fixture.host.handleClientRequest("thread/queue/start", {
+          threadId,
+          queuedSubmissionId: laterItem.id,
+        }),
+      ).resolves.toHaveProperty("result.turn.id");
+      expect(execute).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ type: "turn.start", input: text("later follow-up") }),
+      );
+      expect((await fixture.host.clientSnapshot(threadId)).queue?.items).toMatchObject([
+        { clientUserMessageId: "earlier-message" },
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("keeps Desktop queue requests on the Host and starts the next follow-up after a completed Turn", async () => {
     const fixture = createFixture();
     const official = new JsonLineCollector(fixture.official.stdin);

@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { runInNewContext } from "node:vm";
 import { it, type TestContext } from "vitest";
 import { requestRemoteSession } from "@codexhost/desktop-control";
 import { startControllerAttachmentServer } from "../../packages/desktop-control/src/controller-attachment-server.js";
@@ -18,7 +19,7 @@ const content = [{ type: "text", text: "follow up" }];
 const legacyHost = "remote-ssh-discovered:legacy";
 const applied = { ok: true, value: { accepted: true } };
 
-function nativeManager(legacy = false) {
+function nativeManager(legacy = false, external = false) {
   let active = true;
   let lostReply = false;
   let changedTurn = false;
@@ -34,7 +35,8 @@ function nativeManager(legacy = false) {
   const row = () => ({
     id: identity.threadId,
     cwd: "/remote",
-    modelProvider: "openai",
+    modelProvider: external ? "codexhost" : "openai",
+    ...(external ? { historyMode: "paginated" } : {}),
     createdAt: 1,
     updatedAt: 2,
     status: { type: active ? "active" : "idle" },
@@ -42,7 +44,7 @@ function nativeManager(legacy = false) {
   });
   const manager = {
     async sendRequest(method: string, params: Record<string, unknown>) {
-      calls.push({ method, params });
+      calls.push({ method, params: structuredClone(params) });
       if (method.startsWith("thread/queue/") && legacy)
         throw Object.assign(new Error(`${method} requires experimentalApi capability`), {
           jsonRpcCode: -32600,
@@ -128,8 +130,8 @@ function nativeManager(legacy = false) {
   };
 }
 
-async function fixture(t: TestContext) {
-  const native = nativeManager();
+async function fixture(t: TestContext, external = false) {
+  const native = nativeManager(false, external);
   const legacy = nativeManager(true);
   const routes = new Map([
     [identity.hostId, { manager: native.manager }],
@@ -158,7 +160,10 @@ async function fixture(t: TestContext) {
     nonce,
     attach: async () => undefined,
     remoteConnections: async (request) =>
-      new Function("window", `return ${remoteConnectionsExpression(request)}`)(target),
+      runInNewContext(remoteConnectionsExpression(request), {
+        window: target,
+        crypto: globalThis.crypto,
+      }),
   });
   t.onTestFinished(() => controller.close());
   await writeFile(
@@ -311,6 +316,27 @@ it("begins only the newly admitted idle item and does not skip existing queued i
   assert.deepEqual(
     f.native.queue.map((item) => item.id),
     ["queued-behind-older-item"],
+  );
+});
+
+it("lets the owning external Host guard an idle automatic start without a second write", async (t) => {
+  const f = await fixture(t, true);
+  f.native.idle();
+  assert.deepEqual(await f.prompt("queue", "external-idle"), applied);
+  assert.deepEqual(f.native.writes(), [
+    {
+      method: "thread/queue/add",
+      params: {
+        threadId: identity.threadId,
+        clientUserMessageId: "external-idle",
+        input: [{ ...content[0], text_elements: [] }],
+        codexhostQueueStartIfEmpty: true,
+      },
+    },
+  ]);
+  assert.deepEqual(
+    f.native.queue.map((item) => item.id),
+    ["queued-external-idle"],
   );
 });
 

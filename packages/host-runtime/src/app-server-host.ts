@@ -145,6 +145,7 @@ import {
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
   threadSteeringContextSchema,
+  THREAD_QUEUE_START_IF_EMPTY_PARAM,
   THREAD_STEERING_CONTEXT_PARAM,
   THREAD_STEER_DELIVERY_PARAM,
   THREAD_STEER_STRICT_TARGET_PARAM,
@@ -5746,7 +5747,10 @@ export class AppServerHost {
     await this.#writer.json({ method: "thread/queue/changed", params: { threadId } });
   }
 
-  async #startNextQueuedExternalTurn(thread: ExternalThread): Promise<void> {
+  async #startNextQueuedExternalTurn(
+    thread: ExternalThread,
+    expectedItemId?: string,
+  ): Promise<void> {
     if (
       this.#closeRequested ||
       this.#externalRuntime.get(thread.id) !== thread ||
@@ -5757,7 +5761,7 @@ export class AppServerHost {
     )
       return;
     const next = this.#externalQueue.head(thread.id);
-    if (!next) return;
+    if (!next || (expectedItemId !== undefined && next.id !== expectedItemId)) return;
     try {
       const started = await this.#startQueuedExternalTurn(thread, next.id);
       started.gate.resolve();
@@ -5794,6 +5798,11 @@ export class AppServerHost {
           this.#options.environment ?? process.env,
         );
         requestText(params);
+        const startIfEmpty =
+          params[THREAD_QUEUE_START_IF_EMPTY_PARAM] === true &&
+          !this.#externalThreadBusy(thread) &&
+          !this.#pendingExternalCommandRequests.has(thread.id) &&
+          !this.#externalQueue.has(thread.id);
         const queuedSubmission = this.#externalQueue.add(
           thread.id,
           requestInput(params),
@@ -5807,6 +5816,10 @@ export class AppServerHost {
             result: { queuedSubmission: nativeQueuedSubmission(queuedSubmission) },
           }),
         );
+        if (startIfEmpty) {
+          void this.#startNextQueuedExternalTurn(thread, queuedSubmission.id);
+          return;
+        }
         const lastTurn = thread.turns.at(-1);
         if (
           thread.projectedTerminalTurnId === lastTurn?.id &&

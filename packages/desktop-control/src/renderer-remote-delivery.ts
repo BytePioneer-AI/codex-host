@@ -2,6 +2,7 @@ import type {
   RemoteDeliveryReply,
   RemoteQueueSnapshot,
   RemoteSessionOperation,
+  THREAD_QUEUE_START_IF_EMPTY_PARAM,
 } from "@codexhost/shared-contracts";
 
 /** Self-contained for the Desktop Controller expression. All writes use the selected native manager. */
@@ -186,18 +187,23 @@ export async function rendererRemoteDelivery(
   const unavailable = () =>
     reject("remote/queue-unavailable", "This remote Host does not support message queues.");
 
-  let startWhenEmpty = false;
-  if (header.status === "idle") {
+  let startNativeWhenEmpty = false;
+  if (!header.external && header.status === "idle") {
     try {
-      startWhenEmpty = (await readQueue(1)).data.length === 0;
+      startNativeWhenEmpty = (await readQueue(1)).data.length === 0;
     } catch (error) {
       if (queueUnavailable(error, "thread/queue/list")) return unavailable();
       throw error;
     }
   }
+  const startExternalIfEmpty = {
+    codexhostQueueStartIfEmpty: true,
+  } satisfies Record<typeof THREAD_QUEUE_START_IF_EMPTY_PARAM, true>;
+  const addParams =
+    header.external && header.status === "idle" ? { ...params, ...startExternalIfEmpty } : params;
   let result: Record<string, unknown> | undefined;
   try {
-    result = record(await write("thread/queue/add", params));
+    result = record(await write("thread/queue/add", addParams));
   } catch (error) {
     if (queueUnavailable(error, "thread/queue/add")) return unavailable();
     const code = codeOf(error);
@@ -220,9 +226,8 @@ export async function rendererRemoteDelivery(
   )
     throw new Error("Remote queue admission was not confirmed");
 
-  // A busy submission is only appended. The Host advances its own queue after the Turn.
-  // An idle start claims only this item, and the Host rejects it if a Turn has become active.
-  if (startWhenEmpty) {
+  // Native Codex exposes an idle-only start for the newly admitted item.
+  if (startNativeWhenEmpty) {
     try {
       if (record((await readQueue(1)).data[0])?.id === queued.id)
         await write("thread/queue/start", { threadId, queuedSubmissionId: queued.id });

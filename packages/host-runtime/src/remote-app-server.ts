@@ -34,6 +34,18 @@ const APP_SERVER_FLAG_OPTIONS = new Set([
   "--stdio",
   "--analytics-default-enabled",
 ]);
+// Hidden options Codex Desktop passes to set process-local launch directories
+// for stdio MCP servers. Each takes several space-separated values:
+// --mcp-launch-cwd <SERVER> <EXECUTABLE> <DIRECTORY>
+// --plugin-mcp-launch-cwd <PLUGIN_ID> <SERVER> <DIRECTORY>
+const APP_SERVER_MULTI_VALUE_OPTIONS = new Map([
+  ["--mcp-launch-cwd", 3],
+  ["--plugin-mcp-launch-cwd", 3],
+]);
+
+function appServerMultiValueCount(argument: string): number | undefined {
+  return APP_SERVER_MULTI_VALUE_OPTIONS.get(argument);
+}
 
 export interface RemoteAppServerSession {
   run(): Promise<number>;
@@ -127,6 +139,12 @@ export function remoteUnixListenerUrl(arguments_: readonly string[]): string | n
       if (index >= arguments_.length) return null;
       continue;
     }
+    const valueCount = appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      index += valueCount;
+      if (index >= arguments_.length) return null;
+      continue;
+    }
     if (
       [...APP_SERVER_VALUE_OPTIONS].some((option) => argument.startsWith(`${option}=`)) ||
       APP_SERVER_FLAG_OPTIONS.has(argument)
@@ -168,6 +186,11 @@ export function stdioArgumentsForRemoteListener(arguments_: readonly string[]): 
   if (appServerIndex === null) throw new Error("Expected an app-server invocation");
   for (let index = appServerIndex + 1; index < result.length; index += 1) {
     const argument = result[index];
+    const valueCount = argument === undefined ? undefined : appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      index += valueCount;
+      continue;
+    }
     if (argument === "--listen") {
       result.splice(index, 2, "--stdio");
       return result;
@@ -197,6 +220,12 @@ export function officialListenerArgumentsForRemoteListener(
   let listenerRewritten = false;
   for (let index = appServerIndex + 1; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
+    const valueCount = argument === undefined ? undefined : appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      result.push(...arguments_.slice(index, index + valueCount + 1));
+      index += valueCount;
+      continue;
+    }
     if (argument && APP_SERVER_WEBSOCKET_AUTH_VALUE_OPTIONS.has(argument)) {
       // The public listener already authenticated the remote Desktop client.
       // This second listener is an internal hop bound to a current-user-only
@@ -256,6 +285,16 @@ export function officialLoopbackListenerArguments(arguments_: readonly string[])
       if (!value) throw new Error(`${argument} requires a value`);
       result.push(argument, value);
       index += 1;
+      continue;
+    }
+    const valueCount = appServerMultiValueCount(argument);
+    if (valueCount !== undefined) {
+      const values = arguments_.slice(index + 1, index + 1 + valueCount);
+      if (values.length < valueCount || values.some((value) => !value)) {
+        throw new Error(`${argument} requires ${valueCount} values`);
+      }
+      result.push(argument, ...values);
+      index += valueCount;
       continue;
     }
     if (

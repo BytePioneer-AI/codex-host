@@ -253,11 +253,8 @@ fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
             return Err("The running Web belongs to a different installation".into());
         }
     }
-    if let Some((launcher, _)) = desktop_attachment::managed_processes(&options.data)?
-        && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
-    {
-        return Err("The running Desktop belongs to a different installation".into());
-    }
+    desktop_attachment::running_for_update(&options.data)
+        .map_err(|error| format!("Desktop ownership check failed: {error}"))?;
     Ok(())
 }
 

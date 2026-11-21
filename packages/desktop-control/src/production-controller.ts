@@ -25,7 +25,10 @@ import {
 } from "./renderer-cdp-control-session.js";
 import { RendererDesktopExtensions } from "./renderer-desktop-extensions.js";
 
+import type { ControllerLifecycle } from "./controller-lifecycle.js";
+
 export interface DesktopControllerOptions {
+  lifecycle?: ControllerLifecycle;
   rendererCdpEndpoint: string;
   rendererPath: string;
   attachmentPort: number;
@@ -348,6 +351,7 @@ export async function runDesktopController(
     attachmentServer = await dependencies.startAttachmentServer({
       port: options.attachmentPort,
       nonce: options.attachmentNonce,
+      ...(options.lifecycle ? { lifecycle: options.lifecycle } : {}),
       remoteConnections: async (request) => {
         // Serialize session recovery, not the native request: the renderer can await Host
         // responses while other settings reads run. Never retry a submitted mutation.

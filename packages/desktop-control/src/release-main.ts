@@ -1,12 +1,20 @@
+import { readControllerLifecycle } from "./controller-lifecycle.js";
 import { parseDesktopControllerArguments, runDesktopController } from "./production-controller.js";
 
 const abort = new AbortController();
-const stop = (): void => abort.abort();
+const stop = (): void => {
+  if (abort.signal.aborted) return;
+  // If Renderer or socket cleanup does not finish, only this Controller exits.
+  setTimeout(() => process.exit(0), 4_000).unref();
+  abort.abort();
+};
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 
 try {
-  await runDesktopController(parseDesktopControllerArguments(process.argv.slice(2)), abort.signal);
+  const options = parseDesktopControllerArguments(process.argv.slice(2));
+  const lifecycle = readControllerLifecycle(stop);
+  await runDesktopController({ ...options, ...(lifecycle ? { lifecycle } : {}) }, abort.signal);
 } catch (error) {
   console.error(
     `codexhost Desktop Controller: ${error instanceof Error ? error.message : String(error)}`,

@@ -24,6 +24,7 @@ const LAUNCHER_GUARD_FILE: &str = "launcher-v1.lock";
 #[cfg(target_os = "linux")]
 const MAX_RUNTIME_DESCRIPTOR_BYTES: usize = 4 * 1024;
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartupState {
     RecoverStale,
@@ -31,6 +32,7 @@ pub enum StartupState {
     Attach,
 }
 
+#[cfg(any(target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StartupObservation {
     pub desktop_running: bool,
@@ -38,6 +40,7 @@ pub struct StartupObservation {
     pub control_endpoint_ready: bool,
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub fn classify_startup(observation: StartupObservation) -> StartupState {
     if observation.desktop_running {
         return StartupState::Attach;
@@ -300,11 +303,13 @@ pub fn remove_matching_descriptor(path: &Path, expected: &RuntimeDescriptor) -> 
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub struct RuntimeDescriptorGuard {
     path: PathBuf,
     descriptor: RuntimeDescriptor,
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl RuntimeDescriptorGuard {
     pub fn publish(path: PathBuf, descriptor: RuntimeDescriptor) -> io::Result<Self> {
         write_descriptor(&path, &descriptor)?;
@@ -312,6 +317,7 @@ impl RuntimeDescriptorGuard {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 impl Drop for RuntimeDescriptorGuard {
     fn drop(&mut self) {
         let _ = remove_matching_descriptor(&self.path, &self.descriptor);

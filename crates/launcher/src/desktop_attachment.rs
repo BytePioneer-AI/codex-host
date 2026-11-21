@@ -9,19 +9,21 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(not(unix))]
+use codexhost_platform::desktop_root_process_ids_for_installation;
 use codexhost_platform::{
     DesktopInstallation, PlatformError, ProcessSnapshot, descendant_executable_pair_exists,
-    desktop_root_process_ids_for_installation,
 };
 #[cfg(target_os = "windows")]
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
 
 use crate::ResolvedLaunchOptions;
 use crate::runtime_instance::{
-    LauncherGuard, RuntimeDescriptor, RuntimeDescriptorGuard, default_descriptor_path,
-    default_guard_path, random_nonce, read_descriptor, remove_matching_descriptor,
-    try_acquire_launcher_guard,
+    LauncherGuard, RuntimeDescriptor, default_descriptor_path, default_guard_path, random_nonce,
+    read_descriptor, try_acquire_launcher_guard,
 };
+#[cfg(target_os = "windows")]
+use crate::runtime_instance::{RuntimeDescriptorGuard, remove_matching_descriptor};
 
 const ATTACHMENT_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(100);
 const ATTACHMENT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
@@ -53,11 +55,50 @@ pub(super) fn allocate_runtime_control() -> Result<RuntimeControl, Box<dyn Error
 }
 
 pub(super) enum LauncherOwnership {
-    Acquired(LauncherGuard),
+    Acquired(LauncherGuard, #[cfg(unix)] std::fs::File),
     Attached,
 }
 
 pub(super) fn acquire_launcher_ownership(
+    _installation: &DesktopInstallation,
+    timeout: Duration,
+    #[cfg(unix)] data: &Path,
+) -> Result<LauncherOwnership, Box<dyn Error>> {
+    #[cfg(unix)]
+    {
+        let descriptor_path = default_descriptor_path()?;
+        let lifecycle = crate::desktop_lifecycle::Lifecycle::open(&descriptor_path)?;
+        let guard_path = default_guard_path()?;
+        let started = Instant::now();
+        let mut delay = ATTACHMENT_RETRY_INITIAL_DELAY;
+        loop {
+            let operation = lifecycle.lock()?;
+            if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
+                return Ok(LauncherOwnership::Acquired(guard, operation));
+            }
+            if let Some(descriptor) = read_descriptor(&descriptor_path)? {
+                lifecycle.check_attachment_scope(data)?;
+                if try_activate_controlled_instance(&descriptor)? {
+                    return Ok(LauncherOwnership::Attached);
+                }
+            }
+            drop(operation);
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(
+                    "another codexhost Launcher did not become attachable before timeout".into(),
+                );
+            }
+            thread::sleep(delay.min(remaining));
+            delay = delay.saturating_mul(2).min(ATTACHMENT_RETRY_MAX_DELAY);
+        }
+    }
+    #[cfg(not(unix))]
+    acquire_legacy_launcher_ownership(_installation, timeout)
+}
+
+#[cfg(not(unix))]
+fn acquire_legacy_launcher_ownership(
     installation: &DesktopInstallation,
     timeout: Duration,
 ) -> Result<LauncherOwnership, Box<dyn Error>> {
@@ -274,6 +315,7 @@ fn snapshots_in_desktop_tree<'a>(
     Some(tree)
 }
 
+#[cfg(target_os = "windows")]
 pub(super) fn publish_runtime_descriptor(
     descriptor_path: &Path,
     control: &RuntimeControl,
@@ -377,11 +419,6 @@ pub(super) fn stop_stale_launcher(descriptor: &RuntimeDescriptor) -> Result<(), 
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(super) fn stop_stale_launcher(_descriptor: &RuntimeDescriptor) -> Result<(), Box<dyn Error>> {
-    Ok(())
-}
-
 /// A recorded launcher PID may since have been reused by an unrelated process.
 /// Only an inspected executable matching this launcher proves ownership; a PID
 /// the current user cannot inspect (for example a reused SYSTEM service PID)
@@ -394,6 +431,7 @@ fn recorded_launcher_is_current<E>(inspected: Result<PathBuf, E>, expected: &Pat
         .is_some_and(|path| path == expected)
 }
 
+#[cfg(not(unix))]
 pub(super) fn managed_processes(
     data: &Path,
 ) -> Result<
@@ -424,6 +462,21 @@ pub(super) fn managed_processes(
     Ok(Some((launcher, controller)))
 }
 
+#[cfg(unix)]
+pub(super) use crate::desktop_lifecycle::{running_for_update, stop_managed};
+
+#[cfg(not(unix))]
+pub(super) fn running_for_update(data: &Path) -> Result<bool, Box<dyn Error>> {
+    let desktop = managed_processes(data)?;
+    if let Some((launcher, _)) = &desktop
+        && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
+    {
+        return Err("The running Desktop belongs to a different installation".into());
+    }
+    Ok(desktop.is_some())
+}
+
+#[cfg(not(unix))]
 pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
     let Some((launcher, controller)) = managed_processes(data)? else {
         return Ok(false);
@@ -436,6 +489,7 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
 // The Launcher exits only after its Controller does. A Controller that keeps waiting on an
 // unresponsive Renderer after SIGTERM is forced, so the Launcher can release Desktop ownership
 // instead of failing the update and blocking the recovery Launcher.
+#[cfg(any(not(unix), test))]
 fn stop_controller(
     launcher: &ProcessSnapshot,
     controller: &ProcessSnapshot,

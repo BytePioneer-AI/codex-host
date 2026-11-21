@@ -5,7 +5,7 @@ mod windows_service;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -185,7 +185,11 @@ server.listen(0, '127.0.0.1', () => console.log(server.address().port));
     }
 
     fn public_command(&self, action: &str) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codexhost"));
+        self.public_command_at(Path::new(env!("CARGO_BIN_EXE_codexhost")), action)
+    }
+
+    fn public_command_at(&self, launcher: &Path, action: &str) -> Command {
+        let mut command = Command::new(launcher);
         command
             .env_clear()
             .env("PATH", env::var_os("PATH").unwrap())
@@ -378,6 +382,35 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
         refreshed,
         "stop leaves autostart unchanged"
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_preserves_an_active_legacy_endpoint_without_its_launcher() {
+    let fixture = Fixture::new();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let runtime = fixture.root.join("Library/Application Support/codexhost");
+    fs::create_dir_all(&runtime).unwrap();
+    let descriptor = runtime.join("desktop-runtime-v1.json");
+    fs::write(&descriptor, serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1, "launcher_pid": i32::MAX, "control_port": listener.local_addr().unwrap().port(),
+        "nonce": "0123456789abcdef0123456789abcdef"
+    })).unwrap()).unwrap();
+    fs::create_dir_all(fixture.root.join("diagnostics")).unwrap();
+    fs::write(
+        fixture.root.join("diagnostics/desktop-controller-v1.json"),
+        format!("{{\"pid\":{}}}", std::process::id()),
+    )
+    .unwrap();
+    let output = fixture.public_command("stop").output().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no verified lifecycle record"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(descriptor.is_file());
+    assert!(std::net::TcpStream::connect(listener.local_addr().unwrap()).is_ok());
 }
 
 #[test]
@@ -757,8 +790,22 @@ fn missing_host_entry_reports_failure_but_still_stops_web_and_console() {
             .status
             .success()
     );
+    // The missing Host path has no sibling Console entrypoint. Supply the installed
+    // fallback within this fixture rather than relying on a built console in the checkout.
+    let launcher = fixture
+        .root
+        .join("bin")
+        .join(format!("codexhost{}", std::env::consts::EXE_SUFFIX));
+    fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_codexhost"), &launcher).unwrap();
+    fs::create_dir_all(fixture.root.join("app")).unwrap();
+    fs::copy(
+        fixture.root.join("console-server.mjs"),
+        fixture.root.join("app/console-server.mjs"),
+    )
+    .unwrap();
     let result = fixture
-        .public_command("stop")
+        .public_command_at(&launcher, "stop")
         .arg("--host-runtime")
         .arg(fixture.root.join("missing-host.mjs"))
         .output()

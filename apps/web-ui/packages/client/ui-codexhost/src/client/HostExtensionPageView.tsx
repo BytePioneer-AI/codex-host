@@ -15,7 +15,6 @@ import {
 import {
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES,
-  hostExtensionAssetUrl,
   resolveLocalizedExtensionText,
   type DesktopExtensionDispose,
   type HostExtensionPageApi,
@@ -26,6 +25,7 @@ import {
 } from "@codexhost/shared-contracts";
 import type { HostSettingsSource } from "./HostSettingsSection.tsx";
 import { subscribeHostExtensionEvents } from "./host-extensions-events.ts";
+import { resolveHostExtensionAssetUrl } from "./native-extensions/api.ts";
 import {
   hostExtensionsApi,
   isHostExtensionRevisionConflictError,
@@ -120,6 +120,7 @@ export function HostExtensionPageView({
     const mountRoot = mountRef.current;
     if (!mountRoot || !pageSpec) return;
 
+    const doc = mountRoot.ownerDocument;
     const controller = new AbortController();
     const { id, activationId, digest } = item;
     const hasBackend = Boolean(item.manifest.backend);
@@ -227,7 +228,10 @@ export function HostExtensionPageView({
       assets: {
         async url(relativePath: string): Promise<string> {
           guard();
-          return hostExtensionAssetUrl({ id, activationId, digest, path: relativePath });
+          return resolveHostExtensionAssetUrl(
+            { id, activationId, digest, path: relativePath },
+            doc,
+          );
         },
       },
       storage: {
@@ -321,26 +325,32 @@ export function HostExtensionPageView({
     };
 
     if (pageSpec.style) {
-      const styleUrl = hostExtensionAssetUrl({
-        id,
-        activationId,
-        digest,
-        path: pageSpec.style,
-      });
-      const link = document.createElement("link");
+      const styleUrl = resolveHostExtensionAssetUrl(
+        {
+          id,
+          activationId,
+          digest,
+          path: pageSpec.style,
+        },
+        doc,
+      );
+      const link = doc.createElement("link");
       link.rel = "stylesheet";
       link.setAttribute("data-cx-page-style", id);
       link.href = styleUrl;
-      (document.head ?? document.documentElement).append(link);
+      (doc.head ?? doc.documentElement).append(link);
       styleLink = link;
     }
 
-    const entryUrl = hostExtensionAssetUrl({
-      id,
-      activationId,
-      digest,
-      path: pageSpec.entry,
-    });
+    const entryUrl = resolveHostExtensionAssetUrl(
+      {
+        id,
+        activationId,
+        digest,
+        path: pageSpec.entry,
+      },
+      doc,
+    );
 
     void (async () => {
       try {

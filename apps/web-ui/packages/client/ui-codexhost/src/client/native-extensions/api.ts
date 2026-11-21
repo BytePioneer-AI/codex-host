@@ -32,6 +32,26 @@ export function cloneJsonObject(values: JsonObject): JsonObject {
   }
 }
 
+/**
+ * Resolve a Host extension asset URL relative to the document's `<base href="./">` so sub-path
+ * deployments and Relay proxies keep their base prefix; falls back to the raw asset path.
+ */
+export function resolveHostExtensionAssetUrl(
+  input: Parameters<typeof hostExtensionAssetUrl>[0],
+  doc?: Pick<Document, "baseURI"> | null,
+): string {
+  const rawPath = hostExtensionAssetUrl(input);
+  const baseUri = doc?.baseURI;
+  if (typeof baseUri === "string" && baseUri.length > 0) {
+    try {
+      return new URL(rawPath.replace(/^\/+/u, ""), baseUri).href;
+    } catch {
+      // Fall back to the root-relative path if baseURI is invalid or non-hierarchical.
+    }
+  }
+  return rawPath;
+}
+
 function isHtmlElement(value: unknown): value is HTMLElement {
   return (
     typeof value === "object" &&
@@ -220,7 +240,7 @@ export function createWebExtensionApi(
     assets: {
       url(path: string): string {
         guard();
-        return hostExtensionAssetUrl({ id, activationId, digest, path });
+        return resolveHostExtensionAssetUrl({ id, activationId, digest, path }, doc);
       },
     },
     storage: {

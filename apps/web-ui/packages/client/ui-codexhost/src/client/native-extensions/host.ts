@@ -9,14 +9,17 @@
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import type { ConnectionHandle } from "@deepseek-ai/dsh-client-connection/client";
 import {
-  hostExtensionAssetUrl,
   type HostExtensionRuntimeEntry,
   type HostExtensionsSnapshotResult,
   type WebExtensionDispose,
   type WebExtensionModule,
 } from "@codexhost/shared-contracts";
 import { subscribeHostExtensionEvents } from "../host-extensions-events.ts";
-import { createWebExtensionApi, type ManagedWebExtensionResources } from "./api.ts";
+import {
+  createWebExtensionApi,
+  resolveHostExtensionAssetUrl,
+  type ManagedWebExtensionResources,
+} from "./api.ts";
 import { webNativeExtensionRpcClient, type WebNativeExtensionRpcClient } from "./rpc.ts";
 
 const FALLBACK_POLL_INTERVAL_MS = 30_000;
@@ -163,12 +166,15 @@ export function startWebNativeExtensionHost(
     instances.set(entry.id, instance);
 
     const styleUrl = webSpec.style
-      ? hostExtensionAssetUrl({
-          id: entry.id,
-          activationId: entry.activationId,
-          digest: entry.digest,
-          path: webSpec.style,
-        })
+      ? resolveHostExtensionAssetUrl(
+          {
+            id: entry.id,
+            activationId: entry.activationId,
+            digest: entry.digest,
+            path: webSpec.style,
+          },
+          doc,
+        )
       : undefined;
 
     try {
@@ -186,12 +192,15 @@ export function startWebNativeExtensionHost(
       return;
     }
 
-    const entryUrl = hostExtensionAssetUrl({
-      id: entry.id,
-      activationId: entry.activationId,
-      digest: entry.digest,
-      path: webSpec.entry,
-    });
+    const entryUrl = resolveHostExtensionAssetUrl(
+      {
+        id: entry.id,
+        activationId: entry.activationId,
+        digest: entry.digest,
+        path: webSpec.entry,
+      },
+      doc,
+    );
 
     const resources = createWebExtensionApi({
       ctx,

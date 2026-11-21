@@ -1,3 +1,4 @@
+import { desktopExtensionPageModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
 import {
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES,
@@ -47,7 +48,7 @@ export interface DesktopExtensionPageHostOptions {
   readonly messages: RendererSettingsMessages;
   readonly getClient: () => DesktopExtensionPageRpcClient | null;
   readonly getContentLocale?: (() => DesktopExtensionContentLocale) | undefined;
-  readonly importModule?: ((blobUrl: string) => Promise<unknown>) | undefined;
+  readonly importModule?: ((url: string) => Promise<unknown>) | undefined;
   readonly onClose: () => void;
 }
 
@@ -169,25 +170,12 @@ export function createDesktopExtensionPageHost(
   let containerEl: HTMLElement | null = null;
   let pageAbort: AbortController | null = null;
   let activeDisposer: DesktopExtensionDispose | null = null;
-  let activeBlobUrls: string[] = [];
   let settingsRevision: number | null = null;
   let storageListeners = new Set<(values: JsonObject) => void>();
   let localeListeners = new Set<(locale: string) => void>();
   let colorSchemeListeners = new Set<(scheme: HostExtensionPageColorScheme) => void>();
   let removeColorSchemeMediaListener: (() => void) | null = null;
   let mountToken = 0;
-
-  const revokeBlobUrls = (): void => {
-    const urls = activeBlobUrls;
-    activeBlobUrls = [];
-    for (const url of urls) {
-      try {
-        URL.revokeObjectURL(url);
-      } catch {
-        // Ignore already-revoked or unsupported URLs.
-      }
-    }
-  };
 
   const runDisposerSafely = (disposer: DesktopExtensionDispose | null): void => {
     if (typeof disposer !== "function") return;
@@ -213,7 +201,6 @@ export function createDesktopExtensionPageHost(
     const disposer = activeDisposer;
     activeDisposer = null;
     runDisposerSafely(disposer);
-    revokeBlobUrls();
     settingsRevision = null;
   };
 
@@ -508,32 +495,21 @@ export function createDesktopExtensionPageHost(
 
     void (async () => {
       try {
-        const client = getClient();
-        const reader = client?.readHostExtensionAsset;
-        if (!reader) {
-          throw new Error("Host extension asset RPC is unavailable");
-        }
-
-        const [entryAsset, styleAsset] = await Promise.all([
-          reader({
+        let styleSource: string | null = null;
+        if (pageSpec.style) {
+          const reader = getClient()?.readHostExtensionAsset;
+          if (!reader) {
+            throw new Error("Host extension asset RPC is unavailable");
+          }
+          const styleAsset = await reader({
             id: item.id,
             activationId: item.activationId,
             digest: item.digest,
-            path: pageSpec.entry,
-          }),
-          pageSpec.style
-            ? reader({
-                id: item.id,
-                activationId: item.activationId,
-                digest: item.digest,
-                path: pageSpec.style,
-              })
-            : Promise.resolve(null),
-        ]);
-        if (token !== mountToken || controller.signal.aborted || parentSignal.aborted) return;
-
-        const entrySource = decodeBase64Utf8(entryAsset.base64);
-        const styleSource = styleAsset ? decodeBase64Utf8(styleAsset.base64) : null;
+            path: pageSpec.style,
+          });
+          if (token !== mountToken || controller.signal.aborted || parentSignal.aborted) return;
+          styleSource = decodeBase64Utf8(styleAsset.base64);
+        }
 
         const shadowHost = createEl(doc, "div", "settings-extensions-page-view__shadow-host");
         shadowHost.dataset.extensionPageHost = item.id;
@@ -559,18 +535,13 @@ export function createDesktopExtensionPageHost(
           shadowHost.append(mountRoot);
         }
 
-        const blob = new Blob([entrySource], { type: "text/javascript" });
-        const blobUrl = URL.createObjectURL(blob);
-        activeBlobUrls.push(blobUrl);
-
-        let mod: Partial<HostExtensionPageModule> | null | undefined;
-        try {
-          mod = (await importModule(blobUrl)) as
-            Partial<HostExtensionPageModule> | null | undefined;
-        } finally {
-          // Revoke the single-use Blob URL as soon as module evaluation finishes.
-          revokeBlobUrls();
-        }
+        const entryUrl = desktopExtensionPageModuleUrl({
+          id: item.id,
+          activationId: item.activationId,
+          digest: item.digest,
+        });
+        const mod = (await importModule(entryUrl)) as
+          Partial<HostExtensionPageModule> | null | undefined;
 
         if (token !== mountToken || controller.signal.aborted || parentSignal.aborted) return;
 

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { desktopExtensionPageModuleUrl } from "@codexhost/desktop-control/renderer-bindings";
 import {
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES,
@@ -61,19 +62,8 @@ afterEach(() => {
 });
 
 describe("Desktop standalone extension page host", () => {
-  it("mounts page.entry via Blob URL + page.style in Shadow DOM with CSS variables, full HostExtensionPageApi, and cleans up on close/disable/generation change", async () => {
-    const createObjectURL = vi.fn(() => "blob:codexhost-test-page-1");
-    const revokeObjectURL = vi.fn();
-    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL, revokeObjectURL }));
-
+  it("mounts page.entry via same-origin desktopExtensionPageModuleUrl + page.style in Shadow DOM with CSS variables, full HostExtensionPageApi, and cleans up on close/disable/generation change", async () => {
     const readHostExtensionAsset = vi.fn(async ({ path }: { path: string }) => {
-      if (path === "page/index.mjs") {
-        return {
-          mimeType: "text/javascript",
-          base64: toBase64("export function mount() {}"),
-          digest: "d".repeat(64),
-        };
-      }
       if (path === "page/style.css") {
         return {
           mimeType: "text/css",
@@ -152,13 +142,27 @@ describe("Desktop standalone extension page host", () => {
     });
 
     const itemV1 = makePageItem();
+    const expectedUrlV1 = desktopExtensionPageModuleUrl({
+      id: itemV1.id,
+      activationId: itemV1.activationId,
+      digest: itemV1.digest,
+    });
+    expect(expectedUrlV1).toBe(
+      `app://-/.codexhost/extension-pages/notes-board/act-notes-1/${"d".repeat(64)}/page.mjs`,
+    );
+
     controller.open(itemV1);
 
     await vi.waitFor(() => expect(capturedApis).toHaveLength(1));
-    expect(createObjectURL).toHaveBeenCalledTimes(1);
-    expect(importModule).toHaveBeenCalledWith("blob:codexhost-test-page-1");
-    // Single-use Blob URL is revoked right after dynamic import resolves.
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:codexhost-test-page-1");
+    expect(importModule).toHaveBeenCalledWith(expectedUrlV1);
+    // Only page.style is read via asset RPC; page.entry is loaded via same-origin module URL.
+    expect(readHostExtensionAsset).toHaveBeenCalledTimes(1);
+    expect(readHostExtensionAsset).toHaveBeenCalledWith({
+      id: "notes-board",
+      activationId: "act-notes-1",
+      digest: "d".repeat(64),
+      path: "page/style.css",
+    });
 
     // Verify Shadow DOM contains HOST_EXTENSION_PAGE_CSS_VARIABLES + page.style CSS + mounted DOM.
     const shadowHost = must(
@@ -207,8 +211,16 @@ describe("Desktop standalone extension page host", () => {
     });
 
     // Generation change (new activationId) aborts v1 signal, calls disposerV1, and remounts v2.
-    controller.sync([makePageItem({ activationId: "act-notes-2" })]);
+    const itemV2 = makePageItem({ activationId: "act-notes-2" });
+    controller.sync([itemV2]);
     await vi.waitFor(() => expect(capturedApis).toHaveLength(2));
+    expect(importModule).toHaveBeenLastCalledWith(
+      desktopExtensionPageModuleUrl({
+        id: itemV2.id,
+        activationId: itemV2.activationId,
+        digest: itemV2.digest,
+      }),
+    );
     expect(api.signal.aborted).toBe(true);
     expect(disposerV1).toHaveBeenCalledTimes(1);
     expect(disposerV2).not.toHaveBeenCalled();
@@ -224,21 +236,8 @@ describe("Desktop standalone extension page host", () => {
     controller.dispose();
   });
 
-  it("rejects backend.invoke clearly when manifest.backend is absent and isolates mount errors", async () => {
-    vi.stubGlobal(
-      "URL",
-      Object.assign(URL, {
-        createObjectURL: vi.fn(() => "blob:codexhost-test-page-err"),
-        revokeObjectURL: vi.fn(),
-      }),
-    );
-
+  it("mounts without readHostExtensionAsset when page.style is omitted, rejects backend.invoke clearly without manifest.backend, and isolates mount errors", async () => {
     const invokeHostExtensionBackend = vi.fn();
-    const readHostExtensionAsset = vi.fn(async () => ({
-      mimeType: "text/javascript",
-      base64: toBase64("export function mount() {}"),
-      digest: "e".repeat(64),
-    }));
 
     let capturedApi: HostExtensionPageApi | null = null;
     const importModule = vi
@@ -248,10 +247,12 @@ describe("Desktop standalone extension page host", () => {
           capturedApi = api;
         },
       })
-      .mockRejectedValueOnce(new Error("CSP blocked dynamic import"));
+      .mockRejectedValueOnce(new Error("Module evaluation failed"));
 
     const noBackendItem = makePageItem({
       id: "pure-page",
+      activationId: "act-pure-1",
+      digest: "e".repeat(64),
       manifest: {
         manifestVersion: 2,
         id: "pure-page",
@@ -269,9 +270,9 @@ describe("Desktop standalone extension page host", () => {
       extensions: [noBackendItem],
     };
 
+    // Intentionally omit readHostExtensionAsset to prove page without page.style mounts cleanly.
     const client: RendererDesktopExtensionsClient = {
       listHostExtensions: vi.fn(async () => listResult),
-      readHostExtensionAsset,
       invokeHostExtensionBackend,
     };
 
@@ -297,6 +298,13 @@ describe("Desktop standalone extension page host", () => {
     openPageButton.click();
 
     await vi.waitFor(() => expect(capturedApi).not.toBeNull());
+    expect(importModule).toHaveBeenCalledWith(
+      desktopExtensionPageModuleUrl({
+        id: "pure-page",
+        activationId: "act-pure-1",
+        digest: "e".repeat(64),
+      }),
+    );
     await expect(must(capturedApi).backend.invoke("ping")).rejects.toThrow(
       /does not declare a backend/i,
     );
@@ -307,7 +315,7 @@ describe("Desktop standalone extension page host", () => {
       content.querySelector<HTMLButtonElement>('button[data-action="page-reload"]'),
     );
     reloadButton.click();
-    await vi.waitFor(() => expect(content.textContent).toContain("CSP blocked dynamic import"));
+    await vi.waitFor(() => expect(content.textContent).toContain("Module evaluation failed"));
     expect(content.querySelector('[role="alert"]')).not.toBeNull();
 
     // Clicking back returns cleanly to the unified list view.

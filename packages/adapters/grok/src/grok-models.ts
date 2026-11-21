@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type {
   HarnessModelCatalog,
@@ -7,7 +9,13 @@ import type {
   HarnessThinkingOption,
   HarnessThinkingOptionId,
 } from "@codexhost/harness-adapter";
-import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  HARNESS_MODEL_REF_MAX_LENGTH,
+  harnessModelRefSchema,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
+
+const GROK_MODEL_REF_PREFIX = "grok-model-v1.";
 
 export interface GrokModelState {
   catalog: HarnessModelCatalog;
@@ -23,6 +31,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nonBlank(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+export function encodeGrokModelRef(value: string): HarnessModelRef {
+  if (!nonBlank(value)) throw new Error("Grok Model ID must not be blank");
+  const plain = harnessModelRefSchema.safeParse({ id: value });
+  if (plain.success && !value.startsWith(GROK_MODEL_REF_PREFIX)) return plain.data;
+
+  const id = `${GROK_MODEL_REF_PREFIX}${Buffer.from(value, "utf8").toString("base64url")}`;
+  if (id.length > HARNESS_MODEL_REF_MAX_LENGTH) {
+    throw new Error("Grok Model ID is too long for a Model Ref");
+  }
+  return harnessModelRefSchema.parse({ id });
+}
+
+export function decodeGrokModelRef(ref: HarnessModelRef): string {
+  const parsed = harnessModelRefSchema.parse(ref);
+  if (!parsed.id.startsWith(GROK_MODEL_REF_PREFIX)) return parsed.id;
+
+  const encoded = parsed.id.slice(GROK_MODEL_REF_PREFIX.length);
+  if (encoded.length === 0) throw new Error("Grok Model Ref is empty");
+  let value: string;
+  try {
+    value = Buffer.from(encoded, "base64url").toString("utf8");
+  } catch {
+    throw new Error("Grok Model Ref is malformed");
+  }
+  if (!nonBlank(value) || encodeGrokModelRef(value).id !== parsed.id) {
+    throw new Error("Grok Model Ref is not canonical");
+  }
+  return value;
 }
 
 function thinkingOptions(value: unknown): HarnessThinkingOption[] {
@@ -47,8 +85,12 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
   ) {
     return null;
   }
-  const currentModel = harnessModelRefSchema.safeParse({ id: value.currentModelId });
-  if (!currentModel.success) return null;
+  let currentModel: HarnessModelRef;
+  try {
+    currentModel = encodeGrokModelRef(value.currentModelId);
+  } catch {
+    return null;
+  }
 
   const allThinking = new Map<string, HarnessThinkingOption>();
   const contextWindowTokensByModel = new Map<string, number>();
@@ -57,19 +99,23 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
   let currentThinkingOptionId: HarnessThinkingOptionId | undefined;
   for (const candidate of value.availableModels) {
     if (!isRecord(candidate) || !nonBlank(candidate.modelId) || !nonBlank(candidate.name)) continue;
-    const ref = harnessModelRefSchema.safeParse({ id: candidate.modelId });
-    if (!ref.success) continue;
+    let ref: HarnessModelRef;
+    try {
+      ref = encodeGrokModelRef(candidate.modelId);
+    } catch {
+      continue;
+    }
     const metadata = isRecord(candidate._meta) ? candidate._meta : {};
     const options = thinkingOptions(metadata.reasoningEfforts);
     if (Array.isArray(metadata.contextWindows) && metadata.contextWindows.includes(500_000)) {
-      defaultContextWindowTokensByModel.set(ref.data.id, 500_000);
+      defaultContextWindowTokensByModel.set(ref.id, 500_000);
     }
     if (
       typeof metadata.totalContextTokens === "number" &&
       Number.isSafeInteger(metadata.totalContextTokens) &&
       metadata.totalContextTokens > 0
     ) {
-      contextWindowTokensByModel.set(ref.data.id, metadata.totalContextTokens);
+      contextWindowTokensByModel.set(ref.id, metadata.totalContextTokens);
     }
     for (const option of options) allThinking.set(option.id, option);
     if (candidate.modelId === value.currentModelId && nonBlank(metadata.reasoningEffort)) {
@@ -79,21 +125,21 @@ export function parseGrokModelState(value: unknown): GrokModelState | null {
       }
     }
     models.push({
-      ref: ref.data,
+      ref,
       label: candidate.name,
       ...(options.length > 0 ? { supportedThinkingOptionIds: options.map(({ id }) => id) } : {}),
     });
   }
-  if (!models.some(({ ref }) => ref.id === currentModel.data.id)) return null;
+  if (!models.some(({ ref }) => ref.id === currentModel.id)) return null;
   const options = [...allThinking.values()];
   return {
-    currentModel: currentModel.data,
+    currentModel,
     contextWindowTokensByModel,
     defaultContextWindowTokensByModel,
     ...(currentThinkingOptionId ? { currentThinkingOptionId } : {}),
     catalog: {
       models,
-      defaultModel: currentModel.data,
+      defaultModel: currentModel,
       thinkingOptions: options,
       ...(currentThinkingOptionId ? { defaultThinkingOptionId: currentThinkingOptionId } : {}),
     },

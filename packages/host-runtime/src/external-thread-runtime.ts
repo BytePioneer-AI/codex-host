@@ -874,6 +874,24 @@ export class ExternalThreadRuntime {
     }
   }
 
+  /**
+   * Marks a Turn starting or ending as Thread activity. Status notifications reach only the
+   * connection that runs the Turn; other clients' thread catalogs re-read only rows whose
+   * updatedAt moved past what they have seen.
+   */
+  async touch(thread: ExternalThread): Promise<void> {
+    try {
+      thread.record = await this.#repository.touch(thread.id);
+      const updatedAt = Math.floor(Date.parse(thread.record.updatedAt) / 1_000);
+      if (typeof thread.thread.updatedAt !== "number" || updatedAt > thread.thread.updatedAt)
+        thread.thread.updatedAt = updatedAt;
+      if (typeof thread.thread.recencyAt !== "number" || updatedAt > thread.thread.recencyAt)
+        thread.thread.recencyAt = updatedAt;
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
   async persistTerminalIdentity(
     thread: ExternalThread,
     event: TurnCompletedEvent,

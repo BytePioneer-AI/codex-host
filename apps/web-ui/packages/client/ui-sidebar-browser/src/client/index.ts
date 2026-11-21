@@ -10,6 +10,7 @@ import { BrowserBody, type BrowserBodyProps } from "./view/BrowserBody.tsx";
 import { BrowserTitle } from "./view/BrowserTitle.tsx";
 import { createBrowserControllers } from "./browser/BrowserController.ts";
 import type { BrowserInjected } from "./browser/BrowserController.ts";
+import { DirectSession } from "./remote/DirectSession.ts";
 import { createRemotePage } from "./remote/pages.ts";
 import { createElectronPage } from "./electron/pages.ts";
 import type { DesktopBrowserBridge } from "../types.ts";
@@ -150,13 +151,20 @@ export function apply(ctx: Context): void {
       "ui-sidebar-browser.body",
     );
   };
-  if (desktop === undefined)
+  if (desktop === undefined) {
+    const direct = new DirectSession();
+    ctx.effect(() => () => direct.dispose(), "ui-sidebar-browser.direct");
     installFrames(
       ctx,
       (sessionId) => (options) =>
-        createRemotePage(options, `${String(sessionId)}:${options.tabId}`, t("remote.input")),
+        createRemotePage(
+          options,
+          `${String(sessionId)}:${options.tabId}`,
+          t("remote.input"),
+          direct,
+        ),
     );
-  else
+  } else
     ctx.inject(["workspaces"], (scope) => {
       installFrames(
         scope,

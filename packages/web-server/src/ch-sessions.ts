@@ -587,27 +587,30 @@ export class ChSessions {
       dirty: false,
       operation: Promise.resolve(),
     };
+    const isCurrent = () =>
+      !this.closed && this.threads.view(id) === view && this.threads.get(id)?.usage === state;
+    this.threads.ensure(id).usage = state;
     state.operation = (async () => {
-      do {
-        state.dirty = false;
-        const result = threadUsageInspectionSchema.parse(
-          await this.host.request("codexhost/thread/usage/inspect", { threadId: id }),
-        );
-        if (this.closed || this.threads.view(id) !== view || this.threads.get(id)?.usage !== state)
-          return;
-        applyUsageProjections(view.log, result);
-        this.threads.ensure(id).usageReadAt = Date.now();
-      } while (state.dirty);
-    })()
-      .catch(() => {
-        // Usage is optional metadata. Preserve the latest confirmed projection;
-        // history and input remain usable, and the next invalidation retries.
-      })
-      .finally(() => {
+      try {
+        while (isCurrent()) {
+          state.dirty = false;
+          try {
+            const result = threadUsageInspectionSchema.parse(
+              await this.host.request("codexhost/thread/usage/inspect", { threadId: id }),
+            );
+            if (!isCurrent()) return;
+            applyUsageProjections(view.log, result);
+            this.threads.ensure(id).usageReadAt = Date.now();
+          } catch {
+            // Preserve the latest confirmed projection. Only a pending invalidation retries.
+          }
+          if (!state.dirty) return;
+        }
+      } finally {
         const current = this.threads.get(id);
         if (current?.usage === state) delete current.usage;
-      });
-    this.threads.ensure(id).usage = state;
+      }
+    })();
   }
   private loadControls(
     view: ChThreadHistory,
@@ -1660,9 +1663,17 @@ export class ChSessions {
         throw new RpcError("command/unavailable", "Commands require an editable local Thread.");
       return thread;
     });
-    rpc.register("codexhost/threadCommands", (args) =>
-      native.inspect(requestOf<{ sessionId: string }>(args).sessionId),
-    );
+    rpc.register("codexhost/threadCommands", (args) => {
+      const { sessionId } = requestOf<{ sessionId: string }>(args);
+      const draft = this.drafts.get(sessionId);
+      // Only official Codex lists a draft's Skills; other Harnesses use the Skill Library.
+      if (draft && !draft.canonicalId && draft.selection.provider === "codex") {
+        if (this.closed || !this.hostOnline)
+          throw new RpcError("host/offline", "The Host is disconnected.");
+        return native.inspectDraft("codex", draft.cwd);
+      }
+      return native.inspect(sessionId);
+    });
     rpc.register("codexhost/executeThreadCommand", (args) => {
       const { sessionId, commandId } = requestOf<{ sessionId: string; commandId: string }>(args);
       return native.execute(sessionId, commandId);

@@ -1,7 +1,12 @@
 /**
  * Selection actions over assistant responses: selecting text inside one
  * finished answer offers "Add to chat", which attaches the passage to the
- * Composer as a response annotation.
+ * Composer as a response annotation, and "Comment", which opens a note field
+ * beside the passage and attaches both together.
+ *
+ * Moving focus into the note field collapses the browser selection, so the
+ * passage is captured when the field opens and the selection listeners stand
+ * down until it closes.
  *
  * The selection must start and end inside the same answer, and must not touch
  * chrome the answer does not own as prose (code-block toolbars, composer
@@ -14,6 +19,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import css from "./SelectionActions.module.css";
+import { COMMENT_CARD_HEIGHT, SelectionCommentCard } from "./SelectionCommentCard.tsx";
+import type { SelectionCommentLabels } from "./SelectionCommentCard.tsx";
 
 /** Chrome that never contributes selected prose, excluded from the counted text. */
 const EXCLUDED_SELECTION = [
@@ -23,9 +30,11 @@ const EXCLUDED_SELECTION = [
 ].join(",");
 
 /** Owner-provided copy for the action. */
-export interface SelectionActionsLabels {
+export interface SelectionActionsLabels extends SelectionCommentLabels {
   /** Button label: attach the selection to the chat. */
   readonly addToChat: string;
+  /** Button label: attach the selection with a note of the user's own. */
+  readonly comment: string;
 }
 
 /** One resolved selection inside an answer. */
@@ -169,11 +178,16 @@ function serializeParagraph(node: Element, parent: Element): string {
  * right edge 8px above the selection's top and draws the box upward, keeping
  * the box inside the viewport with a CSS clamp rather than assuming its width;
  * a touch platform draws it below the selection instead, so the system callout
- * above stays reachable.
+ * above stays reachable. The comment card can flip sides or move away from
+ * the selection to stay within the visible viewport.
  * @param rect - the selection's last line in viewport coordinates.
+ * @param height - the box's height; omit for the one-line action.
  * @returns fixed-position anchor and the transform that bounds the box.
  */
-function placeSelection(rect: DOMRect): {
+function placeSelection(
+  rect: DOMRect,
+  height = 0,
+): {
   left: number;
   top: number;
   maxWidth: number;
@@ -184,13 +198,21 @@ function placeSelection(rect: DOMRect): {
   const width = viewport?.width ?? window.innerWidth;
   const offsetLeft = viewport?.offsetLeft ?? 0;
   const right = rect.right - offsetLeft;
-  const below = window.matchMedia("(hover: none)").matches;
+  const touch = window.matchMedia("(hover: none)").matches;
+  const topEdge = viewport?.offsetTop ?? 0;
+  const bottomEdge = topEdge + (viewport?.height ?? window.innerHeight);
+  const fitsAbove = rect.top - POPOVER_GAP - height >= topEdge + VIEWPORT_MARGIN;
+  const fitsBelow = rect.bottom + POPOVER_GAP + height <= bottomEdge - VIEWPORT_MARGIN;
+  const below = height === 0 ? touch : touch ? fitsBelow || !fitsAbove : !fitsAbove && fitsBelow;
   // The clamp bounds the drawn box: its own width decides how far left it may
   // pull itself, and its right edge never leaves the viewport margin.
   const room = width - VIEWPORT_MARGIN - right;
+  const top = below ? rect.bottom + POPOVER_GAP : rect.top - POPOVER_GAP;
+  const minTop = topEdge + VIEWPORT_MARGIN + (below ? 0 : height);
+  const maxTop = bottomEdge - VIEWPORT_MARGIN - (below ? height : 0);
   return {
-    left: right,
-    top: below ? rect.bottom + POPOVER_GAP : rect.top - POPOVER_GAP,
+    left: rect.right,
+    top: height === 0 ? top : Math.max(minTop, Math.min(top, maxTop)),
     maxWidth: width - VIEWPORT_MARGIN * 2,
     transform:
       `translateX(clamp(${String(VIEWPORT_MARGIN - right)}px, -100%, calc(${String(room)}px - 100%)))` +
@@ -200,28 +222,60 @@ function placeSelection(rect: DOMRect): {
 }
 
 /**
- * Watch answers for selections and offer the attach action next to them.
+ * Clear the page selection when it is still inside the answer that owned it.
+ * An attach callback may already have placed the caret in the Composer; that
+ * new caret is left alone.
+ * @param host - the answer body the passage came from.
+ */
+function clearAnswerSelection(host: Element): void {
+  const live = window.getSelection();
+  if (
+    live?.anchorNode != null &&
+    live.focusNode !== null &&
+    host.contains(live.anchorNode) &&
+    host.contains(live.focusNode)
+  )
+    live.removeAllRanges();
+}
+
+/**
+ * Watch answers for selections and offer the attach actions next to them.
  * @param props.labels - localized action copy.
  * @param props.onAdd - attaches the selected text; false keeps the selection available.
+ * @param props.onComment - attaches the selected text with the user's note; false keeps the note field open.
  * @param props.container - transcript element whose answers participate.
- * @returns the popover, or null while nothing is selected.
+ * @returns the popover or the note field, or null while nothing is selected.
  */
 export function SelectionActions({
   labels,
   onAdd,
+  onComment,
   container,
 }: {
   labels: SelectionActionsLabels;
   onAdd: (text: string) => boolean;
+  onComment: (text: string, comment: string) => boolean;
   container: () => Element | null;
 }): ReactNode {
   const [selection, setSelection] = useState<AnswerSelection | null>(null);
+  // The passage a note is being written for. Held apart from `selection`: the
+  // field takes focus, which collapses the page selection `selection` mirrors.
+  const [composing, setComposing] = useState<
+    (AnswerSelection & { placement: ReturnType<typeof placeSelection> }) | null
+  >(null);
+  const commentFieldRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
   const frameRef = useRef<number | null>(null);
   const suppressRef = useRef(false);
 
+  const closeComposing = useCallback(() => {
+    composingRef.current = false;
+    setComposing(null);
+  }, []);
+
   const sync = useCallback(() => {
     frameRef.current = null;
-    if (suppressRef.current) return;
+    if (suppressRef.current || composingRef.current) return;
     const next = readSelection(container());
     setSelection((current) =>
       current?.text === next?.text && current?.rect.top === next?.rect.top
@@ -244,13 +298,14 @@ export function SelectionActions({
     };
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target;
-      if (
-        target instanceof Node &&
-        target.parentElement?.closest("[data-selection-actions]") != null
-      )
-        return;
+      // The note card is itself a `data-selection-actions` element, so a press
+      // on its padding must count as inside; `closest` starts at the element.
+      const origin =
+        target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+      if (origin?.closest("[data-selection-actions]") != null) return;
       suppressRef.current = true;
       setSelection(null);
+      closeComposing();
     };
     const onSelectionChange = (): void => {
       const live = window.getSelection();
@@ -260,8 +315,17 @@ export function SelectionActions({
       }
       schedule();
     };
-    const onScroll = (): void => {
+    const onScroll = (event: Event): void => {
+      // The note field scrolls itself when its text overflows; that is not
+      // the transcript moving away from the passage.
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-selection-actions]") !== null) return;
+      // Opening the keyboard can also scroll the transcript. Keep the card
+      // mounted while editing or when closing it would discard a draft.
+      const field = commentFieldRef.current;
+      if (field !== null && (field === document.activeElement || field.value !== "")) return;
       setSelection(null);
+      closeComposing();
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("pointerup", onPointerUp, true);
@@ -278,8 +342,58 @@ export function SelectionActions({
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     };
-  }, [schedule]);
+  }, [schedule, closeComposing]);
 
+  const composingRect = composing?.rect;
+  useEffect(() => {
+    if (composingRect === undefined) return;
+    const viewport = window.visualViewport;
+    const reposition = (): void => {
+      const placement = placeSelection(composingRect, COMMENT_CARD_HEIGHT);
+      setComposing((current) =>
+        current?.rect === composingRect ? { ...current, placement } : current,
+      );
+    };
+    window.addEventListener("resize", reposition);
+    viewport?.addEventListener("resize", reposition);
+    viewport?.addEventListener("scroll", reposition, { passive: true });
+    reposition();
+    return () => {
+      window.removeEventListener("resize", reposition);
+      viewport?.removeEventListener("resize", reposition);
+      viewport?.removeEventListener("scroll", reposition);
+    };
+  }, [composingRect]);
+
+  /** Whether the answer a passage came from is still on the page. */
+  const owned = (passage: AnswerSelection): boolean =>
+    passage.host.isConnected && container()?.contains(passage.host) === true;
+
+  if (composing !== null) {
+    const placed = composing.placement;
+    return createPortal(
+      <SelectionCommentCard
+        excerpt={composing.text}
+        labels={labels}
+        fieldRef={commentFieldRef}
+        below={placed.below}
+        style={{
+          left: placed.left,
+          top: placed.top,
+          maxWidth: placed.maxWidth,
+          transform: `${placed.transform} translateZ(0)`,
+        }}
+        onSubmit={(comment) => {
+          if (!owned(composing) || !onComment(composing.text, comment)) return false;
+          clearAnswerSelection(composing.host);
+          closeComposing();
+          return true;
+        }}
+        onCancel={closeComposing}
+      />,
+      document.body,
+    );
+  }
   if (selection === null) return null;
   const placed = placeSelection(selection.rect);
   return createPortal(
@@ -304,18 +418,8 @@ export function SelectionActions({
           event.stopPropagation();
         }}
         onClick={() => {
-          if (!selection.host.isConnected || !container()?.contains(selection.host)) return;
-          if (!onAdd(selection.text)) return;
-          const live = window.getSelection();
-          // The attach callback may already have placed the caret in the Composer.
-          // Clear only a selection still owned by the answer, not that new caret.
-          if (
-            live?.anchorNode != null &&
-            live.focusNode !== null &&
-            selection.host.contains(live.anchorNode) &&
-            selection.host.contains(live.focusNode)
-          )
-            live.removeAllRanges();
+          if (!owned(selection) || !onAdd(selection.text)) return;
+          clearAnswerSelection(selection.host);
           setSelection(null);
         }}
       >
@@ -335,6 +439,41 @@ export function SelectionActions({
           <path d="M9 10h6" />
         </svg>
         <span>{labels.addToChat}</span>
+      </button>
+      <button
+        type="button"
+        className={css.action}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onClick={() => {
+          if (!owned(selection)) return;
+          // Set before the state so a selection frame already queued sees it.
+          composingRef.current = true;
+          setComposing({
+            ...selection,
+            placement: placeSelection(selection.rect, COMMENT_CARD_HEIGHT),
+          });
+          setSelection(null);
+        }}
+      >
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          <path d="M8 9h8" />
+          <path d="M8 13h5" />
+        </svg>
+        <span>{labels.comment}</span>
       </button>
     </div>,
     document.body,

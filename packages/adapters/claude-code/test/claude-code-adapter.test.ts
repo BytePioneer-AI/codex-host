@@ -21,7 +21,10 @@ import type {
   HarnessSessionState,
 } from "@codexhost/harness-adapter";
 import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "../src/index.js";
-import { projectClaudePlanLimitToCredits } from "../src/claude-code-adapter.js";
+import {
+  planLimitFromAccountCredits,
+  projectClaudePlanLimitToCredits,
+} from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
 import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
@@ -795,6 +798,52 @@ describe("Claude Code usage metering", () => {
     }
     await opened.value.close();
     await adapter.close();
+  });
+});
+
+describe("planLimitFromAccountCredits", () => {
+  it("round-trips a five-hour window with a seven-day sidecar", () => {
+    const credits = projectClaudePlanLimitToCredits({
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    });
+    expect(planLimitFromAccountCredits(credits)).toEqual({
+      fiveHour: { utilizationPercent: 62, resetsAtUnix: 1_756_130_400 },
+      sevenDay: { utilizationPercent: 18, resetsAtUnix: 1_756_648_800 },
+    });
+  });
+
+  it("returns null when there is no snapshot", () => {
+    expect(planLimitFromAccountCredits(null)).toBeNull();
+    expect(planLimitFromAccountCredits(undefined)).toBeNull();
+  });
+
+  it("ignores model-scoped seven-day product windows when seeding the account cache", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 10,
+        periodType: "five_hour",
+        productUsage: [
+          {
+            product: "Sonnet · 7-day",
+            periodType: "seven_day",
+            scope: { id: "Sonnet", label: "Sonnet" },
+            usagePercent: 91,
+          },
+        ],
+      }),
+    ).toEqual({ fiveHour: { utilizationPercent: 10 } });
+  });
+
+  it("does not treat a scoped primary seven-day window as the account weekly limit", () => {
+    expect(
+      planLimitFromAccountCredits({
+        usedPercent: 91,
+        periodType: "seven_day",
+        scope: { id: "Sonnet", label: "Sonnet" },
+        label: "Sonnet · 7-day",
+      }),
+    ).toBeNull();
   });
 });
 
@@ -2458,6 +2507,119 @@ describe("Claude Code HarnessAdapter", () => {
     expect(transport.turns).toEqual([]);
     await session.close();
   });
+
+  it.each([false, true])(
+    "adds signed narration as commentary before the answer (complete-only: %s)",
+    async (completeOnly) => {
+      const { adapter, history, transports } = fixture();
+      const session = await openSession(adapter);
+      const iterator = session.outputs[Symbol.asyncIterator]();
+
+      await session.execute(textTurn("narration-commentary"));
+      await nextEvent(iterator);
+      await nextEvent(iterator);
+      const liveStarted = await nextEvent(iterator);
+      if (liveStarted.type !== "item.started" || liveStarted.item.type !== "agentMessage") {
+        throw new Error("Claude live Agent Message did not start");
+      }
+      const transport = transports[0];
+      const nativeTurnKey = transport?.turns[0]?.userMessageId;
+      if (!transport || !nativeTurnKey) throw new Error("Fake Claude Turn did not start");
+
+      const narrationId = "native-message:thinking:0";
+      if (!completeOnly) {
+        transport.reasoning(narrationId, "Checking the files");
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.started",
+          item: { type: "reasoning" },
+        });
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.updated",
+          update: { type: "text.append", text: "Checking the files" },
+        });
+        transport.completeReasoning(narrationId);
+        expect(await nextEvent(iterator)).toMatchObject({
+          type: "item.completed",
+          snapshot: { item: { type: "reasoning", text: "Checking the files" } },
+        });
+      }
+      transport.event({
+        type: "narration.completed",
+        messageId: narrationId,
+        text: "Checking the files first.",
+        ...(completeOnly ? { completeOnly: true } : {}),
+      });
+      await nextEvent(iterator);
+      const narration = await nextEvent(iterator);
+      expect(narration).toMatchObject({
+        type: "item.completed",
+        snapshot: {
+          item: {
+            type: "agentMessage",
+            itemId: liveStarted.item.itemId,
+            text: "Checking the files first.",
+            phase: "commentary",
+          },
+          outcome: { status: "succeeded" },
+        },
+      });
+
+      const reasoningId = "native-message:thinking:1";
+      transport.reasoning(reasoningId, "One more thought");
+      const answer = await nextEvent(iterator);
+      if (answer.type !== "item.started" || answer.item.type !== "agentMessage") {
+        throw new Error("Claude live answer did not start");
+      }
+      expect(answer.item.itemId).not.toBe(liveStarted.item.itemId);
+      expect(answer.item).not.toHaveProperty("phase");
+      const reasoning = await nextEvent(iterator);
+      if (reasoning.type !== "item.started" || reasoning.item.type !== "reasoning") {
+        throw new Error("Claude ordinary Reasoning did not start");
+      }
+      transport.completeReasoning(reasoningId);
+      transport.delta("The answer.", "native-message");
+      transport.finish({ status: "succeeded" });
+      while ((await nextEvent(iterator)).type !== "turn.completed") {
+        // Wait for the live Turn to settle before reading history.
+      }
+
+      history.push(
+        {
+          type: "user",
+          uuid: nativeTurnKey,
+          session_id: transport.sessionId,
+          message: { role: "user", content: "narration-commentary" },
+        },
+        {
+          type: "assistant",
+          uuid: "native-assistant",
+          session_id: transport.sessionId,
+          message: {
+            id: "native-message",
+            role: "assistant",
+            content: [
+              {
+                type: "thinking",
+                thinking: "Checking the files first.",
+                signature: "Eg0KC0IJbmFycmF0aW9u",
+              },
+              { type: "thinking", thinking: "One more thought" },
+              { type: "text", text: "The answer." },
+            ],
+            stop_reason: "end_turn",
+          },
+        },
+      );
+      const snapshot = await session.readSnapshot();
+      if (!snapshot.ok) throw new Error(snapshot.error.message);
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toEqual([
+        { ...liveStarted.item, phase: "commentary", text: "Checking the files first." },
+        { ...reasoning.item, text: "One more thought" },
+        { ...answer.item, text: "The answer." },
+      ]);
+      await session.close();
+    },
+  );
 
   it("uses one Item identity for a live response and its native history snapshot", async () => {
     const { adapter, history, transports } = fixture();
@@ -7254,6 +7416,88 @@ describe("Claude Code HarnessAdapter", () => {
   it("has no plan usage on the Adapter before any rate-limit event is observed", () => {
     const { adapter } = fixture();
     expect(adapter.credits()).toBeNull();
+  });
+
+  it("seeds the credits cache from an account inspection so a restarted chat can show quota without a new message", async () => {
+    const { adapter } = fixture({}, { accountCreditsSupported: true });
+    expect(adapter.credits()).toBeNull();
+    await expect(adapter.inspectAccount()).resolves.toEqual({
+      credits: { usedPercent: 10, periodType: "five_hour" },
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("refreshCredits inspects the account and returns the seeded snapshot", async () => {
+    const { adapter } = fixture({}, { accountCreditsSupported: true });
+    await expect(adapter.refreshCredits()).resolves.toEqual({
+      usedPercent: 10,
+      periodType: "five_hour",
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 10, periodType: "five_hour" });
+  });
+
+  it("keeps a previously observed weekly window when inspection only returns the five-hour window", async () => {
+    const { adapter, transports } = fixture({}, { accountCreditsSupported: true });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("inspect-partial-windows"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    transport.planLimit({
+      fiveHour: { utilizationPercent: 44 },
+      sevenDay: { utilizationPercent: 18 },
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 44, planSevenDayUsedPercent: 18 },
+    });
+    await adapter.inspectAccount();
+    expect(adapter.credits()).toEqual({
+      usedPercent: 10,
+      periodType: "five_hour",
+      productUsage: [{ product: "7-day window", periodType: "seven_day", usagePercent: 18 }],
+    });
+    expect(await nextEvent(iterator)).toEqual({
+      type: "session.usage.changed",
+      observedForTurnId: "inspect-partial-windows",
+      usage: { planFiveHourUsedPercent: 10, planSevenDayUsedPercent: 18 },
+    });
+    transport.finish({ status: "succeeded" });
+    await session.close();
+  });
+
+  it("does not let a slower account inspection overwrite a native plan-limit push", async () => {
+    const { adapter, dependencies, transports } = fixture({}, { accountCreditsSupported: true });
+    const accountResult = deferred<{ credits: { usedPercent: number; periodType: "five_hour" } }>();
+    const createInspector = dependencies.createInspector;
+    dependencies.createInspector = (input) => ({
+      ...createInspector(input),
+      inspectAccount: () => accountResult.promise,
+    });
+    const session = await openSession(adapter);
+    const iterator = session.outputs[Symbol.asyncIterator]();
+    await session.execute(textTurn("inspect-race"));
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    await nextEvent(iterator);
+    const transport = transports[0];
+    if (!transport) throw new Error("Fake Claude transport was not created");
+
+    const inspection = adapter.inspectAccount();
+    transport.planLimit({ fiveHour: { utilizationPercent: 44 } });
+    await nextEvent(iterator);
+    accountResult.resolve({ credits: { usedPercent: 10, periodType: "five_hour" } });
+    await expect(inspection).resolves.toEqual({
+      credits: { usedPercent: 10, periodType: "five_hour" },
+    });
+    expect(adapter.credits()).toEqual({ usedPercent: 44, periodType: "five_hour" });
+    transport.finish({ status: "succeeded" });
+    await session.close();
   });
 
   it("projects the five-hour window as the primary credits pill, with the seven-day window riding along", async () => {

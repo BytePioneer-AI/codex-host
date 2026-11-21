@@ -1787,10 +1787,13 @@ describe("Antigravity foreground native commits", () => {
     );
   }
 
-  const terminal = (outputs: HarnessOutput[], id = "t1") =>
-    required(
-      events(outputs).find((event) => event.type === "turn.completed" && event.turnId === id),
+  const terminal = (outputs: HarnessOutput[], id = "t1") => {
+    const event = events(outputs).find(
+      (event) => event.type === "turn.completed" && event.turnId === id,
     );
+    assert(event?.type === "turn.completed");
+    return event;
+  };
 
   it("publishes a durable Turn when the WAL commits at 200ms", async () => {
     const { session, outputs, transport, db } = await setup();

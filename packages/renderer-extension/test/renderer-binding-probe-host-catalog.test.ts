@@ -497,7 +497,7 @@ describe("Renderer binding Harness directory diagnostics", () => {
 
       const notify = testState.notifyMutations;
       assert(notify);
-      notify([{ type: "attributes", target: testState.editor } as MutationRecord]);
+      notify([{ type: "attributes", target: testState.editor } as unknown as MutationRecord]);
       for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
       expect(sendRequest).toHaveBeenCalledWith(HARNESS_PLUGIN_LIST_METHOD, {});
       await vi.waitFor(() => {

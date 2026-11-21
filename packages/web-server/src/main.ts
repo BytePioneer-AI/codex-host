@@ -20,6 +20,7 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 import { createWebServer } from "./http-server.ts";
 import { compressResponse } from "./compression.ts";
+import { IMMUTABLE_CACHE, sendAsset as send } from "./static-response.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
 import {
@@ -28,7 +29,14 @@ import {
   takeNpmEntrypoint,
 } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
-import { downloadWorkspaceFile, openWorkspaceFile } from "./workspace-file-actions.ts";
+import { registerWebExtensionRpc } from "./web-extension-rpc.ts";
+import { WebNativeExtensions } from "./web-native-extensions.ts";
+import {
+  downloadWorkspaceFile,
+  issueWorkspaceDownloadTicket,
+  openWorkspaceFile,
+  WorkspaceDownloadTickets,
+} from "./workspace-file-actions.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
 import { AccessTokenStore } from "./access-tokens.ts";
@@ -68,7 +76,7 @@ import { formatWebStartup } from "./startup-display.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
 import type { SessionListTiming } from "./session-list-timing.ts";
-import { WebAssets, type AssetResponse, type WebAssetOptions } from "./web-assets.ts";
+import { WebAssets, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
@@ -296,11 +304,13 @@ const dsh = await DshWebServices.open({
 if (dsh) streams.setFallback((endpoint, args, sink) => dsh.stream(endpoint, args, sink));
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
+const downloadTickets = new WorkspaceDownloadTickets();
 if (accessTokens !== undefined) {
   push.retainOwners((owner) => owner === LOCAL_CREDENTIAL || accessTokens.has(owner));
   accessTokens.onRevoked((id) => {
     connections.revoke(id);
     push.dropOwner(id);
+    downloadTickets.revokeOwner(id);
   });
 }
 const pushNotifications = chHost.realtime
@@ -447,38 +457,14 @@ registerBackgroundControls(rpc, accessTokens, {
 });
 registerMisc(rpc, { events });
 registerUiExtensionRpc(rpc, extensions);
+const nativeExtensions = new WebNativeExtensions(data, auth !== undefined && !values["safe-mode"]);
+const webExtensionHttp = registerWebExtensionRpc(rpc, nativeExtensions, extensions, trust);
 registerVoiceStatus(rpc, chHost);
 
-const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 /** Harness icon URLs are stable; serve the cached copy while revalidating in the background.
  * `--dev-web-ui` keeps them fresh so icon changes show on reload. */
 const HARNESS_ICON_CACHE =
   devWebUi === undefined ? "private, max-age=86400, stale-while-revalidate=604800" : "no-cache";
-
-async function send(
-  request: IncomingMessage,
-  response: ServerResponse,
-  asset: AssetResponse | undefined,
-  cacheControl = "no-cache",
-): Promise<void> {
-  if (asset === undefined) {
-    response.writeHead(404, { "content-type": "text/plain" }).end("not found");
-    return;
-  }
-  const compressed = await compressResponse(
-    asset.body,
-    asset.contentType,
-    request.headers["accept-encoding"],
-    cacheControl === IMMUTABLE_CACHE ? request.url : undefined,
-  );
-  response
-    .writeHead(200, {
-      "content-type": asset.contentType,
-      "cache-control": cacheControl,
-      ...compressed.headers,
-    })
-    .end(compressed.body);
-}
 
 async function readBody(
   request: IncomingMessage,
@@ -517,12 +503,37 @@ const server = createWebServer((request, response) => {
     response.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
     if (trust.relaySockets.has(request.socket))
       response.setHeader("Strict-Transport-Security", "max-age=31536000");
+    if (
+      pathname === "/api/workspace-file/download" &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      const requestUrl = new URL(url, "http://localhost");
+      const ticket = requestUrl.searchParams.get("ticket");
+      if (ticket !== null) {
+        const grant = downloadTickets.resolve(ticket);
+        if (grant === undefined) {
+          response
+            .writeHead(401, { "content-type": "text/plain", "cache-control": "no-store" })
+            .end("download link expired");
+          return;
+        }
+        await downloadWorkspaceFile(
+          request,
+          response,
+          requestUrl,
+          (id) => sessions.fileWorkspaceRoot(id),
+          grant,
+        );
+        return;
+      }
+    }
     let requestAuth: RequestAuth | undefined;
     if (auth !== undefined) {
       const admission = await auth.gate(request, response, pathname);
       if (admission.handled) return;
       requestAuth = admission.auth;
     }
+    if (await webExtensionHttp.serve(request, response, pathname, requestAuth)) return;
     if (
       pathname === "/api/workspace-file/download" &&
       (request.method === "GET" || request.method === "HEAD")
@@ -578,6 +589,18 @@ const server = createWebServer((request, response) => {
       }
       if (pathname === "/api/session/uploadFileBinary") {
         await serveFileUpload(sessions, request, response, trust.relaySockets.has(request.socket));
+        return;
+      }
+      if (pathname === "/api/workspace-file/download-ticket") {
+        const body = await readBody(request, response);
+        if (body === undefined) return;
+        await issueWorkspaceDownloadTicket(
+          response,
+          body,
+          (id) => sessions.fileWorkspaceRoot(id),
+          downloadTickets,
+          requestAuth?.credential,
+        );
         return;
       }
       const body = await readBody(request, response);
@@ -701,6 +724,7 @@ const server = createWebServer((request, response) => {
       response,
       assets.dist(pathname),
       pathname.startsWith("/assets/") ? IMMUTABLE_CACHE : undefined,
+      pathname === "/codexhost-settings.js",
     );
   })().catch((error: unknown) => {
     console.error("[http] request failed", error);
@@ -781,6 +805,10 @@ server.listen(Number(values.port), values.host, async () => {
     }
   }
   console.log(`codexhost web: ${localUrl}`);
+  // The recovery route is already listening, even if extension activation hangs or fails.
+  void nativeExtensions.start().catch(() => {
+    console.warn("[extensions] Web native packages could not be restored; see /extensions");
+  });
   const urls = reachableNetworkUrls(
     accessTokens !== undefined && local
       ? (await readNetworkAccess()).networkUrls
@@ -820,21 +848,33 @@ server.listen(Number(values.port), values.host, async () => {
   });
 });
 
-async function shutdown(exitCode = 0): Promise<void> {
-  relay.close();
-  shellReload?.close();
-  accessTokens?.close();
-  server.close();
-  desktopScreenshots.close();
-  await sidebarBrowser.close();
-  await dsh?.close();
-  await extensions.cleanup(true);
-  pushNotifications?.close();
-  await sessions.close();
-  remoteSessions.close();
-  await preferences?.close();
-  displaySettings.close();
-  process.exit(exitCode);
+let shuttingDown: Promise<void> | undefined;
+function shutdown(exitCode = 0): Promise<void> {
+  return (shuttingDown ??= (async () => {
+    const stoppingNative = nativeExtensions.stop();
+    const closingUploads = webExtensionHttp.close();
+    try {
+      relay.close();
+      shellReload?.close();
+      accessTokens?.close();
+      server.close();
+      desktopScreenshots.close();
+      await sidebarBrowser.close();
+      await dsh?.close();
+      await extensions.cleanup(true);
+      pushNotifications?.close();
+      await sessions.close();
+      remoteSessions.close();
+      await preferences?.close();
+      displaySettings.close();
+    } catch (error) {
+      console.error("[web] shutdown failed", error);
+      exitCode ||= 1;
+    } finally {
+      await Promise.allSettled([stoppingNative, closingUploads]);
+      process.exit(exitCode);
+    }
+  })());
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());

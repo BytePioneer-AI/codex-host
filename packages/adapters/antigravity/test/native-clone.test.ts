@@ -186,7 +186,7 @@ describe("SQLite clone fidelity", () => {
               )
               .run(childId, f.sourceId);
           const harnessId = harnessIdSchema.parse("antigravity");
-          const sourceRef = { harnessId, nativeSessionId: f.sourceId, formatVersion: 1 };
+          const sourceRef = { harnessId, nativeSessionId: f.sourceId, formatVersion: 1 as const };
           const openSession = vi.fn();
           expect(
             await forkAntigravitySession({

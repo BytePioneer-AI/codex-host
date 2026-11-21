@@ -36,11 +36,7 @@ export type {
   SDKSystemMessage,
   SDKUserMessage,
 } from "./qoder-sdk-types.js";
-export {
-  QODER_DEFAULT_CONTEXT_WINDOW_TOKENS,
-  QoderUsageTracker,
-  resolveQoderContextWindow,
-} from "./qoder-usage.js";
+export { QoderUsageTracker } from "./qoder-usage.js";
 export { mapQoderException, mapQoderExitCode, mapQoderResultError } from "./qoder-errors.js";
 export { mapQoderSnapshot, extractUserText, isHumanUser } from "./qoder-history.js";
 export {

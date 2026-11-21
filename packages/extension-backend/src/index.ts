@@ -1,23 +1,31 @@
-import { spawn } from "node:child_process";
-import {
-  readDesktopExtensionSettings,
-  writeDesktopExtensionSettings,
-} from "@codexhost/harness-plugin-files";
-import type { DesktopExtensionBackendContext } from "@codexhost/shared-contracts";
+import { spawn, spawnSync } from "node:child_process";
+import path from "node:path";
+import type { ExtensionBackendContext } from "@codexhost/shared-contracts";
 
-type Entry = Pick<DesktopExtensionBackendContext, "extensionId" | "extensionDir" | "dataDir"> & {
+export type ExtensionBackendEntry = Pick<
+  ExtensionBackendContext,
+  "extensionId" | "extensionDir" | "dataDir"
+> & {
   url: string;
   hash: string;
   installation: string;
 };
+export interface ExtensionBackendOptions {
+  readSettings(): Promise<Record<string, unknown>>;
+  writeSettings(values: Record<string, unknown>): Promise<Record<string, unknown>>;
+  diagnose?(message: string): void;
+  /** Explicit child environment; omitted means no inherited application secrets. */
+  env?: NodeJS.ProcessEnv;
+}
+
 type Command =
-  | { op: "activate"; entry: Entry }
+  | { op: "activate"; entry: ExtensionBackendEntry }
   | { op: "invoke"; method: string; params: unknown }
   | { op: "dispose" };
 type Reply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: string };
 type Settings = { op: "read" } | { op: "write"; values: Record<string, unknown> };
 
-type BackendExports = { activate?: (context: DesktopExtensionBackendContext) => unknown };
+type BackendExports = { activate?: (context: ExtensionBackendContext) => unknown };
 
 const MAX_IPC_BYTES = 2 * 1024 * 1024;
 const MAX_SETTINGS_IN_FLIGHT = 4;
@@ -86,7 +94,7 @@ function backendChild(
         reject(error);
       }
     });
-  const loadEntry = async ({ url, hash, installation, extensionDir }: Entry) => {
+  const loadEntry = async ({ url, hash, installation, extensionDir }: ExtensionBackendEntry) => {
     const { registerHooks } = process.getBuiltinModule("node:module");
     const { createHash } = process.getBuiltinModule("node:crypto");
     const { statSync } = process.getBuiltinModule("node:fs");
@@ -135,7 +143,7 @@ function backendChild(
       if (typeof owner?.activate !== "function")
         throw new Error("Expected an activate(ctx) export");
       let registering = true;
-      const context: DesktopExtensionBackendContext = {
+      const context: ExtensionBackendContext = {
         extensionId,
         extensionDir,
         dataDir,
@@ -179,7 +187,21 @@ function backendChild(
     if (!handler) throw new Error("Backend method is not registered");
     return (await handler(command.params)) ?? null;
   };
-  process.on("disconnect", () => process.exit());
+  process.on("disconnect", () => {
+    // The IPC owner vanished without running its exit hooks.
+    if (process.platform === "win32") {
+      const { spawnSync } = process.getBuiltinModule("node:child_process");
+      const path = process.getBuiltinModule("node:path");
+      spawnSync(
+        path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+        ["/PID", String(process.pid), "/T", "/F"],
+        { windowsHide: true, stdio: "ignore", timeout: 2_000 },
+      );
+    } else {
+      process.kill(-process.pid, "SIGKILL");
+    }
+    process.exit();
+  });
   process.on("message", async (message: string | { reply: Reply }) => {
     if (typeof message !== "string") {
       const reply = message.reply;
@@ -205,16 +227,26 @@ function backendChild(
   });
 }
 
-export class DesktopExtensionBackendProcess {
+// One exit listener regardless of the number of extensions. Host signals go
+// through the owner's normal async shutdown, which awaits stop() first.
+const reapOnExit = new Set<() => void>();
+const reapAll = () => {
+  for (const reap of reapOnExit) reap();
+};
+
+export class ExtensionBackendProcess {
   readonly #child;
   readonly #closed: Promise<void>;
   readonly #pending = new Map<number, (reply: Reply) => void>();
   readonly #settings = new Set<Promise<unknown>>();
   #nextId = 0;
   #stopping = false;
-  methods = new Set<string>();
+  #activated = false;
+  #reaped = false;
+  #stop: Promise<void> | undefined;
+  readonly #methods = new Set<string>();
 
-  constructor(dataDir: string, id: string, diagnose: (message: string) => void) {
+  constructor(options: ExtensionBackendOptions) {
     this.#child = spawn(
       process.execPath,
       [
@@ -227,18 +259,30 @@ export class DesktopExtensionBackendProcess {
       {
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         serialization: "advanced",
-        env: { ...process.env, NODE_OPTIONS: undefined },
+        env: { SystemRoot: process.env.SystemRoot, ...options.env, NODE_OPTIONS: undefined },
+        detached: process.platform !== "win32",
         windowsHide: true,
       },
     );
-    this.#closed = new Promise((resolve) => this.#child.once("close", () => resolve()));
+    if (!reapOnExit.size) process.on("exit", reapAll);
+    reapOnExit.add(this.#killTree);
+    this.#closed = new Promise((resolve) =>
+      this.#child.once("close", () => {
+        reapOnExit.delete(this.#killTree);
+        if (!reapOnExit.size) process.off("exit", reapAll);
+        resolve();
+      }),
+    );
     const failed = (message: string) => {
-      this.methods.clear();
+      this.#methods.clear();
       for (const [id, finish] of this.#pending) finish({ id, ok: false, error: message });
-      if (!this.#stopping) diagnose(message);
+      if (!this.#stopping) options.diagnose?.(message);
     };
     this.#child.on("error", (error) => failed(error.message));
-    this.#child.on("exit", (code, signal) => failed(`Backend exited (${signal ?? code})`));
+    this.#child.on("exit", (code, signal) => {
+      this.#killTree();
+      failed(`Backend exited (${signal ?? code})`);
+    });
     this.#child.on("message", (text: unknown) => {
       if (typeof text !== "string" || Buffer.byteLength(text) > MAX_IPC_BYTES) return;
       let message: Reply | { settings: Settings & { id: number } };
@@ -262,11 +306,10 @@ export class DesktopExtensionBackendProcess {
         });
         return;
       }
-      const task = (
-        request.op === "read"
-          ? readDesktopExtensionSettings({ dataDir, id })
-          : writeDesktopExtensionSettings({ dataDir, id, values: request.values })
-      )
+      const task = Promise.resolve()
+        .then(() =>
+          request.op === "read" ? options.readSettings() : options.writeSettings(request.values),
+        )
         .then(
           (value) => this.#sendSettingsReply({ id: request.id, ok: true, value }),
           () =>
@@ -285,32 +328,65 @@ export class DesktopExtensionBackendProcess {
     if (this.#child.connected) this.#child.send({ reply }, () => undefined);
   }
 
-  async activate(entry: Entry) {
+  async activate(entry: ExtensionBackendEntry): Promise<void> {
+    if (this.#activated || this.#stopping) throw new Error("Backend cannot be activated twice");
+    this.#activated = true;
     const methods = await this.#request({ op: "activate", entry }, 5_000);
     if (!Array.isArray(methods) || !methods.every((method) => typeof method === "string"))
       throw new Error("Invalid backend activation response");
-    if (this.#child.connected) this.methods = new Set(methods);
+    if (!this.#child.connected || this.#stopping) throw new Error("Backend is not active");
+    for (const method of methods) this.#methods.add(method);
   }
 
   invoke(method: string, params: unknown): Promise<unknown> {
-    if (this.#stopping || !this.methods.has(method))
+    if (this.#stopping || !this.#methods.has(method))
       throw new Error("Backend method is not registered");
     if (this.#pending.size >= 32) throw new Error("Too many pending backend calls");
     return this.#request({ op: "invoke", method, params }, 10_000);
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    return (this.#stop ??= this.#dispose());
+  }
+
+  async #dispose(): Promise<void> {
     this.#stopping = true;
     try {
-      if (this.#child.connected) await this.#request({ op: "dispose" }, 1_000);
+      if (!this.#reaped && this.#child.connected) await this.#request({ op: "dispose" }, 1_000);
     } finally {
       await this.terminate();
     }
   }
 
+  #killTree = (): void => {
+    const pid = this.#child.pid;
+    if (pid === undefined || this.#reaped) return;
+    this.#reaped = true;
+    if (process.platform !== "win32") {
+      try {
+        process.kill(-pid, "SIGKILL");
+        return;
+      } catch {
+        // Fall back to the direct child if the group no longer exists.
+      }
+    } else if (this.#child.exitCode === null && this.#child.signalCode === null) {
+      const taskkill = path.win32.join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32",
+        "taskkill.exe",
+      );
+      spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+        timeout: 2_000,
+      });
+    }
+    this.#child.kill("SIGKILL");
+  };
+
   async terminate(): Promise<void> {
     this.#stopping = true;
-    this.#child.kill("SIGKILL");
+    this.#killTree();
     await this.#closed;
     await Promise.allSettled(this.#settings);
   }
@@ -333,8 +409,8 @@ export class DesktopExtensionBackendProcess {
         else reject(new Error(reply.error));
       };
       const timer = setTimeout(() => {
-        this.methods.clear();
-        this.#child.kill("SIGKILL");
+        this.#methods.clear();
+        this.#killTree();
         finish({ id, ok: false, error: `Backend ${command.op} timed out` });
       }, timeout);
       this.#pending.set(id, finish);

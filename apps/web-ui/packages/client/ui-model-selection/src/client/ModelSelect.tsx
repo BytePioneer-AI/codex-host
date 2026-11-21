@@ -7,8 +7,8 @@
  * (313:14108's ToggleButton) shows model name + effort in the caption tone.
  * Model catalogs above four entries show search, which retains focus while
  * ↑/↓ cycle the highlighted result; Enter and Tab accept it. Smaller model
- * catalogs and Thinking panes move focus between rows. Escape and Shift+Tab
- * leave the Model sibling first and otherwise close back to the trigger. The
+ * catalogs and Thinking panes move focus between rows. Shift+Tab reaches
+ * Refresh from the Model list before backing out; Escape backs out directly. The
  * Model pane focuses the current model or, on desktop, its search field.
  * Phones and tablets enter search only through explicit user input. Provider headings
  * paint their background only while pinned
@@ -51,6 +51,7 @@ import {
   IconChevronRightOutlineRegular,
   IconCloseFillRegular,
   IconDataOutlineRegular,
+  IconRefreshOutlineRegular,
   IconWarningOutlineRegular,
   Input,
   rankByName,
@@ -107,6 +108,7 @@ export function ModelSelect({
   available,
   directory,
   load,
+  refreshModels,
   select,
   setFavorite,
   t,
@@ -130,6 +132,7 @@ export function ModelSelect({
     [state.modelFavorites],
   );
   const [favoritePending, setFavoritePending] = useState(false);
+  const [refreshingModels, setRefreshingModels] = useState(false);
   const [modelSide, setModelSide] = useState<"left" | "right" | "replace">("left");
   // The in-menu error strip serves catalog loads (its Retry re-runs the
   // load); a rejected SELECTION announces through the transient toast
@@ -141,6 +144,7 @@ export function ModelSelect({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const refreshButtonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const modelPanelRef = useRef<HTMLDivElement | null>(null);
   const [menuPos, setMenuPos] = useState<CSSProperties | null>(null);
@@ -465,13 +469,18 @@ export function ModelSelect({
         choose({ provider: highlighted.provider, model: highlighted.model.id });
       return;
     }
-    // Tab settles like Enter and Shift+Tab leaves like Escape, so the menu's
-    // keys mean what they mean in the composer. Both are consumed: the card
-    // keeps the browser's focus traversal out while it is open.
+    // Tab settles like Enter; Shift+Tab reaches Refresh before backing out.
     if (event.key === "Tab") {
       if (event.shiftKey) {
         event.preventDefault();
-        if (pane === "model" && state.current !== null) back();
+        if (
+          pane === "model" &&
+          refreshButtonRef.current &&
+          (event.target === searchRef.current ||
+            modelRefs.current.some((row) => row === event.target))
+        ) {
+          refreshButtonRef.current.focus();
+        } else if (pane === "model" && state.current !== null) back();
         else close(true);
         return;
       }
@@ -701,6 +710,33 @@ export function ModelSelect({
                     <IconChevronLeftOutlineRegular />
                   </button>
                   <span>{t("menu.model")}</span>
+                  {refreshModels && (
+                    <button
+                      ref={refreshButtonRef}
+                      type="button"
+                      className={css.refreshModels}
+                      aria-label={t("action.refreshModels")}
+                      title={t("action.refreshModels")}
+                      aria-disabled={refreshingModels || busy}
+                      onClick={() => {
+                        if (refreshingModels || busy) return;
+                        lastActionRef.current = "load";
+                        setRefreshingModels(true);
+                        void refreshModels(state.current?.provider)
+                          .catch(() => {
+                            /* surfaced on the store */
+                          })
+                          .finally(() => setRefreshingModels(false));
+                      }}
+                    >
+                      <span
+                        className={clsx(css.refreshIcon, refreshingModels && css.spinning)}
+                        aria-hidden="true"
+                      >
+                        <IconRefreshOutlineRegular size={14} />
+                      </span>
+                    </button>
+                  )}
                 </div>
                 {showSearch && (
                   <div
@@ -749,8 +785,10 @@ export function ModelSelect({
                     )}
                   </div>
                 )}
-                {state.status === "loading" && (
-                  <div className={css.status}>{t("status.loading")}</div>
+                {(refreshingModels || state.status === "loading") && (
+                  <div className={css.status} role="status">
+                    {t("status.loading")}
+                  </div>
                 )}
                 {state.error !== null && lastActionRef.current === "load" && (
                   <div className={css.error}>

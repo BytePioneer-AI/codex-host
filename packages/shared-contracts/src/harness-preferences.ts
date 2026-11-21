@@ -23,11 +23,24 @@ export const newThreadDefaultsSchema = z.strictObject({
   lastHarness: harnessIdSchema.optional(),
   byHarness: z.record(preferenceHarnessKey, harnessDefaultConfigurationSchema),
 });
+export const harnessDelegationDefaultSchema = z
+  .strictObject({
+    model: harnessModelRefSchema.optional(),
+    thinkingOptionId: harnessThinkingOptionIdSchema.optional(),
+  })
+  .refine(
+    (value) => Boolean(value.model || value.thinkingOptionId),
+    "A delegation default must contain a Model or Thinking option",
+  );
+export const delegationDefaultsSchema = z.strictObject({
+  byHarness: z.record(preferenceHarnessKey, harnessDelegationDefaultSchema),
+});
 const modelId = z.string().min(1).max(1024);
 export const harnessPreferenceValuesSchema = z.strictObject({
   idleRelease: idleReleaseSettingsSchema.optional(),
   favorites: z.record(preferenceHarnessKey, z.array(modelId).max(2048)).default({}),
   newThread: newThreadDefaultsSchema.optional(),
+  delegation: delegationDefaultsSchema.optional(),
 });
 export const harnessPreferenceSnapshotSchema = z.strictObject({
   scope: harnessPreferenceScopeSchema,
@@ -56,6 +69,11 @@ export const harnessPreferenceOperationSchema = z.discriminatedUnion("kind", [
     harnessId: harnessIdSchema.optional(),
     configuration: harnessDefaultConfigurationSchema.optional(),
   }),
+  z.strictObject({
+    kind: z.literal("delegation"),
+    harnessId: harnessIdSchema,
+    configuration: harnessDelegationDefaultSchema.nullable(),
+  }),
 ]);
 export const harnessPreferencePatchSchema = z
   .strictObject({
@@ -82,6 +100,7 @@ export const harnessPreferencesDocumentSchema = z.strictObject({
   revision: z.number().int().nonnegative(),
   scopes: z.record(harnessPreferenceScopeSchema, harnessPreferenceValuesSchema),
 });
+export type HarnessDelegationDefault = z.infer<typeof harnessDelegationDefaultSchema>;
 export type HarnessPreferenceScope = z.infer<typeof harnessPreferenceScopeSchema>;
 export type HarnessPreferenceSnapshot = z.infer<typeof harnessPreferenceSnapshotSchema>;
 export type HarnessPreferencePatch = z.infer<typeof harnessPreferencePatchSchema>;

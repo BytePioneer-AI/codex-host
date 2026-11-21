@@ -187,6 +187,7 @@ describe("Renderer Settings lifecycle", () => {
     const requestUsageStatistics = vi.fn(async () => ({}));
     const usageStatisticsHosts = vi.fn(async () => []);
     const desktopExtensionsClient = { listDesktopExtensions: vi.fn() };
+    const delegationClient = { inspectHarness: vi.fn() };
     const ownerWindow = {
       navigator: { languages: ["en"] },
       document: {},
@@ -197,11 +198,13 @@ describe("Renderer Settings lifecycle", () => {
       requestUsageStatistics,
       usageStatisticsHosts,
       getDesktopExtensionsClient: () => desktopExtensionsClient,
+      getDelegationClient: () => delegationClient,
     });
     const call = vi.mocked(createDefaultRendererSettingsPages).mock.calls.at(-1);
     expect(call?.[8]).toBe(requestUsageStatistics);
     expect(call?.[9]).toBe(usageStatisticsHosts);
     expect(call?.[11]?.()).toBe(desktopExtensionsClient);
+    expect(call?.[13]?.()).toBe(delegationClient);
     lifecycle.dispose();
   });
 

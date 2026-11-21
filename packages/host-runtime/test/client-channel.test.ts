@@ -10,6 +10,8 @@ import {
 } from "@codexhost/desktop-control";
 import type { ClientChannelEvent } from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
+import { routeDelegationRequest } from "../src/delegation-control-server.js";
+import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { ClientCommandReceipts } from "../src/client-command-receipts.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import {
@@ -117,6 +119,28 @@ describe("public authenticated owner channel", () => {
       expect.objectContaining({ harnessId: "pi" }),
     ]);
     expect(fixture.adapter.sessions).toHaveLength(0);
+  });
+
+  it("notifies Web clients when the CLI control route refreshes a project catalog", async () => {
+    const api = new DelegationControlRegistry();
+    const { fixture, events } = await setup({
+      onDelegationApi: (registration) => api.register(registration, { harnessCatalog: true }),
+    });
+    const inspect = vi.spyOn(fixture.adapter, "inspect");
+    const call = (refresh: boolean) =>
+      routeDelegationRequest({ api }, "/v1/harness/inspect", {
+        harnessId: "pi",
+        cwd: process.cwd(),
+        refresh,
+      });
+    const changes = () => events.filter((event) => event.type === "harness-inspection-changed");
+    await call(false);
+    expect(changes()).toHaveLength(0);
+    await call(true);
+    expect(inspect).toHaveBeenLastCalledWith({ cwd: process.cwd(), refresh: true });
+    await vi.waitFor(() =>
+      expect(changes()).toEqual([expect.objectContaining({ harnessId: "pi" })]),
+    );
   });
 
   it.each([false, true])(

@@ -43,7 +43,7 @@ import {
   type DesktopExtensionManagementMethod,
 } from "@codexhost/shared-contracts";
 import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
-import { backendIpcErrorMessage } from "./desktop-extension-backend-process.js";
+import { backendIpcErrorMessage } from "@codexhost/extension-backend";
 import { rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 

@@ -65,6 +65,7 @@ export const InputBar = memo(function InputBar({
   removeAttachment,
   resolveDraftAttachments,
   retryFileUpload,
+  revealResponseAnnotation,
   toggleCommandMenu,
   stop,
   t,
@@ -527,6 +528,11 @@ export const InputBar = memo(function InputBar({
                 index={index + 1}
                 annotation={annotation}
                 labels={annotationLabels}
+                onActivate={
+                  annotation.anchor === undefined
+                    ? undefined
+                    : () => revealResponseAnnotation?.(annotation.id)
+                }
                 onRemove={() => {
                   inputActions?.removeResponseAnnotation(annotation.id);
                 }}

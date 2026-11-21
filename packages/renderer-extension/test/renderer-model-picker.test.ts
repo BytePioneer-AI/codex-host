@@ -1,9 +1,10 @@
+// @vitest-environment jsdom
 import {
   harnessModelCatalogSchema,
   harnessModelRefSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   rendererModelPickerMainMenuPlacement,
@@ -14,6 +15,8 @@ import {
 
 import {
   isRendererModelPickerDisabled,
+  mountRendererModelPicker,
+  renderRendererModelPicker,
   rendererModelPickerPresentation,
   rendererModelSelectionFailed,
   rendererModelSelectionNoticeContent,
@@ -42,6 +45,106 @@ function catalog(levels: readonly string[]) {
     thinkingOptions,
     ...(thinkingOptions[0] ? { defaultThinkingOptionId: thinkingOptions[0].id } : {}),
   });
+}
+
+describe("Renderer Model picker refresh", () => {
+  it.each([false, true])(
+    "keeps the localized refresh icon visible and the menu open (search=%s)",
+    (search) => {
+      const initial = catalog([]);
+      const extraModels = Array.from({ length: search ? 4 : 0 }, (_, index) => ({
+        ref: harnessModelRefSchema.parse({ id: `other-${index}` }),
+        label: `Other ${index}`,
+      }));
+      const view: RendererModelControlView = {
+        status: "ready",
+        catalog: { ...initial, models: [...initial.models, ...extraModels] },
+        selected: model,
+      };
+      const onRefresh = vi.fn(() =>
+        renderRendererModelPicker(control, { ...view, refreshing: true }, true, "pi", "zh-CN"),
+      );
+      const control = mountRendererModelPicker("refresh", vi.fn(), vi.fn(), onRefresh);
+      // Model top-layer state explicitly; jsdom otherwise keeps the mocked popover unfocusable.
+      control.modelMenu.removeAttribute("popover");
+      let open = false;
+      const matches = control.modelMenu.matches.bind(control.modelMenu);
+      control.modelMenu.matches = ((selector: string) =>
+        selector === ":popover-open"
+          ? open
+          : matches(selector)) as typeof control.modelMenu.matches;
+      control.modelMenu.showPopover = () => {
+        open = true;
+      };
+      control.modelMenu.hidePopover = () => {
+        open = false;
+      };
+      try {
+        renderRendererModelPicker(control, view, true, "pi", "zh-CN");
+        control.trigger.click();
+        expect(open).toBe(true);
+        expect(control.searchInput.hidden).toBe(!search);
+        expect(control.modelMenu.textContent).toContain("模型");
+        const button = control.modelMenu.querySelector<HTMLButtonElement>(
+          'button[aria-label="刷新模型列表"]',
+        );
+        expect(button?.title).toBe("刷新模型列表");
+        expect(button?.querySelector("svg")).not.toBeNull();
+        if (search) {
+          control.searchInput.focus();
+          expect(document.activeElement).toBe(control.searchInput);
+        }
+        button?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+        button?.focus();
+        expect(document.activeElement).toBe(button);
+        button?.click();
+        button?.click();
+        expect(open).toBe(true);
+        expect(onRefresh).toHaveBeenCalledOnce();
+        expect(button?.getAttribute("aria-disabled")).toBe("true");
+        expect(button?.hasAttribute("data-refreshing")).toBe(true);
+        const next = catalog(["high"]);
+        renderRendererModelPicker(
+          control,
+          {
+            ...view,
+            catalog: { ...next, models: [...next.models, ...readyExtraModel()] },
+          },
+          true,
+          "pi",
+          "en",
+        );
+        expect(open).toBe(true);
+        expect(document.activeElement).toBe(button);
+        expect(button?.title).toBe("Refresh models");
+        expect(button?.hasAttribute("data-refreshing")).toBe(false);
+        expect(control.modelMenu.textContent).toContain("New model");
+        expect(control.menu.textContent).toContain("High");
+      } finally {
+        control.dispose();
+      }
+    },
+  );
+
+  it("does not render the refresh action without a callback", () => {
+    const control = mountRendererModelPicker("read-only", vi.fn(), vi.fn());
+    try {
+      renderRendererModelPicker(
+        control,
+        { status: "ready", catalog: catalog([]), selected: model },
+        true,
+        "pi",
+      );
+      expect(control.modelMenu.firstElementChild?.textContent).toBe("Model");
+      expect(control.modelMenu.querySelector('button[aria-label="Refresh models"]')).toBeNull();
+    } finally {
+      control.dispose();
+    }
+  });
+});
+
+function readyExtraModel() {
+  return [{ ref: harnessModelRefSchema.parse({ id: "new-model" }), label: "New model" }];
 }
 
 describe("Renderer combined Model and Thinking picker presentation", () => {

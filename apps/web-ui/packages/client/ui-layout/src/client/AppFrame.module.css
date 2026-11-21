@@ -433,11 +433,11 @@
 }
 
 .frame[data-phone] .leadingSeat {
-  top: calc(env(safe-area-inset-top) + 8px);
-  left: 8px;
+  top: calc(env(safe-area-inset-top) + 4px);
+  left: 12px;
 }
 
-/* Phone: the two leading controls (open sidebar, new session) sit left of the conversation header. */
+/* Phone: only the circular sidebar control sits on the leading edge; New Session moves to the right capsule. */
 .frame[data-phone][data-sidebar-hidden] {
-  --dsh-frame-leading-clearance: 92px;
+  --dsh-frame-leading-clearance: 58px;
 }

@@ -42,6 +42,23 @@ export {
   uninstallDesktopExtension,
 } from "./desktop-extension-installer.js";
 export { HarnessPreferencesStore, HarnessPreferenceConflict } from "./preferences.js";
+export { readExtensionZip } from "./extension-zip.js";
+export {
+  discoverWebNativeExtensions,
+  prepareWebNativeExtension,
+  readCodexHostExtensionManifest,
+  readWebNativeExtension,
+  readWebNativeExtensionAsset,
+  readWebNativeExtensionBackend,
+  readWebNativeExtensionSettings,
+  uninstallWebNativeExtension,
+  webNativeExtensionDataDirectory,
+  webNativeExtensionsRoot,
+  WebNativeExtensionInstallConflict,
+  writeWebNativeExtensionSettings,
+  type PreparedWebNativeExtension,
+  type WebNativeExtensionInstallation,
+} from "./web-native-extension-files.js";
 export {
   pluginResourcePath,
   readPluginConfiguration,

@@ -666,6 +666,9 @@ const _deepseek_ai_dsh_api_session_controller_session_modelCatalog_result$schema
 let _deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_modelCatalog_parameter_0$schema$value ??= z.union([z.undefined(), z.object({
   'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+}), z.object({
+  'refresh': z.literal(true).readonly(),
+  'harnessId': z.string().readonly().optional(),
 })]))
 let _deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema$value
 const _deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema = () => (_deepseek_ai_dsh_api_session_controller_session_openWorkspacePath_parameter_0$schema$value ??= z.object({

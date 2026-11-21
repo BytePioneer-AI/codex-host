@@ -94,10 +94,8 @@ export class DevinAdapter implements HarnessAdapter {
   };
   readonly #sessions = new Set<DevinSession>();
   readonly #probes = new Set<DevinTransport>();
-  readonly #inspections = new Map<
-    string,
-    { pending: boolean; result: Promise<HarnessInspection> }
-  >();
+  readonly #inspections = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
   #closed = false;
   #closePromise: Promise<void> | undefined;
   constructor(readonly options: DevinAdapterOptions = {}) {}
@@ -118,10 +116,13 @@ export class DevinAdapter implements HarnessAdapter {
     const cwd = path.resolve(input.cwd ?? process.cwd());
     // Status-only observations must not replace the selected Harness's full catalog.
     const key = input.purpose === "availability" ? JSON.stringify([cwd, input.purpose]) : cwd;
-    if (input.purpose === "availability" && input.refresh && !this.#inspections.get(cwd)?.pending)
-      this.#inspections.delete(cwd);
     const cached = this.#inspections.get(key);
-    if (cached && (cached.pending || !input.refresh)) return cached.result;
+    if (input.refresh) {
+      this.#inspections.clear();
+      if (cached && this.#inspectionTasks.has(cached)) this.#inspections.set(key, cached);
+    }
+    const current = this.#inspections.get(key);
+    if (current) return current;
     const result = (async (): Promise<HarnessInspection> => {
       if (input.purpose === "availability") {
         try {
@@ -170,11 +171,9 @@ export class DevinAdapter implements HarnessAdapter {
       }
     })();
     // Keep results, including failures, until explicit refresh or Adapter shutdown.
-    const entry = { pending: true, result };
-    this.#inspections.set(key, entry);
-    void result.finally(() => {
-      entry.pending = false;
-    });
+    this.#inspections.set(key, result);
+    this.#inspectionTasks.add(result);
+    void result.finally(() => this.#inspectionTasks.delete(result));
     return result;
   }
   async open(input: OpenSessionInput): Promise<HarnessResult<HarnessSession>> {
@@ -385,9 +384,7 @@ export class DevinAdapter implements HarnessAdapter {
         ...[...this.#sessions].map((session) => session.close()),
         ...[...this.#probes].map((transport) => transport.close()),
       ]);
-      await Promise.allSettled(
-        [...this.#inspections.values()].map((inspection) => inspection.result),
-      );
+      await Promise.allSettled(this.#inspectionTasks);
       this.#inspections.clear();
     })();
     return this.#closePromise;

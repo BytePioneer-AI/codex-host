@@ -36,7 +36,7 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
-import { DocumentDownload } from "./DocumentDownload.tsx";
+import { DocumentDownload, DocumentDownloadAction } from "./DocumentDownload.tsx";
 import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
@@ -56,7 +56,7 @@ import {
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
-import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSection.tsx";
+import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -102,9 +102,9 @@ export const inject = [
 const HOST_SETTINGS_PAGES = [
   ["accounts", "settings.accounts", 2],
   ["connections", "settings.connections", 3],
+  ["delegation", "settings.delegation", 3.5],
   ["usage-statistics", "settings.usage", 4],
   ["resources", "settings.resources", 5],
-  ["desktop-extensions", "settings.desktopExtensions", 6.5],
   ["updates", "settings.updates", 7],
   ["about", "settings.about", 8],
 ] as const;
@@ -124,6 +124,11 @@ export function apply(ctx: ClientContext): void {
         inject: (sessionId) => ({
           sessionId,
           label: t("file.download"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
           openFolderLabel: t("file.openFolder"),
           openFolderFailedLabel: t("file.openFolder.failed"),
           revealFolder: (path: string) =>
@@ -131,6 +136,25 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       DocumentDownload,
+    ),
+  );
+  ctx.slots.inject("sidebar.right.tab.document.unpreviewable", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.right.tab.document.unpreviewable",
+        id: "codexhost-download-action",
+        inject: (sessionId) => ({
+          sessionId,
+          ctaLabel: t("file.download.cta"),
+          preparingLabel: t("file.download.preparing"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
+        }),
+      },
+      DocumentDownloadAction,
     ),
   );
   const installation = ctx.get("pwaInstall");
@@ -397,9 +421,13 @@ export function apply(ctx: ClientContext): void {
         order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
-        inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
+        inject: (): PluginsSectionFace => ({
+          resolveText: (text) => ctx.locale.resolveText(text),
+          locale,
+          colorScheme,
+        }),
       },
-      WebExtensionsSection,
+      PluginsSection,
     ),
   );
   ctx.slots.inject("settings.section", () =>

@@ -1,23 +1,19 @@
 import { pathToFileURL } from "node:url";
+import { BACKEND_ENTRY_CHANGED, ExtensionBackendProcess } from "@codexhost/extension-backend";
 import {
   desktopExtensionDataDirectory,
   desktopExtensionsRoot,
   readDesktopExtensionConfiguration,
   readDesktopExtensionSnapshot,
+  readDesktopExtensionSettings,
+  writeDesktopExtensionSettings,
 } from "@codexhost/harness-plugin-files";
 import { resolveDesktopExtensionSlots } from "@codexhost/shared-contracts";
-import {
-  BACKEND_ENTRY_CHANGED,
-  DesktopExtensionBackendProcess,
-} from "./desktop-extension-backend-process.js";
 import { errorMessage } from "./desktop-rpc.js";
 
 export class DesktopExtensionBackendManager {
   readonly #root: string;
-  readonly #instances = new Map<
-    string,
-    { key: string; process?: DesktopExtensionBackendProcess }
-  >();
+  readonly #instances = new Map<string, { key: string; process?: ExtensionBackendProcess }>();
   #queue = Promise.resolve();
   #poll: NodeJS.Timeout | undefined;
   #pollPending = false;
@@ -119,18 +115,22 @@ export class DesktopExtensionBackendManager {
     await Promise.all(
       [...desired].map(async ([id, entry]) => {
         if (this.#instances.has(id)) return;
-        const instance: { key: string; process?: DesktopExtensionBackendProcess } = {
+        const instance: { key: string; process?: ExtensionBackendProcess } = {
           key: entry.key,
         };
         // Remember activation failures for this revision rather than retrying on every poll.
         this.#instances.set(id, instance);
-        let backend: DesktopExtensionBackendProcess | undefined;
+        let backend: ExtensionBackendProcess | undefined;
         try {
           const dataDir = await desktopExtensionDataDirectory({ dataDir: this.dataDir, id }, true);
           if (this.#closed) return;
-          backend = new DesktopExtensionBackendProcess(this.dataDir, id, (error) =>
-            this.#report(id, error),
-          );
+          const location = { dataDir: this.dataDir, id };
+          backend = new ExtensionBackendProcess({
+            readSettings: () => readDesktopExtensionSettings(location),
+            writeSettings: (values) => writeDesktopExtensionSettings({ ...location, values }),
+            env: process.env,
+            diagnose: (error) => this.#report(id, error),
+          });
           await backend.activate({
             extensionId: id,
             extensionDir: entry.directory,

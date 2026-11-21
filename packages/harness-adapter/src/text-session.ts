@@ -547,6 +547,13 @@ export interface AutonomousTurnStartedEvent {
   input: HostTextInput[];
 }
 
+/** A native autonomous Turn observed only after it commits. It does not acquire
+ * the foreground execution slot and its snapshot must also appear in history. */
+export interface AutonomousTurnCompletedEvent {
+  type: "turn.autonomous.completed";
+  snapshot: HostTurnSnapshot;
+}
+
 export interface ItemStartedEvent {
   type: "item.started";
   turnId: HostTurnId;
@@ -620,6 +627,7 @@ export type HostEvent =
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
+  | AutonomousTurnCompletedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { it } from "node:test";
@@ -652,6 +652,27 @@ it("workspace mirror: migrates legacy project names on Web roots and preserves c
   assert.equal(writes.mock.callCount(), 0, "the migration is idempotent");
 });
 
+it("workspace mirror: migrates the default title a shared folder got from any project", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-shared-title-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspaces = new Workspaces(new DataDir(root), root);
+  const notes = join(root, "shared", "notes");
+  const kept = join(root, "shared", "kept");
+  mkdirSync(notes, { recursive: true });
+  mkdirSync(kept, { recursive: true });
+  // Created in Web with their folder names, the default an older build gave non-first roots.
+  assert.equal(workspaces.create(notes).workspace.title, "notes");
+  const custom = workspaces.create(kept).workspace;
+  custom.title = "Reading list";
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    { name: "one", rootPaths: [join(root, "one"), notes, kept] },
+    { name: "Notebook", rootPaths: [notes] },
+    { name: "Archive", rootPaths: [kept] },
+  ]);
+  assert.equal(workspaces.byPath(notes)?.title, "Notebook");
+  assert.equal(workspaces.byPath(kept)?.title, "Reading list");
+});
+
 it("workspace mirror: recreates deleted native roots on the next snapshot", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-workspace-recreate-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -709,6 +730,91 @@ it("projectRootTitles: falls back to the full path when the basename is empty or
   const unique = projectRootTitles([{ name: "app", rootPaths: ["/srv/app", "/srv/extra"] }]);
   assert.equal(unique.get(resolve("/srv/app")), "app");
   assert.equal(unique.get(resolve("/srv/extra")), "extra", "unique titles keep the folder name");
+  // One folder listed by several projects is a single sidebar entry, not a title conflict.
+  const shared = projectRootTitles([
+    { name: "thesis", rootPaths: ["/docs/writing"] },
+    { name: "chapter3", rootPaths: ["/docs/chapter3", "/docs/writing"] },
+    { name: "chapter4", rootPaths: ["/docs/chapter4", "/docs/writing", "/docs/chapter3"] },
+    { name: "another name for thesis", rootPaths: ["/docs/./writing"] },
+  ]);
+  assert.equal(
+    shared.get(resolve("/docs/writing")),
+    "thesis",
+    "a folder keeps the name of the project it is the first root of",
+  );
+  assert.equal(shared.get(resolve("/docs/chapter3")), "chapter3");
+  assert.equal(shared.get(resolve("/docs/chapter4")), "chapter4");
+  assert.equal(shared.size, 3);
+  const sharedExtra = projectRootTitles([
+    { name: "one", rootPaths: ["/a/one", "/shared/notes"] },
+    { name: "two", rootPaths: ["/b/two", "/shared/notes"] },
+  ]);
+  assert.equal(
+    sharedExtra.get(resolve("/shared/notes")),
+    "notes",
+    "a folder that is only an extra root keeps its folder name",
+  );
+});
+
+it("workspace mirror: native project roots follow the project order until reordered in Web", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-workspace-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const project = (name: string) => ({ name, rootPaths: [join(root, name)] });
+  const web = workspaces.create(root).workspace;
+  const rpc = new RpcRegistry();
+  workspaces.register(rpc, new StreamRegistry());
+  const idOf = (name: string) => workspaces.byPath(join(root, name))?.workspaceId;
+  const reorder = (name: string, before: string) =>
+    rpc.dispatch("workspace/insertBefore", {
+      args: { request: { workspaceId: idOf(name), beforeWorkspaceId: idOf(before) } },
+    });
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [project("c"), project("a")]);
+  const titles = () => workspaces.list().map((workspace) => workspace.title);
+  assert.deepEqual(titles(), ["c", "a", web.title], "project roots come first, in project order");
+  assert.ok((await reorder("c", "a")).ok, "a no-op drop does not disable Desktop order");
+  assert.ok((await reorder("c", "c")).ok, "a drop onto itself does not move the workspace");
+  assert.deepEqual(titles(), ["c", "a", web.title]);
+  const failSave = t.mock.method(data, "writeJson", () => {
+    throw new Error("disk full");
+  });
+  assert.equal((await reorder("a", "c")).ok, false);
+  assert.deepEqual(titles(), ["c", "a", web.title], "an unsuccessful drop does not change order");
+  failSave.mock.restore();
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    project("b"),
+    project("a"),
+    project("c"),
+  ]);
+  assert.deepEqual(titles(), ["b", "a", "c", web.title], "a changed project order is followed");
+  assert.deepEqual(
+    new Workspaces(data, root).list().map((workspace) => workspace.title),
+    titles(),
+    "the order is saved",
+  );
+  const writes = t.mock.method(data, "writeJson");
+  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+    project("b"),
+    project("a"),
+    project("c"),
+  ]);
+  assert.equal(writes.mock.callCount(), 0, "an unchanged order is not rewritten");
+  writes.mock.restore();
+
+  assert.ok((await reorder("c", "b")).ok);
+  const reopened = new Workspaces(data, root);
+  reopened.syncReferencedSessions([], new Map(), new Set(), [
+    project("d"),
+    project("a"),
+    project("b"),
+    project("c"),
+  ]);
+  assert.deepEqual(
+    reopened.list().map((workspace) => workspace.title),
+    ["c", "b", "a", web.title, "d"],
+    "a Web reorder survives reopening and new roots append even if first in Desktop",
+  );
 });
 
 it("workspace mirror: propagates a failed save without accepting the mirror", (t) => {

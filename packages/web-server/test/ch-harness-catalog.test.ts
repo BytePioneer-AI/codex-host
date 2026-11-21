@@ -4,6 +4,7 @@ import { harnessInspectionSchema, type HarnessInspection } from "@codexhost/shar
 import { ChHarnessCatalog } from "../src/ch-harness-catalog.ts";
 import { EventHub } from "../src/transport.ts";
 import { FakeChChannel } from "./support/ch-channel.ts";
+import { nativeCodex } from "./support/native-codex.ts";
 
 const failed: HarnessInspection = {
   status: "unavailable",
@@ -68,6 +69,143 @@ it("shares in-flight inspections and retains ready results until invalidated", a
   const next = await catalog.inspect("fake");
   assert.equal(next.status === "ready" && next.catalog.models.length, 2);
   assert.equal(requests().length, 2);
+});
+
+it("shares explicit refresh probes without serving invalidated batch results to ordinary readers", async (t) => {
+  const { host, catalog, invalidate, requests } = fixture();
+  t.after(() => catalog.close());
+  const codexStarted = Promise.withResolvers<undefined>();
+  const codexResult = Promise.withResolvers<undefined>();
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>) => {
+    const result = await request<T>(method, params);
+    if (method === "codexhost/harness/inspect" && params.harnessId === "codex" && params.refresh) {
+      codexStarted.resolve(undefined);
+      await codexResult.promise;
+    }
+    return result;
+  };
+  const refresh = catalog.models(true);
+  const concurrentRefresh = catalog.models(true);
+  await codexStarted.promise;
+  host.inspection.catalog.models.push({ ref: { id: "new" }, label: "New model" });
+  invalidate();
+  const latest = catalog.models();
+  codexResult.resolve(undefined);
+  assert.deepEqual(await refresh, await concurrentRefresh);
+  assert.equal((await latest).groups[0]?.models.at(-1)?.id, "new");
+  assert.deepEqual(
+    requests()
+      .filter(({ params }) => params.refresh)
+      .map(({ params }) => params),
+    [
+      { harnessId: "fake", refresh: true },
+      { harnessId: "codex", refresh: true },
+    ],
+  );
+});
+
+it("reuses refreshed catalogs after Host echoes, but rereads after an external change", async (t) => {
+  const { host, catalog, emitted, invalidate, requests } = fixture();
+  t.after(() => catalog.close());
+  nativeCodex(host);
+  const request = host.request.bind(host);
+  let followup: ReturnType<ChHarnessCatalog["models"]> | undefined;
+  host.request = async <T>(method: string, params: Record<string, unknown>) => {
+    const result = await request<T>(method, params);
+    if (method === "codexhost/harness/inspect" && params.refresh === true) {
+      invalidate(String(params.harnessId));
+      followup ??= catalog.models(false);
+    }
+    return result;
+  };
+  const refreshed = await catalog.models(true);
+  assert.deepEqual(await followup, refreshed);
+  assert.deepEqual(emitted, [
+    "codexhost/harness-inspection-changed",
+    "codexhost/harness-inspection-changed",
+  ]);
+  assert.deepEqual(
+    requests().map(({ params }) => params),
+    [
+      { harnessId: "fake", refresh: true },
+      { harnessId: "codex", refresh: true },
+    ],
+  );
+
+  host.inspection.catalog.models.push({ ref: { id: "new" }, label: "New model" });
+  invalidate();
+  const latest = await catalog.models(false);
+  assert.equal(latest.groups.find(({ id }) => id === "fake")?.models.at(-1)?.id, "new");
+  assert.deepEqual(
+    requests()
+      .slice(2)
+      .map(({ params }) => params),
+    [{ harnessId: "fake" }],
+  );
+});
+
+it("refreshes only the requested Harness and retains the other cached catalogs", async (t) => {
+  const { host, catalog, invalidate, requests } = fixture();
+  t.after(() => catalog.close());
+  nativeCodex(host);
+  await catalog.models();
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>) => {
+    const result = await request<T>(method, params);
+    if (method === "codexhost/harness/inspect" && params.refresh === true)
+      invalidate(String(params.harnessId));
+    return result;
+  };
+
+  host.inspection.catalog.models.push({ ref: { id: "new" }, label: "New model" });
+  const refreshed = await catalog.models(true, "fake");
+  assert.equal(refreshed.groups.find(({ id }) => id === "fake")?.models.at(-1)?.id, "new");
+  assert.equal(refreshed.groups.find(({ id }) => id === "codex")?.models[0]?.id, "gpt-5.4");
+  assert.deepEqual(await catalog.models(), refreshed);
+  assert.deepEqual(
+    requests()
+      .slice(2)
+      .map(({ params }) => params),
+    [{ harnessId: "fake", refresh: true }],
+  );
+});
+
+it("honors concurrent refreshes for different Harnesses and deduplicates the same target", async (t) => {
+  const { host, catalog, requests } = fixture();
+  t.after(() => catalog.close());
+  nativeCodex(host);
+  await catalog.models();
+  const request = host.request.bind(host);
+  const started = Promise.withResolvers<undefined>();
+  const complete = Promise.withResolvers<undefined>();
+  host.request = async <T>(method: string, params: Record<string, unknown>) => {
+    const result = await request<T>(method, params);
+    if (
+      method === "codexhost/harness/inspect" &&
+      params.harnessId === "fake" &&
+      params.refresh === true
+    ) {
+      started.resolve(undefined);
+      await complete.promise;
+    }
+    return result;
+  };
+  const first = catalog.models(true, "fake");
+  await started.promise;
+  const same = catalog.models(true, "fake");
+  const other = catalog.models(true, "codex");
+  complete.resolve(undefined);
+  await Promise.all([first, same, other]);
+  assert.deepEqual(
+    requests()
+      .slice(2)
+      .map(({ params }) => params),
+    [
+      { harnessId: "fake", refresh: true },
+      { harnessId: "codex", refresh: true },
+    ],
+  );
 });
 
 for (const completion of ["ready", "codex-failure", "throw"] as const)

@@ -34,6 +34,7 @@
 .selector {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 12px;
   height: 36px;
   padding: 0 14px;
@@ -45,12 +46,41 @@
   line-height: 22px;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.selector:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+.selector:active {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .chevron {
   flex: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .selector:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+@media (max-width: 640px) {
+  .row {
+    min-height: 44px;
+    padding: 12px 0;
+    gap: 12px;
+  }
+
+  .rowText {
+    padding-right: 0;
+  }
+
+  .selector {
+    min-height: 44px;
+    height: 44px;
+    gap: 8px;
+    padding: 0 12px;
+    font-size: 13.5px;
+  }
 }

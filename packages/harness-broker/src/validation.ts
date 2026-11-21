@@ -11,6 +11,7 @@ import {
   hostItemIdSchema,
   hostTurnIdSchema,
   jsonObjectSchema,
+  jsonValueSchema,
   nativeCheckpointRefSchema,
   nativeSessionRefSchema,
   nativeTurnRefSchema,
@@ -275,6 +276,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
   ["turn.started", new Set(["type", "turnId"])],
   ["turn.autonomous.started", new Set(["type", "turnId", "input"])],
+  ["turn.autonomous.completed", new Set(["type", "snapshot"])],
   ["item.started", new Set(["type", "turnId", "item"])],
   ["item.updated", new Set(["type", "turnId", "itemId", "update"])],
   ["item.completed", new Set(["type", "turnId", "snapshot"])],
@@ -318,6 +320,122 @@ function strictKeys(
 }
 
 const nonNegativeSafeIntegerSchema = z.int().nonnegative();
+const toolOutputSchema = z.strictObject({
+  content: z.array(
+    z.discriminatedUnion("type", [
+      textInputSchema,
+      z.strictObject({ type: z.literal("image"), mimeType: z.string(), base64Data: z.string() }),
+    ]),
+  ),
+  truncated: z.boolean().optional(),
+});
+const fileChangeSchema = z.strictObject({
+  path: z.string(),
+  kind: z.enum(["add", "update", "delete"]),
+  unifiedDiff: z.string(),
+  diffScope: z.literal("fragment").optional(),
+});
+const subagentStateSchema = z.strictObject({
+  subagentId: z.string().min(1),
+  nativeSubagentId: z.string().min(1).optional(),
+  description: z.string(),
+  role: z.string().optional(),
+  model: z.string().optional(),
+  reasoningEffort: z.string().optional(),
+  background: z.boolean(),
+  status: z.enum(["pending", "running", "completed", "failed", "interrupted"]),
+  resultSummary: z.string().optional(),
+});
+const itemBase = { itemId: hostItemIdSchema };
+const toolFields = {
+  ...itemBase,
+  toolName: z.string(),
+  arguments: jsonValueSchema,
+  output: toolOutputSchema.optional(),
+  durationMs: z.number().nonnegative().optional(),
+};
+const snapshotItemSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...itemBase,
+    type: z.literal("agentMessage"),
+    text: z.string(),
+    phase: z.enum(["commentary", "final_answer"]).optional(),
+  }),
+  z.strictObject({ ...itemBase, type: z.literal("userMessage"), input: z.array(textInputSchema) }),
+  z.strictObject({ ...itemBase, type: z.literal("reasoning"), text: z.string() }),
+  z.strictObject({ ...itemBase, type: z.literal("contextCompaction") }),
+  z.strictObject({
+    ...itemBase,
+    type: z.literal("commandExecution"),
+    command: z.string(),
+    cwd: cwdSchema.optional(),
+    output: z.string().optional(),
+    outputTruncated: z.boolean().optional(),
+    exitCode: z.int().nullable().optional(),
+    durationMs: z.number().nonnegative().optional(),
+  }),
+  z.strictObject({
+    ...toolFields,
+    type: z.literal("toolExecution"),
+    namespace: z.string().optional(),
+  }),
+  z.strictObject({ ...toolFields, type: z.literal("mcpToolCall"), server: z.string() }),
+  z.strictObject({ ...itemBase, type: z.literal("webSearch"), query: z.string() }),
+  z.strictObject({
+    ...itemBase,
+    type: z.literal("fileChange"),
+    changes: z.array(fileChangeSchema),
+    sourceItemIds: z.array(hostItemIdSchema).optional(),
+  }),
+  z.strictObject({
+    ...itemBase,
+    type: z.literal("subagentDelegation"),
+    operation: z.enum(["spawn", "send"]),
+    prompt: z.string().optional(),
+    subagents: z.array(subagentStateSchema),
+  }),
+]);
+const terminalOutcomes = [
+  z.strictObject({ status: z.literal("succeeded") }),
+  z.strictObject({ status: z.literal("failed"), error: harnessErrorSchema }),
+  z.strictObject({ status: z.literal("cancelled"), reason: z.string().optional() }),
+] as const;
+const autonomousSnapshotSchema = z
+  .strictObject({
+    nativeTurnRef: nativeTurnRefSchema,
+    checkpoint: nativeCheckpointRefSchema.optional(),
+    input: z.array(textInputSchema),
+    items: z.array(
+      z.strictObject({
+        item: snapshotItemSchema,
+        outcome: z.discriminatedUnion("status", terminalOutcomes),
+      }),
+    ),
+    outcome: z.discriminatedUnion("status", [
+      ...terminalOutcomes,
+      z.strictObject({ status: z.literal("unknown"), reason: z.string() }),
+    ]),
+    model: harnessModelRefSchema.optional(),
+    startedAtMs: nonNegativeSafeIntegerSchema.optional(),
+    completedAtMs: nonNegativeSafeIntegerSchema.optional(),
+  })
+  .refine(
+    ({ checkpoint, nativeTurnRef }) =>
+      !checkpoint ||
+      (checkpoint.harnessId === nativeTurnRef.harnessId &&
+        checkpoint.nativeSessionId === nativeTurnRef.nativeSessionId),
+    { path: ["checkpoint"], message: "Checkpoint must belong to the native Turn's Session" },
+  )
+  .refine(
+    ({ startedAtMs, completedAtMs }) =>
+      startedAtMs === undefined || completedAtMs === undefined || completedAtMs >= startedAtMs,
+    { path: ["completedAtMs"], message: "Turn cannot complete before it starts" },
+  )
+  .refine(({ items }) => new Set(items.map(({ item }) => item.itemId)).size === items.length, {
+    path: ["items"],
+    message: "Item IDs must be unique within the Turn",
+  });
+
 const usageOutputIntervalSchema = z
   .strictObject({
     startedAtMs: nonNegativeSafeIntegerSchema,
@@ -356,6 +474,8 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
           .strict()
           .safeParse(event.item).success
       );
+    if (event.type === "turn.autonomous.completed")
+      return autonomousSnapshotSchema.safeParse(event.snapshot).success;
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
     if (event.type === "usage.history") return typeof event.complete === "boolean";
     if (event.type === "usage.request.timing")

@@ -8399,7 +8399,25 @@ describe("Claude Code HarnessAdapter", () => {
     }
   });
 
-  it("retains a failed hard-cancel Transport and rejects reuse and confirmed close", async () => {
+  it("waits on the same native close after a Session close times out", async () => {
+    const { adapter, transports } = fixture({ closeTimeoutMs: 10 });
+    const session = await openSession(adapter);
+    await session.execute(textTurn("timed-out-close"));
+    const transport = transports[0];
+    if (!transport) throw new Error("Expected an active Transport");
+    const stopped = Promise.withResolvers<undefined>();
+    // An overlapping close would return success even though native cleanup is still pending.
+    transport.close.mockReturnValueOnce(stopped.promise).mockResolvedValue(undefined);
+    try {
+      await expect(session.close()).rejects.toThrow("could not stop safely");
+      await expect(session.close()).rejects.toThrow("could not stop safely");
+    } finally {
+      stopped.resolve(undefined);
+      await session.close();
+    }
+  });
+
+  it("retains a failed hard-cancel Transport and retries shutdown without allowing reuse", async () => {
     const { adapter, transports } = fixture({ cancelTimeoutMs: 10 });
     const session = await openSession(adapter);
     const events: HarnessOutput[] = [];
@@ -8419,6 +8437,16 @@ describe("Claude Code HarnessAdapter", () => {
     expect(
       events.some((output) => output.kind === "event" && output.event.type === "session.faulted"),
     ).toBe(true);
+
+    const rechecked = Promise.withResolvers<undefined>();
+    transport.close.mockReturnValue(rechecked.promise);
+    const confirmed = session.close();
+    expect(session.close()).toBe(confirmed);
+    await expect(session.execute(textTurn("still-unsafe"))).resolves.toMatchObject({ ok: false });
+    rechecked.resolve(undefined);
+    await expect(confirmed).resolves.toBeUndefined();
+    expect(session.close()).toBe(confirmed);
+    await expect(session.readSnapshot()).resolves.toMatchObject({ ok: false });
   });
 
   it("maps failed native results without faulting a reusable Session", async () => {

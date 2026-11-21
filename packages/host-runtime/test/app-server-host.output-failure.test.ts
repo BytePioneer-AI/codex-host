@@ -310,119 +310,169 @@ describe("AppServerHost output failure", () => {
     }
   });
 
-  it("retires a running Subagent when the parent's output stream ends and pauses the queue once", async () => {
-    const permissionModes = harnessPermissionModeCatalogSchema.parse({
-      modes: [{ id: "auto", label: "Auto" }],
-      defaultModeId: "auto",
-    });
-    const adapter = new FakeHarnessAdapter(
-      harnessIdSchema.parse("pi"),
-      undefined,
-      true,
-      true,
-      null,
-      permissionModes,
-    );
-    const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
-    try {
-      // Wrap each opened Session's output stream before the Host's output pump
-      // consumes it, so it can be ended without a terminal Turn event.
-      const kill = { killed: false };
-      const wrapOutputs = (session: HarnessSession) => {
-        const real = session.outputs;
-        Object.defineProperty(session, "outputs", {
-          value: {
-            [Symbol.asyncIterator]() {
-              const inner = real[Symbol.asyncIterator]();
-              return {
-                next: async () => {
-                  if (kill.killed) return { done: true as const, value: undefined };
-                  const output = await inner.next();
-                  if (kill.killed) return { done: true as const, value: undefined };
-                  return output;
-                },
-              };
+  const parentEndings = [
+    { parent: "active", ending: "EOF", error: "output ended before the active Turn settled" },
+    { parent: "active", ending: "error", error: "Parent output failed" },
+    { parent: "settled", ending: "EOF" },
+    { parent: "settled", ending: "error" },
+  ] as const;
+  it.each(parentEndings)(
+    "retires running Subagents after $ending with a $parent parent Turn",
+    async (testCase) => {
+      const permissionModes = harnessPermissionModeCatalogSchema.parse({
+        modes: [{ id: "auto", label: "Auto" }],
+        defaultModeId: "auto",
+      });
+      const adapter = new FakeHarnessAdapter(
+        harnessIdSchema.parse("pi"),
+        undefined,
+        true,
+        true,
+        null,
+        permissionModes,
+      );
+      const fixture = createFixture({ externalAdapters: new Map([["pi", adapter]]) });
+      try {
+        // End the parent stream without sending a terminal Turn or Session event.
+        let outputEnded = false;
+        const wrapOutputs = (session: HarnessSession) => {
+          const real = session.outputs;
+          Object.defineProperty(session, "outputs", {
+            value: {
+              [Symbol.asyncIterator]() {
+                const inner = real[Symbol.asyncIterator]();
+                return {
+                  next: async () => {
+                    const output = await inner.next();
+                    if (outputEnded) {
+                      if (testCase.ending === "error") throw new Error("Parent output failed");
+                      return { done: true as const, value: undefined };
+                    }
+                    return output;
+                  },
+                };
+              },
             },
+          });
+        };
+        const nativeOpen = adapter.open.bind(adapter);
+        vi.spyOn(adapter, "open").mockImplementation(async (input) => {
+          const result = await nativeOpen(input);
+          if (result.ok) wrapOutputs(result.value);
+          return result;
+        });
+
+        const threadId = await startPiThread(fixture);
+        const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Pi Session was not opened");
+
+        // The native child has not reported a terminal state, even if its spawn Item completes.
+        const subagentItemId = session.startSubagentDelegation({
+          subagentId: "call-child",
+          nativeSubagentId: "native-child",
+          description: "Child worker",
+          background: true,
+          status: "running",
+        });
+        const childThread = await fixture.collector.waitFor(
+          (message) =>
+            method(message, "thread/started") &&
+            (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+        );
+        const child = messageParams(childThread).thread as JsonObject;
+        expect(child.status).toMatchObject({ type: "active" });
+        const childId = child.id as string;
+
+        const settled = testCase.parent === "settled";
+        if (settled) {
+          session.completeItem(subagentItemId, { status: "succeeded" });
+          session.succeedTurn();
+          await fixture.collector.waitFor((message) =>
+            turnEvent(message, "turn/completed", turnId),
+          );
+        }
+
+        // Queue a follow-up while the parent is still active, even after a successful Turn.
+        writeRequest(fixture.desktopInput, {
+          id: 3,
+          method: "thread/queue/add",
+          params: { threadId, input: [{ type: "text", text: "queued" }] },
+        });
+        expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
+          result: { queuedSubmission: { id: expect.any(String) } },
+        });
+        await fixture.collector.waitFor(
+          (message) =>
+            method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
+        );
+        const queuedItems = [
+          expect.objectContaining({ input: [{ type: "text", text: "queued" }] }),
+        ];
+        expect((await fixture.host.clientSnapshot(threadId)).queue).toMatchObject({
+          items: queuedItems,
+          pausedReason: null,
+        });
+        const beforeOutputEnd = fixture.collector.messages.length;
+        for (const id of [threadId, childId]) {
+          expect(
+            fixture.collector.messages.some((message) => threadStatus(message, id, "idle")),
+          ).toBe(false);
+        }
+
+        // Wake the iterator; it discards this Item and ends or throws instead.
+        outputEnded = true;
+        session.emitEvent({
+          type: "item.started",
+          turnId,
+          item: {
+            type: "reasoning",
+            itemId: hostItemIdSchema.parse("killed-parent"),
+            text: "Working",
           },
         });
-      };
-      const nativeOpen = adapter.open.bind(adapter);
-      vi.spyOn(adapter, "open").mockImplementation(async (input) => {
-        const result = await nativeOpen(input);
-        if (result.ok) wrapOutputs(result.value);
-        return result;
-      });
 
-      const threadId = await startPiThread(fixture);
-      const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId));
-      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
-      const session = fixture.adapter.sessions[0];
-      if (!session) throw new Error("Fake Pi Session was not opened");
+        await fixture.collector.waitFor((message) => threadStatus(message, childId, "idle"));
+        await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
+        // Check the final status: failure projection can replay the running Subagent.
+        const childStatus = fixture.collector.messages.findLast(
+          (message) =>
+            method(message, "thread/status/changed") && messageParams(message).threadId === childId,
+        );
+        expect(childStatus).toMatchObject({ params: { status: { type: "idle" } } });
 
-      // A running native Subagent is tracked Host-side while the child Session
-      // (for example a Claude Code ReadonlySnapshotSession) never ends its own
-      // output stream.
-      session.startSubagentDelegation({
-        subagentId: "call-child",
-        nativeSubagentId: "native-child",
-        description: "Child worker",
-        background: false,
-        status: "running",
-      });
-      const childThread = await fixture.collector.waitFor(
-        (message) =>
-          method(message, "thread/started") &&
-          (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
-      );
-      const childId = (messageParams(childThread).thread as JsonObject).id as string;
-
-      // Queue one submission so the settle path pauses and publishes the queue.
-      writeRequest(fixture.desktopInput, {
-        id: 3,
-        method: "thread/queue/add",
-        params: { threadId, input: [{ type: "text", text: "queued" }] },
-      });
-      expect(await fixture.collector.waitFor((message) => requestId(message, 3))).toMatchObject({
-        result: { queuedSubmission: { id: expect.any(String) } },
-      });
-      await fixture.collector.waitFor(
-        (message) =>
-          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
-      );
-      const queueChangesBeforeKill = fixture.collector.messages.filter(
-        (message) =>
-          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
-      ).length;
-
-      // Kill the parent's output stream without a terminal Turn event.
-      kill.killed = true;
-      session.emitEvent({
-        type: "item.started",
-        turnId,
-        item: {
-          type: "reasoning",
-          itemId: hostItemIdSchema.parse("killed-parent"),
-          text: "Working",
-        },
-      });
-
-      await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
-      // Check the final status: failure projection can replay the running Subagent.
-      const childStatus = fixture.collector.messages.findLast(
-        (message) =>
-          method(message, "thread/status/changed") && messageParams(message).threadId === childId,
-      );
-      expect(childStatus).toMatchObject({ params: { status: { type: "idle" } } });
-
-      // Exactly one pause publication: the settled failure's "failed" pause from
-      // the Turn projection, without a second inconsistent "outcome-unknown" one.
-      const queueChanges = fixture.collector.messages.filter(
-        (message) =>
-          method(message, "thread/queue/changed") && messageParams(message).threadId === threadId,
-      );
-      expect(queueChanges).toHaveLength(queueChangesBeforeKill + 1);
-    } finally {
-      await stopFixture(fixture);
-    }
-  });
+        const snapshot = await fixture.host.clientSnapshot(threadId);
+        const messages = fixture.collector.messages;
+        const completions = messages.filter((message) =>
+          turnEvent(message, "turn/completed", turnId),
+        );
+        expect(completions).toHaveLength(1);
+        expect(completions[0]).toMatchObject({
+          params: {
+            turn: settled
+              ? { status: "completed" }
+              : { status: "failed", error: { message: expect.stringContaining(testCase.error) } },
+          },
+        });
+        // Only an unfinished Turn publishes a failure pause. Neither path starts the follow-up.
+        expect(
+          messages
+            .slice(beforeOutputEnd)
+            .filter(
+              (message) =>
+                method(message, "thread/queue/changed") &&
+                messageParams(message).threadId === threadId,
+            ),
+        ).toHaveLength(settled ? 0 : 1);
+        expect(messages.filter((message) => method(message, "turn/started"))).toHaveLength(1);
+        expect(snapshot.queue).toMatchObject({
+          items: queuedItems,
+          pausedReason: settled ? null : "failed",
+        });
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 });

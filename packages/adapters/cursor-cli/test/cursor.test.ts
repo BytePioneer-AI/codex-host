@@ -138,8 +138,10 @@ describe("Cursor native configuration", () => {
       clock.mockReturnValue(7 * 24 * 60 * 60_000);
       await adapter.inspect();
       expect(open).toHaveBeenCalledTimes(1);
-      await adapter.inspect({ refresh: true });
+      await adapter.inspect({ cwd: "/project", refresh: true });
       expect(open).toHaveBeenCalledTimes(2);
+      await adapter.inspect();
+      expect(open).toHaveBeenCalledTimes(3);
     } finally {
       await adapter.close();
     }

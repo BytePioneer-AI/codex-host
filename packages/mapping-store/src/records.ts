@@ -105,6 +105,20 @@ const storedThreadCoreV1Shape = {
     .optional()
     .catch(undefined),
   turnMappings: z.array(storedTurnMappingV1Schema),
+  /** Host execution outcomes, separate from Native history; never includes Items or input. */
+  failedTurns: z
+    .array(
+      z
+        .object({
+          hostTurnId: hostTurnIdSchema,
+          afterTurnId: hostTurnIdSchema.optional(),
+          nativeTurnRef: nativeTurnRefSchema.optional(),
+          error: z.enum(["authenticationRequired", "executionFailed"]),
+        })
+        .strict(),
+    )
+    .optional()
+    .catch(undefined),
   createdAt: isoDateSchema,
   updatedAt: isoDateSchema,
 };

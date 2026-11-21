@@ -21,6 +21,14 @@ import type { WebHarnessPreferences } from "./harness-preferences.ts";
 export class ChHarnessCatalog {
   private plugins: Promise<HarnessPluginDescriptor[]> | undefined;
   private inspections = new Map<string, Promise<HarnessInspection>>();
+  private readonly pendingRefreshes = new Map<
+    string,
+    { inspection: Promise<HarnessInspection>; notified: boolean }
+  >();
+  private readonly refreshing = new Map<
+    string | undefined,
+    ReturnType<ChHarnessCatalog["readModels"]>
+  >();
   private readonly stop: (() => void) | undefined;
   constructor(
     private readonly host: ChHostClient,
@@ -32,13 +40,19 @@ export class ChHarnessCatalog {
   ) {
     this.stop = host.realtime?.subscribe((event) => {
       if (event.type === "harness-inspection-changed") {
-        for (const key of this.inspections.keys()) {
-          if (JSON.parse(key)[0] === event.harnessId) this.inspections.delete(key);
-        }
+        // The Host can announce a local refresh before returning its result.
+        const refresh = this.pendingRefreshes.get(event.harnessId);
+        this.invalidate(
+          event.harnessId,
+          refresh?.notified === false ? refresh.inspection : undefined,
+        );
+        if (refresh) refresh.notified = true;
         events.emit("codexhost/harness-inspection-changed");
       } else if (event.type === "hello") {
         this.inspections.clear();
+        this.pendingRefreshes.clear();
         this.plugins = undefined;
+        this.refreshing.clear();
         events.emit("codexhost/harness-inspection-changed");
       }
     });
@@ -66,14 +80,25 @@ export class ChHarnessCatalog {
     this.plugins = plugins;
     return plugins;
   }
-  async inspect(id: string, cwd?: string): Promise<HarnessInspection> {
+  private invalidate(id: string, preserve?: Promise<HarnessInspection>): void {
+    for (const [key, inspection] of this.inspections) {
+      if (inspection !== preserve && JSON.parse(key)[0] === id) this.inspections.delete(key);
+    }
+  }
+  async inspect(id: string, cwd?: string, refresh = false): Promise<HarnessInspection> {
     const key = JSON.stringify([id, cwd]);
+    if (refresh) {
+      const pending = this.pendingRefreshes.get(id)?.inspection;
+      if (pending && this.inspections.get(key) === pending) return pending;
+      this.invalidate(id);
+    }
     let inspection = this.inspections.get(key);
     if (!inspection) {
       inspection = this.host
         .request("codexhost/harness/inspect", {
           harnessId: id,
           ...(cwd ? { cwd } : {}),
+          ...(refresh ? { refresh: true } : {}),
         })
         .then((value) => {
           const result = harnessInspectionSchema.parse(value);
@@ -89,21 +114,45 @@ export class ChHarnessCatalog {
           if (this.inspections.get(key) === inspection) this.inspections.delete(key);
           throw error;
         });
+      if (refresh) {
+        inspection = inspection.finally(() => {
+          if (this.pendingRefreshes.get(id)?.inspection === inspection)
+            this.pendingRefreshes.delete(id);
+        });
+        this.pendingRefreshes.set(id, { inspection, notified: false });
+      }
       this.inspections.set(key, inspection);
     }
     return inspection;
   }
-  async models() {
+  async models(refresh = false, harnessId?: string) {
+    if (!refresh) {
+      // A notification during a batch may invalidate one of its earlier results.
+      await Promise.allSettled(this.refreshing.values());
+      return this.readModels(false);
+    }
+    const pending = this.refreshing.get(harnessId);
+    if (pending) return pending;
+    const operation = this.readModels(true, harnessId).finally(() => {
+      if (this.refreshing.get(harnessId) === operation) this.refreshing.delete(harnessId);
+    });
+    this.refreshing.set(harnessId, operation);
+    return operation;
+  }
+  private async readModels(refresh: boolean, harnessId?: string) {
+    const shouldRefresh = (id: string) => refresh && (harnessId === undefined || harnessId === id);
     const plugins = await this.list();
     const values = await Promise.all(
-      plugins.map(async (plugin) => ({
-        id: plugin.id,
-        name: plugin.name,
-        inspection: await this.inspect(plugin.id),
+      plugins.map(async ({ id, name }) => ({
+        id,
+        name,
+        inspection: await this.inspect(id, undefined, shouldRefresh(id)),
       })),
     );
     if (this.restrictTo === undefined || this.restrictTo.has("codex")) {
-      const inspection = await this.inspect("codex").catch(() => undefined);
+      const inspection = await this.inspect("codex", undefined, shouldRefresh("codex")).catch(
+        () => undefined,
+      );
       if (inspection)
         values.unshift({ id: harnessIdSchema.parse("codex"), name: "Codex", inspection });
     }

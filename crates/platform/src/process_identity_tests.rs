@@ -8,6 +8,16 @@ fn process_instance_rejects_a_different_start_time() {
     assert!(process_instance(live.id, live.started_at_micros + 1).is_none());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn observation_distinguishes_absent_invalid_and_live_pids() {
+    use super::observe_process_identity;
+    assert!(observe_process_identity(i32::MAX as u32).unwrap().is_none());
+    assert!(observe_process_identity(0).is_err());
+    let own = std::process::id();
+    assert_eq!(observe_process_identity(own).unwrap().unwrap().id, own);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn an_unreaped_exited_process_is_not_a_running_instance() {

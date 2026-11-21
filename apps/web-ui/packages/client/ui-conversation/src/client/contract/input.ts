@@ -20,6 +20,7 @@ import type {
   TokenSpan,
 } from "./draft-editor.ts";
 import type { InputSubmitMode, MessageSubmission } from "./composer-submission.ts";
+import type { ResponseAnnotationAnchor } from "./response-annotation-anchor.ts";
 
 /** Attachment payload passed to a claimed command submission. */
 export type SubmitAttachment =
@@ -170,14 +171,21 @@ declare module "@deepseek-ai/cordis" {
      * @mode bail
      */
     "slash/input-insert-text"(request: InsertTextRequest): true | undefined;
+    /** Reveal one unsent response annotation in the current Chat view. */
+    "conversation/reveal-response-annotation"(id: DraftAttachmentId): void;
   }
 }
 
 /** Browser-runtime identity of one unsent attachment draft. */
 export type DraftAttachmentId = Branded<"DraftAttachmentId">;
 
+/** One annotation input attached to the next message. */
+export interface DraftResponseAnnotationInput extends ResponseAnnotation {
+  readonly anchor?: ResponseAnnotationAnchor;
+}
+
 /** One annotation attached to the next message, with its draft-local identity. */
-export interface DraftResponseAnnotation extends ResponseAnnotation {
+export interface DraftResponseAnnotation extends DraftResponseAnnotationInput {
   readonly id: DraftAttachmentId;
 }
 
@@ -204,7 +212,7 @@ export interface SessionInput extends InputTarget {
   /** Drop ids whose browser-owned objects no longer exist. */
   pruneAttachments(ids: readonly DraftAttachmentId[]): void;
   /** Attach one selected passage to the next message; busy admission phases refuse. */
-  addResponseAnnotation(annotation: ResponseAnnotation): DraftAttachmentId | undefined;
+  addResponseAnnotation(annotation: DraftResponseAnnotationInput): DraftAttachmentId | undefined;
   /** Remove one attached annotation; busy admission phases refuse. @returns whether the id was removed. */
   removeResponseAnnotation(id: DraftAttachmentId): boolean;
   /**
@@ -310,7 +318,7 @@ export interface InputActions {
    * @returns the new draft identity, or undefined while locked or the requested Composer is unavailable.
    */
   addResponseAnnotation(
-    annotation: ResponseAnnotation,
+    annotation: DraftResponseAnnotationInput,
     options?: { readonly focus: "end" },
   ): DraftAttachmentId | undefined;
   /** Remove one attached annotation by draft identity; busy admission phases refuse. */

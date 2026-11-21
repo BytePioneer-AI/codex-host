@@ -125,10 +125,12 @@ it(
             JSON.parse(line) as { type: string; feature?: boolean; browserAccess?: boolean },
         );
 
-    async function desktop(browserPipe: string) {
+    async function openClient(connection: { browserPipe: string } | { remotePipe: string }) {
       const child = spawn(
         process.execPath,
-        [runtime, "-c", "features.fixture=true", "app-server"],
+        "browserPipe" in connection
+          ? [runtime, "-c", "features.fixture=true", "app-server"]
+          : [runtime, "--codexhost-remote-control-bridge"],
         {
           env: {
             ...env,
@@ -137,7 +139,9 @@ it(
             CODEXHOST_LAUNCHER_EXECUTABLE: launcher,
             CODEXHOST_HOST_RUNTIME_PATH: runtime,
             CODEXHOST_STOCK_CODEX_PATH: stockCodex,
-            BROWSER_USE_ACCESS_PIPE_PATH: path.join(root, browserPipe),
+            ...("browserPipe" in connection
+              ? { BROWSER_USE_ACCESS_PIPE_PATH: path.join(root, connection.browserPipe) }
+              : { CODEXHOST_REMOTE_CONTROL_BRIDGE_PIPE: connection.remotePipe }),
           },
           stdio: ["pipe", "pipe", "pipe"],
         },
@@ -192,7 +196,7 @@ it(
       });
       return { child, request };
     }
-    const first = await desktop("first-browser.sock");
+    const first = await openClient({ browserPipe: "first-browser.sock" });
     const created = await first.request("thread/start", { cwd: root });
     const id = (created.thread as { id: string }).id;
     let turnCompleted = false;
@@ -221,7 +225,17 @@ it(
         .map((entry) => entry.browserAccess),
       [true, false],
     );
-    const second = await desktop("second-browser.sock");
+    let observer: Awaited<ReturnType<typeof openClient>> | undefined;
+    if (process.platform === "win32") {
+      const descriptor = path.join(env.LOCALAPPDATA, "codexhost", "remote-control-bridge-v1.json");
+      const { pipePath } = JSON.parse(await readFile(descriptor, "utf8")) as { pipePath: string };
+      observer = await openClient({ remotePipe: pipePath });
+      assert.match(
+        JSON.stringify(await observer.request("thread/read", { threadId: id, includeTurns: true })),
+        /native turn survived Desktop exit/u,
+      );
+    }
+    const second = await openClient({ browserPipe: "second-browser.sock" });
     assert.match(
       JSON.stringify(await second.request("thread/read", { threadId: id, includeTurns: true })),
       /native turn survived Desktop exit/u,
@@ -258,6 +272,13 @@ it(
     const final = await web2.snapshot(id);
     assert.match(JSON.stringify(final), /native turn survived Desktop exit/u);
     assert.equal(final.turnsPage.data.length, 2);
+    if (observer) {
+      const reply = await observer.request("thread/read", { threadId: id, includeTurns: true });
+      assert.equal((reply.thread as { id: string }).id, id);
+      const exited = once(observer.child, "exit");
+      observer.child.stdin.end();
+      assert.deepEqual(await exited, [0, null]);
+    }
     const log = await readNativeCalls();
     assert.deepEqual(
       log

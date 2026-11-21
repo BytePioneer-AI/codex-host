@@ -231,8 +231,8 @@ export class QoderAdapter implements HarnessAdapter {
     }
 
     if (input?.refresh) {
-      this.#inspections.delete(cacheKey);
-      this.#inFlightInspections.delete(cacheKey);
+      this.#inspections.clear();
+      this.#inFlightInspections.clear();
     } else {
       const cached = this.#inspections.get(cacheKey);
       if (cached) return cached;

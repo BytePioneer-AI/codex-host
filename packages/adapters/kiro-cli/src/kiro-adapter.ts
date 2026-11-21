@@ -241,6 +241,7 @@ export class KiroAdapter implements HarnessAdapter {
     { result: Extract<HarnessInspection, { status: "ready" }>; refreshAfter: number }
   >();
   readonly #inspectionInFlight = new Map<string, Promise<HarnessInspection>>();
+  readonly #inspectionTasks = new Set<Promise<HarnessInspection>>();
 
   constructor(options: KiroAdapterOptions = {}, deps: KiroAdapterDependencies = {}) {
     this.#options = options;
@@ -251,7 +252,14 @@ export class KiroAdapter implements HarnessAdapter {
   async inspect(input: InspectHarnessInput = {}): Promise<HarnessInspection> {
     const cwd = path.resolve(input.cwd ?? process.cwd());
     const cached = this.#inspectionCache.get(cwd);
-    if (!input.refresh && cached) {
+    if (input.refresh) {
+      // Keep this scope's stale-while-revalidate fallback, not other directories' catalogs.
+      this.#inspectionCache.clear();
+      if (cached) this.#inspectionCache.set(cwd, cached);
+      const inFlight = this.#inspectionInFlight.get(cwd);
+      this.#inspectionInFlight.clear();
+      if (inFlight) this.#inspectionInFlight.set(cwd, inFlight);
+    } else if (cached) {
       if (cached.refreshAfter <= Date.now()) {
         void this.#refreshInspection(cwd).catch(() => undefined);
       }
@@ -268,6 +276,7 @@ export class KiroAdapter implements HarnessAdapter {
 
     const inspection = this.#inspectCwd(cwd)
       .then((result) => {
+        if (this.#inspectionInFlight.get(cwd) !== inspection) return result;
         if (result.status === "ready") {
           const now = Date.now();
           const date = new Date(now);
@@ -286,9 +295,11 @@ export class KiroAdapter implements HarnessAdapter {
         return result;
       })
       .finally(() => {
-        this.#inspectionInFlight.delete(cwd);
+        this.#inspectionTasks.delete(inspection);
+        if (this.#inspectionInFlight.get(cwd) === inspection) this.#inspectionInFlight.delete(cwd);
       });
     this.#inspectionInFlight.set(cwd, inspection);
+    this.#inspectionTasks.add(inspection);
     return inspection;
   }
 
@@ -619,7 +630,7 @@ export class KiroAdapter implements HarnessAdapter {
     try {
       await Promise.all([
         this.sessionImport.close(),
-        ...this.#inspectionInFlight.values(),
+        ...this.#inspectionTasks,
         ...[...this.#sessions].map((session) => session.close()),
       ]);
     } finally {

@@ -18,6 +18,7 @@ import {
   createDefaultRendererSettingsPages,
   type RendererConnectionDiagnostics,
   type RendererCodexAccountClient,
+  type RendererDelegationClient,
   type RendererDesktopExtensionsClient,
   type RendererUpdateClient,
 } from "./settings/pages.js";
@@ -40,6 +41,7 @@ export interface RendererSettingsLifecycleOptions {
   getUpdateClient?(): RendererUpdateClient | null;
   getConnectionDiagnostics?(): RendererConnectionDiagnostics | null;
   getAccountClient?(): RendererCodexAccountClient | null;
+  getDelegationClient?(): RendererDelegationClient | null;
   getSessionImportClient?(hostId?: string): RendererSessionImportClient | null;
   getLoadedSessionsClient?(): LoadedSessionsClient | null;
   getDesktopExtensionsClient?(): RendererDesktopExtensionsClient | null;
@@ -190,6 +192,7 @@ export function installRendererSettingsLifecycle(
         : undefined,
       getDesktopExtensionsClient,
       nextPluginPages,
+      options.getDelegationClient ?? (() => null),
     );
     const nextShell = installRendererSettingsShell(definitions, messages, ownerWindow.document, {
       pluginPages: nextPluginPages,

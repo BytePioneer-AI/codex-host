@@ -228,14 +228,14 @@ export async function waitForRendererTarget(
 }
 
 export class CdpClient {
-  readonly #commandTimeoutMs: number;
+  readonly #commandTimeoutMs: number | undefined;
   readonly #socket: CdpSocket;
   #closed = false;
   #nextId = 1;
   #pending = new Map<number, PendingCommand>();
   #listeners = new Map<string, Set<CdpEventListener>>();
 
-  private constructor(socket: CdpSocket, commandTimeoutMs: number) {
+  private constructor(socket: CdpSocket, commandTimeoutMs?: number) {
     this.#socket = socket;
     this.#commandTimeoutMs = commandTimeoutMs;
     socket.addEventListener("message", (event) => this.#onMessage(event));
@@ -274,7 +274,7 @@ export class CdpClient {
       socket.addEventListener("open", onOpen);
       socket.addEventListener("error", onError);
     });
-    return new CdpClient(socket, options.commandTimeoutMs ?? 10_000);
+    return new CdpClient(socket, options.commandTimeoutMs);
   }
 
   command(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -304,7 +304,8 @@ export class CdpClient {
     method: string,
     params: Record<string, unknown>,
     sessionId?: string,
-    timeoutMs = this.#commandTimeoutMs,
+    // Native RPC discovery scans the live renderer heap, which can take tens of seconds.
+    timeoutMs = this.#commandTimeoutMs ?? (method === "Runtime.queryObjects" ? 60_000 : 10_000),
   ): Promise<unknown> {
     if (this.#closed) return Promise.reject(new CdpConnectionClosedError("CDP client is closed"));
     const id = this.#nextId++;

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { HostTurnSnapshot } from "@codexhost/harness-adapter";
 import {
   hostItemIdSchema,
   hostTurnIdSchema,
@@ -56,6 +57,20 @@ async function readHistoryTurns(
   const thread = ((response.result ?? {}) as JsonObject).thread as JsonObject;
   if (!thread) throw new Error(JSON.stringify(response));
   return (thread.turns ?? []) as JsonObject[];
+}
+
+function wakeSnapshot(source: HostTurnSnapshot, key: string): HostTurnSnapshot {
+  return {
+    nativeTurnRef: { ...source.nativeTurnRef, nativeTurnKey: key },
+    input: [],
+    items: [
+      {
+        item: { type: "agentMessage", itemId: hostItemIdSchema.parse(key), text: key },
+        outcome: { status: "succeeded" },
+      },
+    ],
+    outcome: { status: "succeeded" },
+  };
 }
 
 describe("Host runtime idle background output on a completed Turn", () => {
@@ -1073,6 +1088,200 @@ describe("Host runtime idle background output on a completed Turn", () => {
       const background = items.find((item) => (item as { id?: string }).id === itemId);
       expect(background).toMatchObject({ id: itemId, text: "pending" });
     } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("appends a committed autonomous Turn without touching the previous final answer", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      await completePiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Session was not opened");
+      const [before] = await readHistoryTurns(fixture, threadId, 3);
+      const [first] = session.persistedSnapshot().turns;
+      if (!first) throw new Error("Missing persisted user Turn");
+      const wake = {
+        nativeTurnRef: { ...first.nativeTurnRef, nativeTurnKey: "wake-12" },
+        input: [],
+        items: [
+          {
+            item: {
+              type: "subagentDelegation" as const,
+              itemId: hostItemIdSchema.parse("wake-child"),
+              operation: "spawn" as const,
+              subagents: [
+                {
+                  subagentId: "native-wake-child",
+                  nativeSubagentId: "native-wake-child",
+                  description: "Check timer",
+                  background: false,
+                  status: "completed" as const,
+                },
+              ],
+            },
+            outcome: { status: "succeeded" as const },
+          },
+          {
+            item: {
+              type: "agentMessage" as const,
+              itemId: hostItemIdSchema.parse("wake-reply"),
+              text: "Timer expired",
+            },
+            outcome: { status: "succeeded" as const },
+          },
+        ],
+        outcome: { status: "unknown" as const, reason: "Native stop reason is not recorded" },
+      };
+      const originalRead = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        const result = await originalRead();
+        if (result.ok) result.value.turns.splice(1, 0, wake);
+        return result;
+      };
+      session.emitEvent({ type: "turn.autonomous.completed", snapshot: wake });
+      const item = await fixture.collector.waitFor((message) =>
+        itemCompleted(message, "wake-reply"),
+      );
+      const id = (item.params as { turnId: string }).turnId;
+      const live = await fixture.collector.waitFor((message) =>
+        turnEvent(message, "turn/completed", id),
+      );
+      const projected = (live.params as { turn: JsonObject }).turn;
+      expect(projected.items).toMatchObject([
+        {
+          id: "wake-child",
+          type: "collabAgentToolCall",
+          senderThreadId: threadId,
+          receiverThreadIds: [expect.stringMatching(/^[\da-f-]{36}$/u)],
+        },
+        { id: "wake-reply", type: "agentMessage", text: "Timer expired", phase: "final_answer" },
+      ]);
+      // A read before a duplicate notification already knows this native Turn.
+      expect(await readHistoryTurns(fixture, threadId, 4)).toEqual([before, projected]);
+      session.emitEvent({ type: "turn.autonomous.completed", snapshot: wake });
+      await completePiTurn(fixture, threadId, 5);
+      expect((await readHistoryTurns(fixture, threadId, 6)).slice(0, 2)).toEqual([
+        before,
+        projected,
+      ]);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each(["mapping write", "projection"])(
+    "keeps the foreground Turn and output stream alive after an autonomous %s failure",
+    async (stage) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        await completePiTurn(fixture, threadId, 2);
+        const session = fixture.adapter.sessions[0];
+        const first = session?.persistedSnapshot().turns[0];
+        if (!session || !first) throw new Error("Missing persisted user Turn");
+        const foreground = await startPiTurn(fixture, threadId, 3);
+        await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/started", foreground),
+        );
+        const wake = wakeSnapshot(first, "wake-failed");
+        const failure = new Error(`injected autonomous ${stage} failure`);
+        if (stage === "mapping write") {
+          vi.spyOn(fixture.mappingStore, "upsertTurnMappings").mockRejectedValueOnce(failure);
+        } else {
+          wake.items.unshift({
+            item: {
+              type: "subagentDelegation",
+              itemId: hostItemIdSchema.parse("wake-child"),
+              operation: "spawn",
+              subagents: [
+                {
+                  subagentId: "wake-child",
+                  nativeSubagentId: "wake-child",
+                  description: "Timer worker",
+                  background: false,
+                  status: "completed",
+                },
+              ],
+            },
+            outcome: { status: "succeeded" },
+          });
+          vi.spyOn(fixture.mappingStore, "createProvisional").mockRejectedValueOnce(failure);
+        }
+        const diagnostic = new Promise<string>((resolve) =>
+          fixture.diagnosticOutput.once("data", (chunk: Buffer) => resolve(chunk.toString())),
+        );
+        session.emitEvent({ type: "turn.autonomous.completed", snapshot: wake });
+        session.appendText("foreground finished normally");
+        session.succeedTurn();
+        const done = await fixture.collector.waitFor((message) =>
+          turnEvent(message, "turn/completed", foreground),
+        );
+        expect(done.params).toMatchObject({ turn: { status: "completed" } });
+        expect(await diagnostic).toContain(failure.message);
+        expect(fixture.collector.messages).toContainEqual(
+          expect.objectContaining({
+            method: "item/completed",
+            params: expect.objectContaining({
+              turnId: foreground,
+              item: expect.objectContaining({ text: "foreground finished normally" }),
+            }),
+          }),
+        );
+        session.emitEvent({
+          type: "turn.autonomous.completed",
+          snapshot: wakeSnapshot(first, "wake-next"),
+        });
+        await fixture.collector.waitFor((message) => itemCompleted(message, "wake-next"));
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
+  it("reconciles a missed older wake when live output overlaps a history read", async () => {
+    const fixture = createFixture();
+    const readStarted = Promise.withResolvers<undefined>();
+    const finishRead = Promise.withResolvers<undefined>();
+    try {
+      const threadId = await startPiThread(fixture);
+      await completePiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      const first = session?.persistedSnapshot().turns[0];
+      if (!session || !first) throw new Error("Missing persisted user Turn");
+      const earlier = wakeSnapshot(first, "wake-earlier");
+      const later = wakeSnapshot(first, "wake-later");
+      const originalRead = session.readSnapshot.bind(session);
+      let liveWakeCommitted = false;
+      session.readSnapshot = async () => {
+        const result = await originalRead();
+        if (!result.ok) return result;
+        result.value.turns.push(earlier);
+        if (liveWakeCommitted) result.value.turns.push(later);
+        else {
+          readStarted.resolve(undefined);
+          await finishRead.promise;
+        }
+        return result;
+      };
+      const history = readHistoryTurns(fixture, threadId, 3);
+      await readStarted.promise;
+      liveWakeCommitted = true;
+      session.emitEvent({ type: "turn.autonomous.completed", snapshot: later });
+      const live = await fixture.collector.waitFor((message) =>
+        itemCompleted(message, "wake-later"),
+      );
+      finishRead.resolve(undefined);
+      const turns = await history;
+      expect(turns.map(({ items }) => (items as JsonObject[]).at(-1)?.text)).toEqual([
+        "answer 2",
+        "wake-earlier",
+        "wake-later",
+      ]);
+      expect(turns.at(-1)?.id).toBe((live.params as { turnId: string }).turnId);
+    } finally {
+      finishRead.resolve(undefined);
       await stopFixture(fixture);
     }
   });

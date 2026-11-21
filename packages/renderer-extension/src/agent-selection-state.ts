@@ -122,8 +122,11 @@ export class DraftAgentController<Composer extends object> {
   invalidateModelRequests(composer: Composer): void {
     this.beginModelRequest(composer);
   }
+  modelRequestGeneration(composer: Composer): number {
+    return this.#modelRequestGenerations.get(this.#state(composer)) ?? 0;
+  }
   isCurrentModelRequest(composer: Composer, generation: number): boolean {
-    return (this.#modelRequestGenerations.get(this.#state(composer)) ?? 0) === generation;
+    return this.modelRequestGeneration(composer) === generation;
   }
   beginOwnershipRequest(composer: Composer): number {
     const generation = ++this.#ownershipRequestSequence;

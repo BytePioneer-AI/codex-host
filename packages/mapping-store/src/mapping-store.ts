@@ -128,6 +128,27 @@ function sameTurns(left: StoredTurnMappingV1[], right: StoredTurnMappingV1[]): b
   );
 }
 
+function failuresBeforeRollback(
+  record: StoredThreadRecordV1,
+  retained: StoredTurnMappingV1[],
+): StoredThreadRecordV1["failedTurns"] {
+  if (!record.failedTurns) return;
+  const undone = new Set(
+    record.turnMappings.slice(retained.length).map(({ hostTurnId }) => hostTurnId),
+  );
+  const kept = record.failedTurns
+    .filter(
+      ({ hostTurnId, afterTurnId }) =>
+        !undone.has(hostTurnId) && (afterTurnId === undefined || !undone.has(afterTurnId)),
+    )
+    .map((failure) => ({
+      ...failure,
+      nativeTurnRef: retained.find(({ hostTurnId }) => hostTurnId === failure.hostTurnId)
+        ?.nativeTurnRef,
+    }));
+  return kept.length ? kept : undefined;
+}
+
 /** Records must not persist credentials, such as a token embedded in a Git remote URL. */
 function withoutUrlCredentials(value: string): string {
   let url: URL;
@@ -703,6 +724,7 @@ export class MappingStore {
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
         forkSource: input.forkSource,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
   }
@@ -738,6 +760,7 @@ export class MappingStore {
         ...current,
         nativeSessionRef: input.nativeSessionRef,
         turnMappings: input.turnMappings,
+        failedTurns: failuresBeforeRollback(current, input.turnMappings),
       };
     });
   }
@@ -803,6 +826,27 @@ export class MappingStore {
       ...current,
       turnMappings: this.#mergeMappings(current.turnMappings, mappings),
     }));
+  }
+
+  async saveFailedTurn(
+    hostThreadId: HostThreadId,
+    failure: NonNullable<StoredThreadRecordV1["failedTurns"]>[number],
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(hostThreadId, (record) => {
+      const ref = failure.nativeTurnRef;
+      if (
+        ref &&
+        (ref.harnessId !== record.harnessId ||
+          ref.nativeSessionId !== record.nativeSessionRef?.nativeSessionId)
+      ) {
+        throw new MappingStoreError(
+          "MAPPING_CONFLICT",
+          "Failed Turn belongs to another Native Session",
+        );
+      }
+      if (record.failedTurns?.some((turn) => turn.hostTurnId === failure.hostTurnId)) return null;
+      return { ...record, failedTurns: [...(record.failedTurns ?? []), failure] };
+    });
   }
 
   async reconcileTurnMappings(

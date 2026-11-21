@@ -12,13 +12,93 @@ interface ScopedDraftModelBinding {
   creationModes?: readonly Draft[];
 }
 
-/** Desktop 26.1021 memo tuples bind the client Thread identity, draft setter
- * and current Model settings mode. Never use the official default Model setter.
- */
+function record(value: unknown): Draft | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Draft)
+    : null;
+}
+
+function draftIdentity(row: readonly unknown[], draftId: string) {
+  const result = record(row[13]);
+  return row.length === 14 &&
+    row[6] === draftId &&
+    row[7] === draftId &&
+    result?.isNewThreadDraft === true &&
+    row[11] === true &&
+    !!record(row[10]) &&
+    result.draftSettings === row[10] &&
+    result.updateDraftSettings === row[9] &&
+    row[9] === row[12] &&
+    typeof row[9] === "function"
+    ? { update: row[9] as UpdateDraft, store: row[8], draft: row[10] }
+    : null;
+}
+
+/** Reviewed memo layouts; the callback and setting identities, not row length, authorize writes. */
+function modelContext(row: readonly unknown[]) {
+  const offset = row.length === 25 ? 1 : 0;
+  const current = row.length === 37;
+  if (!current && row.length !== 24 && row.length !== 25) return null;
+  const context = record(row[current ? 34 : 12 + offset]);
+  const result = record(row[current ? 36 : 23 + offset]);
+  const callback = row[current ? 27 : 14 + offset];
+  const usesAccountPreferences = context?.usesAccountPreferences;
+  if (
+    row[current ? 16 : 7 + offset] !== null ||
+    row[current ? 21 : 10 + offset] !== true ||
+    typeof usesAccountPreferences !== "boolean" ||
+    result?.usesAccountPreferences !== usesAccountPreferences ||
+    typeof callback !== "function" ||
+    result.setModelAndReasoningEffort !== callback ||
+    row[current ? 33 : 20 + offset] !== callback ||
+    (current
+      ? row[25] !== usesAccountPreferences || row[32] !== result.modelSettings || !record(row[32])
+      : row[21 + offset] !== context)
+  )
+    return null;
+  return { update: row[current ? 24 : 13 + offset], usesAccountPreferences, result };
+}
+
+function creationModeFor(
+  row: unknown,
+  model: Draft,
+  owner: unknown,
+  draftId: string,
+): Draft | null {
+  if (!Array.isArray(row) || (row.length !== 52 && row.length !== 55)) return null;
+  const current = row.length === 55;
+  const settings = record(row[current ? 44 : 41]);
+  const mode = record(row[current ? 47 : 44]);
+  const result = record(row[current ? 54 : 51]);
+  const modelSettings = record(model.modelSettings);
+  // Desktop 26.1117's Composer memoizes the actual submit mode and client Thread ID.
+  if (
+    current &&
+    (!Array.isArray(owner) || owner.length !== 263 || owner[82] !== mode || owner[85] !== draftId)
+  )
+    return null;
+  return mode &&
+    settings &&
+    modelSettings &&
+    typeof mode.mode === "string" &&
+    typeof modelSettings.model === "string" &&
+    row[current ? 42 : 39] === modelSettings.model &&
+    row[current ? 43 : 40] === modelSettings.reasoningEffort &&
+    settings.model === modelSettings.model &&
+    settings.reasoning_effort === modelSettings.reasoningEffort &&
+    mode.settings === settings &&
+    (!current || row[46] === settings) &&
+    mode === row[current ? 52 : 49] &&
+    result?.activeMode === mode
+    ? mode
+    : null;
+}
+
 export function findScopedDraftModelBinding(
   composer: DraftElement,
   draftId: string,
 ): ScopedDraftModelBinding | null {
+  if (!draftId.startsWith("client-new-thread:")) return null;
   let element: DraftElement | null =
     composer.querySelector?.('[data-codex-composer], [contenteditable="true"][role="textbox"]') ??
     composer;
@@ -30,94 +110,61 @@ export function findScopedDraftModelBinding(
     if (key) fiber = Object.getOwnPropertyDescriptor(element, key)?.value;
     element = element.parentElement;
   }
-  const rows: unknown[][] = [];
-  const groups = new Map<unknown[], unknown[][]>();
-  const updates = new Set<UpdateDraft>();
+  type Candidate = NonNullable<ReturnType<typeof draftIdentity>> & {
+    usesAccountPreferences: boolean;
+    modes: Set<Draft>;
+  };
+  const candidates = new Map<UpdateDraft, Candidate>();
   for (const ancestor of committedReactAncestors(fiber)) {
-    const queue = ancestor.updateQueue as { memoCache?: { data?: unknown[] } } | null;
-    const data = (queue?.memoCache?.data ?? []).filter(Array.isArray);
-    for (const row of data) {
-      rows.push(row);
-      groups.set(row, data);
-      if (!Array.isArray(row) || row.length !== 14 || row[6] !== draftId || row[7] !== draftId)
-        continue;
-      const result = row[13] as {
-        draftSettings?: unknown;
-        isNewThreadDraft?: unknown;
-        updateDraftSettings?: unknown;
-      } | null;
-      if (
-        result?.isNewThreadDraft === true &&
-        row[11] === true &&
-        result.draftSettings === row[10] &&
-        result.updateDraftSettings === row[9] &&
-        row[9] === row[12] &&
-        typeof row[9] === "function"
-      )
-        updates.add(row[9] as UpdateDraft);
-    }
-  }
-  let update: UpdateDraft | undefined;
-  const modes = new Set<boolean>();
-  const creationModes = new Set<Draft>();
-  // The 26.1021 Model hook pairs its current settings mode with this exact
-  // draft setter. A stored draft's mode can belong to an earlier Account.
-  for (const row of rows) {
-    // Desktop 26.1106 adds one memo slot before the draft/model context.
-    // Accept only the two reviewed layouts and retain their identity checks.
-    const offset = row.length === 25 ? 1 : 0;
-    if (
-      (row.length !== 24 && row.length !== 25) ||
-      row[7 + offset] !== null ||
-      row[10 + offset] !== true ||
-      !updates.has(row[13 + offset] as UpdateDraft)
-    )
-      continue;
-    const context = row[12 + offset] as Draft | null;
-    const result = row[23 + offset] as Draft | null;
-    if (
-      context &&
-      context === row[21 + offset] &&
-      typeof context.usesAccountPreferences === "boolean" &&
-      result?.usesAccountPreferences === context.usesAccountPreferences &&
-      typeof row[14 + offset] === "function" &&
-      row[14 + offset] === row[20 + offset] &&
-      result.setModelAndReasoningEffort === row[14 + offset]
-    ) {
-      // Each native hook can create its own setter for the same draft atom.
-      // Bind through its reviewed draft identity and Model context, not through
-      // function identity shared by every hook in the Composer.
-      update ??= row[13 + offset] as UpdateDraft;
-      modes.add(context.usesAccountPreferences);
-      // Background creation receives a new client Thread id. The reviewed
-      // collaboration-mode memo retains the originating draft's Model hook.
-      const settings = result.modelSettings as Draft | null;
-      const group = groups.get(row);
-      const candidate = group?.[group.indexOf(row) - 1];
-      const mode = candidate?.[44] as Draft | null;
-      const value = candidate?.[51] as Draft | null;
-      if (
-        candidate?.length === 52 &&
-        settings &&
-        candidate[39] === settings.model &&
-        candidate[40] === settings.reasoningEffort &&
-        mode &&
-        mode === candidate[49] &&
-        mode.settings === candidate[41] &&
-        (mode.settings as Draft | null)?.model === settings.model &&
-        value?.activeMode === mode
-      )
-        creationModes.add(mode);
-    }
-  }
-  const [usesAccountPreferences] = modes;
-  return update && modes.size === 1 && usesAccountPreferences !== undefined
-    ? {
-        update,
-        usesAccountPreferences,
-        ...(creationModes.size ? { creationModes: [...creationModes] } : {}),
+    const data = record(record(ancestor.updateQueue)?.memoCache)?.data;
+    if (!Array.isArray(data)) continue;
+    // Nested compiled hooks allocate their memo rows on the same Fiber.
+    const identities = data.filter(Array.isArray).map((row) => draftIdentity(row, draftId));
+    for (const [index, row] of data.entries()) {
+      const model = Array.isArray(row) ? modelContext(row) : null;
+      if (!model) continue;
+      for (const identity of identities) {
+        if (!identity || identity.update !== model.update) continue;
+        const candidate = candidates.get(identity.update) ?? {
+          ...identity,
+          usesAccountPreferences: model.usesAccountPreferences,
+          modes: new Set<Draft>(),
+        };
+        if (
+          candidate.store !== identity.store ||
+          candidate.draft !== identity.draft ||
+          candidate.usesAccountPreferences !== model.usesAccountPreferences
+        )
+          return null;
+        // The owning collaboration hook allocates its row before its nested Model hook.
+        const mode = creationModeFor(data[index - 1], model.result, data[0], draftId);
+        if (mode) candidate.modes.add(mode);
+        candidates.set(identity.update, candidate);
       }
-    : null;
+    }
+  }
+  const writers = [...candidates.values()];
+  const creationOwners = writers.filter(({ modes }) => modes.size > 0);
+  const selected =
+    writers.length === 1 ? writers[0] : creationOwners.length === 1 ? creationOwners[0] : undefined;
+  if (
+    !selected ||
+    (writers.length > 1 &&
+      (!record(selected.store) ||
+        typeof record(selected.store)?.set !== "function" ||
+        writers.some(
+          (writer) =>
+            writer.store !== selected.store ||
+            writer.draft !== selected.draft ||
+            writer.usesAccountPreferences !== selected.usesAccountPreferences,
+        )))
+  )
+    return null;
+
+  const [mode] = selected.modes;
+  if (selected.modes.size > 1 || (mode && !Object.isExtensible(mode))) return null;
+  const { update, usesAccountPreferences } = selected;
+  return { update, usesAccountPreferences, ...(mode ? { creationModes: [mode] } : {}) };
 }
 
 export function createScopedDraftModelWriter() {

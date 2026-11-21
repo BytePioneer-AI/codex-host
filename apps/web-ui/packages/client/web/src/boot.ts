@@ -1,8 +1,9 @@
 /**
  * Web boot kernel. It owns only the module system, Cordis loader, and a
  * framework-free boot page; plugin composition and the renderer handoff are
- * `bootClient` and `mountClient`. The dynamic UI renderer receives the mount
- * point after every client entry activates.
+ * `bootClient` and `mountClient`. Built-in core entries mount the UI first;
+ * optional external DSH plugins and the Web native extension host load after
+ * mount with full failure isolation so a broken extension never white-screens.
  * @module @deepseek-ai/dsh-client-web/src/boot
  */
 import { Context } from "@deepseek-ai/cordis";
@@ -12,7 +13,11 @@ import type {
   ClientModuleSystem,
   DshWindow,
 } from "@deepseek-ai/dsh-client-modules/client";
-import { bootClient } from "./boot-client.ts";
+import {
+  startWebNativeExtensionHost,
+  type WebNativeExtensionHostHandle,
+} from "@deepseek-ai/dsh-client-ui-codexhost/src/client/native-extensions/index.ts";
+import { bootClient, partitionBootManifest } from "./boot-client.ts";
 import { BootPage } from "./boot-page.ts";
 import { PwaInstall } from "./pwa-install.ts";
 import { preventIosFocusZoom } from "./ios-focus-zoom.ts";
@@ -25,6 +30,13 @@ import "./base.css";
 /** Module transport hook replaced by jsdom tests. */
 export type BootSeams = Pick<ClientModuleCreateOptions, "loadBundle">;
 
+/** Whether `?extensions=off` disabled all optional extensions for this page load. */
+export function areExtensionsDisabled(browser: Window | null | undefined): boolean {
+  const search = browser?.location?.search;
+  if (typeof search !== "string" || search.length === 0) return false;
+  return new URLSearchParams(search).get("extensions")?.toLowerCase() === "off";
+}
+
 /** Browser boot entry consumed by `apps/web`. */
 export class AppWebEntry {
   private readonly container: HTMLElement;
@@ -33,6 +45,8 @@ export class AppWebEntry {
   private readonly pwaInstall: PwaInstall | undefined;
   private ctx: Context | undefined;
   private stopDragRecall: (() => void) | undefined;
+  private nativeExtensions: WebNativeExtensionHostHandle | undefined;
+  private disposed = false;
   private modules!: ClientModuleSystem;
   private manifest!: BootManifest;
 
@@ -59,8 +73,9 @@ export class AppWebEntry {
   }
 
   /**
-   * Load and activate every client entry, then hand the mount point to the
-   * UI renderer. Plugin failures remain visible on the boot page.
+   * Load and activate built-in core entries, hand the mount point to the UI
+   * renderer, then asynchronously activate optional external DSH plugins and
+   * the Web native extension host unless `?extensions=off` is active.
    * @param onFailure - Optional carrier-owned fatal presentation; keeps the boot page visible.
    * @returns Resolves after application mount or failure reporting.
    */
@@ -97,16 +112,20 @@ export class AppWebEntry {
       });
       this.manifest = this.modules.manifest;
 
-      const prefetching = this.prefetchImmediateTier();
+      const browser = this.container.ownerDocument.defaultView;
+      const extensionsOff = areExtensionsDisabled(browser);
+      const { core, external } = partitionBootManifest(this.manifest);
+
+      const prefetching = this.prefetchImmediateTier(core);
       const ctx = new Context();
       this.ctx = ctx;
       if (this.pwaInstall !== undefined) ctx.provide("pwaInstall", this.pwaInstall);
-      this.page.setTotal(this.manifest.plugins.length);
+      this.page.setTotal(core.plugins.length);
       await prefetching;
       await bootClient({
         ctx,
         modules: this.modules,
-        manifest: this.manifest,
+        manifest: core,
         onEntryState: (name, state) => {
           if (onFailure === undefined || state !== "failed") this.page.setState(name, state);
         },
@@ -117,6 +136,23 @@ export class AppWebEntry {
       // renderer draws is the one the first frame measures.
       this.stopDragRecall = installWindowDragRecall({ document: this.container.ownerDocument });
       await mountClient(ctx, this.container);
+
+      if (this.disposed || extensionsOff) return;
+
+      // Built-in UI is mounted: load optional external DSH plugins in the background
+      // with degraded logging so broken third-party bundles never white-screen the app.
+      if (external.length > 0 && win.__DSH_BOOT__ !== undefined) {
+        this.loadExternalDshExtensions(
+          win.__DSH_BOOT__,
+          external.map((row) => row.id),
+        );
+      }
+
+      // Start the Web native extension host after the built-in UI is ready.
+      this.nativeExtensions = startWebNativeExtensionHost({
+        ctx,
+        document: this.container.ownerDocument,
+      });
     } catch (reason) {
       console.error(reason);
       if (onFailure !== undefined) onFailure(reason);
@@ -124,8 +160,11 @@ export class AppWebEntry {
     }
   }
 
-  /** Dispose the client plugin tree and whichever page owns the mount point. */
+  /** Dispose the native extension host, client plugin tree, and boot page. */
   async dispose(): Promise<void> {
+    this.disposed = true;
+    this.nativeExtensions?.dispose();
+    this.nativeExtensions = undefined;
     this.pwaInstall?.dispose();
     this.stopDragRecall?.();
     this.stopDragRecall = undefined;
@@ -135,10 +174,10 @@ export class AppWebEntry {
     this.page.dispose();
   }
 
-  /** Prefetch stage-one bundles and their dynamic requests before concurrent plugin imports. */
-  private async prefetchImmediateTier(): Promise<void> {
+  /** Prefetch stage-one core bundles and their dynamic requests before concurrent plugin imports. */
+  private async prefetchImmediateTier(manifest: BootManifest): Promise<void> {
     await Promise.all(
-      this.manifest.plugins
+      manifest.plugins
         .filter((row) => row.immediately)
         .map((row) =>
           this.modules.prefetch(row.id).catch((_prefetchError: unknown) => {
@@ -146,5 +185,34 @@ export class AppWebEntry {
           }),
         ),
     );
+  }
+
+  /**
+   * Reconcile optional external DSH plugins after built-in UI mount.
+   * Failures are degraded and logged without disrupting the mounted application.
+   */
+  private loadExternalDshExtensions(rawGraph: unknown, externalIds: readonly string[]): void {
+    if (this.modules.manifest.rev !== this.manifest.rev) return;
+    const externalSet = new Set(externalIds);
+    void this.modules.entries
+      .sync(rawGraph)
+      .then(() => {
+        if (this.disposed) return;
+        const failures = this.modules.entries.state
+          .getSnapshot()
+          .failures.filter((failure) => externalSet.has(failure.id));
+        for (const failure of failures) {
+          console.warn(
+            `[web-boot] external DSH extension "${failure.id}" failed to load; continuing with built-in UI: ${failure.message}`,
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        if (this.disposed) return;
+        console.warn(
+          "[web-boot] external DSH extension loading failed; continuing with built-in UI",
+          error,
+        );
+      });
   }
 }

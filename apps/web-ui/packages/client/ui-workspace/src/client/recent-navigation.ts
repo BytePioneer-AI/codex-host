@@ -5,6 +5,10 @@ import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-connection/client";
 import type { UiWorkspaceService } from "./navigation.ts";
 import {
+  PhoneHeaderNewSession,
+  type PhoneHeaderNewSessionInjected,
+} from "./PhoneHeaderNewSession.tsx";
+import {
   RecentNavigation,
   RecentShortcuts,
   type RecentNavigationInjected,
@@ -80,6 +84,19 @@ export function registerRecentNavigation(
     viewport,
     setEnabled,
   });
+  ctx.slots.inject("conversation.header.trailing", () =>
+    ctx.slots.register(
+      {
+        name: "conversation.header.trailing",
+        locale: "workspace",
+        inject: (): PhoneHeaderNewSessionInjected => ({
+          startSession: () => navigation.startSession(),
+          hooks: { shortcuts: ctx.shortcuts.catalog },
+        }),
+      },
+      PhoneHeaderNewSession,
+    ),
+  );
   ctx.slots.inject("conversation.header.navigation", () =>
     ctx.slots.register(
       {

@@ -343,7 +343,7 @@ export class FakeChHost implements ChHostClient {
 /** Browser acceptance reaches the production Desktop transport through an isolated fake CDP peer. */
 export async function startFakeChDebugger(
   host: FakeChHost,
-  options: { rpc?: boolean; pinServiceAvailable?: boolean } = {},
+  options: { rpc?: boolean; pinServiceAvailable?: boolean; projectOrder?: string[] } = {},
 ) {
   const server = createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
@@ -411,7 +411,10 @@ export async function startFakeChDebugger(
                         host.projectSnapshot.projects.map((project) => [project.id, project]),
                       );
                     if (key === "project-order")
-                      return host.projectSnapshot.projects.map((project) => project.id);
+                      return (
+                        options.projectOrder ??
+                        host.projectSnapshot.projects.map((project) => project.id)
+                      );
                     if (key === "projectless-thread-ids") return host.projectSnapshot.projectless;
                     if (key === "thread-project-assignments")
                       return Object.fromEntries(

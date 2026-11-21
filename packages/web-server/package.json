@@ -37,6 +37,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@codexhost/extension-backend": "0.0.0",
     "@codexhost/harness-adapter": "0.0.0",
     "@codexhost/harness-plugin-files": "0.0.0",
     "@codexhost/host-runtime": "0.0.0",

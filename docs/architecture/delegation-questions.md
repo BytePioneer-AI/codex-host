@@ -63,6 +63,12 @@ MCP 使用 `thread_answer`，参数为 `thread`、`interactionId` 和相同的 `
 - watch 注册和轮询都优先判断终态，已结束返回 `alreadyTerminal` 或报告终态结果；仅非终态存在待答题时返回 `alreadyNeedsInput` 或报告 `needsInput`。题目不改变 Thread 状态，异步题可以在空闲时仍待答；收到终态后应 read 查看未答题。答复后可重新 watch。
 - wait 遇到待处理请求即返回 `timedOut: false`。通知投递机制保持原有语义，调用者收到通知后应读取当前状态。
 
+## 外部 Harness 失败历史
+
+`read`、`wait` 和 `watch` 按 Thread 观察。外部 Harness 已受理的 Turn 即使未写入原生历史，Host 仍保留它的失败终态。`--view messages` 保留失败 Turn 的序号和 Host 已收到的输入与回复；原生 Session 无法重开时，只返回还可用的消息，不重新编号。`--view result` 不把失败或中断前的回复当作成功结果。
+
+Mapping Store 只保留失败 ID、脱敏错误和定位元数据；不会从失败输入生成持久化预览。仅由 Host 保留的失败不是原生 Fork Checkpoint，也不计入 Side Chat 的继承历史。回滚原生 Turn 保留撤销边界之前的失败。
+
 ## 实现入口
 
 | 文件 | 职责 |

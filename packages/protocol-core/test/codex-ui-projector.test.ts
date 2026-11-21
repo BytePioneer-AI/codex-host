@@ -119,7 +119,6 @@ describe("Codex UI projector", () => {
     };
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
       items: [
-        { type: "userMessage" },
         { type: "reasoning", summary: [visibleText] },
         { type: "commandExecution", aggregatedOutput: visibleText },
       ],
@@ -138,7 +137,7 @@ describe("Codex UI projector", () => {
           ],
         },
       }).items,
-    ).toMatchObject([{ type: "userMessage" }]);
+    ).toEqual([]);
   });
 
   it("keeps steered input inside its Turn, tagged for Desktop only while live", () => {
@@ -285,10 +284,27 @@ describe("Codex UI projector", () => {
       completedAtMs: 1_000,
     };
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot })).toMatchObject({
+      items: [],
       startedAt: null,
       completedAt: null,
       durationMs: null,
     });
+    const wake = projectHistoricalTurn({
+      turnId,
+      cwd: "/workspace",
+      snapshot: {
+        ...snapshot,
+        items: [
+          {
+            item: { type: "agentMessage", itemId: itemId("wake"), text: "Timer expired" },
+            outcome: { status: "succeeded" },
+          },
+        ],
+      },
+    });
+    expect(wake.items).toMatchObject([
+      { id: "wake", type: "agentMessage", text: "Timer expired", phase: "final_answer" },
+    ]);
   });
 
   it("projects a complete historical Snapshot without replaying notifications", () => {
@@ -1414,7 +1430,6 @@ describe("Codex UI projector", () => {
       outcome: { status: "succeeded" },
     };
     expect(projectHistoricalTurn({ turnId, cwd: "/workspace", snapshot }).items).toEqual([
-      expect.objectContaining({ type: "userMessage" }),
       mcpCompleted,
       expect.objectContaining({ id: failedMcpId, ...failedMcpCompleted }),
       searchItem,

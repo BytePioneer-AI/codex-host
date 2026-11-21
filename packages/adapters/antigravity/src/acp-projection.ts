@@ -38,6 +38,7 @@ import {
 import { createTwoFilesPatch } from "diff";
 
 import type { AntigravityAcpConfigOption, AntigravityAcpEvent } from "./acp-types.js";
+import type { NativeReplayEvent } from "./native-replay.js";
 import { ANTIGRAVITY_COMMAND_CATALOG } from "./slash-commands.js";
 import {
   compactToolName,
@@ -588,12 +589,15 @@ export class AntigravityToolTracker {
 export function projectReplayedEventsToTurns(params: {
   nativeSessionId: string;
   cwd: string;
-  events: readonly AntigravityAcpEvent[];
+  events: readonly NativeReplayEvent[];
   knownTurnRefs?: readonly NativeTurnRef[];
   outputLimit?: number;
 }): HostTurnSnapshot[] {
   const turns: HostTurnSnapshot[] = [];
-  const knownTurnRefs = params.knownTurnRefs ?? [];
+  const knownTurnRefs = (params.knownTurnRefs ?? []).filter(
+    ({ nativeTurnKey }) => !/^wake-(0|[1-9]\d*)$/u.test(nativeTurnKey),
+  );
+  const foregroundTurns: HostTurnSnapshot[] = [];
   const usedTurnKeys = new Set(knownTurnRefs.map(({ nativeTurnKey }) => nativeTurnKey));
   const knownTurnKeys = new Set(knownTurnRefs.map(({ nativeTurnKey }) => nativeTurnKey));
   let knownRefIndex = 0;
@@ -614,21 +618,23 @@ export function projectReplayedEventsToTurns(params: {
     }
     return undefined;
   };
-  let active: { turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
+  let active:
+    { turnId: HostTurnId; turn: HostTurnSnapshot; tracker: AntigravityToolTracker } | undefined;
   let userRun = false;
   let textItem: HostItemSnapshot | undefined;
   let sequence = 0;
   let nativeTurnIndex: number | undefined;
   let mergedNativeInputs = false;
-  const begin = (boundary?: number) => {
+  const begin = (boundary?: number, wakeStep?: number) => {
     active?.tracker.finishPending({
       status: "cancelled",
       reason: "No terminal tool status in native history",
     });
-    const index = turns.length;
-    const turnId = hostTurnIdSchema.parse(`turn-${index}`);
-    const knownRef = takeKnownRef(boundary, true);
-    let nativeTurnKey = knownRef?.nativeTurnKey;
+    const index = foregroundTurns.length;
+    const wakeKey = wakeStep === undefined ? undefined : `wake-${wakeStep}`;
+    const turnId = hostTurnIdSchema.parse(wakeKey ?? `turn-${index}`);
+    const checkpointId = wakeKey ?? `turn-${boundary ?? index}`;
+    let nativeTurnKey = wakeKey ?? takeKnownRef(boundary, true)?.nativeTurnKey;
     if (nativeTurnKey === undefined) {
       let n = boundary ?? index;
       nativeTurnKey = `turn-${n}`;
@@ -645,7 +651,7 @@ export function projectReplayedEventsToTurns(params: {
       checkpoint: nativeCheckpointRefSchema.parse({
         harnessId: "antigravity",
         nativeSessionId: params.nativeSessionId,
-        checkpointId: `turn-${boundary ?? index}`,
+        checkpointId,
         formatVersion: 1,
       }),
       input: [],
@@ -653,6 +659,7 @@ export function projectReplayedEventsToTurns(params: {
       outcome: { status: "unknown", reason: "Native history does not include prompt stop reasons" },
     };
     turns.push(turn);
+    if (wakeStep === undefined) foregroundTurns.push(turn);
     sequence = 0;
     const positions = new Map<string, number>();
     const tracker = new AntigravityToolTracker({
@@ -671,7 +678,7 @@ export function projectReplayedEventsToTurns(params: {
     });
     textItem = undefined;
     nativeTurnIndex = boundary;
-    active = { turn, tracker };
+    active = { turnId, turn, tracker };
     return active;
   };
   const updateNativeIdentity = (turn: HostTurnSnapshot, boundary: number): void => {
@@ -693,7 +700,10 @@ export function projectReplayedEventsToTurns(params: {
     usedTurnKeys.add(nativeTurnKey);
   };
   for (const event of params.events) {
-    if (event.type === "user.text") {
+    if (event.type === "history.autonomous") {
+      begin(undefined, event.stepIndex);
+      userRun = false;
+    } else if (event.type === "user.text") {
       const { turn } = !active || !userRun ? begin(event.nativeTurnIndex) : active;
       if (event.nativeTurnIndex !== undefined) {
         const isNewNativeBoundary = nativeTurnIndex !== event.nativeTurnIndex;
@@ -715,7 +725,7 @@ export function projectReplayedEventsToTurns(params: {
       userRun = true;
       textItem = undefined;
     } else if (event.type === "agent.text" || event.type === "agent.thought") {
-      const { turn } = active ?? begin();
+      const { turn, turnId } = active ?? begin();
       userRun = false;
       const type = event.type === "agent.text" ? "agentMessage" : "reasoning";
       if (textItem?.item.type === type) textItem.item.text += event.text;
@@ -723,7 +733,7 @@ export function projectReplayedEventsToTurns(params: {
         textItem = {
           item: {
             type,
-            itemId: hostItemIdSchema.parse(`turn-${turns.length - 1}-item-${sequence++}`),
+            itemId: hostItemIdSchema.parse(`${turnId}-item-${sequence++}`),
             text: event.text,
           },
           outcome: succeeded,
@@ -745,10 +755,10 @@ export function projectReplayedEventsToTurns(params: {
   // Restore those identities without changing the native checkpoints of the groups.
   if (
     mergedNativeInputs &&
-    knownTurnRefs.length === turns.length &&
+    knownTurnRefs.length === foregroundTurns.length &&
     knownTurnRefs.every((ref, index) => ref.nativeTurnKey === `turn-${index}`)
   ) {
-    for (const [index, turn] of turns.entries()) {
+    for (const [index, turn] of foregroundTurns.entries()) {
       const ref = knownTurnRefs[index];
       if (ref) turn.nativeTurnRef = ref;
     }

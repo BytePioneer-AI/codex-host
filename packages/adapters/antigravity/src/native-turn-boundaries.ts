@@ -1,5 +1,11 @@
 import { access } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { HarnessError } from "@codexhost/harness-adapter";
+
+export function nativeConversationDbPath(id: string, home = os.homedir()): string {
+  return path.join(home, ".gemini", "antigravity-cli", "conversations", `${id}.db`);
+}
 
 /** Read native user-input boundaries without creating or repairing a missing store. */
 export async function readNativeTurnCount(dbPath: string): Promise<number> {

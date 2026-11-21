@@ -60,14 +60,20 @@ export function HostSettingsSection({
   const activeScheme = useSyncExternalStore(colorScheme.subscribe, colorScheme.get);
   useEffect(() => {
     let disposed = false;
+    let frame = 0;
     let unmount: (() => void) | undefined;
     setError("");
     loadPages()
       .then((pages) => {
         if (disposed || !host.current) return;
-        unmount = pages.mount(pageId, host.current, {
-          locale: activeLocale,
-          colorScheme: activeScheme,
+        // Let the browser paint the active sidebar tab highlight before running synchronous page mount.
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          if (disposed || !host.current) return;
+          unmount = pages.mount(pageId, host.current, {
+            locale: activeLocale,
+            colorScheme: activeScheme,
+          });
         });
       })
       .catch((cause: unknown) => {
@@ -75,6 +81,7 @@ export function HostSettingsSection({
       });
     return () => {
       disposed = true;
+      if (frame !== 0) cancelAnimationFrame(frame);
       unmount?.();
     };
   }, [pageId, activeLocale, activeScheme]);

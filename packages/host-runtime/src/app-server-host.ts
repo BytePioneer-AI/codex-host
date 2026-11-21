@@ -2486,8 +2486,10 @@ export class AppServerHost {
     return this.#accountControl.currentAccountId();
   }
 
-  async #codexAccountSnapshot() {
-    return this.#accountControl.refresh?.() ?? this.#accountControl.snapshot();
+  async #codexAccountSnapshot(refresh = false) {
+    return refresh
+      ? (this.#accountControl.refresh?.() ?? this.#accountControl.snapshot())
+      : this.#accountControl.snapshot();
   }
 
   async #handleCodexAccountRequest(request: JsonRpcRequest): Promise<void> {
@@ -2511,7 +2513,9 @@ export class AppServerHost {
       }
       await this.#writer.json(
         rpcEnvelope(request, {
-          result: jsonValueSchema.parse(await this.#codexAccountSnapshot()),
+          result: jsonValueSchema.parse(
+            await this.#codexAccountSnapshot(request.method === "codexhost/account/refresh"),
+          ),
         }),
       );
     } catch (error) {

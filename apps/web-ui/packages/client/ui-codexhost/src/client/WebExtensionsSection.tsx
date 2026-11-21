@@ -278,9 +278,15 @@ export function WebExtensionsSection({
   useEffect(() => {
     const controller = new AbortController();
     void refreshList(controller.signal);
+    return () => controller.abort();
+  }, [refreshList]);
+
+  useEffect(() => {
+    if (activeTab !== "market" || market.loaded || market.loading) return;
+    const controller = new AbortController();
     void refreshMarket(controller.signal);
     return () => controller.abort();
-  }, [refreshList, refreshMarket]);
+  }, [activeTab, market.loaded, market.loading, refreshMarket]);
 
   const runMutation = useCallback(
     async (

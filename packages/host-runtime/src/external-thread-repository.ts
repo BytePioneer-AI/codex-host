@@ -22,7 +22,7 @@ import {
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
-import type { JsonObject } from "@codexhost/protocol-core";
+import type { JsonObject, TodoPlan } from "@codexhost/protocol-core";
 import {
   hostThreadIdSchema,
   hostTurnIdSchema,
@@ -110,6 +110,7 @@ export interface ExternalThreadStore {
 export interface AlignedExternalSnapshot {
   record: StoredThreadRecordV1;
   turns: JsonObject[];
+  historicalPlans: ReadonlyMap<string, TodoPlan>;
 }
 
 function nativeTurnKey(ref: NativeTurnRef): string {
@@ -486,7 +487,7 @@ export class ExternalThreadRepository {
     // Some Harnesses establish their native identity only on the first Turn.
     // An unsent draft has no history to reconcile or persist yet.
     if (record.state === "creating" && !nativeSessionRef && snapshot.turns.length === 0) {
-      return { record, turns: [] };
+      return { record, turns: [], historicalPlans: new Map() };
     }
     if (!nativeSessionRef || record.state !== "ready") {
       throw new Error("External Thread has no committed Native Session identity");
@@ -545,10 +546,14 @@ export class ExternalThreadRepository {
     snapshot: HostThreadSnapshot,
     previous?: StoredThreadRecordV1,
   ): Promise<AlignedExternalSnapshot> {
-    const turns = await projectExternalSnapshot(this.store, record, snapshot, previous);
+    const projection = await projectExternalSnapshot(this.store, record, snapshot, previous);
     return {
-      record: await this.updatePreview(record, ownTurns(record, turns), previous !== undefined),
-      turns,
+      record: await this.updatePreview(
+        record,
+        ownTurns(record, projection.turns),
+        previous !== undefined,
+      ),
+      ...projection,
     };
   }
 }

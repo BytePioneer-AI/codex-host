@@ -311,6 +311,11 @@ function summarizeHostFiles(
 
 type CodexPlanStepStatus = "pending" | "inProgress" | "completed";
 
+export interface TodoPlan {
+  explanation: string | null;
+  plan: { step: string; status: CodexPlanStepStatus }[];
+}
+
 function isTodoTool(toolName: string): boolean {
   const compact = compactToolName(toolName);
   return compact.includes("todo") || ["updateplan", "updatetodolist"].includes(compact);
@@ -751,7 +756,10 @@ function historicalStatus(outcome: HistoricalTurnOutcome): "completed" | "interr
   return "completed";
 }
 
-export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): JsonObject {
+export function projectHistoricalTurn(
+  input: HistoricalTurnProjectionInput,
+  plansByTurnId?: Map<string, TodoPlan>,
+): JsonObject {
   const { turnId, cwd, snapshot } = input;
   const files = summarizeHostFiles(snapshot.items, cwd);
   const startedAtMs = snapshot.startedAtMs;
@@ -802,14 +810,17 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
         ];
   };
   const entries = snapshot.items.map((entry) => ({ entry, projected: projectEntry(entry) }));
-  // Codex history has no Todo Item; the Turn's last plan is replayed as turn/plan/updated.
-  const latestPlan = snapshot.items
-    .map(({ item }) =>
-      item.type === "toolExecution" && isTodoTool(item.toolName)
-        ? (planFromTodoValue(item.arguments) ?? planFromTodoValue(item.output))
-        : null,
-    )
-    .findLast((plan) => plan !== null);
+  // Codex history has no Todo Item; collect the last plan separately from the wire Turn.
+  if (plansByTurnId) {
+    const latestPlan = snapshot.items
+      .map(({ item, outcome }) => {
+        if (item.type !== "toolExecution" || !isTodoTool(item.toolName)) return null;
+        const plan = planFromTodoValue(item.arguments) ?? planFromTodoValue(item.output);
+        return plan && (plan.plan.length > 0 || outcome.status === "succeeded") ? plan : null;
+      })
+      .findLast((plan) => plan !== null);
+    if (latestPlan) plansByTurnId.set(turnId, latestPlan);
+  }
   const lastVisible = entries.findLast(({ projected }) => projected.length > 0)?.entry;
   const finalAnswer = inferredFinalAnswer(
     lastVisible,
@@ -840,7 +851,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
     durationMs: hasTiming ? completedAtMs - startedAtMs : null,
     itemsView: "full",
   };
-  const projected: JsonObject = {
+  return {
     ...turn,
     codexhostFileOperations: projectFileOperations(
       snapshot.items,
@@ -848,15 +859,7 @@ export function projectHistoricalTurn(input: HistoricalTurnProjectionInput): Jso
       ({ item, outcome }) => projectItem(item, outcome, cwd, true, input.threadId ?? ""),
     ),
   };
-  if (latestPlan) historicalPlans.set(projected, latestPlan);
-  return projected;
 }
-
-/** Each projected history Turn's last plan, kept off the Turn sent to clients. */
-const historicalPlans = new WeakMap<
-  JsonObject,
-  { explanation: string | null; plan: { step: string; status: CodexPlanStepStatus }[] }
->();
 
 /**
  * Codex Desktop keeps a plan only from turn/plan/updated, so a reopened Thread
@@ -865,14 +868,15 @@ const historicalPlans = new WeakMap<
 export function historicalPlanUpdate(
   threadId: string,
   turns: readonly JsonObject[],
+  plansByTurnId: ReadonlyMap<string, TodoPlan>,
 ): JsonObject | null {
-  const turn = turns.findLast((candidate) => historicalPlans.has(candidate));
-  const plan = turn && historicalPlans.get(turn);
-  if (!turn || !plan || typeof turn.id !== "string") return null;
-  return {
-    method: "turn/plan/updated",
-    params: { threadId, turnId: turn.id, explanation: plan.explanation, plan: plan.plan },
-  };
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turnId = turns[index]?.id;
+    if (typeof turnId !== "string") continue;
+    const plan = plansByTurnId.get(turnId);
+    if (plan) return { method: "turn/plan/updated", params: { threadId, turnId, ...plan } };
+  }
+  return null;
 }
 
 function applyUpdate(item: HostItem, update: HostItemUpdate): HostItem {
@@ -1273,7 +1277,7 @@ export class CodexTurnProjector {
     if (event.item.type === "toolExecution") {
       if (isTodoTool(event.item.toolName)) {
         const plan = planFromTodoValue(event.item.arguments);
-        return { messages: plan ? [this.#planUpdated(plan)] : [] };
+        return { messages: plan?.plan.length ? [this.#planUpdated(plan)] : [] };
       }
       const changes = fileChangeFromTool(event.item.toolName, event.item.arguments);
       if (changes) {
@@ -1462,7 +1466,12 @@ export class CodexTurnProjector {
         if (isTodoTool(projected.item.toolName)) {
           const plan =
             planFromTodoValue(projected.item.arguments) ?? planFromTodoValue(projected.item.output);
-          return { messages: plan ? [this.#planUpdated(plan, emittedAtMs)] : [] };
+          return {
+            messages:
+              plan && (plan.plan.length > 0 || projected.outcome.status === "succeeded")
+                ? [this.#planUpdated(plan, emittedAtMs)]
+                : [],
+          };
         }
       }
       return { messages: [] };

@@ -7083,7 +7083,11 @@ export class AppServerHost {
     if (thread.session.capabilities.persistentPlan !== true) return;
     const update = thread.livePlan
       ? { method: "turn/plan/updated", params: thread.livePlan }
-      : historicalPlanUpdate(thread.id, thread.turns);
+      : historicalPlanUpdate(
+          thread.id,
+          ownTurns(thread.record, thread.turns),
+          thread.historicalPlans,
+        );
     if (update) await this.#writer.json(update);
   }
 

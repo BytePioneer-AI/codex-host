@@ -27,6 +27,7 @@ export type {
   CodexTurnProjection,
   HistoricalTurnProjectionInput,
   ProjectableHostEvent,
+  TodoPlan,
 } from "./codex-ui-projector.js";
 export {
   decodeThreadForkRequest,

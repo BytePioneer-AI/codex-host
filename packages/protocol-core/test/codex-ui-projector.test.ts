@@ -19,7 +19,12 @@ import {
   nativeTurnRefSchema,
 } from "@codexhost/shared-contracts";
 
-import { CodexTurnProjector, historicalPlanUpdate, projectHistoricalTurn } from "../src/index.js";
+import {
+  CodexTurnProjector,
+  historicalPlanUpdate,
+  projectHistoricalTurn,
+  type TodoPlan,
+} from "../src/index.js";
 
 const turnId = hostTurnIdSchema.parse("turn-1");
 const itemId = (value: string) => hostItemIdSchema.parse(value);
@@ -1707,36 +1712,67 @@ describe("Codex UI projector", () => {
     });
     const value = projector();
     value.project({ type: "turn.started", turnId });
+    const empty = todo("todo-empty", []);
+    expect(value.project({ type: "item.started", turnId, item: empty.item }).messages).toEqual([]);
     expect(
-      value.project({ type: "item.started", turnId, item: todo("todo-empty", []).item }).messages,
+      value.project({ type: "item.completed", turnId, snapshot: empty }).messages,
     ).toMatchObject([{ method: "turn/plan/updated", params: { plan: [] } }]);
 
-    const historicalTurn = (id: string, todos: JsonValue[]) =>
-      projectHistoricalTurn({
-        turnId: hostTurnIdSchema.parse(id),
-        cwd: "/workspace",
-        snapshot: {
-          nativeTurnRef: nativeTurnRefSchema.parse({
-            harnessId: "claude-code",
-            nativeSessionId: "session-1",
-            nativeTurnKey: id,
-            formatVersion: 1,
-          }),
-          input: [],
-          items: [todo(`${id}-todo`, todos)],
-          outcome: { status: "succeeded" },
+    const plansByTurnId = new Map<string, TodoPlan>();
+    const historicalTurn = (
+      id: string,
+      todos: JsonValue[],
+      status: "succeeded" | "failed" = "succeeded",
+    ) =>
+      projectHistoricalTurn(
+        {
+          turnId: hostTurnIdSchema.parse(id),
+          cwd: "/workspace",
+          snapshot: {
+            nativeTurnRef: nativeTurnRefSchema.parse({
+              harnessId: "claude-code",
+              nativeSessionId: "session-1",
+              nativeTurnKey: id,
+              formatVersion: 1,
+            }),
+            input: [],
+            items: [{ ...todo(`${id}-todo`, todos), outcome: { status } }],
+            outcome: { status: "succeeded" },
+          },
         },
-      });
+        plansByTurnId,
+      );
     const planned = historicalTurn("turn-1", [{ content: "Ship", status: "pending" }]);
     const cleared = historicalTurn("turn-2", []);
-    expect(planned).not.toHaveProperty("codexhostPlan");
-    expect(historicalPlanUpdate("thread-1", [planned])).toMatchObject({
+    const failed = historicalTurn("turn-3", [], "failed");
+    expect(JSON.stringify(planned)).not.toContain("Ship");
+    expect(historicalPlanUpdate("thread-1", [planned, failed], plansByTurnId)).toMatchObject({
       params: { turnId: "turn-1", plan: [{ step: "Ship", status: "pending" }] },
     });
-    expect(historicalPlanUpdate("thread-1", [planned, cleared])).toEqual({
+    expect(
+      historicalPlanUpdate("thread-1", [planned, { ...cleared }, failed], plansByTurnId),
+    ).toEqual({
       method: "turn/plan/updated",
       params: { threadId: "thread-1", turnId: "turn-2", explanation: null, plan: [] },
     });
+  });
+
+  it("does not clear the plan for a failed generic todo_write", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    const item = {
+      type: "toolExecution" as const,
+      itemId: itemId("empty-write"),
+      toolName: "todo_write",
+      arguments: { todos: [] },
+    };
+    const started = value.project({ type: "item.started", turnId, item });
+    const failed = value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item, outcome: { status: "failed" } },
+    });
+    expect([...started.messages, ...failed.messages]).toEqual([]);
   });
 
   it("docks Todo tools on turn/plan/updated and hides the name-only card", () => {

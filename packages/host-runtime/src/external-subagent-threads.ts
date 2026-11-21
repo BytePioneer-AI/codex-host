@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
 import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
+import { projectHistoricalTurn, type JsonObject, type TodoPlan } from "@codexhost/protocol-core";
 import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-contracts";
 
 import { withoutInjectedText } from "./external-thread-side-chat.js";
@@ -168,9 +168,10 @@ export async function projectExternalSnapshot(
   record: StoredThreadRecordV1,
   snapshot: HostThreadSnapshot,
   previousParent?: StoredThreadRecordV1,
-): Promise<JsonObject[]> {
+): Promise<{ turns: JsonObject[]; historicalPlans: ReadonlyMap<string, TodoPlan> }> {
   const materialize = subagentMaterializer(store, record, previousParent);
   const turns: JsonObject[] = [];
+  const historicalPlans = new Map<string, TodoPlan>();
   for (const [index, turn] of snapshot.turns.entries()) {
     const mapping = record.turnMappings[index];
     if (!mapping) throw new Error("External Snapshot mapping is incomplete");
@@ -190,13 +191,16 @@ export async function projectExternalSnapshot(
       ({ hostTurnId }) => hostTurnId === mapping.hostTurnId,
     );
     turns.push(
-      projectHistoricalTurn({
-        threadId: record.hostThreadId,
-        turnId: mapping.hostTurnId,
-        cwd: record.cwd,
-        snapshot: { ...turn, input: withoutInjectedText(turn.input, injected), items },
-      }),
+      projectHistoricalTurn(
+        {
+          threadId: record.hostThreadId,
+          turnId: mapping.hostTurnId,
+          cwd: record.cwd,
+          snapshot: { ...turn, input: withoutInjectedText(turn.input, injected), items },
+        },
+        historicalPlans,
+      ),
     );
   }
-  return turns;
+  return { turns, historicalPlans };
 }

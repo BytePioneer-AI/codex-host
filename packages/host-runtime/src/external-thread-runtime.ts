@@ -18,6 +18,7 @@ import {
   type ExternalHarnessId,
   type ExternalThreadRpcError,
   type JsonObject,
+  type TodoPlan,
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
@@ -65,6 +66,7 @@ export interface ExternalThread {
   thread: JsonObject;
   transportModelId: string;
   turns: JsonObject[];
+  historicalPlans: ReadonlyMap<string, TodoPlan>;
   historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
@@ -380,6 +382,7 @@ export class ExternalThreadRuntime {
     sessionId: string;
     thread: JsonObject;
     turns: JsonObject[];
+    historicalPlans?: ReadonlyMap<string, TodoPlan>;
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
@@ -434,6 +437,7 @@ export class ExternalThreadRuntime {
         : input.thread,
       transportModelId: input.transportModelId ?? input.record.transportModelId,
       turns: input.turns,
+      historicalPlans: input.historicalPlans ?? new Map(),
       historyHydrated: true,
       running,
       activeTurnId: null,
@@ -480,6 +484,7 @@ export class ExternalThreadRuntime {
       sessionId: string;
       thread: JsonObject;
       turns: JsonObject[];
+      historicalPlans: ReadonlyMap<string, TodoPlan>;
       restoredState?: HarnessSessionState;
     },
   ): Promise<ExternalThread> {
@@ -657,7 +662,10 @@ export class ExternalThreadRuntime {
           ? thread.turns
           : aligned.turns;
       thread.record = aligned.record;
-      if (turns !== thread.turns) thread.livePlan = null;
+      if (turns !== thread.turns) {
+        thread.livePlan = null;
+        thread.historicalPlans = aligned.historicalPlans;
+      }
       thread.turns = turns;
       thread.historyHydrated = true;
       thread.thread = externalThreadValue({
@@ -771,6 +779,7 @@ export class ExternalThreadRuntime {
       thread.session = session;
       thread.record = aligned.record;
       thread.turns = aligned.turns;
+      thread.historicalPlans = aligned.historicalPlans;
       thread.livePlan = null;
       thread.historyHydrated = true;
       thread.sessionUnavailable = false;
@@ -968,6 +977,7 @@ export class ExternalThreadRuntime {
         sessionId,
         thread: externalThreadValue({ record: aligned.record, turns: aligned.turns, sessionId }),
         turns: aligned.turns,
+        historicalPlans: aligned.historicalPlans,
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
@@ -1042,6 +1052,7 @@ export class ExternalThreadRuntime {
           sessionId,
         }),
         turns: aligned.turns,
+        historicalPlans: aligned.historicalPlans,
         ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
         ...(effectiveThinkingOptionId
           ? { requestedThinkingOptionId: effectiveThinkingOptionId }

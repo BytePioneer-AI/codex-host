@@ -437,15 +437,18 @@ pub(super) fn running_for_update(data: &Path) -> Result<bool> {
 }
 
 pub(super) fn stop_managed(data: &Path) -> Result<bool> {
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let lock_deadline = Instant::now() + Duration::from_secs(45);
     let lifecycle = Lifecycle::open(&crate::runtime_instance::default_descriptor_path()?, true)?;
-    let _operation = lifecycle.lock(deadline)?;
+    let _operation = lifecycle.lock(lock_deadline)?;
     let guard = lifecycle.launcher_guard()?;
-    lifecycle.reconcile(
-        data,
-        guard.is_some(),
-        deadline.min(Instant::now() + Duration::from_secs(12)),
-    )
+    // A live Launcher joins any in-flight background Web startup (40s readiness budget)
+    // before exiting; give supervised shutdown enough budget to outlast it.
+    let wait_budget = if guard.is_some() {
+        Duration::from_secs(12)
+    } else {
+        Duration::from_secs(55)
+    };
+    lifecycle.reconcile(data, guard.is_some(), Instant::now() + wait_budget)
 }
 
 pub(super) struct Published {

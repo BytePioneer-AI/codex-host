@@ -254,41 +254,41 @@ button.crumb:hover {
   z-index: 5;
 }
 
-/* Whisper-thin progressive top veil over the top edge softly mists scrolled lines
-   while preserving crystal-clear translucency behind the floating glass controls. */
+/* Progressive top veil adapts to the active header height (1 row or 2 rows) so scrolled
+   lines dissolve smoothly beneath the chrome without colliding with the frameless title. */
 :global([data-phone]) .root[data-phase="active"] .header::before {
   content: "";
   position: absolute;
   top: 0;
   right: 0;
   left: 0;
-  height: calc(env(safe-area-inset-top) + 46px);
+  height: calc(var(--dsh-phone-header-height) + 14px);
   z-index: -1;
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 76%, transparent) 0%,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 42%, transparent) 52%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 84%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 64%, transparent) 68%,
     transparent 100%
   );
   pointer-events: none;
 }
 
-@supports (backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px)) {
+@supports (backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px)) {
   :global([data-phone]) .root[data-phase="active"] .header::before {
-    -webkit-backdrop-filter: blur(12px);
-    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
     -webkit-mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 38%,
-      rgb(0 0 0 / 0.55) 70%,
+      #000 72%,
+      rgb(0 0 0 / 0.5) 88%,
       transparent 100%
     );
     mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 38%,
-      rgb(0 0 0 / 0.55) 70%,
+      #000 72%,
+      rgb(0 0 0 / 0.5) 88%,
       transparent 100%
     );
   }
@@ -297,7 +297,8 @@ button.crumb:hover {
 :global(body[data-codexhost-wallpaper] [data-phone]) .root[data-phase="active"] .header::before {
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 24%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 68%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 44%, transparent) 68%,
     transparent 100%
   );
 }
@@ -362,7 +363,12 @@ button.crumb:hover {
 :global(body[data-codexhost-wallpaper] [data-phone])
   .root[data-phase="active"]
   .titleCenter::before {
-  background: none;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 68%, transparent) 38%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 28%, transparent) 72%,
+    transparent 100%
+  );
 }
 
 :global(body[data-codexhost-wallpaper][data-ds-dark-theme] [data-phone]) .titleCenter {

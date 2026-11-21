@@ -2,6 +2,10 @@ import { z } from "zod";
 import { DESKTOP_EXTENSION_MANAGEMENT_METHODS } from "./desktop-extension-management.js";
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "./harness-models.js";
 import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
+import {
+  HOST_EXTENSION_MANAGEMENT_METHODS,
+  hostExtensionRevisionSchema,
+} from "./host-extension-management.js";
 import { THREAD_ARCHIVE_CONFIRM_METHOD } from "./thread-archive-confirm.js";
 
 /** Authenticated local owner channel. Notifications invalidate state; they are
@@ -63,6 +67,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/session-import/import",
   // Host settings shared across Desktop and Web.
   ...DESKTOP_EXTENSION_MANAGEMENT_METHODS,
+  ...HOST_EXTENSION_MANAGEMENT_METHODS,
   "codexhost/harness/installation",
   "codexhost/harness/installation/start",
   "codexhost/harness/installation/status",
@@ -137,6 +142,11 @@ export const clientChannelEventSchema = z.discriminatedUnion("type", [
     type: z.literal("preferences-changed"),
     cursor: clientChannelCursorSchema,
     revision: z.number().int().nonnegative(),
+  }),
+  z.object({
+    type: z.literal("extensions-changed"),
+    cursor: clientChannelCursorSchema,
+    revision: hostExtensionRevisionSchema,
   }),
   z.object({
     type: z.literal("hello"),

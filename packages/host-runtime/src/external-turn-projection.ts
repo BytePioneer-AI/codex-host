@@ -28,6 +28,17 @@ function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function userMessageKey(item: JsonObject): string {
+  if (!Array.isArray(item.content)) return "";
+  return JSON.stringify(
+    item.content.map((part) =>
+      isJsonObject(part) && part.type === "text" && typeof part.text === "string"
+        ? { type: "text", text: part.text }
+        : part,
+    ),
+  );
+}
+
 /** Overlay Host failures without reordering Native Turns. Only live memory supplies Items. */
 export function withFailedTurns(
   native: JsonObject[],
@@ -41,37 +52,52 @@ export function withFailedTurns(
     const index = turns.findIndex(({ id }) => id === failure.hostTurnId);
     const original = turns[index];
     const items = Array.isArray(original?.items) ? [...original.items] : [];
-    const matchedNativeAgents = new Set<number>();
+    const nativeCount = items.length;
+    const matchedNative = new Set<number>();
     for (const item of live?.get(failure.hostTurnId)?.items ?? []) {
       if (item.type === "userMessage") {
-        if (!items.some((existing) => isJsonObject(existing) && existing.type === "userMessage"))
-          items.push(item);
+        const key = userMessageKey(item);
+        const matched = items.findIndex(
+          (existing, i) =>
+            i < nativeCount &&
+            !matchedNative.has(i) &&
+            isJsonObject(existing) &&
+            existing.type === "userMessage" &&
+            userMessageKey(existing) === key,
+        );
+        if (matched !== -1) {
+          matchedNative.add(matched);
+          continue;
+        }
+        items.push(item);
         continue;
       }
       if (item.type === "agentMessage" && typeof item.text === "string") {
         const text = item.text;
         const covered = items.findIndex(
           (existing, i) =>
-            !matchedNativeAgents.has(i) &&
+            i < nativeCount &&
+            !matchedNative.has(i) &&
             isJsonObject(existing) &&
             existing.type === "agentMessage" &&
             typeof existing.text === "string" &&
             existing.text.startsWith(text),
         );
         if (covered !== -1) {
-          matchedNativeAgents.add(covered);
+          matchedNative.add(covered);
           continue;
         }
         const prefix = items.findIndex(
           (existing, i) =>
-            !matchedNativeAgents.has(i) &&
+            i < nativeCount &&
+            !matchedNative.has(i) &&
             isJsonObject(existing) &&
             existing.type === "agentMessage" &&
             typeof existing.text === "string" &&
             text.startsWith(existing.text),
         );
         if (prefix !== -1) {
-          matchedNativeAgents.add(prefix);
+          matchedNative.add(prefix);
           items[prefix] = { ...(items[prefix] as JsonObject), text };
           continue;
         }

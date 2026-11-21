@@ -9,6 +9,7 @@ import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapt
 import type { JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
 import type { DelegationControlApi } from "../src/delegation-types.js";
+import { withFailedTurns } from "../src/external-turn-projection.js";
 
 import {
   answerOfficialParentCwd,
@@ -342,6 +343,68 @@ describe("External Thread failed history", () => {
     } finally {
       await stopFixture(fixture);
     }
+  });
+
+  it("preserves multiple distinct live replies and accepted steer inputs when merging failed Turns", () => {
+    const failedTurnId = hostTurnIdSchema.parse("failed-turn-merge");
+    const failure = { hostTurnId: failedTurnId, error: "executionFailed" as const };
+    const mergedReplies = withFailedTurns(
+      [
+        {
+          id: failedTurnId,
+          status: "failed",
+          items: [{ type: "agentMessage", id: "n1", text: "A" }],
+        },
+      ],
+      [failure],
+      new Map([
+        [
+          failedTurnId,
+          {
+            failure,
+            items: [
+              { type: "agentMessage", id: "h1", text: "A" },
+              { type: "agentMessage", id: "h2", text: "B" },
+              { type: "agentMessage", id: "h3", text: "B with detail" },
+            ],
+          },
+        ],
+      ]),
+    );
+    expect(mergedReplies[0]?.items).toEqual([
+      { type: "agentMessage", id: "n1", text: "A" },
+      { type: "agentMessage", id: "h2", text: "B" },
+      { type: "agentMessage", id: "h3", text: "B with detail" },
+    ]);
+
+    const user1 = { type: "userMessage", id: "u1", content: [{ type: "text", text: "initial" }] };
+    const steer1 = { type: "userMessage", id: "u2", content: [{ type: "text", text: "steer" }] };
+    const withoutNative = withFailedTurns(
+      [],
+      [failure],
+      new Map([[failedTurnId, { failure, items: [user1, steer1] }]]),
+    );
+    expect(withoutNative[0]?.items).toEqual([user1, steer1]);
+
+    const withInitialNative = withFailedTurns(
+      [
+        {
+          id: failedTurnId,
+          status: "failed",
+          items: [
+            {
+              type: "userMessage",
+              id: "native-u1",
+              content: [{ type: "text", text: "initial", text_elements: [] }],
+            },
+          ],
+        },
+      ],
+      [failure],
+      new Map([[failedTurnId, { failure, items: [user1, steer1] }]]),
+    );
+    expect(withInitialNative[0]?.items).toHaveLength(2);
+    expect(withInitialNative[0]?.items).toContainEqual(steer1);
   });
 });
 

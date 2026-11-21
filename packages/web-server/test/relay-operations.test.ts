@@ -34,8 +34,7 @@ async function fixture(t: TestContext, check: NonNullable<RelayOptions["check"]>
       else process.env[key] = value;
     }
   });
-  // These tests drive disconnects explicitly; use the production heartbeat cadence.
-  const relay = await startRelay(t, 25_000, { check });
+  const relay = await startRelay(t, 25, { check });
   const data = relayData(t);
   const host = `localhost:${relay.port}`;
   saveServiceOptions(data, { relay: host });
@@ -253,7 +252,7 @@ it("registers at the newly saved page endpoint with the same identity, not the o
     identities.push(request.id);
     return { name: "first" };
   });
-  const second = await startRelay(t, 25_000, {
+  const second = await startRelay(t, 25, {
     domain: "second.test",
     check: (request) => {
       identities.push(request.id);

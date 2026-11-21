@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { hostItemIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  hostItemIdSchema,
+  hostTurnIdSchema,
+  REASONING_TRANSCRIPT_COMMAND,
+} from "@codexhost/shared-contracts";
 import type { JsonObject } from "@codexhost/protocol-core";
 
 import {
@@ -129,6 +133,18 @@ describe("Host runtime idle background output on a completed Turn", () => {
       const session = fixture.adapter.sessions[0];
       if (!session) throw new Error("Fake Pi Session was not opened");
 
+      const readMetadata = async (request: number) => {
+        writeRequest(fixture.desktopInput, {
+          id: request,
+          method: "thread/read",
+          params: { threadId, includeTurns: false },
+        });
+        const reply = await fixture.collector.waitFor((message) => requestId(message, request));
+        return (reply.result as { thread: { updatedAt: number; recencyAt: number } }).thread;
+      };
+      const before = await readMetadata(3);
+      using clock = vi.spyOn(Date, "now");
+      clock.mockReturnValue((before.updatedAt + 2) * 1_000);
       const itemId = hostItemIdSchema.parse("bg-item-1");
       const id = hostTurnIdSchema.parse(turnId);
       session.emitEvent({
@@ -149,6 +165,10 @@ describe("Host runtime idle background output on a completed Turn", () => {
       });
       const delta = await fixture.collector.waitFor((message) => itemDelta(message, itemId));
       expect(delta.params).toMatchObject({ delta: "awake\n" });
+      expect(await readMetadata(4)).toMatchObject({
+        updatedAt: before.updatedAt + 2,
+        recencyAt: before.updatedAt + 2,
+      });
 
       // The unsettled background Item appears in served history via the
       // open-detached overlay, in progress with its accumulated text.
@@ -185,6 +205,133 @@ describe("Host runtime idle background output on a completed Turn", () => {
       await stopFixture(fixture);
     }
   });
+
+  it("projects background output queued after a Session fault onto its completed Turn", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const itemId = hostItemIdSchema.parse("buffered-background-output");
+      session.emitEvent({
+        type: "session.faulted",
+        error: { code: "unavailable", message: "Connection closed", retryable: true },
+      });
+      session.emitEvent({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+      session.emitEvent({
+        type: "item.background.started",
+        turnId,
+        item: { type: "agentMessage", itemId, text: "" },
+      });
+      session.emitEvent({
+        type: "item.updated",
+        turnId,
+        itemId,
+        update: { type: "text.append", text: "buffered output" },
+      });
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "agentMessage", itemId, text: "buffered output" },
+          outcome: { status: "succeeded" },
+        },
+      });
+      const completed = await fixture.collector.waitFor((message) =>
+        itemCompleted(message, itemId),
+      );
+      expect(completed.params).toMatchObject({
+        turnId,
+        item: { id: itemId, text: "buffered output" },
+      });
+      expect(
+        fixture.collector.messages.filter((message) =>
+          turnEvent(message, "turn/completed", turnId),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it.each([false, true])(
+    "preserves native Items and settled background text during a successor Turn (already persisted: %s)",
+    async (persisted) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Pi Session was not opened");
+        const readSnapshot = session.readSnapshot.bind(session);
+        const nativeItems = [
+          {
+            type: "reasoning",
+            itemId: hostItemIdSchema.parse("native-reasoning"),
+            text: "analysis",
+          },
+          {
+            type: "toolExecution",
+            itemId: hostItemIdSchema.parse("native-tool"),
+            toolName: "lookup",
+            arguments: {},
+          },
+          ...(persisted
+            ? [
+                {
+                  type: "agentMessage" as const,
+                  itemId: hostItemIdSchema.parse("native-wake"),
+                  text: "wake",
+                },
+              ]
+            : []),
+        ] as const;
+        session.readSnapshot = async () => {
+          const snapshot = await readSnapshot();
+          if (!snapshot.ok) return snapshot;
+          const turns = snapshot.value.turns.map((turn) => ({
+            ...turn,
+            items: [
+              ...turn.items,
+              ...nativeItems.map((item) => ({ item, outcome: { status: "succeeded" as const } })),
+            ],
+          }));
+          return { ...snapshot, value: { ...snapshot.value, turns } };
+        };
+        const transcript = expect.objectContaining({
+          id: "native-reasoning",
+          command: REASONING_TRANSCRIPT_COMMAND,
+          aggregatedOutput: "analysis",
+        });
+        const tool = expect.objectContaining({ id: "native-tool", type: "dynamicToolCall" });
+        expect(await readHistoryItems(fixture, threadId, 3)).toEqual(
+          expect.arrayContaining([transcript, tool]),
+        );
+
+        const itemId = hostItemIdSchema.parse("live-wake");
+        const item = { type: "agentMessage" as const, itemId, text: "wake" };
+        session.emitEvent({ type: "item.background.started", turnId, item });
+        await fixture.collector.waitFor((message) => itemStarted(message, itemId));
+        session.emitEvent({
+          type: "item.completed",
+          turnId,
+          snapshot: { item, outcome: { status: "succeeded" } },
+        });
+        const successor = await startPiTurn(fixture, threadId, 4);
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", successor));
+        const [first, second] = await readHistoryTurns(fixture, threadId, 5);
+        expect(second).toMatchObject({ id: successor, status: "inProgress" });
+        const items = (first?.items ?? []) as JsonObject[];
+        expect(items).toEqual(expect.arrayContaining([transcript, tool]));
+        expect(
+          items.filter((entry) => entry.type === "agentMessage" && entry.text === "wake"),
+        ).toEqual([expect.objectContaining({ id: persisted ? "native-wake" : itemId })]);
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   it("continues streaming alternating background Items after each settles", async () => {
     const fixture = createFixture();
@@ -698,6 +845,53 @@ describe("Host runtime idle background output on a completed Turn", () => {
     }
   });
 
+  it("extends merged replayed reasoning and its transcript before the next background Item", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await startPiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
+      const reasoningId = session.startReasoning("analysis: ");
+      session.completeItem(reasoningId, { status: "succeeded" });
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+      const readSnapshot = session.readSnapshot.bind(session);
+      session.readSnapshot = async () => {
+        const snapshot = await readSnapshot();
+        if (!snapshot.ok) return snapshot;
+        const turns = snapshot.value.turns.map((turn) => ({
+          ...turn,
+          items: turn.items.map((entry) =>
+            entry.item.type === "reasoning"
+              ? { ...entry, item: { ...entry.item, text: "analysis: ta" } }
+              : entry,
+          ),
+        }));
+        return { ...snapshot, value: { ...snapshot.value, turns } };
+      };
+      for (const [index, text] of ["tail", "il again"].entries()) {
+        const itemId = hostItemIdSchema.parse(`live-overlap-${index}`);
+        session.emitEvent({
+          type: "item.background.started",
+          turnId,
+          item: { type: "reasoning", itemId, text },
+        });
+        await fixture.collector.waitFor((message) => itemStarted(message, itemId));
+      }
+      const items = await readHistoryItems(fixture, threadId, 3);
+      expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
+        [["analysis: tail"], ["il again"]],
+      );
+      expect(
+        items.find((item) => item.command === REASONING_TRANSCRIPT_COMMAND)?.aggregatedOutput,
+      ).toBe("analysis: tail");
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("preserves multiple replayed reasoning Items without duplicating them", async () => {
     const fixture = createFixture();
     try {
@@ -878,6 +1072,54 @@ describe("Host runtime idle background output on a completed Turn", () => {
       const items = await readHistoryItems(fixture, threadId, 7);
       const background = items.find((item) => (item as { id?: string }).id === itemId);
       expect(background).toMatchObject({ id: itemId, text: "pending" });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("promotes a trailing idle background agentMessage to final_answer and demotes the earlier answer", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+
+      const beforeItems = await readHistoryItems(fixture, threadId, 3);
+      const initialAnswer = beforeItems.find((item) => item.type === "agentMessage");
+      expect(initialAnswer).toMatchObject({ phase: "final_answer" });
+
+      const bgId = hostItemIdSchema.parse("bg-final-reply");
+      session.emitEvent({
+        type: "item.background.started",
+        turnId,
+        item: { type: "agentMessage", itemId: bgId, text: "" },
+      });
+      session.emitEvent({
+        type: "item.updated",
+        turnId,
+        itemId: bgId,
+        update: { type: "text.append", text: "background task finished" },
+      });
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "agentMessage", itemId: bgId, text: "background task finished" },
+          outcome: { status: "succeeded" },
+        },
+      });
+      await fixture.collector.waitFor((message) => itemCompleted(message, bgId));
+
+      const afterItems = await readHistoryItems(fixture, threadId, 4);
+      const agentMessages = afterItems.filter((item) => item.type === "agentMessage");
+      expect(agentMessages).toHaveLength(2);
+      expect(agentMessages[0]).toMatchObject({ id: initialAnswer?.id, phase: null });
+      expect(agentMessages[1]).toMatchObject({
+        id: bgId,
+        text: "background task finished",
+        phase: "final_answer",
+      });
     } finally {
       await stopFixture(fixture);
     }

@@ -1,4 +1,42 @@
 import {
+  DESKTOP_EXTENSIONS_LIST_METHOD,
+  DESKTOP_EXTENSIONS_ENABLE_METHOD,
+  DESKTOP_EXTENSIONS_DISABLE_METHOD,
+  DESKTOP_EXTENSIONS_RECOVER_METHOD,
+  DESKTOP_EXTENSIONS_CATALOG_METHOD,
+  DESKTOP_EXTENSIONS_INSTALL_METHOD,
+  DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
+  DESKTOP_EXTENSIONS_ASSET_METHOD,
+  DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD,
+  DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD,
+  DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
+  desktopExtensionsListResultSchema,
+  desktopExtensionMutationResultSchema,
+  desktopExtensionSelectionParamsSchema,
+  desktopExtensionsRecoveryParamsSchema,
+  desktopExtensionsCatalogParamsSchema,
+  desktopExtensionsCatalogResultSchema,
+  desktopExtensionsInstallParamsSchema,
+  desktopExtensionsInstallResultSchema,
+  desktopExtensionsUninstallParamsSchema,
+  desktopExtensionsUninstallResultSchema,
+  desktopExtensionsAssetParamsSchema,
+  desktopExtensionsAssetResultSchema,
+  desktopExtensionsSettingsGetParamsSchema,
+  desktopExtensionsSettingsSetParamsSchema,
+  desktopExtensionsSettingsResultSchema,
+  desktopExtensionsBackendInvokeParamsSchema,
+  desktopExtensionsBackendInvokeResultSchema,
+  type DesktopExtensionsListResult,
+  type DesktopExtensionMutationResult,
+  type DesktopExtensionSelectionParams,
+  type DesktopExtensionsRecoveryParams,
+  type DesktopExtensionsCatalogParams,
+  type DesktopExtensionsCatalogResult,
+  type DesktopExtensionsInstallParams,
+  type DesktopExtensionsInstallResult,
+  type DesktopExtensionsUninstallParams,
+  type DesktopExtensionsUninstallResult,
   SKILLS_LIST_METHOD,
   SKILLS_CHANGED_METHOD,
   skillsListParamsSchema,
@@ -193,6 +231,14 @@ export const CODEX_ACCOUNT_LIST_METHOD = "codexhost/account/list";
 export const CODEX_ACCOUNT_REFRESH_METHOD = "codexhost/account/refresh";
 export const CODEX_ACCOUNT_CHANGED_METHOD = "codexhost/account/changed";
 
+import {
+  THREAD_TREE_SNAPSHOT_METHOD,
+  THREAD_TREE_UNWATCH_METHOD,
+  THREAD_TREE_WATCH_METHOD,
+  threadTreeWatchResultSchema,
+  type ThreadTreeSnapshot,
+} from "@codexhost/shared-contracts";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -226,6 +272,8 @@ function notificationTarget(manager: RequestManagerCandidate): RequestManagerCan
 }
 
 export interface RendererModelClient extends Partial<RendererSessionImportClient> {
+  watchThreadTree?(receive: (snapshot: ThreadTreeSnapshot) => void): () => void;
+  hasDesktopThread?(id: string): Promise<boolean>;
   getHarnessPreferences?(scope?: string): Promise<HarnessPreferenceSnapshot>;
   patchHarnessPreferences?(input: HarnessPreferencePatch): Promise<HarnessPreferenceSnapshot>;
   subscribeHarnessPreferences?(listener: () => void): () => void;
@@ -238,6 +286,40 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   setHarnessLaunchSettings?(input: HarnessLaunchSettingsSet): Promise<HarnessLaunchSettings>;
   setIdleReleaseSettings?(settings: IdleReleaseSettings): Promise<IdleReleaseSettings>;
   listLoadedSessions?(): Promise<LoadedSession[]>;
+  /** Use the local Host client, independent of the active Composer. */
+  listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;
+  listDesktopExtensionCatalog?(
+    input?: DesktopExtensionsCatalogParams,
+  ): Promise<DesktopExtensionsCatalogResult>;
+  installDesktopExtension?(
+    input: DesktopExtensionsInstallParams,
+  ): Promise<DesktopExtensionsInstallResult>;
+  uninstallDesktopExtension?(
+    input: DesktopExtensionsUninstallParams,
+  ): Promise<DesktopExtensionsUninstallResult>;
+  enableDesktopExtension?(
+    input: DesktopExtensionSelectionParams,
+  ): Promise<DesktopExtensionMutationResult>;
+  disableDesktopExtension?(
+    input: DesktopExtensionSelectionParams,
+  ): Promise<DesktopExtensionMutationResult>;
+  disableAllDesktopExtensionsAndReload?(
+    input?: DesktopExtensionsRecoveryParams,
+  ): Promise<DesktopExtensionMutationResult>;
+  readDesktopExtensionAsset?(input: {
+    id: string;
+    path: string;
+  }): Promise<{ mimeType: string; dataUrl: string }>;
+  getDesktopExtensionSettings?(input: { id: string }): Promise<{ values: Record<string, unknown> }>;
+  setDesktopExtensionSettings?(input: {
+    id: string;
+    values: Record<string, unknown>;
+  }): Promise<{ values: Record<string, unknown> }>;
+  invokeDesktopExtensionBackend?(input: {
+    id: string;
+    method: string;
+    params?: unknown;
+  }): Promise<{ result: unknown }>;
   currentHostId?(composer?: Element): string | null;
   knownHostIds?(): readonly string[];
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
@@ -351,6 +433,53 @@ export function createRendererModelClient(
     ),
   };
 
+  const watchThreadTree = (receive: (snapshot: ThreadTreeSnapshot) => void) => {
+    let closed = false;
+    let subscriptionId: string | undefined;
+    let revision = -1;
+    const unwatch = (id: string) =>
+      void manager
+        .sendRequest(THREAD_TREE_UNWATCH_METHOD, { subscriptionId: id })
+        .catch(() => undefined);
+    const remove = notificationTarget(source)?.addNotificationCallback?.(
+      THREAD_TREE_SNAPSHOT_METHOD,
+      (message) => {
+        const result = threadTreeWatchResultSchema.safeParse(
+          isRecord(message) ? message.params : undefined,
+        );
+        if (
+          !closed &&
+          result.success &&
+          subscriptionId === result.data.subscriptionId &&
+          result.data.snapshot.revision > revision
+        ) {
+          revision = result.data.snapshot.revision;
+          receive(result.data.snapshot);
+        }
+      },
+    );
+    if (remove)
+      void manager
+        .sendRequest(THREAD_TREE_WATCH_METHOD, {})
+        .then((value) => {
+          const result = threadTreeWatchResultSchema.parse(value);
+          if (closed) {
+            unwatch(result.subscriptionId);
+            return;
+          }
+          subscriptionId = result.subscriptionId;
+          revision = result.snapshot.revision;
+          receive(result.snapshot);
+        })
+        .catch(() => remove());
+    return () => {
+      if (closed) return;
+      closed = true;
+      remove?.();
+      if (subscriptionId) unwatch(subscriptionId);
+    };
+  };
+
   const inspectHarness = async (
     input: HarnessInspectParams,
     options?: RendererRequestOptions,
@@ -434,6 +563,11 @@ export function createRendererModelClient(
           harnessPreferencePatchSchema.parse(input),
         ),
       );
+    },
+    watchThreadTree,
+    async hasDesktopThread(threadId: string) {
+      const result = await manager.sendRequest("thread/read", { threadId, includeTurns: false });
+      return isRecord(result) && isRecord(result.thread) && result.thread.id === threadId;
     },
     subscribeHarnessPreferences(listener: () => void) {
       return (
@@ -618,6 +752,115 @@ export function createRendererModelClient(
     async updateRemote(version: string) {
       return runtimeStatusSchema.parse(
         await manager.sendRequest(REMOTE_UPDATE_METHOD, { version }),
+      );
+    },
+    async listDesktopExtensions(): Promise<DesktopExtensionsListResult> {
+      return desktopExtensionsListResultSchema.parse(
+        await manager.sendRequest(DESKTOP_EXTENSIONS_LIST_METHOD, {}),
+      );
+    },
+    async listDesktopExtensionCatalog(
+      input: DesktopExtensionsCatalogParams = {},
+    ): Promise<DesktopExtensionsCatalogResult> {
+      return desktopExtensionsCatalogResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_CATALOG_METHOD,
+          desktopExtensionsCatalogParamsSchema.parse(input),
+        ),
+      );
+    },
+    async installDesktopExtension(
+      input: DesktopExtensionsInstallParams,
+    ): Promise<DesktopExtensionsInstallResult> {
+      return desktopExtensionsInstallResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_INSTALL_METHOD,
+          desktopExtensionsInstallParamsSchema.parse(input),
+        ),
+      );
+    },
+    async uninstallDesktopExtension(
+      input: DesktopExtensionsUninstallParams,
+    ): Promise<DesktopExtensionsUninstallResult> {
+      return desktopExtensionsUninstallResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_UNINSTALL_METHOD,
+          desktopExtensionsUninstallParamsSchema.parse(input),
+        ),
+      );
+    },
+    async enableDesktopExtension(
+      input: DesktopExtensionSelectionParams,
+    ): Promise<DesktopExtensionMutationResult> {
+      return desktopExtensionMutationResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_ENABLE_METHOD,
+          desktopExtensionSelectionParamsSchema.parse(input),
+        ),
+      );
+    },
+    async disableDesktopExtension(
+      input: DesktopExtensionSelectionParams,
+    ): Promise<DesktopExtensionMutationResult> {
+      return desktopExtensionMutationResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_DISABLE_METHOD,
+          desktopExtensionSelectionParamsSchema.parse(input),
+        ),
+      );
+    },
+    async disableAllDesktopExtensionsAndReload(
+      input: DesktopExtensionsRecoveryParams = {},
+    ): Promise<DesktopExtensionMutationResult> {
+      return desktopExtensionMutationResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_RECOVER_METHOD,
+          desktopExtensionsRecoveryParamsSchema.parse(input),
+        ),
+      );
+    },
+    async readDesktopExtensionAsset(input: {
+      id: string;
+      path: string;
+    }): Promise<{ mimeType: string; dataUrl: string }> {
+      return desktopExtensionsAssetResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_ASSET_METHOD,
+          desktopExtensionsAssetParamsSchema.parse(input),
+        ),
+      );
+    },
+    async getDesktopExtensionSettings(input: {
+      id: string;
+    }): Promise<{ values: Record<string, unknown> }> {
+      return desktopExtensionsSettingsResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD,
+          desktopExtensionsSettingsGetParamsSchema.parse(input),
+        ),
+      );
+    },
+    async setDesktopExtensionSettings(input: {
+      id: string;
+      values: Record<string, unknown>;
+    }): Promise<{ values: Record<string, unknown> }> {
+      return desktopExtensionsSettingsResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD,
+          desktopExtensionsSettingsSetParamsSchema.parse(input),
+        ),
+      );
+    },
+    async invokeDesktopExtensionBackend(input: {
+      id: string;
+      method: string;
+      params?: unknown;
+    }): Promise<{ result: unknown }> {
+      return desktopExtensionsBackendInvokeResultSchema.parse(
+        await manager.sendRequest(
+          DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
+          desktopExtensionsBackendInvokeParamsSchema.parse(input),
+        ),
       );
     },
     async checkUpdate(): Promise<UpdateCheckResult | null> {

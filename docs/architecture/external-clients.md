@@ -12,6 +12,17 @@
 - 连接优先级：完整的 Host 注入参数 → 显式客户端令牌／令牌文件 → 本机私有凭据。部分缺失的 Host 参数仍报错，不自动改变内部会话身份；显式令牌无效时不会回退到本机凭据。
 - HTTP／MCP 不免认证，仍须显式提供 Bearer 令牌。
 
+### 委派时选择 Codex 速度
+
+用 `codexhost harness inspect codex --format compact` 查看目标 Host 公布的档位。要指定 Ultrafast，将标有 `· Ultrafast` 的模型条目的 `id` 传给 `--model`。Thinking 由 `--thinking` 单独设置。例如，选择 `GPT-6.2-Sol · Ultrafast` 且该条目支持 `max` 时：
+
+```sh
+codexhost delegate start --harness codex --cwd "$PWD" \
+  --model '<Ultrafast 条目的 id>' --thinking max --task "执行任务"
+```
+
+普通 Fast 使用 `--format json` 中的 `fastModel.id`。可用档位由原生 Codex 模型目录决定。
+
 ### CLI 输出格式
 
 `harness`、`delegate`、`thread`、`host info` 和 `project list` 支持 `--format json|compact|text`。默认 `json` 保留完整返回结构；`compact` 使用 Thread 链接和精简 JSON 字段。`text` 面向人和 Agent 阅读，信息至少覆盖 compact，以键值行显示嵌套字段（如 `watch.state`、`threads.0.title`），不做 JSON 字符串转义。

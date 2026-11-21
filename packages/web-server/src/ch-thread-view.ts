@@ -374,6 +374,7 @@ export class ChThreadView {
 
   update(thread: ChThread): void {
     this.ensureCurrent();
+    const projectionsByTurn = new Map<string, ReadonlyMap<string, HostItem | undefined>>();
     // The journal is append-only. Same-Turn input can append in place; input
     // replacement or insertion before displayed output needs a fresh history view.
     for (const turn of thread.turns) {
@@ -396,6 +397,7 @@ export class ChThreadView {
       const projections = new Map(
         items.map((item) => [item.id, this.projectItem(turn.id, item, view, reasoningPreviewIds)]),
       );
+      projectionsByTurn.set(turn.id, projections);
       const retained = items.filter((item) => {
         const projected = projections.get(item.id);
         return (
@@ -438,7 +440,7 @@ export class ChThreadView {
       lastPromptAt: thread.updatedAt * 1000,
     });
     try {
-      this.projectTurns(thread);
+      this.projectTurns(thread, projectionsByTurn);
     } finally {
       this.log.clock = undefined;
     }
@@ -528,7 +530,10 @@ export class ChThreadView {
     );
   }
 
-  private projectTurns(thread: ChThread): void {
+  private projectTurns(
+    thread: ChThread,
+    projections?: ReadonlyMap<string, ReadonlyMap<string, HostItem | undefined>>,
+  ): void {
     let previousEnd = thread.createdAt * 1000;
     for (const turn of thread.turns) {
       const items = conversationItems(turn);
@@ -598,7 +603,10 @@ export class ChThreadView {
           view.imageViewPaths.get(item.id) !== imagePath
         )
           throw new RpcError("host/items-replaced", "CH replaced already projected Items.");
-        const projected = this.projectItem(turn.id, item, view, reasoningPreviewIds);
+        const cached = projections?.get(turn.id);
+        const projected = cached?.has(item.id)
+          ? cached.get(item.id)
+          : this.projectItem(turn.id, item, view, reasoningPreviewIds);
         if (item.type === "imageView") view.imageViewPaths.set(item.id, imagePath);
         if (!projected) continue;
         if (view.completed.has(item.id)) continue;

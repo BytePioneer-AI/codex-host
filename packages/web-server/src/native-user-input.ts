@@ -44,9 +44,11 @@ export function imagePath(source: NativeImageSource): string | undefined {
 
 /** Normalize the path string carried by a native imageView into one local path form. */
 export function localImagePath(value: string): string | undefined {
-  const candidate = value.trim();
-  if (!candidate) return undefined;
-  return imagePath(candidate.startsWith("file:") ? { url: candidate } : { path: candidate });
+  const fileUrl = value.trim();
+  if (fileUrl.startsWith("file:")) return imagePath({ url: fileUrl });
+  if (!value) return undefined;
+  // Bare native paths may legally end in spaces; trimming can select a different file.
+  return imagePath({ path: value });
 }
 
 function fileHeader(line: string, quoted: boolean): NativeFile | undefined {

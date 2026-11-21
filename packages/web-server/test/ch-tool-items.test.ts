@@ -178,3 +178,65 @@ it("groups consecutive native imageView items into one assistant image gallery",
     },
   ]);
 });
+
+it("reuses one image projection when a live Turn gains an imageView", () => {
+  let first = true;
+  const view = new ChThreadView(
+    thread(),
+    "codex",
+    () => {},
+    0,
+    0,
+    () => false,
+    undefined,
+    (path) => {
+      const attachmentId = first ? `image:${path}:first` : `image:${path}:second`;
+      first = false;
+      return {
+        attachmentId,
+        name: path.split("/").at(-1),
+        mediaType: "image/png",
+        bytes: 1,
+        width: 1,
+        height: 1,
+      };
+    },
+  );
+  view.update(thread([], "inProgress"));
+  view.update(
+    thread(
+      [
+        {
+          id: "image-live",
+          type: "imageView",
+          path: "/w/live.png",
+        },
+      ],
+      "inProgress",
+    ),
+  );
+  view.update(
+    thread(
+      [
+        {
+          id: "image-live",
+          type: "imageView",
+          path: "/w/live.png",
+        },
+      ],
+      "completed",
+    ),
+  );
+
+  const message = view.log.events.find((entry) => entry.type === "assistant/message");
+  assert.ok(message);
+  const content = (message.data as { message: { content: unknown[] } }).message.content;
+  assert.equal(
+    (
+      content.find((part) => (part as { type?: string }).type === "image") as {
+        attachment: { attachmentId: string };
+      }
+    ).attachment.attachmentId,
+    "image:/w/live.png:first",
+  );
+});

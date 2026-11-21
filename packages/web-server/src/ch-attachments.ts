@@ -138,7 +138,9 @@ export class ChAttachments {
     const imageView = this.imageView(view, attachmentId);
     if (imageView !== undefined) {
       const expected = this.assistantAttachment(view.log.events, attachmentId);
-      if (!expected) return unavailable();
+      // An imageView is an immutable snapshot of one displayed image. If its first
+      // projection could not read a fingerprint, later bytes must not become readable.
+      if (!expected?.fingerprint) return unavailable();
       return this.readSource(imageView, expected, attachmentId);
     }
     return this.readInputs(

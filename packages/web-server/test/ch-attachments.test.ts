@@ -225,6 +225,42 @@ it("keeps a completed imageView fingerprint when only the backing file changes",
   });
 });
 
+it("keeps an unavailable imageView placeholder unreadable after the file appears", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-view-unavailable-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "late.png");
+  const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
+  const host = new FakeChHost();
+  const row = host.add("image-view-unavailable", root);
+  row.turns = [
+    {
+      id: "turn",
+      status: "completed",
+      items: [
+        { id: "user", type: "userMessage", content: [{ type: "text", text: "look" }] },
+        { id: "image", type: "imageView", path },
+      ],
+    },
+  ];
+  const rendered = new ChThreadView(
+    { ...row, turns: [] },
+    "fake",
+    () => {},
+    0,
+    0,
+    () => false,
+    (parts) => attachments.project(row.id, parts),
+    (image, itemKey) => attachments.projectImageView(row.id, image, itemKey),
+  );
+  rendered.update(structuredClone(row));
+  const projected = assistantImageRefs(rendered)[0];
+  assert.ok(projected);
+  assert.equal(projected.bytes, 0);
+
+  writeFileSync(path, Buffer.from(PNG, "base64"));
+  assert.throws(() => attachments.read(rendered, projected.attachmentId), /unavailable/u);
+});
+
 it("normalizes imageView file URLs and surrounding whitespace for projection and reads", (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-image-view-path-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -244,6 +280,44 @@ it("normalizes imageView file URLs and surrounding whitespace for projection and
           type: "imageView",
           path: `  ${pathToFileURL(path).href.replace(/^file:\/\//u, "file:")}  `,
         },
+      ],
+    },
+  ];
+  const rendered = new ChThreadView(
+    { ...row, turns: [] },
+    "fake",
+    () => {},
+    0,
+    0,
+    () => false,
+    (parts) => attachments.project(row.id, parts),
+    (image, itemKey) => attachments.projectImageView(row.id, image, itemKey),
+  );
+  rendered.update(structuredClone(row));
+  const ref = assistantImageRefs(rendered)[0];
+  assert.ok(ref);
+  assert.equal(attachments.read(rendered, ref.attachmentId).data, PNG);
+});
+
+it("preserves trailing spaces in bare native imageView paths", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-view-trailing-space-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "image.png ");
+  const trimmed = join(root, "image.png");
+  writeFileSync(path, Buffer.from(PNG, "base64"));
+  const other = Buffer.from(PNG, "base64");
+  other[other.length - 2] = (other[other.length - 2] ?? 0) ^ 1;
+  writeFileSync(trimmed, other);
+  const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
+  const host = new FakeChHost();
+  const row = host.add("image-view-trailing-space", root);
+  row.turns = [
+    {
+      id: "turn",
+      status: "completed",
+      items: [
+        { id: "user", type: "userMessage", content: [{ type: "text", text: "look" }] },
+        { id: "image", type: "imageView", path },
       ],
     },
   ];

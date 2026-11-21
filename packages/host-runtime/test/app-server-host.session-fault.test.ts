@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import type { JsonObject } from "@codexhost/protocol-core";
 import {
   createFixture,
+  messageParams,
   startPiThread,
   startPiTurn,
   stopFixture,
@@ -19,6 +21,19 @@ describe("AppServerHost session fault", () => {
       const close = vi.spyOn(session, "close");
       await fixture.collector.waitFor((message) => turnEvent(message, "turn/started", turnId));
       const reasoningId = session.startReasoning("still thinking");
+      session.startSubagentDelegation({
+        subagentId: "call-child",
+        nativeSubagentId: "native-child",
+        description: "Child worker",
+        background: false,
+        status: "running",
+      });
+      const childStarted = await fixture.collector.waitFor(
+        (message) =>
+          message.method === "thread/started" &&
+          (messageParams(message).thread as JsonObject | undefined)?.parentThreadId === threadId,
+      );
+      const childId = (messageParams(childStarted).thread as JsonObject).id as string;
       session.emitEvent({
         type: "session.faulted",
         error: {
@@ -38,6 +53,7 @@ describe("AppServerHost session fault", () => {
           },
         },
       });
+      await fixture.collector.waitFor((message) => threadStatus(message, childId, "idle"));
       await fixture.collector.waitFor((message) => threadStatus(message, threadId, "idle"));
       expect(fixture.collector.messages).toContainEqual(
         expect.objectContaining({

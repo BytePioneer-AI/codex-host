@@ -6157,12 +6157,10 @@ export class AppServerHost {
           (output) => this.#projectHarnessOutput(thread, output),
           (failure) => this.#diagnose(failure),
         );
-        if (!thread.activeTurnId && thread.projectedTurns.size === 0) {
-          // The failure projection can re-register running Subagents from the
-          // Item ledger while settling; retire them again so no stale entry
-          // outlives the dead parent stream.
-          await this.#retireRunningSubagents(thread);
-          if (thread.record.subagent) {
+        // Completed Turn projections can remain for late background output.
+        if (!thread.running && !thread.activeTurnId) {
+          await this.#retireSubagentsAfterFailure(thread);
+          if (thread.record.subagent && thread.projectedTurns.size === 0) {
             await this.#setSubagentThreadStatus(thread.id, "idle");
             // The parent Session may be gone too and will never emit a status
             // event, so clear the parent's running-subagent entry here —
@@ -6173,9 +6171,13 @@ export class AppServerHost {
               thread.id,
               "idle",
             );
-          } else if (!thread.running && !this.#hasRunningSubagents(thread.id)) {
-            // The Turn projection may have seen a since-retired Subagent and
-            // kept this Thread active; settle the published status now.
+          } else if (
+            !thread.record.subagent &&
+            !this.#hasRunningSubagents(thread.id) &&
+            isRecord(thread.thread.status) &&
+            thread.thread.status.type === "active"
+          ) {
+            // The Turn projection may have kept the Thread active for a since-retired Subagent.
             await this.#setThreadStatus(thread, { type: "idle" });
           }
         }
@@ -6205,6 +6207,22 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (thread.sessionUnavailable && "turnId" in event) {
+      const projector = thread.projectedTurns.get(event.turnId)?.projector;
+      if (!projector) return;
+      // Completed Turns still own background output and any open detached Items.
+      if (
+        projector.completed &&
+        event.type !== "item.background.started" &&
+        !(event.type === "item.updated" && projector.hasOpenDetachedItem(event.itemId)) &&
+        !(
+          event.type === "item.completed" &&
+          projector.hasOpenDetachedItem(event.snapshot.item.itemId)
+        )
+      ) {
+        return;
+      }
+    }
     if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
       event = {
@@ -6356,6 +6374,7 @@ export class AppServerHost {
           await this.#projectHarnessOutput(thread, { kind: "event", event: failure });
         }
       }
+      await this.#retireSubagentsAfterFailure(thread);
       // Idle Threads must not keep a dead Session; the next open restores from disk.
       if (
         !thread.running &&
@@ -6526,6 +6545,15 @@ export class AppServerHost {
     for (const childThreadId of [...running]) {
       this.#trackRunningSubagent(parent.id, childThreadId, "idle");
       await this.#setSubagentThreadStatus(childThreadId, "idle");
+    }
+  }
+
+  async #retireSubagentsAfterFailure(thread: ExternalThread): Promise<void> {
+    // Failure projection can register running Subagents from the Item ledger.
+    if (!this.#hasRunningSubagents(thread.id)) return;
+    await this.#retireRunningSubagents(thread);
+    if (!thread.running && !thread.activeTurnId) {
+      await this.#setThreadStatus(thread, { type: "idle" });
     }
   }
 

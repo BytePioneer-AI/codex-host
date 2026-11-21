@@ -205,6 +205,55 @@ describe("Host runtime idle background output on a completed Turn", () => {
     }
   });
 
+  it("projects background output queued after a Session fault onto its completed Turn", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      const turnId = hostTurnIdSchema.parse(await completePiTurn(fixture, threadId, 2));
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const itemId = hostItemIdSchema.parse("buffered-background-output");
+      session.emitEvent({
+        type: "session.faulted",
+        error: { code: "unavailable", message: "Connection closed", retryable: true },
+      });
+      session.emitEvent({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+      session.emitEvent({
+        type: "item.background.started",
+        turnId,
+        item: { type: "agentMessage", itemId, text: "" },
+      });
+      session.emitEvent({
+        type: "item.updated",
+        turnId,
+        itemId,
+        update: { type: "text.append", text: "buffered output" },
+      });
+      session.emitEvent({
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { type: "agentMessage", itemId, text: "buffered output" },
+          outcome: { status: "succeeded" },
+        },
+      });
+      const completed = await fixture.collector.waitFor((message) =>
+        itemCompleted(message, itemId),
+      );
+      expect(completed.params).toMatchObject({
+        turnId,
+        item: { id: itemId, text: "buffered output" },
+      });
+      expect(
+        fixture.collector.messages.filter((message) =>
+          turnEvent(message, "turn/completed", turnId),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it.each([false, true])(
     "preserves native Items and settled background text during a successor Turn (already persisted: %s)",
     async (persisted) => {

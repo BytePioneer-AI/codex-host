@@ -96,7 +96,12 @@ import {
 } from "./model-catalog.js";
 import { AntigravityWakeObserver } from "./wake-observer.js";
 import { readNativeHistory } from "./native-replay.js";
-import { readNativeTurnCount } from "./native-turn-boundaries.js";
+import {
+  matchNativeTurnSuffix,
+  nativeInputFingerprint,
+  observeNativeTurnCount,
+  readNativeTurnCount,
+} from "./native-turn-boundaries.js";
 import {
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
@@ -111,6 +116,8 @@ import { antigravityHome, createAntigravityUsageStatistics } from "./usage-stati
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
+const MAX_UNCONFIRMED_PROMPTS = 8;
+
 export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   configuration: {
     selectModel: true,
@@ -277,6 +284,7 @@ interface ActiveTurn {
   cancelled: boolean;
   ended: boolean;
   promptPhase: "notSubmitted" | "submitted" | "returned";
+  readonly accounting: AbortController;
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
   tracker?: AntigravityToolTracker;
@@ -312,6 +320,9 @@ export class AntigravitySession implements HarnessSession {
   #catalog: HarnessModelCatalog | undefined;
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
   #turnCount = 0;
+  #turnCountKnown = false;
+  // A missing fingerprint or an oversized unresolved suffix requires history-only recovery.
+  #unconfirmedPrompts: readonly string[] | undefined = [];
   readonly #confirmedCheckpoints = new Set<string>();
   #active: ActiveTurn | undefined;
   #wakes: AntigravityWakeObserver | undefined;
@@ -366,6 +377,8 @@ export class AntigravitySession implements HarnessSession {
   activeForkTurnIndex(checkpointId: string, home: string): number | undefined {
     if (
       this.#active?.promptPhase === "submitted" &&
+      this.#turnCountKnown &&
+      this.#unconfirmedPrompts?.length === 0 &&
       !this.#opening &&
       !this.#configurationQueue &&
       !this.#subagents.running &&
@@ -467,9 +480,13 @@ export class AntigravitySession implements HarnessSession {
           "Antigravity returned an invalid native Session ID",
         );
       this.#applyOpened(opened, skip);
-      this.#turnCount = await readNativeTurnCount(
+      const count = await readNativeTurnCount(
         nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
-      ).catch(() => this.#turnCount);
+      ).catch((error: NodeJS.ErrnoException) => (!ref && error.code === "ENOENT" ? 0 : undefined));
+      if (this.#unconfirmedPrompts?.length === 0) {
+        if (count !== undefined) this.#turnCount = count;
+        this.#turnCountKnown = count !== undefined;
+      }
       this.#initializeUsage(opened.sessionId);
       if (!this.#wakes) {
         const home = antigravityHome(this.#options.environment);
@@ -849,8 +866,9 @@ export class AntigravitySession implements HarnessSession {
           ? { outputLimit: this.#options.adapter.toolOutputLimit }
           : {}),
       });
-      if (!this.#transport) {
+      if (!this.#transport && this.#unconfirmedPrompts?.length === 0) {
         this.#turnCount = turnCount;
+        this.#turnCountKnown = true;
         this.#initializeUsage(nativeSessionId);
       }
       return ok({ turns, ...(this.#transport ? { state: { ...this.#state } } : {}) });
@@ -892,6 +910,7 @@ export class AntigravitySession implements HarnessSession {
             return err("invalidRequest", "Turn is not active");
           if (!turn.cancelled) {
             turn.cancelled = true;
+            turn.accounting.abort();
             this.#closeInteractions("cancelled");
             try {
               if (turn.promptPhase === "submitted") await this.#transport?.cancel();
@@ -955,6 +974,7 @@ export class AntigravitySession implements HarnessSession {
         cancelled: false,
         ended: false,
         promptPhase: "notSubmitted",
+        accounting: new AbortController(),
       };
       this.#active = turn;
       this.#emit({ type: "turn.started", turnId: turn.turnId });
@@ -1100,10 +1120,46 @@ export class AntigravitySession implements HarnessSession {
     let outcome: TurnOutcome;
     let nativeTurnRef: NativeTurnRef | undefined;
     let confirmedCheckpoint: string | undefined;
+    let promptText: string | undefined;
+    let mayWriteInput = true;
     try {
       await this.initialize();
       await this.#usageWork;
       await this.#wakes?.flush();
+      if (!this.#isCurrent(turn)) return;
+      if (turn.cancelled) {
+        this.#finish(turn, { status: "cancelled" });
+        return;
+      }
+      const ref = this.nativeRef;
+      if (!ref)
+        throw new AntigravityTransportError("unavailable", "Native Session is not connected");
+      const home = antigravityHome(this.#options.environment);
+      const file = nativeConversationDbPath(ref.nativeSessionId, home);
+      const parts = promptParts(command);
+      const part = parts.length === 1 ? parts[0] : undefined;
+      promptText = part?.type === "text" ? part.text : undefined;
+      mayWriteInput = !catalogCommand || !/^\/(?:compact|help)(?:\s|$)/u.test(promptText ?? "");
+      if (!this.#turnCountKnown && this.#unconfirmedPrompts?.length === 0) {
+        const count = await readNativeTurnCount(file).catch(() => undefined);
+        if (!this.#isCurrent(turn)) return;
+        if (count !== undefined) {
+          this.#turnCount = count;
+          this.#turnCountKnown = true;
+        }
+      } else if (this.#unconfirmedPrompts?.length) {
+        const recovered = await this.#matchNativeSuffix(
+          ref.nativeSessionId,
+          home,
+          this.#unconfirmedPrompts,
+        );
+        if (!this.#isCurrent(turn)) return;
+        if (recovered !== undefined) {
+          this.#turnCount = recovered;
+          this.#unconfirmedPrompts = [];
+        }
+      }
+      // Configuration can be queued while reading an uncertain baseline.
       while (this.#configurationQueue && !turn.cancelled && this.#isCurrent(turn)) {
         await this.#configurationQueue;
       }
@@ -1112,6 +1168,9 @@ export class AntigravitySession implements HarnessSession {
         this.#finish(turn, { status: "cancelled" });
         return;
       }
+      const transport = this.#transport;
+      if (!transport)
+        throw new AntigravityTransportError("unavailable", "Native Session is not connected");
       turn.tracker = new AntigravityToolTracker({
         turnId: turn.turnId,
         cwd: this.#options.cwd,
@@ -1129,14 +1188,13 @@ export class AntigravitySession implements HarnessSession {
         },
         onSubagentSpawned: (id, item) => this.#subagents.track(id, item),
       });
-      const transport = this.#transport;
-      const ref = this.nativeRef;
-      if (!transport || !ref)
-        throw new AntigravityTransportError("unavailable", "Native Session is not connected");
+      const before = this.#turnCount;
+      const pending = this.#unconfirmedPrompts;
+      const cleanBaseline = this.#turnCountKnown && pending?.length === 0;
       this.#usage?.beginTurn(Date.now(), turn.turnId);
       this.#usageTurnId = turn.turnId;
       turn.promptPhase = "submitted";
-      const result = await transport.prompt(promptParts(command), {
+      const result = await transport.prompt(parts, {
         onResponse: () => {
           turn.promptPhase = "returned";
         },
@@ -1181,19 +1239,29 @@ export class AntigravitySession implements HarnessSession {
                 },
               }
             : { status: "succeeded" };
-      const before = this.#turnCount;
-      let count: number;
-      try {
-        count = await readNativeTurnCount(
-          nativeConversationDbPath(ref.nativeSessionId, antigravityHome(this.#options.environment)),
-        );
-        if (count === before + 1) confirmedCheckpoint = `turn-${count - 1}`;
-      } catch {
-        // Command output alone cannot establish that the prompt created a conversation Turn.
-        count = !catalogCommand && outcome.status === "succeeded" ? before + 1 : before;
+      const count = await observeNativeTurnCount(
+        () => readNativeTurnCount(file),
+        before,
+        this.#turnCountKnown &&
+          pending !== undefined &&
+          mayWriteInput &&
+          outcome.status === "succeeded",
+        AbortSignal.any([turn.accounting.signal, this.#abort.signal]),
+      );
+      if (!this.#isCurrent(turn)) return;
+      let confirmedCount: number | undefined;
+      if (count !== undefined && count > before) {
+        if (cleanBaseline && count === before + 1) confirmedCount = count;
+        else if (mayWriteInput && pending && promptText !== undefined) {
+          confirmedCount = await this.#matchNativeSuffix(ref.nativeSessionId, home, [
+            ...pending,
+            nativeInputFingerprint(promptText),
+          ]);
+          if (!this.#isCurrent(turn)) return;
+        }
       }
-      if (count > before) {
-        const key = `turn-${count - 1}`;
+      if (confirmedCount !== undefined) {
+        const key = `turn-${confirmedCount - 1}`;
         nativeTurnRef = {
           harnessId,
           nativeSessionId: ref.nativeSessionId,
@@ -1201,7 +1269,9 @@ export class AntigravitySession implements HarnessSession {
           nativeTurnKey: key,
         };
         outcome = { ...outcome, checkpoint: { ...ref, checkpointId: key } };
-        this.#turnCount = count;
+        this.#turnCount = confirmedCount;
+        this.#unconfirmedPrompts = [];
+        confirmedCheckpoint = key;
       }
       await this.#trackUsageWork(
         Promise.resolve(this.#usageWork).then(() =>
@@ -1225,9 +1295,42 @@ export class AntigravitySession implements HarnessSession {
       this.#usage?.endTurn();
     }
     if (this.#isCurrent(turn)) {
+      if (mayWriteInput && turn.promptPhase !== "notSubmitted" && !nativeTurnRef) {
+        const pending = this.#unconfirmedPrompts;
+        // These prompts may still gain rows while a successor is in flight.
+        this.#unconfirmedPrompts =
+          pending && pending.length < MAX_UNCONFIRMED_PROMPTS && promptText !== undefined
+            ? [...pending, nativeInputFingerprint(promptText)]
+            : undefined;
+      }
+      if (turn.cancelled)
+        outcome = {
+          status: "cancelled",
+          ...(outcome.checkpoint && { checkpoint: outcome.checkpoint }),
+        };
       if (confirmedCheckpoint && outcome.checkpoint)
         this.#confirmedCheckpoints.add(confirmedCheckpoint);
       this.#finish(turn, outcome, nativeTurnRef);
+    }
+  }
+  async #matchNativeSuffix(
+    sessionId: string,
+    home: string,
+    expected: readonly string[],
+  ): Promise<number | undefined> {
+    if (!this.#turnCountKnown) return undefined;
+    try {
+      const before = this.#turnCount;
+      const history = await readNativeHistory(sessionId, home);
+      return matchNativeTurnSuffix({
+        ...history,
+        nativeSessionId: sessionId,
+        cwd: this.#options.cwd,
+        before,
+        expected,
+      });
+    } catch {
+      return undefined;
     }
   }
   #isCurrent(turn: ActiveTurn): boolean {
@@ -1429,7 +1532,7 @@ export class AntigravitySession implements HarnessSession {
     if (active) this.#finish(active, { status: "cancelled", reason: "Session closed" });
     this.#channel.end();
     this.#transport?.setSessionEventHandler(null);
-    if (active) await this.#transport?.cancel().catch(() => undefined);
+    if (active?.promptPhase === "submitted") await this.#transport?.cancel().catch(() => undefined);
     await Promise.all([this.#transport?.close(), this.#subagents.close()]);
     this.#options.onClosed(this);
   }

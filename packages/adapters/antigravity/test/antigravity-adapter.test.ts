@@ -803,11 +803,18 @@ describe("Antigravity ACP Session", () => {
   );
 
   it("streams ordered text/reasoning, usage and stable Turn identity", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-stream-turn-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
     const transport = await start(session, transports);
+    const db = await createNativeHistoryDatabase(home, required(transport.sessionId));
+    try {
+      userStep(db, 0, "hello", "prompt");
+      answerStep(db, 1, "hello", "prompt");
+    } finally {
+      db.close();
+    }
     const handler = required(transport.handler);
     handler.onEvent({ type: "agent.thought", text: "reason" });
     handler.onEvent({ type: "agent.text", text: "hel" });
@@ -1731,6 +1738,265 @@ describe("inspection and errors", () => {
       await adapter.close();
     },
   );
+});
+
+describe("Antigravity foreground native commits", () => {
+  async function setup() {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-turn-commit-"));
+    directories.push(home);
+    const nativeRef = ref();
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    db.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0");
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", nativeRef, cwd: home }),
+    );
+    const transport = await start(session, transports);
+    return { home, nativeRef, session, outputs, transport, db };
+  }
+
+  function nextRead() {
+    const readCount = nativeBoundaries.readNativeTurnCount;
+    const firstRead = deferred<number>();
+    vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockImplementationOnce(async (file) => {
+      const count = await readCount(file);
+      firstRead.resolve(count);
+      return count;
+    });
+    return firstRead.promise;
+  }
+
+  const terminal = (outputs: HarnessOutput[], id = "t1") =>
+    required(
+      events(outputs).find((event) => event.type === "turn.completed" && event.turnId === id),
+    );
+
+  it("publishes a durable Turn when the input commits after the first post-response read", async () => {
+    const { session, outputs, transport, db } = await setup();
+    const firstRead = nextRead();
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      userStep(db, 0, "hello", "prompt");
+      answerStep(db, 1, "hello there", "prompt");
+      required(transport.handler).onEvent({ type: "agent.text", text: "hello there" });
+      transport.result.resolve({ stopReason: "end_turn" });
+      expect(await firstRead).toBe(0);
+      db.exec("COMMIT");
+      await completed(outputs);
+      expect(terminal(outputs)).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-0" },
+        outcome: { status: "succeeded", checkpoint: { checkpointId: "turn-0" } },
+      });
+      expect(await session.readSnapshot()).toMatchObject({
+        ok: true,
+        value: { turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" } }] },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["no write", "unreadable"])(
+    "does not fabricate an identity for success with %s",
+    async (mode) => {
+      const { outputs, transport, db } = await setup();
+      try {
+        if (mode === "unreadable") db.exec("ALTER TABLE steps RENAME TO unavailable_steps");
+        required(transport.handler).onEvent({
+          type: "agent.text",
+          text: "output is not a boundary",
+        });
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs);
+        expect(terminal(outputs)).toEqual({
+          type: "turn.completed",
+          turnId: "t1",
+          ephemeral: true,
+          outcome: { status: "succeeded" },
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each(["cancel", "close", "fault"])(
+    "settles only once on %s during the commit wait",
+    async (action) => {
+      const { session, outputs, transport, db } = await setup();
+      const firstRead = nextRead();
+      try {
+        required(transport.handler).onResponse?.();
+        transport.result.resolve({ stopReason: "end_turn" });
+        expect(await firstRead).toBe(0);
+        if (action === "cancel") {
+          expect(await session.execute({ type: "turn.cancel", turnId: turnId("t1") })).toEqual({
+            ok: true,
+            value: { cancellationRequested: true },
+          });
+          expect(transport.cancel).not.toHaveBeenCalled();
+        } else if (action === "close") await session.close();
+        else
+          transport.options.onFault?.(new AntigravityTransportError("processExited", "ACP exited"));
+        userStep(db, 0, "hello", "prompt");
+        await completed(outputs);
+        expect(terminal(outputs)).toMatchObject({
+          outcome: { status: action === "fault" ? "failed" : "cancelled" },
+        });
+        expect(terminal(outputs)).not.toHaveProperty("nativeTurnRef");
+        expect(terminal(outputs)).not.toHaveProperty("ephemeral");
+        if (action !== "fault") expect(transport.cancel).not.toHaveBeenCalled();
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("settles a cancellation during usage collection without dropping the committed identity", async () => {
+    const { session, outputs, transport, db } = await setup();
+    const gate =
+      deferred<
+        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+      >();
+    const collect = vi
+      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+      .mockReturnValueOnce(gate.promise);
+    try {
+      userStep(db, 0, "hello", "prompt");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await vi.waitFor(() => expect(collect).toHaveBeenCalled());
+      expect(await session.execute({ type: "turn.cancel", turnId: turnId("t1") })).toMatchObject({
+        ok: true,
+      });
+      gate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      await completed(outputs);
+      expect(terminal(outputs)).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-0" },
+        outcome: { status: "cancelled", checkpoint: { checkpointId: "turn-0" } },
+      });
+      expect(transport.cancel).not.toHaveBeenCalled();
+    } finally {
+      gate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      db.close();
+    }
+  });
+
+  it.each(["refusal", "cancelled"])(
+    "preserves the native identity of a committed %s",
+    async (stopReason) => {
+      const { session, outputs, transport, db } = await setup();
+      try {
+        userStep(db, 0, "hello", "prompt");
+        if (stopReason === "cancelled")
+          await session.execute({ type: "turn.cancel", turnId: turnId("t1") });
+        transport.result.resolve({ stopReason });
+        await completed(outputs);
+        expect(terminal(outputs)).toMatchObject({
+          nativeTurnRef: { nativeTurnKey: "turn-0" },
+          outcome: { status: stopReason === "refusal" ? "failed" : "cancelled" },
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each(["before the successor", "during the successor", "in the same batch as the successor"])(
+    "attributes a late native boundary committed %s",
+    async (when) => {
+      const { session, outputs, transport, db } = await setup();
+      const writeFirst = () => {
+        userStep(db, 0, "hello", "first");
+        answerStep(db, 1, "first answer", "first");
+      };
+      try {
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs);
+        expect(terminal(outputs)).toMatchObject({ ephemeral: true });
+        if (when === "before the successor") writeFirst();
+        transport.result = deferred();
+        expect(
+          await session.execute({
+            type: "turn.start",
+            turnId: turnId("t2"),
+            input: [{ type: "text", text: "second question" }],
+          }),
+        ).toMatchObject({ ok: true });
+        await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+        if (when !== "before the successor") writeFirst();
+        if (when !== "during the successor") {
+          userStep(db, 2, "second question", "second");
+          answerStep(db, 3, "second answer", "second");
+        }
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs, "t2");
+        if (when === "during the successor")
+          expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
+        else
+          expect(terminal(outputs, "t2")).toMatchObject({
+            nativeTurnRef: { nativeTurnKey: "turn-1" },
+          });
+        const snapshot = await session.readSnapshot();
+        assert(snapshot.ok);
+        expect(snapshot.value.turns[0]).toMatchObject({
+          input: [{ text: "hello" }],
+          nativeTurnRef: { nativeTurnKey: "turn-0" },
+          items: [{ item: { text: "first answer" } }],
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("uses the last native input for a merged Turn and publishes a committed wake after it", async () => {
+    const { session, outputs, transport, db } = await setup();
+    const firstRead = nextRead();
+    try {
+      required(transport.handler).onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      expect(await firstRead).toBe(0);
+      db.exec("BEGIN IMMEDIATE");
+      userStep(db, 0, "hel", "prompt");
+      userStep(db, 1, "lo", "prompt");
+      answerStep(db, 2, "hello there", "prompt");
+      systemStep(db, 3, "wake");
+      answerStep(db, 4, "wake answer", "wake");
+      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      db.exec("COMMIT");
+      await completed(outputs);
+      expect(terminal(outputs)).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-1" },
+        outcome: { checkpoint: { checkpointId: "turn-1" } },
+      });
+      await vi.waitFor(() => {
+        expect(
+          events(outputs).filter(
+            ({ type }) => type === "turn.completed" || type === "turn.autonomous.completed",
+          ),
+        ).toMatchObject([
+          { type: "turn.completed", turnId: "t1" },
+          {
+            type: "turn.autonomous.completed",
+            snapshot: { nativeTurnRef: { nativeTurnKey: "wake-3" }, input: [] },
+          },
+        ]);
+      });
+      const snapshot = await session.readSnapshot();
+      assert(snapshot.ok);
+      expect(
+        snapshot.value.turns.map(({ nativeTurnRef, input }) => [
+          nativeTurnRef.nativeTurnKey,
+          input,
+        ]),
+      ).toEqual([
+        ["turn-1", [{ type: "text", text: "hello" }]],
+        ["wake-3", []],
+      ]);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("Antigravity idle wake Turns", () => {

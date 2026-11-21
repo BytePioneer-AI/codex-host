@@ -8,6 +8,8 @@ use std::fs::OpenOptions;
 use std::io;
 #[cfg(not(target_os = "linux"))]
 use std::io::Write;
+#[cfg(all(unix, not(target_os = "linux")))]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
@@ -241,10 +243,11 @@ pub fn write_descriptor(path: &Path, descriptor: &RuntimeDescriptor) -> io::Resu
             random_nonce()?
         ));
         let result = (|| {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&temporary)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
             atomic_replace_file(&temporary, path).map_err(io::Error::other)
@@ -314,8 +317,10 @@ impl Drop for RuntimeDescriptorGuard {
 mod tests {
     use std::env;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     #[cfg(target_os = "linux")]
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::symlink;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -426,6 +431,20 @@ mod tests {
             assert!(path.exists());
         }
         assert!(!path.exists());
+        fs::remove_dir_all(path.parent().expect("fixture parent")).expect("remove fixture");
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn unix_runtime_descriptor_is_created_with_private_mode() {
+        let path = fixture_path("runtime-private-mode");
+        write_descriptor(&path, &descriptor(45)).expect("write private descriptor");
+        let file_mode = fs::metadata(&path)
+            .expect("descriptor metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600);
         fs::remove_dir_all(path.parent().expect("fixture parent")).expect("remove fixture");
     }
 

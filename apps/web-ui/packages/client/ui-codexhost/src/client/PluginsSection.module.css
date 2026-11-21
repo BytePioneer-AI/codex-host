@@ -1,0 +1,146 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pane {
+  width: 100%;
+  min-width: 0;
+}
+
+.pane[hidden] {
+  display: none;
+}
+
+.desktopPane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+
+.desktopHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 30px;
+}
+
+.desktopHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.01em;
+}
+
+/* Lightweight pill segmented control for switching between Web and Desktop plugins */
+.targetSwitcher {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-interactive-bg-hover) 72%, transparent);
+  animation: switcherFadeIn 140ms ease;
+}
+
+.targetOption {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 1px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 16px;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.targetOption:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.targetOption[aria-pressed="true"] {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 8%),
+    0 0 0 0.5px var(--dsw-alias-border-l2);
+}
+
+.targetOption:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+@keyframes switcherFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .targetSwitcher {
+    animation: none;
+  }
+
+  .targetOption {
+    transition: none;
+  }
+}
+
+:global([data-phone]) .desktopHeaderLeft {
+  flex: 1 1 100%;
+  justify-content: space-between;
+}
+
+:global([data-phone]) .targetOption {
+  min-height: 28px;
+  padding: 2px 12px;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .desktopHeaderLeft {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+
+  .targetOption {
+    min-height: 28px;
+    padding: 2px 12px;
+    font-size: 12px;
+  }
+}

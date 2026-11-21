@@ -49,6 +49,7 @@ import {
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
   isConsoleHostMethod,
+  isDesktopExtensionManagementMethod,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   webOpenParamsSchema,
@@ -2088,7 +2089,8 @@ export class AppServerHost {
         // Settings requests from Web clients; the shared service owns these handlers too.
         request.method.startsWith("codexhost/account/") ||
         request.method.startsWith("codexhost/update/") ||
-        isModelPriceOverridesMethod(request.method)
+        isModelPriceOverridesMethod(request.method) ||
+        isDesktopExtensionManagementMethod(request.method)
       )
     ) {
       await this.#writer.json(

@@ -70,6 +70,7 @@ describe("CodeBuddy native slash commands", () => {
           const client = native.clientFactory(options);
           if (native.clients.length === 2) {
             client.open = async (_cwd, sessionId) => {
+              if (!sessionId) throw new Error("Expected lazy reopen to resume a native Session");
               if (publishCatalog)
                 client.update({
                   sessionUpdate: "available_commands_update",

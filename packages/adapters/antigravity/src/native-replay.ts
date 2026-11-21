@@ -3,14 +3,22 @@ import type { AntigravityAcpEvent } from "./acp-types.js";
 import { readProtoFields, type ProtoField } from "./native-protobuf.js";
 import { nativeConversationDbPath } from "./native-turn-boundaries.js";
 
+export interface NativeCompactionEvent {
+  type: "history.compaction";
+  stepIndex: number;
+  status: "succeeded" | "failed";
+  error?: string;
+}
+
 export type NativeReplayEvent =
-  AntigravityAcpEvent | { type: "history.autonomous"; stepIndex: number };
+  AntigravityAcpEvent | { type: "history.autonomous"; stepIndex: number } | NativeCompactionEvent;
 
 type ToolCalls = Map<string, "pending" | "settled">;
 
 const USER_INPUT = 14;
 const PLANNER_RESPONSE = 15;
 const ERROR_MESSAGE = 17;
+const CHECKPOINT = 23;
 const SYSTEM_MESSAGE = 101;
 const GENERIC_TOOL = 132;
 const DONE = 3;
@@ -63,13 +71,101 @@ export async function readNativeHistory(
   }
 }
 
+/** Read the latest committed step index before a live prompt begins, or -1 if absent. */
+export async function readNativeStepWatermark(dbPath: string): Promise<number> {
+  const { DatabaseSync } = await import("node:sqlite");
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+  } catch {
+    return -1;
+  }
+  try {
+    db.exec("BEGIN");
+    const row = db.prepare("SELECT MAX(idx) AS max_idx FROM steps").get();
+    return row?.max_idx === null || row?.max_idx === undefined ? -1 : Number(row.max_idx);
+  } catch {
+    return -1;
+  } finally {
+    db.close();
+  }
+}
+
+function decodeCheckpointEvent(
+  idx: number,
+  status: unknown,
+  step: readonly ProtoField[],
+): NativeCompactionEvent | undefined {
+  if (status !== DONE && status !== ERROR) return undefined;
+  const error = status === ERROR ? nested(step, 31) : [];
+  const errorText = textField(error, 3) || textField(error, 2) || textField(error, 1);
+  return {
+    type: "history.compaction",
+    stepIndex: idx,
+    status: status === DONE ? "succeeded" : "failed",
+    ...(errorText ? { error: errorText } : {}),
+  };
+}
+
+/** Read terminal compaction checkpoints committed for the active foreground Turn after a watermark. */
+export async function readNativeTurnCompactions(
+  dbPath: string,
+  afterStepIndex: number,
+): Promise<NativeCompactionEvent[]> {
+  const { DatabaseSync } = await import("node:sqlite");
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+  } catch {
+    return [];
+  }
+  try {
+    db.exec("BEGIN");
+    if (db.prepare("PRAGMA user_version").get()?.user_version !== 1) return [];
+    const compactions: NativeCompactionEvent[] = [];
+    let turnRun: string | undefined;
+    let seenUserInput = false;
+    const wakeRuns = new Set<string>();
+    for (const row of db
+      .prepare(
+        `SELECT idx, step_type, status, step_payload FROM steps
+         WHERE idx > ? AND step_type IN (${USER_INPUT}, ${SYSTEM_MESSAGE}, ${CHECKPOINT})
+         ORDER BY idx`,
+      )
+      .iterate(afterStepIndex)) {
+      const idx = Number(row.idx);
+      const step = message(row.step_payload);
+      const stepRun = textField(nested(step, 5), 12);
+      if (row.step_type === USER_INPUT) {
+        seenUserInput = true;
+        turnRun = stepRun;
+        continue;
+      }
+      if (row.step_type === SYSTEM_MESSAGE) {
+        if (stepRun && stepRun !== turnRun) wakeRuns.add(stepRun);
+        continue;
+      }
+      if (!seenUserInput) continue;
+      if (stepRun && wakeRuns.has(stepRun)) continue;
+      if (stepRun && turnRun && stepRun !== turnRun) continue;
+      const event = decodeCheckpointEvent(idx, row.status, step);
+      if (event) compactions.push(event);
+    }
+    return compactions;
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
 export function decodeNativeHistory(db: DatabaseSync) {
   const events: NativeReplayEvent[] = [];
   let toolCalls: ToolCalls = new Map();
   let turnCount = 0;
   let run = "";
   let candidate:
-    { stepIndex: number; run: string; events: AntigravityAcpEvent[]; calls: ToolCalls } | undefined;
+    { stepIndex: number; run: string; events: NativeReplayEvent[]; calls: ToolCalls } | undefined;
   let wake: { eventIndex: number; settled: boolean } | undefined;
   let finalPlanner = false;
   const endWake = () => {
@@ -85,7 +181,7 @@ export function decodeNativeHistory(db: DatabaseSync) {
   for (const row of db
     .prepare(
       `SELECT idx, step_type, status, step_payload FROM steps
-       WHERE step_type IN (${USER_INPUT}, ${PLANNER_RESPONSE}, ${ERROR_MESSAGE}, ${SYSTEM_MESSAGE}, ${GENERIC_TOOL})
+       WHERE step_type IN (${USER_INPUT}, ${PLANNER_RESPONSE}, ${ERROR_MESSAGE}, ${CHECKPOINT}, ${SYSTEM_MESSAGE}, ${GENERIC_TOOL})
        ORDER BY idx`,
     )
     .iterate()) {
@@ -112,6 +208,14 @@ export function decodeNativeHistory(db: DatabaseSync) {
           candidate = { stepIndex: idx, run: stepRun, events: [], calls: new Map() };
         }
       }
+      continue;
+    }
+    if (row.step_type === CHECKPOINT) {
+      const event = decodeCheckpointEvent(idx, row.status, step);
+      if (!event) continue;
+      const pendingWake = candidate?.run === stepRun ? candidate : undefined;
+      if (!pendingWake && (candidate || (stepRun && run && stepRun !== run))) continue;
+      (pendingWake?.events ?? events).push(event);
       continue;
     }
     if (row.step_type === USER_INPUT) run = stepRun;

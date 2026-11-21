@@ -23,17 +23,21 @@ export interface HostSettingsSectionFace {
   pageId: string;
   locale: HostSettingsSource<string>;
   colorScheme: HostSettingsSource<"light" | "dark">;
+  shadowCss?: string;
 }
 
 let loading: Promise<WebSettingsPages> | undefined;
+
+function registeredPages(): WebSettingsPages | undefined {
+  return (window as { __codexhostWebSettingsV1?: WebSettingsPages }).__codexhostWebSettingsV1;
+}
 
 function loadPages(): Promise<WebSettingsPages> {
   loading ??= new Promise<WebSettingsPages>((resolve, reject) => {
     const script = document.createElement("script");
     script.src = "codexhost-settings.js";
     script.onload = () => {
-      const pages = (window as { __codexhostWebSettingsV1?: WebSettingsPages })
-        .__codexhostWebSettingsV1;
+      const pages = registeredPages();
       if (pages) resolve(pages);
       else reject(new Error("codexhost-settings.js did not register its pages"));
     };
@@ -48,13 +52,19 @@ function loadPages(): Promise<WebSettingsPages> {
   return loading;
 }
 
+export function preloadHostSettings(): void {
+  void loadPages().catch(() => undefined);
+}
+
 export function HostSettingsSection({
   t,
   pageId,
   locale,
   colorScheme,
+  shadowCss,
 }: HostSettingsSectionFace & PropsLocale<"codexhostImport">) {
   const host = useRef<HTMLDivElement>(null);
+  const [waitingForPages, setWaitingForPages] = useState(() => registeredPages() === undefined);
   const [error, setError] = useState("");
   const activeLocale = useSyncExternalStore(locale.subscribe, locale.get);
   const activeScheme = useSyncExternalStore(colorScheme.subscribe, colorScheme.get);
@@ -74,6 +84,15 @@ export function HostSettingsSection({
             locale: activeLocale,
             colorScheme: activeScheme,
           });
+          if (shadowCss && host.current.shadowRoot) {
+            const extraSheet = new CSSStyleSheet();
+            extraSheet.replaceSync(shadowCss);
+            host.current.shadowRoot.adoptedStyleSheets = [
+              ...host.current.shadowRoot.adoptedStyleSheets,
+              extraSheet,
+            ];
+          }
+          setWaitingForPages(false);
         });
       })
       .catch((cause: unknown) => {
@@ -84,10 +103,16 @@ export function HostSettingsSection({
       if (frame !== 0) cancelAnimationFrame(frame);
       unmount?.();
     };
-  }, [pageId, activeLocale, activeScheme]);
+  }, [pageId, activeLocale, activeScheme, shadowCss]);
   return (
     <>
-      {error && <div className={css.error}>{t("settings.unavailable", { message: error })}</div>}
+      {error ? (
+        <div className={css.error}>{t("settings.unavailable", { message: error })}</div>
+      ) : waitingForPages ? (
+        <p role="status" className={css.loading}>
+          {t("settings.loading")}
+        </p>
+      ) : null}
       <div ref={host} className={css.host} />
     </>
   );

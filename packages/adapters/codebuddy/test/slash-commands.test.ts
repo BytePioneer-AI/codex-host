@@ -75,7 +75,7 @@ describe("CodeBuddy native slash commands", () => {
                   sessionUpdate: "available_commands_update",
                   availableCommands: [{ name: "review", input: { hint: "[target]" } }],
                 });
-              return { sessionId, configOptions: client.options };
+              return { sessionId: sessionId ?? "native-session", configOptions: client.options };
             };
             const prompt = client.prompt.bind(client);
             client.prompt = (id, input) => {

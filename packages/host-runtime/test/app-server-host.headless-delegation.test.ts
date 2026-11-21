@@ -8,6 +8,7 @@ import { MappingStore } from "@codexhost/mapping-store";
 import type { JsonObject } from "@codexhost/protocol-core";
 import {
   encodeOfficialCodexModelRef,
+  harnessModelRefIdSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
 } from "@codexhost/shared-contracts";
@@ -189,13 +190,13 @@ it("supports native and saved defaults for headless Codex delegations and export
     const sameModel = await api.start({
       ...input,
       requestId: "headless-same-model",
-      model: { id: "delegated" },
+      model: { id: harnessModelRefIdSchema.parse("delegated") },
     });
     expect(turnStarts.at(-1)).toMatchObject({ threadId: sameModel.threadId, effort: "high" });
     const differentModel = await api.start({
       ...input,
       requestId: "headless-different-model",
-      model: { id: "native-default" },
+      model: { id: harnessModelRefIdSchema.parse("native-default") },
     });
     expect(turnStarts.at(-1)).toMatchObject({
       threadId: differentModel.threadId,
@@ -203,7 +204,10 @@ it("supports native and saved defaults for headless Codex delegations and export
     });
     expect(turnStarts.at(-1)).not.toHaveProperty("effort");
 
-    await save({ model: { id: "retired" }, thinkingOptionId: "low" });
+    await save({
+      model: { id: "retired" },
+      thinkingOptionId: "low",
+    });
     await expect(api.start(delegatedInput)).resolves.toMatchObject({
       delegationId: delegated.delegationId,
       threadId: delegated.threadId,
@@ -212,7 +216,9 @@ it("supports native and saved defaults for headless Codex delegations and export
     expect(threadStarts.at(-1)).not.toHaveProperty("model");
     expect(turnStarts.at(-1)).toMatchObject({ threadId: fallback.threadId });
     expect(turnStarts.at(-1)).not.toHaveProperty("effort");
-    await expect(api.start({ ...input, model: { id: "retired" } })).rejects.toMatchObject({
+    await expect(
+      api.start({ ...input, model: { id: harnessModelRefIdSchema.parse("retired") } }),
+    ).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
     });
     await expect(

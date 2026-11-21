@@ -6,6 +6,7 @@ import { get } from "node:https";
 import { BlockList, type LookupFunction } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { finished } from "node:stream/promises";
 import {
   DESKTOP_EXTENSION_ZIP_MAX_BYTES as ZIP_LIMIT,
   WEB_EXTENSION_ASSETS_PREFIX,
@@ -472,12 +473,25 @@ export function registerWebExtensionRpc(
             .end(JSON.stringify({ uploadId }));
         } catch (error) {
           if (!response.destroyed) {
-            response
-              .writeHead(error instanceof UploadRejected ? error.status : 400, {
-                "Content-Type": "text/plain",
-                connection: "close",
-              })
-              .end(error instanceof UploadRejected ? error.message : "ZIP upload failed.");
+            const status = error instanceof UploadRejected ? error.status : 400;
+            const message = error instanceof UploadRejected ? error.message : "ZIP upload failed.";
+            response.writeHead(status, {
+              "Content-Type": "text/plain",
+              "Content-Length": Buffer.byteLength(message),
+              connection: "close",
+            });
+            if (status === 413 && request.headers["transfer-encoding"] && !request.complete) {
+              // Closing with unread upload bytes can reset the socket on Windows. Send the
+              // complete reply first, then give the client a bounded window to finish writing.
+              response.write(message);
+              const drained = finished(request, {
+                cleanup: true,
+                signal: AbortSignal.timeout(1000),
+              });
+              request.resume();
+              await drained.catch(() => {});
+              response.end();
+            } else response.end(message);
           }
         }
       } else if (request.method === "GET" || request.method === "HEAD") {

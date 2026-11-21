@@ -28,7 +28,9 @@ import { registerWebExtensionRpc } from "../src/web-extension-rpc.ts";
 import { WebNativeExtensions } from "../src/web-native-extensions.ts";
 
 // The Web package normally runs on node:test. This suite also supports focused Vitest runs.
-const { test } = process.env.VITEST ? await import("vitest") : await import("node:test");
+const { test }: { test: (name: string, run: () => Promise<void>) => void } = process.env.VITEST
+  ? await import("vitest")
+  : await import("node:test");
 const identity = { format: "codexhost", id: "sample" } as const;
 const owner: RequestAuth = { credential: "owner", local: false, release() {} };
 const stranger: RequestAuth = { ...owner, credential: "other" };

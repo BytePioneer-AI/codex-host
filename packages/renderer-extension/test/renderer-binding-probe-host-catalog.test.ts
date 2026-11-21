@@ -37,6 +37,9 @@ it("filters Desktop internal environments from connection hosts", async () => {
   expect(["durable", "env_e_internal"].filter(isListedConnectionHost)).toEqual([]);
 });
 
+const mutation = (type: MutationRecordType, target: Node) =>
+  ({ type, target, addedNodes: [], removedNodes: [] }) as unknown as MutationRecord;
+
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,
@@ -497,7 +500,7 @@ describe("Renderer binding Harness directory diagnostics", () => {
 
       const notify = testState.notifyMutations;
       assert(notify);
-      notify([{ type: "attributes", target: testState.editor } as MutationRecord]);
+      notify([mutation("attributes", testState.editor)]);
       for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
       expect(sendRequest).toHaveBeenCalledWith(HARNESS_PLUGIN_LIST_METHOD, {});
       await vi.waitFor(() => {
@@ -970,8 +973,6 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     };
     reconcile.mockClear();
     const text = { nodeType: 3, parentElement: testState.editor } as unknown as Text;
-    const mutation = (type: MutationRecordType, target: Node) =>
-      ({ type, target, addedNodes: [], removedNodes: [] }) as unknown as MutationRecord;
 
     // Text replacement and rich-text paragraph edits are also childList changes.
     for (let index = 0; index < 10; index += 1) {

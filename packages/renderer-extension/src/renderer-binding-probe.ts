@@ -3019,11 +3019,15 @@ export function installRendererBindingProbe(
         (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
       );
     },
-    async installation(hostId, agent, action) {
+    async installation(hostId, agent, action, confirmedVersion) {
       const client = isHarnessDirectoryUnsupported(hostId) ? null : modelClientForHost(hostId);
       if (!client?.installation)
         throw new Error("Harness version management is unavailable on this Host");
-      return client.installation({ harnessId: harnessIdSchema.parse(agent), action });
+      return client.installation({
+        harnessId: harnessIdSchema.parse(agent),
+        action,
+        ...(confirmedVersion === undefined ? {} : { confirmedVersion }),
+      });
     },
     async getLaunchSettings(hostId, agent) {
       const client = hostId === "local" ? modelClientForHost(hostId) : null;

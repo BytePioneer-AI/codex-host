@@ -8,6 +8,10 @@ import {
   versionFromOutput,
 } from "@codexhost/harness-discovery";
 import { resolveDeepSeekCommand } from "./executable.js";
+import {
+  DEEPSEEK_NEWEST_VERIFIED_VERSION,
+  DEEPSEEK_VERIFIED_VERSIONS,
+} from "./generation-selector.js";
 
 export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, command?: string) {
   let update: ((version: string) => Promise<void>) | undefined;
@@ -55,11 +59,15 @@ export function createDeepSeekInstallation(environment: NodeJS.ProcessEnv, comma
           }
         : npm?.update;
       const canUpdate = isNpx || (npm?.canUpdate ?? false);
+      const updateAvailable = newerInstallationVersion(currentVersion, latestVersion);
       return {
         currentVersion,
         latestVersion,
-        updateAvailable: newerInstallationVersion(currentVersion, latestVersion),
+        updateAvailable,
         canUpdate,
+        ...(updateAvailable && !DEEPSEEK_VERIFIED_VERSIONS.includes(latestVersion)
+          ? { latestVerifiedVersion: DEEPSEEK_NEWEST_VERIFIED_VERSION }
+          : {}),
         ...(!canUpdate
           ? {
               messageCode: "deepseek-original-installer",

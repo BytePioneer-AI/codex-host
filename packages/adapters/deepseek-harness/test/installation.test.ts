@@ -19,23 +19,42 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.resolve.mockReturnValue({ command: "/chosen/dsh", arguments: [], kind: "dsh" });
   mocks.run.mockResolvedValue("0.2.0-rc.2");
-  mocks.fetch.mockResolvedValue(JSON.stringify({ version: "0.2.0-rc.3" }));
+  mocks.fetch.mockResolvedValue(JSON.stringify({ version: "0.2.1-rc.3" }));
 });
 
 describe("DeepSeek installation", () => {
   it("updates identified global npm installs including newer prereleases", async () => {
     mocks.npm.mockResolvedValue({
       canUpdate: true,
-      latest: async () => "0.2.0-rc.3",
+      latest: async () => "0.2.1-rc.3",
       update: mocks.update,
     });
-    mocks.update.mockImplementation(async () => mocks.run.mockResolvedValue("0.2.0-rc.3"));
+    mocks.update.mockImplementation(async () => mocks.run.mockResolvedValue("0.2.1-rc.3"));
     await expect(createDeepSeekInstallation({}, "/chosen/dsh")("update")).resolves.toMatchObject({
-      currentVersion: "0.2.0-rc.3",
+      currentVersion: "0.2.1-rc.3",
       updateAvailable: false,
     });
     expect(mocks.npm).toHaveBeenCalledWith("/chosen/dsh", ["@deepseek-ai/dsh"], {});
-    expect(mocks.update).toHaveBeenCalledWith("0.2.0-rc.3");
+    expect(mocks.update).toHaveBeenCalledWith("0.2.1-rc.3");
+  });
+
+  it("requires consent for the exact unverified target before updating", async () => {
+    const installation = createDeepSeekInstallation({});
+    mocks.fetch.mockResolvedValue(JSON.stringify({ version: "0.2.3" }));
+    mocks.npm.mockResolvedValue({ canUpdate: true, update: mocks.update });
+    expect(await installation("check")).toMatchObject({
+      latestVersion: "0.2.3",
+      latestVerifiedVersion: "0.2.2-rc.2",
+    });
+    await installation("update");
+    await installation("update", "0.2.2-rc.3");
+    expect(mocks.update).not.toHaveBeenCalled();
+    mocks.update.mockImplementation(async () => mocks.run.mockResolvedValue("0.2.3"));
+    await expect(installation("update", "0.2.3")).resolves.toMatchObject({
+      currentVersion: "0.2.3",
+      updateAvailable: false,
+    });
+    expect(mocks.update).toHaveBeenCalledExactlyOnceWith("0.2.3");
   });
 
   it("queries latest independently while preserving the offline npx version probe", async () => {
@@ -46,7 +65,7 @@ describe("DeepSeek installation", () => {
     });
     await expect(createDeepSeekInstallation({})("check")).resolves.toMatchObject({
       currentVersion: "0.2.0-rc.2",
-      latestVersion: "0.2.0-rc.3",
+      latestVersion: "0.2.1-rc.3",
       canUpdate: true,
       updateAvailable: true,
     });
@@ -72,10 +91,10 @@ describe("DeepSeek installation", () => {
     });
 
     it("updates the original cache and confirms the offline launch version", async () => {
-      mocks.run.mockResolvedValueOnce("0.2.0-rc.2").mockResolvedValue("0.2.0-rc.3");
+      mocks.run.mockResolvedValueOnce("0.2.0-rc.2").mockResolvedValue("0.2.1-rc.3");
       const environment = { npm_config_cache: "/chosen/cache" };
       await expect(createDeepSeekInstallation(environment)("update")).resolves.toMatchObject({
-        currentVersion: "0.2.0-rc.3",
+        currentVersion: "0.2.1-rc.3",
         canUpdate: true,
         updateAvailable: false,
       });
@@ -112,7 +131,7 @@ describe("DeepSeek installation", () => {
     it("rejects success when the subsequent offline launch still selects an old cache", async () => {
       mocks.run
         .mockResolvedValueOnce("0.2.0-rc.2")
-        .mockResolvedValueOnce("0.2.0-rc.3")
+        .mockResolvedValueOnce("0.2.1-rc.3")
         .mockResolvedValueOnce("0.2.0-rc.2");
       await expect(createDeepSeekInstallation({})("update")).rejects.toThrow("offline npx launch");
     });
@@ -125,8 +144,8 @@ describe("DeepSeek installation", () => {
       const first = installation("update");
       expect(installation("update")).toBe(first);
       await expect(first).rejects.toThrow("download failed");
-      mocks.run.mockResolvedValueOnce("0.2.0-rc.2").mockResolvedValue("0.2.0-rc.3");
-      await expect(installation("update")).resolves.toMatchObject({ currentVersion: "0.2.0-rc.3" });
+      mocks.run.mockResolvedValueOnce("0.2.0-rc.2").mockResolvedValue("0.2.1-rc.3");
+      await expect(installation("update")).resolves.toMatchObject({ currentVersion: "0.2.1-rc.3" });
     });
 
     it.each(["{}", '{"version":"not-a-version"}', "not-json"])(
@@ -156,7 +175,7 @@ describe("DeepSeek installation", () => {
     mocks.npm.mockResolvedValue(null);
     await expect(createDeepSeekInstallation({})("check")).resolves.toMatchObject({
       canUpdate: false,
-      latestVersion: "0.2.0-rc.3",
+      latestVersion: "0.2.1-rc.3",
       updateAvailable: true,
     });
   });

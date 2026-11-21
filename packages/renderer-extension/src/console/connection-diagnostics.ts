@@ -104,10 +104,15 @@ export function createConsoleConnectionDiagnostics(
             hostId: string,
             agent: string,
             action: "check" | "update" | "install",
+            confirmedVersion?: string,
           ) => {
             if (hostId !== "local")
               throw new Error("Web console installation only supports the local Host");
-            return installation({ harnessId: harnessIdSchema.parse(agent), action });
+            return installation({
+              harnessId: harnessIdSchema.parse(agent),
+              action,
+              ...(confirmedVersion === undefined ? {} : { confirmedVersion }),
+            });
           },
         }
       : {}),

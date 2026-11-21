@@ -579,6 +579,8 @@ Web 侧栏与空会话主视觉共用 `ui-brand-official` 提供的原版“抱�
 
 共享来源统一调用 Host 的 `codexhost/thread/pins/list` / `codexhost/thread/pins/set`，不调用 Renderer 的置顶服务。Host 复用原生 `threadSection/list`、`thread/list(section_position)` 和既有外部 Thread 分区移动逻辑；内置 Pinned 分区使用原生协议的保留标识，并通过原生查询确认存在，不按显示名称猜测或自行创建分区。官方 Codex Thread 的分区成员与顺序由官方 app-server 持久化，Host 通过 `thread/read` 确认当前分区，通过 `thread/section/move` 修改；外部 Thread 的归属与排序锚点只保存于 Mapping Store 的分区记录。`pins/list` 始终读取官方 Pinned 分区并合并可见外部成员，即使没有任何外部置顶也返回官方成员，和 Desktop 的原生 Thread 查询共用同一混合顺序；不修改 `.codex-global-state.json`，不创建镜像会话。展示未归档的本机官方 Codex 与 canonical external Threads 的置顶，不聚合远程 Threads。
 
+Web 侧栏读取本机 Codex Desktop 的自定义分区，并按原生成员顺序显示。置顶仍由内置分区管理。分区名称和成员可在 Desktop 管理，Web 在刷新会话目录时同步。
+
 分组、树形及平铺模式都将已置顶会话集中到顶部“置顶”分区，项目内不重复显示，不改变项目归属；项目折叠不影响置顶行。取消置顶后恢复普通列表位置；搜索仍只显示一个结果。置顶区为空时隐藏。行继续沿用 Harness 图标、菜单、键盘导航、当前选中态及手机触摸目标。置顶行不常驻显示独立图钉，也不为其预留时间旁的空位；支持悬停且使用精细指针时，悬停、键盘聚焦或菜单打开显示原有置顶/取消置顶快捷按钮。不支持悬停或使用粗指针时隐藏独立快捷按钮，常驻至少 44px 的 `…` 菜单入口，菜单提供「取消置顶」，不依赖长按；按输入能力而非屏幕宽度区分。暂不提供置顶区拖动排序，避免把浏览器本地顺序冒充 GUI 顺序。
 
 Web 操作在持久写入并重新读取确认后才发布完整置顶集合；Host 的置顶查询、写入与 Desktop 分区移动共用串行边界，避免并发重写分区丢失操作。官方与外部 Thread 重复设置同一状态都不重复写入或改变顺序；取消未置顶会话不会移出它的自定义分区。Web 刷新后重新查询同一分区，两端的置顶与取消置顶均以各所有者的持久化结果为准。Host 的 `codexhost/thread/pins/changed` 通知触发 Web 目录校验，Desktop 的分区变化仍由 10 秒查询校验；多浏览器通过现有 `workspace/follow` 接收变更，无变化不重发。Desktop 后续原生查询读取同一分区记录，不依赖启动时补写。共享模式不读取旧 Web-only 或 GUI 全局文件中的置顶副本，也不写 `workspaces.json`。尚未产生 canonical Thread 的草稿不能置顶，也不会为了置顶创建原生会话。

@@ -61,6 +61,11 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_delete_result$schema =
   'deleted': z.literal(true).readonly(),
 }))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value
+const threadSections = () => z.array(z.object({
+  'id': z.string().readonly(),
+  'name': z.string().readonly(),
+  'threadIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+}).readonly()).readonly()
 const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema$value ??= z.union([z.object({
   'type': z.literal("baseline").readonly(),
   'value': z.object({
@@ -74,6 +79,7 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
 })).readonly(),
   'archivedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+  'threadSections': threadSections().optional().readonly(),
 }).readonly(),
 }), z.object({
   'type': z.literal("upsert").readonly(),
@@ -97,6 +103,9 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_follow_result$schema =
 }), z.object({
   'type': z.literal("pinned").readonly(),
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
+}), z.object({
+  'type': z.literal("threadSections").readonly(),
+  'threadSections': threadSections(),
 })]))
 let _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value
 const _deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema = () => (_deepseek_ai_dsh_api_workspace_controller_workspace_initializeDefault_result$schema$value ??= z.union([z.undefined(), z.object({

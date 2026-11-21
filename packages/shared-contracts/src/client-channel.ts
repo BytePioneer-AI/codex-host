@@ -1,3 +1,4 @@
+import { jsonObjectSchema } from "./json-value.js";
 import { z } from "zod";
 import { DESKTOP_EXTENSION_MANAGEMENT_METHODS } from "./desktop-extension-management.js";
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "./harness-models.js";
@@ -45,6 +46,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/workspace/read",
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
+  "codexhost/thread/sections/list",
   "codexhost/thread/pins/set",
   "codexhost/harness/plugins/list",
   "codexhost/harness/inspect",
@@ -85,6 +87,22 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/update/status",
   "codexhost/sessions/loaded/list",
 ] as const;
+/** Native custom sections in the order returned by the official app-server. */
+export const clientThreadSectionsSchema = z
+  .object({
+    sections: z.array(
+      z
+        .object({
+          id: z.string().min(1),
+          name: z.string().min(1),
+          threads: z.array(jsonObjectSchema),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+export type ClientThreadSections = z.infer<typeof clientThreadSectionsSchema>;
+
 /** Canonical external pin membership, shared with native Thread sections. */
 export const clientThreadPinsSchema = z.object({ threadIds: z.array(z.string().min(1)) }).strict();
 export const clientThreadPinParamsSchema = z

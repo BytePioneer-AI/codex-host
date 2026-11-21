@@ -348,8 +348,13 @@ import {
   officialThreadListPageFromResponse,
   OfficialThreadListError,
 } from "./thread-list-aggregator.js";
-import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
-import { ThreadPins } from "./external-thread-pins.js";
+import {
+  listSectionThreads,
+  moveThreadSection,
+  officialThreadSections,
+  listAllOfficialRows,
+} from "./external-thread-sections.js";
+import { PINNED_THREAD_SECTION_ID, ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
 import { ThreadTreeWatch } from "./thread-tree-watch.js";
 import {
@@ -2135,6 +2140,36 @@ export class AppServerHost {
       request.method === "codexhost/thread/pins/set"
     ) {
       this.#dispatchDesktopReply(request, () => this.#handleThreadPins(request));
+      return;
+    }
+    if (request.method === "codexhost/thread/sections/list") {
+      this.#dispatchDesktopReply(request, async () => {
+        try {
+          const requestOfficial = (method: string, params: JsonObject) =>
+            this.#requestOfficial(method, params);
+          const sections = [];
+          for await (const { id, name } of officialThreadSections(requestOfficial)) {
+            if (id !== PINNED_THREAD_SECTION_ID && name) sections.push({ id, name });
+          }
+          const sectionRows = await Promise.all(
+            sections.map(async (section) => ({
+              ...section,
+              threads: await listAllOfficialRows(requestOfficial, {
+                sectionId: section.id,
+                sortKey: "section_position",
+                modelProviders: [],
+                useStateDbOnly: true,
+              }),
+            })),
+          );
+          await this.#writer.json(rpcEnvelope(request, { result: { sections: sectionRows } }));
+        } catch (error) {
+          this.#diagnose(error);
+          await this.#writer.json(
+            rpcError(request, -32081, "Native Thread sections are unavailable"),
+          );
+        }
+      });
       return;
     }
     if (await this.#threadRouting.handle(request, frame, origin)) return;

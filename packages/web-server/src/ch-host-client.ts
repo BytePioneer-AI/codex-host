@@ -56,6 +56,7 @@ const METHODS = new Set([
   THREAD_ARCHIVE_CONFIRM_METHOD,
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
+  "codexhost/thread/sections/list",
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",

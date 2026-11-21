@@ -97,6 +97,79 @@ it("shares canonical CH identity and cwd without a Web index/history or physical
   assert.deepEqual(readdirSync(root), ["workspaces.json"]);
 });
 
+it("propagates native section order and loads members outside the normal catalog page", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-native-sections-"));
+  const host = new FakeChHost();
+  host.add("ordinary", root);
+  const older = host.add("outside-catalog", root);
+  host.threads.delete(older.id);
+  const request = host.request.bind(host);
+  host.request = async <T>(method: string, params: Record<string, unknown>): Promise<T> =>
+    method === "codexhost/thread/sections/list"
+      ? ({ sections: [{ id: "research", name: "Research", threads: [older] }] } as T)
+      : request<T>(method, params);
+  const data = new DataDir(root);
+  const workspaces = new Workspaces(data, root);
+  const sessions = new ChSessions(host, workspaces, new EventHub(root));
+  t.after(async () => {
+    await sessions.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const rpc = new RpcRegistry();
+  let follow: StreamHandler | undefined;
+  class WorkspaceStreams extends StreamRegistry {
+    override register(name: string, callback: StreamHandler) {
+      super.register(name, callback);
+      if (name === "workspace/follow") follow = callback;
+    }
+  }
+  const streams = new WorkspaceStreams();
+  workspaces.register(rpc, streams);
+  sessions.register(rpc, streams);
+  const frames: unknown[] = [];
+  assert.ok(follow);
+  const closeHandlers: Array<() => void> = [];
+  await follow(
+    {},
+    {
+      id: "sections",
+      closed: false,
+      push: (frame) => {
+        frames.push(frame);
+      },
+      end: () => {},
+      fail: (code, message) => {
+        throw new Error(`${code} ${message}`);
+      },
+      onClose: (handler) => {
+        closeHandlers.push(handler);
+      },
+    },
+  );
+  try {
+    const result = await rpc.dispatch("session/list", { args: {} });
+    assert.ok(result.ok, result.ok ? undefined : result.error.message);
+    assert.deepEqual(
+      (result.value as { items: Array<{ sessionId: string }> }).items
+        .map((row) => row.sessionId)
+        .sort(),
+      ["ordinary", older.id].sort(),
+    );
+    assert.ok(
+      frames.some(
+        (frame) =>
+          JSON.stringify(frame) ===
+          JSON.stringify({
+            type: "threadSections",
+            threadSections: [{ id: "research", name: "Research", threadIds: [older.id] }],
+          }),
+      ),
+    );
+  } finally {
+    for (const handler of closeHandlers) handler();
+  }
+});
+
 it("resolves an existing unbound draft summary without native reads, then follows its bound alias", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-direct-draft-"));
   const host = new FakeChHost();

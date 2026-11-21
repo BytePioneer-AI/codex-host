@@ -24,6 +24,7 @@ import type {
   WorkspaceValue,
   WorkspaceId,
   WorkspaceView,
+  WorkspaceThreadSection,
 } from "../types.ts";
 
 /** Complete generated `ctx.remote.workspace` namespace. */
@@ -40,6 +41,7 @@ export interface WorkspaceSnapshot {
   readonly archivedSessionIds: WorkspaceArchiveValue["archivedSessionIds"];
   /** Complete registry-global pin set, most recently pinned first. */
   readonly pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"];
+  readonly threadSections?: readonly WorkspaceThreadSection[];
   readonly state: "idle" | "loading" | "error";
   readonly phase: WorkspaceListPhase;
   readonly error: RemoteFailure | null;
@@ -59,6 +61,7 @@ export interface WorkspaceFollowSink {
   replaceArchived(sessionIds: WorkspaceArchiveValue["archivedSessionIds"]): void;
   /** Replace the complete pinned Session set. */
   replacePinned(pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"]): void;
+  replaceThreadSections(sections: readonly WorkspaceThreadSection[]): void;
 }
 
 /**
@@ -69,6 +72,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   private items: readonly WorkspaceView[] = [];
   private archivedSessionIds: WorkspaceArchiveValue["archivedSessionIds"] = [];
   private pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"] = [];
+  private threadSections: readonly WorkspaceThreadSection[] = [];
   private state: WorkspaceSnapshot["state"] = "loading";
   private phase: WorkspaceListPhase = "pending";
   private error: RemoteFailure | null = null;
@@ -300,6 +304,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
     this.installViews(baseline.items);
     this.installArchived(baseline.archivedSessionIds);
     this.installPinned(baseline.pinnedSessionIds);
+    this.threadSections = baseline.threadSections ?? [];
     this.state = "idle";
     this.phase = "ready";
     this.error = null;
@@ -338,6 +343,11 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
   replacePinned(pinnedSessionIds: WorkspacePinValue["pinnedSessionIds"]): void {
     this.pinRequestSeq++;
     this.installPinned(pinnedSessionIds);
+  }
+
+  replaceThreadSections(sections: readonly WorkspaceThreadSection[]): void {
+    this.threadSections = sections;
+    this.invalidate();
   }
 
   /** Keep the last complete projection visible while a lost carrier reconnects. */
@@ -394,6 +404,7 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
         optimistic.size === 0
           ? this.pinnedSessionIds
           : this.pinnedSessionIds.filter((id) => !optimistic.has(id)),
+      threadSections: this.threadSections,
       state: this.state,
       phase: this.phase,
       error: this.error,

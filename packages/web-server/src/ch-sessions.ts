@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  clientThreadSectionsSchema,
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
@@ -263,7 +264,7 @@ export class ChSessions {
     cursor?: string,
   ): Promise<CatalogPage | undefined> {
     const known = new Set(this.rows.keys());
-    const [{ page: snapshot }, definitions] = await Promise.all([
+    const [{ page: snapshot }, definitions, , sections] = await Promise.all([
       readSessionPage(this.host, timing, includeArchived, cursor, () =>
         this.pins.refresh().catch((error: unknown) => {
           console.error("[session/list] native pins unavailable", error);
@@ -272,6 +273,16 @@ export class ChSessions {
       ),
       timing.measure("project_definitions", () => this.host.projects([])),
       timing.measure("thread_tree", () => this.tree.refresh()),
+      timing.measure("thread_sections", async () => {
+        try {
+          return clientThreadSectionsSchema.parse(
+            await this.host.request("codexhost/thread/sections/list", {}),
+          ).sections;
+        } catch {
+          // Optional on older Hosts; keep the last confirmed snapshot on a read failure.
+          return undefined;
+        }
+      }),
     ]);
     if (this.closed) return;
     const found = new Map(snapshot.threads.map((row) => [row.id, row]));
@@ -288,6 +299,24 @@ export class ChSessions {
       )
         ownership.set(item.threadId, item.harnessId);
       else if (item.owner === "codex") ownership.set(item.threadId, "codex");
+    }
+    if (sections) {
+      this.workspaces.setReferenceThreadSections(
+        sections.map(({ id, name, threads }) => {
+          const threadIds: string[] = [];
+          for (const thread of threads) {
+            if (typeof thread.id !== "string" || thread.archived === true) continue;
+            if (!found.has(thread.id)) {
+              const row = thread as unknown as ChThread;
+              found.set(thread.id, row);
+              ownership.set(thread.id, "codex");
+              if (cursor === undefined) snapshot.threads.push(row);
+            }
+            if (ownership.get(thread.id) === "codex") threadIds.push(thread.id);
+          }
+          return { id, name, threadIds };
+        }),
+      );
     }
     timing.count("ownershipIds", ownership.size);
     timing.count(

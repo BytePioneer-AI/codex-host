@@ -250,6 +250,17 @@ export class Workspaces {
     this.broadcast({ type: "pinned", pinnedSessionIds: this.pinnedSessionIds() });
   }
 
+  /** Read-only native Thread sections; only the app-server persists them. */
+  private referenceThreadSections: Array<{ id: string; name: string; threadIds: string[] }> = [];
+
+  setReferenceThreadSections(
+    sections: Array<{ id: string; name: string; threadIds: string[] }>,
+  ): void {
+    if (JSON.stringify(sections) === JSON.stringify(this.referenceThreadSections)) return;
+    this.referenceThreadSections = sections;
+    this.broadcast({ type: "threadSections", threadSections: sections });
+  }
+
   /** Ephemeral Host archive projection; shared Threads never use legacy Web archive flags. */
   setReferenceArchives(ids: readonly string[]): void {
     const next = [...new Set(ids)];
@@ -615,6 +626,7 @@ export class Workspaces {
         value: {
           items: this.list(),
           pinnedSessionIds: this.pinnedSessionIds(),
+          threadSections: this.referenceThreadSections,
           archivedSessionIds: this.archivedSessionIds(),
           ...(this.referenceOnlyDefault ? { canStartProjectless: true } : {}),
         },

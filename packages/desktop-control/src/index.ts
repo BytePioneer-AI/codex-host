@@ -37,6 +37,7 @@ export type {
   RendererContractAuditInspection,
 } from "./contract-audit.js";
 export { inspectRendererDom, validateRendererDomInspection } from "./renderer-dom.js";
+export { desktopExtensionPageModuleUrl } from "./renderer-extension-page-url.js";
 export {
   createRendererCdpControlSession,
   installRendererCdpControlSession,

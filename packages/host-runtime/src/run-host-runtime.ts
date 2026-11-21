@@ -490,6 +490,7 @@ export async function runHostRuntime(input: {
                 usageStatistics,
                 ...common,
                 desktopExtensionBackends: host.desktopExtensionBackends,
+                hostExtensions: host.hostExtensions,
                 arguments: [],
                 desktopInput,
                 desktopOutput,
@@ -601,6 +602,7 @@ export async function runHostRuntime(input: {
             usageStatistics,
             ...(sharedDelegation ? { sharedDelegation } : {}),
             desktopExtensionBackends: externalHost.desktopExtensionBackends,
+            hostExtensions: externalHost.hostExtensions,
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),
               delegateCreates: true,

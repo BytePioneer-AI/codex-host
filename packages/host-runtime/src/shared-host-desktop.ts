@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { AppServerHost } from "./app-server-host.js";
 import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import type { HostExtensionManager } from "./host-extension-manager.js";
 import { SharedThreadBridge } from "./shared-thread-bridge.js";
 import type { SharedThreadOwner } from "./shared-thread-owner.js";
 import type { ExternalThreadStore } from "./external-thread-repository.js";
@@ -74,6 +75,7 @@ export function sharedHostDesktop(
     official: PreparedLocalCodex;
     owner: SharedThreadOwner;
     desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
+    hostExtensions?: HostExtensionManager | undefined;
     store: ExternalThreadStore;
     prices: ModelPriceCatalog;
     updateCoordinator?: HostUpdateCoordinator;
@@ -100,6 +102,7 @@ export function sharedHostDesktop(
       arguments: [],
       environment,
       desktopExtensionBackends: options.desktopExtensionBackends,
+      hostExtensions: options.hostExtensions,
       desktopInput: streams.input,
       desktopOutput: streams.output,
       diagnosticOutput: streams.diagnosticOutput,

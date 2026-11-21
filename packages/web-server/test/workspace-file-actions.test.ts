@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getActiveResourcesInfo } from "node:process";
 import { test } from "node:test";
 import { ChSessions } from "../src/ch-sessions.ts";
 import { DataDir } from "../src/store.ts";
@@ -10,6 +11,20 @@ import { EventHub, RpcRegistry, StreamRegistry } from "../src/transport.ts";
 import { downloadWorkspaceFile, openWorkspaceFile } from "../src/workspace-file-actions.ts";
 import { Workspaces } from "../src/workspaces.ts";
 import { FakeChHost } from "./support/ch-host.ts";
+
+test("a missing Launcher does not leave a timer keeping Node alive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ch-missing-launcher-"));
+  const activeTimers = () => getActiveResourcesInfo().filter((type) => type === "Timeout").length;
+  try {
+    const before = activeTimers();
+    await assert.rejects(openWorkspaceFile(join(root, "missing-launcher"), root, "reveal"), {
+      code: "session/open-failed",
+    });
+    assert.equal(activeTimers(), before, "Launcher failure should not leave a referenced timer");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("downloads original binary, HTML and empty files with attachment headers; refuses unknown sessions and directories", async () => {
   const root = await mkdtemp(join(tmpdir(), "ch-file-actions-"));

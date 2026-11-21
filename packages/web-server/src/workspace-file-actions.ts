@@ -1,5 +1,5 @@
 /** Authenticated original-file downloads and local desktop handoff. */
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -38,20 +38,34 @@ export async function openWorkspaceFile(
     }
   }
   const command = action === "reveal" ? "reveal-file" : "open-file";
-  await new Promise<void>((resolve, reject) => {
-    execFile(launcher, [command, target], { timeout: 10_000, windowsHide: true }, (error) => {
-      if (error)
-        reject(
-          new RpcError(
-            "session/open-failed",
-            action === "reveal"
-              ? "The system could not open the containing folder."
-              : "The system could not open this file.",
-          ),
-        );
-      else resolve();
-    });
+  // DETACHED_PROCESS skips the console without passing SW_HIDE to Explorer.
+  const detached = process.platform === "win32" && action === "reveal";
+  const child = spawn(launcher, [command, target], {
+    stdio: "ignore",
+    detached,
+    windowsHide: !detached,
   });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const opened = await new Promise<boolean>((resolve) => {
+    let timedOut = false;
+    child.on("error", () => resolve(false));
+    child.once("close", (code) => resolve(!timedOut && code === 0));
+    timeout = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        resolve(false);
+      }
+    }, 10_000);
+  }).finally(() => clearTimeout(timeout));
+  if (!opened)
+    throw new RpcError(
+      "session/open-failed",
+      action === "reveal"
+        ? "The system could not open the containing folder."
+        : "The system could not open this file.",
+    );
   return { opened: true };
 }
 

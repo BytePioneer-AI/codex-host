@@ -25,3 +25,37 @@ describe("background output validation", () => {
     }
   });
 });
+
+it("validates request timing independently of billable usage", () => {
+  const event = { type: "usage.request.timing", turnId: "turn-1" };
+  const requestId = "step:1";
+  const latency = { requestStartedAtMs: 100, timeToFirstOutputMs: 0 };
+  const output = { startedAtMs: 100, completedAtMs: 110, outputTokens: 5 };
+  const accepts = (fields: Record<string, unknown>) =>
+    harnessOutputSchema.safeParse({ kind: "event", event: { ...event, ...fields } }).success;
+
+  for (const timing of [
+    { requestId, ...latency },
+    { requestId, output },
+    { requestId, ...latency, output },
+  ]) {
+    expect(accepts({ timing })).toBe(true);
+  }
+  for (const fields of [
+    {},
+    { timing: null },
+    { turnId: "", timing: { requestId, ...latency } },
+    { timing: { requestId: "", ...latency } },
+    { timing: { requestId } },
+    { timing: { requestId, requestStartedAtMs: 100, output } },
+    { timing: { requestId, timeToFirstOutputMs: 0, output } },
+    { timing: { requestId, ...latency, timeToFirstOutputMs: -1 } },
+    { timing: { requestId, ...latency, timeToFirstOutputMs: Number.MAX_SAFE_INTEGER + 1 } },
+    { timing: { requestId, ...latency, extra: true } },
+    { timing: { requestId, output: { ...output, completedAtMs: 100 } } },
+    { timing: { requestId, output: { ...output, outputTokens: 1.5 } } },
+    { timing: { requestId, output: { ...output, extra: true } } },
+  ]) {
+    expect(accepts(fields), JSON.stringify(fields)).toBe(false);
+  }
+});

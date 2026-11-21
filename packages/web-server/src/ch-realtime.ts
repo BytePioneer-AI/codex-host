@@ -15,9 +15,9 @@ export class ChRealtime {
     host: NonNullable<ChHostClient["realtime"]>,
     private readonly callbacks: {
       thread: (id: string) => Promise<unknown>;
+      usage: (id: string) => void;
       catalog: () => Promise<void>;
       archived?: (id: string, archived: boolean) => void;
-      usageChanged?: (id: string) => void;
       connection: (online: boolean) => void;
       /** `full` is the hello's `reset`: the cursor could not be replayed. */
       reset: (epoch: string, full: boolean) => void;
@@ -53,8 +53,11 @@ export class ChRealtime {
       for (const id of this.watched.keys()) this.schedule(id);
       this.schedule("");
     } else if (event.type === "changed") {
-      if (event.method === "codexhost/thread/usage/updated") {
-        if (this.watched.has(event.threadId)) this.callbacks.usageChanged?.(event.threadId);
+      if (
+        event.method === "codexhost/thread/usage/updated" ||
+        event.method === "thread/tokenUsage/updated"
+      ) {
+        if (this.online && this.watched.has(event.threadId)) this.callbacks.usage(event.threadId);
         return;
       }
       if (event.method === "thread/archived" || event.method === "thread/unarchived")

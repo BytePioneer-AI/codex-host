@@ -62,6 +62,7 @@ Antigravity 通过官方 `agy acp`（要求 `agy >= 1.5.8`，已用本机 `1.5.9
 
 - **权限与交互**：原生提供 `default`、`accept-edits`、`auto`、`plan` 四种 ACP 模式（`session/set_mode`）及进程启动级 `dangerously-skip-permissions`；工具审批走原生 `session/request_permission`，`ask_question` 走原生客户端 `elicitation/create`（`form` 模式），不使用私有 Hook 桥。详见 [Antigravity 权限与交互](antigravity/antigravity-tool-approval.md)。
 - **历史读取**：只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`，不启动 `agy`，不走 `session/load`（ACP 回放在 stdout 受阻时会提前回复并跨轮乱序，不可作为完整来源）。活动库读取已提交的 WAL 快照并跳过仍在生成的步骤；数据库不可读或格式未知时返回“历史不可用”，不降级。连续用户输入沿用既有分组规则合并，保证已存 Turn 身份稳定。
+- **历史身份与检查点**：读取时保留每条原生用户输入的序号。合并展示的 Turn 使用其覆盖的最后一条原生用户输入生成分叉检查点，不使用界面分组下标；例如 15 条原生输入显示为 14 组，末组的检查点仍保留完整的 15 条输入。有效的已有身份可以与检查点不同，稀疏编号和非数字旧身份继续保留；没有已有映射时，依据原生边界生成身份，使首次读取与带映射重读保持一致。
 - **历史派生（Fork / Rollback）**：`agy acp` 1.5.9 未提供 `session/fork` RPC（返回 `-32601 Method not found`）。Adapter 在会话空闲态克隆 `~/.gemini/antigravity-cli/conversations/<id>.db`，按原生 `steps` 表 `step_type = 14`（`user_input`）边界裁剪并同步 `conversation_summaries.db` 后，经 `session/resume` 打开派生会话；活动 Turn 期间返回 `sessionBusy`。
 - **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行，但 ACP 流不推送旧 PrintMode 专有的 `checkpoint` 步骤事件，因此不合成独立的 `contextCompaction` Item。
 

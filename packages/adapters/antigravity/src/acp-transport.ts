@@ -346,7 +346,7 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     await this.#request(connection.cancel({ sessionId }), "session/cancel");
   }
 
-  async closeSession(): Promise<void> {
+  #clearSessionState(): string | null {
     const sessionId = this.#sessionId;
     this.#sessionId = null;
     this.#acceptCallbacks = false;
@@ -357,6 +357,11 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
     this.#promptRequestId = undefined;
     this.#pendingEvents = [];
     this.#clearCallbacks();
+    return sessionId;
+  }
+
+  async closeSession(): Promise<void> {
+    const sessionId = this.#clearSessionState();
     if (sessionId && this.#connection)
       await this.#request(
         this.#connection.closeSession({ sessionId }),
@@ -372,11 +377,9 @@ export class AntigravityAcpTransport implements AntigravityAcpTransportLike {
   }
 
   async #shutdown(): Promise<void> {
-    try {
-      await this.closeSession();
-    } catch (error) {
-      this.#stderrRaw = `${this.#stderrRaw}\n${this.#error(error).message}`.slice(-32_000);
-    }
+    // End stdin without sending session/close: in agy ACP, session/close
+    // force-cancels any background tasks and subagents owned by the conversation.
+    this.#clearSessionState();
     this.#faultSignal.abort(new AntigravityTransportError("unavailable", "Antigravity ACP closed"));
     this.#opening = null;
     this.#sessionHandler = null;

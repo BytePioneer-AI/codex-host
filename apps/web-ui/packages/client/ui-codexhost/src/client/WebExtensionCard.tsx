@@ -1,4 +1,4 @@
-/** Desktop-aligned 3-row extension card & category-tinted icon for Installed and Market views. */
+/** Desktop-aligned minimalist extension card & category-tinted icon for Installed and Market views. */
 import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
   IconCheckCircleFillRegular,
@@ -23,6 +23,7 @@ import {
   isValidExtensionCount,
   parseSafeHttpUrl,
   parseSafeIconUrl,
+  type ExtensionCapabilityBadge,
   type ExtensionLocale,
   type Translate,
 } from "./web-extensions-helpers.ts";
@@ -88,7 +89,6 @@ export function ExtensionIcon({
 export interface WebExtensionCardProps {
   readonly cardKey: string;
   readonly extensionId: string;
-  readonly format: "codexhost" | "dsh";
   readonly cardKind: "installed" | "market";
   readonly displayName: string;
   readonly description?: string | null | undefined;
@@ -100,10 +100,12 @@ export interface WebExtensionCardProps {
   readonly downloads?: number | undefined;
   readonly trustTier?: DesktopExtensionTrustTier | undefined;
   readonly categories?: readonly DesktopExtensionCategory[] | undefined;
+  readonly capabilityBadges?: readonly ExtensionCapabilityBadge[] | undefined;
   readonly statusDot?:
     { readonly tone: "info" | "warning" | "danger"; readonly label: string } | undefined;
   readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
   readonly attention?: { readonly tone: "warning" | "danger"; readonly text: string } | undefined;
+  readonly secondaryAction?: ReactNode;
   readonly actionControl: ReactNode;
   readonly busy?: boolean | undefined;
   readonly contentLocale: ExtensionLocale;
@@ -124,7 +126,6 @@ function formatAuthorVersion(author: string | undefined, version: string | undef
 export function WebExtensionCard({
   cardKey,
   extensionId,
-  format,
   cardKind,
   displayName,
   description,
@@ -136,9 +137,11 @@ export function WebExtensionCard({
   downloads,
   trustTier,
   categories,
+  capabilityBadges,
   statusDot,
   updateHint,
   attention,
+  secondaryAction,
   actionControl,
   busy = false,
   contentLocale,
@@ -173,7 +176,6 @@ export function WebExtensionCard({
       className={css.card}
       data-web-extension={cardKey}
       data-extension-id={extensionId}
-      data-extension-format={format}
       data-card-kind={cardKind}
       data-busy={busy ? "true" : undefined}
       tabIndex={0}
@@ -188,7 +190,7 @@ export function WebExtensionCard({
         }
       }}
     >
-      {/* Row 1: 32x32 icon + title (+ optional official shield / error dot) on left; control on right */}
+      {/* Row 1: 32x32 icon + title (+ optional official shield / error dot) on left; controls on right */}
       <div className={css.cardTop}>
         <div className={css.cardIdentity}>
           <ExtensionIcon src={iconUrl} categories={categories} size="card" />
@@ -218,9 +220,21 @@ export function WebExtensionCard({
           </div>
         </div>
         <div className={css.cardAction} onClick={stopBubble} onKeyDown={stopBubble}>
+          {secondaryAction}
           {actionControl}
         </div>
       </div>
+
+      {/* Capability badges row */}
+      {capabilityBadges !== undefined && capabilityBadges.length > 0 && (
+        <div className={css.cardCapabilities}>
+          {capabilityBadges.map((badge) => (
+            <span key={badge.kind} className={css.capBadge} data-capability={badge.kind}>
+              {badge.label}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Row 2: 2-line muted description + compact error callout only when abnormal */}
       {(trimmedDescription !== "" || attention !== undefined) && (
@@ -239,7 +253,7 @@ export function WebExtensionCard({
         </div>
       )}
 
-      {/* Row 3: Borderless muted metadata line matching Desktop card */}
+      {/* Row 3: Borderless muted metadata line */}
       {showMeta && (
         <div className={css.cardMeta}>
           <div className={css.cardMetaLeft}>

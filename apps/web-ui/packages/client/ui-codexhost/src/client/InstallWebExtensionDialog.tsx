@@ -1,4 +1,4 @@
-/** Multi-source install dialog: native .zip upload, GitHub Release, and DSH npm/URL/directory. */
+/** Multi-source install dialog for unified Host extensions: local .zip, GitHub, and local directory. */
 import {
   useEffect,
   useId,
@@ -10,7 +10,6 @@ import {
 } from "react";
 import {
   Button,
-  IconChevronDownOutlineRegular,
   IconPaperclipOutlineRegular,
   IconShieldOutlineRegular,
   Modal,
@@ -18,31 +17,22 @@ import {
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
-  DESKTOP_EXTENSION_ZIP_MAX_BYTES,
-  webNativeExtensionSourceSchema,
-  webUiExtensionRegistrySchema,
+  HOST_EXTENSION_ZIP_MAX_BYTES,
+  hostExtensionInstallSourceSchema,
+  type HostExtensionInstallSource,
 } from "@codexhost/shared-contracts";
-import { formatByteSize } from "./web-extensions-helpers.ts";
+import { formatByteSize, parseHostGitHubSource } from "./web-extensions-helpers.ts";
 import css from "./InstallWebExtensionDialog.module.css";
 
-type InstallMode = "zip" | "github" | "dsh";
-type RegistryChoice = "official" | "mirror" | "custom";
-
-const REGISTRIES = {
-  official: "https://registry.npmjs.org/",
-  mirror: "https://registry.npmmirror.com/",
-} as const;
+type InstallMode = "zip" | "github" | "localDir";
 
 export type InstallWebExtensionRequest =
-  | { readonly format: "codexhost"; readonly kind: "zip"; readonly file: File }
+  | { readonly kind: "zip"; readonly file: File }
   | {
-      readonly format: "codexhost";
       readonly kind: "github";
-      readonly repository: string;
-      readonly tag?: string | undefined;
-      readonly asset: string;
+      readonly source: Extract<HostExtensionInstallSource, { type: "github" }>;
     }
-  | { readonly format: "dsh"; readonly spec: string; readonly registry: string };
+  | { readonly kind: "localDir"; readonly localDir: string };
 
 type Props = PropsLocale<"codexhostImport"> & {
   open: boolean;
@@ -62,26 +52,24 @@ export function InstallWebExtensionDialog({
 }: Props): ReactNode {
   const [mode, setMode] = useState<InstallMode>("zip");
 
-  // Native ZIP state
+  // Local ZIP state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  // Native GitHub Release state
+  // GitHub state
   const [repository, setRepository] = useState("");
+  const [refName, setRefName] = useState("");
   const [tag, setTag] = useState("");
   const [asset, setAsset] = useState("");
+  const [subpath, setSubpath] = useState("");
 
-  // DSH state
-  const [spec, setSpec] = useState("");
-  const [registry, setRegistry] = useState<RegistryChoice>("official");
-  const [customRegistry, setCustomRegistry] = useState("");
-  const [guideOpen, setGuideOpen] = useState(false);
+  // Local directory state
+  const [localDir, setLocalDir] = useState("");
 
   // Local validation error
   const [localError, setLocalError] = useState<string | null>(null);
 
   const formId = useId();
-  const guideId = useId();
   const errorId = useId();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composition = useRef<ReturnType<typeof observeComposition> | null>(null);
@@ -114,11 +102,11 @@ export function InstallWebExtensionDialog({
       setLocalError(t("extensions.installDialog.errorZipEmpty"));
       return;
     }
-    if (file.size > DESKTOP_EXTENSION_ZIP_MAX_BYTES) {
+    if (file.size > HOST_EXTENSION_ZIP_MAX_BYTES) {
       setSelectedFile(null);
       setLocalError(
         t("extensions.installDialog.errorZipTooLarge", {
-          limit: formatByteSize(DESKTOP_EXTENSION_ZIP_MAX_BYTES),
+          limit: formatByteSize(HOST_EXTENSION_ZIP_MAX_BYTES),
         }),
       );
       return;
@@ -144,7 +132,7 @@ export function InstallWebExtensionDialog({
         setLocalError(t("extensions.installDialog.errorNoFile"));
         return;
       }
-      void onInstall({ format: "codexhost", kind: "zip", file: selectedFile }).then((installed) => {
+      void onInstall({ kind: "zip", file: selectedFile }).then((installed) => {
         if (installed) {
           setSelectedFile(null);
           if (fileInputRef.current) fileInputRef.current.value = "";
@@ -154,57 +142,49 @@ export function InstallWebExtensionDialog({
     }
 
     if (mode === "github") {
-      const trimmedRepo = repository.trim();
-      const trimmedTag = tag.trim();
-      const trimmedAsset = asset.trim();
-      if (!trimmedRepo) {
+      if (!repository.trim()) {
         setLocalError(t("extensions.installDialog.errorEmptyRepo"));
         return;
       }
-      if (!trimmedAsset) {
-        setLocalError(t("extensions.installDialog.errorEmptyAsset"));
-        return;
-      }
-      const parsed = webNativeExtensionSourceSchema.safeParse({
-        type: "github",
-        repository: trimmedRepo,
-        ...(trimmedTag !== "" ? { tag: trimmedTag } : {}),
-        asset: trimmedAsset,
+      const parsed = parseHostGitHubSource({
+        repoOrUrl: repository,
+        ref: refName,
+        tag,
+        asset,
+        subpath,
       });
-      if (!parsed.success || parsed.data.type !== "github") {
+      if (!parsed) {
         setLocalError(t("extensions.installDialog.errorInvalidGitHub"));
         return;
       }
-      void onInstall({
-        format: "codexhost",
-        kind: "github",
-        repository: parsed.data.repository,
-        ...(parsed.data.tag !== undefined ? { tag: parsed.data.tag } : {}),
-        asset: parsed.data.asset,
-      }).then((installed) => {
+      void onInstall({ kind: "github", source: parsed }).then((installed) => {
         if (installed) {
           setRepository("");
+          setRefName("");
           setTag("");
           setAsset("");
+          setSubpath("");
         }
       });
       return;
     }
 
-    const source = spec.trim();
-    if (source === "") return;
-    const parsedRegistry = webUiExtensionRegistrySchema.safeParse(
-      registry === "custom" ? customRegistry : REGISTRIES[registry],
-    );
-    if (!parsedRegistry.success) {
-      setLocalError(t("extensions.registryInvalid"));
+    const trimmedDir = localDir.trim();
+    if (!trimmedDir) {
+      setLocalError(t("extensions.installDialog.errorEmptyLocalDir"));
       return;
     }
-    void onInstall({ format: "dsh", spec: source, registry: parsedRegistry.data }).then(
-      (installed) => {
-        if (installed) setSpec("");
-      },
-    );
+    const parsedDir = hostExtensionInstallSourceSchema.safeParse({
+      type: "localDir",
+      localDir: trimmedDir,
+    });
+    if (!parsedDir.success) {
+      setLocalError(t("extensions.installDialog.errorInvalidLocalDir"));
+      return;
+    }
+    void onInstall({ kind: "localDir", localDir: trimmedDir }).then((installed) => {
+      if (installed) setLocalDir("");
+    });
   };
 
   const displayError = localError ?? error;
@@ -213,8 +193,8 @@ export function InstallWebExtensionDialog({
     (mode === "zip"
       ? selectedFile !== null
       : mode === "github"
-        ? repository.trim() !== "" && asset.trim() !== ""
-        : spec.trim() !== "");
+        ? repository.trim() !== ""
+        : localDir.trim() !== "");
 
   return (
     <Modal
@@ -230,11 +210,7 @@ export function InstallWebExtensionDialog({
         <div className={css.footer}>
           <div className={css.trustBanner}>
             <IconShieldOutlineRegular size={14} className={css.trustIcon} />
-            <span>
-              {mode === "dsh"
-                ? t("extensions.scope")
-                : t("extensions.installDialog.nativeTrustWarning")}
-            </span>
+            <span>{t("extensions.installDialog.nativeTrustWarning")}</span>
           </div>
           <div className={css.footerActions}>
             <Button variant="outline" disabled={busy} onClick={onClose}>
@@ -272,7 +248,7 @@ export function InstallWebExtensionDialog({
             [
               ["zip", "extensions.installDialog.tabZip"],
               ["github", "extensions.installDialog.tabGitHub"],
-              ["dsh", "extensions.installDialog.tabDsh"],
+              ["localDir", "extensions.installDialog.tabLocalDir"],
             ] as const
           ).map(([id, labelKey]) => (
             <button
@@ -370,7 +346,7 @@ export function InstallWebExtensionDialog({
                 type="text"
                 data-modal-autofocus
                 value={repository}
-                placeholder="owner/repo"
+                placeholder="owner/repo or https://github.com/owner/repo"
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -381,6 +357,40 @@ export function InstallWebExtensionDialog({
                 }}
               />
             </label>
+            <div className={css.fieldRow}>
+              <label className={css.field}>
+                <span>{t("extensions.installDialog.refLabel")}</span>
+                <input
+                  type="text"
+                  value={refName}
+                  placeholder="main"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  disabled={busy}
+                  onChange={(event) => {
+                    setRefName(event.currentTarget.value);
+                    setLocalError(null);
+                  }}
+                />
+              </label>
+              <label className={css.field}>
+                <span>{t("extensions.installDialog.subpathLabel")}</span>
+                <input
+                  type="text"
+                  value={subpath}
+                  placeholder="packages/my-plugin"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  disabled={busy}
+                  onChange={(event) => {
+                    setSubpath(event.currentTarget.value);
+                    setLocalError(null);
+                  }}
+                />
+              </label>
+            </div>
             <div className={css.fieldRow}>
               <label className={css.field}>
                 <span>{t("extensions.installDialog.tagLabel")}</span>
@@ -403,7 +413,7 @@ export function InstallWebExtensionDialog({
                 <input
                   type="text"
                   value={asset}
-                  placeholder="my-extension-web.zip"
+                  placeholder="my-plugin.zip"
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
@@ -419,91 +429,27 @@ export function InstallWebExtensionDialog({
           </div>
         )}
 
-        {mode === "dsh" && (
+        {mode === "localDir" && (
           <div className={css.panel}>
-            <div className={css.field}>
+            <label className={css.field}>
+              <span>{t("extensions.installDialog.localDirLabel")}</span>
               <input
                 type="text"
                 data-modal-autofocus
-                value={spec}
-                placeholder={t("extensions.sourcePlaceholder")}
-                aria-label={t("extensions.sourceLabel")}
+                value={localDir}
+                placeholder="/path/to/my-plugin"
                 aria-describedby={displayError === null ? undefined : errorId}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
                 disabled={busy}
                 onChange={(event) => {
-                  setSpec(event.currentTarget.value);
+                  setLocalDir(event.currentTarget.value);
                   setLocalError(null);
                 }}
               />
-            </div>
-
-            <div className={css.options}>
-              <button
-                type="button"
-                className={css.guideToggle}
-                aria-expanded={guideOpen}
-                aria-controls={guideId}
-                onClick={() => setGuideOpen(!guideOpen)}
-              >
-                <IconChevronDownOutlineRegular
-                  className={css.chevron}
-                  size={14}
-                  aria-hidden="true"
-                />
-                {t("extensions.guide")}
-              </button>
-              <label className={css.registry}>
-                <span>{t("extensions.registry")}</span>
-                <select
-                  aria-label={t("extensions.registry")}
-                  value={registry}
-                  disabled={busy}
-                  onChange={(event) => {
-                    setRegistry(event.currentTarget.value as RegistryChoice);
-                    setLocalError(null);
-                  }}
-                >
-                  <option value="official">{t("extensions.registryOfficial")}</option>
-                  <option value="mirror">{t("extensions.registryMirror")}</option>
-                  <option value="custom">{t("extensions.registryCustom")}</option>
-                </select>
-              </label>
-            </div>
-
-            {registry === "custom" && (
-              <label className={css.field}>
-                <span>{t("extensions.registryCustomUrl")}</span>
-                <input
-                  type="text"
-                  value={customRegistry}
-                  aria-label={t("extensions.registryCustomUrl")}
-                  placeholder="https://npm.example.com/"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  disabled={busy}
-                  onChange={(event) => {
-                    setCustomRegistry(event.currentTarget.value);
-                    setLocalError(null);
-                  }}
-                />
-              </label>
-            )}
-
-            {guideOpen && (
-              <div id={guideId} className={css.guide}>
-                <p>{t("extensions.guideNpm")}</p>
-                <code>dsh-theme-example · @author/theme@1.2.3</code>
-                <p>{t("extensions.guideGitHub")}</p>
-                <code>https://github.com/owner/plugin</code>
-                <p>{t("extensions.guideDirectory")}</p>
-                <code>/absolute/path/to/plugin · /absolute/path/to/plugin.tgz</code>
-                <p className={css.hint}>{t("extensions.registryHint")}</p>
-              </div>
-            )}
+            </label>
+            <p className={css.hint}>{t("extensions.installDialog.localDirHint")}</p>
           </div>
         )}
 

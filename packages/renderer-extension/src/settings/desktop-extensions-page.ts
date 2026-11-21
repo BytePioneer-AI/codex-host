@@ -1,61 +1,65 @@
 import {
-  type DesktopExtensionCatalogEntry,
+  type HOST_EXTENSIONS_RPC,
+  type HostExtensionCatalogEntry,
+  type HostExtensionInstallSource,
+  type HostExtensionListItem,
+  type HostExtensionsCatalogResult,
+  type HostExtensionsListResult,
+  type HostExtensionsRpcParams,
+  type HostExtensionsRpcResult,
   type DesktopExtensionCategory,
-  type DesktopExtensionMutationResult,
-  type DesktopExtensionSelectionParams,
-  type DesktopExtensionsCatalogParams,
-  type DesktopExtensionsCatalogResult,
-  type DesktopExtensionsInstallParams,
-  type DesktopExtensionsInstallResult,
-  type DesktopExtensionsListResult,
-  type DesktopExtensionsRecoveryParams,
-  type DesktopExtensionsUninstallParams,
-  type DesktopExtensionsUninstallResult,
 } from "@codexhost/shared-contracts";
 import { RendererMethodUnavailableError } from "../renderer-request-sender.js";
 import type { RendererSettingsPageDefinition, RendererSettingsPageMountContext } from "./core.js";
-import { renderDesktopExtensionCard } from "./desktop-extensions-card.js";
+import { createDesktopExtensionPageHost } from "./desktop-extension-page-host.js";
 import type { RendererSettingsPluginPagesSource } from "./desktop-extension-settings-pages.js";
-import { createDesktopExtensionDetailModal } from "./desktop-extensions-detail-modal.js";
+import { renderDesktopExtensionCard } from "./desktop-extensions-card.js";
 import { createDesktopExtensionCreateModal } from "./desktop-extensions-create-modal.js";
+import { createDesktopExtensionDetailModal } from "./desktop-extensions-detail-modal.js";
 import { createDesktopExtensionImportModal } from "./desktop-extensions-import-modal.js";
 import {
   renderDesktopExtensionsMarketplaceGrid,
   renderMarketplaceFallbackNotice,
 } from "./desktop-extensions-marketplace-view.js";
 import {
+  CAPABILITY_FILTER_ORDER,
   CATEGORY_ORDER,
   blockedToggleReason,
+  capabilityFilterLabel,
+  catalogCapabilities,
   catalogDisplayName,
   contentLocaleMessages,
   createEl,
-  describeOtherExtension,
+  deriveCapabilityBadges,
   errorMessage,
   extensionDescription,
   extensionDisplayName,
   extensionGroupOf,
   formatMessage,
-  formatSlotLabel,
   hasCatalogUpdate,
   isToggleBlocked,
   isWithinElement,
+  itemCapabilities,
+  itemStatusState,
+  itemTargets,
+  matchesCapabilityFilter,
   matchesCatalogSearchQuery,
   matchesInstalledSearchQuery,
-  overlappingSlots,
   resolveAttentionDetail,
   resolveInstalledExtensionIconUrl,
   type DesktopExtensionContentLocale,
   type DesktopExtensionContentLocalePreference,
   type DesktopExtensionFeedback,
-  type DesktopExtensionItem,
   type DesktopExtensionMutationAction,
+  type ExtensionCapabilityFilter,
+  type HostExtensionValidItem,
 } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { createPreferenceSwitch, preferenceId } from "./preference-ui.js";
 
 const POLL_INTERVAL_MS = 5_000;
-const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/desktop-extensions/";
+const EXTENSIONS_ROOT_DISPLAY = "$CODEXHOST_DATA_DIR/host-extensions/";
 const CONTENT_LOCALE_STORAGE_KEY = "codexhost.desktopExtensions.contentLocale";
 
 type ActiveTab = "installed" | "marketplace";
@@ -88,52 +92,60 @@ function writeContentLocalePreference(
 }
 
 export interface RendererDesktopExtensionsClient {
-  listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;
-  listDesktopExtensionCatalog?(
-    input?: DesktopExtensionsCatalogParams,
-  ): Promise<DesktopExtensionsCatalogResult>;
-  installDesktopExtension?(
-    input: DesktopExtensionsInstallParams,
-  ): Promise<DesktopExtensionsInstallResult>;
-  uninstallDesktopExtension?(
-    input: DesktopExtensionsUninstallParams,
-  ): Promise<DesktopExtensionsUninstallResult>;
-  enableDesktopExtension?(
-    input: DesktopExtensionSelectionParams,
-  ): Promise<DesktopExtensionMutationResult>;
-  disableDesktopExtension?(
-    input: DesktopExtensionSelectionParams,
-  ): Promise<DesktopExtensionMutationResult>;
-  disableAllDesktopExtensionsAndReload?(
-    input?: DesktopExtensionsRecoveryParams,
-  ): Promise<DesktopExtensionMutationResult>;
-  readDesktopExtensionAsset?(input: {
-    id: string;
-    path: string;
-  }): Promise<{ mimeType: string; dataUrl: string }>;
-  getDesktopExtensionSettings?(input: { id: string }): Promise<{ values: Record<string, unknown> }>;
-  setDesktopExtensionSettings?(input: {
-    id: string;
-    values: Record<string, unknown>;
-  }): Promise<{ values: Record<string, unknown> }>;
-  invokeDesktopExtensionBackend?(input: {
-    id: string;
-    method: string;
-    params?: unknown;
-  }): Promise<{ result: unknown }>;
+  listHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.list>>;
+  snapshotHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.snapshot>>;
+  listHostExtensionCatalog?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalog>>;
+  installHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.install>>;
+  updateHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.update>>;
+  enableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.enable>>;
+  disableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.disable>>;
+  uninstallHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.uninstall>>;
+  recoverHostExtensions?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.recover>>;
+  readHostExtensionAsset?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.asset>>;
+  getHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsGet>>;
+  setHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsSet>>;
+  invokeHostExtensionBackend?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.backendInvoke>>;
+}
+
+export interface CreateDesktopExtensionsSettingsPageOptions {
+  /** Optional dynamic ESM importer seam for testing standalone `page` loading. */
+  readonly importPageModule?: (blobUrl: string) => Promise<unknown>;
 }
 
 function resolveAvailableClient(
   getClient: () => RendererDesktopExtensionsClient | null,
 ): RendererDesktopExtensionsClient | null {
   const client = getClient();
-  return client && typeof client.listDesktopExtensions === "function" ? client : null;
+  return client && typeof client.listHostExtensions === "function" ? client : null;
 }
 
 export function createDesktopExtensionsSettingsPage(
   messages: RendererSettingsMessages,
   getClient: () => RendererDesktopExtensionsClient | null = () => null,
   pluginPages?: RendererSettingsPluginPagesSource,
+  options: CreateDesktopExtensionsSettingsPageOptions = {},
 ): RendererSettingsPageDefinition {
   const copy = messages.desktopExtensions;
   return Object.freeze<RendererSettingsPageDefinition>({
@@ -145,8 +157,13 @@ export function createDesktopExtensionsSettingsPage(
       const ownerWindow = document.defaultView;
       const root = createEl(document, "div", "settings-extensions");
 
-      // Header: title + lightweight Desktop connection indicator on left;
-      // compact Import + Refresh + More ("...") menu on right.
+      // List view container (hidden while an extension's standalone `page` is open).
+      const listViewWrap = createEl(document, "div", "settings-extensions__list-view");
+      // Standalone page view host container.
+      const pageViewHost = createEl(document, "div", "settings-extensions__page-host");
+      pageViewHost.hidden = true;
+
+      // Header: title on left; compact Language + Create + Import + Refresh + More ("...") menu on right.
       const header = createEl(
         document,
         "div",
@@ -159,9 +176,7 @@ export function createDesktopExtensionsSettingsPage(
         "settings-section-label",
         messages.pageLabels["desktop-extensions"],
       );
-      const connectionBadge = createEl(document, "span", "settings-extensions__connection");
-      connectionBadge.hidden = true;
-      headerLeft.append(title, connectionBadge);
+      headerLeft.append(title);
 
       const toolbar = createEl(document, "div", "settings-remote__toolbar");
 
@@ -364,7 +379,10 @@ export function createDesktopExtensionsSettingsPage(
       searchBox.append(searchIcon, searchInput, clearSearchButton);
       controlsBar.append(tabList, searchBox);
 
-      // Dynamic category filter pills row below tabs.
+      // Capability filter pills row (All / Page / Web / Desktop / Backend) + Category filter pills row.
+      const capabilitySlot = createEl(document, "div", "settings-extensions__capability-slot");
+      capabilitySlot.hidden = true;
+
       const categorySlot = createEl(document, "div", "settings-extensions__category-slot");
       categorySlot.hidden = true;
 
@@ -387,7 +405,16 @@ export function createDesktopExtensionsSettingsPage(
 
       const body = createEl(document, "div", "settings-extensions__body");
 
-      root.append(header, controlsBar, categorySlot, banner, diagnosticsPanel, body);
+      listViewWrap.append(
+        header,
+        controlsBar,
+        capabilitySlot,
+        categorySlot,
+        banner,
+        diagnosticsPanel,
+        body,
+      );
+      root.append(listViewWrap, pageViewHost);
       context.content.append(root);
 
       let disposed = false;
@@ -396,8 +423,8 @@ export function createDesktopExtensionsSettingsPage(
       let contentLocalePreference: DesktopExtensionContentLocalePreference =
         readContentLocalePreference(ownerWindow);
       let activeTab: ActiveTab = "installed";
-      let listing: DesktopExtensionsListResult | null = null;
-      let catalog: DesktopExtensionsCatalogResult | null = null;
+      let listing: HostExtensionsListResult | null = null;
+      let catalog: HostExtensionsCatalogResult | null = null;
       let unavailable = false;
       let catalogUnavailable = false;
       let catalogError: string | null = null;
@@ -409,6 +436,7 @@ export function createDesktopExtensionsSettingsPage(
       let activeMutationAction: DesktopExtensionMutationAction | null = null;
       let pollTimer: ReturnType<typeof setTimeout> | undefined;
       let activeRecoveryDialog: HTMLDialogElement | null = null;
+      let selectedCapability: ExtensionCapabilityFilter = "all";
       let selectedCategory: DesktopExtensionCategory | null = null;
       let searchQuery = "";
       let currentFeedback: DesktopExtensionFeedback | null = null;
@@ -418,9 +446,9 @@ export function createDesktopExtensionsSettingsPage(
         const client = resolveAvailableClient(getClient);
         return {
           client,
-          canInstall: !unavailable && Boolean(client?.installDesktopExtension),
-          canUninstall: !unavailable && Boolean(client?.uninstallDesktopExtension),
-          canRecover: !unavailable && Boolean(client?.disableAllDesktopExtensionsAndReload),
+          canInstall: !unavailable && Boolean(client?.installHostExtension),
+          canUninstall: !unavailable && Boolean(client?.uninstallHostExtension),
+          canRecover: !unavailable && Boolean(client?.recoverHostExtensions),
         };
       };
 
@@ -437,6 +465,33 @@ export function createDesktopExtensionsSettingsPage(
           entry.button.setAttribute("aria-checked", String(selected));
           entry.checkSlot.hidden = !selected;
         }
+      };
+
+      const pageHost = createDesktopExtensionPageHost({
+        document,
+        host: pageViewHost,
+        signal: context.signal,
+        messages,
+        getClient: () => resolveAvailableClient(getClient),
+        getContentLocale: resolveContentLocale,
+        importModule: options.importPageModule,
+        onClose: () => {
+          listViewWrap.hidden = false;
+          pageViewHost.hidden = true;
+          render();
+        },
+      });
+
+      const openExtensionPage = (item: HostExtensionValidItem): void => {
+        if (disposed || context.signal.aborted || !item.enabled || !item.manifest.page) return;
+        closeHeaderMenus();
+        detailModal.close();
+        importModal.close();
+        createModal.close();
+        const catalogEntry = catalog?.extensions.find((entry) => entry.id === item.id);
+        listViewWrap.hidden = true;
+        pageViewHost.hidden = false;
+        pageHost.open(item, catalogEntry?.icon);
       };
 
       const buildDetailModalState = () => {
@@ -467,6 +522,21 @@ export function createDesktopExtensionsSettingsPage(
         host: root,
         signal: context.signal,
         messages,
+        settingsClient: {
+          async getSettings(id) {
+            const getter = resolveAvailableClient(getClient)?.getHostExtensionSettings;
+            if (!getter) throw new Error("Host extension settings RPC is unavailable");
+            return getter({ id });
+          },
+          async setSettings(id, expectedSettingsRevision, values) {
+            const setter = resolveAvailableClient(getClient)?.setHostExtensionSettings;
+            if (!setter) throw new Error("Host extension settings RPC is unavailable");
+            return setter({ id, expectedSettingsRevision, values });
+          },
+        },
+        onSettingsSaved: (extensionId, values, revision) => {
+          pageHost.notifySettingsChanged(extensionId, values, revision);
+        },
         onToggle: (item, enable) => {
           void toggleExtension(item, enable);
         },
@@ -475,6 +545,9 @@ export function createDesktopExtensionsSettingsPage(
         },
         onUninstall: (item) => {
           void uninstallExtension(item);
+        },
+        onOpenPage: (item) => {
+          openExtensionPage(item);
         },
         onOpenSettings: pluginPages
           ? (extensionId) => {
@@ -549,18 +622,6 @@ export function createDesktopExtensionsSettingsPage(
         installedTabButton.setAttribute("aria-selected", String(activeTab === "installed"));
         marketplaceTabButton.setAttribute("aria-selected", String(activeTab === "marketplace"));
         syncLocaleControl();
-      };
-
-      const renderConnectionState = (): void => {
-        if (!listing || unavailable || listing.desktopConnected) {
-          connectionBadge.hidden = true;
-          connectionBadge.textContent = "";
-          delete connectionBadge.dataset.tone;
-          return;
-        }
-        connectionBadge.hidden = false;
-        connectionBadge.dataset.tone = "neutral";
-        connectionBadge.textContent = copy.desktopDisconnected;
       };
 
       const renderDiagnostics = (): void => {
@@ -641,6 +702,7 @@ export function createDesktopExtensionsSettingsPage(
         );
         resetButton.type = "button";
         resetButton.addEventListener("click", () => {
+          selectedCapability = "all";
           selectedCategory = null;
           searchQuery = "";
           searchInput.value = "";
@@ -649,6 +711,36 @@ export function createDesktopExtensionsSettingsPage(
         });
         empty.append(copyBox, resetButton);
         body.replaceChildren(...prefixNodes, empty);
+      };
+
+      const renderCapabilityFilterBar = (show: boolean): void => {
+        if (!show) {
+          capabilitySlot.hidden = true;
+          capabilitySlot.replaceChildren();
+          return;
+        }
+        const filterBar = createEl(document, "div", "settings-extensions__filters");
+        filterBar.setAttribute("role", "group");
+        filterBar.setAttribute("aria-label", copy.capabilityFilterLabel);
+        for (const filter of CAPABILITY_FILTER_ORDER) {
+          const pill = createEl(
+            document,
+            "button",
+            "settings-extensions-filter-pill",
+            capabilityFilterLabel(filter, copy),
+          );
+          pill.type = "button";
+          pill.dataset.capabilityFilter = filter;
+          pill.setAttribute("aria-pressed", String(selectedCapability === filter));
+          pill.addEventListener("click", () => {
+            if (selectedCapability === filter) return;
+            selectedCapability = filter;
+            render();
+          });
+          filterBar.append(pill);
+        }
+        capabilitySlot.hidden = false;
+        capabilitySlot.replaceChildren(filterBar);
       };
 
       const renderCategoryFilterBar = (
@@ -724,15 +816,16 @@ export function createDesktopExtensionsSettingsPage(
       };
 
       const renderExtensionCard = (
-        item: DesktopExtensionItem,
-        allExtensions: readonly DesktopExtensionItem[],
-        catalogEntry: DesktopExtensionCatalogEntry | undefined,
+        item: HostExtensionListItem,
+        allExtensions: readonly HostExtensionListItem[],
+        catalogEntry: HostExtensionCatalogEntry | undefined,
       ): HTMLElement => {
         const contentLocale = resolveContentLocale();
         const displayName = extensionDisplayName(item, contentLocale);
-        const switchId = preferenceId(`desktop-ext-${item.id}`);
-        const errorId = preferenceId(`desktop-ext-error-${item.id}`);
+        const switchId = preferenceId(`host-ext-${item.id}`);
+        const errorId = preferenceId(`host-ext-error-${item.id}`);
         const blocked = isToggleBlocked(item);
+        const statusState = itemStatusState(item);
 
         const toggle = createPreferenceSwitch(document, switchId, errorId);
         toggle.checked = item.enabled;
@@ -755,6 +848,26 @@ export function createDesktopExtensionsSettingsPage(
           void toggleExtension(item, desired);
         });
 
+        let openPageButton: HTMLElement | undefined;
+        if (item.state === "valid" && item.enabled && item.manifest.page) {
+          const btn = createEl(
+            document,
+            "button",
+            "settings-command-button settings-command-button--secondary settings-extensions-card__open-page",
+            copy.openPage,
+          );
+          btn.type = "button";
+          btn.dataset.action = "open-page";
+          btn.dataset.extensionId = item.id;
+          btn.disabled = mutating;
+          btn.addEventListener("click", (event) => {
+            event.stopPropagation?.();
+            if (!btn.disabled) openExtensionPage(item);
+          });
+          btn.addEventListener("keydown", stopTrigger);
+          openPageButton = btn;
+        }
+
         const updateHint =
           hasCatalogUpdate(item, catalogEntry) && catalogEntry
             ? {
@@ -764,6 +877,11 @@ export function createDesktopExtensionsSettingsPage(
             : undefined;
 
         const attention = resolveAttentionDetail(item, allExtensions, messages.locale, copy);
+        const capabilityBadges = deriveCapabilityBadges(
+          itemCapabilities(item),
+          itemTargets(item),
+          copy,
+        );
 
         return renderDesktopExtensionCard({
           document,
@@ -773,22 +891,27 @@ export function createDesktopExtensionsSettingsPage(
           cardKind: "installed",
           displayName,
           iconUrl: resolveInstalledExtensionIconUrl(item, catalogEntry),
-          author: item.manifest?.author ?? catalogEntry?.author,
-          version: item.manifest?.version,
-          repository: item.manifest?.repository ?? catalogEntry?.repository,
+          author:
+            (item.state === "valid" ? item.manifest.author : undefined) ?? catalogEntry?.author,
+          version: item.state === "valid" ? item.manifest.version : undefined,
+          repository:
+            (item.state === "valid" ? item.manifest.repository : undefined) ??
+            catalogEntry?.repository,
           stars: catalogEntry?.stars,
           downloads: catalogEntry?.downloads,
           trustTier: catalogEntry?.trustTier,
-          statusState: item.status.state,
+          statusState,
           updateHint,
           description: extensionDescription(item, contentLocale),
           attention,
           attentionId: attention ? errorId : undefined,
-          categories: item.manifest?.categories,
+          categories: item.state === "valid" ? item.manifest.categories : undefined,
+          capabilityBadges,
+          secondaryAction: openPageButton,
           actionControl: toggle,
           busy: activeMutationId === item.id,
           dataset: {
-            extensionState: item.status.state,
+            extensionState: statusState,
             trustTier: catalogEntry?.trustTier,
           },
           onOpenDetails: () => openDetailModal(item.id),
@@ -797,6 +920,7 @@ export function createDesktopExtensionsSettingsPage(
 
       const renderInstalledTab = (): void => {
         if (!listing) {
+          renderCapabilityFilterBar(false);
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           if (loading) renderLoading(copy.loading);
@@ -804,24 +928,39 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
         if (listing.extensions.length === 0) {
+          selectedCapability = "all";
           selectedCategory = null;
+          renderCapabilityFilterBar(false);
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           renderEmptyBox(copy.emptyTitle, copy.emptyDescription, copy.emptyPathHint);
           return;
         }
 
+        renderCapabilityFilterBar(true);
+
         const presentCategories = new Set<DesktopExtensionCategory>();
         for (const item of listing.extensions) {
-          for (const category of item.manifest?.categories ?? []) {
-            presentCategories.add(category);
+          if (item.state === "valid") {
+            for (const category of item.manifest.categories ?? []) {
+              presentCategories.add(category);
+            }
           }
         }
         renderCategoryFilterBar(presentCategories);
 
         const normalizedQuery = searchQuery.trim().toLowerCase();
         const visibleExtensions = listing.extensions.filter((item) => {
-          if (selectedCategory && !item.manifest?.categories?.includes(selectedCategory)) {
+          if (
+            selectedCapability !== "all" &&
+            !matchesCapabilityFilter(selectedCapability, itemCapabilities(item), itemTargets(item))
+          ) {
+            return false;
+          }
+          if (
+            selectedCategory &&
+            (item.state !== "valid" || !item.manifest.categories?.includes(selectedCategory))
+          ) {
             return false;
           }
           return matchesInstalledSearchQuery(item, normalizedQuery);
@@ -832,15 +971,15 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
 
-        const catalogById = new Map<string, DesktopExtensionCatalogEntry>();
+        const catalogById = new Map<string, HostExtensionCatalogEntry>();
         for (const entry of catalog?.extensions ?? []) {
           catalogById.set(entry.id, entry);
         }
 
-        const attentionItems: DesktopExtensionItem[] = [];
-        const normalItems: DesktopExtensionItem[] = [];
+        const attentionItems: HostExtensionListItem[] = [];
+        const normalItems: HostExtensionListItem[] = [];
         for (const item of visibleExtensions) {
-          if (extensionGroupOf(item.status.state) === "attention") {
+          if (extensionGroupOf(itemStatusState(item)) === "attention") {
             attentionItems.push(item);
           } else {
             normalItems.push(item);
@@ -861,7 +1000,7 @@ export function createDesktopExtensionsSettingsPage(
         });
 
         const allExtensions = listing.extensions;
-        const buildGrid = (items: readonly DesktopExtensionItem[]): HTMLElement => {
+        const buildGrid = (items: readonly HostExtensionListItem[]): HTMLElement => {
           const grid = createEl(document, "div", "settings-extensions-grid");
           for (const item of items) {
             grid.append(renderExtensionCard(item, allExtensions, catalogById.get(item.id)));
@@ -881,7 +1020,7 @@ export function createDesktopExtensionsSettingsPage(
 
         const attentionSection = createEl(document, "section", "settings-extensions__group");
         attentionSection.dataset.extensionGroup = "attention";
-        const headingId = preferenceId("desktop-ext-group-attention");
+        const headingId = preferenceId("host-ext-group-attention");
         attentionSection.setAttribute("aria-labelledby", headingId);
 
         const groupHead = createEl(document, "div", "settings-extensions__group-head");
@@ -911,6 +1050,7 @@ export function createDesktopExtensionsSettingsPage(
 
       const renderMarketplaceTab = (): void => {
         if (catalogUnavailable) {
+          renderCapabilityFilterBar(false);
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           renderEmptyBox(copy.marketplaceUnavailableTitle, copy.marketplaceUnavailableDescription);
@@ -918,6 +1058,7 @@ export function createDesktopExtensionsSettingsPage(
         }
 
         if (!catalog) {
+          renderCapabilityFilterBar(false);
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           if (catalogLoading) {
@@ -954,11 +1095,14 @@ export function createDesktopExtensionsSettingsPage(
               void loadCatalog({ forceRefresh: true, silent: false });
             }
           },
+          catalogError,
         );
         const prefixNodes = fallbackNotice ? [fallbackNotice] : [];
 
         if (catalog.extensions.length === 0) {
+          selectedCapability = "all";
           selectedCategory = null;
+          renderCapabilityFilterBar(false);
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           const empty = createEl(
@@ -976,6 +1120,8 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
 
+        renderCapabilityFilterBar(true);
+
         const presentCategories = new Set<DesktopExtensionCategory>();
         for (const entry of catalog.extensions) {
           for (const category of entry.categories ?? []) {
@@ -986,6 +1132,12 @@ export function createDesktopExtensionsSettingsPage(
 
         const normalizedQuery = searchQuery.trim().toLowerCase();
         const visibleEntries = catalog.extensions.filter((entry) => {
+          if (
+            selectedCapability !== "all" &&
+            !matchesCapabilityFilter(selectedCapability, catalogCapabilities(entry), entry.targets)
+          ) {
+            return false;
+          }
           if (selectedCategory && !entry.categories?.includes(selectedCategory)) {
             return false;
           }
@@ -997,7 +1149,7 @@ export function createDesktopExtensionsSettingsPage(
           return;
         }
 
-        const installedById = new Map<string, DesktopExtensionItem>();
+        const installedById = new Map<string, HostExtensionListItem>();
         for (const item of listing?.extensions ?? []) {
           installedById.set(item.id, item);
         }
@@ -1020,6 +1172,7 @@ export function createDesktopExtensionsSettingsPage(
           },
           onViewInstalled: () => {
             activeTab = "installed";
+            selectedCapability = "all";
             selectedCategory = null;
             searchQuery = "";
             searchInput.value = "";
@@ -1039,11 +1192,11 @@ export function createDesktopExtensionsSettingsPage(
 
       const render = (): void => {
         syncToolbarState();
-        renderConnectionState();
         renderDiagnostics();
 
         if (unavailable) {
           controlsBar.hidden = true;
+          renderCapabilityFilterBar(false);
           categorySlot.hidden = true;
           categorySlot.replaceChildren();
           renderEmptyBox(copy.unavailableTitle, copy.unavailableDescription);
@@ -1087,13 +1240,23 @@ export function createDesktopExtensionsSettingsPage(
         }, POLL_INTERVAL_MS);
       };
 
+      const applyLoadedList = (result: HostExtensionsListResult): void => {
+        const hadOpenPageId = pageHost.extensionId;
+        listing = result;
+        pluginPages?.syncInstalledExtensions?.(result.extensions, result.configuration.revision);
+        pageHost.sync(result.extensions);
+        if (hadOpenPageId && !pageHost.isOpen) {
+          setFeedback({ tone: "info", text: copy.pageClosedDisabled });
+        }
+      };
+
       const loadInstalled = async (
         options: { silent?: boolean; keepFeedback?: boolean } = {},
       ): Promise<void> => {
         const silent = options.silent ?? false;
         const keepFeedback = options.keepFeedback ?? silent;
         const client = resolveAvailableClient(getClient);
-        if (!client?.listDesktopExtensions) {
+        if (!client?.listHostExtensions) {
           unavailable = true;
           listing = null;
           loading = false;
@@ -1109,16 +1272,12 @@ export function createDesktopExtensionsSettingsPage(
           render();
         }
 
-        const listDesktopExtensions = client.listDesktopExtensions.bind(client);
-        await context.runLatest(async () => listDesktopExtensions(), {
+        const listHostExtensions = client.listHostExtensions.bind(client);
+        await context.runLatest(async () => listHostExtensions(), {
           success(result) {
             loading = false;
             unavailable = false;
-            listing = result;
-            pluginPages?.syncInstalledExtensions?.(
-              result.extensions,
-              result.configuration.revision,
-            );
+            applyLoadedList(result);
             if (!keepFeedback) setFeedback(null);
             render();
             schedulePoll();
@@ -1151,7 +1310,7 @@ export function createDesktopExtensionsSettingsPage(
         const forceRefresh = options.forceRefresh ?? false;
         const silent = options.silent ?? false;
         const client = resolveAvailableClient(getClient);
-        if (!client?.listDesktopExtensionCatalog) {
+        if (!client?.listHostExtensionCatalog) {
           catalogUnavailable = true;
           catalogLoading = false;
           if (activeTab === "marketplace") render();
@@ -1169,8 +1328,10 @@ export function createDesktopExtensionsSettingsPage(
         }
 
         try {
-          const params: DesktopExtensionsCatalogParams = forceRefresh ? { forceRefresh: true } : {};
-          const result = await client.listDesktopExtensionCatalog(params);
+          const params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog> = forceRefresh
+            ? { forceRefresh: true }
+            : {};
+          const result = await client.listHostExtensionCatalog(params);
           if (disposed || context.signal.aborted || token !== catalogRequestToken) return;
           catalogLoading = false;
           catalogUnavailable = false;
@@ -1198,24 +1359,18 @@ export function createDesktopExtensionsSettingsPage(
         }
       };
 
-      const resolveDisplayNameFromList = (
-        listResult: DesktopExtensionsListResult,
-        extensionId: string,
-        fallbackName?: string,
-      ): string => {
-        const match = listResult.extensions.find((item) => item.id === extensionId);
-        if (match?.manifest) return extensionDisplayName(match, messages.locale);
-        return fallbackName ?? extensionId;
-      };
-
       const installFromCatalog = async (
-        entry: DesktopExtensionCatalogEntry,
+        entry: HostExtensionCatalogEntry,
         isUpdate: boolean,
       ): Promise<void> => {
         if (mutating || disposed || context.signal.aborted) return;
         const client = resolveAvailableClient(getClient);
-        const install = client?.installDesktopExtension?.bind(client);
-        if (!install) return;
+        const installedItem = listing?.extensions.find((item) => item.id === entry.id);
+        const canUpdate =
+          isUpdate && installedItem?.state === "valid" && Boolean(client?.updateHostExtension);
+        const install = client?.installHostExtension?.bind(client);
+        const update = client?.updateHostExtension?.bind(client);
+        if (!canUpdate && !install) return;
 
         const fallbackName = catalogDisplayName(entry, messages.locale);
         const modalTargetId = detailModal.extensionId === entry.id ? entry.id : null;
@@ -1226,28 +1381,36 @@ export function createDesktopExtensionsSettingsPage(
         render();
 
         try {
-          const result = await install({ source: { type: "catalog", id: entry.id } });
+          const result =
+            canUpdate && update && installedItem?.state === "valid"
+              ? await update({
+                  id: entry.id,
+                  expectedDigest: installedItem.digest,
+                  expectedActivationId: installedItem.activationId,
+                  source: { type: "catalog", id: entry.id },
+                })
+              : await install!({
+                  source: { type: "catalog", id: entry.id },
+                });
           if (disposed || context.signal.aborted) return;
-          listing = result.list;
-          pluginPages?.syncInstalledExtensions?.(
-            result.list.extensions,
-            result.list.configuration.revision,
-          );
-          const displayName = resolveDisplayNameFromList(
-            result.list,
-            result.extensionId,
-            fallbackName,
-          );
+          const displayName =
+            result.manifest.name[messages.locale] || result.manifest.name.en || fallbackName;
           setFeedback(
             {
               tone: "success",
               text: formatMessage(
                 result.replaced || isUpdate ? copy.updatedSuccess : copy.installedSuccess,
-                { name: displayName, version: result.version },
+                { name: displayName, version: result.manifest.version },
               ),
             },
             modalTargetId,
           );
+          if (client?.listHostExtensions) {
+            const refreshed = await client.listHostExtensions();
+            if (!disposed && !context.signal.aborted) {
+              applyLoadedList(refreshed);
+            }
+          }
         } catch (error) {
           if (disposed || context.signal.aborted) return;
           setFeedback(
@@ -1268,11 +1431,9 @@ export function createDesktopExtensionsSettingsPage(
         }
       };
 
-      const importExtension = async (
-        source: DesktopExtensionsInstallParams["source"],
-      ): Promise<void> => {
+      const importExtension = async (source: HostExtensionInstallSource): Promise<void> => {
         const client = resolveAvailableClient(getClient);
-        const install = client?.installDesktopExtension?.bind(client);
+        const install = client?.installHostExtension?.bind(client);
         if (!install) {
           throw new Error(copy.importUnavailable);
         }
@@ -1285,24 +1446,27 @@ export function createDesktopExtensionsSettingsPage(
         try {
           const result = await install({ source });
           if (disposed || context.signal.aborted) return;
-          listing = result.list;
-          pluginPages?.syncInstalledExtensions?.(
-            result.list.extensions,
-            result.list.configuration.revision,
-          );
           activeTab = "installed";
+          selectedCapability = "all";
           selectedCategory = null;
           searchQuery = "";
           searchInput.value = "";
           clearSearchButton.hidden = true;
-          const displayName = resolveDisplayNameFromList(result.list, result.extensionId);
+          const displayName =
+            result.manifest.name[messages.locale] || result.manifest.name.en || result.id;
           setFeedback({
             tone: "success",
             text: formatMessage(result.replaced ? copy.updatedSuccess : copy.installedSuccess, {
               name: displayName,
-              version: result.version,
+              version: result.manifest.version,
             }),
           });
+          if (client?.listHostExtensions) {
+            const refreshed = await client.listHostExtensions();
+            if (!disposed && !context.signal.aborted) {
+              applyLoadedList(refreshed);
+            }
+          }
         } finally {
           if (!disposed && !context.signal.aborted) {
             mutating = false;
@@ -1314,10 +1478,10 @@ export function createDesktopExtensionsSettingsPage(
         }
       };
 
-      const uninstallExtension = async (item: DesktopExtensionItem): Promise<void> => {
+      const uninstallExtension = async (item: HostExtensionListItem): Promise<void> => {
         if (mutating || disposed || context.signal.aborted) return;
         const client = resolveAvailableClient(getClient);
-        const uninstall = client?.uninstallDesktopExtension?.bind(client);
+        const uninstall = client?.uninstallHostExtension?.bind(client);
         if (!uninstall) return;
 
         const displayName = extensionDisplayName(item, messages.locale);
@@ -1329,18 +1493,25 @@ export function createDesktopExtensionsSettingsPage(
         render();
 
         try {
-          const result = await uninstall({ id: item.id });
+          await uninstall({
+            id: item.id,
+            ...(item.state === "valid" ? { expectedDigest: item.digest } : {}),
+          });
           if (disposed || context.signal.aborted) return;
-          listing = result.list;
-          pluginPages?.syncInstalledExtensions?.(
-            result.list.extensions,
-            result.list.configuration.revision,
-          );
+          if (pageHost.extensionId === item.id) {
+            pageHost.close();
+          }
           detailModal.close();
           setFeedback({
             tone: "success",
             text: formatMessage(copy.uninstalledSuccess, { name: displayName }),
           });
+          if (client?.listHostExtensions) {
+            const refreshed = await client.listHostExtensions();
+            if (!disposed && !context.signal.aborted) {
+              applyLoadedList(refreshed);
+            }
+          }
         } catch (error) {
           if (disposed || context.signal.aborted) return;
           setFeedback(
@@ -1362,14 +1533,14 @@ export function createDesktopExtensionsSettingsPage(
       };
 
       const toggleExtension = async (
-        item: DesktopExtensionItem,
+        item: HostExtensionListItem,
         enable: boolean,
       ): Promise<void> => {
         if (mutating || disposed || context.signal.aborted) return;
         const client = resolveAvailableClient(getClient);
         const mutate = enable
-          ? client?.enableDesktopExtension?.bind(client)
-          : client?.disableDesktopExtension?.bind(client);
+          ? client?.enableHostExtension?.bind(client)
+          : client?.disableHostExtension?.bind(client);
         if (!mutate) {
           unavailable = true;
           render();
@@ -1389,18 +1560,17 @@ export function createDesktopExtensionsSettingsPage(
           if (disposed || context.signal.aborted) return;
 
           if (result.state === "saved") {
+            if (!enable && pageHost.extensionId === item.id) {
+              pageHost.close();
+            }
             if (listing) {
-              listing = {
+              applyLoadedList({
                 ...listing,
                 configuration: result.configuration,
                 extensions: listing.extensions.map((entry) =>
                   entry.id === item.id ? { ...entry, enabled: enable } : entry,
                 ),
-              };
-              pluginPages?.syncInstalledExtensions?.(
-                listing.extensions,
-                listing.configuration.revision,
-              );
+              });
             }
             setFeedback(
               {
@@ -1416,34 +1586,6 @@ export function createDesktopExtensionsSettingsPage(
             activeMutationAction = null;
             render();
             await loadInstalled({ silent: true, keepFeedback: true });
-            return;
-          }
-
-          if (result.state === "slot-conflict") {
-            const allExtensions = listing?.extensions ?? [];
-            const other = describeOtherExtension(
-              result.conflictWith,
-              allExtensions,
-              messages.locale,
-            );
-            const shared = overlappingSlots(item, result.conflictWith, allExtensions);
-            setFeedback(
-              {
-                tone: "warning",
-                text:
-                  shared.length > 0
-                    ? formatMessage(copy.slotConflictBannerWithSlots, {
-                        name: displayName,
-                        slots: shared.map((slot) => formatSlotLabel(slot, copy)).join(", "),
-                        other,
-                      })
-                    : formatMessage(copy.slotConflictBanner, {
-                        name: displayName,
-                        other,
-                      }),
-              },
-              modalTargetId,
-            );
             return;
           }
 
@@ -1491,7 +1633,7 @@ export function createDesktopExtensionsSettingsPage(
       const openRecoveryDialog = (): void => {
         if (disposed || context.signal.aborted || mutating || activeRecoveryDialog) return;
         const client = resolveAvailableClient(getClient);
-        if (!client?.disableAllDesktopExtensionsAndReload) return;
+        if (!client?.recoverHostExtensions) return;
         detailModal.close();
         importModal.close();
 
@@ -1507,16 +1649,6 @@ export function createDesktopExtensionsSettingsPage(
 
         const dialogBody = createEl(document, "div", "settings-credential-dialog__body");
         dialogBody.append(createEl(document, "p", "", copy.recoveryDialogDescription));
-        if (listing && !listing.desktopConnected) {
-          dialogBody.append(
-            createEl(
-              document,
-              "p",
-              "settings-extensions-dialog__note",
-              copy.recoveryDialogOfflineNote,
-            ),
-          );
-        }
 
         const dialogError = createEl(document, "p", "settings-credential-dialog__error");
         dialogError.setAttribute("role", "alert");
@@ -1567,7 +1699,7 @@ export function createDesktopExtensionsSettingsPage(
         form.addEventListener("submit", (event) => {
           event.preventDefault();
           if (dialogBusy || mutating) return;
-          const recover = resolveAvailableClient(getClient)?.disableAllDesktopExtensionsAndReload;
+          const recover = resolveAvailableClient(getClient)?.recoverHostExtensions;
           if (!recover) {
             modal.close();
             unavailable = true;
@@ -1581,26 +1713,23 @@ export function createDesktopExtensionsSettingsPage(
           clearPollTimer();
           syncToolbarState();
 
-          const params: DesktopExtensionsRecoveryParams =
+          const params: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover> =
             listing !== null ? { expectedRevision: listing.configuration.revision } : {};
 
           void recover(params)
             .then(async (result) => {
               if (disposed || context.signal.aborted) return;
               if (result.state === "saved") {
+                pageHost.close();
                 if (listing) {
-                  listing = {
+                  applyLoadedList({
                     ...listing,
                     configuration: result.configuration,
                     extensions: listing.extensions.map((entry) => ({
                       ...entry,
                       enabled: false,
                     })),
-                  };
-                  pluginPages?.syncInstalledExtensions?.(
-                    listing.extensions,
-                    listing.configuration.revision,
-                  );
+                  });
                 }
                 setFeedback({
                   tone: "info",
@@ -1656,6 +1785,7 @@ export function createDesktopExtensionsSettingsPage(
       const switchTab = (next: ActiveTab): void => {
         if (activeTab === next) return;
         closeHeaderMenus();
+        if (pageHost.isOpen) pageHost.close();
         activeTab = next;
         setFeedback(null);
         render();
@@ -1810,7 +1940,7 @@ export function createDesktopExtensionsSettingsPage(
       document.addEventListener?.("keydown", onDocumentKeyDown);
 
       void loadInstalled({ silent: false });
-      if (resolveAvailableClient(getClient)?.listDesktopExtensionCatalog) {
+      if (resolveAvailableClient(getClient)?.listHostExtensionCatalog) {
         void loadCatalog({ forceRefresh: false, silent: true });
       }
 
@@ -1821,6 +1951,7 @@ export function createDesktopExtensionsSettingsPage(
         document.removeEventListener?.("visibilitychange", onVisibilityChange);
         document.removeEventListener?.("click", onDocumentClick);
         document.removeEventListener?.("keydown", onDocumentKeyDown);
+        pageHost.dispose();
         detailModal.dispose();
         createModal.dispose();
         importModal.dispose();

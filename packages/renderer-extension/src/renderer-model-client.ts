@@ -10,6 +10,10 @@ import {
   DESKTOP_EXTENSIONS_SETTINGS_GET_METHOD,
   DESKTOP_EXTENSIONS_SETTINGS_SET_METHOD,
   DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
+  HOST_EXTENSIONS_RPC,
+  hostExtensionsRpcSchemas,
+  type HostExtensionsRpcParams,
+  type HostExtensionsRpcResult,
   desktopExtensionsListResultSchema,
   desktopExtensionMutationResultSchema,
   desktopExtensionSelectionParamsSchema,
@@ -320,6 +324,41 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
     method: string;
     params?: unknown;
   }): Promise<{ result: unknown }>;
+  listHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.list>>;
+  snapshotHostExtensions?(): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.snapshot>>;
+  listHostExtensionCatalog?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.catalog>>;
+  installHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.install>>;
+  updateHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.update>>;
+  enableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.enable>>;
+  disableHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.disable>>;
+  uninstallHostExtension?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.uninstall>>;
+  recoverHostExtensions?(
+    input?: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.recover>>;
+  readHostExtensionAsset?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.asset>>;
+  getHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsGet>>;
+  setHostExtensionSettings?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsSet>>;
+  invokeHostExtensionBackend?(
+    input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+  ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.backendInvoke>>;
   currentHostId?(composer?: Element): string | null;
   knownHostIds?(): readonly string[];
   listHarnessPlugins?(): Promise<HarnessPluginListResult>;
@@ -861,6 +900,96 @@ export function createRendererModelClient(
           DESKTOP_EXTENSIONS_BACKEND_INVOKE_METHOD,
           desktopExtensionsBackendInvokeParamsSchema.parse(input),
         ),
+      );
+    },
+    async listHostExtensions() {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.list];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.list, schema.params.parse({})),
+      );
+    },
+    async snapshotHostExtensions() {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.snapshot];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.snapshot, schema.params.parse({})),
+      );
+    },
+    async listHostExtensionCatalog(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.catalog> = {},
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.catalog];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.catalog, schema.params.parse(input)),
+      );
+    },
+    async installHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.install>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.install];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.install, schema.params.parse(input)),
+      );
+    },
+    async updateHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.update>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.update];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.update, schema.params.parse(input)),
+      );
+    },
+    async enableHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.enable>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.enable];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.enable, schema.params.parse(input)),
+      );
+    },
+    async disableHostExtension(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.disable>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.disable];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.disable, schema.params.parse(input)),
+      );
+    },
+    async uninstallHostExtension(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.uninstall>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.uninstall];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.uninstall, schema.params.parse(input)),
+      );
+    },
+    async recoverHostExtensions(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.recover> = {},
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.recover];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.recover, schema.params.parse(input)),
+      );
+    },
+    async readHostExtensionAsset(input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.asset];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.asset, schema.params.parse(input)),
+      );
+    },
+    async getHostExtensionSettings(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.settingsGet];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.settingsGet, schema.params.parse(input)),
+      );
+    },
+    async setHostExtensionSettings(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.settingsSet];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.settingsSet, schema.params.parse(input)),
+      );
+    },
+    async invokeHostExtensionBackend(
+      input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
+    ) {
+      const schema = hostExtensionsRpcSchemas[HOST_EXTENSIONS_RPC.backendInvoke];
+      return schema.result.parse(
+        await manager.sendRequest(HOST_EXTENSIONS_RPC.backendInvoke, schema.params.parse(input)),
       );
     },
     async checkUpdate(): Promise<UpdateCheckResult | null> {

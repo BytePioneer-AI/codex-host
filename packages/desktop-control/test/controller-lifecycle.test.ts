@@ -4,6 +4,7 @@ import { createConnection, createServer } from "node:net";
 import { createInterface } from "node:readline";
 import { expect, it, vi } from "vitest";
 import { startControllerAttachmentServer } from "../src/controller-attachment-server.js";
+import { controllerLifecycle } from "../src/controller-lifecycle.js";
 
 it("proves the Controller identity and accepts shutdown only with a fresh client proof", async () => {
   const probe = createServer();
@@ -15,7 +16,7 @@ it("proves the Controller identity and accepts shutdown only with a fresh client
   probe.close();
   await once(probe, "close");
   const key = Buffer.alloc(32, 42);
-  const context = "a".repeat(64);
+  const context = "a".repeat(32);
   const client = "b".repeat(32);
   const attach = vi.fn(async () => {});
   const stop = vi.fn();
@@ -23,7 +24,7 @@ it("proves the Controller identity and accepts shutdown only with a fresh client
     port,
     nonce: "c".repeat(32),
     attach,
-    lifecycle: { key, context, stop },
+    lifecycle: controllerLifecycle(key, context, stop),
   });
   async function connection() {
     const socket = createConnection({ host: "127.0.0.1", port });

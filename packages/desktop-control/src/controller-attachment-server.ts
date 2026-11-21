@@ -9,7 +9,7 @@ import {
 } from "@codexhost/shared-contracts";
 import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
 
-import { serveControllerLifecycle, type ControllerLifecycle } from "./controller-lifecycle.js";
+import type { ControllerLifecycle } from "./controller-lifecycle.js";
 
 const MAX_REQUEST_BYTES = REMOTE_CONTROLLER_REQUEST_MAX_BYTES;
 
@@ -80,7 +80,7 @@ export async function startControllerAttachmentServer(
       const line = request.slice(0, newline).replace(/\r$/, "");
       if (options.lifecycle && line.startsWith("LIFECYCLE ")) {
         socket.off("data", receive);
-        serveControllerLifecycle(socket, line, request.slice(newline + 1), options.lifecycle);
+        options.lifecycle(socket, line, request.slice(newline + 1));
         return;
       }
       const remotePrefix = `REMOTE ${options.nonce} `;

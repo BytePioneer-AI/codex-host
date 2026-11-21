@@ -1,4 +1,4 @@
-//! Ownership and shutdown of a published Desktop generation on Unix.
+//! Unix Desktop ownership. Only a live supervisor may stop a managed child natively.
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use codexhost_platform::{ProcessSnapshot, observe_process_identity, process_snapshot};
+use codexhost_platform::{
+    ProcessIdentity, ProcessSnapshot, observe_process_identity, process_snapshot,
+};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 use crate::desktop_lifecycle_storage::Store;
 use crate::runtime_instance::{
@@ -18,13 +20,12 @@ use crate::runtime_instance::{
 };
 
 const RECORD: &str = "owner.json";
-const KEY: &str = "shutdown.key";
-const LEGACY: &str = "Desktop control endpoint has no verified lifecycle record; quit the previous Controller before retrying";
-const TIMEOUT: Duration = Duration::from_secs(10);
+const STOP: &str = "stop-request";
+const POLL: Duration = Duration::from_millis(25);
 const WIRE_TIMEOUT: Duration = Duration::from_secs(5);
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub(super) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Instance {
     pid: u32,
@@ -42,66 +43,81 @@ impl From<&ProcessSnapshot> for Instance {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Presence {
-    Same,
-    Gone,
-    Reused,
-}
-
 impl Instance {
-    fn presence(&self) -> Result<Presence> {
-        let Some(identity) = observe_process_identity(self.pid)? else {
-            return Ok(Presence::Gone);
-        };
-        if identity.started_at_micros != self.started_at_micros {
-            return Ok(Presence::Reused);
+    // Both a missing PID and a reused PID mean the original instance ended. Do not
+    // read /proc/PID/exe here: Linux can tear it down before reporting a zombie.
+    fn live(&self) -> Result<Option<ProcessIdentity>> {
+        Ok(observe_process_identity(self.pid)?
+            .filter(|id| id.started_at_micros == self.started_at_micros))
+    }
+
+    fn verify_image(&self) -> Result<()> {
+        if Self::from(&process_snapshot(self.pid)?) != *self {
+            return Err("Desktop process executable or instance identity changed".into());
         }
-        let snapshot = match process_snapshot(self.pid) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                // The process can exit between the identity and image queries. Do not
-                // confuse an unreadable image with an absent process.
-                return match observe_process_identity(self.pid)? {
-                    None => Ok(Presence::Gone),
-                    Some(current) if current.started_at_micros != self.started_at_micros => {
-                        Ok(Presence::Reused)
-                    }
-                    Some(_) => Err(error.into()),
-                };
-            }
-        };
-        if snapshot.started_at_micros != self.started_at_micros {
-            return Ok(Presence::Reused);
-        }
-        if snapshot.executable != self.executable {
-            return Err("Desktop process executable identity changed".into());
-        }
-        Ok(Presence::Same)
+        Ok(())
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Owner {
-    schema_version: u8,
-    generation: String,
-    port: u16,
+    descriptor: RuntimeDescriptor,
     data: PathBuf,
     launcher: Instance,
     controller: Instance,
-    controller_entry: PathBuf,
     desktop: Instance,
+    key: [u8; 32],
 }
 
-fn sha(bytes: &[u8]) -> [u8; 32] {
-    Sha256::digest(bytes).into()
+impl Owner {
+    fn ended(&self) -> Result<bool> {
+        Ok(self.controller.live()?.is_none()
+            && self.desktop.live()?.is_none()
+            && self.launcher.live()?.is_none()
+            && port_closed(self.descriptor.control_port)?)
+    }
+
+    fn check_scope(&self, data: &Path) -> Result<()> {
+        if data.canonicalize().ok().as_ref() != Some(&self.data) {
+            return Err(
+                "Desktop belongs to a different CODEXHOST_DATA_DIR; no GUI action taken".into(),
+            );
+        }
+        check_installation(&self.launcher.executable)
+    }
+
+    fn check_orphan(&self) -> Result<()> {
+        if self.launcher.live()?.is_some()
+            || self
+                .controller
+                .live()?
+                .is_none_or(|id| id.parent_id == self.launcher.pid)
+        {
+            return Err(
+                "Desktop Launcher or Controller identity does not match; no process was stopped"
+                    .into(),
+            );
+        }
+        self.controller.verify_image()?;
+        if self.desktop.live()?.is_some()
+            || codexhost_platform::process_snapshots()?
+                .iter()
+                .any(|p| p.executable == self.desktop.executable)
+        {
+            return Err(
+                "Desktop is still running without its Launcher; orphan cleanup refused".into(),
+            );
+        }
+        Ok(())
+    }
 }
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-fn generation(value: &RuntimeDescriptor) -> Result<String> {
-    Ok(hex(&sha(&serde_json::to_vec(value)?)))
+
+fn check_installation(executable: &Path) -> Result<()> {
+    if std::env::current_exe()?.canonicalize()? != executable {
+        return Err("Desktop belongs to a different installation; no GUI action taken".into());
+    }
+    Ok(())
 }
 
 fn transport(port: u16) -> io::Result<TcpStream> {
@@ -121,255 +137,287 @@ pub(super) fn port_closed(port: u16) -> Result<bool> {
 
 pub(super) struct Lifecycle {
     descriptor: PathBuf,
-    store: Store,
+    store: Option<Store>,
+}
+
+enum State {
+    Empty,
+    Legacy(RuntimeDescriptor),
+    Owned(Box<Owner>, bool),
 }
 
 impl Lifecycle {
-    pub(super) fn open(descriptor: &Path) -> Result<Self> {
+    pub(super) fn open(descriptor: &Path, create: bool) -> Result<Self> {
+        let runtime = descriptor
+            .parent()
+            .ok_or("invalid Desktop runtime directory")?;
+        let store = match Store::open(runtime, create) {
+            Ok(store) => Some(store),
+            Err(error) if !create && error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
         Ok(Self {
             descriptor: descriptor.into(),
-            store: Store::open(
-                descriptor
-                    .parent()
-                    .ok_or("invalid Desktop runtime directory")?,
-            )?,
+            store,
         })
     }
 
-    pub(super) fn lock(&self) -> Result<File> {
-        Ok(self.store.lock()?)
+    fn store(&self) -> &Store {
+        self.store
+            .as_ref()
+            .expect("operation requires lifecycle storage")
+    }
+
+    pub(super) fn lock(&self, deadline: Instant) -> Result<File> {
+        Ok(self.store().lock(deadline)?)
+    }
+
+    pub(super) fn launcher_guard(&self) -> Result<Option<crate::runtime_instance::LauncherGuard>> {
+        Ok(try_acquire_launcher_guard(
+            &crate::runtime_instance::guard_path(&self.descriptor),
+        )?)
     }
 
     pub(super) fn record_start(
         self,
-        descriptor: &RuntimeDescriptor,
+        descriptor: RuntimeDescriptor,
         data: &Path,
         desktop: &ProcessSnapshot,
         controller: &ProcessSnapshot,
-        entry: &Path,
-    ) -> Result<(Published, [u8; 64])> {
+    ) -> Result<Published> {
         fs::create_dir_all(data)?;
         let launcher = process_snapshot(std::process::id())?;
         if launcher.id != descriptor.launcher_pid || controller.parent_id != launcher.id {
             return Err("Desktop Controller is not a child of this Launcher".into());
         }
+        let mut key = [0; 32];
+        getrandom::fill(&mut key).map_err(|error| io::Error::other(error.to_string()))?;
         let owner = Owner {
-            schema_version: 1,
-            generation: generation(descriptor)?,
-            port: descriptor.control_port,
+            descriptor,
             data: data.canonicalize()?,
             launcher: (&launcher).into(),
             controller: controller.into(),
-            controller_entry: entry.canonicalize()?,
             desktop: desktop.into(),
+            key,
         };
-        let bytes = serde_json::to_vec(&owner)?;
-        let mut bootstrap = [0; 64];
-        getrandom::fill(&mut bootstrap[..32])
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        bootstrap[32..].copy_from_slice(&sha(&bytes));
-        // A child cannot open its listener until it receives the bootstrap. A crash in
-        // between the two writes can leave only a key, never an unrecorded listener.
-        self.store.publish(KEY, &bootstrap[..32])?;
-        self.store.publish(RECORD, &bytes)?;
-        Ok((
-            Published {
-                lifecycle: self,
-                owner,
-            },
-            bootstrap,
-        ))
+        // Publish all private state before the child can open its listener.
+        self.store().remove(STOP)?;
+        self.store().publish(RECORD, &serde_json::to_vec(&owner)?)?;
+        Ok(Published {
+            lifecycle: self,
+            owner,
+        })
     }
 
-    fn read(&self) -> Result<Option<(Owner, [u8; 32])>> {
-        let Some(bytes) = self.store.read(RECORD, 24 * 1024)? else {
+    fn read(&self) -> Result<Option<Owner>> {
+        let Some(bytes) = self
+            .store
+            .as_ref()
+            .map(|store| store.read(RECORD, 24 * 1024))
+            .transpose()?
+            .flatten()
+        else {
             return Ok(None);
         };
         let owner: Owner = serde_json::from_slice(&bytes)?;
-        if owner.schema_version != 1
-            || owner.port == 0
-            || !owner.data.is_absolute()
-            || !owner.controller_entry.is_absolute()
+        owner.descriptor.validate()?;
+        if !owner.data.is_absolute()
+            || owner.descriptor.launcher_pid != owner.launcher.pid
             || [&owner.launcher, &owner.controller, &owner.desktop]
                 .iter()
-                .any(|instance| {
-                    instance.pid <= 1
-                        || instance.started_at_micros == 0
-                        || !instance.executable.is_absolute()
-                })
+                .any(|p| p.pid <= 1 || p.started_at_micros == 0 || !p.executable.is_absolute())
             || owner.launcher.pid == owner.controller.pid
             || owner.controller.pid == owner.desktop.pid
+            || owner.launcher.pid == owner.desktop.pid
         {
             return Err("invalid Desktop lifecycle owner record".into());
         }
-        Ok(Some((owner, sha(&bytes))))
+        Ok(Some(owner))
     }
 
-    fn matching_descriptor(&self, owner: &Owner) -> Result<Option<RuntimeDescriptor>> {
+    fn inspect(&self, data: &Path, guard_free: bool) -> Result<State> {
+        let owner = self.read()?;
         let descriptor = read_descriptor(&self.descriptor)?;
-        if let Some(value) = &descriptor
-            && (value.launcher_pid != owner.launcher.pid
-                || value.control_port != owner.port
-                || generation(value)? != owner.generation)
-        {
-            return Err("Desktop runtime descriptor and lifecycle generation do not match".into());
+        if let Some(owner) = owner {
+            if descriptor
+                .as_ref()
+                .is_some_and(|value| *value != owner.descriptor)
+            {
+                return Err(
+                    "Desktop runtime descriptor and lifecycle generation do not match".into(),
+                );
+            }
+            if !guard_free || !owner.ended()? {
+                owner.check_scope(data)?;
+                let launcher = owner.launcher.live()?;
+                if launcher.is_some() == guard_free {
+                    return Err("Desktop Launcher ownership changed; retry after it settles".into());
+                }
+                if !guard_free {
+                    owner.launcher.verify_image()?;
+                    if owner
+                        .controller
+                        .live()?
+                        .is_some_and(|id| id.parent_id != owner.launcher.pid)
+                    {
+                        return Err("Desktop Controller parent identity does not match".into());
+                    }
+                }
+            }
+            return Ok(State::Owned(Box::new(owner), descriptor.is_some()));
         }
-        Ok(descriptor)
+        let Some(descriptor) = descriptor else {
+            return Ok(State::Empty);
+        };
+        if guard_free && !port_closed(descriptor.control_port)? {
+            return Err(legacy_recovery_hint(descriptor.control_port));
+        }
+        Ok(State::Legacy(descriptor))
+    }
+
+    pub(super) fn attachment(&self, data: &Path) -> Result<Option<RuntimeDescriptor>> {
+        match self.inspect(data, false)? {
+            State::Legacy(descriptor) => Ok(Some(descriptor)),
+            State::Owned(owner, true) if !self.stop_requested(&owner)? => {
+                Ok(Some(owner.descriptor))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn stop_requested(&self, owner: &Owner) -> Result<bool> {
+        Ok(self.store().read(STOP, 32)?.as_deref() == Some(owner.descriptor.nonce.as_bytes()))
     }
 
     fn remove(&self, owner: &Owner) -> Result<()> {
-        if self.read()?.is_none_or(|(current, _)| current != *owner) {
-            return Ok(());
-        }
-        if let Some(descriptor) = self.matching_descriptor(owner)? {
-            remove_matching_descriptor(&self.descriptor, &descriptor)?;
-        }
-        self.store.remove(RECORD)?;
-        self.store.remove(KEY)?;
-        Ok(())
-    }
-
-    fn check_scope(&self, owner: &Owner, data: &Path) -> Result<()> {
-        if data.canonicalize().ok().as_ref() != Some(&owner.data) {
-            return Err(
-                "Desktop belongs to a different CODEXHOST_DATA_DIR; no GUI action taken".into(),
-            );
-        }
-        if std::env::current_exe()?.canonicalize()? != owner.launcher.executable {
-            return Err("Desktop belongs to a different installation; no GUI action taken".into());
+        if self.read()?.as_ref() == Some(owner) {
+            remove_matching_descriptor(&self.descriptor, &owner.descriptor)?;
+            self.store().remove(STOP)?;
+            self.store().remove(RECORD)?;
         }
         Ok(())
     }
 
-    pub(super) fn check_attachment_scope(&self, data: &Path) -> Result<()> {
-        if let Some((owner, _)) = self.read()? {
-            self.matching_descriptor(&owner)?;
-            self.check_scope(&owner, data)?;
-        }
-        Ok(())
-    }
-
-    /// A read-only query for update preparation. An orphan is not a running Desktop.
-    pub(super) fn desktop_running(&self, data: &Path) -> Result<bool> {
-        let Some((owner, _)) = self.read()? else {
-            if let Some(value) = read_descriptor(&self.descriptor)?
-                && !port_closed(value.control_port)?
-            {
-                return Err(LEGACY.into());
-            }
-            return Ok(false);
-        };
-        self.matching_descriptor(&owner)?;
-        self.check_scope(&owner, data)?;
-        Ok(owner.desktop.presence()? == Presence::Same)
-    }
-
-    /// Called with the operation lock. No numeric PID is ever signaled here.
-    /// Returns true if a residual generation was found (even when already dead).
+    /// The caller holds the operation lock; guard_free means it also owns the Launcher guard.
     pub(super) fn reconcile(
         &self,
         data: &Path,
-        launcher_lock_free: bool,
-        for_launch: bool,
+        guard_free: bool,
+        deadline: Instant,
     ) -> Result<bool> {
-        let Some((owner, context)) = self.read()? else {
-            let Some(descriptor) = read_descriptor(&self.descriptor)? else {
-                return Ok(false);
-            };
-            if !port_closed(descriptor.control_port)? {
-                return Err(LEGACY.into());
+        match self.inspect(data, guard_free)? {
+            State::Empty if guard_free => return Ok(false),
+            State::Empty => {
+                return Err("Desktop Launcher is starting or stopping; retry shortly".into());
             }
-            if !launcher_lock_free || observe_process_identity(descriptor.launcher_pid)?.is_some() {
-                return Err(
-                    "Legacy Desktop Launcher state is unconfirmed; no GUI action taken".into(),
-                );
-            }
-            remove_matching_descriptor(&self.descriptor, &descriptor)?;
-            return Ok(true);
-        };
-        self.matching_descriptor(&owner)?;
-        self.check_scope(&owner, data)?;
-        let launcher = owner.launcher.presence()?;
-        let orphan = launcher != Presence::Same;
-        if orphan != launcher_lock_free || for_launch && !orphan {
-            return Err("Desktop Launcher ownership changed; retry after it settles".into());
-        }
-        if orphan {
-            require_no_desktop(&owner)?;
-        }
-        match owner.controller.presence()? {
-            Presence::Same => {
-                let observed = process_snapshot(owner.controller.pid)?;
-                if !orphan && observed.parent_id != owner.launcher.pid
-                    || orphan && observed.parent_id == owner.launcher.pid
-                {
-                    return Err("Desktop Controller parent identity does not match".into());
+            State::Legacy(descriptor) => {
+                if !guard_free {
+                    let (launcher, controller) = legacy_processes(&descriptor, data)?
+                        .ok_or("Legacy Desktop Controller is not a verified child of its Launcher; retry after it settles")?;
+                    crate::desktop_attachment::stop_controller(
+                        &launcher,
+                        &controller,
+                        deadline.saturating_duration_since(Instant::now()),
+                    )?;
+                    let controller = Instance::from(&controller);
+                    wait_until(deadline, || {
+                        Ok(controller.live()?.is_none() && port_closed(descriptor.control_port)?)
+                    })?;
                 }
-                let key = self
-                    .store
-                    .read(KEY, 32)?
-                    .filter(|bytes| bytes.len() == 32)
-                    .ok_or("Desktop Controller lifecycle key is unavailable")?;
-                authenticated_stop(&owner, &context, &key, || {
-                    if owner.controller.presence()? != Presence::Same
-                        || owner.launcher.presence()? != launcher
-                    {
-                        return Err(
-                            "Desktop Launcher or Controller identity changed during verification"
-                                .into(),
-                        );
-                    }
-                    if orphan {
-                        require_no_desktop(&owner)?;
-                    }
-                    Ok(())
-                })?;
+                remove_matching_descriptor(&self.descriptor, &descriptor)?;
             }
-            Presence::Gone if port_closed(owner.port)? => {}
-            _ => {
-                return Err(
-                    "Desktop Controller identity does not match; no process was stopped".into(),
-                );
-            }
-        }
-        let started = Instant::now();
-        loop {
-            if owner.controller.presence()? != Presence::Same
-                && port_closed(owner.port)?
-                && owner.launcher.presence()? != Presence::Same
-                && owner.desktop.presence()? != Presence::Same
-            {
+            State::Owned(owner, _) => {
+                if !owner.ended()? {
+                    if guard_free {
+                        authenticated_stop(&owner, deadline)?;
+                    } else {
+                        self.store()
+                            .publish(STOP, owner.descriptor.nonce.as_bytes())?;
+                        wait_until(deadline, || owner.ended())?;
+                    }
+                }
                 self.remove(&owner)?;
-                return Ok(true);
             }
-            if started.elapsed() >= TIMEOUT {
-                return Err(format!("Desktop shutdown timed out (Controller: {:?}, Launcher: {:?}, Desktop: {:?}, listener closed: {})", owner.controller.presence()?, owner.launcher.presence()?, owner.desktop.presence()?, port_closed(owner.port)?).into());
-            }
-            thread::sleep(Duration::from_millis(25));
         }
+        Ok(true)
     }
 }
 
-fn require_no_desktop(owner: &Owner) -> Result<()> {
-    if owner.desktop.presence()? == Presence::Same
-        || codexhost_platform::process_snapshots()?
-            .iter()
-            .any(|process| process.executable == owner.desktop.executable)
-    {
-        return Err("Desktop is still running without its Launcher; orphan cleanup refused".into());
+fn legacy_recovery_hint(port: u16) -> Box<dyn std::error::Error> {
+    format!("Desktop control endpoint has no verified lifecycle record (port {port}); quit Codex Desktop, then run `lsof -nP -iTCP:{port} -sTCP:LISTEN` and `ps -ww -p <PID> -o command=`. Only if it is the old codexhost Node Controller (desktop-controller.mjs with --attachment-port {port}), quit that PID manually and retry. Do not stop an unrelated listener.").into()
+}
+
+fn legacy_processes(
+    descriptor: &RuntimeDescriptor,
+    data: &Path,
+) -> Result<Option<(ProcessSnapshot, ProcessSnapshot)>> {
+    let launcher = match process_snapshot(descriptor.launcher_pid) {
+        Ok(launcher) => launcher,
+        Err(codexhost_platform::PlatformError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    check_installation(&launcher.executable)?;
+    let Some(controller) = crate::desktop_attachment::recorded_controller(data)? else {
+        return Ok(None);
+    };
+    Ok((controller.parent_id == launcher.id
+        && controller.started_at_micros >= launcher.started_at_micros)
+        .then_some((launcher, controller)))
+}
+
+fn wait_until(deadline: Instant, mut predicate: impl FnMut() -> Result<bool>) -> Result<()> {
+    loop {
+        let observed = predicate();
+        if matches!(observed, Ok(true)) {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return observed.and(Err(
+                "Desktop shutdown timed out waiting for processes and listener to exit".into(),
+            ));
+        }
+        // Exit can briefly make process inspection inconclusive. Never count it as gone.
+        thread::sleep(POLL.min(remaining));
     }
-    Ok(())
 }
 
 pub(super) fn running_for_update(data: &Path) -> Result<bool> {
-    Lifecycle::open(&crate::runtime_instance::default_descriptor_path()?)?.desktop_running(data)
+    let lifecycle = Lifecycle::open(&crate::runtime_instance::existing_descriptor_path()?, false)?;
+    if lifecycle.store.is_none() && read_descriptor(&lifecycle.descriptor)?.is_none() {
+        return Ok(false);
+    }
+    let _operation = lifecycle
+        .store
+        .as_ref()
+        .map(|store| store.lock(Instant::now() + Duration::from_secs(40)))
+        .transpose()?;
+    let guard = lifecycle.launcher_guard()?;
+    match lifecycle.inspect(data, guard.is_some())? {
+        State::Legacy(descriptor) if guard.is_none() => {
+            match legacy_processes(&descriptor, data)? {
+                Some(_) => Ok(true),
+                None if port_closed(descriptor.control_port)? => Ok(false),
+                None => {
+                    Err("Legacy Desktop Controller is not a verified child of its Launcher".into())
+                }
+            }
+        }
+        State::Owned(owner, _) if guard.is_none() => Ok(owner.desktop.live()?.is_some()),
+        _ => Ok(false),
+    }
 }
 
 pub(super) fn stop_managed(data: &Path) -> Result<bool> {
-    let lifecycle = Lifecycle::open(&crate::runtime_instance::default_descriptor_path()?)?;
-    let _operation = lifecycle.lock()?;
-    let launcher = try_acquire_launcher_guard(&crate::runtime_instance::default_guard_path()?)?;
-    lifecycle.reconcile(data, launcher.is_some(), false)
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let lifecycle = Lifecycle::open(&crate::runtime_instance::default_descriptor_path()?, true)?;
+    let _operation = lifecycle.lock(deadline)?;
+    let guard = lifecycle.launcher_guard()?;
+    lifecycle.reconcile(
+        data,
+        guard.is_some(),
+        deadline.min(Instant::now() + Duration::from_secs(12)),
+    )
 }
 
 pub(super) struct Published {
@@ -377,25 +425,31 @@ pub(super) struct Published {
     owner: Owner,
 }
 
+impl Published {
+    pub(super) fn bootstrap(&self, mut pipe: impl Write) -> io::Result<()> {
+        pipe.write_all(&self.owner.key)
+    }
+
+    pub(super) fn stopping(&self) -> Result<bool> {
+        self.lifecycle.stop_requested(&self.owner)
+    }
+}
+
 impl Drop for Published {
     fn drop(&mut self) {
-        // The supervising Launcher still owns launcher-v1.lock here. A stop caller
-        // may own the operation lock and be waiting for us; never reacquire it here.
-        if matches!(self.owner.controller.presence(), Ok(Presence::Gone))
-            && matches!(self.owner.desktop.presence(), Ok(Presence::Gone))
-            && matches!(port_closed(self.owner.port), Ok(true))
+        // A stop caller holding this lock confirms exit and cleans up instead.
+        if let Ok(_lock) = self.lifecycle.lock(Instant::now())
+            && matches!(self.owner.controller.live(), Ok(None))
+            && matches!(self.owner.desktop.live(), Ok(None))
+            && matches!(port_closed(self.owner.descriptor.control_port), Ok(true))
         {
             let _ = self.lifecycle.remove(&self.owner);
         }
     }
 }
 
-fn authenticator(key: &[u8], role: &str, transcript: &str) -> Hmac<Sha256> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any size");
-    mac.update(role.as_bytes());
-    mac.update(b":");
-    mac.update(transcript.as_bytes());
-    mac
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn unhex<const N: usize>(value: &str) -> Option<[u8; N]> {
@@ -413,8 +467,7 @@ fn unhex<const N: usize>(value: &str) -> Option<[u8; N]> {
     Some(bytes)
 }
 
-fn read_wire_line(stream: &mut TcpStream, maximum: usize) -> io::Result<String> {
-    let deadline = Instant::now() + WIRE_TIMEOUT;
+fn read_wire_line(stream: &mut TcpStream, maximum: usize, deadline: Instant) -> io::Result<String> {
     let mut bytes = Vec::new();
     while bytes.len() < maximum {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -436,49 +489,52 @@ fn read_wire_line(stream: &mut TcpStream, maximum: usize) -> io::Result<String> 
     ))
 }
 
-fn authenticated_stop(
-    owner: &Owner,
-    context: &[u8; 32],
-    key: &[u8],
-    recheck: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    let mut stream = transport(owner.port)?;
+// Before authentication errors fail closed. After a verified commit, even a lost
+// receipt must be followed by a process and port check.
+fn authenticated_stop(owner: &Owner, deadline: Instant) -> Result<()> {
+    owner.check_orphan()?;
+    let mut stream = transport(owner.descriptor.control_port)?;
     stream.set_write_timeout(Some(WIRE_TIMEOUT))?;
     let client = random_nonce()?;
-    stream.write_all(format!("LIFECYCLE 1 {client}\n").as_bytes())?;
-    let response = read_wire_line(&mut stream, 112)
-        .map_err(|error| format!("Desktop Controller identity probe failed: {error}"))?;
-    let mut parts = response.strip_suffix('\n').unwrap_or("").split(' ');
+    writeln!(stream, "LIFECYCLE 1 {client}")?;
+    let response = read_wire_line(
+        &mut stream,
+        112,
+        deadline.min(Instant::now() + WIRE_TIMEOUT),
+    )?;
+    let parts: Vec<_> = response.trim_end_matches('\n').split(' ').collect();
     let invalid =
         "Desktop Controller endpoint did not prove its lifecycle identity; no process was stopped";
-    if parts.next() != Some("identity") {
+    let ["identity", server, proof] = parts.as_slice() else {
         return Err(invalid.into());
-    }
-    let server = parts
-        .next()
-        .filter(|value| unhex::<16>(value).is_some())
+    };
+    let proof = unhex::<32>(proof)
+        .filter(|_| unhex::<16>(server).is_some())
         .ok_or(invalid)?;
-    let proof = parts.next().and_then(unhex::<32>).ok_or(invalid)?;
-    if parts.next().is_some() {
-        return Err(invalid.into());
-    }
-    let transcript = format!(
-        "{}:{}:{client}:{server}",
-        hex(context),
-        owner.controller.pid
-    );
-    authenticator(key, "identity", &transcript)
-        .verify_slice(&proof)
-        .map_err(|_| invalid)?;
-    recheck()?;
-    let proof = authenticator(key, "stop", &transcript)
-        .finalize()
-        .into_bytes();
-    stream.write_all(format!("stop {}\n", hex(&proof)).as_bytes())?;
-    if read_wire_line(&mut stream, 16)? != "stopping\n" {
-        return Err("Desktop Controller did not acknowledge the shutdown request".into());
-    }
-    Ok(())
+    let mac = |role: &str| {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&owner.key).expect("valid HMAC key");
+        mac.update(
+            format!(
+                "{role}:{}:{}:{client}:{server}",
+                owner.descriptor.nonce, owner.controller.pid
+            )
+            .as_bytes(),
+        );
+        mac
+    };
+    mac("identity").verify_slice(&proof).map_err(|_| invalid)?;
+    owner.check_orphan()?;
+    let receipt =
+        writeln!(stream, "stop {}", hex(&mac("stop").finalize().into_bytes())).and_then(|()| {
+            read_wire_line(&mut stream, 16, deadline.min(Instant::now() + WIRE_TIMEOUT))
+        });
+    wait_until(deadline, || owner.ended()).map_err(|error| match receipt {
+        Ok(line) if line == "stopping\n" => error,
+        Ok(_) => format!("Desktop Controller did not acknowledge shutdown: {error}").into(),
+        Err(receipt) => {
+            format!("Desktop Controller shutdown receipt lost ({receipt}): {error}").into()
+        }
+    })
 }
 
 #[cfg(test)]

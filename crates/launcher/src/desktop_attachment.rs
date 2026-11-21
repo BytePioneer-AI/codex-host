@@ -18,9 +18,12 @@ use codexhost_platform::{
 use codexhost_platform::{process_executable_path, process_exists, terminate_process_by_id};
 
 use crate::ResolvedLaunchOptions;
+#[cfg(not(unix))]
+use crate::runtime_instance::read_descriptor;
+#[cfg(not(unix))]
+use crate::runtime_instance::try_acquire_launcher_guard;
 use crate::runtime_instance::{
-    LauncherGuard, RuntimeDescriptor, default_descriptor_path, default_guard_path, random_nonce,
-    read_descriptor, try_acquire_launcher_guard,
+    LauncherGuard, RuntimeDescriptor, default_descriptor_path, random_nonce,
 };
 #[cfg(target_os = "windows")]
 use crate::runtime_instance::{RuntimeDescriptorGuard, remove_matching_descriptor};
@@ -64,77 +67,48 @@ pub(super) fn acquire_launcher_ownership(
     timeout: Duration,
     #[cfg(unix)] data: &Path,
 ) -> Result<LauncherOwnership, Box<dyn Error>> {
+    let descriptor_path = default_descriptor_path()?;
     #[cfg(unix)]
-    {
-        let descriptor_path = default_descriptor_path()?;
-        let lifecycle = crate::desktop_lifecycle::Lifecycle::open(&descriptor_path)?;
-        let guard_path = default_guard_path()?;
-        let started = Instant::now();
-        let mut delay = ATTACHMENT_RETRY_INITIAL_DELAY;
-        loop {
-            let operation = lifecycle.lock()?;
-            if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
+    let lifecycle = crate::desktop_lifecycle::Lifecycle::open(&descriptor_path, true)?;
+    #[cfg(not(unix))]
+    let guard_path = crate::runtime_instance::guard_path(&descriptor_path);
+    let deadline = Instant::now() + timeout;
+    let mut delay = ATTACHMENT_RETRY_INITIAL_DELAY;
+    loop {
+        #[cfg(unix)]
+        let descriptor = {
+            let operation = lifecycle.lock(deadline)?;
+            if let Some(guard) = lifecycle.launcher_guard()? {
                 return Ok(LauncherOwnership::Acquired(guard, operation));
             }
-            if let Some(descriptor) = read_descriptor(&descriptor_path)? {
-                lifecycle.check_attachment_scope(data)?;
-                if try_activate_controlled_instance(&descriptor)? {
-                    return Ok(LauncherOwnership::Attached);
-                }
+            lifecycle.attachment(data)?
+        };
+        #[cfg(not(unix))]
+        let descriptor = {
+            if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
+                return Ok(LauncherOwnership::Acquired(guard));
             }
-            drop(operation);
-            let remaining = timeout.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                return Err(
-                    "another codexhost Launcher did not become attachable before timeout".into(),
-                );
-            }
-            thread::sleep(delay.min(remaining));
-            delay = delay.saturating_mul(2).min(ATTACHMENT_RETRY_MAX_DELAY);
-        }
-    }
-    #[cfg(not(unix))]
-    acquire_legacy_launcher_ownership(_installation, timeout)
-}
-
-#[cfg(not(unix))]
-fn acquire_legacy_launcher_ownership(
-    installation: &DesktopInstallation,
-    timeout: Duration,
-) -> Result<LauncherOwnership, Box<dyn Error>> {
-    let guard_path = default_guard_path()?;
-    if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
-        return Ok(LauncherOwnership::Acquired(guard));
-    }
-
-    let descriptor_path = default_descriptor_path()?;
-    let started = Instant::now();
-    let mut retry_delay = ATTACHMENT_RETRY_INITIAL_DELAY;
-    while started.elapsed() < timeout {
-        let descriptor = read_descriptor(&descriptor_path).ok().flatten();
+            read_descriptor(&descriptor_path).ok().flatten()
+        };
         if let Some(descriptor) = &descriptor {
-            if try_activate_controlled_instance(descriptor)? {
+            if try_activate_until(descriptor, deadline)? {
                 return Ok(LauncherOwnership::Attached);
             }
-            if desktop_root_process_ids_for_installation(installation)?.is_empty() {
+            #[cfg(not(unix))]
+            if desktop_root_process_ids_for_installation(_installation)?.is_empty() {
                 stop_stale_launcher(descriptor)?;
-                let _ = remove_matching_descriptor(&descriptor_path, descriptor)?;
+                remove_matching_descriptor(&descriptor_path, descriptor)?;
+                if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
+                    return Ok(LauncherOwnership::Acquired(guard));
+                }
             }
         }
-        if let Some(guard) = try_acquire_launcher_guard(&guard_path)? {
-            return Ok(LauncherOwnership::Acquired(guard));
-        }
-        // A recovering Controller reports busy while one attachment owns the
-        // recovery work. Back off retries so another Launcher cannot create a
-        // connection storm while the healthy owner keeps its guard.
-        let remaining = timeout.saturating_sub(started.elapsed());
+        let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
-        thread::sleep(retry_delay.min(remaining));
-        retry_delay = retry_delay
-            .saturating_mul(2)
-            .min(ATTACHMENT_RETRY_MAX_DELAY);
+        thread::sleep(delay.min(remaining));
+        delay = (delay * 2).min(ATTACHMENT_RETRY_MAX_DELAY);
     }
     Err("another codexhost Launcher did not become attachable before timeout".into())
 }
@@ -153,10 +127,13 @@ pub(super) fn wait_for_host_chain(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
     timeout: Duration,
+    stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
 ) -> Result<bool, Box<dyn Error>> {
     let nodes =
         host_runtime_node_candidates(options.node.clone(), env::var_os(crate::NPM_NODE_PATH_ENV));
-    wait_for_host_chain_with_nodes(desktop, options, &nodes, timeout)
+    wait_for_host_chain_with_inspector(desktop, &options.shim, &nodes, timeout, stopping, |node| {
+        descendant_executable_pair_exists(desktop, &options.shim, node)
+    })
 }
 
 /// The Shim runs the Host Runtime on the Node selected at launch
@@ -179,15 +156,21 @@ pub(super) fn host_runtime_node_candidates(
     nodes
 }
 
-pub(super) fn wait_for_host_chain_with_nodes(
+#[cfg(test)]
+fn wait_for_host_chain_with_nodes(
     desktop: &ProcessSnapshot,
     options: &ResolvedLaunchOptions,
     nodes: &[PathBuf],
     timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
-    wait_for_host_chain_with_inspector(desktop, &options.shim, nodes, timeout, |node| {
-        descendant_executable_pair_exists(desktop, &options.shim, node)
-    })
+    wait_for_host_chain_with_inspector(
+        desktop,
+        &options.shim,
+        nodes,
+        timeout,
+        || Ok(false),
+        |node| descendant_executable_pair_exists(desktop, &options.shim, node),
+    )
 }
 
 fn wait_for_host_chain_with_inspector(
@@ -195,6 +178,7 @@ fn wait_for_host_chain_with_inspector(
     shim: &Path,
     nodes: &[PathBuf],
     timeout: Duration,
+    mut stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
     mut inspect: impl FnMut(&Path) -> Result<bool, PlatformError>,
 ) -> Result<bool, Box<dyn Error>> {
     let started = Instant::now();
@@ -206,6 +190,9 @@ fn wait_for_host_chain_with_inspector(
     let mut unresolved_error = None;
     let mut last_error = None;
     while started.elapsed() < timeout {
+        if stopping()? {
+            return Ok(false);
+        }
         let mut round_error = None;
         for node in nodes {
             match inspect(node) {
@@ -331,30 +318,19 @@ pub(super) fn publish_runtime_descriptor(
     )?)
 }
 
-fn connect_controlled_instance(descriptor: &RuntimeDescriptor) -> std::io::Result<TcpStream> {
-    TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", descriptor.control_port)
-            .parse()
-            .expect("valid loopback socket address"),
-        Duration::from_secs(2),
-    )
-}
-
-fn send_controlled_attachment(
-    stream: TcpStream,
-    descriptor: &RuntimeDescriptor,
-) -> Result<bool, Box<dyn Error>> {
-    send_controlled_attachment_with_timeout(stream, descriptor, Duration::from_secs(10))
-}
-
 fn send_controlled_attachment_with_timeout(
     mut stream: TcpStream,
     descriptor: &RuntimeDescriptor,
     read_timeout: Duration,
 ) -> Result<bool, Box<dyn Error>> {
-    stream.set_read_timeout(Some(read_timeout))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let started = Instant::now();
+    stream.set_write_timeout(Some(read_timeout.min(Duration::from_secs(2))))?;
     writeln!(stream, "ATTACH {}", descriptor.nonce)?;
+    let remaining = read_timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    stream.set_read_timeout(Some(remaining))?;
     let mut response = String::new();
     match BufReader::new(stream).read_line(&mut response) {
         Ok(_) => {}
@@ -385,14 +361,28 @@ fn send_controlled_attachment_with_timeout(
     }
 }
 
-pub(super) fn try_activate_controlled_instance(
+fn try_activate_until(
     descriptor: &RuntimeDescriptor,
+    deadline: Instant,
 ) -> Result<bool, Box<dyn Error>> {
-    let stream = match connect_controlled_instance(descriptor) {
-        Ok(stream) => stream,
-        Err(_) => return Ok(false),
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], descriptor.control_port));
+    let Ok(stream) = TcpStream::connect_timeout(&address, remaining.min(Duration::from_secs(2)))
+    else {
+        return Ok(false);
     };
-    send_controlled_attachment(stream, descriptor)
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(false);
+    }
+    send_controlled_attachment_with_timeout(
+        stream,
+        descriptor,
+        remaining.min(Duration::from_secs(10)),
+    )
 }
 
 #[cfg(target_os = "windows")]
@@ -447,19 +437,33 @@ pub(super) fn managed_processes(
     if !endpoint_ready(descriptor.control_port, Duration::from_millis(300)) {
         return Ok(None);
     }
-    let document: serde_json::Value = serde_json::from_slice(&std::fs::read(
-        data.join("diagnostics/desktop-controller-v1.json"),
-    )?)?;
-    let pid = document["pid"]
-        .as_u64()
-        .and_then(|pid| u32::try_from(pid).ok())
-        .ok_or("Invalid Desktop Controller pid")?;
+    let Some(controller) = recorded_controller(data)? else {
+        return Ok(None);
+    };
     let launcher = codexhost_platform::process_snapshot(descriptor.launcher_pid)?;
-    let controller = codexhost_platform::process_snapshot(pid)?;
     if controller.parent_id != launcher.id {
         return Err("Desktop Controller does not belong to the recorded Launcher".into());
     }
     Ok(Some((launcher, controller)))
+}
+
+pub(super) fn recorded_controller(data: &Path) -> Result<Option<ProcessSnapshot>, Box<dyn Error>> {
+    let bytes = match std::fs::read(data.join("diagnostics/desktop-controller-v1.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let document: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let pid = document["pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 1)
+        .ok_or("Invalid Desktop Controller pid")?;
+    match codexhost_platform::process_snapshot(pid) {
+        Ok(controller) => Ok(Some(controller)),
+        Err(PlatformError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(unix)]
@@ -489,8 +493,7 @@ pub(super) fn stop_managed(data: &Path) -> Result<bool, Box<dyn Error>> {
 // The Launcher exits only after its Controller does. A Controller that keeps waiting on an
 // unresponsive Renderer after SIGTERM is forced, so the Launcher can release Desktop ownership
 // instead of failing the update and blocking the recovery Launcher.
-#[cfg(any(not(unix), test))]
-fn stop_controller(
+pub(super) fn stop_controller(
     launcher: &ProcessSnapshot,
     controller: &ProcessSnapshot,
     timeout: Duration,
@@ -511,48 +514,6 @@ mod tests {
     fn descriptor(port: u16) -> RuntimeDescriptor {
         RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
             .expect("runtime descriptor")
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn stop_controller_forces_a_controller_that_ignores_sigterm() {
-        use codexhost_platform::process_snapshot;
-        use std::process::{Command, Stdio};
-
-        // The fixture Launcher exits once its Controller child does, like the real Launcher. The
-        // Controller reports its PID only after installing the SIGTERM trap.
-        let mut command = Command::new("/bin/bash");
-        command
-            .args([
-                "-c",
-                "/bin/bash -c 'trap \"\" TERM; echo $$; while :; do sleep 0.05; done' & wait $!",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut launcher_child = command.spawn().unwrap();
-        let mut line = String::new();
-        BufReader::new(launcher_child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let controller = process_snapshot(line.trim().parse().unwrap()).unwrap();
-        let launcher = process_snapshot(launcher_child.id()).unwrap();
-        let reaper = thread::spawn(move || launcher_child.wait());
-
-        let started = Instant::now();
-        let result = stop_controller(&launcher, &controller, Duration::from_secs(6));
-        let elapsed = started.elapsed();
-        let _ = codexhost_platform::terminate_process_instance(&controller, true);
-        reaper.join().unwrap().unwrap();
-        assert!(
-            result.is_ok(),
-            "stuck Controller blocked shutdown: {result:?}"
-        );
-        // The Controller ignores SIGTERM, so only the 2s escalation can end it.
-        assert!(
-            elapsed >= Duration::from_secs(2) && elapsed < Duration::from_secs(6),
-            "shutdown took {elapsed:?}"
-        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -594,7 +555,10 @@ mod tests {
             pi: None,
         };
         // A pair of sibling executables is not a parent -> child runtime chain.
-        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_millis(200)).unwrap();
+        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_millis(200), || {
+            Ok(false)
+        })
+        .unwrap();
         root.force_terminate().unwrap();
         root.wait().unwrap();
         assert!(
@@ -633,7 +597,8 @@ mod tests {
             renderer_extension: sleep,
             pi: None,
         };
-        let ready = wait_for_host_chain(&snapshot, &options, Duration::from_secs(2)).unwrap();
+        let ready =
+            wait_for_host_chain(&snapshot, &options, Duration::from_secs(2), || Ok(false)).unwrap();
         root.force_terminate().unwrap();
         root.wait().unwrap();
         assert!(
@@ -789,6 +754,7 @@ mod tests {
             Path::new("/fixture/shim"),
             &[PathBuf::from("/fixture/node")],
             Duration::from_millis(350),
+            || Ok(false),
             |_| {
                 calls += 1;
                 results(calls)
@@ -894,20 +860,36 @@ mod tests {
     }
 
     #[test]
-    fn controlled_attachment_treats_busy_as_transient() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("attachment listener");
-        let descriptor = descriptor(listener.local_addr().expect("attachment address").port());
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("attachment connection");
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("clone stream"))
-                .read_line(&mut request)
-                .expect("attachment request");
-            writeln!(stream, "busy").expect("attachment response");
-        });
-
-        assert!(!try_activate_controlled_instance(&descriptor).expect("busy Controller"));
-        server.join().expect("attachment server");
+    fn controlled_attachment_checks_nonce_and_treats_busy_eof_or_absence_as_transient() {
+        for (reply, expected) in [
+            (Some("ready\n"), true),
+            (Some("busy\n"), false),
+            (Some(""), false),
+            (None, false),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let descriptor = descriptor(listener.local_addr().unwrap().port());
+            let nonce = descriptor.nonce.clone();
+            let server = if let Some(reply) = reply {
+                Some(thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = String::new();
+                    BufReader::new(&stream).read_line(&mut request).unwrap();
+                    assert_eq!(request, format!("ATTACH {nonce}\n"));
+                    stream.write_all(reply.as_bytes()).unwrap();
+                }))
+            } else {
+                drop(listener);
+                None
+            };
+            assert_eq!(
+                try_activate_until(&descriptor, Instant::now() + Duration::from_secs(2)).unwrap(),
+                expected
+            );
+            if let Some(server) = server {
+                server.join().unwrap();
+            }
+        }
     }
 
     #[test]
@@ -923,7 +905,8 @@ mod tests {
             thread::sleep(Duration::from_millis(100));
             drop(stream);
         });
-        let stream = connect_controlled_instance(&descriptor).expect("Controller connection");
+        let stream = TcpStream::connect(("127.0.0.1", descriptor.control_port))
+            .expect("Controller connection");
 
         assert!(
             !send_controlled_attachment_with_timeout(

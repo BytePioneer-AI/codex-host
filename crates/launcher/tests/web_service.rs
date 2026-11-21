@@ -95,7 +95,7 @@ log('web-start');
 fs.writeFileSync(path.join(data, 'npm-entrypoint.json'), JSON.stringify({node: process.env.CODEXHOST_NPM_NODE_PATH, wrapper: process.env.CODEXHOST_NPM_LAUNCHER_PATH}));
 fs.appendFileSync(path.join(data, 'starts'), 'start\n');
 if (fs.existsSync(path.join(data, 'fail'))) {
-  console.error('first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port');
+  fs.writeSync(2, 'first diagnostic' + 'x'.repeat(16384) + 'fixture port is occupied; use --port\n');
   process.exit(1);
 }
 const ready = value('--ready-file');
@@ -382,35 +382,6 @@ fn background_web_refreshes_only_enabled_autostart_without_printing_login_link()
         refreshed,
         "stop leaves autostart unchanged"
     );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn stop_preserves_an_active_legacy_endpoint_without_its_launcher() {
-    let fixture = Fixture::new();
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let runtime = fixture.root.join("Library/Application Support/codexhost");
-    fs::create_dir_all(&runtime).unwrap();
-    let descriptor = runtime.join("desktop-runtime-v1.json");
-    fs::write(&descriptor, serde_json::to_vec(&serde_json::json!({
-        "schema_version": 1, "launcher_pid": i32::MAX, "control_port": listener.local_addr().unwrap().port(),
-        "nonce": "0123456789abcdef0123456789abcdef"
-    })).unwrap()).unwrap();
-    fs::create_dir_all(fixture.root.join("diagnostics")).unwrap();
-    fs::write(
-        fixture.root.join("diagnostics/desktop-controller-v1.json"),
-        format!("{{\"pid\":{}}}", std::process::id()),
-    )
-    .unwrap();
-    let output = fixture.public_command("stop").output().unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("no verified lifecycle record"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(descriptor.is_file());
-    assert!(std::net::TcpStream::connect(listener.local_addr().unwrap()).is_ok());
 }
 
 #[test]

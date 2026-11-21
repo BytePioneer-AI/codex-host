@@ -13,8 +13,8 @@ process.once("SIGTERM", stop);
 
 try {
   const options = parseDesktopControllerArguments(process.argv.slice(2));
-  const lifecycle = readControllerLifecycle(stop);
-  await runDesktopController({ ...options, ...(lifecycle ? { lifecycle } : {}) }, abort.signal);
+  const lifecycle = readControllerLifecycle(options.attachmentNonce, stop);
+  await runDesktopController(options, abort.signal, undefined, lifecycle);
 } catch (error) {
   console.error(
     `codexhost Desktop Controller: ${error instanceof Error ? error.message : String(error)}`,

@@ -14,7 +14,7 @@ mod host_service;
 mod installation_layout;
 mod native_harness_broker;
 mod runtime_instance;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod secure_storage;
 mod service_update;
 mod services;
@@ -637,7 +637,8 @@ fn read_bounded_controller_line(mut input: impl Read) -> std::io::Result<Vec<u8>
 fn wait_for_controller_ready(
     controller: &mut SupervisedChild,
     timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
+    mut stopping: impl FnMut() -> Result<bool, Box<dyn Error>>,
+) -> Result<bool, Box<dyn Error>> {
     let stdout = controller
         .take_stdout()
         .ok_or("Desktop Controller stdout is unavailable")?;
@@ -645,12 +646,24 @@ fn wait_for_controller_ready(
     thread::spawn(move || {
         let _ = sender.send(read_bounded_controller_line(stdout));
     });
-    let line = receiver
-        .recv_timeout(timeout)
-        .map_err(|_| "Desktop Controller did not become ready before timeout")??;
-    parse_controller_readiness_line(&line)
-        .map(|_| ())
-        .map_err(|error| format!("Desktop Controller returned invalid readiness: {error}").into())
+    let deadline = Instant::now() + timeout;
+    loop {
+        if stopping()? {
+            return Ok(false);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            Ok(line) => {
+                return parse_controller_readiness_line(&line?)
+                    .map(|_| true)
+                    .map_err(|error| {
+                        format!("Desktop Controller returned invalid readiness: {error}").into()
+                    });
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) if !remaining.is_zero() => continue,
+            Err(_) => return Err("Desktop Controller did not become ready before timeout".into()),
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -667,12 +680,13 @@ fn start_desktop_controller(
     ))?)
 }
 
+#[cfg(target_os = "windows")]
 fn await_spawned_controller(
     mut controller: SupervisedChild,
 ) -> Result<SupervisedChild, Box<dyn Error>> {
     startup_trace("waiting for Desktop Controller readiness");
-    match wait_for_controller_ready(&mut controller, Duration::from_secs(120)) {
-        Ok(()) => {
+    match wait_for_controller_ready(&mut controller, Duration::from_secs(120), || Ok(false)) {
+        Ok(_) => {
             startup_trace("Desktop Controller ready");
             Ok(controller)
         }
@@ -843,28 +857,45 @@ fn supervise_desktop(
         control.nonce.clone(),
     )?;
     let snapshot = codexhost_platform::process_snapshot(controller.id())?;
-    let (_published, bootstrap) = Lifecycle::open(descriptor_path)?.record_start(
-        &descriptor,
+    let published = Lifecycle::open(descriptor_path, true)?.record_start(
+        descriptor.clone(),
         data,
         desktop.root_snapshot(),
         &snapshot,
-        &options.desktop_controller,
     )?;
-    controller
-        .take_stdin()
-        .ok_or("Desktop Controller lifecycle pipe is unavailable")?
-        .write_all(&bootstrap)?;
-    let mut controller = await_spawned_controller(controller)?;
+    drop(operation);
+    published.bootstrap(
+        controller
+            .take_stdin()
+            .ok_or("Desktop Controller lifecycle pipe is unavailable")?,
+    )?;
+    let stopping = || published.stopping();
+    startup_trace("waiting for Desktop Controller readiness");
+    let controller_ready =
+        wait_for_controller_ready(&mut controller, Duration::from_secs(120), stopping);
+    if stopping()? {
+        return stop_managed_desktop_for_update(&mut desktop, &mut controller);
+    }
+    controller_ready?;
+    startup_trace("Desktop Controller ready");
     let desktop_pid = desktop.root_snapshot().id;
     startup_trace("waiting for Host chain");
-    if !wait_for_host_chain(desktop.root_snapshot(), options, Duration::from_secs(30))? {
+    let host_ready = wait_for_host_chain(
+        desktop.root_snapshot(),
+        options,
+        Duration::from_secs(30),
+        stopping,
+    );
+    if stopping()? {
+        return stop_managed_desktop_for_update(&mut desktop, &mut controller);
+    }
+    if !host_ready? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.shutdown(Duration::from_secs(2));
         return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
     }
     startup_trace("Host chain ready");
     runtime_instance::write_descriptor(descriptor_path, &descriptor)?;
-    drop(operation);
     startup_trace("runtime descriptor published");
     notify_ready_and_detach()?;
     #[cfg(target_os = "macos")]
@@ -879,18 +910,8 @@ fn supervise_desktop(
         let helper_started = started_update_request.is_some();
         #[cfg(target_os = "linux")]
         let helper_started = false;
-        if should_stop_desktop_for_update(helper_started) {
-            if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
-                eprintln!(
-                    "codexhost launcher: managed Desktop could not be stopped for update: {error}"
-                );
-            } else if desktop_lifecycle::port_closed(control.attachment_port)? {
-                return Ok(());
-            } else {
-                return Err(
-                    "Desktop Controller listener is still active after update shutdown".into(),
-                );
-            }
+        if stopping()? || should_stop_desktop_for_update(helper_started) {
+            return stop_managed_desktop_for_update(&mut desktop, &mut controller);
         }
         if let Some(status) = controller.try_wait()? {
             let _ = desktop.shutdown(Duration::from_secs(2));
@@ -960,7 +981,9 @@ fn supervise_desktop(
         }
     };
     startup_trace("waiting for Host chain");
-    if !wait_for_host_chain(&desktop_snapshot, options, Duration::from_secs(30))? {
+    if !wait_for_host_chain(&desktop_snapshot, options, Duration::from_secs(30), || {
+        Ok(false)
+    })? {
         let _ = stop_desktop_controller(&mut controller);
         let _ = desktop.kill();
         let _ = desktop.wait();
@@ -1231,12 +1254,10 @@ fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error
     result
 }
 
-#[cfg(target_os = "windows")]
-fn launch_gui(
+fn prepare_gui(
     options: LaunchOptions,
     installation: Result<DesktopInstallation, Box<dyn Error>>,
-    _interactive_running_desktop: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(ResolvedLaunchOptions, DesktopInstallation), Box<dyn Error>> {
     startup_trace("launch requested");
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
@@ -1253,7 +1274,42 @@ fn launch_gui(
         &installation.install_root,
     );
     startup_trace("Codex Desktop installation discovered");
-    startup_trace("acquiring Launcher ownership");
+    Ok((options, installation))
+}
+
+type DesktopEnvironment = Vec<(OsString, OsString)>;
+
+fn gui_controls(
+    options: &ResolvedLaunchOptions,
+    descriptor_path: &Path,
+) -> Result<(RuntimeControl, DesktopEnvironment), Box<dyn Error>> {
+    let control = allocate_runtime_control()?;
+    let environment = desktop_environment(
+        options,
+        &control,
+        &env::current_exe()?.canonicalize()?,
+        descriptor_path,
+        managed_desktop_data_directory(
+            env::var_os(DATA_DIRECTORY_ENV),
+            env::var_os(REMOTE_SSH_MANAGED_ENV),
+        ),
+    );
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let environment = {
+        let mut environment = environment;
+        environment.extend(codexhost_platform::proxy_environment());
+        environment
+    };
+    Ok((control, environment))
+}
+
+#[cfg(target_os = "windows")]
+fn launch_gui(
+    options: LaunchOptions,
+    installation: Result<DesktopInstallation, Box<dyn Error>>,
+    interactive: bool,
+) -> Result<(), Box<dyn Error>> {
+    let (options, installation) = prepare_gui(options, installation)?;
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
     {
         LauncherOwnership::Acquired(guard) => {
@@ -1292,35 +1348,21 @@ fn launch_gui(
                 }
             }
             StartupState::Attach => {
-                #[cfg(target_os = "macos")]
-                {
-                    codexhost_platform::force_stop_desktop(&installation, Duration::from_secs(10))?;
-                    continue;
-                }
-                #[cfg(target_os = "windows")]
-                {
-                    if _interactive_running_desktop {
-                        match prompt_running_desktop() {
-                            RunningDesktopChoice::Restart => {
-                                force_stop_external_desktop(
-                                    &installation,
-                                    Duration::from_secs(10),
-                                )?;
-                                continue;
-                            }
-                            RunningDesktopChoice::Retry => continue,
-                            RunningDesktopChoice::Cancel => return Ok(()),
+                if interactive {
+                    match prompt_running_desktop() {
+                        RunningDesktopChoice::Restart => {
+                            force_stop_external_desktop(&installation, Duration::from_secs(10))?;
+                            continue;
                         }
+                        RunningDesktopChoice::Retry => continue,
+                        RunningDesktopChoice::Cancel => return Ok(()),
                     }
-                    // A Desktop is running without a live codexhost owner (an official
-                    // instance or a controlled instance whose Launcher exited). Drop the
-                    // stale runtime descriptor, force-stop the Desktop, and relaunch.
-                    if let Some(descriptor) = &descriptor {
-                        let _ = remove_matching_descriptor(&descriptor_path, descriptor);
-                    }
-                    force_stop_external_desktop(&installation, Duration::from_secs(10))?;
-                    continue;
                 }
+                if let Some(descriptor) = &descriptor {
+                    let _ = remove_matching_descriptor(&descriptor_path, descriptor);
+                }
+                force_stop_external_desktop(&installation, Duration::from_secs(10))?;
+                continue;
             }
             StartupState::CleanLaunch => {
                 if descriptor_present && control_endpoint_ready {
@@ -1332,24 +1374,7 @@ fn launch_gui(
             }
         }
 
-        let control = allocate_runtime_control()?;
-        let launcher_executable = env::current_exe()?.canonicalize()?;
-        let environment = desktop_environment(
-            &options,
-            &control,
-            &launcher_executable,
-            &descriptor_path,
-            managed_desktop_data_directory(
-                env::var_os(DATA_DIRECTORY_ENV),
-                env::var_os(REMOTE_SSH_MANAGED_ENV),
-            ),
-        );
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let environment = {
-            let mut environment = environment;
-            environment.extend(codexhost_platform::proxy_environment());
-            environment
-        };
+        let (control, environment) = gui_controls(&options, &descriptor_path)?;
         let result = supervise_desktop(
             &installation,
             &options,
@@ -1358,10 +1383,9 @@ fn launch_gui(
             &control,
             &descriptor_path,
         );
-        #[cfg(target_os = "windows")]
         match result {
             Err(error)
-                if _interactive_running_desktop
+                if interactive
                     && (error.downcast_ref::<UnmanagedDesktopConflict>().is_some()
                         || error.to_string() == UNMANAGED_DESKTOP_MESSAGE) =>
             {
@@ -1382,23 +1406,7 @@ fn launch_gui(
     installation: Result<DesktopInstallation, Box<dyn Error>>,
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
-    startup_trace("launch requested");
-    // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
-    let options = options.resolve(
-        installation
-            .as_ref()
-            .ok()
-            .map(|desktop| desktop.install_root.as_path()),
-    )?;
-    let installation = installation?;
-    startup_trace("resources resolved");
-    startup_record::desktop(
-        &installation.version,
-        &installation.build,
-        &installation.install_root,
-    );
-    startup_trace("Codex Desktop installation discovered");
-    startup_trace("acquiring Launcher ownership");
+    let (options, installation) = prepare_gui(options, installation)?;
     let data = startup_record::data_directory().ok_or("User data directory is unavailable")?;
     service_update::ensure_start_allowed(&data)?;
     let (_launcher_guard, operation) =
@@ -1417,7 +1425,11 @@ fn launch_gui(
 
     service_update::ensure_start_allowed(&data)?;
     let descriptor_path = default_descriptor_path()?;
-    let recovered = Lifecycle::open(&descriptor_path)?.reconcile(&data, true, true)?;
+    let recovered = Lifecycle::open(&descriptor_path, true)?.reconcile(
+        &data,
+        true,
+        Instant::now() + Duration::from_secs(12),
+    )?;
     if !desktop_root_process_ids_for_installation(&installation)?.is_empty() {
         #[cfg(target_os = "linux")]
         return Err(Box::new(UnmanagedDesktopConflict));
@@ -1434,24 +1446,7 @@ fn launch_gui(
     #[cfg(target_os = "linux")]
     let _ = recovered;
     service_update::ensure_start_allowed(&data)?;
-    let control = allocate_runtime_control()?;
-    let launcher_executable = env::current_exe()?.canonicalize()?;
-    let environment = desktop_environment(
-        &options,
-        &control,
-        &launcher_executable,
-        &descriptor_path,
-        managed_desktop_data_directory(
-            env::var_os(DATA_DIRECTORY_ENV),
-            env::var_os(REMOTE_SSH_MANAGED_ENV),
-        ),
-    );
-    #[cfg(target_os = "macos")]
-    let environment = {
-        let mut environment = environment;
-        environment.extend(codexhost_platform::proxy_environment());
-        environment
-    };
+    let (control, environment) = gui_controls(&options, &descriptor_path)?;
     let result = supervise_desktop(
         &installation,
         &options,
@@ -1671,13 +1666,10 @@ mod tests {
     #[cfg(target_os = "windows")]
     use std::ffi::OsStr;
     use std::ffi::OsString;
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     #[cfg(target_os = "macos")]
     use std::process::Stdio;
-    use std::thread;
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     use std::time::Duration;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1692,7 +1684,7 @@ mod tests {
     use super::PI_COMMAND_ENV;
     #[cfg(target_os = "linux")]
     use super::linux_wayland_runtime_environment;
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     use super::stop_desktop_controller;
     #[cfg(target_os = "macos")]
     use super::wait_for_controller_ready;
@@ -1811,22 +1803,6 @@ mod tests {
         let mut controller = spawn_supervised(&mut command).expect("spawn Controller fixture");
 
         stop_desktop_controller(&mut controller).expect("stop owned Controller");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn force_stops_a_controller_that_ignores_graceful_termination() {
-        let mut command = Command::new("/bin/bash");
-        command.args(["-c", "trap '' TERM; while :; do sleep 1; done"]);
-        command.stdout(Stdio::null()).stderr(Stdio::null());
-        let mut controller = spawn_supervised(&mut command).expect("spawn Controller fixture");
-        thread::sleep(Duration::from_millis(50));
-
-        let started = Instant::now();
-        stop_desktop_controller(&mut controller).expect("force-stop owned Controller");
-
-        assert!(started.elapsed() < Duration::from_secs(3));
-        assert!(controller.try_wait().expect("Controller status").is_some());
     }
 
     #[cfg(target_os = "windows")]
@@ -2338,66 +2314,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn controlled_attachment_uses_the_exact_nonce_handshake() {
-        use crate::desktop_attachment::try_activate_controlled_instance;
-        use crate::runtime_instance::RuntimeDescriptor;
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("attachment listener");
-        let port = listener.local_addr().expect("attachment address").port();
-        let descriptor =
-            RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
-                .expect("runtime descriptor");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("attachment connection");
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("clone stream"))
-                .read_line(&mut request)
-                .expect("attachment request");
-            assert_eq!(request, "ATTACH 0123456789abcdef0123456789abcdef\n");
-            writeln!(stream, "ready").expect("attachment response");
-        });
-        assert!(try_activate_controlled_instance(&descriptor).expect("controlled attachment"));
-        server.join().expect("attachment server");
-    }
-
-    #[test]
-    fn controlled_attachment_is_unavailable_when_its_controller_is_absent() {
-        use crate::desktop_attachment::try_activate_controlled_instance;
-        use crate::runtime_instance::RuntimeDescriptor;
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("temporary listener");
-        let port = listener.local_addr().expect("listener address").port();
-        drop(listener);
-        let descriptor =
-            RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
-                .expect("runtime descriptor");
-
-        assert!(!try_activate_controlled_instance(&descriptor).expect("unavailable Controller"));
-    }
-
-    #[test]
-    fn controlled_attachment_retries_a_transient_empty_controller_response() {
-        use crate::desktop_attachment::try_activate_controlled_instance;
-        use crate::runtime_instance::RuntimeDescriptor;
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("attachment listener");
-        let port = listener.local_addr().expect("attachment address").port();
-        let descriptor =
-            RuntimeDescriptor::new(10, port, "0123456789abcdef0123456789abcdef".into())
-                .expect("runtime descriptor");
-        let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("attachment connection");
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().expect("clone stream"))
-                .read_line(&mut request)
-                .expect("attachment request");
-            assert_eq!(request, "ATTACH 0123456789abcdef0123456789abcdef\n");
-            // Simulate a Controller that was still restoring the Desktop: close
-            // the socket without a response line.
-            drop(stream);
-        });
-        assert!(!try_activate_controlled_instance(&descriptor).expect("transient response"));
-        server.join().expect("attachment server");
-    }
-
     #[cfg(target_os = "windows")]
     #[test]
     fn production_controller_normalizes_a_verbatim_node_entrypoint() {
@@ -2449,7 +2365,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         let mut controller = spawn_supervised(&mut command).expect("fake Controller");
-        wait_for_controller_ready(&mut controller, Duration::from_secs(2))
+        wait_for_controller_ready(&mut controller, Duration::from_secs(2), || Ok(false))
             .expect("Controller ready");
         controller.wait().expect("wait fake Controller");
         controller.disarm_cleanup();

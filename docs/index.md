@@ -145,7 +145,8 @@
 | [`product/web-remote-access.md`](product/web-remote-access.md) | 局域网、Tailscale、Relay 和自备隧道的连接方式、自动证书、可信代理、手机连接提示与信任边界。 |
 | [`product/self-hosted-relay.md`](product/self-hosted-relay.md) | 自建 Relay：Compose 从源码构建、通配 DNS、443 自动证书与电脑端连接。 |
 | [`product/web-ui-extensions.md`](product/web-ui-extensions.md) | DSH Web 插件安装、原生前后端运行、资源路由、启停、依赖检查、恢复与原包验证边界；使用或维护界面扩展时阅读。 |
-| [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及待实现的原生插件和 Codex GUI 分端接入边界。 |
+| [`proposals/ui-extension-plugins.md`](proposals/ui-extension-plugins.md) | 界面扩展目标方案与分步状态：Harness 与界面插件分类、统一管理、DSH 纯 Web 首期范围，以及原生插件和 Codex GUI 分端接入背景。 |
+| [`proposals/web-native-extensions.md`](proposals/web-native-extensions.md) | Web 原生扩展 Phase 1 契约：v2 清单、双轨管理、浏览器宿主、Node 后端和市场索引；包含三路并行实现的分工与接口。 |
 | [`product/standalone-web.md`](product/standalone-web.md) | 同仓库 Web/PWA 的共享 CH 会话、Desktop 已有 SSH/Remote Control 会话、GUI/Web 共享偏好、Web/Desktop 共用的官方 Codex Thread、原生项目归组、历史分页、选中回复文字加入对话、Windows/macOS 按需桌面截图、侧栏服务器浏览器推流、源码构建、启动隔离、跨工作树停机及验收限制；开发 Web 或与 Desktop 并行运行时阅读。 |
 | [`product/web-ios-keyboard-composer-alignment.md`](product/web-ios-keyboard-composer-alignment.md) | 待解决问题：iOS Safari 软键盘下输入框与屏幕底部不贴合的实测数据、根因（页面被 iOS 多滚、`visualViewport` 不可用）、无效做法与备选方向；处理手机键盘布局前阅读。 |
 | [`../packages/remote-relay/README.md`](../packages/remote-relay/README.md) | 独立 Relay 的启动参数、部署要求、控制证书重载、协议与流量限制、元数据日志和本机验证；自建 Docker 部署见产品文档。 |

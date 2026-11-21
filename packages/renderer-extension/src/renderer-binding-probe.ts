@@ -2603,13 +2603,16 @@ export function installRendererBindingProbe(
     return modelClientForHostFrom(modelControl, hostId);
   }
 
-  function isHarnessDirectoryUnsupported(hostId: string | null | undefined): boolean {
-    if (!hostId) return false;
+  function currentHarnessDirectoryError(hostId: string | null | undefined): Error | undefined {
+    if (!hostId) return undefined;
     const state = hostHarnessAvailabilityState(hostId);
-    return (
-      state.directoryError instanceof RendererMethodUnavailableError &&
-      state.directoryClient === modelClientForHost(hostId)
-    );
+    return state.directoryError && state.directoryClient === modelClientForHost(hostId)
+      ? state.directoryError
+      : undefined;
+  }
+
+  function isHarnessDirectoryUnsupported(hostId: string | null | undefined): boolean {
+    return currentHarnessDirectoryError(hostId) instanceof RendererMethodUnavailableError;
   }
 
   function refreshHarnessAvailabilityForHost(
@@ -2981,11 +2984,12 @@ export function installRendererBindingProbe(
         adapter: { ...adapterStatus },
         hosts: hostIds.map((hostId) => {
           const state = hostHarnessAvailabilityState(hostId);
+          const directoryError = currentHarnessDirectoryError(hostId);
           return {
             hostId,
             active: hostId === activeAvailabilityHostId,
-            ...(state.directoryError ? { directoryError: state.directoryError.message } : {}),
-            ...(state.directoryError instanceof RendererMethodUnavailableError
+            ...(directoryError ? { directoryError: directoryError.message } : {}),
+            ...(directoryError instanceof RendererMethodUnavailableError
               ? { directoryUnsupported: true as const }
               : {}),
             agents: (state.plugins ?? EMPTY_PLUGINS).map((plugin) => ({
@@ -3305,6 +3309,7 @@ export function installRendererBindingProbe(
     }
     const localState = hostHarnessAvailabilityState("local");
     if (
+      localState.directoryClient !== modelClientForHost("local") ||
       (!localState.plugins && !localState.directoryError) ||
       Object.values(localState.availability).includes("checking")
     ) {

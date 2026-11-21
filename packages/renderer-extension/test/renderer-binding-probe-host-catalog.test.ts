@@ -449,6 +449,68 @@ describe("Renderer binding Harness directory diagnostics", () => {
     });
   });
 
+  it.each(["remote-ssh-discovered:linux", "remote-control:mac"])(
+    "refreshes connection diagnostics when the local client changes while %s stays active",
+    async (hostId) => {
+      installFakeBrowser();
+      let local = createRendererModelClient([
+        {
+          sendRequest: async () => {
+            throw Object.assign(new Error("Method not found"), { code: -32601 });
+          },
+        },
+      ]);
+      const remote = {
+        listHarnessPlugins: async () => ({ plugins: [] }),
+        inspectThread: async () => ({ owner: "codex", locked: true }),
+        inspectThreadCommands: async () => ({ commands: [] }),
+        inspectThreadUsage: async () => ({ threadId: "thread-a", usage: null }),
+      };
+      const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+      const probe = installRendererBindingProbe({});
+      probe.setAdapter(
+        { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+        undefined,
+        undefined,
+        {
+          currentHostId: () => hostId,
+          clientForHost: (target: string) => (target === "local" ? local : remote),
+        } as never,
+      );
+      const diagnostics = testState.getConnectionDiagnostics?.();
+      assert(diagnostics);
+      await vi.waitFor(() =>
+        expect(diagnostics.snapshot().hosts).toMatchObject([
+          { hostId: "local", active: false, directoryUnsupported: true },
+          { hostId, active: true },
+        ]),
+      );
+      let latestStatus: ReturnType<typeof diagnostics.snapshot> | undefined;
+      diagnostics.subscribe(() => {
+        latestStatus = diagnostics.snapshot();
+      });
+      const sendRequest = vi.fn(async () => ({ plugins: [] }));
+      local = createRendererModelClient([{ sendRequest }]);
+      const [localBeforeScan] = diagnostics.snapshot().hosts;
+      expect.soft(localBeforeScan).not.toHaveProperty("directoryError");
+      expect.soft(localBeforeScan).not.toHaveProperty("directoryUnsupported");
+
+      const notify = testState.notifyMutations;
+      assert(notify);
+      notify([{ type: "attributes", target: testState.editor } as MutationRecord]);
+      for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+      expect(sendRequest).toHaveBeenCalledWith(HARNESS_PLUGIN_LIST_METHOD, {});
+      await vi.waitFor(() => {
+        expect(latestStatus?.hosts).toMatchObject([
+          { hostId: "local", active: false },
+          { hostId, active: true },
+        ]);
+        expect(latestStatus?.hosts[0]).not.toHaveProperty("directoryError");
+        expect(latestStatus?.hosts[0]).not.toHaveProperty("directoryUnsupported");
+      });
+    },
+  );
+
   it.each([
     { reject: Object.assign(new Error("Method not found"), { code: -32601 }), retry: false },
     { reject: new Error("Connection timed out"), retry: true },

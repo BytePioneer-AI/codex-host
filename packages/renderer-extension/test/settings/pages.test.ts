@@ -146,6 +146,10 @@ class FakeElement {
     this.#listeners.get(name)?.(event);
   }
 
+  click(): void {
+    if (!this.disabled) this.dispatch("click", new Event("click"));
+  }
+
   focus(): void {
     this.focused = true;
   }
@@ -1055,12 +1059,14 @@ describe("Renderer Connections page", () => {
     },
   );
 
-  it("keeps the last confirmed Harness order read-only when its local owner lacks the RPCs", () => {
+  it("keeps the last confirmed Harness order read-only until the local RPCs are available", async () => {
+    let directoryUnsupported = true;
+    let notify: () => void = () => undefined;
     const diagnostics: RendererConnectionDiagnostics = {
       snapshot: () => ({
         adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
         hosts: [
-          { hostId: "local", active: false, agents: [], directoryUnsupported: true },
+          { hostId: "local", active: false, agents: [], directoryUnsupported },
           {
             hostId: "remote-test",
             active: true,
@@ -1071,7 +1077,10 @@ describe("Renderer Connections page", () => {
         ],
       }),
       refresh: vi.fn(async () => undefined),
-      subscribe: () => () => undefined,
+      subscribe: (listener) => {
+        notify = listener;
+        return () => undefined;
+      },
     };
     const store = createAgentGroupPreferenceStore(null);
     store.replace([{ agent: "pi", section: "more" }]);
@@ -1091,15 +1100,26 @@ describe("Renderer Connections page", () => {
       runLatest: (op, handlers) => scope.runLatest(op, handlers),
     });
     const reset = elementWithClass(content, "settings-connection-group-reset");
+    const toggle = elementWithClass(content, "settings-connection-row__group-toggle");
     expect(reset.disabled).toBe(true);
+    expect(toggle.disabled).toBe(true);
     expect(
       descendants(content).find(({ dataset }) => dataset.connectionItem === "pi")?.dataset
         .connectionGroupSection,
     ).toBe("more");
     expect(visibleText(content)).toContain("Harness order is read-only");
     expect(visibleText(content)).not.toContain("WSL");
-    reset.dispatch("click");
+    reset.click();
+    toggle.click();
     expect(write).not.toHaveBeenCalled();
+
+    directoryUnsupported = false;
+    notify();
+    await vi.waitFor(() => {
+      expect(reset.disabled).toBe(false);
+      expect(toggle.disabled).toBe(false);
+      expect(visibleText(content)).not.toContain("Harness order is read-only");
+    });
     cleanup?.();
     scope.dispose();
   });

@@ -715,9 +715,11 @@ export function createConnectionsSettingsPage(
       moreZone.setAttribute("role", "presentation");
       // The shared order is written to the local connection even when viewing a remote Host.
       let groupDisabled = false;
-      const resetButton = createGroupResetButton(document, messages, () => {
-        if (!groupDisabled) groupPreference.resetToDefault();
-      });
+      const resetButton = createGroupResetButton(
+        document,
+        messages,
+        groupPreference.resetToDefault,
+      );
 
       let draggingAgent: ExternalRendererAgent | null = null;
       let currentCatalog: { id: string; name: string }[] = [];
@@ -1079,7 +1081,6 @@ export function createConnectionsSettingsPage(
               : messages.connectionGroupMoveToMain,
           dragHandleTitle: messages.connectionGroupDragHandle,
           toggleSection() {
-            if (groupDisabled) return;
             groupPreference.moveAgent(
               agent,
               section === "main" ? "more" : "main",

@@ -166,6 +166,10 @@ export class ChSessions {
     this.realtime = host.realtime
       ? new ChRealtime(host.realtime, {
           thread: (id) => this.view(id),
+          usage: (id) => {
+            const view = this.threads.view(id);
+            if (view) this.loadUsage(view, true);
+          },
           catalog: async () => {
             await this.refresh();
           },
@@ -583,27 +587,30 @@ export class ChSessions {
       dirty: false,
       operation: Promise.resolve(),
     };
+    const isCurrent = () =>
+      !this.closed && this.threads.view(id) === view && this.threads.get(id)?.usage === state;
+    this.threads.ensure(id).usage = state;
     state.operation = (async () => {
-      do {
-        state.dirty = false;
-        const result = threadUsageInspectionSchema.parse(
-          await this.host.request("codexhost/thread/usage/inspect", { threadId: id }),
-        );
-        if (this.closed || this.threads.view(id) !== view || this.threads.get(id)?.usage !== state)
-          return;
-        applyUsageProjections(view.log, result);
-        this.threads.ensure(id).usageReadAt = Date.now();
-      } while (state.dirty);
-    })()
-      .catch(() => {
-        // Usage is optional metadata. Preserve the latest confirmed projection;
-        // history and input remain usable, and the next invalidation retries.
-      })
-      .finally(() => {
+      try {
+        while (isCurrent()) {
+          state.dirty = false;
+          try {
+            const result = threadUsageInspectionSchema.parse(
+              await this.host.request("codexhost/thread/usage/inspect", { threadId: id }),
+            );
+            if (!isCurrent()) return;
+            applyUsageProjections(view.log, result);
+            this.threads.ensure(id).usageReadAt = Date.now();
+          } catch {
+            // Preserve the latest confirmed projection. Only a pending invalidation retries.
+          }
+          if (!state.dirty) return;
+        }
+      } finally {
         const current = this.threads.get(id);
         if (current?.usage === state) delete current.usage;
-      });
-    this.threads.ensure(id).usage = state;
+      }
+    })();
   }
   private loadControls(
     view: ChThreadHistory,

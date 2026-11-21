@@ -6497,9 +6497,15 @@ export class AppServerHost {
       });
       return;
     }
-    if (event.type === "usage.request" || event.type === "usage.history") {
+    if (
+      event.type === "usage.request" ||
+      event.type === "usage.request.timing" ||
+      event.type === "usage.history"
+    ) {
       if (this.#externalRuntime.get(thread.id) !== thread) return;
-      if (event.type === "usage.request") {
+      if (event.type === "usage.request.timing") {
+        if (!thread.usageMeter.recordRequestTiming(event.timing, event.turnId)) return;
+      } else if (event.type === "usage.request") {
         const changed = thread.usageMeter.recordRequest(event.request, thread.activeTurnId);
         // Replayed history is announced once by the following usage.history.
         if (!changed || event.request.historical === true) return;

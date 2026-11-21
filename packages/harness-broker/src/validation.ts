@@ -269,6 +269,7 @@ const eventKeys = new Map<string, ReadonlySet<string>>([
   ["session.state.changed", new Set(["type", "state"])],
   ["session.usage.changed", new Set(["type", "usage", "observedForTurnId"])],
   ["usage.request", new Set(["type", "request"])],
+  ["usage.request.timing", new Set(["type", "turnId", "timing"])],
   ["usage.history", new Set(["type", "complete"])],
   ["subagent.state.changed", new Set(["type", "nativeSubagentId", "status", "resultSummary"])],
   ["subagent.transcript.changed", new Set(["type", "nativeSubagentId"])],
@@ -316,6 +317,24 @@ function strictKeys(
   );
 }
 
+const nonNegativeSafeIntegerSchema = z.int().nonnegative();
+const usageOutputIntervalSchema = z
+  .strictObject({
+    startedAtMs: nonNegativeSafeIntegerSchema,
+    completedAtMs: nonNegativeSafeIntegerSchema,
+    outputTokens: nonNegativeSafeIntegerSchema,
+  })
+  .refine(({ startedAtMs, completedAtMs }) => completedAtMs > startedAtMs);
+const usageRequestTimingSchema = z.union([
+  z.strictObject({
+    requestId: z.string().min(1),
+    requestStartedAtMs: nonNegativeSafeIntegerSchema,
+    timeToFirstOutputMs: nonNegativeSafeIntegerSchema,
+    output: usageOutputIntervalSchema.optional(),
+  }),
+  z.strictObject({ requestId: z.string().min(1), output: usageOutputIntervalSchema }),
+]);
+
 export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const output = value as Record<string, unknown>;
@@ -339,6 +358,11 @@ export const harnessOutputSchema = z.custom<HarnessOutput>((value) => {
       );
     if (event.type === "session.faulted") return harnessErrorSchema.safeParse(event.error).success;
     if (event.type === "usage.history") return typeof event.complete === "boolean";
+    if (event.type === "usage.request.timing")
+      return (
+        hostTurnIdSchema.safeParse(event.turnId).success &&
+        usageRequestTimingSchema.safeParse(event.timing).success
+      );
     return true;
   }
   if (output.kind === "interaction") {

@@ -5,7 +5,12 @@ import { decodeVarint, readProtoFields, type ProtoField } from "./native-protobu
 
 export interface AntigravityRequestMetadata {
   reasoningOutputTokens: number;
-  timing?: { startedAtMs: number; completedAtMs: number };
+  timing?: {
+    requestStartedAtMs: number;
+    timeToFirstOutputMs: number;
+    startedAtMs: number;
+    completedAtMs: number;
+  };
 }
 
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
@@ -131,11 +136,14 @@ function requestMetadata(
     !closeTo(completed - started, streamed)
   )
     return facts;
-  const startedAtMs = Number(started / NANOSECONDS_PER_MS);
-  const completedAtMs = Number(completed / NANOSECONDS_PER_MS);
   return {
     ...facts,
-    ...(completedAtMs > startedAtMs ? { timing: { startedAtMs, completedAtMs } } : {}),
+    timing: {
+      requestStartedAtMs: Number(created / NANOSECONDS_PER_MS),
+      timeToFirstOutputMs: Number(ttft / NANOSECONDS_PER_MS),
+      startedAtMs: Number(started / NANOSECONDS_PER_MS),
+      completedAtMs: Number(completed / NANOSECONDS_PER_MS),
+    },
   };
 }
 

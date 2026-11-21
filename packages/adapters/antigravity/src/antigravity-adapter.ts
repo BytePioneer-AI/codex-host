@@ -73,6 +73,7 @@ import {
   type AntigravityAcpTransportLike,
   type AntigravityAcpTransportOptions,
   type AntigravityPromptInputPart,
+  type AntigravityPromptUsage,
 } from "./acp-types.js";
 import {
   AntigravityToolTracker,
@@ -333,7 +334,10 @@ export class AntigravitySession implements HarnessSession {
   #postPromptBackground: Array<{ type: "agentMessage" | "reasoning"; text: string }> = [];
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
-  #usageWork: Promise<void> = Promise.resolve();
+  #usageWork: Promise<void> | undefined;
+  #usageDirty = false;
+  #usageRetry: ReturnType<typeof setTimeout> | undefined;
+  #usageTurnId: HostTurnId | undefined;
   #abort = new AbortController();
   #closed = false;
   #faulted = false;
@@ -515,7 +519,7 @@ export class AntigravitySession implements HarnessSession {
       homedir: antigravityHome(this.#options.environment),
       expectedInitialTurns: this.#turnCount,
     });
-    this.#usageWork = this.#replayUsage();
+    this.#trackUsageWork(this.#replayUsage());
   }
   #setLocatorPermissionMode(permissionModeId: string): void {
     const ref = this.#state.nativeRef;
@@ -677,7 +681,10 @@ export class AntigravitySession implements HarnessSession {
       case "usage.context": {
         const usage = this.#usage?.recordContextWindow(event.used, event.size);
         if (usage) this.#emit({ type: "session.usage.changed", usage });
-        if (this.#active?.promptPhase === "submitted") void this.refreshUsage();
+        if (this.#active?.promptPhase === "submitted") {
+          void this.refreshUsage();
+          this.#scheduleUsageRetry();
+        }
         break;
       }
     }
@@ -696,22 +703,71 @@ export class AntigravitySession implements HarnessSession {
     }
   }
   async refreshUsage(): Promise<void> {
+    if (this.#usageWork) {
+      this.#usageDirty = true;
+      await this.#usageWork;
+    } else await this.#trackUsageWork(this.#collectUsage());
+  }
+  #trackUsageWork(work: Promise<void>): Promise<void> {
+    const drain = async () => {
+      try {
+        await work;
+        while (this.#usageWork === tracked && this.#usageDirty) {
+          this.#usageDirty = false;
+          await this.#collectUsage();
+        }
+      } finally {
+        if (this.#usageWork === tracked) this.#usageWork = undefined;
+      }
+    };
+    const tracked = drain();
+    this.#usageWork = tracked;
+    return tracked;
+  }
+  #scheduleUsageRetry(remaining = 2): void {
+    if (this.#usageRetry || this.#abort.signal.aborted) return;
+    this.#usageRetry = setTimeout(() => {
+      this.#usageRetry = undefined;
+      void this.refreshUsage().then(() => {
+        if (remaining > 1) this.#scheduleUsageRetry(remaining - 1);
+      });
+    }, 150);
+    this.#usageRetry.unref();
+  }
+  async #collectUsage(final?: {
+    turn: ActiveTurn;
+    completedAtMs: number;
+    usage?: AntigravityPromptUsage;
+  }): Promise<void> {
     const tracker = this.#usage;
     if (!tracker || this.#closed || this.#faulted) return;
-    this.#usageWork = this.#usageWork
-      .then(async () => {
-        const update = await tracker.collectNewTranscriptRequests({
-          signal: this.#abort.signal,
-        });
-        if (this.#closed || this.#faulted) return;
-        for (const request of update.requests) this.#emit({ type: "usage.request", request });
-        this.#emit({ type: "usage.history", complete: update.complete });
-        this.#emit({ type: "session.usage.changed", usage: update.usage });
-      })
-      .catch(() => {
-        if (!this.#closed && !this.#faulted) this.#emit({ type: "usage.history", complete: false });
+    if (final && !this.#isCurrent(final.turn)) return;
+    try {
+      const update = await tracker.collectNewTranscriptRequests({
+        signal: this.#abort.signal,
+        ...(final && {
+          completedAtMs: final.completedAtMs,
+          ...(final.turn.firstOutputAtMs === undefined
+            ? {}
+            : { firstOutputAtMs: final.turn.firstOutputAtMs }),
+          ...(final.turn.hasToolCalls && { hasToolCalls: true }),
+          ...(final.usage && { promptUsage: final.usage }),
+        }),
       });
-    await this.#usageWork;
+      const recorded = final ? tracker.recordTurnPromptUsage(final) : update;
+      if (this.#closed || this.#faulted) return;
+      for (const request of update.requests) this.#emit({ type: "usage.request", request });
+      this.#emit({ type: "usage.history", complete: recorded.complete });
+      this.#emit({
+        type: "session.usage.changed",
+        usage: recorded.usage,
+        ...(this.#usageTurnId && { observedForTurnId: this.#usageTurnId }),
+      });
+      for (const { turnId, ...timing } of update.timings)
+        if (turnId) this.#emit({ type: "usage.request.timing", turnId, timing });
+    } catch {
+      if (!this.#closed && !this.#faulted) this.#emit({ type: "usage.history", complete: false });
+    }
   }
   get commands(): HarnessCommandCapability {
     return {
@@ -994,7 +1050,8 @@ export class AntigravitySession implements HarnessSession {
       const ref = this.nativeRef;
       if (!transport || !ref)
         throw new AntigravityTransportError("unavailable", "Native Session is not connected");
-      this.#usage?.beginTurn();
+      this.#usage?.beginTurn(Date.now(), turn.turnId);
+      this.#usageTurnId = turn.turnId;
       turn.promptPhase = "submitted";
       const result = await transport.prompt(promptParts(command), {
         onResponse: () => {
@@ -1063,37 +1120,12 @@ export class AntigravitySession implements HarnessSession {
         outcome = { ...outcome, checkpoint: { ...ref, checkpointId: key } };
         this.#turnCount = count;
       }
-      await this.#usageWork;
-      if (this.#usage && this.#isCurrent(turn)) {
-        try {
-          const timing = {
-            ...(turn.firstOutputAtMs !== undefined
-              ? { firstOutputAtMs: turn.firstOutputAtMs }
-              : {}),
-            completedAtMs,
-          };
-          const update = await this.#usage.collectNewTranscriptRequests({
-            ...timing,
-            ...(turn.hasToolCalls ? { hasToolCalls: true } : {}),
-            ...(result.usage ? { promptUsage: result.usage } : {}),
-            signal: this.#abort.signal,
-          });
-          const recorded = this.#usage.recordTurnPromptUsage({
-            ...(result.usage ? { usage: result.usage } : {}),
-            ...timing,
-          });
-          if (!this.#isCurrent(turn)) return;
-          for (const request of update.requests) this.#emit({ type: "usage.request", request });
-          this.#emit({ type: "usage.history", complete: recorded.complete });
-          this.#emit({
-            type: "session.usage.changed",
-            usage: recorded.usage,
-            observedForTurnId: turn.turnId,
-          });
-        } catch {
-          if (this.#isCurrent(turn)) this.#emit({ type: "usage.history", complete: false });
-        }
-      }
+      await this.#trackUsageWork(
+        Promise.resolve(this.#usageWork).then(() =>
+          this.#collectUsage({ turn, completedAtMs, ...(result.usage && { usage: result.usage }) }),
+        ),
+      );
+      this.#scheduleUsageRetry();
     } catch (error) {
       if (
         error instanceof AntigravityTransportError &&
@@ -1353,6 +1385,7 @@ export class AntigravitySession implements HarnessSession {
   handleTransportFault(error: AntigravityTransportError): void {
     if (this.#closed || this.#faulted) return;
     this.#faulted = true;
+    clearTimeout(this.#usageRetry);
     this.#abort.abort();
     this.#postPromptBackground.length = 0;
     this.#closeInteractions("cancelled");
@@ -1374,6 +1407,7 @@ export class AntigravitySession implements HarnessSession {
   }
   async #close(): Promise<void> {
     this.#closed = true;
+    clearTimeout(this.#usageRetry);
     this.#abort.abort();
     this.#postPromptBackground.length = 0;
     this.#closeInteractions("cancelled");

@@ -152,6 +152,12 @@ export function nativeThreadSkillInput(result: JsonObject, name: string): JsonOb
   return skill ? { type: "skill", ...skill } : undefined;
 }
 
+/** A draft has no Thread yet, so it can offer Skills but not `/compact` or `/review`. */
+export function nativeDraftSkillCommands(skills: JsonObject) {
+  const catalog = nativeThreadCommands(skills);
+  return { ...catalog, commands: catalog.commands.filter(({ kind }) => kind === "skill") };
+}
+
 export function nativeThreadCommands(skills: JsonObject) {
   const catalog = nativeSkills(skills);
   return harnessCommandCatalogSchema.parse({

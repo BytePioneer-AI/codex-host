@@ -1,6 +1,9 @@
 import { z } from "zod";
 export * from "./client-channel.js";
 export * from "./thread-catalog.js";
+export * from "./thread-tree-watch.js";
+export * from "./desktop-extensions.js";
+export * from "./desktop-extension-management.js";
 export * from "./thread-archive-confirm.js";
 export * from "./voice.js";
 export * from "./skills.js";
@@ -463,3 +466,4 @@ export {
   canonicalizeOfficialCodexModelRef,
   OFFICIAL_CODEX_MODEL_REF_PREFIX,
 } from "./official-codex-model-ref.js";
+export { desktopProjectDefinitions } from "./desktop-project-definitions.js";

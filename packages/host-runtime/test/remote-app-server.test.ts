@@ -67,7 +67,9 @@ import {
   createRemoteAppServerWebSocketListener,
   isRemoteUnixListenerInvocation,
   officialListenerArgumentsForRemoteListener,
+  officialLoopbackListenerArguments,
   remoteAppServerSocketPath,
+  stdioArgumentsForRemoteListener,
   withRemoteAppServerSocketInitializationLock,
 } from "../src/remote-app-server.js";
 
@@ -209,6 +211,123 @@ describe("remote SSH app-server transport", () => {
       "--ws-max-clock-skew-seconds=30",
       "--analytics-default-enabled",
     ]);
+  });
+
+  describe("Desktop MCP launch directories", () => {
+    const desktopAppServer = [
+      "-c",
+      "features.code_mode_host=true",
+      "app-server",
+      "--analytics-default-enabled",
+      "-c",
+      "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    ];
+    const mcpLaunchCwd = ["--mcp-launch-cwd", "files", "/usr/bin/node", "/tmp/project"];
+    const pluginMcpLaunchCwd = [
+      "--plugin-mcp-launch-cwd",
+      "github@openai-curated",
+      "github",
+      "/tmp/project",
+    ];
+
+    it("forwards every launch directory value to the shared loopback listener", () => {
+      expect(officialLoopbackListenerArguments([...desktopAppServer, "--stdio"])).toEqual([
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--listen",
+        "ws://127.0.0.1:0",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+      ]);
+      expect(officialLoopbackListenerArguments([...desktopAppServer, ...mcpLaunchCwd])).toEqual([
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--listen",
+        "ws://127.0.0.1:0",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+        ...mcpLaunchCwd,
+      ]);
+      expect(
+        officialLoopbackListenerArguments([
+          ...desktopAppServer,
+          ...pluginMcpLaunchCwd,
+          ...mcpLaunchCwd,
+          "--stdio",
+        ]),
+      ).toEqual([
+        "-c",
+        "features.code_mode_host=true",
+        "app-server",
+        "--listen",
+        "ws://127.0.0.1:0",
+        "--analytics-default-enabled",
+        "-c",
+        "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+        ...pluginMcpLaunchCwd,
+        ...mcpLaunchCwd,
+      ]);
+    });
+
+    it("rejects launch directories with missing values and still rejects unknown options", () => {
+      expect(() =>
+        officialLoopbackListenerArguments([...desktopAppServer, "--mcp-launch-cwd", "files"]),
+      ).toThrow("--mcp-launch-cwd requires 3 values");
+      expect(() =>
+        officialLoopbackListenerArguments([
+          ...desktopAppServer,
+          "--plugin-mcp-launch-cwd",
+          "github@openai-curated",
+          "github",
+        ]),
+      ).toThrow("--plugin-mcp-launch-cwd requires 3 values");
+      for (const option of [mcpLaunchCwd, pluginMcpLaunchCwd]) {
+        const emptyDirectory = [...option.slice(0, -1), ""];
+        expect(() =>
+          officialLoopbackListenerArguments([...desktopAppServer, ...emptyDirectory]),
+        ).toThrow(`${option[0]} requires 3 values`);
+        expect(
+          isRemoteUnixListenerInvocation(["app-server", "--listen", "unix://", ...emptyDirectory]),
+        ).toBe(false);
+      }
+      expect(() =>
+        officialLoopbackListenerArguments([...desktopAppServer, "--unknown-option"]),
+      ).toThrow("Unsupported app-server argument for a shared listener: --unknown-option");
+    });
+
+    it("keeps launch directories on remote Unix listener invocations", () => {
+      const incoming = [
+        "app-server",
+        ...mcpLaunchCwd,
+        "--listen",
+        "unix://",
+        ...pluginMcpLaunchCwd,
+      ];
+
+      expect(isRemoteUnixListenerInvocation(incoming)).toBe(true);
+      expect(
+        officialListenerArgumentsForRemoteListener(incoming, "/tmp/codexhost-official.sock"),
+      ).toEqual([
+        "app-server",
+        ...mcpLaunchCwd,
+        "--listen",
+        "unix:///tmp/codexhost-official.sock",
+        ...pluginMcpLaunchCwd,
+      ]);
+      expect(stdioArgumentsForRemoteListener(incoming)).toEqual([
+        "app-server",
+        ...mcpLaunchCwd,
+        "--stdio",
+        ...pluginMcpLaunchCwd,
+      ]);
+      expect(
+        isRemoteUnixListenerInvocation(["app-server", "--listen", "unix://", "--mcp-launch-cwd"]),
+      ).toBe(false);
+    });
   });
 
   it("uses the Codex control socket under the remote CODEX_HOME", () => {

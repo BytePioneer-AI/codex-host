@@ -46,6 +46,19 @@ export function withDiscovery(host: FakeChHost) {
       ],
     }),
     skillFailure: "",
+    /** Official Codex Skills a draft sees before it has a Thread. */
+    draftCatalog: harnessCommandCatalogSchema.parse({
+      source: "live",
+      commands: [
+        {
+          id: "skill:build",
+          invocation: "$build",
+          label: "build",
+          argumentMode: "text",
+          kind: "skill",
+        },
+      ],
+    }),
     beforeSkills: async () => {},
     official: false,
     failure: "",
@@ -69,6 +82,10 @@ export function withDiscovery(host: FakeChHost) {
       await state.beforeSkills();
       if (state.skillFailure) throw new RpcError("skills/unavailable", state.skillFailure);
       return structuredClone(state.skills) as T;
+    }
+    if (method === "codexhost/harness/commands/inspect") {
+      host.requests.push({ method, params: structuredClone(params) });
+      return structuredClone(state.draftCatalog) as T;
     }
     if (method === "codexhost/thread/commands/inspect") {
       host.requests.push({ method, params });

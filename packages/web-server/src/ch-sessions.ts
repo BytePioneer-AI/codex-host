@@ -1656,9 +1656,17 @@ export class ChSessions {
         throw new RpcError("command/unavailable", "Commands require an editable local Thread.");
       return thread;
     });
-    rpc.register("codexhost/threadCommands", (args) =>
-      native.inspect(requestOf<{ sessionId: string }>(args).sessionId),
-    );
+    rpc.register("codexhost/threadCommands", (args) => {
+      const { sessionId } = requestOf<{ sessionId: string }>(args);
+      const draft = this.drafts.get(sessionId);
+      // Only official Codex lists a draft's Skills; other Harnesses use the Skill Library.
+      if (draft && !draft.canonicalId && draft.selection.provider === "codex") {
+        if (this.closed || !this.hostOnline)
+          throw new RpcError("host/offline", "The Host is disconnected.");
+        return native.inspectDraft("codex", draft.cwd);
+      }
+      return native.inspect(sessionId);
+    });
     rpc.register("codexhost/executeThreadCommand", (args) => {
       const { sessionId, commandId } = requestOf<{ sessionId: string; commandId: string }>(args);
       return native.execute(sessionId, commandId);

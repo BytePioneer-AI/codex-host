@@ -16,8 +16,8 @@ import {
 import { bytes, nanoseconds } from "./support/native-timing-fixture.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
-  const fs = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...fs, open: vi.fn(fs.open) };
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, open: vi.fn(actual.open) };
 });
 
 const homes: string[] = [];
@@ -51,7 +51,8 @@ describe("SQLite clone fidelity", () => {
   it("trims the same WAL snapshot used to find the boundary despite a concurrent commit", async () => {
     const f = await fixture();
     const reserve = vi.mocked(fs.open);
-    const open = reserve.getMockImplementation()!;
+    const open = reserve.getMockImplementation();
+    if (!open) throw new Error("Missing mock implementation for fs.open");
     // The transaction has read the boundary by the time it reserves the destination.
     reserve.mockImplementationOnce((...args) => {
       if (args[0] === nativeConversationDbPath(f.derivedId, f.home)) {

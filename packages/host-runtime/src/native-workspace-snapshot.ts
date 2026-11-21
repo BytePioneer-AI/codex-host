@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   clientWorkspaceSnapshotSchema,
+  desktopProjectDefinitions,
   type ClientWorkspaceSnapshot,
 } from "@codexhost/shared-contracts";
 
@@ -13,10 +14,8 @@ import { externalPinIds } from "./external-thread-pins.js";
 export async function readNativeWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
 ): Promise<ClientWorkspaceSnapshot> {
-  const file = path.join(
-    environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
-    ".codex-global-state.json",
-  );
+  const codexHome = environment.CODEX_HOME ?? path.join(homedir(), ".codex");
+  const file = path.join(codexHome, ".codex-global-state.json");
   let text: string;
   try {
     const handle = await open(file, "r");
@@ -54,9 +53,7 @@ export async function readNativeWorkspaceSnapshot(
   )
     throw new Error("Invalid native project metadata");
   return clientWorkspaceSnapshotSchema.parse({
-    projects: Object.values(local)
-      .filter((value) => value && typeof value === "object" && order.includes(value.id))
-      .map(({ id, name, rootPaths }) => ({ id, name, rootPaths })),
+    projects: desktopProjectDefinitions(state, `local:${path.resolve(codexHome)}`),
     assignments: Object.fromEntries(
       Object.entries(assigned).flatMap(([id, value]) => {
         if (!value || typeof value !== "object") return [];

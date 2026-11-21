@@ -59,6 +59,60 @@ describe("CodeBuddy native slash commands", () => {
     ).toMatchObject({ error: { code: "invalidRequest" } });
   });
 
+  it.each([true, false])(
+    "rejects an old command on lazy reopen (new catalog published: %s)",
+    async (publishCatalog) => {
+      const native = fixture();
+      const submitted = vi.fn();
+      const adapter = new CodeBuddyAdapter({
+        ...native,
+        clientFactory: (options) => {
+          const client = native.clientFactory(options);
+          if (native.clients.length === 2) {
+            client.open = async (_cwd, sessionId) => {
+              if (publishCatalog)
+                client.update({
+                  sessionUpdate: "available_commands_update",
+                  availableCommands: [{ name: "review", input: { hint: "[target]" } }],
+                });
+              return { sessionId, configOptions: client.options };
+            };
+            const prompt = client.prompt.bind(client);
+            client.prompt = (id, input) => {
+              submitted(input);
+              return prompt(id, input);
+            };
+          }
+          return client;
+        },
+      });
+      adapters.push(adapter);
+      const opened = await adapter.open({ kind: "create", cwd: process.cwd() });
+      if (!opened.ok) throw Error(opened.error.message);
+      const session = opened.value;
+      const outputs = session.outputs[Symbol.asyncIterator]();
+      const stopped = hostTurnIdSchema.parse("stopped");
+      await session.execute({
+        type: "turn.start",
+        turnId: stopped,
+        input: [{ type: "text", text: "hold" }],
+      });
+      await session.execute({ type: "turn.cancel", turnId: stopped });
+      while (true) {
+        const { done, value } = await outputs.next();
+        if (done || (value.kind === "event" && value.event.type === "turn.completed")) break;
+      }
+      expect(native.clients).toHaveLength(1);
+      expect(
+        await session.commands?.execute({ turnId, commandId: "codebuddy.cost" }),
+      ).toMatchObject({
+        error: { code: "unsupported" },
+      });
+      expect(native.clients).toHaveLength(2);
+      expect(submitted).not.toHaveBeenCalled();
+    },
+  );
+
   it("runs local commands without inventing Native Turn identity and preserves later prompt history", async () => {
     const native = fixture();
     const adapter = new CodeBuddyAdapter(native);

@@ -332,7 +332,12 @@ describe("CodeBuddy native Adapter", () => {
       releaseClose.resolve(undefined);
     }
     expect(await events.completed()).toMatchObject([
-      { event: { outcome: { status: "cancelled" }, nativeTurnRef: { nativeTurnKey: "user-1" } } },
+      {
+        event: {
+          outcome: { status: "cancelled", checkpoint: { checkpointId: "user-1" } },
+          nativeTurnRef: { nativeTurnKey: "user-1" },
+        },
+      },
     ]);
     expect(old.closed).toBe(true);
     expect(await session.readSnapshot()).toMatchObject({ ok: true });
@@ -360,6 +365,62 @@ describe("CodeBuddy native Adapter", () => {
       event: { outcome: { status: "succeeded" } },
     });
   });
+
+  it.each(["missing", "unreadable", "stalled"] as const)(
+    "preserves confirmed cancellation with a userMessageId and %s history",
+    async (historyState) => {
+      const native = fixture();
+      const readEntered = Promise.withResolvers<undefined>();
+      const releaseRead = Promise.withResolvers<string>();
+      const adapter = new CodeBuddyAdapter({
+        ...native,
+        readHistory: async () => {
+          if (native.clients.length === 1 && native.clients[0]?.closed) {
+            readEntered.resolve(undefined);
+            if (historyState === "unreadable") throw Error("History read failed");
+            if (historyState === "stalled") return releaseRead.promise;
+          }
+          return native.readHistory();
+        },
+      });
+      adapters.push(adapter);
+      const session = await create(adapter);
+      const events = collect(session);
+      const old = native.clients[0];
+      if (!old) throw Error("No native client");
+      old.missingHistory = historyState === "missing";
+      const start = turn("stopped", "hold");
+      expect(await session.execute(start)).toMatchObject({ ok: true });
+      expect(old.pending?.id).toBe("user-1");
+      if (historyState === "stalled") vi.useFakeTimers();
+      try {
+        await session.execute({ type: "turn.cancel", turnId: start.turnId });
+        await readEntered.promise;
+        if (historyState === "stalled") {
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(events.outputs.filter(terminal)).toHaveLength(1);
+        }
+        expect(await events.completed()).toEqual([
+          {
+            kind: "event",
+            event: {
+              type: "turn.completed",
+              turnId: start.turnId,
+              outcome: { status: "cancelled" },
+            },
+          },
+        ]);
+      } finally {
+        if (historyState === "stalled") vi.useRealTimers();
+        releaseRead.resolve("");
+      }
+      expect(native.clients).toHaveLength(1);
+      expect(await session.execute(turn("next"))).toMatchObject({ ok: true });
+      expect((await events.completed(2))[1]).toMatchObject({
+        event: { outcome: { status: "succeeded" } },
+      });
+    },
+  );
 
   it("fails the old Turn and never opens a replacement if shutdown cannot be confirmed", async () => {
     const { adapter, native } = setup();
@@ -522,6 +583,59 @@ describe("CodeBuddy native Adapter", () => {
       } finally {
         release.resolve(undefined);
       }
+    },
+  );
+
+  it.each([false, true])(
+    "restores only changed configuration and rejects a reset of a skipped value (%s)",
+    async (resetModel) => {
+      const requests: [string, string][] = [];
+      const { adapter, native } = setup({}, (client, index) => {
+        if (index !== 1) return;
+        const configure = client.configure.bind(client);
+        client.configure = async (sessionId, id, value) => {
+          requests.push([id, value]);
+          if (resetModel && id === "thought_level") client.options = configOptions("other");
+          return configure(sessionId, id, value);
+        };
+      });
+      const session = await create(adapter);
+      const events = collect(session);
+      expect(
+        await session.execute({
+          type: "thinking.select",
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+        }),
+      ).toMatchObject({ ok: true });
+      const start = turn("stopped", "hold");
+      await session.execute(start);
+      await session.execute({ type: "turn.cancel", turnId: start.turnId });
+      await events.completed();
+      const next = await session.execute(turn("next"));
+      expect(requests).toEqual([["thought_level", "high"]]);
+      if (resetModel) {
+        expect(next).toMatchObject({
+          error: {
+            code: "protocolError",
+            message: expect.stringContaining("did not restore model"),
+          },
+        });
+        expect(native.clients[1]?.closed).toBe(true);
+      } else {
+        expect(next).toMatchObject({ ok: true });
+        expect((await events.completed(2))[1]).toMatchObject({
+          event: { outcome: { status: "succeeded" } },
+        });
+      }
+      expect(await session.readSnapshot()).toMatchObject({
+        value: {
+          state: {
+            effectiveModel: modelRef("native/model"),
+            effectiveThinkingOptionId: "high",
+            effectivePermissionModeId: "default",
+          },
+        },
+      });
     },
   );
 

@@ -139,15 +139,15 @@ export async function restoreConfiguration(
     ["thought_level", saved.effectiveThinkingOptionId],
     ["mode", saved.effectivePermissionModeId],
   ] as const;
+  const matches = (id: string, value: string) =>
+    config.options.some((option) => option.id === id && option.currentValue === value);
   for (const [id, value] of selections) {
-    if (value) config = await selectConfiguration(config, id, value, profile, request);
+    if (value && !matches(id, value))
+      config = await selectConfiguration(config, id, value, profile, request);
   }
   // A later selection may reset another option. Only publish a fully restored state.
   for (const [id, value] of selections) {
-    if (
-      value &&
-      !config.options.some((option) => option.id === id && option.currentValue === value)
-    )
+    if (value && !matches(id, value))
       throw new CodeBuddyError("protocolError", `ACP did not restore ${id}`);
   }
   return config;

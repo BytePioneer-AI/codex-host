@@ -423,9 +423,12 @@ export class CodeBuddySession implements HarnessSession {
     }
   }
 
-  async #snapshot(): Promise<HostThreadSnapshot> {
+  async #snapshot(historyTimeout?: number): Promise<HostThreadSnapshot> {
     if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
-    const history = await this.#history(this.#ref);
+    const read = this.#history(this.#ref);
+    const history = historyTimeout
+      ? await bounded(read, historyTimeout, "Native Turn history read")
+      : await read;
     if (this.#closed || this.#fault)
       throw new CodeBuddyError("invalidState", "Session closed during history read");
     const snapshot = snapshotFromHistory(history, this.#ref, this.input.cwd, this.profile);
@@ -498,12 +501,7 @@ export class CodeBuddySession implements HarnessSession {
   async #executeCommand(
     command: HarnessCommandInvocation,
   ): Promise<HarnessResult<HarnessCommandAccepted>> {
-    const parsed = commandPrompt(command, this.#commands, this.profile);
-    if (!parsed.ok) return parsed;
-    const result = await this.#execute(
-      { type: "turn.start", turnId: command.turnId, input: [{ type: "text", text: parsed.value }] },
-      true,
-    );
+    const result = await this.#execute({ ...command, type: "command.execute" });
     return result.ok ? { ok: true, value: { turnId: command.turnId } } : result;
   }
 
@@ -537,16 +535,12 @@ export class CodeBuddySession implements HarnessSession {
         : undefined;
     if (nativeCommandsEnabled(this.profile) && isExcludedInvocation(invocation))
       return failure("unsupported", "Command is not available in this Session", this.profile);
-    return this.#execute(
-      command,
-      nativeCommandsEnabled(this.profile) &&
-        this.#commands.commands.some((entry) => entry.invocation === invocation),
-    );
+    return this.#execute(command, invocation);
   }
 
   async #execute(
-    command: HostCommand,
-    nativeCommand = false,
+    command: HostCommand | (HarnessCommandInvocation & { type: "command.execute" }),
+    invocation?: string,
   ): Promise<
     HarnessResult<
       | TurnStartAccepted
@@ -580,7 +574,8 @@ export class CodeBuddySession implements HarnessSession {
         }
         if (this.#active === active && !this.#closed) {
           void bounded(active.completion, 30_000, "ACP cancel acknowledgement").catch((error) => {
-            if (this.#active === active) this.#onFault(error);
+            // Once the process has exited, only best-effort history remains.
+            if (this.#active === active && !this.#needsResume) this.#onFault(error);
           });
         }
       }
@@ -595,18 +590,32 @@ export class CodeBuddySession implements HarnessSession {
       return failure("sessionBusy", "Session is executing an operation", this.profile);
     this.#busy = true;
     try {
-      if (command.type === "turn.start") {
+      if (command.type === "turn.start" || command.type === "command.execute") {
         if (
           !command.turnId.trim() ||
-          !command.input.length ||
-          command.input.some((item) => item.type !== "text") ||
-          !command.input
-            .map((item) => item.text)
-            .join("")
-            .trim()
+          (command.type === "turn.start" &&
+            (!command.input.length ||
+              command.input.some((item) => item.type !== "text") ||
+              !command.input
+                .map((item) => item.text)
+                .join("")
+                .trim()))
         )
           return failure("invalidRequest", "A nonempty text prompt is required", this.profile);
         if (this.#needsResume) await this.#resumeClient();
+        const nativeCommand =
+          command.type === "command.execute" ||
+          (nativeCommandsEnabled(this.profile) &&
+            this.#commands.commands.some((entry) => entry.invocation === invocation));
+        if (command.type === "command.execute") {
+          const parsed = commandPrompt(command, this.#commands, this.profile);
+          if (!parsed.ok) return parsed;
+          command = {
+            type: "turn.start",
+            turnId: command.turnId,
+            input: [{ type: "text", text: parsed.value }],
+          };
+        }
         const snapshot = await this.#snapshot();
         const before = new Set(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey));
         const beforeItems = new Set(
@@ -657,6 +666,7 @@ export class CodeBuddySession implements HarnessSession {
   }
 
   async #run(active: ActiveTurn) {
+    let cancellationConfirmed = false;
     try {
       if (!this.#ref) throw new CodeBuddyError("invalidState", "Session is not open");
       const response = await this.#client.prompt(
@@ -692,8 +702,10 @@ export class CodeBuddySession implements HarnessSession {
         }
         if (active.done || this.#closed) return;
         this.#needsResume = true;
+        cancellationConfirmed = true;
       }
-      const snapshot = await this.#snapshot();
+      // After shutdown, history can enrich cancellation but cannot change its outcome.
+      const snapshot = await this.#snapshot(cancellationConfirmed ? 1_000 : undefined);
       if (active.done || this.#closed) return;
       const added = snapshot.turns.filter(
         (turn) => !active.before.has(turn.nativeTurnRef.nativeTurnKey),
@@ -706,6 +718,12 @@ export class CodeBuddySession implements HarnessSession {
           "protocolError",
           "Could not identify exactly one persisted Native Turn",
         );
+      const nativeTurnRef = added[0]?.nativeTurnRef;
+      if (response.userMessageId && nativeTurnRef?.nativeTurnKey !== response.userMessageId)
+        throw new CodeBuddyError(
+          "protocolError",
+          "ACP terminal and native history disagree on Turn identity",
+        );
       active.output.confirmCompaction(
         snapshot.turns
           .flatMap((turn) => turn.items)
@@ -715,13 +733,8 @@ export class CodeBuddySession implements HarnessSession {
         active.output.replayCommandResult(
           (added[0]?.items ?? []).filter(({ item }) => !this.subagents.hasItem(item.itemId)),
         );
-      const nativeTurnRef = added[0]?.nativeTurnRef;
-      if (response.userMessageId && nativeTurnRef?.nativeTurnKey !== response.userMessageId)
-        throw new CodeBuddyError(
-          "protocolError",
-          "ACP terminal and native history disagree on Turn identity",
-        );
       const compactCommand =
+        outcome.status !== "cancelled" &&
         active.nativeCommand &&
         /^\/compact(?:\s|$)/u.test(
           active.command.input
@@ -748,7 +761,12 @@ export class CodeBuddySession implements HarnessSession {
       if (this.#usage) this.#emitUsage();
     } catch (error) {
       if (!active.done && !this.#closed)
-        this.#finish(active, { status: "failed", error: nativeError(error, this.profile) });
+        this.#finish(
+          active,
+          cancellationConfirmed
+            ? { status: "cancelled" }
+            : { status: "failed", error: nativeError(error, this.profile) },
+        );
     }
   }
 
@@ -769,7 +787,7 @@ export class CodeBuddySession implements HarnessSession {
       );
       this.#assertClient(generation);
       this.#apply(restored);
-      if (replay.commands) this.#commands = replay.commands;
+      if (!this.profile.staticCommandCatalog) this.#commands = replay.commands ?? { commands: [] };
       this.#needsResume = false;
     } catch (error) {
       ++this.#generation;

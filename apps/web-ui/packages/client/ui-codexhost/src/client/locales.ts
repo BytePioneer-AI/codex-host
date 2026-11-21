@@ -1,5 +1,26 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
+  "git.details": "Git status",
+  "git.branch": "Branch",
+  "git.root": "Working tree",
+  "git.upstream": "Upstream",
+  "git.sync": "Ahead / behind",
+  "git.unknown": "Unknown (tracking ref unavailable)",
+  "git.staged": "Staged",
+  "git.unstaged": "Unstaged",
+  "git.untracked": "Untracked",
+  "git.conflicted": "Conflicted",
+  "git.unavailable": "Git unavailable",
+  "git.remote": "Git status for remote projects is not supported yet.",
+  "git.failed":
+    "Could not read Git status. Check Git availability and directory access, then refresh.",
+  "git.refresh": "Refresh",
+  "git.clean": "Working tree clean",
+  "git.changed": "{n} changed files (categories can overlap)",
+  "git.unborn": "No commits yet",
+  "git.localRefs":
+    "Ahead/behind uses local tracking refs; no fetch is performed. Submodule commit changes count as one entry; their dirty files are not scanned. External clean/process filters are disabled, so filter-backed files may appear modified.",
+  "git.checkedAt": "Checked at {time}",
   "file.download": "Download",
   "file.openFolder": "Open containing folder",
   "file.openFolder.failed": "Could not open the containing folder.",
@@ -652,6 +673,26 @@ export const en = {
 export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
+  "git.details": "Git 状态",
+  "git.branch": "当前分支",
+  "git.root": "工作目录",
+  "git.upstream": "跟踪分支",
+  "git.sync": "领先／落后",
+  "git.unknown": "未知（跟踪引用不可用）",
+  "git.staged": "已暂存",
+  "git.unstaged": "未暂存",
+  "git.untracked": "未跟踪",
+  "git.conflicted": "冲突",
+  "git.unavailable": "Git 不可用",
+  "git.remote": "暂不支持查询远程项目的 Git 状态。",
+  "git.failed": "无法读取 Git 状态，请检查 Git 安装和目录权限后刷新。",
+  "git.refresh": "刷新",
+  "git.clean": "工作目录干净",
+  "git.changed": "{n} 个变更文件（分类可能重叠）",
+  "git.unborn": "尚无提交",
+  "git.localRefs":
+    "领先／落后基于本地跟踪引用，不自动 fetch。子模块仅统计提交号变化，不扫描内部脏文件。外部 clean/process 过滤器已禁用，依赖过滤器的文件可能显示为已修改。",
+  "git.checkedAt": "查询时间：{time}",
   "file.download": "下载",
   "file.openFolder": "打开所在文件夹",
   "file.openFolder.failed": "打开所在文件夹失败。",

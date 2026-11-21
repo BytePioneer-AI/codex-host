@@ -73,6 +73,7 @@ import type { SessionListTiming } from "./session-list-timing.ts";
 import { WebAssets, type AssetResponse, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
+import { registerWorkspaceGitStatus } from "./workspace-git-status.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
 import { WebFiles } from "./web-files.ts";
 import { serveFileUpload } from "./ch-file-upload-http.ts";
@@ -390,6 +391,7 @@ const shellReload = devWebUi === undefined ? undefined : new WebShellReload(asse
 streams.register("$events", events.handler);
 workspaces.register(rpc, streams);
 sessions.register(rpc, streams);
+registerWorkspaceGitStatus(rpc, (id) => sessions.gitWorkspaceRoot(id));
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
 const remoteSessions = new RemoteSessions(events, undefined, workspaces);

@@ -17,7 +17,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  gap: clamp(4px, 1.2vw, 12px);
   max-width: 100%;
   padding-top: 4px;
 }

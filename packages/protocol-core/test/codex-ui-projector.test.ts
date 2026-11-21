@@ -1,6 +1,7 @@
 import { configureSubagentEvent } from "@codexhost/harness-adapter";
 import { describe, expect, it } from "vitest";
 import type {
+  HostApprovalInteraction,
   HostCommandExecutionItem,
   HostFileChangeItem,
   HostMcpToolCallItem,
@@ -2175,6 +2176,333 @@ describe("Codex UI projector", () => {
       turnId,
       snapshot: { item: tool, outcome: { status: "cancelled" } },
     });
+  });
+
+  it("opens and closes a synthetic Question after its Turn completed", () => {
+    const value = projector();
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-completed"),
+      turnId,
+      title: "Question",
+      questions: [
+        {
+          id: "decision",
+          type: "choice",
+          prompt: "Continue?",
+          options: [{ value: "yes", label: "Yes" }],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    const owner: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("synthetic-owner"),
+      command: "await-user",
+    };
+    value.project({ type: "item.started", turnId, item: owner });
+    value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    const opened = value.projectQuestion(question, itemId("completed-question"), 2_000);
+    expect(opened.questionRequest.request).toMatchObject({
+      params: { itemId: "completed-question", turnId },
+    });
+    const closed = value.project(
+      {
+        type: "interaction.closed",
+        interactionId: question.interactionId,
+        turnId,
+        reason: "responded",
+      },
+      2_100,
+    );
+    expect(closed.messages).toContainEqual(
+      expect.objectContaining({
+        method: "item/completed",
+        params: expect.objectContaining({
+          item: expect.objectContaining({ id: "completed-question" }),
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    { status: "succeeded" as const },
+    {
+      status: "failed" as const,
+      error: { code: "nativeFailure" as const, message: "failed", retryable: false },
+    },
+    { status: "cancelled" as const, reason: "cancelled" },
+  ])("rejects a post-terminal Question without a detached owner (%s)", (outcome) => {
+    const value = projector();
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse(`interaction-${outcome.status}`),
+      turnId,
+      questions: [
+        {
+          id: "decision",
+          type: "choice",
+          prompt: "Continue?",
+          options: [{ value: "yes", label: "Yes" }],
+          multiple: false,
+          allowOther: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "turn.completed", turnId, outcome });
+    expect(() => value.projectQuestion(question, itemId(`unowned-${outcome.status}`))).toThrow(
+      /follows (a non-successful Turn terminal|the Turn terminal)/u,
+    );
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse(`approval-${outcome.status}`),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      /follows (a non-successful Turn terminal|the Turn terminal)/u,
+    );
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
+  it("allows terminal interaction only for a successful detached tool owner", () => {
+    const value = projector();
+    const toolId = itemId("detached-question-tool");
+    const tool: HostToolExecutionItem = {
+      type: "toolExecution",
+      itemId: toolId,
+      toolName: "user_question_tool",
+      arguments: {},
+    };
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-detached-tool"),
+      turnId,
+      itemId: toolId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: tool });
+    value.project({ type: "item.detached", turnId, itemId: toolId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(value.hasOpenDetachedTool()).toBe(true);
+    expect(value.hasOpenDetachedTool(toolId)).toBe(true);
+    expect(value.hasOpenDetachedTool(itemId("other-owner"))).toBe(false);
+
+    expect(value.projectQuestion(question, itemId("unused"))).toMatchObject({
+      itemId: toolId,
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    value.project({
+      type: "interaction.closed",
+      interactionId: question.interactionId,
+      turnId,
+      reason: "cancelled",
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: tool, outcome: { status: "cancelled" } },
+    });
+    expect(value.hasOpenDetachedItems).toBe(false);
+  });
+
+  it("allows terminal approval only while a successful detached owner is open", () => {
+    const value = projector();
+    const command: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("detached-approval-command"),
+      command: "await-user",
+    };
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse("interaction-detached-approval"),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: command });
+    value.project({ type: "item.detached", turnId, itemId: command.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    expect(value.projectApproval(approval, "test-server").approvalRequest).toBeDefined();
+    value.project({
+      type: "interaction.closed",
+      interactionId: approval.interactionId,
+      turnId,
+      reason: "cancelled",
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+  });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "keeps pending owned approvals only across successful completion: %s",
+    (status) => {
+      const value = projector();
+      const owner = {
+        type: "toolExecution" as const,
+        itemId: itemId("pending-approval-owner"),
+        namespace: "test",
+        toolName: "edit_file",
+        arguments: {},
+      };
+      value.project({ type: "turn.started", turnId });
+      value.project({ type: "item.started", turnId, item: owner });
+      value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+      value.projectApproval(
+        {
+          type: "approval",
+          interactionId: hostInteractionIdSchema.parse("pending-owned-approval"),
+          turnId,
+          title: "Approve edit",
+          subject: { type: "nativeAction" },
+          actions: [
+            { id: "allow", label: "Allow", effect: "allowOnce" },
+            { id: "deny", label: "Deny", effect: "deny" },
+          ],
+        },
+        "test-server",
+      );
+      const complete = () =>
+        value.project({
+          type: "turn.completed",
+          turnId,
+          outcome:
+            status === "succeeded"
+              ? { status }
+              : status === "failed"
+                ? { status, error: { code: "nativeFailure", message: "failed", retryable: false } }
+                : { status, reason: "cancelled" },
+        });
+      if (status === "succeeded") {
+        expect(complete).not.toThrow();
+        expect(value.hasOpenDetachedItems).toBe(true);
+      } else {
+        expect(complete).toThrow("pending Interactions");
+      }
+    },
+  );
+
+  it("does not treat background text as a terminal interaction owner", () => {
+    const value = projector();
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    value.project({
+      type: "item.background.started",
+      turnId,
+      item: { type: "agentMessage", itemId: itemId("background-text"), text: "late output" },
+    });
+    expect(value.hasOpenDetachedItems).toBe(true);
+    expect(value.hasOpenDetachedTool()).toBe(false);
+
+    const question: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-background-text"),
+      turnId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    expect(() => value.projectQuestion(question, itemId("unowned-background-text"))).toThrow(
+      "follows the Turn terminal",
+    );
+    const approval: HostApprovalInteraction = {
+      type: "approval",
+      interactionId: hostInteractionIdSchema.parse("approval-background-text"),
+      turnId,
+      title: "Approve",
+      subject: { type: "nativeAction" },
+      actions: [
+        { id: "allow", label: "Allow", effect: "allowOnce" },
+        { id: "deny", label: "Deny", effect: "deny" },
+      ],
+    };
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      "follows the Turn terminal",
+    );
+  });
+
+  it("does not reuse a settled owner or synthetic Question as a new owner", () => {
+    const value = projector();
+    const owner: HostCommandExecutionItem = {
+      type: "commandExecution",
+      itemId: itemId("settled-owner"),
+      command: "await-user",
+    };
+    const firstQuestion: HostQuestionInteraction = {
+      type: "question",
+      interactionId: hostInteractionIdSchema.parse("interaction-synthetic-pending"),
+      turnId,
+      questions: [
+        {
+          id: "answer",
+          type: "text",
+          prompt: "Answer",
+          multiline: false,
+          secret: false,
+          optional: false,
+        },
+      ],
+    };
+    value.project({ type: "turn.started", turnId });
+    value.project({ type: "item.started", turnId, item: owner });
+    value.project({ type: "item.detached", turnId, itemId: owner.itemId });
+    value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
+    value.projectQuestion(firstQuestion, itemId("synthetic-pending"));
+    value.project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: owner, outcome: { status: "succeeded" } },
+    });
+    expect(value.hasOpenDetachedTool()).toBe(false);
+
+    const secondQuestion = {
+      ...firstQuestion,
+      interactionId: hostInteractionIdSchema.parse("interaction-after-settle"),
+    };
+    expect(() => value.projectQuestion(secondQuestion, itemId("synthetic-second"))).toThrow(
+      "follows the Turn terminal",
+    );
+    expect(value.hasOpenDetachedItems).toBe(true);
+    value.project({
+      type: "interaction.closed",
+      interactionId: firstQuestion.interactionId,
+      turnId,
+      reason: "cancelled",
+    });
+    expect(value.hasOpenDetachedItems).toBe(false);
   });
 
   it("fails a secret Question without mutating synthetic Item state", () => {

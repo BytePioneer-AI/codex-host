@@ -10,6 +10,7 @@ import { DelegationControlError, EXTERNAL_CLIENT_PORT_ENV } from "./delegation-t
 import {
   bearerToken,
   codexhostDataDirectory,
+  type ClientScope,
   type ExternalClientRegistry,
 } from "./external-clients.js";
 
@@ -18,6 +19,7 @@ export const DEFAULT_EXTERNAL_CLIENT_PORT = 4398;
 /** The authenticated caller of one external request. */
 export interface ExternalClientCall {
   client: string;
+  scope: ClientScope;
   request: IncomingMessage;
   response: ServerResponse;
 }
@@ -119,7 +121,7 @@ export async function startExternalClientServer(input: {
         unauthorized(response);
         return;
       }
-      const call = { client, request, response };
+      const call = { client: client.name, scope: client.scope, request, response };
       const stream = input.streams?.[url.pathname];
       if (stream) {
         await stream(call, url);

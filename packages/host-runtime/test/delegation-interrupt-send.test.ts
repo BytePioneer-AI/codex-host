@@ -308,7 +308,7 @@ describe("send with watch", () => {
       timeoutMs: 1234,
     }));
     const router = externalClientRouter({ api: registry, watchApi: { watch, watches: vi.fn() } });
-    const call = { client: "caller" } as Parameters<typeof router>[0];
+    const call = { client: "caller", scope: "dispatch" } as Parameters<typeof router>[0];
     await router(call, "/v1/thread/send", {
       threadId: "target",
       message: "continue",

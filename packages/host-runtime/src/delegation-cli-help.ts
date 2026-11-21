@@ -12,17 +12,20 @@ Read this Host's environment, tools and workspace defaults. Cached observations 
 Discover projects under this Host's configured roots. Returns live project metadata and pagination; no static project registry is required.`,
   "thread file": `codexhost thread file <thread> --path <file> [--offset <n>] [--limit <bytes>] [--revision <revision>] [--format json|compact|text]
 Read a file explicitly linked in the latest final report, inside the Thread workspace. Returns a base64 chunk, revision, nextOffset and eof. Continue with the returned revision; restart if it changes. Maximum chunk size is 1 MiB. Read through the execution Host.`,
-  "client add": `codexhost client add <name>
+  "client add": `codexhost client add <name> [--scope read|dispatch]
 Register a named external client for HTTP/MCP or a separate CLI identity. Normal same-user CLI calls authenticate automatically and do not need registration. Prints the client token once; it is not stored in a readable form and cannot be shown again.
 The client sets CODEXHOST_CLIENT_TOKEN (or CODEXHOST_CLIENT_TOKEN_FILE) and then uses the same delegate, thread and harness commands, or the MCP endpoint, against the external client listener (127.0.0.1:4398 unless CODEXHOST_EXTERNAL_CLIENT_PORT says otherwise).
-Names use lowercase letters, digits and hyphens; local-cli is reserved.`,
+Names use lowercase letters, digits and hyphens; local-cli is reserved.
+--scope read allows host info, project list, harness list and inspect, thread read, file, wait, list and watches, and events only. dispatch (default) also allows delegate start and thread send, answer, export, cancel and watch; a read client gets FORBIDDEN for those.`,
+  "client set": `codexhost client set <name> --scope read|dispatch
+Change a client's scope. Takes effect on its next request; the token stays the same.`,
   events: `codexhost events [--after <id>] [--limit <n>] [--follow true|false]
 For external clients: read the client's event log. Without --after, every retained event is returned, oldest first; keep the cursor to read only new ones. An event reports that a Thread the client watches stopped (outcome, Thread, Turn, Harness, deep link, references); it never carries Thread content, so read the Thread for results.
 Without --follow, prints {events, cursor} once; pass cursor back as --after. With --follow true, prints one JSON line per event until interrupted.
 Events are kept for 7 days (CODEXHOST_CLIENT_EVENT_RETENTION_DAYS). CURSOR_EXPIRED means older events were removed: reconcile with thread list --client <name>.
 The listener also serves GET /v1/events as server-sent events (resume with Last-Event-ID) and POST /v1/events/poll for long-polling.`,
   "client list": `codexhost client list
-List registered external clients with their registration time. Tokens are never shown.`,
+List registered external clients with their registration time and scope. Tokens are never shown.`,
   "client remove": `codexhost client remove <name>
 Revoke a client immediately. Its later requests are rejected with UNAUTHORIZED and its open event streams are closed. Threads it started remain.`,
   "harness list": `codexhost harness list [--format json|compact|text]
@@ -126,7 +129,7 @@ export const DELEGATION_HELP = `usage:
   codexhost thread watch <thread>
   codexhost thread watches
   codexhost thread list
-  codexhost client add|list|remove
+  codexhost client add|list|set|remove
   codexhost events
 
 Use <command> --help for its options. Use harness list to discover targets.

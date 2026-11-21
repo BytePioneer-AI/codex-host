@@ -83,7 +83,9 @@ Rarely needed: debugging only. Exports the full Thread to a JSON file and return
 
 ## 登记与认证
 
-- `codexhost client add <name>` 生成 `chc_` 开头的随机令牌并只输出一次；`client list` 列出名称与登记时间；`client remove` 立即吊销。
+- `codexhost client add <name> [--scope read|dispatch]` 生成 `chc_` 开头的随机令牌并只输出一次；`client list` 列出名称、登记时间与权限范围；`client set <name> --scope read|dispatch` 修改权限范围，令牌不变，下一次请求生效；`client remove` 立即吊销。
+- 权限范围在执行前由外部监听的路由统一检查，HTTP 与 MCP 工具走同一处。`read` 只能使用 `host info`、`project list`、`harness list`、`harness inspect`、`thread read`、`thread file`、`thread wait`、`thread watches`、`thread list` 与事件（`/v1/events`、`/v1/events/poll`）；其余路由（`delegate start`、`thread send`、`answer`、`export`、`cancel`、`watch`，以及以后新增的路由）需要 `dispatch`，`read` 客户端调用时返回 `FORBIDDEN`，不改变任何 Thread。
+- `client add` 默认 `dispatch`；权限范围出现之前登记的客户端与自动认证的 `local-cli` 都按 `dispatch` 处理。
 - 登记保存在 `<数据目录>/external-clients.json`（默认 `~/.codexhost`，仅当前用户可读写），只存加盐 SHA-256 摘要。CLI 直接编辑该文件，因此 Runtime 未运行时也能登记；Runtime 按文件修改时间重读，删除在下一次请求生效。
 - 名称只允许小写字母、数字和连字符，同时用作事件日志的目录名；`local-cli` 保留给自动认证的本机 CLI。
 
@@ -182,6 +184,6 @@ CLI 用 `codexhost thread file <thread> --path <文件> --offset <位置> --limi
 
 ## 边界
 
-- 本地监听只绑定 `127.0.0.1`，所有客户端拥有完整的委派权限；tailnet、公网、权限范围与 webhook 推送见 `openspec/changes/add-remote-client-access`。
+- 本地监听只绑定 `127.0.0.1`；tailnet、公网与 webhook 推送见 `openspec/changes/add-remote-client-access`。
 - 外部客户端发起的 Thread 与其他 Thread 一样出现在 Desktop 侧栏；按客户端分组尚未提供。
 - npm 安装没有自带 Node：在 codexhost 会话之外运行 `codexhost client`、`codexhost events` 等命令时，需要 `CODEXHOST_CLI_NODE_PATH` 指向一个 Node。MCP 与 HTTP 客户端不受影响。

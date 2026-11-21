@@ -34,6 +34,23 @@ function ownOrigin(client: string, value: unknown, field: string): string {
   return value as string;
 }
 
+/**
+ * Routes a `read` client may use: they observe Threads, the Host and the client's
+ * own events. Every other route, including any added later, needs `dispatch`.
+ */
+const READ_ROUTES = new Set([
+  "/v1/host/info",
+  "/v1/project/list",
+  "/v1/harness/list",
+  "/v1/harness/inspect",
+  "/v1/thread/read",
+  "/v1/thread/file",
+  "/v1/thread/wait",
+  "/v1/thread/watches",
+  "/v1/thread/list",
+  "/v1/events/poll",
+]);
+
 /** External watch=true is shorthand for the timeout-based control protocol used by the CLI. */
 function withWatch(body: Record<string, unknown>): Record<string, unknown> {
   const { watch, ...rest } = body;
@@ -152,6 +169,11 @@ export function externalClientRouter(handlers: {
   inventory?: HostInventory;
 }): ExternalClientRouter {
   return async (call, route, body) => {
+    if (call.scope !== "dispatch" && !READ_ROUTES.has(route))
+      throw new DelegationControlError(
+        "FORBIDDEN",
+        `Client '${call.client}' has read scope and cannot use ${route}`,
+      );
     if (route === "/v1/events/poll") {
       if (!handlers.events)
         throw new DelegationControlError("INVALID_ARGUMENT", "This Runtime keeps no client events");

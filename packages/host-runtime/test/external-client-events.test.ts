@@ -248,7 +248,7 @@ describe("event routes", () => {
       api: {} as never,
       watchApi: { watch, watches: vi.fn() } as never,
     });
-    const call = { client: "bot" } as Parameters<typeof route>[0];
+    const call = { client: "bot", scope: "dispatch" } as Parameters<typeof route>[0];
     await route(call, "/v1/thread/watch", { threadId: "child", timeoutMs: 1 });
     expect(watch).toHaveBeenCalledWith(expect.objectContaining({ notifyThreadId: "client:bot" }));
     await expect(
@@ -263,7 +263,7 @@ describe("event routes", () => {
   it("long-polls until an event arrives or the timeout ends", async () => {
     const events = new ClientEventLog({ directory, retentionDays: 7 });
     const route = externalClientRouter({ api: {} as never, events });
-    const call = { client: "bot" } as Parameters<typeof route>[0];
+    const call = { client: "bot", scope: "dispatch" } as Parameters<typeof route>[0];
     await expect(route(call, "/v1/events/poll", { after: 0, timeoutMs: 20 })).resolves.toEqual({
       events: [],
       cursor: 0,

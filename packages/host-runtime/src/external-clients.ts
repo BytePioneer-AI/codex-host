@@ -5,13 +5,32 @@ import path from "node:path";
 
 import { DelegationControlError } from "./delegation-types.js";
 
+/** `read` observes; `dispatch` may also start, steer, answer, export, cancel and watch work. */
+export type ClientScope = "read" | "dispatch";
+
+const CLIENT_SCOPES: readonly ClientScope[] = ["read", "dispatch"];
+
+/** New clients, clients registered before scopes existed, and the local CLI. */
+const DEFAULT_SCOPE: ClientScope = "dispatch";
+
 /** A named process outside the Host that may call the delegation API with its own token. */
 export interface ExternalClient {
   name: string;
   createdAt: string;
+  scope: ClientScope;
 }
 
-interface StoredClient extends ExternalClient {
+/** The caller a token belongs to. */
+export interface AuthenticatedClient {
+  name: string;
+  scope: ClientScope;
+}
+
+interface StoredClient {
+  name: string;
+  createdAt: string;
+  /** Absent for clients registered before scopes existed. */
+  scope?: ClientScope;
   salt: string;
   /** sha256(salt + token), hex. Tokens are 32 random bytes, so a fast hash is sufficient. */
   tokenHash: string;
@@ -60,7 +79,8 @@ function parseClientsFile(text: string): ClientsFile {
       !CLIENT_NAME.test(client.name) ||
       typeof client.createdAt !== "string" ||
       typeof client.salt !== "string" ||
-      typeof client.tokenHash !== "string"
+      typeof client.tokenHash !== "string" ||
+      (client.scope !== undefined && !CLIENT_SCOPES.includes(client.scope))
     )
       throw new Error("unrecognized external client registry entry");
   }
@@ -84,8 +104,10 @@ export class ExternalClientRegistry {
 
   async add(
     name: string,
+    scope: ClientScope = DEFAULT_SCOPE,
     now: Date = new Date(),
   ): Promise<{ client: ExternalClient; token: string }> {
+    validScope(scope);
     if (!CLIENT_NAME.test(name))
       throw new DelegationControlError(
         "INVALID_ARGUMENT",
@@ -104,15 +126,28 @@ export class ExternalClientRegistry {
     const client: StoredClient = {
       name,
       createdAt: now.toISOString(),
+      scope,
       salt,
       tokenHash: hashToken(salt, token),
     };
     await this.#write([...clients, client]);
-    return { client: { name, createdAt: client.createdAt }, token };
+    return { client: publicClient(client), token };
   }
 
   async list(): Promise<ExternalClient[]> {
-    return (await this.#read()).map(({ name, createdAt }) => ({ name, createdAt }));
+    return (await this.#read()).map(publicClient);
+  }
+
+  /** Takes effect on the client's next request; the token is unchanged. */
+  async setScope(name: string, scope: ClientScope): Promise<ExternalClient> {
+    validScope(scope);
+    const clients = await this.#read();
+    const current = clients.find((client) => client.name === name);
+    if (!current)
+      throw new DelegationControlError("INVALID_ARGUMENT", `Client '${name}' does not exist`);
+    const updated: StoredClient = { ...current, scope };
+    await this.#write(clients.map((client) => (client.name === name ? updated : client)));
+    return publicClient(updated);
   }
 
   async remove(name: string): Promise<void> {
@@ -123,14 +158,15 @@ export class ExternalClientRegistry {
   }
 
   /** The client the token belongs to, or undefined. Every entry is compared, so timing reveals nothing. */
-  async authenticate(token: string | undefined): Promise<string | undefined> {
+  async authenticate(token: string | undefined): Promise<AuthenticatedClient | undefined> {
     if (!token?.startsWith(TOKEN_PREFIX)) return undefined;
-    let match =
+    let match: AuthenticatedClient | undefined =
       this.#cliTokenHash && sameHash(hashToken("", token), this.#cliTokenHash)
-        ? LOCAL_CLI_CLIENT_NAME
+        ? { name: LOCAL_CLI_CLIENT_NAME, scope: DEFAULT_SCOPE }
         : undefined;
     for (const client of await this.#current()) {
-      if (sameHash(hashToken(client.salt, token), client.tokenHash)) match = client.name;
+      if (sameHash(hashToken(client.salt, token), client.tokenHash))
+        match = { name: client.name, scope: client.scope ?? DEFAULT_SCOPE };
     }
     return match;
   }
@@ -179,6 +215,15 @@ export class ExternalClientRegistry {
     }
     this.#cache = undefined;
   }
+}
+
+function validScope(scope: string): asserts scope is ClientScope {
+  if (!CLIENT_SCOPES.includes(scope as ClientScope))
+    throw new DelegationControlError("INVALID_ARGUMENT", "--scope must be read or dispatch");
+}
+
+function publicClient(client: StoredClient): ExternalClient {
+  return { name: client.name, createdAt: client.createdAt, scope: client.scope ?? DEFAULT_SCOPE };
 }
 
 export function bearerToken(header: string | undefined): string | undefined {

@@ -4,6 +4,7 @@ import type { SessionAssistantStreamBaseline, SessionAssistantStreamFrame } from
 import { expandAssistantStream } from "@deepseek-ai/dsh-llm/assistant-stream";
 import type { AssistantStreamRecord } from "@deepseek-ai/dsh-llm/assistant-stream";
 import type { LlmAttemptId } from "@deepseek-ai/dsh-llm/brand";
+import type { StreamChunk } from "@deepseek-ai/dsh-llm/types";
 import type {
   SessionAssistantSettlementEntry,
   SessionEventLikeEntry,
@@ -45,6 +46,7 @@ export class ClientAssistantStream {
   private publishedSeqs = new Set<number>();
   private durableCursor = -1;
   private transientInGap = 0;
+  private transientOrder = 0;
 
   /**
    * Replace the durable Web window and adopt an optional reconnect baseline.
@@ -58,6 +60,7 @@ export class ClientAssistantStream {
   ): readonly SessionEventLikeEntry[] {
     this.pending.clear();
     this.transientInGap = 0;
+    this.transientOrder = 0;
     this.activeAttempt = undefined;
     this.retainedAttempt = undefined;
     const opening = baseline?.activeAttempt;
@@ -77,21 +80,7 @@ export class ClientAssistantStream {
       for (const [index, member] of expandAssistantStream(
         opening.stream as unknown as readonly AssistantStreamRecord[],
       ).entries()) {
-        this.transientInGap += 1;
-        visible.push({
-          type: "transient",
-          event: {
-            type: "assistant/live-chunk",
-            seq: this.durableCursor + 1 - 1 / (this.transientInGap + 1),
-            time: member.time,
-            data: {
-              attemptId: opening.attemptId,
-              turn: opening.turn,
-              step: opening.step,
-              chunk: member.chunk,
-            },
-          },
-        });
+        visible.push(this.transientEntry(opening, member.time, member.chunk));
         if (index + 1 >= opening.nextIndex) break;
       }
     }
@@ -149,23 +138,9 @@ export class ClientAssistantStream {
         if (attempt === undefined || attempt.attemptId !== frame.attemptId) return undefined;
         if (frame.index !== attempt.nextIndex) return { type: "rebaseline" };
         attempt.nextIndex += 1;
-        this.transientInGap += 1;
         return {
           type: "transient",
-          entry: {
-            type: "transient",
-            event: {
-              type: "assistant/live-chunk",
-              seq: this.durableCursor + 1 - 1 / (this.transientInGap + 1),
-              time: frame.time,
-              data: {
-                attemptId: frame.attemptId,
-                turn: attempt.turn,
-                step: attempt.step,
-                chunk: frame.chunk as never,
-              },
-            },
-          },
+          entry: this.transientEntry(attempt, frame.time, frame.chunk as never),
         };
       }
       case "end": {
@@ -198,6 +173,27 @@ export class ClientAssistantStream {
         return { type: "settlement", attemptId: attempt.attemptId, entry };
       }
     }
+  }
+
+  private transientEntry(
+    { attemptId, turn, step }: Pick<ActiveAttempt, "attemptId" | "turn" | "step">,
+    time: number,
+    chunk: StreamChunk,
+  ): SessionTransientEventEntry {
+    const nextSeq = this.durableCursor + 1;
+    this.transientInGap += 1;
+    // Keep the render anchor below the next durable event even when rounding closes the gap.
+    const distance = Math.max(1 / (this.transientInGap + 1), nextSeq * Number.EPSILON);
+    return {
+      type: "transient",
+      event: {
+        type: "assistant/live-chunk",
+        seq: Math.max(this.durableCursor, nextSeq - distance),
+        order: ++this.transientOrder,
+        time,
+        data: { attemptId, turn, step, chunk },
+      },
+    };
   }
 
   private attemptForSettlement(

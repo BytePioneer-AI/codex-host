@@ -51,7 +51,7 @@ Web 的排队提交通过 `thread/read {includeTurns: false}` 读取运行态，
 
 `codexhost/thread/queue/send-now` 在空闲时调用 `thread/queue/start`，活动 Turn 内则读取原队列项，以其完整输入和 `clientUserMessageId` 调用带 `expectedTurnId` 的 `turn/steer`，确认接受后才删除队列项。拒绝或结果未知不回退启动新 Turn；已接受但删除未确认时返回 `-32095`，保留“输入已接受，不要重发”的明确错误信息，不把它归为发送结果完全未知。相同 Thread／队列项的该操作复用当前 Host 的有界进程内回执，不承诺跨重启去重，也不能将两次原生写入变成原子操作。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
 
-官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单。菜单中的压缩和默认审查分别调用 `thread/compact/start`、`review/start`（`uncommittedChanges`）；显式发送 `/review 指令` 使用 `custom` target。压缩不接受文本参数，这两类操作不能排队或 Steer，不降级成普通 Prompt。Skill 同名时保留官方列表中首个有效启用项，目录通过 `warnings` 报告忽略的条目、解析错误或 Skills 加载失败，不影响有效入口；Skills 不可用时仍保留压缩和审查。`$name` carrier 保留原生前缀，发送时按当前工作区官方目录解析为 `type: "skill"` 的 `name/path` 输入，原有文本、附件及队列／Steer 语义保留；Skill 已失效或目录读取失败则拒绝发送，不退化为普通提示词。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 支持同目录 Web Fork，不开放 Web 历史回退。
+官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单。菜单中的压缩和默认审查分别调用 `thread/compact/start`、`review/start`（`uncommittedChanges`）；显式发送 `/review 指令` 使用 `custom` target。压缩不接受文本参数，这两类操作不能排队或 Steer，不降级成普通 Prompt。Skill 同名时保留官方列表中首个有效启用项，目录通过 `warnings` 报告忽略的条目、解析错误或 Skills 加载失败，不影响有效入口；Skills 不可用时仍保留压缩和审查。尚无 Thread 的 Web 草稿通过 `codexhost/harness/commands/inspect {harnessId: "codex", cwd}` 按草稿工作区调用官方 `skills/list`，不启动或恢复 Thread；该目录只含 Skill（压缩和审查需要 Thread），没有工作区时为空。`$name` carrier 保留原生前缀，发送时按当前工作区官方目录解析为 `type: "skill"` 的 `name/path` 输入，原有文本、附件及队列／Steer 语义保留；Skill 已失效或目录读取失败则拒绝发送，不退化为普通提示词。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 支持同目录 Web Fork，不开放 Web 历史回退。
 
 官方 Fork 使用既有 `thread/fork {threadId, lastTurnId, excludeTurns: true}`，保留指定轮次及之前的原生上下文；不传模型、权限或 cwd 默认值覆盖。新 Thread 的订阅与实际配置按响应中的 `thread.id` 登记，不覆盖来源 Thread 的配置。新身份仍由官方持久化并与 Desktop 共用，不创建 Mapping Store 记录；通知使客户端目录失效重读。GUI 的原生 Fork 转发路径保持不变，结果未知不自动重试。
 
@@ -126,7 +126,7 @@ Web 的 `session/control` 状态流必须先发送 baseline，再发送 projecti
 
 Desktop 专用 `CodexTurnProjector.pendingTurn()` 不包含所有进行中的 Item，不能用作通用客户端完整快照。`snapshotTurn()` 复用同一投影器的 Item 状态，提供 Reasoning、命令输出及工具状态；原 Desktop 通知形状保留。Host 接受的普通用户输入保留给快照；来自客户端通道的输入还沿既有 shared-Thread 投影方式广播给 GUI。`clientUserMessageId`/`clientId` 关联用于撤下 Web 乐观回显，不能靠相同文本猜测确认。
 
-原生历史缺少 Turn 结束依据时，Turn 附带 `codexhostTurnOutcome: {status: "unknown", reason}`。Desktop 兼容的 `status` 仍使用其已有终态词汇，客户端不能据此覆盖显式的 unknown。Web 将该事实保留为 `turn/end` 的 `unknown` 原因，显示“已结束（状态未知）”；正常完成、取消、失败维持原有区别。正文独立于结束原因保留，不能以空正文猜测失败，也不能将已有正文当作成功证据。
+原生历史缺少 Turn 结束依据时，Turn 附带 `codexhostTurnOutcome: {status: "unknown", reason}`。Desktop 兼容的 `status` 仍使用其已有终态词汇，客户端不能据此覆盖显式的 unknown。Web 将该事实保留为 `turn/end` 的 `unknown` 原因，以中性的“已结束”展示，不将缺少历史结束依据当作异常提示或成功结论；正常完成、取消、失败维持原有区别。正文独立于结束原因保留，不能以空正文猜测失败，也不能将已有正文当作成功证据。
 
 Turn 可附 `codexhostFileOperations: [{beforeItemId, item}]`，保留被 Desktop 累计 `fileChange` 卡合并的原始编辑调用。`item` 沿用原生 Item ID、参数、输出及成功/失败/取消状态；`beforeItemId` 指向后续的非文件 Item，`null` 表示放在轮末，同一锚点按数组顺序排列。客户端展示逐次调用时替换正文里的累计文件卡，而不是叠加两种表示；累计文件卡的 `changes` 仍供本轮变更汇总使用。字段缺失表示 Host 只提供旧的累计表示，不能从累计 diff 猜测真实的工具调用次数或边界。实时快照、已完成 Turn 和分页历史均携带该信息；它参与已完成 Turn 指纹，原始调用不受 `truncateToolOutput` 对 `items` 的截断影响。
 

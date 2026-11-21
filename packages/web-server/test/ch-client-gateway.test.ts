@@ -6,7 +6,11 @@ import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { it } from "node:test";
-import { clientChannelEventSchema } from "@codexhost/shared-contracts";
+import {
+  DESKTOP_EXTENSIONS_LIST_METHOD,
+  DESKTOP_EXTENSIONS_RECOVER_METHOD,
+  clientChannelEventSchema,
+} from "@codexhost/shared-contracts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
 import { startFakeChDebugger } from "./support/ch-host.ts";
 import { startServer } from "./support/server.ts";
@@ -26,6 +30,18 @@ it(
     );
     const host = new FakeChChannel();
     host.add("shared", "/computer/shared");
+    const list = {
+      configuration: { version: 1, revision: 2, enabled: [] },
+      desktopConnected: false,
+      diagnostics: [],
+      extensions: [],
+    };
+    const requestHost = host.request.bind(host);
+    t.mock.method(host, "request", (method: string, params: Record<string, unknown>) =>
+      method === DESKTOP_EXTENSIONS_LIST_METHOD
+        ? Promise.resolve(list)
+        : requestHost(method, params),
+    );
     const control = await startFakeChChannel(host, directory);
     t.after(() => control.close());
     const cdp = await startFakeChDebugger(host);
@@ -50,6 +66,18 @@ it(
     const origin = new URL(url).origin;
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
     assert.equal((await fetch(`${origin}/api/ch/v1/events`)).status, 401);
+    const listBody = JSON.stringify({ method: DESKTOP_EXTENSIONS_LIST_METHOD, params: {} });
+    assert.equal(
+      (await fetch(`${origin}/api/ch/v1/rpc`, { method: "POST", body: listBody })).status,
+      401,
+    );
+    const listed = await fetch(`${origin}/api/ch/v1/rpc`, {
+      method: "POST",
+      headers,
+      body: listBody,
+    });
+    assert.equal(listed.status, 200);
+    assert.deepEqual(await listed.json(), { result: list });
     assert.equal(
       (
         await fetch(`${origin}/api/ch/v1/events`, {
@@ -184,6 +212,13 @@ it("preserves numeric Host errors on every native client operation", async (t) =
   t.mock.method(host, "request", reject);
   t.mock.method(host, "respond", reject);
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/ch/v1`;
+  const denied = await fetch(`${base}/rpc`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method: DESKTOP_EXTENSIONS_RECOVER_METHOD, params: {} }),
+  });
+  assert.equal(denied.status, 403);
+  assert.match(await denied.text(), /Authentication must be enabled/u);
   const operations = {
     snapshot: { threadId: "shared" },
     rpc: { method: "turn/start", params: { threadId: "shared" } },

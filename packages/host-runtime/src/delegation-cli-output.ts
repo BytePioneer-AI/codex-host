@@ -42,11 +42,22 @@ function inspectOutput({ harnessId, inspection }: HarnessInspectResult): unknown
   return {
     harnessId,
     status: inspection.status,
-    models: catalog.models.map(({ ref, label, supportedThinkingOptionIds }) => ({
-      id: ref.id,
-      label,
-      ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
-    })),
+    models: catalog.models.flatMap(({ ref, label, fastModel, supportedThinkingOptionIds }) => [
+      {
+        id: ref.id,
+        label,
+        ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
+      },
+      ...(fastModel
+        ? [
+            {
+              id: fastModel.id,
+              label: `${label} (Fast)`,
+              ...(supportedThinkingOptionIds ? { thinking: supportedThinkingOptionIds } : {}),
+            },
+          ]
+        : []),
+    ]),
     ...(catalog.defaultModel ? { defaultModel: catalog.defaultModel.id } : {}),
     thinkingOptions: catalog.thinkingOptions,
     ...(catalog.defaultThinkingOptionId

@@ -123,6 +123,10 @@ export class ModelDirectoryResolver extends Service {
     });
     this.refreshCatalogs();
   }
+  async refreshModels(harnessId?: string): Promise<void> {
+    await this.catalog.refreshModels(harnessId);
+  }
+
   async setFavorite(provider: string, modelId: string, enabled: boolean) {
     await preferenceCall("patch", {
       operation: { kind: "favorite", harnessId: provider, modelId, enabled },

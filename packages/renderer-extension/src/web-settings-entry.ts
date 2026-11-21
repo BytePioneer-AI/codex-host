@@ -92,6 +92,9 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
       () => null,
       () => null,
       (method, params) => manager.sendRequest(method, params),
+      undefined,
+      undefined,
+      () => modelClient,
     ),
     resourcesPage(messages, modelClient),
   ].find((candidate) => candidate.id === pageId);

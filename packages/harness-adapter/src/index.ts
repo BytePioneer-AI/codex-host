@@ -5,7 +5,7 @@ export type {
   HarnessCredentialExport,
   HarnessCredentialImports,
 } from "./credential-imports.js";
-export { parseHarnessAccountCredits } from "./account-credits.js";
+export { parseHarnessAccountBalance, parseHarnessAccountCredits } from "./account-credits.js";
 export { validateHostApprovalResponse } from "./approval.js";
 export { validateHostInteractionResponse } from "./interaction.js";
 export { HarnessOutputChannel } from "./output-channel.js";
@@ -13,7 +13,12 @@ export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics
 export { validateHostQuestionResponse } from "./question.js";
 export { unsupportedSteer } from "./steer.js";
 export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
-export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
+export type {
+  HostUsage,
+  HostUsageCostSource,
+  HostUsageRequest,
+  HostUsageRequestTiming,
+} from "./usage.js";
 export type {
   HarnessUsageEntry,
   HarnessUsageSession,
@@ -89,6 +94,7 @@ export type {
   InteractionClosedEvent,
   InteractionRespondAccepted,
   InteractionRespondCommand,
+  ItemBackgroundStartedEvent,
   ItemCompletedEvent,
   ItemDetachedEvent,
   ItemStartedEvent,
@@ -107,6 +113,7 @@ export type {
   SubagentStateChangedEvent,
   UsageHistoryEvent,
   UsageRequestEvent,
+  UsageRequestTimingEvent,
   SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,

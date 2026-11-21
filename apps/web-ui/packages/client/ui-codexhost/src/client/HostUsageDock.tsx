@@ -167,8 +167,8 @@ function usageGroups(usage: HostThreadUsage | null, t: Translate): DetailGroup[]
         label: t("usage.speed.average"),
         value: tokenRate(usage.sessionOutputTokensPerSecond, t),
       });
-    if (usage.timeToFirstOutputMs !== undefined)
-      speed.push({ label: t("usage.ttft"), value: latency(usage.timeToFirstOutputMs, t) });
+    const ttft = usage.latestRequestTimeToFirstOutputMs ?? usage.timeToFirstOutputMs;
+    if (ttft !== undefined) speed.push({ label: t("usage.ttft"), value: latency(ttft, t) });
     if (speed.length) groups.push({ label: t("usage.group.performance"), rows: speed });
 
     const cache: DetailRow[] = [];
@@ -639,29 +639,14 @@ function UsagePopover({
     }, HOVER_CLOSE_DELAY_MS);
   }, [cancelClose, cancelOpen]);
 
-  useDismissOnOutsidePointer(
-    rootRef,
-    open,
-    (next) => {
-      if (!next) close();
-    },
-    panelRef,
-  );
+  useDismissOnOutsidePointer(rootRef, open, close, panelRef);
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") close();
     };
-    const onScroll = (event: Event): void => {
-      if (event.target instanceof Node && panelRef.current?.contains(event.target)) return;
-      close();
-    };
     document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", onScroll, true);
-    };
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [close, open]);
   useEffect(
     () => () => {

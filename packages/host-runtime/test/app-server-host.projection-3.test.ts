@@ -207,6 +207,22 @@ describe("AppServerHost HarnessAdapter projection", () => {
       model: { id: "thinking-model" },
       thinkingOptionId: "low",
     });
+
+    failSave = true;
+    await expect(
+      fixture.host.handleClientRequest("codexhost/thread/thinking/select", {
+        threadId,
+        thinkingOptionId: "xhigh",
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32078,
+        message: expect.stringContaining("Thinking was applied but could not be saved"),
+      },
+    });
+    expect(await mappingStore.getThread(hostThreadIdSchema.parse(threadId))).toMatchObject({
+      transportModelId: afterRetry?.transportModelId,
+    });
     await stopFixture(fixture);
   });
 
@@ -1282,6 +1298,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     await vi.waitFor(() => expect(notifications()).toBe(beforeOutput + 2));
+    session.emitEvent({
+      type: "usage.request.timing",
+      turnId: hostTurnIdSchema.parse(turnId),
+      timing: { requestId: "native-2", requestStartedAtMs: 500, timeToFirstOutputMs: 500 },
+    });
+    await vi.waitFor(() => expect(notifications()).toBe(beforeOutput + 3));
     // No Context usage, native Token notification or Turn completion is required to refresh.
     expect(
       fixture.collector.messages.some((message) => method(message, "thread/tokenUsage/updated")),
@@ -1300,6 +1322,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       costSource: "publicPrice",
       sessionCacheHitRatePercent: (2_000 / 3_000) * 100,
       outputTokensPerSecond: 100,
+      latestRequestTimeToFirstOutputMs: 500,
     });
     expect(response.result.usage.totalCostUsd).not.toBe(99);
     expect(response.result.usage.totalCostUsd).toBeGreaterThan(0);

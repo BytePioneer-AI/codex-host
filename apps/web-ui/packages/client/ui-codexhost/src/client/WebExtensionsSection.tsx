@@ -95,6 +95,7 @@ type Feedback = { readonly tone: "success" | "warning" | "danger"; readonly text
 export interface WebExtensionsFace {
   resolveText: (text: NonNullable<WebUiExtensionMeta["title"]>) => string;
   locale: HostSettingsSource<string>;
+  headerAccessory?: ReactNode;
 }
 
 const GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
@@ -154,6 +155,7 @@ export function WebExtensionsSection({
   t,
   resolveText,
   locale,
+  headerAccessory,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
   const activeLocaleRaw = useSyncExternalStore(locale.subscribe, locale.get);
   const systemLocale = toExtensionLocale(activeLocaleRaw);
@@ -623,7 +625,10 @@ export function WebExtensionsSection({
 
   const renderHeader = (options: { readonly canMutate: boolean }) => (
     <header className={css.header}>
-      <h2 className={css.title}>{t("settings.extensions")}</h2>
+      <div className={css.headerLeft}>
+        <h2 className={css.title}>{t("settings.extensions")}</h2>
+        {headerAccessory}
+      </div>
 
       <div className={css.toolbar}>
         {/* Content language switcher (matching Desktop EN / 中文 dropdown) */}
@@ -730,7 +735,7 @@ export function WebExtensionsSection({
         </button>
 
         {/* More ("...") menu containing recovery actions */}
-        <div ref={moreWrapRef} className={css.menuAnchor}>
+        <div ref={moreWrapRef} className={`${css.menuAnchor} ${css.moreMenuAnchor}`}>
           <button
             type="button"
             className={css.iconButton}

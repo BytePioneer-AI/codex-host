@@ -73,7 +73,6 @@ export class QoderUsageTracker {
   #totalCostUsd: number | undefined;
   #contextUsagePercent: number | undefined;
   #reportedWindow: number | undefined;
-  #catalogWindow: number | undefined;
   #contextUsedTokens: number | undefined;
   #latestInputTokens: number | undefined;
   #cacheHitRatePercent: number | undefined;
@@ -83,25 +82,19 @@ export class QoderUsageTracker {
   #modelId: string | undefined;
   readonly #configuredWindows = new Map<string, number>();
 
-  constructor(options?: {
-    modelId?: string | undefined;
-    contextWindowTokens?: number | undefined;
-  }) {
-    this.setModel(options?.modelId, options?.contextWindowTokens);
+  constructor(options?: { modelId?: string | undefined }) {
+    this.setModel(options?.modelId);
   }
 
-  setModel(modelId?: string, catalogWindow?: number): void {
-    if (modelId && modelId !== this.#modelId) {
-      if (this.#modelId !== undefined && modelAlias(modelId) !== this.#modelId) {
-        this.#reportedWindow = undefined;
-        this.#catalogWindow = undefined;
-        this.#contextUsedTokens = undefined;
-        this.#contextUsagePercent = undefined;
-        this.#latestInputTokens = undefined;
-      }
-      this.#modelId = modelId;
+  setModel(modelId?: string): void {
+    if (!modelId || modelId === this.#modelId) return;
+    if (this.#modelId === undefined || modelAlias(modelId) !== this.#modelId) {
+      this.#reportedWindow = undefined;
+      this.#contextUsedTokens = undefined;
+      this.#contextUsagePercent = undefined;
+      this.#latestInputTokens = undefined;
     }
-    if (isContextWindow(catalogWindow)) this.#catalogWindow = catalogWindow;
+    this.#modelId = modelId;
   }
 
   /** A complete settings response replaces the previous settings, not the native reading. */
@@ -246,8 +239,10 @@ export class QoderUsageTracker {
     if (!context || typeof context !== "object") return;
     const raw = context as Record<string, unknown>;
 
-    if (typeof raw.model === "string") {
-      this.setModel(raw.model);
+    if (typeof raw.model === "string" && raw.model) {
+      // Learning the native Model's ID is not a switch; keep samples already reported for it.
+      if (this.#modelId === undefined) this.#modelId = raw.model;
+      else this.setModel(raw.model);
     }
 
     const contextWindow = (raw.contextWindow ?? {}) as Record<string, unknown>;
@@ -356,7 +351,7 @@ export class QoderUsageTracker {
 
     const percent = this.#contextUsagePercent;
     if (percent !== undefined) candidate.contextUsagePercent = percent;
-    const windowTokens = this.#reportedWindow ?? this.#catalogWindow ?? this.#configuredWindow();
+    const windowTokens = this.#reportedWindow ?? this.#configuredWindow();
     if (windowTokens !== undefined) {
       const usedTokens =
         this.#contextUsedTokens ??

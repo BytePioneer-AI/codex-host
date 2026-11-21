@@ -2286,7 +2286,7 @@ describe("QoderAdapter", () => {
 
   describe("QoderUsageTracker", () => {
     it("keeps aggregate usage while deriving context from the latest request", () => {
-      const tracker = new QoderUsageTracker({ contextWindowTokens: 500_000 });
+      const tracker = new QoderUsageTracker();
       for (const input of [100, 200]) {
         tracker.observeAssistant({
           message: {
@@ -2299,6 +2299,7 @@ describe("QoderAdapter", () => {
           },
         } as SDKAssistantMessage);
       }
+      tracker.observeContextUsage({ model: "dfmodel", maxTokens: 500_000 });
       expect(tracker.snapshot()).toMatchObject({
         inputTokens: 300,
         outputTokens: 20,
@@ -2407,9 +2408,9 @@ describe("QoderAdapter", () => {
     });
 
     it("updates context window when setModel is called", () => {
-      const tracker = new QoderUsageTracker({
-        modelId: "claude-3-5-sonnet",
-        contextWindowTokens: 500_000,
+      const tracker = new QoderUsageTracker({ modelId: "claude-3-5-sonnet" });
+      tracker.setConfiguredContextWindows({
+        windows: { "claude-3-5-sonnet": 500_000, "gemini-2.5-flash": 900_000 },
       });
       tracker.observeAssistant({
         type: "assistant",
@@ -2430,13 +2431,43 @@ describe("QoderAdapter", () => {
       expect(tracker.snapshot()?.contextWindowTokens).toBe(500_000);
       expect(tracker.snapshot()?.contextUsedTokens).toBe(50_000);
 
-      tracker.setModel("gemini-2.5-flash", 900_000);
+      tracker.setModel("gemini-2.5-flash");
       expect(tracker.snapshot()).not.toHaveProperty("contextUsagePercent");
       expect(tracker.snapshot()).not.toHaveProperty("contextUsedTokens");
       tracker.observeContextUsage({ usedPercentage: 10 });
       expect(tracker.snapshot()?.contextWindowTokens).toBe(900_000);
       expect(tracker.snapshot()?.contextUsedTokens).toBe(90_000);
     });
+
+    it.each([
+      ["percentage only", {}],
+      ["with a native window and token count", { maxTokens: 200_000, totalTokens: 22_000 }],
+    ])(
+      "clears context from an unknown default Model (%s) on explicit selection",
+      (_label, context) => {
+        const tracker = new QoderUsageTracker();
+        tracker.setConfiguredContextWindows({ windows: { gmodel: 400_000 } });
+        tracker.observeAssistant({
+          message: { usage: { input_tokens: 100, output_tokens: 20, context_usage_ratio: 0.11 } },
+        } as SDKAssistantMessage);
+        tracker.observeContextUsage(context);
+        expect(tracker.snapshot()?.contextUsagePercent).toBe(11);
+
+        tracker.setModel("gmodel");
+        expect(tracker.snapshot()).toEqual({
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+        });
+
+        tracker.observeContextUsage({ model: "gmodel", usedPercentage: 5 });
+        expect(tracker.snapshot()).toMatchObject({
+          contextUsagePercent: 5,
+          contextWindowTokens: 400_000,
+          contextUsedTokens: 20_000,
+        });
+      },
+    );
 
     it("tracks cache hit rate and calculates percentage correctly", () => {
       const tracker = new QoderUsageTracker();
@@ -2492,10 +2523,8 @@ describe("QoderAdapter", () => {
     });
 
     it("derives contextUsedTokens for an exactly configured custom model", () => {
-      const tracker = new QoderUsageTracker({
-        modelId: "qoder-custom/gpt-5.6-sol",
-        contextWindowTokens: 252_000,
-      });
+      const tracker = new QoderUsageTracker({ modelId: "qoder-custom/gpt-5.6-sol" });
+      tracker.setConfiguredContextWindows({ windows: { "qoder-custom/gpt-5.6-sol": 252_000 } });
       tracker.observeContextUsage({
         model: "qoder-custom/gpt-5.6-sol",
         contextWindow: {
@@ -2535,7 +2564,7 @@ describe("QoderAdapter", () => {
       expect(tracker.snapshot()).toEqual({ contextUsagePercent: 11 });
     });
 
-    it("prefers exact settings keys, then explicit and native windows without losing them on alias changes", () => {
+    it("prefers exact settings keys and preserves native readings across alias changes", () => {
       const tracker = new QoderUsageTracker({ modelId: "qmodel_latest_preview" });
       const configured = {
         windows: { qmodel_latest_preview: 700_000, "qoder/qmodel_latest_preview": 1_000_000 },
@@ -2545,9 +2574,7 @@ describe("QoderAdapter", () => {
       expect(tracker.snapshot()?.contextWindowTokens).toBe(700_000);
       tracker.observeContextUsage({ model: "qoder/qmodel_latest_preview", usedPercentage: 11 });
       expect(tracker.snapshot()?.contextWindowTokens).toBe(1_000_000);
-      tracker.setModel("qmodel_latest_preview", 500_000);
-      expect(tracker.snapshot()?.contextWindowTokens).toBe(500_000);
-      tracker.observeContextUsage({ maxTokens: 300_000, usedPercentage: 11 });
+      tracker.observeContextUsage({ model: "qmodel_latest_preview", maxTokens: 300_000 });
       tracker.setConfiguredContextWindows(configured);
       tracker.observeContextUsage({ model: "qoder/qmodel_latest_preview", maxTokens: -1 });
       expect(tracker.snapshot()).toMatchObject({
@@ -2563,20 +2590,6 @@ describe("QoderAdapter", () => {
       expect(tracker.snapshot()?.contextWindowTokens).toBe(1_000_000);
       tracker.setConfiguredContextWindows({ windows: { "qoder/dfmodel": -1, dfmodel: Infinity } });
       expect(tracker.snapshot()).toEqual({ contextUsagePercent: 11 });
-    });
-
-    it("keeps a configured context window when getContextUsage reports the same model", () => {
-      const tracker = new QoderUsageTracker({ modelId: "dfmodel" });
-      tracker.setModel("dfmodel", 1_000_000);
-      tracker.observeContextUsage({
-        model: "dfmodel",
-        contextWindow: { usedPercentage: 11 },
-      });
-
-      const snapshot = tracker.snapshot();
-      expect(snapshot?.contextWindowTokens).toBe(1_000_000);
-      expect(snapshot?.contextUsagePercent).toBe(11);
-      expect(snapshot?.contextUsedTokens).toBe(110_000);
     });
   });
 

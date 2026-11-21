@@ -485,7 +485,7 @@ export function createDelegationSettingsPage(
           delegationByHarness = { ...delegationByHarness, [harnessId]: configuration };
         } else {
           const next = { ...delegationByHarness };
-          delete next[harnessId];
+          Reflect.deleteProperty(next, harnessId);
           delegationByHarness = next;
         }
         syncRow(harnessId);
@@ -512,7 +512,7 @@ export function createDelegationSettingsPage(
                 if (id !== harnessId && count > 0) {
                   const local = delegationByHarness[id];
                   if (local) merged[id] = local;
-                  else delete merged[id];
+                  else Reflect.deleteProperty(merged, id);
                 }
               }
               delegationByHarness = merged;
@@ -525,7 +525,7 @@ export function createDelegationSettingsPage(
               const reverted = { ...delegationByHarness };
               const confirmed = confirmedByHarness[harnessId];
               if (confirmed) reverted[harnessId] = confirmed;
-              else delete reverted[harnessId];
+              else Reflect.deleteProperty(reverted, harnessId);
               delegationByHarness = reverted;
               saveErrorByHarness.set(
                 harnessId,
@@ -855,7 +855,7 @@ export function createDelegationSettingsPage(
             if (count > 0) {
               const local = delegationByHarness[id];
               if (local) merged[id] = local;
-              else delete merged[id];
+              else Reflect.deleteProperty(merged, id);
             }
           }
           delegationByHarness = merged;

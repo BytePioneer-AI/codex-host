@@ -441,7 +441,7 @@ describe("Delegation settings page", () => {
       for (const op of patch.operations) {
         if (op.kind === "delegation") {
           if (op.configuration) savedState[op.harnessId] = op.configuration;
-          else delete savedState[op.harnessId];
+          else Reflect.deleteProperty(savedState, op.harnessId);
         }
       }
       revision += 1;

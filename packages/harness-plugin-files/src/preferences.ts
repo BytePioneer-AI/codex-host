@@ -97,8 +97,11 @@ export class HarnessPreferencesStore {
           if (request.initializeOnly && exists) continue;
           if (configuration === null) {
             if (!exists) continue;
-            delete byHarness[harnessId];
-            if (Object.keys(byHarness).length === 0) delete values.delegation;
+            const remaining = Object.fromEntries(
+              Object.entries(byHarness).filter(([id]) => id !== harnessId),
+            );
+            if (Object.keys(remaining).length === 0) delete values.delegation;
+            else values.delegation = { byHarness: remaining };
           } else {
             values.delegation = { byHarness: { ...byHarness, [harnessId]: configuration } };
           }

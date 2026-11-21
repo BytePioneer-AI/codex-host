@@ -96,11 +96,11 @@ interface FeedNodes {
   readonly laneIndex: number;
 }
 
-const FALLBACK_LANE_AGENTS: readonly { id: string; name: string }[] = [
+const FALLBACK_LANE_AGENTS = [
   { id: "claude-code", name: "Claude Code" },
   { id: "codex", name: "Codex" },
   { id: "grok", name: "Grok" },
-];
+] as const;
 
 function createSvgElement<K extends keyof SVGElementTagNameMap>(
   doc: Document,
@@ -191,7 +191,7 @@ export function selectDiagramLanes(
   const slot0 = claude ??
     others[0] ??
     grok ?? {
-      ...FALLBACK_LANE_AGENTS[0]!,
+      ...FALLBACK_LANE_AGENTS[0],
       modelText: defaultModelText,
       overridden: false,
     };
@@ -199,7 +199,7 @@ export function selectDiagramLanes(
 
   const slot1 = codex ??
     others.find((agent) => !used.has(agent.id)) ?? {
-      ...FALLBACK_LANE_AGENTS[1]!,
+      ...FALLBACK_LANE_AGENTS[1],
       modelText: defaultModelText,
       overridden: false,
     };
@@ -209,7 +209,7 @@ export function selectDiagramLanes(
     (!used.has("grok") ? grok : undefined) ??
     others.find((agent) => !used.has(agent.id)) ??
     FALLBACK_LANE_AGENTS.find((fallback) => !used.has(fallback.id)) ??
-    FALLBACK_LANE_AGENTS[2]!;
+    FALLBACK_LANE_AGENTS[2];
   const resolvedSlot2: DelegationDiagramAgent =
     "modelText" in slot2 ? slot2 : { ...slot2, modelText: defaultModelText, overridden: false };
   take(resolvedSlot2);
@@ -569,7 +569,7 @@ export function createDelegationDiagram(
 
   const hoverCleanups: Array<() => void> = [];
   for (let index = 0; index < laneNodes.length; index++) {
-    const laneEl = laneNodes[index]!.root;
+    const laneEl = laneNodes[index]?.root;
     const feedEl = feedNodesByLane.get(index)?.root;
     for (const target of [laneEl, feedEl]) {
       if (!target) continue;
@@ -620,15 +620,18 @@ export function createDelegationDiagram(
     const endPt = vertical ? { x: cv.x, y: cv.t } : { x: cv.l, y: cv.y };
 
     for (let index = 0; index < LANE_SCHEDULES.length; index++) {
-      const lane = laneNodes[index]!;
+      const lane = laneNodes[index];
+      const outWire = outWires[index];
+      const retWire = retWires[index];
+      if (!lane || !outWire || !retWire) continue;
       const inPt = relativeBox(lane.inDot);
       const outPt = relativeBox(lane.outDot);
       const aIn = vertical ? { x: inPt.x, y: inPt.t } : { x: inPt.l, y: inPt.y };
       const aOut = vertical ? { x: outPt.x, y: outPt.b } : { x: outPt.r, y: outPt.y };
 
       const pairs: readonly [WireNodes, string][] = [
-        [outWires[index]!, curve(startPt, aIn)],
-        [retWires[index]!, curve(aOut, endPt)],
+        [outWire, curve(startPt, aIn)],
+        [retWire, curve(aOut, endPt)],
       ];
       for (const [wire, pathData] of pairs) {
         wire.base.setAttribute("d", pathData);
@@ -681,11 +684,12 @@ export function createDelegationDiagram(
     let anyReturned = false;
 
     for (let index = 0; index < LANE_SCHEDULES.length; index++) {
-      const schedule = LANE_SCHEDULES[index]!;
-      const lane = laneNodes[index]!;
-      const outWire = outWires[index]!;
-      const retWire = retWires[index]!;
-      const feedNode = feedNodesByLane.get(index)!;
+      const schedule = LANE_SCHEDULES[index];
+      const lane = laneNodes[index];
+      const outWire = outWires[index];
+      const retWire = retWires[index];
+      const feedNode = feedNodesByLane.get(index);
+      if (!schedule || !lane || !outWire || !retWire || !feedNode) continue;
 
       renderComet(outWire, (seconds - schedule.d) / TRAVEL_SECONDS);
       renderComet(retWire, (seconds - schedule.fin) / TRAVEL_SECONDS);
@@ -734,13 +738,15 @@ export function createDelegationDiagram(
           : messages.feedPending;
       if (feedNode.meta.textContent !== nextMeta) feedNode.meta.textContent = nextMeta;
 
-      const pulseEl = cvPulses[index]!;
-      if (seconds >= schedule.back && seconds < schedule.back + 0.85) {
-        const pu = (seconds - schedule.back) / 0.85;
-        pulseEl.style.opacity = ((1 - pu) * 0.62).toFixed(3);
-        pulseEl.style.transform = `scale(${(1 + pu * 2.5).toFixed(2)})`;
-      } else {
-        pulseEl.style.opacity = "0";
+      const pulseEl = cvPulses[index];
+      if (pulseEl) {
+        if (seconds >= schedule.back && seconds < schedule.back + 0.85) {
+          const pu = (seconds - schedule.back) / 0.85;
+          pulseEl.style.opacity = ((1 - pu) * 0.62).toFixed(3);
+          pulseEl.style.transform = `scale(${(1 + pu * 2.5).toFixed(2)})`;
+        } else {
+          pulseEl.style.opacity = "0";
+        }
       }
     }
 
@@ -751,9 +757,10 @@ export function createDelegationDiagram(
   const updateAgents = (readyAgents: readonly DelegationDiagramAgent[]): void => {
     const selected = selectDiagramLanes(readyAgents, messages.laneDefaultModel);
     for (let index = 0; index < laneNodes.length; index++) {
-      const agent = selected[index]!;
-      const lane = laneNodes[index]!;
-      const feedNode = feedNodesByLane.get(index)!;
+      const agent = selected[index];
+      const lane = laneNodes[index];
+      const feedNode = feedNodesByLane.get(index);
+      if (!agent || !lane || !feedNode) continue;
 
       lane.root.dataset.harnessId = agent.id;
       lane.dot.style.background = delegationAgentDotColor(agent.id);

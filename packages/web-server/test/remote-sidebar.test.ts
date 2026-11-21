@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
-import { RemoteSidebarPeer } from "../../host-runtime/src/remote-sidebar-peer.js";
+import { RemoteSidebarPeer } from "@codexhost/host-runtime/remote-sidebar-peer";
 import { RemoteSidebar } from "../src/remote-sidebar.ts";
 import { remoteSessionId } from "../src/remote-sessions.ts";
 import { StreamRegistry } from "../src/transport.ts";
@@ -74,6 +74,7 @@ it("forwards remote file bytes, directory watches and the terminal environment t
   const local = await call("terminal/environment", { agentId: nativeId });
   assert.equal(local.status, 404);
   const environment = await (await call("terminal/environment", { agentId: id })).json();
+  assert.ok(environment.result.ok, JSON.stringify(environment.result.error));
   assert.equal(environment.result.value.cwd, dir);
   const outside = await (
     await call("workspaceFiles/list", { workspaceFileScopeId: id, path: "../" })
@@ -119,4 +120,47 @@ it("forwards remote file bytes, directory watches and the terminal environment t
       action: { type: "unary", method: "codexhost/accessTokenGet", rpcId: "forbidden", args: {} },
     }),
   );
+});
+
+it("closes a peer while its target thread lookup is pending", async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "sidebar-peer-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const descriptor = join(home, ".codexhost");
+  mkdirSync(descriptor);
+  const server = createServer();
+  const request = once(server, "request");
+  let upgrades = 0;
+  server.on("upgrade", (_request, socket) => {
+    upgrades++;
+    socket.destroy();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  writeFileSync(
+    join(descriptor, "web-service-ready.json"),
+    JSON.stringify({
+      pid: process.pid,
+      web_pid: process.pid,
+      loginUrl: "http://127.0.0.1:" + address.port + "/?token=test",
+    }),
+    { mode: 0o600 },
+  );
+  const peer = new RemoteSidebarPeer(descriptor);
+  t.after(() => peer.close());
+  const input = {
+    nativeId: "thread",
+    action: { type: "open", method: "workspaceFiles/changes", args: { path: "." } },
+  };
+  const pending = peer.run(input);
+  const [, response] = await request;
+  peer.close();
+  response.end(
+    JSON.stringify({ result: { ok: true, value: { items: [{ sessionId: "thread" }] } } }),
+  );
+  await assert.rejects(pending, /peer is closed/);
+  await assert.rejects(peer.run(input), /peer is closed/);
+  assert.equal(upgrades, 0);
 });

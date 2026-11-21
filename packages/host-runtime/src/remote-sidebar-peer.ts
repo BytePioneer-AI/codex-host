@@ -31,6 +31,7 @@ interface Feed {
 /** Talks only to the target user's running loopback Web service. Credentials stay on this Host. */
 export class RemoteSidebarPeer {
   private feeds = new Map<string, Feed>();
+  private closed = false;
   constructor(private readonly directory: string) {}
   static forEnvironment(environment: NodeJS.ProcessEnv) {
     return new RemoteSidebarPeer(
@@ -40,6 +41,9 @@ export class RemoteSidebarPeer {
           : environment.CODEXHOST_DATA_DIR) ??
         join(environment.HOME ?? homedir(), ".codexhost"),
     );
+  }
+  private ensureOpen() {
+    if (this.closed) throw new Error("Remote sidebar peer is closed.");
   }
   private async access() {
     try {
@@ -122,6 +126,7 @@ export class RemoteSidebarPeer {
     };
   }
   async run(input: unknown): Promise<unknown> {
+    this.ensureOpen();
     const { nativeId, action } = parameters.parse(input);
     if (action.type === "unary" || action.type === "open") {
       const access = await this.access();
@@ -132,6 +137,7 @@ export class RemoteSidebarPeer {
         { request: { sessionId: nativeId } },
         "sidebar-lookup",
       );
+      this.ensureOpen();
       const lookup = z
         .object({
           result: z.object({
@@ -207,6 +213,7 @@ export class RemoteSidebarPeer {
         this.drop(handle);
         throw new Error("The target Web service could not open the panel stream.");
       }
+      this.ensureOpen();
       return { handle };
     }
     const feed = this.feeds.get(action.handle);
@@ -256,6 +263,7 @@ export class RemoteSidebarPeer {
     feed.socket.terminate();
   }
   close() {
+    this.closed = true;
     for (const handle of this.feeds.keys()) this.drop(handle);
   }
 }

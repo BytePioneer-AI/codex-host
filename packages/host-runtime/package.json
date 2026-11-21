@@ -7,6 +7,10 @@
     "dist"
   ],
   "exports": {
+    "./remote-sidebar-peer": {
+      "types": "./dist/remote-sidebar-peer.d.ts",
+      "import": "./dist/remote-sidebar-peer.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"

@@ -540,7 +540,30 @@ export class HarnessDelegationCoordinator {
     }
     if (location.kind === "error")
       throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
-    const { thread, turns, busy } = await this.#readExternalThread(input.threadId);
+    const source = await this.#readExternalThread(input.threadId).catch(async (error: unknown) => {
+      if (!(error instanceof DelegationControlError) || error.code !== "INTERNAL_ERROR")
+        throw error;
+      const retained = await this.#externalRuntime.retainedFailure(input.threadId);
+      if (!retained) throw error;
+      return retained;
+    });
+    if ("record" in source) {
+      return this.#withPendingQuestions(
+        projectDelegationThreadSnapshot({
+          ...input,
+          thread: {
+            cwd: source.record.cwd,
+            name: source.record.title,
+            preview: source.record.preview ?? "",
+          },
+          harnessId: source.record.harnessId as RoutedHarnessId,
+          turns: source.turns,
+          running: false,
+        }),
+        input.threadId,
+      );
+    }
+    const { thread, turns, busy } = source;
     const snapshot = projectDelegationThreadSnapshot({
       threadId: thread.id,
       harnessId: thread.harnessId,

@@ -1275,6 +1275,9 @@ export class AppServerHost {
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
       persistTerminalIdentity: (thread, event) =>
         this.#externalRuntime.persistTerminalIdentity(thread, event),
+      retainFailedTurn: (...args) => this.#externalRuntime.retainFailedTurn(...args),
+      captureCompletedPreview: (thread, turn) =>
+        this.#externalRuntime.captureCompletedPreview(thread, turn),
       touchThread: (thread) => this.#externalRuntime.touch(thread),
       resolveDesktopApproval: (interactionId, thread) =>
         this.#resolveDesktopApproval(interactionId, thread),
@@ -6248,7 +6251,6 @@ export class AppServerHost {
       });
       if (!result.ok) throw new ExternalSteerError(-32073, result.error.message);
       await this.#releaseInjectedText(thread, turnId, injected);
-      await this.#externalRuntime.capturePreview(thread, projection.projector.snapshotTurn());
       return { turnId, turn: projection.projector.pendingTurn(), gate };
     } catch (error) {
       restoreExecutionHost();

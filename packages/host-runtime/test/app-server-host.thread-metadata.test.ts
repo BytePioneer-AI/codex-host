@@ -8,8 +8,11 @@ import type {
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import type { DelegationControlApi } from "../src/delegation-types.js";
 
 import {
+  answerOfficialParentCwd,
+  rollbackCapableAdapter,
   JsonLineCollector,
   closeFixture,
   createFixture,
@@ -67,6 +70,167 @@ async function listIds(fixture: Fixture, id: number, params: JsonObject): Promis
   const response = await fixture.collector.waitFor((message) => requestId(message, id));
   return ((response.result as JsonObject).data as JsonObject[]).map((row) => row.id as string);
 }
+
+describe("External Thread failed history", () => {
+  it.each(["refresh", "write failure", "reopen", "unavailable"])(
+    "reads the accepted failed fifth Turn after %s",
+    async (mode) => {
+      let api: DelegationControlApi | undefined;
+      const adapter = rollbackCapableAdapter();
+      const fixture = createFixture({
+        externalAdapters: new Map([["pi", adapter]]),
+        onDelegationApi: (registration) => {
+          api = registration;
+        },
+      });
+      try {
+        await fixture.ready;
+        if (!api) throw new Error("No Delegation API");
+        const starting = api.start({
+          harnessId: "pi",
+          task: "first input",
+          cwd: "/synthetic",
+          parentThreadId: "parent-thread",
+        });
+        await answerOfficialParentCwd(fixture);
+        const { threadId, turnId: first } = await starting;
+        const session = adapter.sessions[0];
+        if (!session) throw new Error("Missing fake Session");
+        const succeed = async (turnId: string) => {
+          session.appendText("successful answer");
+          session.succeedTurn();
+          await fixture.collector.waitFor((message) =>
+            turnEvent(message, "turn/completed", turnId),
+          );
+        };
+        await succeed(first);
+        const predecessors = [first];
+        for (let index = 2; index <= 4; index++) {
+          const { turnId } = await api.send({ threadId, message: `input ${index}` });
+          await succeed(turnId);
+          predecessors.push(turnId);
+        }
+        const previous = await session.readSnapshot();
+        const snapshots = vi.spyOn(session, "readSnapshot").mockResolvedValue(previous);
+        if (mode === "write failure") {
+          vi.spyOn(fixture.mappingStore, "saveFailedTurn").mockRejectedValueOnce(
+            new Error("metadata write failed"),
+          );
+        }
+        if (mode === "unavailable") {
+          vi.spyOn(adapter, "open").mockResolvedValue({
+            ok: false,
+            error: { code: "unavailable", message: "cannot reopen", retryable: false },
+          });
+        }
+        const { turnId } = await api.send({
+          threadId,
+          message: "input missing from native history",
+        });
+        session.appendText("partial reply before failure");
+        const failure = {
+          code: "authenticationRequired",
+          message: "not logged in",
+          retryable: false,
+        } as const;
+        if (mode === "reopen" || mode === "unavailable") session.fault(failure);
+        else session.failTurn(failure);
+        await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+        const expectedMessages = {
+          totalTurns: 5,
+          turns: [
+            {
+              turnId,
+              turnNumber: 5,
+              status: "failed",
+              messages: [
+                { role: "user", text: "input missing from native history" },
+                { role: "agent", text: "partial reply before failure" },
+              ],
+            },
+          ],
+        };
+        await expect(
+          api.wait({ threadId, view: "messages", from: 5, timeoutMs: 1000 }),
+        ).resolves.toMatchObject({
+          ...expectedMessages,
+          status: "failed",
+          timedOut: false,
+        });
+        await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
+          status: "failed",
+          turn: { turnId },
+          result: { availability: "unavailable" },
+        });
+        const hostId = hostThreadIdSchema.parse(threadId);
+        const record = await fixture.mappingStore.getThread(hostId);
+        expect(record?.turnMappings.map(({ hostTurnId }) => hostTurnId)).toEqual(
+          mode === "unavailable" ? [...predecessors, turnId] : predecessors,
+        );
+        const failureMetadata = {
+          hostTurnId: turnId,
+          afterTurnId: predecessors.at(-1),
+          error: "authenticationRequired",
+        };
+        if (mode === "write failure") expect(record?.failedTurns).toBeUndefined();
+        else expect(record?.failedTurns).toMatchObject([failureMetadata]);
+        expect(JSON.stringify(record)).not.toContain("input missing from native history");
+        expect(JSON.stringify(record)).not.toContain("partial reply before failure");
+        if (mode === "reopen" || mode === "unavailable") return;
+
+        for (const [id, method, params] of [
+          [801, "thread/rollback", { threadId, numTurns: 1 }],
+          [802, "thread/fork", { threadId, lastTurnId: turnId }],
+        ] as const) {
+          writeRequest(fixture.desktopInput, { id, method, params });
+          await expect(
+            fixture.collector.waitFor((message) => requestId(message, id)),
+          ).resolves.toMatchObject({ error: { code: -32080 } });
+        }
+        const next = await api.send({ threadId, message: "next input" });
+        await succeed(next.turnId);
+        const native = session.persistedSnapshot();
+        snapshots.mockResolvedValue({
+          ok: true,
+          value: {
+            ...native,
+            turns: native.turns.filter(({ outcome }) => outcome.status !== "failed"),
+          },
+        });
+        await expect(api.read({ threadId, view: "result" })).resolves.toMatchObject({
+          status: "completed",
+          turn: { turnId: next.turnId },
+        });
+        writeRequest(fixture.desktopInput, {
+          id: 803,
+          method: "thread/rollback",
+          params: { threadId, numTurns: 1 },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, 803)),
+        ).resolves.toMatchObject({
+          result: {
+            thread: {
+              turns: expect.arrayContaining([
+                expect.objectContaining({ id: turnId, status: "failed" }),
+              ]),
+            },
+          },
+        });
+        await expect(api.read({ threadId, view: "messages", from: 5 })).resolves.toMatchObject(
+          expectedMessages,
+        );
+        const rolledBack = await fixture.mappingStore.getThread(hostId);
+        expect(rolledBack?.turnMappings.map(({ hostTurnId }) => hostTurnId)).toEqual(predecessors);
+        expect(rolledBack?.failedTurns).toEqual(
+          mode === "write failure" ? undefined : [failureMetadata],
+        );
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+});
 
 describe("External Thread metadata updates", () => {
   it("persists a project assignment and emits the official project notification", async () => {
@@ -139,7 +303,7 @@ describe("External Thread metadata updates", () => {
     ["thread/read", false],
     ["thread/turns/list", false],
   ] as const)(
-    "%s preserves failed local history only while native identity is deferred: %s",
+    "%s preserves failed local history with or without native identity: %s",
     async (firstRead, deferred) => {
       const adapter = deferred
         ? new DeferredNativeSessionAdapter(harnessIdSchema.parse("pi"))
@@ -174,9 +338,7 @@ describe("External Thread metadata updates", () => {
             turn: { id: turnId, status: "failed", error: { message: "Native startup failed" } },
           },
         });
-        const expectedTurns = deferred
-          ? [{ id: turnId, status: "failed", error: { message: "Native startup failed" } }]
-          : [];
+        const expectedTurns = [{ id: turnId, status: "failed" }];
         const reads =
           firstRead === "thread/read"
             ? ["thread/read", "thread/turns/list"]

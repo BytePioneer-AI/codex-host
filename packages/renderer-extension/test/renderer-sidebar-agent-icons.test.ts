@@ -273,6 +273,13 @@ describe("Renderer sidebar Agent ownership", () => {
       dom.change();
       await vi.runAllTimersAsync();
       expect(checkRemotePlaceholder).toHaveBeenCalledTimes(4);
+      checkRemotePlaceholder.mockResolvedValue(undefined);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
       expect(client.listThreadOwnership).toHaveBeenCalledTimes(ownershipRequests);
     } finally {
       icons.dispose();

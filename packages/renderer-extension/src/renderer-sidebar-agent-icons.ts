@@ -512,13 +512,14 @@ export function installRendererSidebarAgentIcons(options: {
         if (checked.get(row) === attempt) checked.delete(row);
       })
       .catch(() => {
-        if (disposed || checked.get(row) !== attempt || attempt.retry) return;
+        if (disposed || checked.get(row) !== attempt) return;
+        const automaticRetry = !attempt.retry;
         attempt.retry = true;
         const timer = setTimeout(() => {
           placeholderRetryTimers.delete(timer);
           if (checked.get(row) !== attempt) return;
           attempt.waiting = false;
-          scheduleScan([row]);
+          if (automaticRetry) scheduleScan([row]);
         }, 300);
         placeholderRetryTimers.add(timer);
       });

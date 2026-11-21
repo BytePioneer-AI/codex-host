@@ -7,7 +7,16 @@ import { afterEach, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import { HostClientChannel } from "@codexhost/desktop-control";
-import { encodeHarnessPluginRoute, harnessIdSchema } from "@codexhost/shared-contracts";
+import {
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
+  hostThreadIdSchema,
+  THREAD_TREE_WATCH_METHOD,
+  THREAD_TREE_SNAPSHOT_METHOD,
+  threadTreeWatchResultSchema,
+} from "@codexhost/shared-contracts";
+import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { PINNED_THREAD_SECTION_ID } from "../src/external-thread-pins.js";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { AppServerHost } from "../src/app-server-host.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
@@ -355,6 +364,85 @@ it.each(["Web", "Desktop"])(
   },
 );
 
+it("projects the shared owner's Turn state without forwarding owner subscription IDs", async () => {
+  const { web, adapter, store, gui } = await setup();
+  const { viewer, bridge } = gui();
+  await viewer.ready;
+  const native = vi
+    .spyOn(OfficialRuntimeClient.prototype, "request")
+    .mockImplementation(async (method, params): Promise<JsonObject> => {
+      if (method === "threadSection/list")
+        return {
+          result: {
+            data: [{ id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null }],
+            nextCursor: null,
+          },
+        };
+      if (method === "thread/read") {
+        if (typeof params.threadId !== "string") throw new Error("Missing native Thread ID");
+        return { result: { thread: { id: params.threadId, status: { type: "notLoaded" } } } };
+      }
+      return { result: { data: [], nextCursor: null } };
+    });
+  try {
+    const { thread } = await web.request<{ thread: { id: string } }>("thread/start", {
+      model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }),
+      cwd: "/synthetic",
+    });
+    const child = hostThreadIdSchema.parse(thread.id);
+    await store.createDelegation({
+      delegationId: hostThreadIdSchema.parse("delegated"),
+      parentHostThreadId: hostThreadIdSchema.parse("native-parent"),
+      childHostThreadId: child,
+      taskDigest: "a".repeat(64),
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: harnessIdSchema.parse("pi"),
+    });
+    writeRequest(viewer.desktopInput, { id: 99, method: THREAD_TREE_WATCH_METHOD, params: {} });
+    const { subscriptionId, snapshot } = threadTreeWatchResultSchema.parse(
+      (await viewer.collector.waitFor((m) => m.id === 99)).result,
+    );
+    let revision = snapshot.revision;
+    const next = async (status: string) => {
+      const msg = await viewer.collector.waitFor((m) => {
+        if (m.method !== THREAD_TREE_SNAPSHOT_METHOD) return false;
+        const result = threadTreeWatchResultSchema.parse(m.params);
+        return (
+          result.subscriptionId === subscriptionId &&
+          result.snapshot.revision > revision &&
+          result.snapshot.nodes[child]?.status === status
+        );
+      }, 1000);
+      revision = threadTreeWatchResultSchema.parse(msg.params).snapshot.revision;
+    };
+    await web.request("turn/start", {
+      threadId: child,
+      input: [{ type: "text", text: "A shared Turn" }],
+    });
+    await next("running");
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Missing shared Session");
+    session.succeedTurn();
+    await next("idle");
+    bridge.close();
+    await next("unknown");
+    expect(
+      viewer.collector.messages
+        .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+        .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+    ).toEqual(expect.arrayContaining([subscriptionId]));
+    expect(
+      new Set(
+        viewer.collector.messages
+          .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+          .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+      ),
+    ).toEqual(new Set([subscriptionId]));
+  } finally {
+    native.mockRestore();
+  }
+});
+
 it.each([0, 1])("shutdown reports %i running tasks before stopping", async (count) => {
   const { root, web, adapter, stop } = await setup();
   if (count === 1) {
@@ -410,12 +498,13 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
   });
   mkdirSync(root, { recursive: true });
   const file = path.join(root, ".codex-global-state.json");
-  const text = JSON.stringify({
-    "project-order": ["selected"],
-    "local-projects": {
-      a: { id: "selected", name: "Project", rootPaths: ["/real/project"] },
-      b: { id: "hidden", name: "Hidden", rootPaths: ["/other"] },
-    },
+  const selected = { id: "selected", name: "Project", rootPaths: ["/real/project"] };
+  const first = { id: "first", name: "First", rootPaths: ["/first"] };
+  const hidden = { id: "hidden", name: "Hidden", rootPaths: ["/other"] };
+  const foreign = { id: "foreign", name: "Foreign", rootPaths: ["/foreign"] };
+  const state = {
+    "project-order": ["remote-project", "first", "selected", "first"],
+    "local-projects": { a: selected, b: hidden, c: first, duplicate: hidden, foreign },
     "thread-project-assignments": {
       thread: { projectKind: "local", projectId: "selected" },
       remote: { projectKind: "remote", projectId: "remote" },
@@ -423,15 +512,42 @@ it("reads projects and pins with no Desktop and never rewrites native metadata",
     "projectless-thread-ids": ["unselected"],
     "pinned-thread-ids": ["thread"],
     privateData: "must not be projected",
-  });
+  };
+  const text = JSON.stringify(state);
   writeFileSync(file, text);
   expect(await readNativeWorkspaceSnapshot(environment)).toEqual({
-    projects: [{ id: "selected", name: "Project", rootPaths: ["/real/project"] }],
+    projects: [first, selected],
     assignments: { thread: "selected" },
     projectless: ["unselected"],
     pinned: [],
   });
   expect(readFileSync(file, "utf8")).toBe(text);
+  const migrated = {
+    ...state,
+    "app-server-project-id-by-legacy-project-id-by-host": {
+      [`local:${path.resolve(root)}`]: { hidden: "native-hidden", first: "native-first" },
+      "remote-ssh:other": { foreign: "native-foreign" },
+    },
+  };
+  writeFileSync(file, JSON.stringify(migrated));
+  expect((await readNativeWorkspaceSnapshot(environment)).projects).toEqual([
+    first,
+    selected,
+    hidden,
+  ]);
+  for (const key of ["a", "duplicate"] as const) {
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...migrated,
+        "local-projects": {
+          ...state["local-projects"],
+          [key]: { ...state["local-projects"][key], rootPaths: [123] },
+        },
+      }),
+    );
+    await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow(/rootPaths/u);
+  }
   for (const invalid of ["{bad", "[]", "null", '"wrong"', '{"project-order":[123]}']) {
     writeFileSync(file, invalid);
     await expect(readNativeWorkspaceSnapshot(environment)).rejects.toThrow();

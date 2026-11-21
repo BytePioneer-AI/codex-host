@@ -2445,8 +2445,10 @@ export class OmpAdapter implements HarnessAdapter {
 
   #startFullInspection(cwd: string): Promise<HarnessInspection> {
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection)
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection) {
         this.#inspectionCache.set(cwd, result);
+        this.#thinkingSelectionSupported = result.capabilities.configuration.selectThinkingOption;
+      }
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
@@ -2526,7 +2528,6 @@ export class OmpAdapter implements HarnessAdapter {
       const models = await transport.getAvailableModels();
       stage = "capabilities";
       const thinkingLevels = await transport.getAvailableThinkingLevels();
-      this.#thinkingSelectionSupported = thinkingLevels !== null;
       const catalog = normalizeOmpModelCatalog(
         models,
         nativeModelFromState(transport.state),

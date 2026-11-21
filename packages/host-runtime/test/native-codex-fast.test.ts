@@ -6,7 +6,10 @@ import { encodeOfficialCodexModelRef } from "../src/official-codex-model-ref.js"
 import { updateNativeThreadSettings } from "../src/codex-runtime/native-thread-controls.js";
 import { createFixture, stopFixture } from "./app-server-host-fixture.js";
 import type { DelegationControlApi } from "../src/delegation-types.js";
-import { harnessThinkingOptionIdSchema } from "@codexhost/shared-contracts";
+import {
+  HARNESS_MODEL_LABEL_MAX_LENGTH,
+  harnessThinkingOptionIdSchema,
+} from "@codexhost/shared-contracts";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -14,7 +17,10 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-it("advertises Fast only from the official priority service tier", async () => {
+it("advertises Fast and Ultrafast only from the official service tiers", async () => {
+  const suffix = " · Ultrafast";
+  const labelPrefix = "a".repeat(HARNESS_MODEL_LABEL_MAX_LENGTH - suffix.length - 1);
+  const longLabel = `${labelPrefix}😀 tail`;
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));
   await fixture.ready;
@@ -33,12 +39,19 @@ it("advertises Fast only from the official priority service tier", async () => {
                   model: "priority-capable",
                   serviceTiers: [
                     { id: "priority", name: "Fast", description: "Priority processing" },
+                    { id: "ultrafast", name: "Ultrafast" },
                   ],
+                  supportedReasoningEfforts: [{ reasoningEffort: "high" }],
                 },
                 { model: "flex-only", serviceTiers: [{ id: "flex", name: "Fast" }] },
-                { model: "legacy-fast", additionalSpeedTiers: ["fast", "priority"] },
+                { model: "legacy-fast", additionalSpeedTiers: ["fast", "priority", "ultrafast"] },
                 { model: "no-tiers" },
-              ].map((model, i) => ({ ...model, displayName: model.model, isDefault: i === 0 })),
+                {
+                  model: "long-label",
+                  displayName: longLabel,
+                  serviceTiers: [{ id: "ultrafast" }],
+                },
+              ].map((model, i) => ({ displayName: model.model, ...model, isDefault: i === 0 })),
             }
           : { data: [] };
       fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -56,9 +69,19 @@ it("advertises Fast only from the official priority service tier", async () => {
             ref: encodeOfficialCodexModelRef("priority-capable"),
             fastModel: encodeOfficialCodexModelRef("priority-capable", "priority"),
           },
+          {
+            ref: encodeOfficialCodexModelRef("priority-capable", "ultrafast"),
+            label: "priority-capable · Ultrafast",
+            supportedThinkingOptionIds: ["high"],
+          },
           { ref: encodeOfficialCodexModelRef("flex-only") },
           { ref: encodeOfficialCodexModelRef("legacy-fast") },
           { ref: encodeOfficialCodexModelRef("no-tiers") },
+          { ref: encodeOfficialCodexModelRef("long-label"), label: longLabel },
+          {
+            ref: encodeOfficialCodexModelRef("long-label", "ultrafast"),
+            label: labelPrefix + suffix,
+          },
         ],
       },
     },
@@ -68,7 +91,7 @@ it("advertises Fast only from the official priority service tier", async () => {
   expect(models.slice(1).every((model) => model.fastModel === undefined)).toBe(true);
 });
 
-it("selects priority and clears it only after matching confirmation, preserving Thinking", async () => {
+it("changes the native speed tier only after matching confirmation, preserving Thinking", async () => {
   const fixture = createFixture();
   cleanup.push(() => stopFixture(fixture));
   await fixture.ready;
@@ -94,7 +117,7 @@ it("selects priority and clears it only after matching confirmation, preserving 
         params: { threadId: "official", threadSettings: value },
       })}\n`,
     );
-  for (const tier of ["priority", null, "priority"]) {
+  for (const tier of ["priority", "ultrafast", null, "ultrafast"]) {
     let resolved = false;
     const selecting = fixture.host
       .handleClientRequest("codexhost/thread/model/select", {
@@ -130,13 +153,13 @@ it("selects priority and clears it only after matching confirmation, preserving 
   notify(settings);
   expect(await thinking).toMatchObject({
     result: {
-      effectiveModel: encodeOfficialCodexModelRef("native", "priority"),
+      effectiveModel: encodeOfficialCodexModelRef("native", "ultrafast"),
       effectiveThinkingOptionId: "low",
     },
   });
 });
 
-it("uses native Model and priority parameters when the shared official catalog is used for delegation", async () => {
+it.each(["priority", "ultrafast"])("delegates %s with Max", async (serviceTier) => {
   let api: DelegationControlApi | undefined;
   const fixture = createFixture({
     onDelegationApi: (value) => {
@@ -162,8 +185,8 @@ it("uses native Model and priority parameters when the shared official catalog i
               data: [
                 {
                   model: "native",
-                  serviceTiers: [{ id: "priority" }],
-                  supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+                  serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+                  supportedReasoningEfforts: [{ reasoningEffort: "max" }],
                 },
               ],
             }
@@ -171,7 +194,7 @@ it("uses native Model and priority parameters when the shared official catalog i
             ? {
                 thread: { id: "native-child" },
                 model: "native",
-                serviceTier: "priority",
+                serviceTier,
               }
             : request.method === "turn/start"
               ? { turn: { id: "turn-child" } }
@@ -181,25 +204,31 @@ it("uses native Model and priority parameters when the shared official catalog i
       fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
     }
   });
-  const fast = encodeOfficialCodexModelRef("native", "priority");
   if (!api) throw new Error("Delegation API was not registered");
+  const { inspection } = await api.inspect({ harnessId: "codex", cwd: "/synthetic" });
+  if (inspection.status !== "ready") throw new Error("Missing catalog");
+  const model =
+    serviceTier === "priority"
+      ? inspection.catalog.models.find(({ label }) => label === "native")?.fastModel
+      : inspection.catalog.models.find(({ label }) => label === "native · Ultrafast")?.ref;
+  if (!model) throw new Error(`Missing advertised ${serviceTier} selection`);
   const result = await api.start({
     harnessId: "codex",
     parentThreadId: "parent",
     task: "test",
     cwd: "/synthetic",
-    model: fast,
-    thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    model,
+    thinkingOptionId: harnessThinkingOptionIdSchema.parse("max"),
   });
   for (const method of ["thread/start", "turn/start"])
     expect(calls.find((call) => call.method === method)).toMatchObject({
-      params: { model: "native", serviceTier: "priority" },
+      params: { model: "native", serviceTier },
     });
   expect(calls.find((call) => call.method === "turn/start")).toMatchObject({
-    params: { effort: "high" },
+    params: { effort: "max" },
   });
   expect(result).toMatchObject({
-    configuration: { requested: { model: fast }, effective: { effectiveModel: fast } },
+    configuration: { requested: { model }, effective: { effectiveModel: model } },
   });
 });
 

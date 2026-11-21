@@ -29,17 +29,14 @@ const { TYPERT_REMOTE } = (await import(
 interface Value {
   harnessOrder: string[];
 }
-interface Result {
-  ok: true;
-  value: Value;
-}
+type Result = { ok: true; value: Value } | { ok: false; error: { code: string; message: string } };
 interface Catalog {
   load(): Promise<Value>;
   refresh(): void;
   refreshModels(harnessId?: string): Promise<Value>;
   resetGeneration(): void;
   dispose(): void;
-  store: { getSnapshot(): { value: Value | null; status: string } };
+  store: { getSnapshot(): { value: Value | null; status: string; error: string | null } };
 }
 const output = await build({
   entryPoints: [
@@ -58,6 +55,7 @@ runInNewContext(output.outputFiles[0]?.text ?? "", {
   module,
   exports: module.exports,
   require: createRequire(import.meta.url),
+  Error,
   console,
   process: { env: { NODE_ENV: "test" } },
   queueMicrotask,
@@ -162,6 +160,44 @@ it("preserves different queued refresh targets and falls back to all only withou
     { refresh: true },
   ]);
   assert.equal(f.peak(), 1);
+  f.catalog.dispose();
+});
+
+it("keeps a targeted transport failure visible after a successful notification read", async () => {
+  const f = fixture();
+  const refresh = f.catalog.refreshModels("pi");
+  const rejected = assert.rejects(refresh, /Pi refresh failed/);
+  f.catalog.refresh();
+  f.reads[0]?.reject(new Error("Pi refresh failed"));
+  await flush();
+  assert.equal(f.requests[1], undefined);
+  f.reads[1]?.resolve(response(["new"]));
+  await rejected;
+  const state = f.catalog.store.getSnapshot();
+  assert.deepEqual(state.value?.harnessOrder, ["new"]);
+  assert.equal(state.status, "error");
+  assert.equal(state.error, "Pi refresh failed");
+  f.catalog.dispose();
+});
+
+it("keeps a targeted RPC failure visible after another Harness refresh succeeds", async () => {
+  const f = fixture();
+  const pi = f.catalog.refreshModels("pi");
+  const rejected = assert.rejects(pi, /unavailable: Pi refresh failed/);
+  const claude = f.catalog.refreshModels("claude-code");
+  assert.equal(pi, claude);
+  f.reads[0]?.resolve({ ok: false, error: { code: "unavailable", message: "Pi refresh failed" } });
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.requests[1])), {
+    refresh: true,
+    harnessId: "claude-code",
+  });
+  f.reads[1]?.resolve(response(["claude-code"]));
+  await rejected;
+  const state = f.catalog.store.getSnapshot();
+  assert.deepEqual(state.value?.harnessOrder, ["claude-code"]);
+  assert.equal(state.status, "error");
+  assert.equal(state.error, "unavailable: Pi refresh failed");
   f.catalog.dispose();
 });
 

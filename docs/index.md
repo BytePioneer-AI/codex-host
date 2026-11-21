@@ -32,6 +32,7 @@
 | [`architecture/delegation-titles.md`](architecture/delegation-titles.md) | 委派子会话标题、子任务显示名、创建快照与重试边界。 |
 | [`architecture/delegation-worktrees.md`](architecture/delegation-worktrees.md) | CLI 与 HTTP/MCP 委派创建独立 Git worktree 的目录、HEAD 基线、返回字段、状态校验与失败保留边界。 |
 | [`architecture/delegation-thread-list.md`](architecture/delegation-thread-list.md) | 委派 CLI 列表的共享 catalog、独立来源分页、查询绑定与活列表一致性边界。 |
+| [`architecture/desktop-ui-extensions.md`](architecture/desktop-ui-extensions.md) | Desktop 界面扩展：市场与包管理、manifest、API v1、侧栏槽位、回收与兜底。 |
 | [`architecture/web-thread-tree.md`](architecture/web-thread-tree.md) | Web 侧栏会话树：委派关系决定的显示父 Thread、Host 树接口、祖先补齐、归档级联、排序与置顶规则；修改侧栏层级或委派显示时阅读。 |
 | [`architecture/thread-watch.md`](architecture/thread-watch.md) | 一次性 Thread 停下或等待回答通知（`thread watch`）的模型、结果、送达与边界；修改委派跟进或通知时阅读。 |
 | [`architecture/external-clients.md`](architecture/external-clients.md) | 同用户 CLI 自动认证、命名客户端登记、本机监听、Thread 引用、调试导出、事件日志与 MCP；修改外部接入时阅读。 |
@@ -59,6 +60,7 @@
 | 文档 | 内容与阅读时机 |
 | --- | --- |
 | [`harnesses/claude-code/claude-code-plan-mode.md`](harnesses/claude-code/claude-code-plan-mode.md) | Claude Code 规划模式、计划退出确认与权限状态边界；修改 Plan Mode 时阅读。 |
+| [`harnesses/claude-code/claude-code-thinking.md`](harnesses/claude-code/claude-code-thinking.md) | 思考摘要的实时流式显示、外层进度说明和历史投影；修改 Thinking 或 Narration 显示时阅读。 |
 | [`harnesses/claude-code/claude-code-edit-recovery.md`](harnesses/claude-code/claude-code-edit-recovery.md) | 最后一条消息编辑后的独立 Session、空历史保留和关闭语义；修改编辑恢复时阅读。 |
 | [`harnesses/claude-code/claude-code-background-terminals.md`](harnesses/claude-code/claude-code-background-terminals.md) | Claude 后台命令作为 Desktop 后台终端：原生通知结算、实时输出、历史叠加与所有权；修改后台命令时阅读。 |
 | [`harnesses/claude-code/claude-code-steer.md`](harnesses/claude-code/claude-code-steer.md) | Claude Code `priority: "next"` 同轮插入、接受条件和历史分轮；修改运行中插入时阅读。 |

@@ -1,18 +1,8 @@
 import { z } from "zod";
 import { harnessIdSchema } from "./ids.js";
-import { accountCreditsSnapshotSchema } from "./thread-usage.js";
+import { accountBalanceSnapshotSchema, accountCreditsSnapshotSchema } from "./thread-usage.js";
 
-/** Remaining prepaid funds, distinct from a percentage-based quota or allowance. */
-export const accountBalanceSnapshotSchema = z
-  .object({
-    amount: z.number().finite().nonnegative(),
-    /** ISO 4217 code as reported by the Provider, for example `CNY`. */
-    currency: z.string().trim().min(1).max(8),
-    /** Native label when the Harness exposes several Billing Sources. */
-    label: z.string().trim().min(1).max(128).optional(),
-  })
-  .strict();
-export type AccountBalanceSnapshot = z.infer<typeof accountBalanceSnapshotSchema>;
+export { accountBalanceSnapshotSchema, type AccountBalanceSnapshot } from "./thread-usage.js";
 
 const harnessAccountSnapshotObject = z
   .object({

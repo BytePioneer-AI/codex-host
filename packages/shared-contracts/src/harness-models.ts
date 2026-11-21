@@ -206,6 +206,11 @@ export const harnessSessionCapabilitiesSchema = z
       .optional(),
     /** True only when `turn.steer` delivers input into the active Turn through a native primitive. */
     steer: z.boolean().optional(),
+    /**
+     * True when the native plan (task list) outlives the Turn that changed it, so a reopened
+     * Thread gets its latest plan again. Otherwise a plan stays with the Turn that made it.
+     */
+    persistentPlan: z.boolean().optional(),
   })
   .strict();
 

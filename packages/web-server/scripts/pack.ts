@@ -225,6 +225,14 @@ cpSync(
   join(out, "licenses/image-size-MIT.txt"),
 );
 cpSync(join(frontendRoot, "THIRD_PARTY_NOTICES.md"), join(out, "licenses/THIRD_PARTY_NOTICES.md"));
+cpSync(
+  join(repoRoot, "scripts/release/licenses/werift-0.28.0-NOTICES.txt"),
+  join(out, "licenses/werift-NOTICES.txt"),
+);
+cpSync(
+  join(repoRoot, "node_modules/werift/THIRD_PARTY_LICENSES_LIBWEBRTC.txt"),
+  join(out, "licenses/werift-libwebrtc-NOTICES.txt"),
+);
 for (const [name, file] of [
   ["js-yaml", "LICENSE"],
   ["import-meta-resolve", "license"],

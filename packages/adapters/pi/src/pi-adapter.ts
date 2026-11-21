@@ -574,7 +574,12 @@ class PiHarnessSession implements HarnessSession {
     try {
       const transport = await this.#ensureTransport();
       const history = await transport.getEntries();
-      await restorePiSubagents(history, transport.state.sessionId, this.#subagents);
+      const { sessionId, sessionFile } = transport.state;
+      await restorePiSubagents(
+        history,
+        new Set(sessionFile ? [sessionId, sessionFile] : [sessionId]),
+        this.#subagents,
+      );
       return {
         ok: true,
         value: {
@@ -2350,8 +2355,10 @@ export class PiAdapter implements HarnessAdapter {
     if (cached) return cached;
 
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection)
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection) {
         this.#inspectionCache.set(cwd, result);
+        this.#thinkingSelectionSupported = result.capabilities.configuration.selectThinkingOption;
+      }
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);
@@ -2374,7 +2381,6 @@ export class PiAdapter implements HarnessAdapter {
       const models = await transport.getAvailableModels();
       stage = "capabilities";
       const thinkingLevels = await transport.getAvailableThinkingLevels();
-      this.#thinkingSelectionSupported = thinkingLevels !== null;
       const normalized = normalizePiModelCatalog(
         models,
         nativeModelFromState(transport.state),

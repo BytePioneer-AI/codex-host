@@ -26,6 +26,11 @@ export const EXTERNAL_CLIENT_PORT_ENV = "CODEXHOST_EXTERNAL_CLIENT_PORT";
 export const NATIVE_CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID";
 /** Default watch expiry; callers adjust it with --timeout-ms. */
 export const DEFAULT_WATCH_TIMEOUT_MS = 29 * 60_000;
+/** Default `thread wait` budget; callers adjust it with --timeout-ms. */
+export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+/** Default `thread list` page size and ordering. */
+export const DEFAULT_LIST_LIMIT = 25;
+export const DEFAULT_LIST_SORT = "created-desc";
 
 export type DelegationThreadStatus =
   "creating" | "running" | "completed" | "failed" | "interrupted";
@@ -341,6 +346,7 @@ export interface DelegationControlApi {
 
 export interface DelegationControlRegistration extends DelegationControlApi {
   executionHostId?(threadId: string): string | undefined;
+  onThreadIdle?(listener: (threadId: string) => void): () => void;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;
 }

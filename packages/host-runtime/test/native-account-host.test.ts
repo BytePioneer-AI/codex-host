@@ -9,6 +9,7 @@ import type { OfficialAppServerExit } from "../src/official-app-server-connectio
 import { createOwnedLoopbackBackend } from "../src/codex-runtime/owned-official-backends.js";
 import { prepareLocalCodex, type PreparedLocalCodex } from "../src/native-account-host.js";
 import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { CodexRuntimeFilesRemovedError } from "../src/codex-runtime/backend-files.js";
 
 vi.mock("../src/codex-runtime/owned-official-backends.js", () => ({
   createOwnedLoopbackBackend: vi.fn(),
@@ -31,6 +32,14 @@ afterEach(async () => {
   temporaryDirectories.clear();
   vi.clearAllMocks();
 });
+
+function configureStartup(
+  local: PreparedLocalCodex,
+  input: Parameters<PreparedLocalCodex["configureStartup"]>[0],
+  attachment = new AbortController().signal,
+) {
+  return local.configureStartup(input, attachment);
+}
 
 function nativeFixture() {
   const exit = Promise.withResolvers<OfficialAppServerExit>();
@@ -145,6 +154,85 @@ describe("local Codex read-only identity startup", () => {
     return { executable, tool };
   }
 
+  it.each([true, false])(
+    "replaces an idle backend after a same-path update (deferStart=%s)",
+    async (deferStart) => {
+      const { executable } = await runtimeFiles("idle-update");
+      const first = nativeFixture();
+      const local = await startLocal(deferStart, undefined, new PassThrough(), executable);
+      const scope = local.officialRuntimeScope;
+      const client = new OfficialRuntimeClient({ scope, output: async () => {} });
+      await client.initialize();
+      await client.initializeProtocol({ clientInfo: { name: "fixture", version: "1" } });
+
+      await writeFile(executable, "updated backend fixture");
+      const replacement = nativeFixture();
+      for (let i = 0; i < 2; i++) {
+        await expect(client.request("thread/start", {})).resolves.toMatchObject({
+          result: { thread: { id: "voice-thread" } },
+        });
+        expect(scope.owner.generation).toBe(2);
+      }
+      expect(first.stop).toHaveBeenCalledOnce();
+      expect(replacement.requests.filter(({ method }) => method === "thread/start")).toHaveLength(
+        2,
+      );
+      await client.close();
+    },
+  );
+
+  it.each([false, true])(
+    "detects a same-path update on Desktop attachment (active Turn=%s)",
+    async (active) => {
+      const { executable } = await runtimeFiles("desktop-update");
+      const first = nativeFixture();
+      const local = await startLocal(true, undefined, new PassThrough(), executable);
+      const scope = local.officialRuntimeScope;
+      const client = new OfficialRuntimeClient({ scope, output: async () => {} });
+      await client.initialize();
+      await client.initializeProtocol({ clientInfo: { name: "fixture", version: "1" } });
+      const started = {
+        threadId: "active-thread",
+        turn: { id: "active-turn", status: "inProgress" },
+      };
+      if (active) {
+        first.notify({ method: "turn/started", params: started });
+        await vi.waitFor(() => expect(scope.owner.hasActiveWork).toBe(true));
+      }
+
+      await writeFile(executable, "updated backend fixture");
+      nativeFixture();
+      await configureStartup(local, {
+        stockCodexPath: executable,
+        arguments: ["-c", "features.code_mode_host=true", "app-server"],
+        environment: {},
+      });
+      if (active) {
+        await expect(client.request("thread/start", {})).resolves.toMatchObject({
+          result: { thread: { id: "voice-thread" } },
+        });
+        expect(scope.owner.generation).toBe(1);
+        expect(first.stop).not.toHaveBeenCalled();
+        first.notify({
+          method: "turn/completed",
+          params: { ...started, turn: { ...started.turn, status: "completed" } },
+        });
+        await vi.waitFor(() => expect(scope.owner.hasActiveWork).toBe(false));
+        expect(scope.owner.generation).toBe(1);
+      } else {
+        expect(first.stop).toHaveBeenCalledOnce();
+        expect(scope.gate.phase).toBe("unavailable");
+        await client.initialize();
+      }
+      await expect(client.request("thread/start", {})).resolves.toMatchObject({
+        result: { thread: { id: "voice-thread" } },
+      });
+      expect(first.stop).toHaveBeenCalledOnce();
+      expect(scope.owner.generation).toBe(2);
+      await client.close();
+    },
+  );
+
   it("rejects a retained generation whose executable was removed without stopping active work", async () => {
     const files = await runtimeFiles("active");
     const first = nativeFixture();
@@ -158,12 +246,12 @@ describe("local Codex read-only identity startup", () => {
     await rm(files.executable);
     for (const executable of [files.executable, (await runtimeFiles("proposed")).executable]) {
       await expect(
-        local.configureStartup({
+        configureStartup(local, {
           stockCodexPath: executable,
           arguments: ["-c", "features.code_mode_host=true", "app-server"],
           environment: {},
         }),
-      ).rejects.toThrow("codexhost stop");
+      ).rejects.toThrow(CodexRuntimeFilesRemovedError);
     }
     expect(first.stop).not.toHaveBeenCalled();
     expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true);
@@ -185,12 +273,12 @@ describe("local Codex read-only identity startup", () => {
         arguments: ["app-server"],
         environment: {},
       };
-      await local.configureStartup(configuration);
+      await configureStartup(local, configuration);
       expect(first.stop).toHaveBeenCalledOnce();
       await local.officialRuntimeScope.start();
-      await expect(local.configureStartup(configuration)).resolves.toBeUndefined();
+      await expect(configureStartup(local, configuration)).resolves.toBeUndefined();
       await rm(b.tool);
-      await expect(local.configureStartup(configuration)).rejects.toThrow("codexhost stop");
+      await expect(configureStartup(local, configuration)).rejects.toThrow("codexhost stop");
     },
   );
 
@@ -199,7 +287,7 @@ describe("local Codex read-only identity startup", () => {
     const first = nativeFixture();
     const local = await startLocal(true, undefined, new PassThrough(), files.executable);
     await local.officialRuntimeScope.start();
-    await local.configureStartup({
+    await configureStartup(local, {
       stockCodexPath: files.executable,
       arguments: ["-c", "features.code_mode_host=true", "app-server"],
       environment: {},
@@ -219,7 +307,7 @@ describe("local Codex read-only identity startup", () => {
       "app-server",
       "--analytics-default-enabled",
     ];
-    await local.configureStartup({
+    await configureStartup(local, {
       stockCodexPath: "/synthetic/desktop-codex",
       arguments: arguments_,
       environment: { CODEX_HOME: "/must-not-change-home", PATH: "/synthetic/path" },
@@ -299,7 +387,7 @@ describe("local Codex read-only identity startup", () => {
       arguments: ["-c", "features.recovered=true", "app-server"],
       environment: {},
     };
-    await local.configureStartup(configuration);
+    await configureStartup(local, configuration);
     await local.officialRuntimeScope.start();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
@@ -336,7 +424,7 @@ describe("local Codex read-only identity startup", () => {
         arguments: ["-c", "features.recovered=true", "app-server"],
         environment: {},
       };
-      await local.configureStartup(configuration);
+      await configureStartup(local, configuration);
       await local.officialRuntimeScope.start();
       expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -372,7 +460,7 @@ describe("local Codex read-only identity startup", () => {
     try {
       await entered.promise;
       expect(local.officialRuntimeScope.owner.running).toBe(false);
-      await local.configureStartup({
+      await configureStartup(local, {
         stockCodexPath: "/synthetic/replacement",
         arguments: ["app-server", "--analytics-default-enabled"],
         environment: {},
@@ -418,8 +506,8 @@ describe("local Codex read-only identity startup", () => {
         environment: {},
       };
       if (configureFirst) {
-        await local.configureStartup(configuration);
-        await local.configureStartup({ ...configuration, arguments: ["app-server"] });
+        await configureStartup(local, configuration);
+        await configureStartup(local, { ...configuration, arguments: ["app-server"] });
       }
       await local.officialRuntimeScope.start();
       expect(createOwnedLoopbackBackend).toHaveBeenCalledWith(
@@ -427,7 +515,7 @@ describe("local Codex read-only identity startup", () => {
           arguments: configureFirst ? configuration.arguments : arguments_,
         }),
       );
-      await local.configureStartup({ ...configuration, arguments: ["app-server"] });
+      await configureStartup(local, { ...configuration, arguments: ["app-server"] });
       expect(first.stop).not.toHaveBeenCalled();
       expect(createOwnedLoopbackBackend).toHaveBeenCalledOnce();
       expect(await readFile(startupFile, "utf8")).toBe(saved);
@@ -449,8 +537,8 @@ describe("local Codex read-only identity startup", () => {
       arguments: ["app-server", "--analytics-default-enabled"],
       environment: {},
     };
-    await local.configureStartup(configuration);
-    await local.configureStartup(configuration);
+    await configureStartup(local, configuration);
+    await configureStartup(local, configuration);
     expect(first.stop).toHaveBeenCalledOnce();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
     await local.officialRuntimeScope.start();
@@ -471,7 +559,7 @@ describe("local Codex read-only identity startup", () => {
     await mkdir(startupFile);
     const arguments_ = ["app-server", "--analytics-default-enabled"];
     await expect(
-      local.configureStartup({
+      configureStartup(local, {
         stockCodexPath: "/synthetic/desktop-codex",
         arguments: arguments_,
         environment: {},
@@ -490,7 +578,7 @@ describe("local Codex read-only identity startup", () => {
     nativeFixture();
     const local = await startLocal(true);
     const overrides = ["-c", 'mcp_servers.node_repl.args=["synthetic-local-capability"]'];
-    await local.configureStartup({
+    await configureStartup(local, {
       stockCodexPath: "/synthetic/codex",
       arguments: ["app-server"],
       environment: { CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS: JSON.stringify(overrides) },
@@ -513,7 +601,7 @@ describe("local Codex read-only identity startup", () => {
       arguments: ["-c", "features.code_mode_host=true", "app-server"],
       environment: { [key]: "/synthetic/connection-1" },
     };
-    await local.configureStartup(configuration);
+    await configureStartup(local, configuration);
     await local.officialRuntimeScope.start();
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -524,7 +612,7 @@ describe("local Codex read-only identity startup", () => {
     );
     nativeFixture();
     // A reopened Desktop creates new connection settings; retire the stale idle backend.
-    await local.configureStartup({
+    await configureStartup(local, {
       ...configuration,
       environment: { [key]: "/synthetic/connection-2" },
     });
@@ -540,6 +628,103 @@ describe("local Codex read-only identity startup", () => {
     );
   });
 
+  it("refreshes native requests with the remaining Desktop's tool access after disconnect", async () => {
+    const initial = nativeFixture();
+    const local = await startLocal(true);
+    const first = new AbortController();
+    const second = new AbortController();
+    const configuration = { stockCodexPath: "/synthetic/codex", arguments: ["app-server"] };
+    await configureStartup(
+      local,
+      {
+        ...configuration,
+        environment: { BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/first" },
+      },
+      first.signal,
+    );
+    await configureStartup(
+      local,
+      {
+        ...configuration,
+        environment: {
+          BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/second",
+          CODEX_APP_TOOLS_PIPE_PATH: "/synthetic/second-app-tools",
+        },
+      },
+      second.signal,
+    );
+    const events: JsonObject[] = [];
+    const client = new OfficialRuntimeClient({
+      scope: local.officialRuntimeScope,
+      output: async ({ value }) => {
+        const event = jsonObjectSchema.safeParse(value);
+        if (event.success) events.push(event.data);
+      },
+    });
+    await client.initialize();
+    await client.initializeProtocol({ clientInfo: { name: "fixture", version: "1" } });
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/second",
+        }),
+      }),
+    );
+
+    initial.notify({ method: "turn/started", params: { threadId: "active" } });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        method: "turn/started",
+        params: { threadId: "active" },
+      }),
+    );
+    second.abort();
+    await client.request("thread/start", {});
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/second",
+        }),
+      }),
+    );
+
+    initial.notify({ method: "turn/completed", params: { threadId: "active" } });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        method: "turn/completed",
+        params: { threadId: "active" },
+      }),
+    );
+    nativeFixture();
+    await expect(client.request("thread/start", {})).resolves.toMatchObject({
+      result: { thread: { id: "voice-thread" } },
+    });
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        environment: {
+          CODEX_HOME: local.officialRuntimeScope.permanentHome,
+          BROWSER_USE_ACCESS_PIPE_PATH: "/synthetic/first",
+        },
+      }),
+    );
+
+    first.abort();
+    nativeFixture();
+    await client.send({ id: 7, method: "thread/start", params: {} });
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        id: 7,
+        result: { thread: { id: "voice-thread" } },
+      }),
+    );
+    expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        environment: { CODEX_HOME: local.officialRuntimeScope.permanentHome },
+      }),
+    );
+    await client.close();
+  });
+
   it.each(desktopConnectionVariables)("keeps active Turn on %s change", async (key) => {
     const first = nativeFixture();
     const diagnostics = new PassThrough();
@@ -549,14 +734,14 @@ describe("local Codex read-only identity startup", () => {
       arguments: ["-c", "features.code_mode_host=true", "app-server"],
       environment: { [key]: "/synthetic/connection-1" },
     };
-    await local.configureStartup(configuration);
+    await configureStartup(local, configuration);
     await local.officialRuntimeScope.start();
     first.notify({
       method: "turn/started",
       params: { threadId: "active-thread", turn: { id: "active-turn", status: "inProgress" } },
     });
     await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
-    await local.configureStartup({
+    await configureStartup(local, {
       ...configuration,
       environment: { [key]: "/synthetic/connection-2" },
     });
@@ -573,14 +758,14 @@ describe("local Codex read-only identity startup", () => {
       arguments: ["-c", "features.code_mode_host=true", "app-server"],
       environment: { [key]: "/synthetic/connection-1" },
     };
-    await local.configureStartup(configuration);
+    await configureStartup(local, configuration);
     await local.officialRuntimeScope.start();
     first.notify({
       method: "turn/started",
       params: { threadId: "active-thread", turn: { id: "active-turn", status: "inProgress" } },
     });
     await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
-    await local.configureStartup({
+    await configureStartup(local, {
       ...configuration,
       environment: { [key]: "/synthetic/connection-2" },
     });
@@ -610,7 +795,7 @@ describe("local Codex read-only identity startup", () => {
       params: { threadId: "active-thread", turn: { id: "active-turn", status: "inProgress" } },
     });
     await vi.waitFor(() => expect(local.officialRuntimeScope.owner.hasActiveWork).toBe(true));
-    await local.configureStartup({
+    await configureStartup(local, {
       stockCodexPath: "/synthetic/codex",
       arguments: ["app-server", "--analytics-default-enabled"],
       environment: {},

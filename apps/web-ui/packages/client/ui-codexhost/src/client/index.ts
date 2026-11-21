@@ -104,6 +104,7 @@ const HOST_SETTINGS_PAGES = [
   ["connections", "settings.connections", 3],
   ["usage-statistics", "settings.usage", 4],
   ["resources", "settings.resources", 5],
+  ["desktop-extensions", "settings.desktopExtensions", 6.5],
   ["updates", "settings.updates", 7],
   ["about", "settings.about", 8],
 ] as const;

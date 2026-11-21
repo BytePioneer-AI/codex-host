@@ -18,6 +18,7 @@ import {
   type ExternalHarnessId,
   type ExternalThreadRpcError,
   type JsonObject,
+  type TodoPlan,
 } from "@codexhost/protocol-core";
 import { HarnessOutputChannel } from "@codexhost/harness-adapter";
 import {
@@ -65,6 +66,7 @@ export interface ExternalThread {
   thread: JsonObject;
   transportModelId: string;
   turns: JsonObject[];
+  historicalPlans: ReadonlyMap<string, TodoPlan>;
   historyHydrated: boolean;
   running: boolean;
   activeTurnId: HostTurnId | null;
@@ -73,6 +75,8 @@ export interface ExternalThread {
   // history cannot be refreshed.
   projectedTerminalTurnId: HostTurnId | null;
   latestUsage: HostUsage | null;
+  /** turn/plan/updated params projected live since history was last loaded; newer than history. */
+  livePlan: JsonObject | null;
   /** Host metering for the current Session only; replaced with it. */
   usageMeter: UsageMeter;
   usageTurnId: HostTurnId | null;
@@ -378,6 +382,7 @@ export class ExternalThreadRuntime {
     sessionId: string;
     thread: JsonObject;
     turns: JsonObject[];
+    historicalPlans?: ReadonlyMap<string, TodoPlan>;
     requestedModel?: HarnessModelRef;
     requestedThinkingOptionId?: HarnessThinkingOptionId;
     requestedPermissionModeId?: HarnessPermissionModeId;
@@ -432,10 +437,12 @@ export class ExternalThreadRuntime {
         : input.thread,
       transportModelId: input.transportModelId ?? input.record.transportModelId,
       turns: input.turns,
+      historicalPlans: input.historicalPlans ?? new Map(),
       historyHydrated: true,
       running,
       activeTurnId: null,
       latestUsage: input.session.initialUsage,
+      livePlan: null,
       usageMeter: new UsageMeter(),
       usageTurnId: null,
       projectedTurns: new Map(),
@@ -477,6 +484,7 @@ export class ExternalThreadRuntime {
       sessionId: string;
       thread: JsonObject;
       turns: JsonObject[];
+      historicalPlans: ReadonlyMap<string, TodoPlan>;
       restoredState?: HarnessSessionState;
     },
   ): Promise<ExternalThread> {
@@ -654,6 +662,10 @@ export class ExternalThreadRuntime {
           ? thread.turns
           : aligned.turns;
       thread.record = aligned.record;
+      if (turns !== thread.turns) {
+        thread.livePlan = null;
+        thread.historicalPlans = aligned.historicalPlans;
+      }
       thread.turns = turns;
       thread.historyHydrated = true;
       thread.thread = externalThreadValue({
@@ -767,6 +779,8 @@ export class ExternalThreadRuntime {
       thread.session = session;
       thread.record = aligned.record;
       thread.turns = aligned.turns;
+      thread.historicalPlans = aligned.historicalPlans;
+      thread.livePlan = null;
       thread.historyHydrated = true;
       thread.sessionUnavailable = false;
       thread.persistenceError = null;
@@ -874,6 +888,24 @@ export class ExternalThreadRuntime {
     }
   }
 
+  /**
+   * Marks a Turn starting or ending as Thread activity. Status notifications reach only the
+   * connection that runs the Turn; other clients' thread catalogs re-read only rows whose
+   * updatedAt moved past what they have seen.
+   */
+  async touch(thread: ExternalThread): Promise<void> {
+    try {
+      thread.record = await this.#repository.touch(thread.id);
+      const updatedAt = Math.floor(Date.parse(thread.record.updatedAt) / 1_000);
+      if (typeof thread.thread.updatedAt !== "number" || updatedAt > thread.thread.updatedAt)
+        thread.thread.updatedAt = updatedAt;
+      if (typeof thread.thread.recencyAt !== "number" || updatedAt > thread.thread.recencyAt)
+        thread.thread.recencyAt = updatedAt;
+    } catch (error) {
+      this.#diagnose(error);
+    }
+  }
+
   async persistTerminalIdentity(
     thread: ExternalThread,
     event: TurnCompletedEvent,
@@ -963,6 +995,7 @@ export class ExternalThreadRuntime {
         sessionId,
         thread: externalThreadValue({ record: aligned.record, turns: aligned.turns, sessionId }),
         turns: aligned.turns,
+        historicalPlans: aligned.historicalPlans,
         ...(snapshot.value.state ? { restoredState: snapshot.value.state } : {}),
       });
     }
@@ -1037,6 +1070,7 @@ export class ExternalThreadRuntime {
           sessionId,
         }),
         turns: aligned.turns,
+        historicalPlans: aligned.historicalPlans,
         ...(effectiveModel ? { requestedModel: effectiveModel } : {}),
         ...(effectiveThinkingOptionId
           ? { requestedThinkingOptionId: effectiveThinkingOptionId }

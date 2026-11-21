@@ -117,19 +117,19 @@ interface WorkspaceDownloadLabels {
 }
 
 function useWorkspaceFileDownload({
-  absolutePath,
+  filePath,
   sessionId,
   downloadFailedLabel,
   onToast,
 }: {
-  readonly absolutePath: string;
+  readonly filePath: string;
   readonly sessionId: string;
   readonly downloadFailedLabel: string;
   readonly onToast: (text: string) => void;
 }) {
-  const query = new URLSearchParams({ sessionId, path: absolutePath });
+  const query = new URLSearchParams({ sessionId, path: filePath });
   const downloadUrl = `/api/workspace-file/download?${query}`;
-  const fileName = fileBaseName(absolutePath);
+  const fileName = fileBaseName(filePath);
   const [downloading, setDownloading] = useState(false);
   const [ready, setReady] = useState<IosReadyDownload | null>(null);
   const downloadAbortRef = useRef<AbortController | null>(null);
@@ -141,7 +141,7 @@ function useWorkspaceFileDownload({
       downloadAbortRef.current?.abort();
       downloadAbortRef.current = null;
     };
-  }, [absolutePath, sessionId]);
+  }, [filePath, sessionId]);
 
   const openTicketSheet = async (
     signal: AbortSignal,
@@ -152,7 +152,7 @@ function useWorkspaceFileDownload({
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId, path: absolutePath }),
+        body: JSON.stringify({ sessionId, path: filePath }),
         signal,
       });
       if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
@@ -306,6 +306,7 @@ function ReadyDownloadBar({
 
 /** Reveals the file's containing folder locally and downloads the original bytes. */
 export function DocumentDownload({
+  filePath,
   absolutePath,
   sessionId,
   label,
@@ -318,7 +319,8 @@ export function DocumentDownload({
   openFolderFailedLabel,
   revealFolder,
 }: WorkspaceDownloadLabels & {
-  readonly absolutePath: string;
+  readonly filePath: string;
+  readonly absolutePath?: string;
   readonly sessionId: string;
   readonly label: string;
   readonly openFolderLabel: string;
@@ -339,7 +341,7 @@ export function DocumentDownload({
   };
   const { downloadUrl, downloading, iosPwa, ready, setReady, startIosPwaDownload } =
     useWorkspaceFileDownload({
-      absolutePath,
+      filePath,
       sessionId,
       downloadFailedLabel,
       onToast: showToast,
@@ -354,29 +356,31 @@ export function DocumentDownload({
 
   return (
     <>
-      <Tooltip label={openFolderLabel} side="bottom" delayMs={500}>
-        <button
-          type="button"
-          className={css.tool}
-          aria-label={openFolderLabel}
-          disabled={opening}
-          onClick={() => {
-            setOpening(true);
-            void (async () => {
-              try {
-                const result = await revealFolder(absolutePath);
-                if (!result.ok) showError(result.error.message);
-              } catch (error) {
-                showError(error instanceof Error ? error.message : undefined);
-              } finally {
-                setOpening(false);
-              }
-            })();
-          }}
-        >
-          <IconFolderOpenOutlineRegular />
-        </button>
-      </Tooltip>
+      {absolutePath !== undefined && (
+        <Tooltip label={openFolderLabel} side="bottom" delayMs={500}>
+          <button
+            type="button"
+            className={css.tool}
+            aria-label={openFolderLabel}
+            disabled={opening}
+            onClick={() => {
+              setOpening(true);
+              void (async () => {
+                try {
+                  const result = await revealFolder(absolutePath);
+                  if (!result.ok) showError(result.error.message);
+                } catch (error) {
+                  showError(error instanceof Error ? error.message : undefined);
+                } finally {
+                  setOpening(false);
+                }
+              })();
+            }}
+          >
+            <IconFolderOpenOutlineRegular />
+          </button>
+        </Tooltip>
+      )}
       <Tooltip label={label} side="bottom" delayMs={500}>
         {iosPwa ? (
           <button
@@ -410,7 +414,7 @@ export function DocumentDownload({
 
 /** Primary download CTA shown inside the unpreviewable document empty state. */
 export function DocumentDownloadAction({
-  absolutePath,
+  filePath,
   sessionId,
   ctaLabel,
   preparingLabel,
@@ -420,7 +424,7 @@ export function DocumentDownloadAction({
   downloadOpenLabel,
   downloadDismissLabel,
 }: WorkspaceDownloadLabels & {
-  readonly absolutePath: string;
+  readonly filePath: string;
   readonly sessionId: string;
   readonly ctaLabel: string;
   readonly preparingLabel: string;
@@ -431,7 +435,7 @@ export function DocumentDownloadAction({
   };
   const { downloadUrl, downloading, iosPwa, ready, setReady, startIosPwaDownload } =
     useWorkspaceFileDownload({
-      absolutePath,
+      filePath,
       sessionId,
       downloadFailedLabel,
       onToast: showToast,

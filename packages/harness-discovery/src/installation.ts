@@ -21,6 +21,7 @@ export function runInstallationCommand(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
   timeout = 30_000,
+  cwd?: string,
 ): Promise<string> {
   const env = withNodeRuntimeOnPath(environment);
   const invocation = /\.[cm]?js$/i.test(command)
@@ -32,7 +33,7 @@ export function runInstallationCommand(
       invocation.arguments,
       {
         env,
-        cwd: env.HOME ?? env.USERPROFILE ?? homedir(),
+        cwd: cwd ?? env.HOME ?? env.USERPROFILE ?? homedir(),
         encoding: "utf8",
         timeout,
         killSignal: "SIGKILL",

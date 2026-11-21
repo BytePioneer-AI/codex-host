@@ -69,8 +69,10 @@ describe("Renderer Model picker refresh", () => {
       control.modelMenu.removeAttribute("popover");
       let open = false;
       const matches = control.modelMenu.matches.bind(control.modelMenu);
-      control.modelMenu.matches = (selector) =>
-        selector === ":popover-open" ? open : matches(selector);
+      control.modelMenu.matches = ((selector: string) =>
+        selector === ":popover-open"
+          ? open
+          : matches(selector)) as typeof control.modelMenu.matches;
       control.modelMenu.showPopover = () => {
         open = true;
       };

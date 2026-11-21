@@ -78,7 +78,9 @@ export async function prepareLocalCodex(input: {
     arguments: sharedDesktop
       ? ["-c", "features.code_mode_host=true", "app-server"]
       : [...input.arguments],
-    environment: sharedDesktop ? withoutDesktopToolContext(input.environment) : input.environment,
+    environment: input.deferStart
+      ? withoutDesktopToolContext(input.environment)
+      : input.environment,
   };
   if (startupFile) {
     try {
@@ -116,7 +118,7 @@ export async function prepareLocalCodex(input: {
     recovery: {},
     shouldReplaceIdleBackend: () =>
       running !== undefined &&
-      ((sharedDesktop && desktopToolContextChanged(running, nextStartup())) ||
+      ((Boolean(input.deferStart) && desktopToolContextChanged(running, nextStartup())) ||
         codexRuntimeFilesChanged(backendFiles)),
     createBackend: () => {
       try {
@@ -175,26 +177,36 @@ export async function prepareLocalCodex(input: {
     return snapshot();
   });
   async function applyStartup(configuration: NativeStartup, attachment: AbortSignal) {
-    if (
-      !input.deferStart ||
-      scope.closed ||
-      attachment.aborted ||
-      (input.remoteControl &&
-        (startupConfigured || scope.owner.running || scope.owner.hasActiveWork))
-    )
-      return;
-    const stockCodexPath = await resolveOfficialCodexExecutable(
-      configuration.stockCodexPath,
-      configuration.environment,
-    );
-    if (scope.closed || attachment.aborted) return;
-    if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
-    const next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
-    if (input.remoteControl) {
-      if (startupConfigured || scope.owner.running || scope.owner.hasActiveWork) return;
-      startupConfigured = true;
-      startup = next;
-      return;
+    if (!input.deferStart || scope.closed || attachment.aborted) return;
+    const isRemoteInvocationLocked = () =>
+      Boolean(input.remoteControl) &&
+      (startupConfigured || scope.owner.running || scope.owner.hasActiveWork);
+    let lockRemoteInvocation = isRemoteInvocationLocked();
+    let next: NativeStartup;
+    if (lockRemoteInvocation) {
+      next = {
+        ...startup,
+        arguments: [...startup.arguments],
+        environment: configuration.environment,
+      };
+    } else {
+      const stockCodexPath = await resolveOfficialCodexExecutable(
+        configuration.stockCodexPath,
+        configuration.environment,
+      );
+      if (scope.closed || attachment.aborted) return;
+      lockRemoteInvocation = isRemoteInvocationLocked();
+      if (lockRemoteInvocation) {
+        next = {
+          ...startup,
+          arguments: [...startup.arguments],
+          environment: configuration.environment,
+        };
+      } else {
+        if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
+        next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
+        if (input.remoteControl) startupConfigured = true;
+      }
     }
     if (startupFile) {
       try {
@@ -220,7 +232,9 @@ export async function prepareLocalCodex(input: {
       JSON.stringify(current.arguments) !== JSON.stringify(next.arguments) ||
       desktopToolContextChanged(current, next) ||
       (scope.owner.running && codexRuntimeFilesChanged(backendFiles));
-    startup = { ...next, environment: withoutDesktopToolContext(next.environment) };
+    if (!lockRemoteInvocation) {
+      startup = { ...next, environment: withoutDesktopToolContext(next.environment) };
+    }
     if (desktopStartups.has(attachment)) desktopStartups.delete(attachment);
     else {
       attachment.addEventListener("abort", () => desktopStartups.delete(attachment), {

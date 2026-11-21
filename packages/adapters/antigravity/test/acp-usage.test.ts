@@ -90,7 +90,7 @@ describe("Antigravity Session usage", () => {
   it("meters historical and completed live requests without waiting for the Turn to end", async () => {
     const meter = new UsageMeter();
     const prices = { find: () => ({ input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 }) };
-    const apply = (update: Awaited<ReturnType<typeof tracker.collectNewTranscriptRequests>>) => {
+    const apply = (update: Awaited<ReturnType<typeof tracker.replayHistoricalRequests>>) => {
       for (const request of update.requests) meter.recordRequest(request, "turn-live");
       meter.recordHistory(update.complete);
       return meter.derive(update.usage, prices);

@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -1145,6 +1145,179 @@ async function nextEvent(iterator: AsyncIterator<HarnessOutput>) {
 }
 
 describe("OMP Adapter usage metering", () => {
+  it("switches quota when a response starts and restores the confirmed account on failure", async () => {
+    const root = path.join(tmpdir(), `codexhost-omp-quota-${randomUUID()}`);
+    await mkdir(root);
+    const project = path.join(root, "project");
+    await mkdir(project);
+    await writeFile(path.join(project, ".env"), "TEST_QUOTA=0.4", "utf8");
+    const command = path.join(root, "omp.cjs");
+    const reports = [
+      {
+        provider: "synthetic",
+        metadata: { credentialId: 1 },
+        limits: [
+          { amount: { usedFraction: 0.25 }, window: { durationMs: 18_000_000 } },
+          { amount: { usedFraction: 0.5 }, window: { durationMs: 604_800_000 } },
+        ],
+      },
+      {
+        provider: "synthetic",
+        metadata: { credentialId: 2 },
+        limits: [{ amount: { usedFraction: 0.75 } }],
+      },
+      {
+        provider: "other",
+        metadata: { credentialId: 1 },
+        limits: [{ amount: { usedFraction: 0.9 } }],
+      },
+    ];
+    const transport = new FakeOmpTransport();
+    transport.autoCompleteTurn = false;
+    const launches: OmpRpcSessionOptions[] = [];
+    const probes = path.join(root, "probes");
+    let onAssistantStart: OmpRpcSessionOptions["onAssistantStart"];
+    let onAssistantSummary: OmpRpcSessionOptions["onAssistantSummary"];
+    let onUsage: OmpRpcSessionOptions["onUsage"];
+    const adapter = new OmpAdapter(
+      { command, environment: { HOME: root, OMP_QUOTA_TEST_BASE: "base" } },
+      {
+        createTransport: (options) => {
+          launches.push(options);
+          onAssistantSummary = options.onAssistantSummary;
+          onAssistantStart = options.onAssistantStart;
+          onUsage = options.onUsage;
+          return transport;
+        },
+      },
+    );
+    try {
+      await writeFile(
+        command,
+        `require("node:fs").appendFileSync(${JSON.stringify(probes)}, process.env.OMP_QUOTA_TEST_PROFILE || "-");
+const reports = ${JSON.stringify(reports)};
+if (process.env.OMP_QUOTA_TEST_PROFILE === "b") reports[0].limits[0].amount.usedFraction = 0.6;
+const dotenv = require("node:fs").existsSync(".env") && require("node:fs").readFileSync(".env", "utf8");
+if (dotenv) reports[0].limits[0].amount.usedFraction = Number(dotenv.split("=")[1]);
+console.log(JSON.stringify({ reports }));`,
+        "utf8",
+      );
+      const opened = await adapter.open({ kind: "create", cwd: root });
+      if (!opened.ok || !opened.value.readAccountCredits) throw new Error("No session credits");
+      const session = opened.value;
+      expect(await session.readAccountCredits?.()).toBeNull();
+      const iterator = session.outputs[Symbol.asyncIterator]();
+      await session.execute({
+        type: "turn.start",
+        turnId: "turn-quota" as HostTurnId,
+        input: [{ type: "text", text: "hi" }],
+      });
+      const assistant = { role: "assistant", provider: "synthetic", stopReason: "stop" };
+      if (!onAssistantStart || !onAssistantSummary || !onUsage)
+        throw new Error("Missing account observers");
+      onAssistantStart({ ...assistant, credentialId: 1 });
+      expect(await session.readAccountCredits?.()).toMatchObject({
+        usedPercent: 25,
+        periodType: "five_hour",
+        productUsage: [{ usagePercent: 50, periodType: "seven_day" }],
+      });
+      onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 20, startedAtMs: null });
+      onAssistantStart({ ...assistant, credentialId: 2 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onAssistantStart({ ...assistant, provider: "other", credentialId: 1 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 90 });
+      const failure = { ...assistant, provider: "other", credentialId: 1, stopReason: "error" };
+      onAssistantSummary([{ ...assistant, credentialId: 2 }, failure]);
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onAssistantSummary([{ ...assistant, credentialId: 2 }, assistant, failure]);
+      expect(await session.readAccountCredits?.()).toBeNull();
+      onUsage({ message: { ...assistant, credentialId: 2 }, completedAtMs: 40, startedAtMs: null });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      onUsage({
+        message: { ...assistant, credentialId: 99 },
+        completedAtMs: 50,
+        startedAtMs: null,
+      });
+      expect(await session.readAccountCredits?.()).toBeNull();
+      onUsage({ message: { ...assistant, credentialId: 1 }, completedAtMs: 60, startedAtMs: null });
+      onAssistantStart({ ...assistant, credentialId: 2 });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 75 });
+      transport.history = {
+        entries: historyTurn({
+          userId: "cancelled-user",
+          assistantId: "cancelled-assistant",
+          parentId: null,
+          text: "Partial response",
+        }),
+        leafId: "cancelled-assistant",
+      };
+      transport.completeWithoutHistory({ text: "", cancelled: true, agentInvoked: true });
+      expect((await nextTurnEvents(iterator)).at(-1)).toMatchObject({
+        type: "turn.completed",
+        outcome: { status: "cancelled" },
+      });
+      expect(await session.readAccountCredits?.()).toMatchObject({ usedPercent: 25 });
+      await session.close();
+
+      transport.state = { ...transport.state, sessionFile: path.join(root, "session.jsonl") };
+      const nativeRef = nativeSessionRefSchema.parse({
+        harnessId: "omp",
+        nativeSessionId: transport.state.sessionId,
+        formatVersion: 1,
+        locator: { sessionFile: transport.state.sessionFile },
+      });
+      transport.history = {
+        entries: [
+          {
+            id: "active",
+            parentId: null,
+            type: "message",
+            message: { ...assistant, credentialId: 1 },
+          },
+          {
+            id: "other",
+            parentId: null,
+            type: "message",
+            message: { ...assistant, credentialId: 2 },
+          },
+        ],
+        leafId: "active",
+      };
+      const resume = (profile: string, threadId: string, cwd = root) =>
+        adapter.open({
+          kind: "resume",
+          cwd,
+          nativeRef,
+          environment: { OMP_QUOTA_TEST_PROFILE: profile, CODEXHOST_THREAD_ID: threadId },
+        });
+      const resumed = await Promise.all([
+        resume("a", "thread-1"),
+        resume("a", "thread-2"),
+        resume("b", "thread-3"),
+        resume("a", "thread-4", project),
+      ]);
+      expect(resumed.every((result) => result.ok)).toBe(true);
+      expect(
+        launches.slice(-4).map((launch) => launch.environment?.OMP_QUOTA_TEST_PROFILE),
+      ).toEqual(["a", "a", "b", "a"]);
+      expect(launches.at(-1)?.environment?.OMP_QUOTA_TEST_BASE).toBe("base");
+      const credits = await Promise.all(
+        resumed.map((result) => result.ok && result.value.readAccountCredits?.()),
+      );
+      expect(credits.map((value) => (value ? value.usedPercent : undefined))).toEqual([
+        25, 25, 60, 40,
+      ]);
+      expect([...(await readFile(probes, "utf8"))].sort().join("")).toBe("-aab");
+
+      expect((await adapter.inspectAccounts())[0]?.credits?.usedPercent).toBe(25);
+      await writeFile(path.join(root, ".env"), "TEST_QUOTA=0.55", "utf8");
+      expect((await adapter.inspectAccounts())[0]?.credits?.usedPercent).toBeCloseTo(55);
+    } finally {
+      await adapter.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("declares empty history on create and meters live assistant messages", async () => {
     const transport = new FakeOmpTransport();
     let onUsage: OmpRpcSessionOptions["onUsage"];

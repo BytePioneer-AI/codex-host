@@ -795,8 +795,8 @@ export type RendererComposerModelContractState = "draft" | "conversation" | "mis
 
 export function inspectComposerModelContract(
   composer: Element,
-  target = findComposerModelTarget(composer),
 ): RendererComposerModelContractState {
+  const target = findComposerModelTarget(composer);
   if (target?.[0] === "default") return "draft";
   if (target?.[0] === "conversation") return "conversation";
   const domIdentity = findComposerDomIdentity(composer);

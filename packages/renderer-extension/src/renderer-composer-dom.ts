@@ -346,28 +346,17 @@ function nativePermissionModeControlForComposer(composer: Element): HTMLElement 
   return candidate && isNativePermissionModeControlCandidate(candidate) ? candidate : null;
 }
 
-function nativeModelCandidates(composer: Element): HTMLElement[] {
-  return [
+function nativeModelControlForComposer(composer: Element): HTMLElement | null {
+  const candidates = [
     ...composer.querySelectorAll<HTMLElement>(
       'button[aria-haspopup="menu"], button[data-composer-navigation-target="reasoning"]',
     ),
   ].filter(
     (button) =>
-      !isOwnedRendererControl(button) && button.closest(CODEX_COMPOSER_SELECTOR) === composer,
+      !isOwnedRendererControl(button) &&
+      button.closest(CODEX_COMPOSER_SELECTOR) === composer &&
+      (isNativeModelControlCandidate(button) || isNativeModelRetryButton(button, composer)),
   );
-}
-
-function verifiedNativeModelCandidates(
-  composer: Element,
-  candidates: HTMLElement[],
-): HTMLElement[] {
-  return candidates.filter(
-    (button) => isNativeModelControlCandidate(button) || isNativeModelRetryButton(button, composer),
-  );
-}
-
-function nativeModelControlForComposer(composer: Element): HTMLElement | null {
-  const candidates = verifiedNativeModelCandidates(composer, nativeModelCandidates(composer));
   return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
@@ -429,23 +418,20 @@ export function inspectRendererComposerContract(
     );
     const allButtons = composerButtonsWithin(composer);
     const sendButton = sendButtonWithin(composer) ?? allButtons.at(-1) ?? null;
-    if (editors.length === 1 && sendButton !== null) {
-      result.activeComposerCount += 1;
-      const candidates = nativeModelCandidates(composer);
-      const verified = verifiedNativeModelCandidates(composer, candidates);
-      result.modelCandidateCount += candidates.filter(
-        (button) =>
-          button.getAttribute("data-composer-navigation-target") === "reasoning" ||
-          verified.includes(button),
-      ).length;
-      result.verifiedModelCandidateCount += verified.length;
-    }
+    if (editors.length === 1 && sendButton !== null) result.activeComposerCount += 1;
     if (sendButton) {
       result.sendButtonCount += 1;
       if (trailingActionAnchor(sendButton).parentElement !== null) {
         result.trailingActionOwnerCount += 1;
       }
     }
+    const modelCandidates = [
+      ...composer.querySelectorAll<HTMLElement>('button[aria-haspopup="menu"]'),
+    ].filter((element) => !isOwnedRendererControl(element));
+    result.modelCandidateCount += modelCandidates.length;
+    result.verifiedModelCandidateCount += modelCandidates.filter(
+      isNativeModelControlCandidate,
+    ).length;
     const permissionCandidates = [
       ...composer.querySelectorAll<HTMLElement>(
         'button[aria-haspopup="menu"][data-composer-navigation-target="permissions"]',

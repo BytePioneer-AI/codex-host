@@ -12,13 +12,6 @@ interface ScopedDraftModelBinding {
   creationModes?: readonly Draft[];
 }
 
-type BindingState = "bound" | "missing" | "ambiguous";
-interface BindingResolution {
-  writer: BindingState;
-  creationMode: BindingState | "unmarkable";
-  binding: ScopedDraftModelBinding | null;
-}
-
 function record(value: unknown): Draft | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Draft)
@@ -66,13 +59,24 @@ function modelContext(row: readonly unknown[]) {
   return { update: row[current ? 24 : 13 + offset], usesAccountPreferences, result };
 }
 
-function creationModeFor(row: unknown, model: Draft): Draft | null {
+function creationModeFor(
+  row: unknown,
+  model: Draft,
+  owner: unknown,
+  draftId: string,
+): Draft | null {
   if (!Array.isArray(row) || (row.length !== 52 && row.length !== 55)) return null;
   const current = row.length === 55;
   const settings = record(row[current ? 44 : 41]);
   const mode = record(row[current ? 47 : 44]);
   const result = record(row[current ? 54 : 51]);
   const modelSettings = record(model.modelSettings);
+  // Desktop 26.1117's Composer memoizes the actual submit mode and client Thread ID.
+  if (
+    current &&
+    (!Array.isArray(owner) || owner.length !== 263 || owner[82] !== mode || owner[85] !== draftId)
+  )
+    return null;
   return mode &&
     settings &&
     modelSettings &&
@@ -90,13 +94,11 @@ function creationModeFor(row: unknown, model: Draft): Draft | null {
     : null;
 }
 
-function resolveScopedDraftModelBinding(
+export function findScopedDraftModelBinding(
   composer: DraftElement,
   draftId: string,
-): BindingResolution {
-  const missing = { writer: "missing", creationMode: "missing", binding: null } as const;
-  const ambiguous = { ...missing, writer: "ambiguous" } as const;
-  if (!draftId.startsWith("client-new-thread:")) return missing;
+): ScopedDraftModelBinding | null {
+  if (!draftId.startsWith("client-new-thread:")) return null;
   let element: DraftElement | null =
     composer.querySelector?.('[data-codex-composer], [contenteditable="true"][role="textbox"]') ??
     composer;
@@ -133,16 +135,15 @@ function resolveScopedDraftModelBinding(
           candidate.draft !== identity.draft ||
           candidate.usesAccountPreferences !== model.usesAccountPreferences
         )
-          return ambiguous;
+          return null;
         // The owning collaboration hook allocates its row before its nested Model hook.
-        const mode = creationModeFor(data[index - 1], model.result);
+        const mode = creationModeFor(data[index - 1], model.result, data[0], draftId);
         if (mode) candidate.modes.add(mode);
         candidates.set(identity.update, candidate);
       }
     }
   }
   const writers = [...candidates.values()];
-  if (!writers.length) return missing;
   const creationOwners = writers.filter(({ modes }) => modes.size > 0);
   const selected =
     writers.length === 1 ? writers[0] : creationOwners.length === 1 ? creationOwners[0] : undefined;
@@ -158,42 +159,12 @@ function resolveScopedDraftModelBinding(
             writer.usesAccountPreferences !== selected.usesAccountPreferences,
         )))
   )
-    return { ...ambiguous, creationMode: creationOwners.length > 1 ? "ambiguous" : "missing" };
+    return null;
 
   const [mode] = selected.modes;
-  const creationMode =
-    selected.modes.size > 1
-      ? "ambiguous"
-      : !mode
-        ? "missing"
-        : Object.isExtensible(mode)
-          ? "bound"
-          : "unmarkable";
+  if (selected.modes.size > 1 || (mode && !Object.isExtensible(mode))) return null;
   const { update, usesAccountPreferences } = selected;
-  return {
-    writer: "bound",
-    creationMode,
-    binding:
-      creationMode === "ambiguous" || creationMode === "unmarkable"
-        ? null
-        : {
-            update,
-            usesAccountPreferences,
-            ...(mode ? { creationModes: [mode] } : {}),
-          },
-  };
-}
-
-export function findScopedDraftModelBinding(
-  composer: DraftElement,
-  draftId: string,
-): ScopedDraftModelBinding | null {
-  return resolveScopedDraftModelBinding(composer, draftId).binding;
-}
-
-export function inspectScopedDraftModelBinding(composer: DraftElement, draftId: string) {
-  const { writer, creationMode } = resolveScopedDraftModelBinding(composer, draftId);
-  return { writer, creationMode };
+  return { update, usesAccountPreferences, ...(mode ? { creationModes: [mode] } : {}) };
 }
 
 export function createScopedDraftModelWriter() {

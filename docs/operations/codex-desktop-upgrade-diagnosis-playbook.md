@@ -70,8 +70,6 @@ Codex Desktop 启动
 
 **重要：Adapter `ready` 不是最终验收标准。** 本次事故中 Adapter 已经是 `ready`，但 Agent 点击仍被旧的 prewarm 清理 RPC 中断。
 
-`audit:codex-desktop` 将 Composer Model 检查分为身份、草稿写入器、后台创建 Collaboration Mode、原生 Model 按钮。前两项通过不代表后台创建能识别草稿归属；原生重试按钮也可能没有菜单属性。核对唯一的已提交 owner 与引用关系，不凭行宽、显示文字或图标认定目标。只读 audit 不会写草稿或证明真实创建路由。
-
 ## 二、第一步：记录现场版本和启动方式
 
 Remote Control 重连后，原生 Renderer Manager 可能仍是同一个对象，但其 `processHandle` 已失效。若首个请求报 `no active process for process handle`，还应核对原生 app scope 的连接状态与 `revision$`。旧管理器路径在这些信号存在时按连接代次释放桥接，断开期间不发送请求，重连后的请求建立新桥接；不会自动重放已经提交的用户消息。旧版没有连接信号时保留原有管理器身份检查，SSH 路由不受此检查影响。

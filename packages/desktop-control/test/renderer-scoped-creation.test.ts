@@ -305,6 +305,7 @@ it.each([52, 55])("uses a verified %i-slot mode to select the owning draft write
           51: { activeMode },
         });
   const data = [creation, model(update), identity(update)];
+  if (width === 55) data.unshift(tuple(263, { 82: activeMode, 85: draftId }));
   const creationOwner = { updateQueue: { memoCache: { data } } };
   const element = {
     parentElement: null,
@@ -322,9 +323,20 @@ it.each([52, 55])("uses a verified %i-slot mode to select the owning draft write
   expect(draft.modelSettingsPersistAsDefault).toBe(false);
   writer.apply(draftId, binding, null);
   expect(draft.modelSettings).toBe(original.modelSettings);
+  const size = data.length;
   data.push(creation, model(otherUpdate), identity(otherUpdate));
   expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
-  data.splice(3);
+  data.splice(size);
+  if (width === 55) {
+    const unrelated = { ...activeMode };
+    data[1] = Object.assign([...creation], {
+      47: unrelated,
+      52: unrelated,
+      54: { activeMode: unrelated },
+    });
+    expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
+    data[1] = creation;
+  }
   Object.freeze(activeMode);
   expect(findScopedDraftModelBinding(element, draftId)).toBeNull();
 });

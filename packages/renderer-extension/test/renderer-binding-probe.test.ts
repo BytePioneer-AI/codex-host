@@ -578,7 +578,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(previous.getAttribute("aria-hidden")).toBeNull();
     expect(replacement.hidden).toBe(true);
     expect(replacement.getAttribute("aria-hidden")).toBe("true");
-    expect(control.nativeModelControl?.element === replacement).toBe(true);
+    expect(control.nativeModelControl?.element).toBe(replacement);
 
     live = [retry, nested, injected, loading];
     reconcileComposerNativeControls(control, true, true);

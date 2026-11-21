@@ -10,7 +10,6 @@ export {
 } from "./renderer-native-schedule-sidebar.js";
 export {
   findScopedDraftModelBinding,
-  inspectScopedDraftModelBinding,
   createScopedDraftModelWriter,
 } from "./renderer-scoped-draft-model.js";
 export {

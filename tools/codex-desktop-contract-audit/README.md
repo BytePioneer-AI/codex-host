@@ -32,15 +32,6 @@ npm run audit:codex-desktop -- --mode controlled
 
 Controlled mode reuses the existing production `RendererControlSession`. It can reload the Renderer and install Title, Draft/Prewarm, and Renderer binding policies. It still does not automatically submit, create a Thread, open Settings, execute Fork, or exercise title creation, so those behavior checks remain `unverified`.
 
-## Composer Model surfaces
-
-The report distinguishes `model` (draft or Thread identity), `draft-writer` (the
-scoped draft setter), `creation-mode` (the markable native collaboration mode
-used for background creation), and `model-button` (the verified native menu or
-retry control). A resolved draft ID or a ready Adapter does not prove the other
-contracts. An older report is accepted as a baseline without the newer surfaces.
-These checks do not call setters, tag modes, activate controls or exercise routing.
-
 ## Codex usage gate surface
 
 The `codex-usage-gate` surface covers `renderer-codex-usage-gate.ts`, which lets an external Harness submit while the ChatGPT-signed-in Codex subscription is out of usage. For each Composer with an editor it records bounded counts:

@@ -34,6 +34,7 @@ import {
   type HarnessError,
   type HarnessSessionCapabilities,
 } from "@codexhost/harness-adapter";
+import { sessionImportTitle } from "@codexhost/harness-adapter/session-import";
 import type { HarnessModelCatalog, HostTurnId } from "@codexhost/shared-contracts";
 import { decodeOpenCodeModelRef, decodeOpenCodeVariant } from "../model-catalog.js";
 import { openCodeCommandCatalog } from "../opencode-adapter.js";
@@ -357,14 +358,11 @@ export class V2Session implements HarnessSession {
   }
 
   #onEvent(event: OpenCodeEvent) {
-    const active = this.#active;
-    if (
-      !active ||
-      !("data" in event) ||
-      !("sessionID" in event.data) ||
-      event.data.sessionID !== this.info.id
-    )
+    if (!("data" in event) || !("sessionID" in event.data) || event.data.sessionID !== this.info.id)
       return;
+    if (event.type === "session.renamed") this.#publishTitle(event.data.title);
+    const active = this.#active;
+    if (!active) return;
     if (
       FIRST_OUTPUT_EVENTS.has(event.type) &&
       "assistantMessageID" in event.data &&
@@ -591,6 +589,7 @@ export class V2Session implements HarnessSession {
       type: "session.state.changed",
       state: v2State(this.info, this.catalog, this.policy),
     });
+    this.#publishTitle(this.info.title);
     this.#emit({
       type: "session.usage.changed",
       usage: this.#usage(),
@@ -604,6 +603,12 @@ export class V2Session implements HarnessSession {
       outcome: { ...turn.outcome, ...(turn.checkpoint ? { checkpoint: turn.checkpoint } : {}) },
     });
     active.resolve();
+  }
+
+  #publishTitle(value: string | undefined) {
+    const title = sessionImportTitle(value);
+    if (title && !/^New session - \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(title))
+      this.#emit({ type: "session.title.changed", title });
   }
 
   #closeInteraction(active: ActiveTurn, id: string, reason: "responded" | "cancelled" | "expired") {

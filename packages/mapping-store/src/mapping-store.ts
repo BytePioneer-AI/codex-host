@@ -902,8 +902,16 @@ export class MappingStore {
     );
   }
 
-  async setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1> {
-    return this.#update(hostThreadId, (current) => ({ ...current, title }));
+  async setTitle(
+    hostThreadId: HostThreadId,
+    title: string,
+    options?: { ifUnnamed?: boolean },
+  ): Promise<StoredThreadRecordV1> {
+    return this.#update(
+      hostThreadId,
+      (current) => (options?.ifUnnamed && current.title ? null : { ...current, title }),
+      options?.ifUnnamed === true,
+    );
   }
 
   /** Marks conversation activity that changes nothing else in the record, such as a Turn starting or ending. */

@@ -276,6 +276,32 @@ describe("OpenCode v2 native history", () => {
 });
 
 describe("OpenCode v2 Session lifecycle", () => {
+  it.each(["at completion", "after completion"])("publishes the native title %s", async (when) => {
+    const f = fixture();
+    const placeholder = "New session - 2026-11-21T12:00:00.000Z";
+    const title = "Explain the host protocol";
+    f.client.session.get.mockResolvedValue({ ...info, title: placeholder });
+    await f.start();
+    expect((await f.turn()).ok).toBe(true);
+    if (when === "at completion") f.client.session.get.mockResolvedValue({ ...info, title });
+    f.messages.push(assistant("Done."), idle());
+    f.emit("session.execution.succeeded");
+    await vi.waitFor(() => expect(f.completed()).toHaveLength(1));
+
+    if (when === "after completion") {
+      f.emit("session.renamed", { title: placeholder });
+      f.emit("session.renamed", { sessionID: "other", title: "Other Session" });
+      f.emit("session.renamed", { title });
+    }
+    await vi.waitFor(() =>
+      expect(
+        f.events.filter(
+          (output) => output.kind === "event" && output.event.type === "session.title.changed",
+        ),
+      ).toEqual([{ kind: "event", event: { type: "session.title.changed", title } }]),
+    );
+  });
+
   it.each([false, true])(
     "completes reasoning and text with independent ordinals (before admission: %s)",
     async (beforeAdmission) => {

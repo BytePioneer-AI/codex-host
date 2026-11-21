@@ -217,6 +217,7 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
         let start = || -> Result<(), Box<dyn Error>> {
             let _guard =
                 host_service::lifecycle_lock(&resolved.data, "web-service-lifecycle.lock")?;
+            crate::service_update::ensure_start_allowed(&resolved.data)?;
             web_service::ensure(&resolved)
         };
         if let Err(error) = start() {
@@ -228,7 +229,7 @@ pub fn start_for_launch(options: &LaunchOptions, desktop_root: Option<&Path>) {
     }
 }
 
-fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
+fn validate_web_and_host_installation(options: &Options) -> Result<(), Box<dyn Error>> {
     if let Some((runtime, _)) = host_service::current_runtime(&options.data) {
         let runtime = runtime
             .canonicalize()
@@ -253,19 +254,24 @@ fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
             return Err("The running Web belongs to a different installation".into());
         }
     }
-    if let Some((launcher, _)) = desktop_attachment::managed_processes(&options.data)?
-        && launcher.executable.canonicalize()? != env::current_exe()?.canonicalize()?
-    {
-        return Err("The running Desktop belongs to a different installation".into());
-    }
+    Ok(())
+}
+
+fn validate_installation(options: &Options) -> Result<(), Box<dyn Error>> {
+    validate_web_and_host_installation(options)?;
+    desktop_attachment::running_for_update(&options.data)
+        .map_err(|error| format!("Desktop ownership check failed: {error}"))?;
     Ok(())
 }
 
 fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
-    let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
     validate_installation(options)?;
+    // Stop Desktop before taking web-service-lifecycle.lock: the Launcher joins its
+    // background Web startup thread before exiting, and that thread waits on the same lock.
     desktop_attachment::stop_managed(&options.data)
         .map_err(|error| format!("stopping Desktop failed: {error}"))?;
+    let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
+    validate_web_and_host_installation(options)?;
     web_service::stop(options).map_err(|error| format!("stopping Web failed: {error}"))?;
     if host_service::current_runtime(&options.data).is_some() {
         host_service::run(&options.host_arguments("stop"))

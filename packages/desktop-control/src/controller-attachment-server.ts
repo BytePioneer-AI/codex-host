@@ -9,6 +9,8 @@ import {
 } from "@codexhost/shared-contracts";
 import { isLocalPageUrl, serveLocalPage, type LocalPageHandle } from "./local-page-control.js";
 
+import type { ControllerLifecycle } from "./controller-lifecycle.js";
+
 const MAX_REQUEST_BYTES = REMOTE_CONTROLLER_REQUEST_MAX_BYTES;
 
 export interface ControllerAttachmentServer {
@@ -19,6 +21,7 @@ export interface StartControllerAttachmentServerOptions {
   port: number;
   nonce: string;
   attach(): Promise<void>;
+  lifecycle?: ControllerLifecycle;
   openLocalPage?(url: string): Promise<LocalPageHandle>;
   remoteConnections?(request: RemoteConnectionsRequest): Promise<RemoteConnectionsReply>;
 }
@@ -75,6 +78,11 @@ export async function startControllerAttachmentServer(
       if (newline < 0) return;
       handled = true;
       const line = request.slice(0, newline).replace(/\r$/, "");
+      if (options.lifecycle && line.startsWith("LIFECYCLE ")) {
+        socket.off("data", receive);
+        options.lifecycle(socket, line, request.slice(newline + 1));
+        return;
+      }
       const remotePrefix = `REMOTE ${options.nonce} `;
       if (options.remoteConnections && line.startsWith(remotePrefix)) {
         let input;

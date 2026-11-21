@@ -314,25 +314,25 @@ describe("Delegation settings page", () => {
         agents: [
           {
             agent: "claude-code",
-            plugin: pluginDescriptor("claude-code", "Claude Code"),
+            plugin: pluginDescriptor("claude-code"),
             availability: "ready",
             error: null,
           },
           {
             agent: "grok",
-            plugin: pluginDescriptor("grok", "Grok"),
+            plugin: pluginDescriptor("grok"),
             availability: "ready",
             error: null,
           },
           {
             agent: "pi",
-            plugin: pluginDescriptor("pi", "Pi"),
+            plugin: pluginDescriptor("pi"),
             availability: "notInstalled",
             error: null,
           },
           {
             agent: "opencode",
-            plugin: pluginDescriptor("opencode", "OpenCode"),
+            plugin: pluginDescriptor("opencode"),
             availability: "unavailable",
             error: null,
           },
@@ -344,7 +344,7 @@ describe("Delegation settings page", () => {
         agents: [
           {
             agent: "antigravity",
-            plugin: pluginDescriptor("antigravity", "Antigravity"),
+            plugin: pluginDescriptor("antigravity"),
             availability: "ready",
             error: null,
           },
@@ -558,7 +558,7 @@ describe("Delegation settings page", () => {
 
   it("syncs external preference updates, retries failed catalog loads, and ignores stale responses after unmount", async () => {
     const { diagnostics } = makeDiagnostics(baseSnapshot());
-    let listener: (() => void) | null = null;
+    const subscription: { listener: (() => void) | null } = { listener: null };
     let remoteState: Record<string, HarnessDelegationDefault> = {};
 
     const pendingCodex = deferred<HarnessInspection>();
@@ -578,9 +578,9 @@ describe("Delegation settings page", () => {
       getHarnessPreferences: vi.fn(async () => preferenceSnapshot(remoteState)),
       patchHarnessPreferences: vi.fn(async () => preferenceSnapshot(remoteState)),
       subscribeHarnessPreferences: vi.fn((cb) => {
-        listener = cb;
+        subscription.listener = cb;
         return () => {
-          listener = null;
+          subscription.listener = null;
         };
       }),
       inspectHarness,
@@ -605,7 +605,8 @@ describe("Delegation settings page", () => {
     remoteState = {
       "claude-code": { model: { id: harnessModelRefIdSchema.parse("sonnet-4-6") } },
     };
-    listener?.();
+    if (!subscription.listener) throw new Error("Expected a preference subscription");
+    subscription.listener();
     const claudeRow = rowFor(content, "claude-code");
     await vi.waitFor(() => expect(textOf(claudeRow)).toContain("sonnet-4-6"));
 
@@ -625,7 +626,7 @@ describe("Delegation settings page", () => {
     selectIn(codexRow, "model").dispatch("focus");
     cleanup?.();
     scope.dispose();
-    expect(listener).toBeNull();
+    expect(subscription.listener).toBeNull();
 
     pendingCodex.resolve(
       readyInspection({

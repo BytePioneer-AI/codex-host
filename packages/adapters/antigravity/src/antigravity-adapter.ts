@@ -719,11 +719,14 @@ export class AntigravitySession implements HarnessSession {
             return err("invalidRequest", "Command accepts only a text argument");
           prompt = `${descriptor.invocation}${typeof args.text === "string" && args.text.trim() ? ` ${args.text.trim()}` : ""}`;
         }
-        return this.execute({
-          type: "turn.start",
-          turnId: invocation.turnId,
-          input: [{ type: "text", text: prompt }],
-        });
+        return this.#startTurn(
+          {
+            type: "turn.start",
+            turnId: invocation.turnId,
+            input: [{ type: "text", text: prompt }],
+          },
+          true,
+        );
       },
     };
   }
@@ -778,36 +781,12 @@ export class AntigravitySession implements HarnessSession {
       | ModelSelectCompleted
     >
   > {
+    if (command.type === "turn.start") return this.#startTurn(command, false);
     if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
     try {
       switch (command.type) {
         case "turn.steer":
           return unsupportedSteer("Antigravity ACP");
-        case "turn.start": {
-          if (this.#active || this.#configuring || this.#historyOperation)
-            return err("sessionBusy", "Session is busy", true);
-          if (
-            !command.turnId ||
-            !command.input.length ||
-            !command.input.some((part) => typeof part.text === "string" && part.text.trim())
-          )
-            return err("invalidRequest", "Prompt and Turn ID must not be empty");
-          this.#postPromptBackground.length = 0;
-          const turn: ActiveTurn = {
-            turnId: command.turnId,
-            cancelled: false,
-            ended: false,
-            promptPhase: "notSubmitted",
-          };
-          this.#active = turn;
-          // A successor prompt ends the idle-output window of the previous Turn
-          // before the new Turn announces itself.
-          this.#settleBackground({ status: "succeeded" });
-          this.#lastCompletedTurnId = undefined;
-          this.#emit({ type: "turn.started", turnId: turn.turnId });
-          void this.#runTurn(turn, command);
-          return ok({ turnId: command.turnId });
-        }
         case "turn.cancel": {
           const turn = this.#active;
           if (!turn || turn.turnId !== command.turnId)
@@ -835,6 +814,36 @@ export class AntigravitySession implements HarnessSession {
         default:
           return await this.#select(command);
       }
+    } catch (error) {
+      return { ok: false, error: normalizeAntigravityError(error) };
+    }
+  }
+  #startTurn(command: TurnStartCommand, catalogCommand: boolean): HarnessResult<TurnStartAccepted> {
+    if (this.#closed || this.#faulted) return err("invalidState", "Session is closed");
+    if (this.#active || this.#configuring || this.#historyOperation)
+      return err("sessionBusy", "Session is busy", true);
+    if (
+      !command.turnId ||
+      !command.input.length ||
+      !command.input.some((part) => typeof part.text === "string" && part.text.trim())
+    )
+      return err("invalidRequest", "Prompt and Turn ID must not be empty");
+    try {
+      this.#postPromptBackground.length = 0;
+      const turn: ActiveTurn = {
+        turnId: command.turnId,
+        cancelled: false,
+        ended: false,
+        promptPhase: "notSubmitted",
+      };
+      this.#active = turn;
+      // A successor prompt ends the idle-output window of the previous Turn
+      // before the new Turn announces itself.
+      this.#settleBackground({ status: "succeeded" });
+      this.#lastCompletedTurnId = undefined;
+      this.#emit({ type: "turn.started", turnId: turn.turnId });
+      void this.#runTurn(turn, command, catalogCommand);
+      return ok({ turnId: command.turnId });
     } catch (error) {
       return { ok: false, error: normalizeAntigravityError(error) };
     }
@@ -933,7 +942,11 @@ export class AntigravitySession implements HarnessSession {
       this.#configuring = false;
     }
   }
-  async #runTurn(turn: ActiveTurn, command: TurnStartCommand): Promise<void> {
+  async #runTurn(
+    turn: ActiveTurn,
+    command: TurnStartCommand,
+    catalogCommand: boolean,
+  ): Promise<void> {
     let outcome: TurnOutcome;
     let nativeTurnRef: NativeTurnRef | undefined;
     try {
@@ -1019,7 +1032,8 @@ export class AntigravitySession implements HarnessSession {
           nativeConversationDbPath(ref.nativeSessionId, antigravityHome(this.#options.environment)),
         );
       } catch {
-        count = outcome.status === "succeeded" ? before + 1 : before;
+        // Command output alone cannot establish that the prompt created a conversation Turn.
+        count = !catalogCommand && outcome.status === "succeeded" ? before + 1 : before;
       }
       if (count > before) {
         const key = `turn-${count - 1}`;

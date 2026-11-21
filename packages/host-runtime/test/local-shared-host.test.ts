@@ -7,7 +7,16 @@ import { afterEach, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import { HostClientChannel } from "@codexhost/desktop-control";
-import { encodeHarnessPluginRoute, harnessIdSchema } from "@codexhost/shared-contracts";
+import {
+  encodeHarnessPluginRoute,
+  harnessIdSchema,
+  hostThreadIdSchema,
+  THREAD_TREE_WATCH_METHOD,
+  THREAD_TREE_SNAPSHOT_METHOD,
+  threadTreeWatchResultSchema,
+} from "@codexhost/shared-contracts";
+import { OfficialRuntimeClient } from "../src/codex-runtime/official-runtime-scope.js";
+import { PINNED_THREAD_SECTION_ID } from "../src/external-thread-pins.js";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { AppServerHost } from "../src/app-server-host.js";
 import { SharedThreadOwner } from "../src/shared-thread-owner.js";
@@ -354,6 +363,85 @@ it.each(["Web", "Desktop"])(
     expect(await store.listThreads()).toHaveLength(1);
   },
 );
+
+it("projects the shared owner's Turn state without forwarding owner subscription IDs", async () => {
+  const { web, adapter, store, gui } = await setup();
+  const { viewer, bridge } = gui();
+  await viewer.ready;
+  const native = vi
+    .spyOn(OfficialRuntimeClient.prototype, "request")
+    .mockImplementation(async (method, params): Promise<JsonObject> => {
+      if (method === "threadSection/list")
+        return {
+          result: {
+            data: [{ id: PINNED_THREAD_SECTION_ID, name: "Pinned", appearance: null }],
+            nextCursor: null,
+          },
+        };
+      if (method === "thread/read") {
+        if (typeof params.threadId !== "string") throw new Error("Missing native Thread ID");
+        return { result: { thread: { id: params.threadId, status: { type: "notLoaded" } } } };
+      }
+      return { result: { data: [], nextCursor: null } };
+    });
+  try {
+    const { thread } = await web.request<{ thread: { id: string } }>("thread/start", {
+      model: encodeHarnessPluginRoute({ harnessId: harnessIdSchema.parse("pi") }),
+      cwd: "/synthetic",
+    });
+    const child = hostThreadIdSchema.parse(thread.id);
+    await store.createDelegation({
+      delegationId: hostThreadIdSchema.parse("delegated"),
+      parentHostThreadId: hostThreadIdSchema.parse("native-parent"),
+      childHostThreadId: child,
+      taskDigest: "a".repeat(64),
+      sourceHarnessId: harnessIdSchema.parse("codex"),
+      targetHarnessId: harnessIdSchema.parse("pi"),
+    });
+    writeRequest(viewer.desktopInput, { id: 99, method: THREAD_TREE_WATCH_METHOD, params: {} });
+    const { subscriptionId, snapshot } = threadTreeWatchResultSchema.parse(
+      (await viewer.collector.waitFor((m) => m.id === 99)).result,
+    );
+    let revision = snapshot.revision;
+    const next = async (status: string) => {
+      const msg = await viewer.collector.waitFor((m) => {
+        if (m.method !== THREAD_TREE_SNAPSHOT_METHOD) return false;
+        const result = threadTreeWatchResultSchema.parse(m.params);
+        return (
+          result.subscriptionId === subscriptionId &&
+          result.snapshot.revision > revision &&
+          result.snapshot.nodes[child]?.status === status
+        );
+      }, 1000);
+      revision = threadTreeWatchResultSchema.parse(msg.params).snapshot.revision;
+    };
+    await web.request("turn/start", {
+      threadId: child,
+      input: [{ type: "text", text: "A shared Turn" }],
+    });
+    await next("running");
+    const session = adapter.sessions[0];
+    if (!session) throw new Error("Missing shared Session");
+    session.succeedTurn();
+    await next("idle");
+    bridge.close();
+    await next("unknown");
+    expect(
+      viewer.collector.messages
+        .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+        .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+    ).toEqual(expect.arrayContaining([subscriptionId]));
+    expect(
+      new Set(
+        viewer.collector.messages
+          .filter((m) => m.method === THREAD_TREE_SNAPSHOT_METHOD)
+          .map((m) => threadTreeWatchResultSchema.parse(m.params).subscriptionId),
+      ),
+    ).toEqual(new Set([subscriptionId]));
+  } finally {
+    native.mockRestore();
+  }
+});
 
 it.each([0, 1])("shutdown reports %i running tasks before stopping", async (count) => {
   const { root, web, adapter, stop } = await setup();

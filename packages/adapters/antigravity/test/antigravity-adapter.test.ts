@@ -876,6 +876,8 @@ describe("Antigravity ACP Session", () => {
     for (const value of ["private-cli", "private-endpoint", "secret-token", "thread-override"])
       expect(prompt).not.toContain(value);
     expect(prompt).toContain("CODEXHOST_RUNTIME_TOKEN");
+    expect(prompt).toContain("harness inspect --help");
+    expect(prompt).toContain("the exact advertised Model Ref for the requested speed");
   });
   it("reads cold SQLite history, then resumes with the saved configuration for writing", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-history-resume-"));

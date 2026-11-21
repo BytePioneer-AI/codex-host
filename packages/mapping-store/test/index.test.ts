@@ -417,7 +417,8 @@ describe("mapping-store package", () => {
     expect(repeated).toEqual(reconciled);
     await first.close();
 
-    const second = new MappingStore({ directory });
+    let now = new Date("2026-03-01T00:00:00.000Z");
+    const second = new MappingStore({ directory, now: () => now });
     await second.initialize();
     await expect(second.getThread(threadId)).resolves.toMatchObject({
       revision: reconciled.revision,
@@ -430,12 +431,17 @@ describe("mapping-store package", () => {
       mapping(4),
     ]);
     expect(dropped.turnMappings).toEqual([mapping(1), mapping(2), mapping(4)]);
+    // Removed and reordered Turns are conversation activity.
+    expect(dropped.updatedAt).toBe(now.toISOString());
+    now = new Date("2026-03-02T00:00:00.000Z");
     const reordered = await second.reconcileTurnMappings(threadId, [
       mapping(1),
       mapping(4),
       mapping(2),
     ]);
     expect(reordered.turnMappings).toEqual([mapping(1), mapping(4), mapping(2)]);
+    expect(reordered.updatedAt).toBe(now.toISOString());
+    now = new Date("2026-03-03T00:00:00.000Z");
     const nativeCheckpoint = {
       ...mapping(1),
       nativeCheckpointRef: {
@@ -449,6 +455,11 @@ describe("mapping-store package", () => {
       mapping(2),
     ]);
     expect(adopted.turnMappings[0]).toEqual(nativeCheckpoint);
+    // A newer checkpoint for the same Turns, as a Harness upgrade writes, keeps the Thread's place.
+    expect(adopted).toMatchObject({
+      revision: reordered.revision + 1,
+      updatedAt: reordered.updatedAt,
+    });
 
     await expect(
       second.reconcileTurnMappings(threadId, [

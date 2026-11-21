@@ -258,6 +258,42 @@ describe("External Thread history pagination", () => {
     ).toEqual([]);
   });
 
+  it.each(["asc", "desc"] as const)(
+    "pages from an official exclusive Item anchor inside the requested Turn in %s order",
+    (sortDirection) => {
+      const turns = [turn(1), turn(2), turn(3)];
+      const page = listExternalItems(turns, {
+        sortDirection,
+        turnId: "turn-2",
+        limit: 1,
+        cursor: { type: "item", itemId: "tool-2" },
+      });
+      expect(page.data).toEqual([
+        {
+          turnId: "turn-2",
+          item: expect.objectContaining({ id: sortDirection === "asc" ? "agent-2" : "user-2" }),
+        },
+      ]);
+      expect(page.nextCursor).toBeNull();
+      expect(typeof page.backwardsCursor).toBe("string");
+    },
+  );
+
+  it("rejects official Item anchors without a Turn, malformed, or outside the Turn", () => {
+    const turns = [turn(1), turn(2)];
+    for (const cursor of [{ type: "item", itemId: "" }, { type: "turn", itemId: "tool-1" }, []]) {
+      expect(() => listExternalItems(turns, { turnId: "turn-1", cursor })).toThrow(
+        ExternalHistoryRequestError,
+      );
+    }
+    expect(() => listExternalItems(turns, { cursor: { type: "item", itemId: "tool-1" } })).toThrow(
+      "an item cursor requires turnId",
+    );
+    expect(() =>
+      listExternalItems(turns, { turnId: "turn-1", cursor: { type: "item", itemId: "tool-2" } }),
+    ).toThrow("cursor anchor is no longer present");
+  });
+
   it("rejects malformed and stale cursors", () => {
     expect(() => listExternalTurns([turn(1)], { cursor: "not-json" })).toThrow(
       ExternalHistoryRequestError,

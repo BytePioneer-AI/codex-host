@@ -6282,6 +6282,35 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
+  it("preserves the native Fable alias and exposes its label on resume and selection", async () => {
+    const { adapter } = fixture();
+    const fable = encodeClaudeModelRef("fable");
+    const opened = await adapter.open({
+      kind: "resume",
+      cwd: "/synthetic",
+      model: fable,
+      nativeRef: nativeSessionRefSchema.parse({
+        harnessId: "claude-code",
+        nativeSessionId: "restored-fable",
+        formatVersion: 1,
+      }),
+    });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const fableState = { effectiveModel: fable, resolvedModelLabel: "Fable" };
+    expect(session.initialState).toMatchObject(fableState);
+
+    const events = session.outputs[Symbol.asyncIterator]();
+    await expect(session.execute({ type: "model.select", model: fable })).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(nextEvent(events)).resolves.toMatchObject({
+      type: "session.state.changed",
+      state: fableState,
+    });
+    await session.close();
+  });
+
   it("fits Thinking to the selected Model's catalog options", async () => {
     const { adapter, dependencies, transports } = fixture();
     await adapter.inspect({ cwd: "/synthetic" });

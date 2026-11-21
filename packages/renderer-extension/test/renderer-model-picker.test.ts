@@ -431,6 +431,17 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
       thinkingSelectionEnabled: false,
     });
   });
+
+  it("shows a Thread's confirmed Model label even when the selectable catalog omits it", () => {
+    const view: RendererModelControlView = {
+      status: "error",
+      catalog: catalog([]),
+      selected: harnessModelRefSchema.parse({ id: "claude-model-v1.ZmFibGU" }),
+      resolvedModelLabel: "Fable",
+    };
+    expect(rendererModelPickerPresentation(view)).toMatchObject({ modelLabel: "Fable" });
+    expect(isRendererModelPickerDisabled(view)).toBe(false);
+  });
 });
 
 describe("Renderer Model selection rejection notice", () => {

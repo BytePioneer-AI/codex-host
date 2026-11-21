@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
 import { EventEmitter, once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -36,7 +37,7 @@ import {
 import { SidebarBrowser } from "../../packages/web-server/src/sidebar-browser.ts";
 import { DataDir } from "../../packages/web-server/src/store.ts";
 
-const cleanups: (() => void | Promise<unknown>)[] = [];
+const cleanups: Array<(() => void) | (() => Promise<unknown>)> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.reverse()) await cleanup();
   cleanups.length = 0;
@@ -73,7 +74,7 @@ function tempData() {
   return new DataDir(folder);
 }
 
-function direct(iceServers = ["stun:127.0.0.1:9"]) {
+function direct(iceServers: readonly string[] = ["stun:127.0.0.1:9"]) {
   const connections = new CredentialConnections();
   const peers = new SidebarBrowserDirect(tempData(), connections, iceServers);
   cleanups.push(() => peers.close());
@@ -143,7 +144,9 @@ function client(socket: TestSocket) {
 
 it("trickles before an unresponsive STUN deadline, isolates the retired peer, and revokes writes", async () => {
   const sink = createSocket("udp4");
-  cleanups.push(() => sink.close());
+  cleanups.push(() => {
+    sink.close();
+  });
   sink.bind(0, "127.0.0.1");
   await once(sink, "listening");
   const logs = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -169,10 +172,12 @@ it("trickles before an unresponsive STUN deadline, isolates the retired peer, an
       ).toBeDefined(),
     { timeout: 3_000 },
   );
-  const answer = trace.find((signal) => signal.type === "direct-answer" && signal.attempt === 2)!;
-  const ready = trace.find((signal) => signal.type === "direct-ready" && signal.attempt === 2)!;
+  const answer = trace.find((signal) => signal.type === "direct-answer" && signal.attempt === 2);
+  assert.ok(answer, "Expected direct-answer for attempt 2");
   expect(answer.at - started).toBeLessThan(1_000);
   // Stronger than a checking-state assertion: DTLS and SCTP also complete before 3 seconds.
+  const ready = trace.find((signal) => signal.type === "direct-ready" && signal.attempt === 2);
+  assert.ok(ready, "Expected direct-ready for attempt 2");
   expect(ready.at - started).toBeLessThan(3_000);
   expect(trace.some((signal) => signal.type === "direct-close" && signal.attempt === 2)).toBe(
     false,
@@ -229,9 +234,9 @@ it("classifies client-ended attempts and logs only aggregated ICE candidate meta
         });
     }
     socket.receive({ type: "direct-close", attempt, reason });
-    const log = JSON.parse(
-      logs.mock.calls.filter(([tag]) => tag === "[direct] attempt").at(-1)![1],
-    );
+    const call = logs.mock.calls.filter(([tag]) => tag === "[direct] attempt").at(-1);
+    assert.ok(call, `Expected a log for attempt ${attempt}`);
+    const log = JSON.parse(call[1]);
     expect(log).toMatchObject({ attempt, outcome, reason: loggedReason });
     expect(log.candidates.remoteSrflxReceived).toBe(index === 0);
     if (index === 0) {
@@ -333,7 +338,10 @@ function tab() {
     send: async (name: string, args?: { maxWidth: number }) => {
       if (name === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
       if (name === "Page.captureScreenshot" && castWidth > 1000) return { data: "" };
-      if (name === "Page.startScreencast") castWidth = args!.maxWidth;
+      if (name === "Page.startScreencast") {
+        assert.ok(args, "Expected screencast options");
+        castWidth = args.maxWidth;
+      }
       if (name === "Page.stopScreencast") await stopCast;
       return undefined;
     },
@@ -371,10 +379,11 @@ function tab() {
       return castWidth;
     },
     blockStop() {
-      const { promise, resolve } = Promise.withResolvers<void>();
+      const { promise, resolve } = Promise.withResolvers<undefined>();
       stopCast = promise;
-      cleanups.push(resolve);
-      return resolve;
+      const unblock = () => resolve(undefined);
+      cleanups.push(unblock);
+      return unblock;
     },
     async paint(id: number) {
       cdp.emit("Page.screencastFrame", {
@@ -410,7 +419,9 @@ it("isolates stale bindings and immediately resends the cached 1x frame before a
   viewer.label.receive({ type: "visible", visible: true });
   viewer.label.receive({ type: "navigate", url: "https://example.test/" });
   await vi.waitFor(() => expect(viewer.pictures.length).toBe(1));
-  const old = decodeSidebarBrowserFrameHeader(Uint8Array.from(viewer.pictures[0]!).buffer).sequence;
+  const firstPicture = viewer.pictures[0];
+  assert.ok(firstPicture, "Expected the initial picture");
+  const old = decodeSidebarBrowserFrameHeader(Uint8Array.from(firstPicture).buffer).sequence;
   viewer.label.receive({ type: "transport", peer: "not-this-viewer", binding: 1 });
   expect(viewer.messages).toContainEqual({ type: "transport", binding: 1, via: "socket" });
   viewer.label.receive({ type: "transport", peer: hello.peer, binding: 2 });
@@ -429,10 +440,12 @@ it("isolates stale bindings and immediately resends the cached 1x frame before a
     via: "direct",
     from: fragments[0]?.sequence,
   });
-  channel.send(encodeSidebarBrowserDirectAck(lastPart()!.sequence));
+  const last = lastPart();
+  assert.ok(last, "Expected the last fragment of the first direct picture");
+  channel.send(encodeSidebarBrowserDirectAck(last.sequence));
   await viewer.paint(74);
   await vi.waitFor(() =>
-    expect(fragments.find((fragment) => fragment.sequence > lastPart()!.sequence)).toBeDefined(),
+    expect(fragments.find((fragment) => fragment.sequence > last.sequence)).toBeDefined(),
   );
   await delay(225); // A slow in-flight frame affects quality once input resumes.
   viewer.label.receive({ type: "wheel", x: 1, y: 1, deltaX: 0, deltaY: 1 });
@@ -446,7 +459,9 @@ it("isolates stale bindings and immediately resends the cached 1x frame before a
   unblock();
   await vi.waitFor(() => expect(viewer.castWidth).toBe(2000));
   peers.close();
-  const [, payload] = logs.mock.calls.find(([tag]) => tag === "[direct] session")!;
+  const session = logs.mock.calls.find(([tag]) => tag === "[direct] session");
+  assert.ok(session, "Expected a direct session log");
+  const [, payload] = session;
   expect(JSON.parse(payload)).toMatchObject({
     directBytes: fragments.reduce((bytes, part) => bytes + part.payload.length, 0),
     socketBytes: viewer.pictures.slice(1).reduce((bytes, picture) => bytes + picture.length, 0),

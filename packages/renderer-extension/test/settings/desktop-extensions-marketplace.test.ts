@@ -308,7 +308,9 @@ const CATALOG_THEME: DesktopExtensionCatalogEntry = {
   updatedAt: "2026-07-01T00:00:00.000Z",
 };
 
-function sampleInstalledList(): DesktopExtensionsListResult {
+function sampleInstalledList(
+  overrides: Partial<DesktopExtensionsListResult> = {},
+): DesktopExtensionsListResult {
   return {
     configuration: { version: 1, revision: 3, enabled: ["sidebar-thread-tree"] },
     desktopConnected: true,
@@ -349,6 +351,7 @@ function sampleInstalledList(): DesktopExtensionsListResult {
         },
       },
     ],
+    ...overrides,
   };
 }
 

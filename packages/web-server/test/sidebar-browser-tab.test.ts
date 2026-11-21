@@ -76,7 +76,9 @@ async function openTab(t: TestContext, frames: () => Frame[] = () => []) {
   viewer.receive({ type: "navigate", url: page.url() });
   await setImmediate();
   const paint = async (id: number, size = 1, session = 0) => {
-    sessions[session]!.emit("Page.screencastFrame", {
+    const cdp = sessions[session];
+    assert.ok(cdp, `Expected CDP session ${session}`);
+    cdp.emit("Page.screencastFrame", {
       data: Buffer.alloc(size, id).toString("base64"),
       sessionId: 1,
     });

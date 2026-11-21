@@ -20,9 +20,9 @@ export const DESKTOP_TOOL_CONTEXT_ENV: readonly string[] = [
 ];
 
 export function withoutDesktopToolContext(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const base = { ...environment };
-  for (const key of DESKTOP_TOOL_CONTEXT_ENV) delete base[key];
-  return base;
+  return Object.fromEntries(
+    Object.entries(environment).filter(([key]) => !DESKTOP_TOOL_CONTEXT_ENV.includes(key)),
+  );
 }
 
 /** Desktop variables the Independent Host accepts besides codexhost's own `CODEXHOST_*` context. */

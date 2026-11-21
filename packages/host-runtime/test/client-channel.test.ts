@@ -159,8 +159,8 @@ describe("public authenticated owner channel", () => {
   );
 
   it("broadcasts one Codex catalog invalidation when the replacement backend is ready", async () => {
-    const starting = Promise.withResolvers<void>();
-    const ready = Promise.withResolvers<void>();
+    const starting = Promise.withResolvers<undefined>();
+    const ready = Promise.withResolvers<undefined>();
     let replace = false;
     const scope = new OfficialRuntimeScope({
       permanentHome: tmpdir(),
@@ -171,7 +171,7 @@ describe("public authenticated owner channel", () => {
         replace = false;
         return createOwnedConnectionBackend(async () => {
           if (model === "updated-model") {
-            starting.resolve();
+            starting.resolve(undefined);
             await ready.promise;
           }
           const stdin = new PassThrough();
@@ -218,7 +218,7 @@ describe("public authenticated owner channel", () => {
     const refreshed = inspect();
     await starting.promise;
     const whileStarting = journal.cursor;
-    ready.resolve();
+    ready.resolve(undefined);
     await expect(refreshed).resolves.toMatchObject({
       catalog: { models: [expect.objectContaining({ label: "updated-model" })] },
     });

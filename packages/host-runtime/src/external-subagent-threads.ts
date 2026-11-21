@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { HostSubagentState, HostThreadSnapshot } from "@codexhost/harness-adapter";
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
-import { projectHistoricalTurn, type JsonObject } from "@codexhost/protocol-core";
+import type {
+  HostSubagentState,
+  HostThreadSnapshot,
+  HostTurnSnapshot,
+} from "@codexhost/harness-adapter";
+import type { StoredThreadRecordV1, StoredTurnMappingV1 } from "@codexhost/mapping-store";
+import { projectHistoricalTurn, type JsonObject, type TodoPlan } from "@codexhost/protocol-core";
 import { hostThreadIdSchema, type NativeSessionRef } from "@codexhost/shared-contracts";
 
 import { withoutInjectedText } from "./external-thread-side-chat.js";
@@ -163,40 +167,52 @@ export async function materializeExternalSubagent(
   return subagentMaterializer(store, parent)(child);
 }
 
+export async function projectExternalTurn(
+  record: StoredThreadRecordV1,
+  turnId: StoredTurnMappingV1["hostTurnId"],
+  turn: HostTurnSnapshot,
+  materialize: ReturnType<typeof subagentMaterializer>,
+  historicalPlans?: Map<string, TodoPlan>,
+): Promise<JsonObject> {
+  const items = await Promise.all(
+    turn.items.map(async (entry) => {
+      if (entry.item.type !== "subagentDelegation") return entry;
+      const subagents = await Promise.all(
+        entry.item.subagents.map(async (child) => {
+          const stored = await materialize(child);
+          return stored ? { ...child, subagentId: stored.hostThreadId } : child;
+        }),
+      );
+      return { ...entry, item: { ...entry.item, subagents } };
+    }),
+  );
+  const injected = record.injectedTurnPrefixes?.find(({ hostTurnId }) => hostTurnId === turnId);
+  return projectHistoricalTurn(
+    {
+      threadId: record.hostThreadId,
+      turnId,
+      cwd: record.cwd,
+      snapshot: { ...turn, input: withoutInjectedText(turn.input, injected), items },
+    },
+    historicalPlans,
+  );
+}
+
 export async function projectExternalSnapshot(
   store: ExternalThreadStore,
   record: StoredThreadRecordV1,
   snapshot: HostThreadSnapshot,
   previousParent?: StoredThreadRecordV1,
-): Promise<JsonObject[]> {
+): Promise<{ turns: JsonObject[]; historicalPlans: ReadonlyMap<string, TodoPlan> }> {
   const materialize = subagentMaterializer(store, record, previousParent);
   const turns: JsonObject[] = [];
+  const historicalPlans = new Map<string, TodoPlan>();
   for (const [index, turn] of snapshot.turns.entries()) {
     const mapping = record.turnMappings[index];
     if (!mapping) throw new Error("External Snapshot mapping is incomplete");
-    const items = await Promise.all(
-      turn.items.map(async (entry) => {
-        if (entry.item.type !== "subagentDelegation") return entry;
-        const subagents = await Promise.all(
-          entry.item.subagents.map(async (child) => {
-            const stored = await materialize(child);
-            return stored ? { ...child, subagentId: stored.hostThreadId } : child;
-          }),
-        );
-        return { ...entry, item: { ...entry.item, subagents } };
-      }),
-    );
-    const injected = record.injectedTurnPrefixes?.find(
-      ({ hostTurnId }) => hostTurnId === mapping.hostTurnId,
-    );
     turns.push(
-      projectHistoricalTurn({
-        threadId: record.hostThreadId,
-        turnId: mapping.hostTurnId,
-        cwd: record.cwd,
-        snapshot: { ...turn, input: withoutInjectedText(turn.input, injected), items },
-      }),
+      await projectExternalTurn(record, mapping.hostTurnId, turn, materialize, historicalPlans),
     );
   }
-  return turns;
+  return { turns, historicalPlans };
 }

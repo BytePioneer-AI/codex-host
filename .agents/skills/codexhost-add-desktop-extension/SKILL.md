@@ -128,13 +128,16 @@ define({ activate() {} });
 
 ## 4. 通过 GitHub 分发与投稿官方市场
 
-将 `manifest.json` 和声明的 `desktop.script` / `backend.script`（构建好的 JS，不只是 `.ts` 源码）一并提交到公开 GitHub 仓库的默认分支。把样式、Logo、截图及其他静态资源也提交到对应路径。上架索引时，若使用 Release ZIP，Logo 和截图还须各自作为同名文件资产上传，且与 ZIP 内的字节一致。发给用户仓库主页即可安装，无需手动打包 Release `.zip`；若最新稳定 Release 有 `.zip` 资产，主页会优先安装该资产。扩展放在仓库子目录时，可分享 `/tree/<ref>/<subdir>` 链接。
+**推荐通过 GitHub Release 管理正式版本**：
+- **Release ZIP（推荐）**：将 `manifest.json`、构建好的 `desktop.script` / `backend.script`、样式、Logo、截图及其他静态资源打包为 `.zip` 附在公开正式 Release 下；若声明了 `icon` 或 `screenshots`，还须将对应图片作为同名单独资产上传到同一 Release（且与 ZIP 内字节一致）。官方市场与用户安装都会**优先使用最新公开正式 Release**（自动跳过 `draft` 和 `prerelease`），便于把日常开发提交与稳定发版隔离开。
+- **默认分支源码（无 Release 时兜底）**：若仓库尚未发布带 `.zip` 资产的 Release，可将上述构建产物直接提交到默认分支根目录，市场和直接安装会兜底拉取默认分支最新 commit（不负责编译 `.ts`）。扩展放在仓库子目录时，直接分享 `/tree/<ref>/<subdir>` 链接可手动安装，但官方市场索引只接受仓库主页。
 
-**投稿到官方插件市场（`BytePioneer-AI/codexhost-extensions-registry`）**：
+**投稿到官方插件市场（`BytePioneer-AI/codexhost-extensions-registry`）与后续更新**：
 1. 打开 [投稿表单（GitHub Issue Form）](https://github.com/BytePioneer-AI/codexhost-extensions-registry/issues/new/choose) 填写你的公开 GitHub 仓库地址（或直接向 `sources.json` 提交 PR）。
-2. 仓库 Actions 会自动校验 `manifest.json`、双语字段、Logo/截图与静态安全检查并生成报告；维护者首次审核合并后即上架。
-3. 上架后每 30 分钟自动同步你的新版本、GitHub Star 数与下载量，后续发版无需重复提 PR。
+2. 仓库 Actions 会自动校验 `manifest.json`、双语字段、Logo/截图与静态安全检查并生成审核 PR；维护者首次审核合并后即上架。
+3. **后续更新无需再提 Issue 或 PR**：版本号完全由作者在 `manifest.json` 中自行定义与递增（包内容变化时须递增 `version`，不允许降级或同版本改包）。市场会按「优先最新正式 Release、无 Release 才看默认分支源码」的规则自动检测更新：Worker 无状态巡检约 **每 5 分钟** 检查一次包地址变化，发现新版本后自动触发校验、更新 `catalog.json` 并刷新 jsDelivr 缓存（另保留每 30 分钟的定时同步作为兜底）。
+4. 注意：一旦仓库发布过带 `.zip` 的正式 Release，后续更新请继续通过发布新 Release 完成；仅推送默认分支不会覆盖已有的 Release 版本。
 
-完成条件：确认选中的 GitHub 目录同时包含 manifest 和声明的入口 JS，安装时不需要构建。
+完成条件：确认选中的 Release `.zip` 或 GitHub 默认分支目录同时包含 manifest 和声明的构建后入口 JS，安装时不需要构建。
 
 更多约束见 [Desktop 界面扩展](../../../docs/architecture/desktop-ui-extensions.md)。

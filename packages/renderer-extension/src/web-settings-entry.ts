@@ -13,6 +13,7 @@ import { installIdleReleasePreferenceSync } from "./renderer-idle-release-prefer
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import coloredBrandCss from "./renderer-brand-mark.css";
 import accountsCss from "./settings/accounts.css";
+import delegationCss from "./settings/delegation.css";
 import { RendererSettingsPageScope, type RendererSettingsPageDefinition } from "./settings/core.js";
 import { mountIdleReleaseControls } from "./settings/idle-release-controls.js";
 import {
@@ -95,6 +96,8 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
       undefined,
       undefined,
       () => modelClient,
+      undefined,
+      () => modelClient,
     ),
     resourcesPage(messages, modelClient),
   ].find((candidate) => candidate.id === pageId);
@@ -104,7 +107,7 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
   const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
+    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${delegationCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
   );
   shadow.adoptedStyleSheets = [sheet];
   const content = document.createElement("div");

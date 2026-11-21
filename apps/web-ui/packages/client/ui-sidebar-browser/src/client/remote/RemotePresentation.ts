@@ -8,6 +8,7 @@ import {
 } from "@codexhost/shared-contracts/sidebar-browser";
 import type { BrowserPresentation } from "../view/BrowserPresentation.ts";
 import css from "./Remote.module.css";
+import { TouchScroll } from "./TouchScroll.ts";
 
 type ViewerMessage = Extract<
   SidebarBrowserClientMessage,
@@ -18,8 +19,6 @@ const BUTTONS: readonly SidebarBrowserMouseButton[] = ["left", "middle", "right"
 const IS_MAC = /Mac|iPhone|iPad/u.test(navigator.platform);
 /** The viewer's shortcut modifier; the CodexHost machine maps it to its own. */
 const PRIMARY_KEY = IS_MAC ? "Meta" : "Control";
-/** A touch that moves less than this is a tap. */
-const TAP_SLOP = 8;
 
 /** Owns the canvas and focus target; the frame owns the connection. */
 export class RemotePresentation implements BrowserPresentation {
@@ -70,10 +69,10 @@ export class RemotePresentation implements BrowserPresentation {
     this.picture = undefined;
 
     const measure = (): void => {
+      if (this.canvas !== canvas) return;
       const bounds = root.getBoundingClientRect();
       const width = Math.round(bounds.width);
       const height = Math.round(bounds.height);
-      const visible = width > 0 && height > 0 && document.visibilityState === "visible";
       if (width > 0 && height > 0) {
         const previous = this.viewportMessage;
         if (previous?.width !== width || previous.height !== height) {
@@ -81,10 +80,12 @@ export class RemotePresentation implements BrowserPresentation {
           this.send(this.viewportMessage);
         }
       }
-      if (visible !== this.visibleValue) {
-        this.visibleValue = visible;
-        this.send({ type: "visible", visible });
-      }
+      this.setVisible(
+        width > 0 &&
+          height > 0 &&
+          document.visibilityState === "visible" &&
+          root.closest("[inert]") === null,
+      );
     };
     let pendingMeasure: ReturnType<typeof setTimeout> | undefined;
     const scheduleMeasure = (): void => {
@@ -93,6 +94,11 @@ export class RemotePresentation implements BrowserPresentation {
     };
     const resize = new ResizeObserver(scheduleMeasure);
     resize.observe(root);
+    // Inert tab sections mark a collapsed dock immediately, even while it still
+    // has its full size and is sliding out. Floating tabs can remain visible.
+    const visibility = new MutationObserver(measure);
+    for (let ancestor = root.parentElement; ancestor !== null; ancestor = ancestor.parentElement)
+      visibility.observe(ancestor, { attributeFilter: ["inert"] });
     window.addEventListener("resize", scheduleMeasure, { signal });
     document.addEventListener("visibilitychange", measure, { signal });
     measure();
@@ -101,13 +107,13 @@ export class RemotePresentation implements BrowserPresentation {
     return () => {
       lifetime.abort();
       resize.disconnect();
+      visibility.disconnect();
       clearTimeout(pendingMeasure);
       this.releaseKeys();
       root.remove();
-      if (this.canvas === canvas) this.canvas = undefined;
-      if (this.visibleValue) {
-        this.visibleValue = false;
-        this.send({ type: "visible", visible: false });
+      if (this.canvas === canvas) {
+        this.canvas = undefined;
+        this.setVisible(false);
       }
     };
   }
@@ -152,6 +158,13 @@ export class RemotePresentation implements BrowserPresentation {
   /** Forget the canvas; the frame closes the connection. */
   dispose(): void {
     this.canvas = undefined;
+    this.setVisible(false);
+  }
+
+  private setVisible(visible: boolean): void {
+    if (visible === this.visibleValue) return;
+    this.visibleValue = visible;
+    this.send({ type: "visible", visible });
   }
 
   private point(event: MouseEvent): { x: number; y: number } {
@@ -179,7 +192,7 @@ export class RemotePresentation implements BrowserPresentation {
     ): void => {
       target.addEventListener(type, listener, { signal, passive });
     };
-    let touch: { id: number; x: number; y: number; moved: number } | undefined;
+    let touch: TouchScroll | undefined;
     let pointerType = "mouse";
     const focusAt = (event: MouseEvent): void => {
       const at = this.point(event);
@@ -228,7 +241,7 @@ export class RemotePresentation implements BrowserPresentation {
         if (event.pointerType !== "mouse") {
           // Touch taps are forwarded below; suppress their compatibility mouse events.
           event.preventDefault();
-          touch = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: 0 };
+          touch = new TouchScroll(event.pointerId, this.point(event), event.clientX, event.clientY);
         }
       },
       false,
@@ -245,21 +258,12 @@ export class RemotePresentation implements BrowserPresentation {
         return;
       }
       if (touch?.id !== event.pointerId) return;
-      // A touch drag scrolls the remote page.
-      const deltaX = touch.x - event.clientX;
-      const deltaY = touch.y - event.clientY;
-      touch = {
-        ...touch,
-        x: event.clientX,
-        y: event.clientY,
-        moved: touch.moved + Math.hypot(deltaX, deltaY),
-      };
-      if (touch.moved > TAP_SLOP)
-        this.send({ type: "wheel", ...this.point(event), deltaX, deltaY });
+      const wheel = touch.move(event.clientX, event.clientY);
+      if (wheel !== undefined) this.send(wheel);
     });
     on(canvas, "pointerup", (event) => {
       if (event.pointerType === "mouse" || touch?.id !== event.pointerId) return;
-      const tapped = touch.moved <= TAP_SLOP;
+      const tapped = touch.tapped;
       touch = undefined;
       if (!tapped) return;
       const at = this.point(event);

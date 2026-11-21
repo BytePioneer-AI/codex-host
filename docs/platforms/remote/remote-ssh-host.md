@@ -13,6 +13,12 @@ Use Claude Code, Pi, and other Harnesses (AI coding tools) installed and signed 
 
 Update local codexhost to the latest version before installing the remote end below.
 
+### Using Harnesses installed in WSL
+
+Windows-native codexhost does not discover Harnesses installed inside WSL. If the local connection reports that codexhost Harnesses are unavailable and **Agent environment** is set to **WSL**, switch it to **Windows** in Codex Settings → General and restart Desktop through codexhost.
+
+To run Harnesses installed in WSL, keep the Desktop setting on **Windows** and connect to the distro over Remote SSH. The [issue reporter verified this workaround](https://github.com/BytePioneer-AI/codex-host/issues/512#issuecomment-6067959243) with WSL2 Ubuntu 24.04 and Pi. Install the same codexhost version and the Harness inside the distro, use a POSIX-compatible SSH login shell, and follow the SSH setup below. If a stock Codex daemon already owns the distro's app-server socket, first verify its ownership and stop it from WSL with `codex app-server daemon stop` when it is safe to interrupt its work. This is an SSH connection, not native WSL Agent environment support.
+
 ## Step 1: Check SSH login
 
 Log in to the remote computer once through SSH from your local terminal and confirm its identity. The page uses your existing SSH key or alias and does not show a password prompt.

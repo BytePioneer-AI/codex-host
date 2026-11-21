@@ -28,6 +28,8 @@ import {
   takeNpmEntrypoint,
 } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
+import { registerWebExtensionRpc } from "./web-extension-rpc.ts";
+import { WebNativeExtensions } from "./web-native-extensions.ts";
 import { downloadWorkspaceFile, openWorkspaceFile } from "./workspace-file-actions.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
@@ -48,6 +50,7 @@ import { registerRelayRpc } from "./remote-relay/rpc.ts";
 import { DESKTOP_SCREENSHOT_PATH } from "@codexhost/shared-contracts/desktop-screenshot";
 import { DesktopScreenshots } from "./desktop-screenshot.ts";
 import { SIDEBAR_BROWSER_PATH } from "@codexhost/shared-contracts/sidebar-browser";
+import { SidebarBrowserDirect, sidebarDirectStunUrls } from "./sidebar-browser-direct.ts";
 import { SidebarBrowser } from "./sidebar-browser.ts";
 import { registerMisc } from "./misc.ts";
 import { PushNotifier } from "./push.ts";
@@ -156,6 +159,7 @@ const dataRoot = resolve(
     ),
 );
 const data = new DataDir(dataRoot);
+const directIceServers = sidebarDirectStunUrls(process.env.CODEXHOST_WEB_STUN_URLS);
 if (values["save-service-options"]) {
   try {
     process.exit(saveServiceOptions(data, values) ? SETTINGS_CHANGED_EXIT_CODE : 0);
@@ -445,6 +449,8 @@ registerBackgroundControls(rpc, accessTokens, {
 });
 registerMisc(rpc, { events });
 registerUiExtensionRpc(rpc, extensions);
+const nativeExtensions = new WebNativeExtensions(data, auth !== undefined && !values["safe-mode"]);
+const webExtensionHttp = registerWebExtensionRpc(rpc, nativeExtensions, extensions, trust);
 registerVoiceStatus(rpc, chHost);
 
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
@@ -521,6 +527,7 @@ const server = createWebServer((request, response) => {
       if (admission.handled) return;
       requestAuth = admission.auth;
     }
+    if (await webExtensionHttp.serve(request, response, pathname, requestAuth)) return;
     if (
       pathname === "/api/workspace-file/download" &&
       (request.method === "GET" || request.method === "HEAD")
@@ -712,7 +719,12 @@ registerRelayRpc(rpc, accessTokens, relay);
 if (serviceOptions.relayEnabled) relay.start();
 
 const wss = createBrowserWebSocketServer();
-const sidebarBrowser = new SidebarBrowser({ profileDirectory: join(dataRoot, "sidebar-browser") });
+const sidebarBrowser = new SidebarBrowser({
+  profileDirectory: join(dataRoot, "sidebar-browser"),
+  ...(auth === undefined
+    ? {}
+    : { direct: new SidebarBrowserDirect(data, connections, directIceServers) }),
+});
 server.on("upgrade", (request, socket, head) => {
   const path = (request.url ?? "").split("?")[0];
   if (!trust.sameOrigin(request)) {
@@ -720,9 +732,12 @@ server.on("upgrade", (request, socket, head) => {
     socket.destroy();
     return;
   }
+  if (path === SIDEBAR_BROWSER_PATH) {
+    sidebarBrowser.upgrade(request, socket, head, trust, auth);
+    return;
+  }
   if (auth !== undefined && !auth.admitUpgrade(request, socket)) return;
-  if (path === SIDEBAR_BROWSER_PATH) sidebarBrowser.upgrade(request, socket, head);
-  else if (path === "/api/remote.mux")
+  if (path === "/api/remote.mux")
     wss.handleUpgrade(request, socket, head, (ws) =>
       streams.attach(ws, trust.relaySockets.has(request.socket)),
     );
@@ -771,6 +786,10 @@ server.listen(Number(values.port), values.host, async () => {
     }
   }
   console.log(`codexhost web: ${localUrl}`);
+  // The recovery route is already listening, even if extension activation hangs or fails.
+  void nativeExtensions.start().catch(() => {
+    console.warn("[extensions] Web native packages could not be restored; see /extensions");
+  });
   const urls = reachableNetworkUrls(
     accessTokens !== undefined && local
       ? (await readNetworkAccess()).networkUrls
@@ -810,21 +829,33 @@ server.listen(Number(values.port), values.host, async () => {
   });
 });
 
-async function shutdown(exitCode = 0): Promise<void> {
-  relay.close();
-  shellReload?.close();
-  accessTokens?.close();
-  server.close();
-  desktopScreenshots.close();
-  await sidebarBrowser.close();
-  await dsh?.close();
-  await extensions.cleanup(true);
-  pushNotifications?.close();
-  await sessions.close();
-  remoteSessions.close();
-  await preferences?.close();
-  displaySettings.close();
-  process.exit(exitCode);
+let shuttingDown: Promise<void> | undefined;
+function shutdown(exitCode = 0): Promise<void> {
+  return (shuttingDown ??= (async () => {
+    const stoppingNative = nativeExtensions.stop();
+    const closingUploads = webExtensionHttp.close();
+    try {
+      relay.close();
+      shellReload?.close();
+      accessTokens?.close();
+      server.close();
+      desktopScreenshots.close();
+      await sidebarBrowser.close();
+      await dsh?.close();
+      await extensions.cleanup(true);
+      pushNotifications?.close();
+      await sessions.close();
+      remoteSessions.close();
+      await preferences?.close();
+      displaySettings.close();
+    } catch (error) {
+      console.error("[web] shutdown failed", error);
+      exitCode ||= 1;
+    } finally {
+      await Promise.allSettled([stoppingNative, closingUploads]);
+      process.exit(exitCode);
+    }
+  })());
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());

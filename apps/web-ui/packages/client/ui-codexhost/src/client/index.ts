@@ -102,6 +102,7 @@ export const inject = [
 const HOST_SETTINGS_PAGES = [
   ["accounts", "settings.accounts", 2],
   ["connections", "settings.connections", 3],
+  ["delegation", "settings.delegation", 3.5],
   ["usage-statistics", "settings.usage", 4],
   ["resources", "settings.resources", 5],
   ["desktop-extensions", "settings.desktopExtensions", 6.5],
@@ -397,7 +398,10 @@ export function apply(ctx: ClientContext): void {
         order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
-        inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
+        inject: (): WebExtensionsFace => ({
+          resolveText: (text) => ctx.locale.resolveText(text),
+          locale,
+        }),
       },
       WebExtensionsSection,
     ),

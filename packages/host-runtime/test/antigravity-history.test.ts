@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
+import { decodeExternalTransportSelection } from "@codexhost/protocol-core";
 import { encodeHarnessPluginRoute, harnessPluginRouteSchema } from "@codexhost/shared-contracts";
 import {
   AntigravityAdapter,
@@ -10,7 +11,12 @@ import {
 } from "@codexhost/adapter-antigravity";
 import type { DelegationControlRegistration } from "../src/delegation-types.js";
 import { createExternalThreadRecordInput } from "../src/external-thread-repository.js";
-import { createFixture, startExternalThread, stopFixture } from "./app-server-host-fixture.js";
+import {
+  closeFixture,
+  createFixture,
+  startExternalThread,
+  stopFixture,
+} from "./app-server-host-fixture.js";
 
 function protoField(field: number, value: string | Buffer): Buffer {
   const body = typeof value === "string" ? Buffer.from(value) : value;
@@ -43,17 +49,37 @@ it("reads cold agy history from SQLite and connects ACP only for the first write
   const conversations = path.join(home, ".gemini", "antigravity-cli", "conversations");
   const dbPath = (sessionId: string) => path.join(conversations, `${sessionId}.db`);
   const opens: Parameters<AntigravityAcpTransportLike["openSession"]>[0][] = [];
-  const prompt = vi.fn<AntigravityAcpTransportLike["prompt"]>(async (parts) => {
+  let writer: DatabaseSync | undefined;
+  let staleCount: unknown;
+  const get = StatementSync.prototype.get;
+  const read = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+    this: StatementSync,
+    ...params: Parameters<StatementSync["get"]>
+  ) {
+    const row = get.apply(this, params);
+    if (
+      writer &&
+      staleCount === undefined &&
+      this.sourceSQL.includes("count(*) AS n FROM steps WHERE step_type = 14")
+    ) {
+      staleCount = row?.n;
+      writer.exec("COMMIT");
+      // Keep the writer open so recovery reads the WAL without a checkpoint.
+    }
+    return row;
+  });
+  const prompt = vi.fn<AntigravityAcpTransportLike["prompt"]>(async (parts, handler) => {
     const input = parts[0];
     if (input?.type !== "text") throw new Error("Expected a text prompt");
-    const db = new DatabaseSync(dbPath(nativeSessionId));
-    try {
-      db.prepare("INSERT INTO steps VALUES (24, 14, 3, ?)").run(
-        protoField(19, protoField(2, input.text)),
-      );
-    } finally {
-      db.close();
-    }
+    writer = new DatabaseSync(dbPath(nativeSessionId));
+    writer.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; BEGIN IMMEDIATE");
+    writer
+      .prepare("INSERT INTO steps VALUES (24, 14, 3, ?)")
+      .run(protoField(19, protoField(2, input.text)));
+    writer
+      .prepare("INSERT INTO steps VALUES (25, 15, 3, ?)")
+      .run(protoField(20, protoField(1, "late committed answer")));
+    handler.onEvent({ type: "agent.text", text: "late committed answer" });
     return { stopReason: "end_turn" };
   });
   const close = vi.fn(async () => {});
@@ -120,6 +146,7 @@ it("reads cold agy history from SQLite and connects ACP only for the first write
     environment,
     additionalAdapters: new Map([["antigravity", adapter]]),
   });
+  let reopened: ReturnType<typeof createFixture> | undefined;
   try {
     await fixture.ready;
     mkdirSync(conversations, { recursive: true });
@@ -199,7 +226,20 @@ it("reads cold agy history from SQLite and connects ACP only for the first write
       input: [{ type: "text", text: "continue the conversation" }],
     });
     expect(started).toHaveProperty("result");
-    await fixture.collector.waitFor((message) => message.method === "turn/completed");
+    const completion = await fixture.collector.waitFor(
+      (message) => message.method === "turn/completed",
+    );
+    const live = await fixture.host.clientSnapshot(record.hostThreadId);
+    const liveTurn = live.turnsPage.data[0];
+    expect(liveTurn).toMatchObject({
+      status: "completed",
+      items: [
+        { type: "userMessage", content: [{ type: "text", text: "continue the conversation" }] },
+        { type: "agentMessage", text: "late committed answer" },
+      ],
+    });
+    expect(completion).toMatchObject({ params: { turn: { id: liveTurn?.id } } });
+    expect(staleCount).toBe(12);
     expect(createTransport).toHaveBeenCalledOnce();
     expect(opens).toEqual([
       expect.objectContaining({ kind: "resume", sessionId: nativeSessionId }),
@@ -213,14 +253,176 @@ it("reads cold agy history from SQLite and connects ACP only for the first write
       nativeSessionRef: { nativeSessionId },
       turnMappings: expect.arrayContaining([
         expect.objectContaining({
+          hostTurnId: liveTurn?.id,
           nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-12" }),
         }),
       ]),
     });
+    const listRequest = {
+      threadId: record.hostThreadId,
+      limit: 1,
+      itemsView: "full",
+      sortDirection: "desc",
+    };
+    const expected = {
+      result: {
+        data: [
+          {
+            id: liveTurn?.id,
+            items: expect.arrayContaining([
+              expect.objectContaining({ type: "agentMessage", text: "late committed answer" }),
+            ]),
+          },
+        ],
+      },
+    };
+    expect(await fixture.host.handleClientRequest("thread/turns/list", listRequest)).toMatchObject(
+      expected,
+    );
+    await closeFixture(fixture);
+    reopened = createFixture({
+      mappingStoreDirectory: home,
+      environment,
+      additionalAdapters: new Map([
+        ["antigravity", new AntigravityAdapter({ createTransport, environment })],
+      ]),
+    });
+    await reopened.ready;
+    expect(await reopened.host.handleClientRequest("thread/turns/list", listRequest)).toMatchObject(
+      expected,
+    );
+    expect(createTransport).toHaveBeenCalledOnce();
   } finally {
-    await stopFixture(fixture);
+    read.mockRestore();
+    writer?.close();
+    await stopFixture(reopened ?? fixture);
   }
   expect(close).toHaveBeenCalledOnce();
+});
+
+it("returns and saves each confirmed configuration for queued cold agy selections", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-cold-config-"));
+  const nativeSessionId = "11111111-1111-4111-8111-111111111111";
+  const environment = { HOME: home, USERPROFILE: home };
+  const modelGate = Promise.withResolvers<undefined>();
+  const thinkingGate = Promise.withResolvers<undefined>();
+  let config = [
+    {
+      id: "model",
+      name: "Model",
+      currentValue: "old",
+      options: [
+        { value: "old", name: "Old" },
+        { value: "new", name: "New" },
+      ],
+    },
+    {
+      id: "thought_level",
+      name: "Thinking",
+      currentValue: "high",
+      options: [
+        { value: "low", name: "Low" },
+        { value: "high", name: "High" },
+      ],
+    },
+  ];
+  let handler: Parameters<AntigravityAcpTransportLike["setSessionEventHandler"]>[0];
+  const setConfigOption = vi.fn(async (id: string, value: string) => {
+    if (id === "model") {
+      handler?.({ type: "config.update", configOptions: config });
+      await modelGate.promise;
+    } else {
+      await thinkingGate.promise;
+    }
+    config = config.map((entry) =>
+      entry.id === id || id === "model"
+        ? { ...entry, currentValue: entry.id === id ? value : "low" }
+        : entry,
+    );
+    return config;
+  });
+  const adapter = new AntigravityAdapter({
+    environment,
+    createTransport: (): AntigravityAcpTransportLike => ({
+      sessionId: nativeSessionId,
+      isClosed: false,
+      skipPermissions: false,
+      initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+      openSession: async () => ({ opened: { sessionId: nativeSessionId, configOptions: config } }),
+      setSessionEventHandler: (next) => {
+        handler = next;
+      },
+      setConfigOption,
+      setMode: async () => {},
+      prompt: async () => {
+        throw new Error("Configuration selection must not send a prompt");
+      },
+      cancel: async () => {},
+      closeSession: async () => {},
+      close: async () => {},
+    }),
+  });
+  const fixture = createFixture({
+    environment,
+    mappingStoreDirectory: home,
+    additionalAdapters: new Map([["antigravity", adapter]]),
+  });
+  try {
+    await fixture.ready;
+    const conversations = path.join(home, ".gemini", "antigravity-cli", "conversations");
+    mkdirSync(conversations, { recursive: true });
+    seedHistory(path.join(conversations, `${nativeSessionId}.db`), "old");
+    const selection = { model: { id: "retired" }, thinkingOptionId: "high" };
+    const transportModelId = encodeHarnessPluginRoute(
+      harnessPluginRouteSchema.parse({ harnessId: adapter.harnessId, ...selection }),
+    );
+    const { hostThreadId: threadId } = await fixture.mappingStore.createProvisional(
+      createExternalThreadRecordInput({
+        harnessId: adapter.harnessId,
+        cwd: home,
+        title: "Cold configuration",
+        transportModelId,
+        ephemeral: false,
+        historyMode: "paginated",
+      }),
+    );
+    await fixture.mappingStore.commitReady({
+      hostThreadId: threadId,
+      nativeSessionRef: { harnessId: adapter.harnessId, nativeSessionId, formatVersion: 1 },
+    });
+    const modelReply = fixture.host.handleClientRequest("codexhost/thread/model/select", {
+      threadId,
+      model: { id: "new" },
+    });
+    await vi.waitFor(() => expect(setConfigOption).toHaveBeenCalledWith("model", "new"));
+    const thinkingReply = fixture.host.handleClientRequest("codexhost/thread/thinking/select", {
+      threadId,
+      thinkingOptionId: "high",
+    });
+    expect(await fixture.mappingStore.getThread(threadId)).toMatchObject({ transportModelId });
+    modelGate.resolve(undefined);
+    expect(await modelReply).toMatchObject({
+      result: { effectiveModel: { id: "new" }, effectiveThinkingOptionId: "low" },
+    });
+    const afterModel = await fixture.mappingStore.getThread(threadId);
+    expect(decodeExternalTransportSelection("antigravity", afterModel?.transportModelId)).toEqual({
+      model: { id: "new" },
+      thinkingOptionId: "low",
+    });
+    thinkingGate.resolve(undefined);
+    expect(await thinkingReply).toMatchObject({
+      result: { effectiveModel: { id: "new" }, effectiveThinkingOptionId: "high" },
+    });
+    const saved = await fixture.mappingStore.getThread(threadId);
+    expect(decodeExternalTransportSelection("antigravity", saved?.transportModelId)).toEqual({
+      model: { id: "new" },
+      thinkingOptionId: "high",
+    });
+  } finally {
+    modelGate.resolve(undefined);
+    thinkingGate.resolve(undefined);
+    await stopFixture(fixture);
+  }
 });
 
 it("reflects a catalog Skill reply in live agy history without moving local command output", async () => {

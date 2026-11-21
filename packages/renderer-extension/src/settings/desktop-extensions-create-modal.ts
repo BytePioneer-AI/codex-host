@@ -1,3 +1,4 @@
+import type { DesktopExtensionsMessages } from "./desktop-extensions-messages.js";
 import { createEl } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
@@ -20,9 +21,9 @@ export function createDesktopExtensionCreateModal(options: {
   readonly host: HTMLElement;
   readonly signal: AbortSignal;
   readonly messages: RendererSettingsMessages;
+  readonly getCopy?: () => DesktopExtensionsMessages;
 }): DesktopExtensionCreateModalController {
-  const { document, host, signal, messages } = options;
-  const copy = messages.desktopExtensions;
+  const { document, host, signal, messages, getCopy } = options;
 
   let dialog: HTMLDialogElement | null = null;
   let copiedResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -44,6 +45,7 @@ export function createDesktopExtensionCreateModal(options: {
 
   const open = (): void => {
     if (signal.aborted || dialog?.open) return;
+    const copy = getCopy ? getCopy() : messages.desktopExtensions;
 
     const modal = createEl(
       document,

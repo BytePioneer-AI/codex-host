@@ -12,40 +12,29 @@ import {
   encodeSidebarBrowserFrameHeader,
   parseSidebarBrowserClientMessage,
   type SidebarBrowserClientMessage,
-  type SidebarBrowserFrameFormat,
   type SidebarBrowserServerMessage,
   type SidebarBrowserState,
 } from "@codexhost/shared-contracts/sidebar-browser";
 
+import { SidebarBrowserDelivery } from "./sidebar-browser-delivery.ts";
 import {
-  SIDEBAR_INTERACTION_IDLE_MS,
-  SidebarBrowserDelivery,
-  sidebarBrowserReduced,
-} from "./sidebar-browser-delivery.ts";
+  SidebarBrowserCast,
+  type SidebarBrowserQuality,
+  type SidebarBrowserViewport as Viewport,
+} from "./sidebar-browser-cast.ts";
+import { SidebarBrowserQualitySelection } from "./sidebar-browser-quality.ts";
 import { EDITABLE_CHANGE_BINDING, SidebarBrowserEditables } from "./sidebar-browser-input.ts";
+import {
+  SidebarBrowserInputBatcher,
+  type SidebarBrowserInput,
+} from "./sidebar-browser-input-batcher.ts";
+import { SidebarDirectFrames, type SidebarDirectFrame } from "./sidebar-browser-direct-frames.ts";
+import type { SidebarDirectSession } from "./sidebar-browser-direct.ts";
 
-/** Stream tuning; a relayed link can trade sharpness and frame rate for bandwidth. */
-export interface SidebarBrowserQuality {
-  /** Lossless PNG keeps text sharp and is near JPEG size for text pages; JPEG suits video. */
-  readonly format: SidebarBrowserFrameFormat;
-  readonly jpegQuality: number;
-  readonly maxFps: number;
-  /**
-   * Physical pixels per CSS pixel in every frame. Screencast follows the browser's real scale and
-   * ignores emulated ratios, so this is a launch setting; viewers downscale it to their own ratio.
-   */
-  readonly deviceScale: number;
-  /** Longest physical side of a frame; larger viewports are streamed downscaled. */
-  readonly maxPixels: number;
-}
-
-export const DEFAULT_SIDEBAR_BROWSER_QUALITY: SidebarBrowserQuality = {
-  format: "png",
-  jpegQuality: 85,
-  maxFps: 30,
-  deviceScale: 2,
-  maxPixels: 3200,
-};
+export {
+  DEFAULT_SIDEBAR_BROWSER_QUALITY,
+  type SidebarBrowserQuality,
+} from "./sidebar-browser-cast.ts";
 
 const MAX_IN_FLIGHT_FRAMES = 2;
 /** Enough for two typical 2x PNGs; a larger PNG may use the window alone. */
@@ -58,20 +47,13 @@ interface Viewer {
   readonly heldKeys: Set<string>;
   readonly heldButtons: Set<"left" | "middle" | "right">;
   visible: boolean;
-  readonly inFlight: { sequence: number; bytes: number }[];
+  readonly inFlight: { sequence: number; bytes: number; via: "direct" | "socket" }[];
+  readonly findDirect: (peer: string) => SidebarDirectSession | undefined;
+  binding: number;
+  direct?: SidebarDirectFrames;
+  session?: SidebarDirectSession;
   delivery: SidebarBrowserDelivery;
-  pending: { sequence: number; frame: Buffer } | undefined;
-}
-
-interface Viewport {
-  readonly width: number;
-  readonly height: number;
-}
-
-interface Cast {
-  readonly viewport: Viewport;
-  readonly reduced: boolean;
-  readonly scale: number;
+  pending: SidebarDirectFrame | undefined;
 }
 
 interface ScreencastFrame {
@@ -86,13 +68,12 @@ export class SidebarBrowserTab {
   private mainFrame: string | undefined;
   private readonly viewers = new Set<Viewer>();
   private viewport: Viewport = { width: 1000, height: 800 };
-  private casting: Cast | undefined;
+  private casting: SidebarBrowserCast | undefined;
   private castUpdates = Promise.resolve();
   private freshPicture = false;
-  private reduced = false;
-  private fullFrameBytes: number | undefined;
-  private lastInput = -Infinity;
-  private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  private pictureQuality: SidebarBrowserQualitySelection;
+  private qualityTimer: ReturnType<typeof setTimeout> | undefined;
+  private qualityCheckAt: number | undefined;
   private state: SidebarBrowserState = {
     type: "state",
     url: undefined,
@@ -105,11 +86,11 @@ export class SidebarBrowserTab {
   private sentState = "";
   /** `document.title` changes raise no CDP event; titles are re-read while someone is watching. */
   private titlePoll: ReturnType<typeof setInterval> | undefined;
-  private lastAck = 0;
   private sequence = 0;
+  private latest: { cast: SidebarBrowserCast; picture: SidebarDirectFrame } | undefined;
   private readonly editables: SidebarBrowserEditables;
   private input: Promise<unknown> = Promise.resolve();
-  private pendingMove: { x: number; y: number } | undefined;
+  private readonly inputBatcher = new SidebarBrowserInputBatcher<Viewer, Page>();
   private closed = false;
   /** When the last viewer left; the page is kept for reconnects until the owner sweeps it. */
   detachedAt: number | undefined = Date.now();
@@ -118,7 +99,9 @@ export class SidebarBrowserTab {
     readonly key: string,
     private readonly context: () => Promise<BrowserContext>,
     private readonly quality: SidebarBrowserQuality,
+    private readonly countFrameBytes: (via: "direct" | "socket", bytes: number) => void = () => {},
   ) {
+    this.pictureQuality = new SidebarBrowserQualitySelection(quality.format);
     this.editables = new SidebarBrowserEditables(
       () => {
         const { page, casting, viewport } = this;
@@ -145,9 +128,11 @@ export class SidebarBrowserTab {
     return this.page === page;
   }
 
-  attach(socket: WebSocket): void {
+  attach(socket: WebSocket, findDirect: Viewer["findDirect"] = () => undefined): void {
     const viewer: Viewer = {
       socket,
+      findDirect,
+      binding: 0,
       heldKeys: new Set(),
       heldButtons: new Set(),
       visible: false,
@@ -169,6 +154,7 @@ export class SidebarBrowserTab {
     });
     socket.on("close", () => {
       this.viewers.delete(viewer);
+      viewer.direct?.dispose();
       this.releaseInput(viewer);
       if (this.viewers.size === 0) this.detachedAt = Date.now();
       this.adapt();
@@ -191,7 +177,7 @@ export class SidebarBrowserTab {
     this.closed = true;
     clearInterval(this.titlePoll);
     this.editables.pause();
-    clearTimeout(this.idleTimer);
+    this.resetPictureQuality();
     for (const viewer of this.viewers) viewer.socket.close(1001, "closed");
     this.viewers.clear();
     const page = this.page ?? (await this.opening?.catch(() => undefined));
@@ -201,21 +187,12 @@ export class SidebarBrowserTab {
 
   private receive(viewer: Viewer, message: SidebarBrowserClientMessage): void {
     switch (message.type) {
-      case "ack": {
-        const index = viewer.inFlight.findIndex((frame) => frame.sequence === message.sequence);
-        if (index < 0) return;
-        const spareSlot = hasSpareSlot(viewer, inFlightBytes(viewer));
-        const acknowledged = viewer.inFlight.splice(0, index + 1);
-        viewer.delivery.acknowledged(
-          performance.now(),
-          acknowledged.reduce((sum, frame) => sum + frame.bytes, 0),
-          viewer.inFlight.length > 0,
-          spareSlot,
-        );
-        this.adapt();
-        this.flush(viewer);
+      case "ack":
+        this.acknowledged(viewer, message.sequence);
         return;
-      }
+      case "transport":
+        this.changeTransport(viewer, message.binding, message.peer);
+        return;
       case "visible":
         if (viewer.visible === message.visible) return;
         viewer.visible = message.visible;
@@ -228,19 +205,113 @@ export class SidebarBrowserTab {
         void this.updateCasting(viewer.visible);
         return;
       case "viewport":
+        this.inputBatcher.seal();
         void this.resize(message);
         return;
       case "navigate":
+        this.inputBatcher.seal();
         void this.navigate(message.url);
         return;
       case "back":
       case "forward":
       case "reload":
+        this.inputBatcher.seal();
         void this.history(message.type);
         return;
       default:
         this.dispatchInput(viewer, message);
     }
+  }
+
+  private acknowledged(viewer: Viewer, sequence: number): void {
+    const index = viewer.inFlight.findIndex((frame) => frame.sequence === sequence);
+    if (index < 0) return;
+    const via = viewer.direct ? "direct" : "socket";
+    const bytes = inFlightBytes(viewer, via);
+    const spareSlot = bytes === inFlightBytes(viewer) && hasSpareSlot(viewer, bytes);
+    const acknowledged = viewer.inFlight.splice(0, index + 1);
+    const delivered = acknowledged.reduce(
+      (sum, frame) => sum + (frame.via === via ? frame.bytes : 0),
+      0,
+    );
+    if (delivered > 0)
+      viewer.delivery.acknowledged(
+        performance.now(),
+        delivered,
+        viewer.inFlight.some((frame) => frame.via === via),
+        spareSlot,
+      );
+    viewer.direct?.acknowledged(sequence);
+    this.adapt();
+    this.flush(viewer);
+  }
+
+  private changeTransport(viewer: Viewer, id: number, peer: string | undefined): void {
+    if (peer === undefined) {
+      if (id === viewer.binding) this.fallback(viewer, id, "client-request");
+      return;
+    }
+    if (id <= viewer.binding) return;
+    viewer.binding = id;
+    const session = viewer.findDirect(peer);
+    const binding = session?.bind(this.key, (reason) => this.fallback(viewer, id, reason));
+    if (!session || !binding) {
+      this.fallback(viewer, id, "client-request");
+      return;
+    }
+    const direct = new SidebarDirectFrames(
+      binding,
+      () => this.flush(viewer),
+      (sequence) => this.acknowledged(viewer, sequence),
+      (bytes) => this.recordFrameBytes(viewer, "direct", bytes),
+    );
+    if (!direct.usable) {
+      direct.dispose();
+      this.fallback(viewer, id, "message-size");
+      return;
+    }
+    this.clearDirect(viewer);
+    viewer.direct = direct;
+    viewer.session = session;
+    viewer.delivery = new SidebarBrowserDelivery();
+    this.send(viewer, {
+      type: "transport",
+      binding: id,
+      via: "direct",
+      from: viewer.pending?.sequence ?? this.sequence + 1,
+    });
+    this.adapt();
+    this.flush(viewer);
+  }
+
+  private clearDirect(viewer: Viewer): boolean {
+    const direct = viewer.direct;
+    if (!direct) return false;
+    delete viewer.direct;
+    direct.dispose();
+    for (let i = viewer.inFlight.length - 1; i >= 0; i--)
+      if (viewer.inFlight[i]?.via === "direct") viewer.inFlight.splice(i, 1);
+    viewer.delivery = new SidebarBrowserDelivery();
+    return true;
+  }
+
+  private fallback(viewer: Viewer, id: number, reason: string): void {
+    if (id !== viewer.binding) return;
+    if (this.clearDirect(viewer)) {
+      viewer.session?.fallback(reason);
+      if (reason === "revoked" || reason === "shutdown") return;
+      const latest = this.latest;
+      if (
+        viewer.visible &&
+        latest?.cast === this.casting &&
+        latest &&
+        !viewer.inFlight.some((frame) => frame.sequence === latest.picture.sequence)
+      )
+        viewer.pending = latest.picture;
+    }
+    this.send(viewer, { type: "transport", binding: id, via: "socket" });
+    this.flush(viewer);
+    this.adapt();
   }
 
   private async navigate(url: string): Promise<void> {
@@ -313,7 +384,11 @@ export class SidebarBrowserTab {
       });
       page.on("framenavigated", (frame) => {
         this.editables.invalidate();
-        if (frame === page.mainFrame()) void this.observe();
+        if (frame === page.mainFrame()) {
+          this.resetPictureQuality();
+          void this.updateCasting();
+          void this.observe();
+        }
       });
       page.on("frameattached", () => this.editables.invalidate());
       page.on("framedetached", () => this.editables.invalidate());
@@ -326,6 +401,7 @@ export class SidebarBrowserTab {
         this.page = undefined;
         this.cdp = undefined;
         this.casting = undefined;
+        this.resetPictureQuality();
         clearInterval(this.titlePoll);
         this.titlePoll = undefined;
         this.publish({ ...this.state, loading: false, error: "The page was closed." });
@@ -378,7 +454,7 @@ export class SidebarBrowserTab {
     const height = Math.round(viewport.height);
     if (width === this.viewport.width && height === this.viewport.height) return;
     this.viewport = { width, height };
-    this.fullFrameBytes = undefined;
+    this.resetPictureQuality();
     this.editables.invalidate();
     await this.emulate();
     this.adapt();
@@ -402,19 +478,39 @@ export class SidebarBrowserTab {
     const rates = [...this.viewers]
       .filter((viewer) => viewer.visible)
       .map((viewer) => {
-        const bytes = inFlightBytes(viewer);
-        return viewer.delivery.rate(now, bytes, hasSpareSlot(viewer, bytes));
+        const bytes = inFlightBytes(viewer, viewer.direct ? "direct" : "socket");
+        return viewer.delivery.rate(
+          now,
+          bytes,
+          bytes === inFlightBytes(viewer) && hasSpareSlot(viewer, bytes),
+        );
       });
-    const reduced = sidebarBrowserReduced(
-      now,
-      this.lastInput,
-      this.reduced,
-      this.fullFrameBytes,
-      rates,
-    );
-    if (this.reduced === reduced) return;
-    this.reduced = reduced;
-    void this.updateCasting();
+    const previous = this.pictureQuality.mode;
+    const mode = this.pictureQuality.update(now, rates);
+    const deadline = this.pictureQuality.deadline;
+    if (
+      deadline === undefined ||
+      this.qualityCheckAt === undefined ||
+      deadline < this.qualityCheckAt
+    ) {
+      clearTimeout(this.qualityTimer);
+      this.qualityCheckAt = deadline;
+      if (deadline !== undefined)
+        this.qualityTimer = setTimeout(
+          () => {
+            this.qualityCheckAt = undefined;
+            this.adapt();
+          },
+          Math.max(1, Math.ceil(deadline - now)),
+        );
+    }
+    if (previous !== mode) void this.updateCasting();
+  }
+
+  private resetPictureQuality(): void {
+    clearTimeout(this.qualityTimer);
+    this.qualityCheckAt = undefined;
+    this.pictureQuality = new SidebarBrowserQualitySelection(this.quality.format);
   }
 
   private updateCasting(freshPicture = false): Promise<void> {
@@ -424,7 +520,8 @@ export class SidebarBrowserTab {
   }
 
   private async applyCasting(): Promise<void> {
-    const { cdp, casting, viewport, reduced, freshPicture } = this;
+    const { cdp, page, casting, viewport, freshPicture } = this;
+    const { mode } = this.pictureQuality;
     this.freshPicture = false;
     if (cdp === undefined || this.closed) return;
     if (!this.hasVisibleViewer()) {
@@ -432,74 +529,109 @@ export class SidebarBrowserTab {
       this.titlePoll = undefined;
       this.editables.pause();
       this.casting = undefined;
-      if (casting !== undefined) await cdp.send("Page.stopScreencast").catch(() => undefined);
+      this.resetPictureQuality();
+      await casting?.stop(cdp);
       return;
     }
     this.titlePoll ??= setInterval(() => {
       void this.observe();
     }, TITLE_POLL_MS);
-    if (casting?.viewport === viewport && casting.reduced === reduced) {
+    if (casting?.viewport === viewport && casting.mode === mode) {
       if (freshPicture) void this.snapshot(cdp, casting);
       return;
     }
     this.casting = undefined;
     for (const viewer of this.viewers) viewer.pending = undefined;
-    if (casting !== undefined) await cdp.send("Page.stopScreencast").catch(() => undefined);
-    if (this.cdp !== cdp || this.closed) return;
-    const scale = Math.min(
-      reduced ? 1 : this.quality.deviceScale,
-      this.quality.maxPixels / Math.max(viewport.width, viewport.height),
-    );
-    const next = { viewport, reduced, scale };
+    await casting?.stop(cdp);
+    const current = () =>
+      this.cdp === cdp &&
+      !this.closed &&
+      this.hasVisibleViewer() &&
+      this.viewport === viewport &&
+      this.pictureQuality.mode === mode;
+    if (!current()) return;
+    // Chrome can finish a stopped encode after restart. Isolate temporary quality levels so
+    // late JPEG or 1x events (and their ACKs) cannot leak into the full-resolution PNG cast.
+    const castCdp =
+      mode === "full"
+        ? cdp
+        : await page
+            ?.context()
+            .newCDPSession(page)
+            .catch(() => undefined);
+    if (!current()) {
+      if (castCdp && castCdp !== cdp) await castCdp.detach().catch(() => undefined);
+      return;
+    }
+    if (!castCdp) {
+      this.resetPictureQuality();
+      void this.updateCasting(true);
+      return;
+    }
+    if (castCdp !== cdp)
+      castCdp.on("Page.screencastFrame", (frame: ScreencastFrame) =>
+        this.screencastFrame(castCdp, frame),
+      );
+    const next = new SidebarBrowserCast(castCdp, viewport, mode, this.quality);
     this.casting = next;
     if (casting === undefined) this.editables.refresh();
     else this.editables.resume();
-    await cdp
-      .send("Page.startScreencast", {
-        format: this.quality.format,
-        quality: this.quality.jpegQuality,
-        maxWidth: Math.round(viewport.width * scale),
-        maxHeight: Math.round(viewport.height * scale),
-        everyNthFrame: 1,
-      })
-      .catch(() => undefined);
-    // A static page may not repaint, so a (re)start always requests the current picture.
-    void this.snapshot(cdp, next);
+    const started = await next.start();
+    if (!current()) return;
+    if (mode !== "full" && !started) {
+      this.resetPictureQuality();
+      void this.updateCasting(true);
+      return;
+    }
+    // A static page may not repaint after a restart, in particular when leaving JPEG.
+    if (mode !== "motion") void this.snapshot(cdp, next);
   }
 
   private screencastFrame(cdp: CDPSession, frame: ScreencastFrame): void {
-    if (this.cdp !== cdp) return;
-    const casting = this.casting;
-    if (casting?.viewport === this.viewport)
-      this.deliver(Buffer.from(frame.data, "base64"), casting);
-    // Chromium sends the next frame only after an ack; pacing the ack caps the frame rate.
-    const delay = Math.max(0, 1000 / this.quality.maxFps - (Date.now() - this.lastAck));
-    setTimeout(() => {
-      this.lastAck = Date.now();
-      if (this.cdp === cdp)
-        void cdp
-          .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
-          .catch(() => undefined);
-    }, delay);
+    const cast = this.casting;
+    if (cast?.cdp !== cdp) return;
+    const now = performance.now();
+    if (this.currentCast(cast)) {
+      const image = Buffer.from(frame.data, "base64");
+      const sample = cast.sample(frame.data, image.length, now, () => {
+        for (const viewer of this.viewers)
+          if (viewer.visible && viewer.pending !== undefined) return true;
+        return false;
+      });
+      this.pictureQuality.picture(sample);
+      if (cast.allowPicture(now)) this.deliver(image, cast);
+      if (sample.changed || cast.mode === "motion") this.adapt(now);
+    }
+    cast.acknowledge(frame.sessionId, now, () => this.casting === cast);
   }
 
-  private async snapshot(cdp: CDPSession, casting: Cast): Promise<void> {
+  private async snapshot(cdp: CDPSession, casting: SidebarBrowserCast): Promise<void> {
     const sequence = this.sequence;
     const generation = this.editables.current.generation;
-    const { viewport, reduced, scale } = casting;
     try {
-      const shot = await cdp.send("Page.captureScreenshot", {
-        format: this.quality.format,
-        ...(this.quality.format === "jpeg" ? { quality: this.quality.jpegQuality } : {}),
-        ...(reduced
-          ? { clip: { x: 0, y: 0, ...viewport, scale: scale / this.quality.deviceScale } }
-          : {}),
-      });
-      if (this.casting === casting && this.viewport === viewport && this.sequence === sequence)
-        this.deliver(Buffer.from(shot.data, "base64"), casting, generation);
+      const shot = await casting.snapshot(cdp);
+      if (
+        this.currentCast(casting) &&
+        this.sequence === sequence &&
+        casting.allowPicture(performance.now())
+      ) {
+        const image = Buffer.from(shot.data, "base64");
+        this.pictureQuality.size(image.length);
+        this.deliver(image, casting, generation);
+      }
     } catch {
       // The page is navigating or gone; the next screencast frame replaces this one.
     }
+  }
+
+  private currentCast(cast: SidebarBrowserCast): boolean {
+    return (
+      !this.closed &&
+      this.casting === cast &&
+      cast.viewport === this.viewport &&
+      cast.mode === this.pictureQuality.mode &&
+      this.hasVisibleViewer()
+    );
   }
 
   private hasVisibleViewer(): boolean {
@@ -509,27 +641,26 @@ export class SidebarBrowserTab {
 
   private deliver(
     image: Buffer,
-    { viewport, reduced }: Cast,
+    cast: SidebarBrowserCast,
     generation = this.editables.current.generation,
   ): void {
+    const { viewport, format } = cast;
     const sequence = ++this.sequence;
     this.editables.frame(generation);
     const frame = Buffer.concat([
       encodeSidebarBrowserFrameHeader({
-        format: this.quality.format,
+        format,
         ...viewport,
         sequence,
         generation,
       }),
       image,
     ]);
-    if (!reduced) {
-      const previous = this.fullFrameBytes ?? frame.length;
-      this.fullFrameBytes = previous + (frame.length - previous) / 4;
-    }
+    const picture = { sequence, frame };
+    this.latest = { cast, picture };
     for (const viewer of this.viewers) {
       if (!viewer.visible) continue;
-      viewer.pending = { sequence, frame };
+      viewer.pending = picture;
       this.flush(viewer);
     }
   }
@@ -539,55 +670,57 @@ export class SidebarBrowserTab {
     const bytesInFlight = inFlightBytes(viewer);
     if (
       pending === undefined ||
-      this.casting?.viewport !== this.viewport ||
-      this.casting.reduced !== this.reduced ||
+      this.casting === undefined ||
+      !this.currentCast(this.casting) ||
       viewer.socket.readyState !== viewer.socket.OPEN ||
       viewer.inFlight.length >= MAX_IN_FLIGHT_FRAMES ||
-      (bytesInFlight > 0 && bytesInFlight + pending.frame.length > MAX_IN_FLIGHT_BYTES) ||
-      viewer.socket.bufferedAmount > MAX_IN_FLIGHT_BYTES
+      (bytesInFlight > 0 && bytesInFlight + pending.frame.length > MAX_IN_FLIGHT_BYTES)
     )
       return;
+    const { direct, socket } = viewer;
+    if (direct ? !direct.canSend(pending) : socket.bufferedAmount > MAX_IN_FLIGHT_BYTES) return;
     viewer.pending = undefined;
-    viewer.inFlight.push({ sequence: pending.sequence, bytes: pending.frame.length });
-    viewer.delivery.sent(performance.now());
-    viewer.socket.send(pending.frame, { binary: true }, (error) => {
-      if (!error) this.flush(viewer);
+    viewer.inFlight.push({
+      sequence: pending.sequence,
+      bytes: pending.frame.length,
+      via: direct ? "direct" : "socket",
     });
+    viewer.delivery.sent(performance.now());
+    if (direct) direct.send(pending);
+    else {
+      this.recordFrameBytes(viewer, "socket", pending.frame.length);
+      socket.send(pending.frame, { binary: true }, (error) => {
+        if (!error) this.flush(viewer);
+      });
+    }
   }
 
-  private dispatchInput(
-    viewer: Viewer,
-    message: Extract<SidebarBrowserClientMessage, { type: "mouse" | "wheel" | "key" | "text" }>,
-  ): void {
+  private recordFrameBytes(viewer: Viewer, via: "direct" | "socket", bytes: number): void {
+    this.countFrameBytes(via, bytes);
+    viewer.session?.countFrameBytes(via, bytes);
+  }
+
+  private dispatchInput(viewer: Viewer, message: SidebarBrowserInput): void {
     const page = this.page;
     if (page === undefined) return;
     if (
       viewer.visible &&
       (message.type !== "mouse" || message.action !== "move" || viewer.heldButtons.size > 0)
     ) {
-      this.lastInput = performance.now();
-      this.adapt(this.lastInput);
-      clearTimeout(this.idleTimer);
-      this.idleTimer = setTimeout(() => this.adapt(), SIDEBAR_INTERACTION_IDLE_MS + 1);
+      const now = performance.now();
+      this.pictureQuality.input(now);
+      this.adapt(now);
     }
-    if (message.type === "mouse" && message.action === "move") {
-      // Moves coalesce: only the newest position waits behind earlier input.
-      const queued = this.pendingMove !== undefined;
-      this.pendingMove = { x: message.x, y: message.y };
-      if (queued) return;
-    }
+    const take = this.inputBatcher.enqueue(viewer, page, message);
+    if (take === undefined) return;
     this.input = this.input
       .then(async () => {
+        const message = take();
         if (this.page !== page) return;
         switch (message.type) {
           case "mouse": {
-            if (message.action === "move") {
-              const move = this.pendingMove;
-              this.pendingMove = undefined;
-              if (move !== undefined) await page.mouse.move(move.x, move.y);
-              return;
-            }
             await page.mouse.move(message.x, message.y);
+            if (message.action === "move") return;
             const button = message.button === "none" ? "left" : message.button;
             const options = { button, clickCount: Math.max(1, message.clickCount) };
             await (message.action === "down" ? page.mouse.down(options) : page.mouse.up(options));
@@ -616,6 +749,7 @@ export class SidebarBrowserTab {
   /** Release only this viewer's held input, after all its already queued events. */
   private releaseInput(viewer: Viewer): void {
     const page = this.page;
+    this.inputBatcher.seal();
     this.input = this.input
       .then(async () => {
         if (page === undefined || this.page !== page) return;
@@ -646,8 +780,11 @@ export class SidebarBrowserTab {
   }
 }
 
-function inFlightBytes(viewer: Viewer): number {
-  return viewer.inFlight.reduce((sum, frame) => sum + frame.bytes, 0);
+function inFlightBytes(viewer: Viewer, via?: "socket" | "direct"): number {
+  return viewer.inFlight.reduce(
+    (sum, frame) => sum + (via === undefined || frame.via === via ? frame.bytes : 0),
+    0,
+  );
 }
 
 function hasSpareSlot(viewer: Viewer, bytes: number): boolean {

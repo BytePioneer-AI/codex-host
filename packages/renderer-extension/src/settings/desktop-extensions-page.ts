@@ -492,6 +492,7 @@ export function createDesktopExtensionsSettingsPage(
         host: root,
         signal: context.signal,
         messages,
+        getCopy: () => contentLocaleMessages(resolveContentLocale()),
       });
 
       const importModal = createDesktopExtensionImportModal({

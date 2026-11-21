@@ -921,6 +921,7 @@ export class QwenCodeAdapter implements HarnessAdapter {
   readonly #dependencies: QwenCodeAdapterDependencies;
   readonly #environment: NodeJS.ProcessEnv | undefined;
   readonly #inspectionCache = new Map<string, Extract<HarnessInspection, { status: "ready" }>>();
+  #inspectionGeneration = 0;
   readonly #sessions = new Set<QwenCodeHarnessSession>();
   readonly #toolOutputLimit: number;
   #closePromise: Promise<void> | null = null;
@@ -941,10 +942,13 @@ export class QwenCodeAdapter implements HarnessAdapter {
       return { status: "unavailable", error: invalidState("Qwen Code Adapter is closed") };
     }
     const cwd = path.resolve(input.cwd ?? process.cwd());
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionGeneration++;
     }
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) return cached;
+    const generation = this.#inspectionGeneration;
     let transport: QwenCodeSdkTransportLike | null = null;
     const startedAt = Date.now();
     let stage = "spawn";
@@ -970,7 +974,8 @@ export class QwenCodeAdapter implements HarnessAdapter {
         permissionModes: QWEN_CODE_PERMISSION_MODE_CATALOG,
         capabilities: capabilitiesForModels(modelState),
       };
-      this.#inspectionCache.set(cwd, ready);
+      if (!this.#closePromise && generation === this.#inspectionGeneration)
+        this.#inspectionCache.set(cwd, ready);
       return ready;
     } catch (error) {
       await transport?.close().catch(() => undefined);

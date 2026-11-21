@@ -98,26 +98,50 @@ fn macos_desktop_installation(
 
 /// The Desktop local app-server's stdio builder adds the codex-app-tools override
 /// after its base flags and other config overrides. The startup probe shares the
-/// base flags, and plugin helpers can also run app-server over stdio.
+/// base flags, and plugin helpers can also run app-server over stdio. When stdio
+/// MCP servers are configured, Desktop also passes the multi-value MCP launch
+/// directory options; those may appear between or after the `-c` overrides.
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn has_local_app_server_signature(arguments: &[OsString]) -> bool {
     let [config, code_mode, subcommand, analytics, overrides @ ..] = arguments else {
         return false;
     };
     const APP_TOOLS: &str = "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=";
-    config == "-c"
+    if !(config == "-c"
         && code_mode == "features.code_mode_host=true"
         && subcommand == "app-server"
-        && analytics == "--analytics-default-enabled"
-        && overrides.len().is_multiple_of(2)
-        && overrides.chunks_exact(2).all(|pair| pair[0] == "-c")
-        && matches!(
-            overrides
-                .last()
-                .and_then(|value| value.to_str())
-                .and_then(|value| value.strip_prefix(APP_TOOLS)),
-            Some("true" | "false")
-        )
+        && analytics == "--analytics-default-enabled")
+    {
+        return false;
+    }
+    let mut last_override = None;
+    let mut index = 0;
+    while let Some(option) = overrides.get(index) {
+        if option == "-c" {
+            let Some(value) = overrides.get(index + 1) else {
+                return false;
+            };
+            last_override = Some(value);
+            index += 2;
+            continue;
+        }
+        let Some(count) = option
+            .to_str()
+            .and_then(super::app_server_multi_value_count)
+        else {
+            return false;
+        };
+        if overrides.len() <= index + count {
+            return false;
+        }
+        index += count + 1;
+    }
+    matches!(
+        last_override
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.strip_prefix(APP_TOOLS)),
+        Some("true" | "false")
+    )
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -276,6 +300,66 @@ mod tests {
                 &["app-server"],
                 None
             ),
+            DesktopCaller::Main
+        );
+    }
+
+    fn signature(extra: &[&str]) -> bool {
+        has_local_app_server_signature(
+            &[MAIN_ARGS, extra]
+                .concat()
+                .iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn local_app_server_signature_accepts_mcp_launch_directories() {
+        assert!(signature(&[]));
+        assert!(signature(&[
+            "--mcp-launch-cwd",
+            "files",
+            "/usr/bin/node",
+            "/tmp/project",
+        ]));
+        assert!(signature(&[
+            "--plugin-mcp-launch-cwd",
+            "github@openai-curated",
+            "github",
+            "/tmp/project",
+        ]));
+        // Launch directories ahead of the app-tools override keep it as the last config override.
+        let mut before = MAIN_ARGS[..4].to_vec();
+        before.extend([
+            "--plugin-mcp-launch-cwd",
+            "github@openai-curated",
+            "github",
+            "/tmp/project",
+        ]);
+        before.extend(&MAIN_ARGS[4..]);
+        assert!(has_local_app_server_signature(
+            &before.iter().map(OsString::from).collect::<Vec<_>>()
+        ));
+    }
+
+    #[test]
+    fn local_app_server_signature_rejects_incomplete_or_unknown_options() {
+        assert!(!signature(&["--mcp-launch-cwd", "files", "/usr/bin/node"]));
+        assert!(!signature(&["--plugin-mcp-launch-cwd"]));
+        assert!(!signature(&["--unknown-option"]));
+        assert!(!signature(&["-c"]));
+        // The app-tools override must still be the last config override.
+        assert!(!signature(&["-c", "model=\"gpt-5\""]));
+    }
+
+    #[test]
+    fn macos_local_app_server_with_mcp_launch_directories_is_main() {
+        let chain = [(40, 20, "/shim"), (20, 10, UTILITY), (10, 1, DESKTOP)];
+        let mut arguments = MAIN_ARGS.to_vec();
+        arguments.extend(["--mcp-launch-cwd", "files", "/usr/bin/node", "/tmp/project"]);
+        assert_eq!(
+            macos_caller(&chain, &arguments, Some("Codex Desktop")),
             DesktopCaller::Main
         );
     }

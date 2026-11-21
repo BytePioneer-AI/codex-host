@@ -22,12 +22,13 @@ import {
   type StoredTurnMappingV1,
   type ThreadMetadataPatch,
 } from "@codexhost/mapping-store";
-import type { JsonObject } from "@codexhost/protocol-core";
+import type { JsonObject, TodoPlan } from "@codexhost/protocol-core";
 import {
   hostThreadIdSchema,
   hostTurnIdSchema,
   type HarnessId,
   type HostThreadId,
+  type HostTurnId,
   type NativeCheckpointRef,
   type NativeSessionRef,
   type NativeTurnRef,
@@ -38,6 +39,8 @@ import {
   projectExternalSnapshot,
 } from "./external-subagent-threads.js";
 import { ownTurns } from "./external-thread-side-chat.js";
+
+export type FailedTurn = NonNullable<StoredThreadRecordV1["failedTurns"]>[number];
 
 export interface ExternalThreadStore {
   initialize(): Promise<void>;
@@ -74,11 +77,13 @@ export interface ExternalThreadStore {
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
+  saveFailedTurn(hostThreadId: HostThreadId, failure: FailedTurn): Promise<StoredThreadRecordV1>;
   reconcileTurnMappings(
     hostThreadId: HostThreadId,
     mappings: StoredTurnMappingV1[],
   ): Promise<StoredThreadRecordV1>;
   setTitle(hostThreadId: HostThreadId, title: string): Promise<StoredThreadRecordV1>;
+  touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1>;
   setTransportModelId(
     hostThreadId: HostThreadId,
     transportModelId: string,
@@ -110,6 +115,7 @@ export interface ExternalThreadStore {
 export interface AlignedExternalSnapshot {
   record: StoredThreadRecordV1;
   turns: JsonObject[];
+  historicalPlans: ReadonlyMap<string, TodoPlan>;
 }
 
 function nativeTurnKey(ref: NativeTurnRef): string {
@@ -238,10 +244,18 @@ export class ExternalThreadRepository {
     record: StoredThreadRecordV1,
     turns: readonly JsonObject[],
     clearMissing = false,
+    failures = record.failedTurns ?? [],
   ): Promise<StoredThreadRecordV1> {
-    const preview = firstUserMessagePreview(turns);
+    const failedIds = new Set<string>(failures.map(({ hostTurnId }) => hostTurnId));
+    const preview = firstUserMessagePreview(
+      turns.filter((turn) => turn.status === "completed" && !failedIds.has(String(turn.id))),
+    );
     if (preview === record.preview || (preview === undefined && !clearMissing)) return record;
     return this.store.updateMetadata(record.hostThreadId, { preview: preview ?? null });
+  }
+
+  touch(hostThreadId: HostThreadId): Promise<StoredThreadRecordV1> {
+    return this.store.touch(hostThreadId);
   }
 
   setTransportModelId(
@@ -318,6 +332,10 @@ export class ExternalThreadRepository {
         ...(nativeCheckpointRef ? { nativeCheckpointRef } : {}),
       },
     ]);
+  }
+
+  saveFailedTurn(record: StoredThreadRecordV1, failure: FailedTurn): Promise<StoredThreadRecordV1> {
+    return this.store.saveFailedTurn(record.hostThreadId, failure);
   }
 
   async commitDerivedSnapshot(
@@ -481,12 +499,13 @@ export class ExternalThreadRepository {
   async alignSnapshot(
     record: StoredThreadRecordV1,
     snapshot: HostThreadSnapshot,
+    failures = record.failedTurns ?? [],
   ): Promise<AlignedExternalSnapshot> {
     const nativeSessionRef = record.nativeSessionRef;
     // Some Harnesses establish their native identity only on the first Turn.
     // An unsent draft has no history to reconcile or persist yet.
     if (record.state === "creating" && !nativeSessionRef && snapshot.turns.length === 0) {
-      return { record, turns: [] };
+      return { record, turns: [], historicalPlans: new Map() };
     }
     if (!nativeSessionRef || record.state !== "ready") {
       throw new Error("External Thread has no committed Native Session identity");
@@ -503,31 +522,24 @@ export class ExternalThreadRepository {
       }
     }
 
-    const mappingsByNative = new Map(
-      record.turnMappings.map(
-        (mapping) => [nativeTurnKey(mapping.nativeTurnRef), mapping] as const,
-      ),
-    );
-    const aligned = snapshot.turns.map((turn) => {
-      const existing = mappingsByNative.get(nativeTurnKey(turn.nativeTurnRef));
-      const mapping =
-        existing ??
-        ({
-          hostTurnId: hostTurnIdSchema.parse(randomUUID()),
-          nativeTurnRef: turn.nativeTurnRef,
-          ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
-        } satisfies StoredTurnMappingV1);
+    const mappingsByNative = new Map<string, HostTurnId>();
+    for (const failure of failures) {
+      if (failure.nativeTurnRef)
+        mappingsByNative.set(nativeTurnKey(failure.nativeTurnRef), failure.hostTurnId);
+    }
+    for (const mapping of record.turnMappings) {
+      mappingsByNative.set(nativeTurnKey(mapping.nativeTurnRef), mapping.hostTurnId);
+    }
+    const orderedMappings = snapshot.turns.map((turn) => {
       return {
-        snapshot: turn,
-        mapping: {
-          hostTurnId: mapping.hostTurnId,
-          nativeTurnRef: turn.nativeTurnRef,
-          ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
-        },
+        hostTurnId:
+          mappingsByNative.get(nativeTurnKey(turn.nativeTurnRef)) ??
+          hostTurnIdSchema.parse(randomUUID()),
+        nativeTurnRef: turn.nativeTurnRef,
+        ...(turn.checkpoint ? { nativeCheckpointRef: turn.checkpoint } : {}),
       };
     });
 
-    const orderedMappings = aligned.map(({ mapping }) => mapping);
     const mappingsChanged =
       orderedMappings.length !== record.turnMappings.length ||
       orderedMappings.some((mapping, index) => {
@@ -537,18 +549,24 @@ export class ExternalThreadRepository {
     const nextRecord = mappingsChanged
       ? await this.store.reconcileTurnMappings(record.hostThreadId, orderedMappings)
       : record;
-    return this.#projectSnapshot(nextRecord, snapshot);
+    return this.#projectSnapshot(nextRecord, snapshot, undefined, failures);
   }
 
   async #projectSnapshot(
     record: StoredThreadRecordV1,
     snapshot: HostThreadSnapshot,
     previous?: StoredThreadRecordV1,
+    failures = record.failedTurns ?? [],
   ): Promise<AlignedExternalSnapshot> {
-    const turns = await projectExternalSnapshot(this.store, record, snapshot, previous);
+    const projection = await projectExternalSnapshot(this.store, record, snapshot, previous);
     return {
-      record: await this.updatePreview(record, ownTurns(record, turns), previous !== undefined),
-      turns,
+      record: await this.updatePreview(
+        record,
+        ownTurns(record, projection.turns),
+        previous !== undefined,
+        failures,
+      ),
+      ...projection,
     };
   }
 }

@@ -1,5 +1,6 @@
 import type {
   DesktopExtensionMutationResult,
+  DesktopExtensionsCatalogResult,
   DesktopExtensionsListResult,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -478,8 +479,11 @@ describe("Desktop extensions settings page", () => {
     };
     const client: RendererDesktopExtensionsClient = {
       listDesktopExtensions: vi.fn(async () => listWithIcons),
-      listDesktopExtensionCatalog: vi.fn(async () => ({
-        source: "remote" as const,
+      listDesktopExtensionCatalog: vi.fn(async (): Promise<DesktopExtensionsCatalogResult> => ({
+        catalogUrl: "https://example.com/catalog.json",
+        source: "remote",
+        fetchedAt: "2026-07-02T00:00:00.000Z",
+        cached: false,
         extensions: [
           {
             id: first.id,
@@ -490,6 +494,7 @@ describe("Desktop extensions settings page", () => {
             categories: ["interface"],
             slots: ["sidebar.thread-layout"],
             trustTier: "official",
+            repository: "https://example.com/tree",
             icon: "https://cdn.example.com/ignored-because-local-exists.png",
             downloadUrl: "https://example.com/tree.zip",
             sha256: "a".repeat(64),
@@ -503,6 +508,7 @@ describe("Desktop extensions settings page", () => {
             categories: ["appearance"],
             slots: ["appearance.theme"],
             trustTier: "community",
+            repository: "https://example.com/nord",
             icon: validHttpsUrl,
             downloadUrl: "https://example.com/nord.zip",
             sha256: "b".repeat(64),
@@ -560,7 +566,7 @@ describe("Desktop extensions settings page", () => {
   it("renders empty-state directory guidance in Chinese and English", async () => {
     const client: RendererDesktopExtensionsClient = {
       listDesktopExtensions: vi.fn(async () => ({
-        configuration: { version: 1, revision: 0, enabled: [] },
+        configuration: { version: 1 as const, revision: 0, enabled: [] },
         desktopConnected: false,
         diagnostics: [],
         extensions: [],
@@ -1793,7 +1799,9 @@ describe("Desktop extensions settings page", () => {
   it("shows an unavailable state when the Host does not support Desktop extension RPCs", async () => {
     const mounted = mountPage("en", () => ({
       listDesktopExtensions: vi.fn(async () => {
-        throw new RendererMethodUnavailableError("codexhost/desktop/extensions/list");
+        throw new RendererMethodUnavailableError("codexhost/desktop/extensions/list", {
+          code: -32601,
+        });
       }),
     }));
     await vi.waitFor(() =>

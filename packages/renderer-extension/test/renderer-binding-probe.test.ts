@@ -42,6 +42,7 @@ import {
   isComposerSubmitButton,
   isComposerVoiceButton,
   creditsPlacementAnchor,
+  CODEX_COMPOSER_SELECTOR,
   isNativeContextUsageControlCandidate,
   nativeContextUsageControlForComposer,
   reconcileComposerNativeControls,
@@ -464,7 +465,7 @@ describe("Renderer Composer DOM behavior", () => {
     expect(canScheduleExternalThreadUsageRefresh(usage, 6)).toBe(false);
   });
 
-  it("re-hides a replaced native Model control for an external Agent", () => {
+  it("replaces only the owning native Model menu or retry button and restores stale controls", () => {
     class FakeElement {
       readonly attributes = new Map<string, string>();
       className = "";
@@ -482,10 +483,14 @@ describe("Renderer Composer DOM behavior", () => {
         return this.attributes.has(name);
       }
       matches(selector: string): boolean {
-        return selector === 'button[aria-haspopup="menu"]';
+        return (
+          selector === "button" ||
+          (selector === 'button[aria-haspopup="menu"]' &&
+            this.getAttribute("aria-haspopup") === "menu")
+        );
       }
-      closest(): null {
-        return null;
+      closest(selector: string): Element | null {
+        return selector === CODEX_COMPOSER_SELECTOR ? composer : null;
       }
       removeAttribute(name: string): void {
         this.attributes.delete(name);
@@ -504,10 +509,47 @@ describe("Renderer Composer DOM behavior", () => {
     replacement.setAttribute("aria-haspopup", "menu");
     replacement.setAttribute("data-codex-intelligence-trigger", "true");
     replacement.setAttribute("data-composer-navigation-target", "reasoning");
+    const navigation = "data-composer-navigation-target";
+    const retry = new FakeElement();
+    retry.setAttribute(navigation, "reasoning");
+    const loading = new FakeElement();
+    loading.setAttribute(navigation, "reasoning");
+    loading.setAttribute("aria-busy", "true");
+    const nested = new FakeElement();
+    nested.setAttribute(navigation, "reasoning");
+    nested.closest = () => ({}) as Element;
+    const injected = new FakeElement();
+    injected.setAttribute(navigation, "reasoning");
+    injected.setAttribute("data-codexhost-model-control", "");
+    const attachRetryFiber = (button: FakeElement) => {
+      const onClick = () => {
+        throw new Error("Replacing the retry button must not click it");
+      };
+      const props = {
+        [navigation]: "reasoning",
+        onClick,
+        children: [
+          null,
+          { props: { children: { props: { id: "composer.modelPicker.retryModels" } } } },
+        ],
+      };
+      Object.assign(button, {
+        __reactProps$fixture: props,
+        __reactFiber$fixture: {
+          stateNode: button,
+          memoizedProps: props,
+          return: {
+            memoizedProps: { content: { props: { id: "composer.modelPicker.modelsUnavailable" } } },
+          },
+        },
+      });
+    };
+    for (const button of [retry, nested, injected, loading]) attachRetryFiber(button);
+    let live = [replacement];
     const composer = {
       ...noNativeRequest,
       querySelectorAll: (selector: string) =>
-        selector === 'button[aria-haspopup="menu"]' ? [replacement] : [],
+        selector.includes('data-composer-navigation-target="reasoning"') ? live : [],
     } as unknown as Element;
     const trigger = new FakeElement();
     const control = {
@@ -537,6 +579,28 @@ describe("Renderer Composer DOM behavior", () => {
     expect(replacement.hidden).toBe(true);
     expect(replacement.getAttribute("aria-hidden")).toBe("true");
     expect(control.nativeModelControl?.element).toBe(replacement);
+
+    live = [retry, nested, injected, loading];
+    reconcileComposerNativeControls(control, true, true);
+    expect(replacement.hidden).toBe(false);
+    expect(retry.hidden).toBe(true);
+    expect(retry.getAttribute("aria-hidden")).toBe("true");
+    expect([nested.hidden, injected.hidden, loading.hidden]).toEqual([false, false, false]);
+
+    live = [retry, replacement];
+    reconcileComposerNativeControls(control, true, true);
+    expect(retry.hidden).toBe(false);
+    expect(retry.getAttribute("aria-hidden")).toBeNull();
+    expect(replacement.hidden).toBe(false);
+    expect(control.nativeModelControl).toBeNull();
+
+    live = [retry];
+    reconcileComposerNativeControls(control, true, true);
+    expect(retry.hidden).toBe(true);
+    live = [];
+    reconcileComposerNativeControls(control, true, true);
+    expect(retry.hidden).toBe(false);
+    expect(control.nativeModelControl).toBeNull();
     vi.unstubAllGlobals();
   });
 

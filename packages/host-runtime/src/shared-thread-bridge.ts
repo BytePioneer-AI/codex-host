@@ -53,11 +53,24 @@ export async function connectSharedThreads(
 }
 
 const SHARED_LIST_REUSE_MS = 5_000;
+// The shared Host announces most of these with a `thread/*` notification, but a
+// section move has none, and a GUI rereads its lists as soon as the reply lands.
+const LIST_CHANGING_METHODS = new Set([
+  "thread/archive",
+  "thread/delete",
+  "thread/fork",
+  "thread/metadata/update",
+  "thread/name/set",
+  "thread/revert",
+  "thread/rollback",
+  "thread/section/move",
+  "thread/start",
+  "thread/unarchive",
+]);
 
 /** A GUI keeps its native Codex connection and forwards only shared external Threads. */
 export class SharedThreadBridge {
   readonly #known = new Set<string>();
-  readonly #localKnown = new Set<string>();
   #localProbe: ((threadId: string) => Promise<boolean>) | undefined;
 
   setLocalOwnershipProbe(probe: (threadId: string) => Promise<boolean>): void {
@@ -231,7 +244,7 @@ export class SharedThreadBridge {
   }
 
   async ownership(threadIds: string[]): Promise<Map<string, string>> {
-    if (threadIds.every((id) => this.#localKnown.has(id) && !this.#known.has(id))) return new Map();
+    if (threadIds.length === 0) return new Map();
     try {
       const peer = await this.#connect();
       if (!peer) throw new Error("Shared Thread Host is disconnected");
@@ -247,11 +260,9 @@ export class SharedThreadBridge {
       return owners;
     } catch (error) {
       if (threadIds.some((id) => this.#known.has(id))) throw error;
-      // A failed remote lookup is not proof of native ownership. Only an
-      // authoritative local store/native read can admit this fallback.
+      // A local read permits fallback for this lookup only; it may be a copy of a shared Thread.
       const probe = this.#localProbe;
       if (probe && (await Promise.all(threadIds.map((id) => probe(id)))).every(Boolean)) {
-        for (const id of threadIds) this.#localKnown.add(id);
         return new Map();
       }
       if (this.options.delegateCreates) throw error;
@@ -293,7 +304,9 @@ export class SharedThreadBridge {
     if (!shared) return null;
     const peer = await this.#connect();
     if (!peer) throw new Error("Shared Thread Host is disconnected");
-    return { ...(await peer.request(request.method, params)), id: request.id };
+    const reply = await peer.request(request.method, params);
+    if (LIST_CHANGING_METHODS.has(request.method)) this.#invalidateLists();
+    return { ...reply, id: request.id };
   }
 
   async #rows(peer: SharedThreadPeer, params: JsonObject): Promise<JsonObject[]> {

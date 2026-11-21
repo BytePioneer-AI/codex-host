@@ -1168,6 +1168,21 @@ describe("ClaudeSdkTransport process environment", () => {
     await value.transport.close();
   });
 
+  it("enables Claude Code task tools unless the user already chose a value", async () => {
+    const enabled = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {});
+    await enabled.transport.start();
+    expect(options(enabled).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("1");
+    expect(options(enabled).env).not.toHaveProperty("CLAUDE_CODE_ENABLE_TASKS");
+    await enabled.transport.close();
+
+    const userChoice = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: "0",
+    });
+    await userChoice.transport.start();
+    expect(options(userChoice).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe("0");
+    await userChoice.transport.close();
+  });
+
   it("adds the Host Node runtime to the Claude process PATH", async () => {
     const value = fixture("create", "default", harnessThinkingOptionIdSchema.parse("auto"), {
       PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -2417,6 +2432,8 @@ describe("Claude history replacement fence", () => {
     } as unknown as SDKMessage);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+    // The closed SDK stream alone does not permit a later close to confirm release.
+    await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
     expect(value.fakeQuery.stopTask).toHaveBeenCalledWith("still-running");
   });
 
@@ -2454,14 +2471,80 @@ describe("Claude history replacement fence", () => {
     },
   );
 
-  it("rejects close if native output cannot be drained", async () => {
+  it.skipIf(process.platform === "win32")(
+    "does not signal a reused process group when retrying a timed-out shutdown",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("Missing native process ownership hook");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: ["-e", ""],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      await once(child, "exit");
+      if (!child.pid) throw new Error("Missing spawned process ID");
+      const pgid = -child.pid;
+      const realKill = process.kill.bind(process);
+      let groupExists = true;
+      const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid !== pgid) return realKill(pid, signal);
+        if (!groupExists) throw Object.assign(new Error("No such group"), { code: "ESRCH" });
+        return true;
+      });
+      try {
+        // The original group outlives its wrapper and does not exit before the deadline.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill).toHaveBeenCalledWith(pgid, "SIGTERM");
+        kill.mockClear();
+
+        // The kernel now reports an unrelated group at the same PGID.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill.mock.calls.filter(([pid]) => pid === pgid)).toEqual([[pgid, 0]]);
+
+        groupExists = false;
+        await expect(value.transport.close()).resolves.toBeUndefined();
+      } finally {
+        kill.mockRestore();
+      }
+    },
+  );
+
+  it("rechecks a late SDK output drain after a failed close without closing the Query again", async () => {
     const value = fixture();
     await value.transport.start();
+    const finishOutput = value.fakeQuery.close.bind(value.fakeQuery);
     const close = vi.spyOn(value.fakeQuery, "close").mockImplementation(() => undefined);
     try {
+      const first = value.transport.close();
+      expect(value.transport.close()).toBe(first);
+      await expect(first).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.start()).rejects.toThrow("closing");
       await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      finishOutput();
+      const confirmed = value.transport.close();
+      await expect(confirmed).resolves.toBeUndefined();
+      expect(value.transport.close()).toBe(confirmed);
+      expect(close).toHaveBeenCalledOnce();
+      expect(value.onFault).not.toHaveBeenCalled();
     } finally {
-      close.mockRestore();
+      finishOutput();
+    }
+  });
+
+  it("retries an SDK Query close that threw before it could finish output", async () => {
+    const value = fixture();
+    await value.transport.start();
+    vi.spyOn(value.fakeQuery, "close").mockImplementationOnce(() => {
+      throw new Error("failed to close Query");
+    });
+    try {
+      await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.close()).resolves.toBeUndefined();
+    } finally {
       value.fakeQuery.close();
     }
   });

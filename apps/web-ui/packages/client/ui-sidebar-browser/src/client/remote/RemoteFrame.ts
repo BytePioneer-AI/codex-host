@@ -1,12 +1,14 @@
 /** Navigation of a tab that lives in the browser on the CodexHost machine, over one WebSocket. */
 import { createSnapshotStore, type SnapshotStore } from "@deepseek-ai/dsh-client-store";
 import {
-  SIDEBAR_BROWSER_PATH,
   SIDEBAR_BROWSER_TAB_PARAM,
   decodeSidebarBrowserFrameHeader,
+  parseSidebarBrowserTransport,
   type SidebarBrowserClientMessage,
+  type SidebarBrowserFrameHeader,
   type SidebarBrowserServerMessage,
   type SidebarBrowserState,
+  type SidebarBrowserTransport,
 } from "@codexhost/shared-contracts/sidebar-browser";
 import {
   emptyBrowserFrame,
@@ -16,7 +18,10 @@ import {
 import type { BrowserPageOptions } from "../browser/BrowserPage.ts";
 import { browserAddressCheckpoint, currentBrowserTarget } from "../browser/BrowserPersistence.ts";
 import { parseBrowserAddress, type BrowserTarget } from "../browser/url.ts";
+import { DirectFrames } from "./DirectFrames.ts";
+import type { DirectSession } from "./DirectSession.ts";
 import type { RemotePresentation } from "./RemotePresentation.ts";
+import { sidebarBrowserSocketUrl } from "./socket-url.ts";
 
 const MAX_RETRY_MS = 8000;
 
@@ -31,6 +36,10 @@ export class RemoteFrame implements BrowserFrame {
   private checkpoint: BrowserTarget | undefined;
   private revision = 0;
   private drawing: Promise<void> = Promise.resolve();
+  private presented = 0;
+  private direct: DirectFrames | undefined;
+  private lastBinding = 0;
+  private unsubscribeDirect: (() => void) | undefined;
   private disposed = false;
 
   /**
@@ -42,6 +51,7 @@ export class RemoteFrame implements BrowserFrame {
     private readonly options: BrowserPageOptions,
     private readonly key: string,
     private readonly presentation: RemotePresentation,
+    private readonly directSession: DirectSession,
   ) {
     this.checkpoint = currentBrowserTarget(options.initial);
     this.store = createSnapshotStore(emptyBrowserFrame());
@@ -87,6 +97,7 @@ export class RemoteFrame implements BrowserFrame {
   dispose(): Promise<void> {
     this.disposed = true;
     clearTimeout(this.retryTimer);
+    this.detachDirect();
     this.socket?.close(1000);
     this.socket = undefined;
     this.presentation.dispose();
@@ -100,18 +111,21 @@ export class RemoteFrame implements BrowserFrame {
 
   private connect(): void {
     if (this.disposed) return;
-    const url = new URL(SIDEBAR_BROWSER_PATH.slice(1), document.baseURI);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const url = sidebarBrowserSocketUrl();
     url.searchParams.set(SIDEBAR_BROWSER_TAB_PARAM, this.key);
     const socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";
     this.socket = socket;
+    this.presented = 0;
+    this.lastBinding = 0;
     socket.addEventListener("open", () => {
+      if (this.socket !== socket) return;
       this.retryMs = 500;
       for (const message of this.presentation.current) this.send(message);
       const queued = this.queued;
       this.queued = undefined;
       if (queued !== undefined) this.send(queued);
+      this.subscribeDirect(socket);
     });
     socket.addEventListener("message", (event: MessageEvent<ArrayBuffer | string>) => {
       if (this.socket !== socket) return;
@@ -119,23 +133,12 @@ export class RemoteFrame implements BrowserFrame {
         this.receive(JSON.parse(event.data) as SidebarBrowserServerMessage);
         return;
       }
-      const frame = event.data;
-      const current = (): boolean => this.socket === socket;
-      // Serialize decoding and painting even when two frames arrive before either is drawn.
-      this.drawing = this.drawing
-        .then(async () => {
-          if (!current()) return;
-          const header = decodeSidebarBrowserFrameHeader(frame);
-          await this.presentation.draw(frame, header, current);
-          if (current()) this.send({ type: "ack", sequence: header.sequence });
-        })
-        .catch(() => {
-          if (current()) socket.close();
-        });
+      this.draw(socket, event.data);
     });
     socket.addEventListener("close", (event) => {
       if (this.socket !== socket || this.disposed) return;
       this.socket = undefined;
+      this.detachDirect();
       this.presentation.setEditables(undefined);
       const current = this.store.getSnapshot();
       if (current.target !== undefined)
@@ -155,7 +158,87 @@ export class RemoteFrame implements BrowserFrame {
     });
   }
 
+  private subscribeDirect(socket: WebSocket): void {
+    this.unsubscribeDirect = this.directSession.subscribe((ready) => {
+      if (this.socket !== socket) return;
+      const released = this.clearDirect();
+      if (released !== undefined) this.send({ type: "transport", binding: released });
+      if (!ready) return;
+      try {
+        const frames = new DirectFrames(
+          ready,
+          this.key,
+          () => {
+            if (this.direct !== frames) return;
+            const binding = ++this.lastBinding;
+            frames.binding = binding;
+            this.send({ type: "transport", peer: ready.peer, binding });
+          },
+          ({ data, header }) => this.draw(socket, data, frames, header),
+        );
+        this.direct = frames;
+      } catch {
+        ready.failed("frames-open");
+      }
+    });
+  }
+
+  private clearDirect(): number | undefined {
+    const frames = this.direct;
+    this.direct = undefined;
+    frames?.dispose();
+    return frames?.binding;
+  }
+
+  private detachDirect(): void {
+    this.unsubscribeDirect?.();
+    this.unsubscribeDirect = undefined;
+    this.clearDirect();
+  }
+
+  private transport(message: SidebarBrowserTransport): void {
+    const frames = this.direct;
+    if (frames?.binding !== message.binding) return;
+    if (message.via === "direct") frames.confirm(message.from);
+    else {
+      this.clearDirect(); // The server already switched this tab back.
+      if (frames.bound) frames.ready.failed("frames-fallback");
+    }
+  }
+
+  private draw(
+    socket: WebSocket,
+    data: ArrayBuffer,
+    direct?: DirectFrames,
+    frameHeader?: SidebarBrowserFrameHeader,
+  ): void {
+    const current = (): boolean => this.socket === socket && (!direct || this.direct === direct);
+    // Serialize presentation on both routes and acknowledge old frames without repainting them.
+    this.drawing = this.drawing
+      .then(async () => {
+        if (!current()) return;
+        const header = frameHeader ?? decodeSidebarBrowserFrameHeader(data);
+        if (header.sequence > this.presented) {
+          await this.presentation.draw(data, header, current);
+          if (!current()) return;
+          this.presented = header.sequence;
+        }
+        if (direct) direct.acknowledge(header.sequence);
+        else this.send({ type: "ack", sequence: header.sequence });
+      })
+      .catch(() => {
+        if (!current()) return;
+        if (direct) direct.ready.failed("frame-decode");
+        else socket.close();
+      });
+  }
+
   private receive(message: SidebarBrowserServerMessage): void {
+    if (message.type === "transport") {
+      const transport = parseSidebarBrowserTransport(message);
+      if (transport) this.transport(transport);
+      return;
+    }
     if (message.type === "editable") {
       this.presentation.setEditables(message);
       return;

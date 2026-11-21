@@ -38,6 +38,8 @@ const update = (value) => send({method:'session/update',params:{sessionId,update
 const replies = {};
 const permission = (name='run_command', kind='execute') => send({id:'permission',method:'session/request_permission',params:{sessionId,toolCall:{toolCallId:'old',name,kind},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});
 const question = () => send({id:'question',method:'elicitation/create',params:{sessionId,toolCallId:'old',mode:'form',message:'Continue?',requestedSchema:{type:'object',properties:{answer:{type:'string'}}}}});
+process.stdin.on('end', () => process.exit(0));
+process.stdin.on('close', () => process.exit(0));
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
   const request = JSON.parse(line);
   if (!request.method) {
@@ -87,7 +89,10 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   );
   if (process.platform === "win32") {
     const shim = `${cli}.cmd`;
-    await writeFile(shim, `@"${process.execPath}" "${cli}" %*\r\n`);
+    // Escape % so cmd.exe does not expand variable references hidden in the
+    // executable or temporary paths; %* stays unescaped to forward arguments.
+    const escape = (value: string) => value.replaceAll("%", "%%");
+    await writeFile(shim, `@"${escape(process.execPath)}" "${escape(cli)}" %*\r\n`);
     return shim;
   }
   await chmod(cli, 0o700);

@@ -66,6 +66,7 @@ export interface ExternalTurnProjectionHost {
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
+  touchThread(thread: ExternalThread): Promise<void>;
   persistTerminalIdentity(
     thread: ExternalThread,
     event: Parameters<ExternalThreadRuntime["persistTerminalIdentity"]>[1],
@@ -140,9 +141,23 @@ export class ExternalTurnProjection {
       await this.#host.resolveDesktopApproval(event.interactionId, thread);
       await this.#host.resolveDesktopQuestion(event.interactionId, thread);
     }
-    const ephemeralTurn =
+    // agy uses the same ACP prompt for slash commands and conversation. Only
+    // promote output backed by a new native user Turn, not local command text.
+    const conversationalCommand =
       event.type === "turn.completed" &&
-      (event.ephemeral === true || thread.ephemeralTurnIds.has(event.turnId));
+      thread.clientCommand?.turn.id === event.turnId &&
+      thread.harnessId === "antigravity" &&
+      this.#host.manualCompactionTurns.get(thread) !== event.turnId &&
+      event.outcome.status === "succeeded" &&
+      event.nativeTurnRef !== undefined &&
+      [...projection.projector.foregroundWireItems().values()].some(
+        (item) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim(),
+      );
+    const ephemeralTurn =
+      event.type === "turn.completed"
+        ? event.ephemeral === true ||
+          (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand)
+        : thread.ephemeralTurnIds.has(event.turnId);
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#host.persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -172,30 +187,34 @@ export class ExternalTurnProjection {
       thread.thread.recencyAt = updatedAt;
     }
     if (event.type === "turn.started") {
-      if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
+      if (thread.clientCommand && !ephemeralTurn)
         thread.clientCommand.subsequentTurnId ??= event.turnId;
       // A successor Turn ends the attribution window of every earlier Turn.
       this.#dropSettledTurnProjections(thread, event.turnId);
+      // Not awaited: the write must not delay the Turn's first output.
+      if (!ephemeralTurn) void this.#host.touchThread(thread);
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
-      const completedAt = Math.floor(Date.now() / 1000);
-      if (ephemeralTurn) {
-        if (thread.clientCommand?.turn.id === event.turnId)
-          thread.clientCommand.turn = projection.projector.snapshotTurn(result.completedTurn);
-        thread.ephemeralTurnIds.delete(event.turnId);
+      const turn = projection.projector.snapshotTurn(result.completedTurn);
+      if (thread.ephemeralTurnIds.delete(event.turnId)) {
+        if (thread.clientCommand?.turn.id === event.turnId) {
+          // Settle an already visible command card without repeating the reply in it.
+          thread.clientCommand.turn = ephemeralTurn ? turn : { ...turn, items: [] };
+        }
         this.#host.manualCompactionTurns.delete(thread);
-      } else {
-        thread.turns.push(projection.projector.snapshotTurn(result.completedTurn));
+      }
+      if (!ephemeralTurn) {
+        thread.turns.push(turn);
         thread.projectedTerminalTurnId = event.turnId;
-        thread.thread.updatedAt = completedAt;
-        thread.thread.recencyAt = completedAt;
       }
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
+      // Before any completion message, so a client acting on it reads the touched record.
+      if (!ephemeralTurn) await this.#host.touchThread(thread);
       // Detached Items (native background commands) and idle background output
       // settle on the completed Turn later; keep its projector so late events
       // still project instead of failing on a missing Turn.

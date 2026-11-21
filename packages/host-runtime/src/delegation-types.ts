@@ -346,6 +346,7 @@ export interface DelegationControlApi {
 
 export interface DelegationControlRegistration extends DelegationControlApi {
   executionHostId?(threadId: string): string | undefined;
+  onThreadIdle?(listener: (threadId: string) => void): () => void;
   canHandleStart(input: DelegationStartInput): boolean | Promise<boolean>;
   ownsThread(threadId: string): boolean | Promise<boolean>;
 }

@@ -178,6 +178,8 @@ export class DelegationWatchService {
   readonly #cancelling = new Map<string, number>();
   #writes: Promise<void> = Promise.resolve();
   #timer: ReturnType<typeof setTimeout> | undefined;
+  #ticking = false;
+  #nudgePending = false;
   #closed = false;
 
   constructor(
@@ -369,9 +371,33 @@ export class DelegationWatchService {
     }
   }
 
+  /** Triggers an immediate check when a watched or notified Thread becomes idle. */
+  nudge(threadId?: string): void {
+    if (this.#closed) return;
+    const relevant =
+      threadId === undefined
+        ? this.#watches.some((watch) => watch.state !== "undeliverable")
+        : this.#watches.some(
+            (watch) =>
+              watch.state !== "undeliverable" &&
+              (watch.threadId === threadId || watch.notifyThreadId === threadId),
+          );
+    if (!relevant) return;
+    if (this.#ticking) {
+      this.#nudgePending = true;
+      return;
+    }
+    if (this.#timer) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
+    }
+    this.#schedule(0);
+  }
+
   /** Stops work in this process. Stored watches stay on disk for the next Runtime. */
   close(): void {
     this.#closed = true;
+    this.#nudgePending = false;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#watches.length = 0;
@@ -409,18 +435,23 @@ export class DelegationWatchService {
     this.#schedule();
   }
 
-  #schedule(): void {
+  #schedule(delayMs = this.#pollIntervalMs): void {
     if (this.#closed || this.#timer) return;
     if (!this.#watches.some((watch) => watch.state !== "undeliverable")) return;
     this.#timer = setTimeout(() => {
+      this.#ticking = true;
+      this.#nudgePending = false;
       // A background loop must never take the Host Runtime down with it.
       void this.#tick()
         .catch((error: unknown) => this.#diagnose(error))
         .finally(() => {
+          this.#ticking = false;
           this.#timer = undefined;
-          this.#schedule();
+          const immediate = this.#nudgePending;
+          this.#nudgePending = false;
+          this.#schedule(immediate ? 0 : this.#pollIntervalMs);
         });
-    }, this.#pollIntervalMs);
+    }, delayMs);
     this.#timer.unref?.();
   }
 

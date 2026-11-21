@@ -11,7 +11,9 @@ const RAIL_TOP_PROPERTY = "--codexhost-settings-rail-top";
  * Native rail buttons draw their selected state with `[data-selected]::before`
  * and the hover text color. While the settings page covers the content area,
  * that highlight is hidden with scoped CSS instead of editing React-owned
- * attributes, so native reconciliation never races the Host.
+ * attributes, so native reconciliation never races the Host. The same CSS hides
+ * the native workspace outline, which would otherwise draw a vertical line over
+ * the settings page.
  */
 const RAIL_STYLE = `
 nav[data-app-navigation-rail][${RAIL_OPEN_ATTRIBUTE}] ${RAIL_DESTINATION_SELECTOR}[data-selected]:not(:hover) {
@@ -19,6 +21,9 @@ nav[data-app-navigation-rail][${RAIL_OPEN_ATTRIBUTE}] ${RAIL_DESTINATION_SELECTO
 }
 nav[data-app-navigation-rail][${RAIL_OPEN_ATTRIBUTE}] ${RAIL_DESTINATION_SELECTOR}[data-selected]:not(:hover)::before {
   opacity: 0 !important;
+}
+:root:has(nav[data-app-navigation-rail][${RAIL_OPEN_ATTRIBUTE}]) [data-app-shell-frame][data-app-shell-page-surface="true"] [data-app-shell-surface-backing]::after {
+  box-shadow: none !important;
 }
 `;
 

@@ -35,8 +35,7 @@ export const en = {
   remoteAccess: "Remote access",
   "settings.open": "Settings",
   "settings.updateAvailable": "Settings · A new version is available",
-  "settings.extensions": "Web Plugins",
-  "settings.desktopExtensions": "Desktop Extensions",
+  "settings.extensions": "Plugins",
   "settings.connections": "Connections",
   "settings.delegation": "Multi-Agent",
   "settings.resources": "Resources",
@@ -44,6 +43,7 @@ export const en = {
   "settings.usage": "Usage",
   "settings.updates": "Updates",
   "settings.about": "About",
+  "settings.loading": "Loading settings…",
   "settings.unavailable": "Could not load this page: {message}",
   panel: "Import sessions",
   "connection.reconnecting": "Connection interrupted; reconnecting…",
@@ -302,6 +302,9 @@ export const en = {
   "connectDevices.localListener":
     "This foreground Web cannot change its IP listener here. Use Tailscale HTTPS, or see the setup guide.",
 
+  "extensions.targetSwitcherLabel": "Plugin target",
+  "extensions.targetWeb": "Web",
+  "extensions.targetDesktop": "Desktop",
   "extensions.description":
     "Manage CodexHost Web native extensions and compatible DSH interface extensions. Extensions apply to signed-in browsers connected to this Web service.",
   "extensions.authDisabled": "Authentication must be enabled to manage interface extensions.",
@@ -693,8 +696,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   remoteAccess: "远程访问",
   "settings.open": "设置",
   "settings.updateAvailable": "设置 · 有新版本可用",
-  "settings.extensions": "Web 插件",
-  "settings.desktopExtensions": "Desktop 扩展",
+  "settings.extensions": "插件",
   "settings.connections": "连接",
   "settings.delegation": "多 Agent 协作",
   "settings.resources": "资源管理",
@@ -702,6 +704,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "settings.usage": "用量统计",
   "settings.updates": "更新",
   "settings.about": "关于",
+  "settings.loading": "正在加载设置…",
   "settings.unavailable": "无法加载此页面：{message}",
   panel: "导入会话",
   "connection.reconnecting": "连接已中断，正在重连…",
@@ -939,6 +942,9 @@ export const zh: Record<ImportLocaleKey, string> = {
   "connectDevices.localListener":
     "当前前台 Web 无法在此更改 IP 监听。你可以使用 Tailscale HTTPS，或查看配置文档。",
 
+  "extensions.targetSwitcherLabel": "切换插件端",
+  "extensions.targetWeb": "Web",
+  "extensions.targetDesktop": "Desktop",
   "extensions.description":
     "管理 CodexHost Web 原生扩展与兼容的 DSH 界面扩展。扩展对连接此 Web 服务的已登录浏览器生效。",
   "extensions.authDisabled": "未启用访问认证时不能管理界面扩展。",

@@ -95,6 +95,7 @@ type Feedback = { readonly tone: "success" | "warning" | "danger"; readonly text
 export interface WebExtensionsFace {
   resolveText: (text: NonNullable<WebUiExtensionMeta["title"]>) => string;
   locale: HostSettingsSource<string>;
+  headerAccessory?: ReactNode;
 }
 
 const GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
@@ -154,6 +155,7 @@ export function WebExtensionsSection({
   t,
   resolveText,
   locale,
+  headerAccessory,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
   const activeLocaleRaw = useSyncExternalStore(locale.subscribe, locale.get);
   const systemLocale = toExtensionLocale(activeLocaleRaw);
@@ -242,45 +244,47 @@ export function WebExtensionsSection({
     [t],
   );
 
-  const refreshMarket = useCallback(
-    async (signal?: AbortSignal): Promise<void> => {
-      setMarket((prev) => ({ ...prev, loading: true }));
-      try {
-        const result = await webNativeExtensionsApi.marketRefresh(signal);
-        if (signal?.aborted || !mountedRef.current) return;
-        const webEntries = result.extensions.filter((entry) => entry.targets.includes("web"));
-        setMarket({
-          loading: false,
-          loaded: true,
-          entries: webEntries,
-          stale: result.stale,
-          error: result.error ?? null,
-        });
-      } catch (cause: unknown) {
-        if (signal?.aborted || !mountedRef.current) return;
-        if (isWebExtensionAuthDisabledError(cause)) {
-          setListView({ kind: "disabled" });
-          setMarket((prev) => ({ ...prev, loading: false }));
-          return;
-        }
-        setMarket((prev) => ({
-          ...prev,
-          loading: false,
-          loaded: true,
-          stale: prev.entries.length > 0,
-          error: formatManagementError(cause, t),
-        }));
+  const refreshMarket = async (): Promise<void> => {
+    setMarket((prev) => ({ ...prev, loading: true }));
+    try {
+      const result = await webNativeExtensionsApi.marketRefresh();
+      if (!mountedRef.current) return;
+      const webEntries = result.extensions.filter((entry) => entry.targets.includes("web"));
+      setMarket({
+        loading: false,
+        loaded: true,
+        entries: webEntries,
+        stale: result.stale,
+        error: result.error ?? null,
+      });
+    } catch (cause: unknown) {
+      if (!mountedRef.current) return;
+      if (isWebExtensionAuthDisabledError(cause)) {
+        setListView({ kind: "disabled" });
+        setMarket((prev) => ({ ...prev, loading: false }));
+        return;
       }
-    },
-    [t],
-  );
+      setMarket((prev) => ({
+        ...prev,
+        loading: false,
+        loaded: true,
+        stale: prev.entries.length > 0,
+        error: formatManagementError(cause, t),
+      }));
+    }
+  };
+
+  const openMarket = () => {
+    setActiveTab("market");
+    setSelectedCategory(null);
+    if (!market.loaded && !market.loading) void refreshMarket();
+  };
 
   useEffect(() => {
     const controller = new AbortController();
     void refreshList(controller.signal);
-    void refreshMarket(controller.signal);
     return () => controller.abort();
-  }, [refreshList, refreshMarket]);
+  }, [refreshList]);
 
   const runMutation = useCallback(
     async (
@@ -621,7 +625,10 @@ export function WebExtensionsSection({
 
   const renderHeader = (options: { readonly canMutate: boolean }) => (
     <header className={css.header}>
-      <h2 className={css.title}>{t("settings.extensions")}</h2>
+      <div className={css.headerLeft}>
+        <h2 className={css.title}>{t("settings.extensions")}</h2>
+        {headerAccessory}
+      </div>
 
       <div className={css.toolbar}>
         {/* Content language switcher (matching Desktop EN / 中文 dropdown) */}
@@ -728,7 +735,7 @@ export function WebExtensionsSection({
         </button>
 
         {/* More ("...") menu containing recovery actions */}
-        <div ref={moreWrapRef} className={css.menuAnchor}>
+        <div ref={moreWrapRef} className={`${css.menuAnchor} ${css.moreMenuAnchor}`}>
           <button
             type="button"
             className={css.iconButton}
@@ -842,11 +849,7 @@ export function WebExtensionsSection({
             role="tab"
             className={css.segmentedTab}
             aria-selected={activeTab === "market"}
-            onClick={() => {
-              setActiveTab("market");
-              setSelectedCategory(null);
-              if (!market.loaded && !market.loading) void refreshMarket();
-            }}
+            onClick={openMarket}
           >
             {t("extensions.tabMarket", { count: String(market.entries.length) })}
           </button>
@@ -947,7 +950,7 @@ export function WebExtensionsSection({
               <p className={css.emptyDesc}>{t("extensions.emptyHint")}</p>
             </div>
             <div className={css.emptyActions}>
-              <Button variant="primary" size="sm" onClick={() => setActiveTab("market")}>
+              <Button variant="primary" size="sm" onClick={openMarket}>
                 {t("extensions.goToMarket")}
               </Button>
               <Button

@@ -83,6 +83,36 @@ export async function checkHostUpdate(signal: AbortSignal) {
   return updateCheckResultSchema.parse(reply.result);
 }
 
+const DESKTOP_EXTENSIONS_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Probe whether the connected Host supports Desktop extension management.
+ * Non-200 responses, RPC errors (e.g. -32601), timeouts, and transport failures
+ * resolve silently to `false`.
+ */
+export async function probeDesktopExtensionsSupport(signal: AbortSignal): Promise<boolean> {
+  const probeSignal =
+    typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function"
+      ? AbortSignal.any([signal, AbortSignal.timeout(DESKTOP_EXTENSIONS_PROBE_TIMEOUT_MS)])
+      : signal;
+  try {
+    const response = await fetch("api/ch/v1/rpc", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ method: "codexhost/desktop/extensions/list", params: {} }),
+      signal: probeSignal,
+    });
+    if (response.status !== 200) return false;
+    const reply = (await response.json()) as { error?: unknown } | null;
+    return (
+      reply !== null && typeof reply === "object" && !("error" in reply && reply.error != null)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const voiceApi = {
   status: async () =>
     voiceStatusResultSchema.parse(await call<unknown>("codexhost/voice/status", {})),

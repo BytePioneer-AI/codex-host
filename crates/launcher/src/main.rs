@@ -1355,7 +1355,8 @@ fn launch_gui(
     let (options, installation) = prepare_gui(options, installation)?;
     startup_trace("acquiring Launcher ownership");
     let _launcher_guard = if windows_direct {
-        runtime_instance::try_acquire_launcher_guard(&runtime_instance::default_guard_path()?)?
+        let guard_path = runtime_instance::guard_path(&default_descriptor_path()?);
+        runtime_instance::try_acquire_launcher_guard(&guard_path)?
             .ok_or("a codexhost Desktop is starting or running; completely quit it before using --windows-direct")?
     } else {
         match acquire_launcher_ownership(&installation, Duration::from_secs(120))? {

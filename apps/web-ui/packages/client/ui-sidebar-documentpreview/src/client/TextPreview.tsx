@@ -171,8 +171,12 @@ export function TextPreview({
       {openError !== undefined && <span role="alert">{openError}</span>}
     </>
   );
-  // Contributions that hand the file to the Host wait for its Host path.
-  const fileOwner = absolutePath === undefined ? undefined : { absolutePath };
+  // Workspace-scoped actions can act on `file.path` immediately; Host-native actions wait for `absolutePath`.
+  const fileOwner = useMemo(
+    () =>
+      absolutePath === undefined ? { filePath: file.path } : { filePath: file.path, absolutePath },
+    [file.path, absolutePath],
+  );
   // Every tab of this type is a `file` resource address, so its params are the
   // `file` type's; the union is narrowed on the one field read, not validated.
   const line =
@@ -382,7 +386,7 @@ export function TextPreview({
       >
         <div className={css.header}>
           {pathLabel}
-          {fileOwner !== undefined && renderSlot("sidebar.right.tab.document.actions", fileOwner)}
+          {renderSlot("sidebar.right.tab.document.actions", fileOwner)}
         </div>
         <div className={css.body} data-textpreview-body>
           <div className={css.empty} data-textpreview-unsupported>
@@ -394,11 +398,9 @@ export function TextPreview({
               {spec !== null && <p className={css.emptySpec}>{spec}</p>}
             </div>
             <p className={css.emptyLine}>{t("unsupportedFile")}</p>
-            {fileOwner !== undefined && (
-              <div className={css.emptyActions}>
-                {renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
-              </div>
-            )}
+            <div className={css.emptyActions}>
+              {renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
+            </div>
           </div>
         </div>
       </div>
@@ -555,7 +557,7 @@ export function TextPreview({
           </button>
         </Tooltip>
         {/* jscpd:ignore-end */}
-        {fileOwner !== undefined && renderSlot("sidebar.right.tab.document.actions", fileOwner)}
+        {renderSlot("sidebar.right.tab.document.actions", fileOwner)}
       </div>
       <div
         ref={bindBody}
@@ -642,7 +644,7 @@ export function TextPreview({
                 <FileTypeIcon kind={classifyFileType(name)} size={36} className={css.emptyIcon} />
               )}
               <p className={css.emptyLine}>{failureLine(t, current.failure)}</p>
-              {emptyFailureRecourse(current.failure) === "open" && fileOwner !== undefined && (
+              {emptyFailureRecourse(current.failure) === "open" && (
                 <div className={css.emptyActions}>
                   {renderSlot("sidebar.right.tab.document.unpreviewable", fileOwner)}
                 </div>

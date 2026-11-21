@@ -23,6 +23,8 @@ export interface TransportOptions {
   /** ZCode application location saved as the plugin launch path. */
   app?: string;
   timeoutMs?: number;
+  /** Allow retrying a previously denied/timed-out OS Keychain credential read. */
+  retryDeniedKeychain?: boolean;
   /** The Host's shared verifier for this installation; the transport never closes it. */
   verifier: (appVersion: string) => ZcodeVerifier;
 }
@@ -95,7 +97,11 @@ export class CliTransport {
       startPlanChecked,
       credentialIssue,
       codingPlan,
-    } = await accountConfig(installation, this.options.environment);
+    } = await accountConfig(
+      installation,
+      this.options.environment,
+      this.options.retryDeniedKeychain ? { retryDenied: true } : undefined,
+    );
     this.#installation = installation;
     this.#startPlan = startPlan;
     this.#signedIn = signedIn;

@@ -7,7 +7,12 @@ import type {
 } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
-import { harnessIdSchema, hostThreadIdSchema, hostTurnIdSchema } from "@codexhost/shared-contracts";
+import {
+  harnessIdSchema,
+  hostItemIdSchema,
+  hostThreadIdSchema,
+  hostTurnIdSchema,
+} from "@codexhost/shared-contracts";
 import type { DelegationControlApi } from "../src/delegation-types.js";
 import { withFailedTurns } from "../src/external-turn-projection.js";
 
@@ -316,7 +321,9 @@ describe("External Thread failed history", () => {
                 {
                   item: {
                     type: "agentMessage",
-                    itemId: partialSnapshot.turns[0]?.items[0]?.item.itemId ?? "native-agent-1",
+                    itemId:
+                      partialSnapshot.turns[0]?.items[0]?.item.itemId ??
+                      hostItemIdSchema.parse("native-agent-1"),
                     text: "earlier reply",
                   },
                   outcome: { status: "succeeded" },

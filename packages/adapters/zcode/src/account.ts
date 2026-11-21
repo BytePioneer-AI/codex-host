@@ -6,6 +6,7 @@ import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
 import type { ZcodeVerifier } from "./verification/index.js";
 import { readCredentials, ZcodeCredentialError } from "./credentials.js";
+import type { ReadSystemKeyOptions } from "./credential-keyring.js";
 import {
   readLoginChannel,
   readOAuthUserId,
@@ -191,6 +192,7 @@ async function queryStartPlanBalance(
 export async function accountConfig(
   installation: ZcodeInstallation,
   environment: NodeJS.ProcessEnv,
+  readSystemKeyOptions?: ReadSystemKeyOptions,
 ): Promise<{
   params: {
     revision: string;
@@ -218,8 +220,9 @@ export async function accountConfig(
   let channel: LoginChannel | undefined;
   let credentialIssue: string | undefined;
   let balanceData: BalanceData | undefined;
+  let credential: CredentialReader | undefined;
   try {
-    const credential = await readCredentials(installation, environment);
+    credential = await readCredentials(installation, environment, undefined, readSystemKeyOptions);
     channel = await readLoginChannel(credential);
     if (channel) {
       const jwt = await readStartJwt(credential, channel);
@@ -237,14 +240,14 @@ export async function accountConfig(
       : `${error.message} Personal Coding Plan subscription status is unknown.`;
   }
   let startPlan = false;
-  const codingPlan = new PersonalCodingPlanAccount(installation, environment);
+  const codingPlan = new PersonalCodingPlanAccount(installation, environment, readSystemKeyOptions);
   const providers: Record<string, unknown> = {};
   const states: Record<string, unknown> = {};
   for (const rule of builtin.config.providerConfigRules.providerRules) {
     const access = rule.config.access;
     if (!channel || access?.accountType !== startFamily(channel)) continue;
     if (access.mode === "individual-coding-plan") {
-      const state = await codingPlan.inspect(rule.providerId, access.accountType);
+      const state = await codingPlan.inspect(rule.providerId, access.accountType, credential);
       providers[rule.providerId] = {
         access: { type: "zhipu-account", entitled: state.entitled },
       };

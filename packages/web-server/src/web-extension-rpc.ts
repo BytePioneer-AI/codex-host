@@ -164,18 +164,19 @@ class ExtensionSources {
 
   async #refresh(): Promise<Market> {
     try {
-      const candidate = async (url: string) =>
+      const candidate = async (url: string, signal: AbortSignal) =>
         parseExtensionCatalogV2(
           JSON.parse(
             (
-              await this.fetchBytes(url, CATALOG_HOSTS, JSON_LIMIT, "application/json", this.signal)
+              await this.fetchBytes(url, CATALOG_HOSTS, JSON_LIMIT, "application/json", signal)
             ).toString("utf8"),
           ),
         );
-      const parsed = await candidate(WEB_EXTENSION_CATALOG_URL).catch(() => {
-        this.signal.throwIfAborted();
-        return candidate(CATALOG_MIRROR);
-      });
+      const race = new AbortController();
+      const raceSignal = AbortSignal.any([this.signal, race.signal]);
+      const parsed = await Promise.any(
+        [WEB_EXTENSION_CATALOG_URL, CATALOG_MIRROR].map((url) => candidate(url, raceSignal)),
+      ).finally(() => race.abort());
       const market = {
         generatedAt: parsed.generatedAt,
         extensions: parsed.extensions.filter(({ targets }) => targets.includes("web")),

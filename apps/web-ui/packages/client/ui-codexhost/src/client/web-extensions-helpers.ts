@@ -198,6 +198,42 @@ export function itemGroupOf(
   return enabled ? "enabled" : "disabled";
 }
 
+export function categoryLabelForLocale(
+  category: DesktopExtensionCategory,
+  locale: ExtensionLocale,
+): string {
+  if (locale === "zh-CN") {
+    switch (category) {
+      case "appearance":
+        return "外观主题";
+      case "interface":
+        return "界面增强";
+      case "workflow":
+        return "效率与协作";
+      case "analytics":
+        return "数据与统计";
+      case "integrations":
+        return "外部集成";
+      case "tools":
+        return "实用工具";
+    }
+  }
+  switch (category) {
+    case "appearance":
+      return "Appearance";
+    case "interface":
+      return "Interface";
+    case "workflow":
+      return "Workflow";
+    case "analytics":
+      return "Analytics";
+    case "integrations":
+      return "Integrations";
+    case "tools":
+      return "Tools";
+  }
+}
+
 export function categoryLabel(category: DesktopExtensionCategory, t: Translate): string {
   switch (category) {
     case "appearance":

@@ -873,6 +873,8 @@ export class AppServerHost {
   >();
   #activeWorkDrainWaiters = new Set<() => void>();
   #pendingOfficialDelegationThreads = new Set<string>();
+  /** Desktop `thread/delete` requests forwarded to the official runtime, by request ID. */
+  #pendingOfficialDeletes = new Map<string | number, string>();
   #pendingOfficialTerminalStatuses = new Map<string, DelegationStartResult["status"]>();
   readonly #officialRateLimits = new AccountRateLimits();
   #routeObservationTracker = new RequestRouteObservationTracker();
@@ -1683,6 +1685,28 @@ export class AppServerHost {
     this.#signalActiveWorkChanged();
   }
 
+  #observeOfficialDeleteResponse(value: JsonValue): void {
+    if (!isRecord(value) || (typeof value.id !== "string" && typeof value.id !== "number")) return;
+    const threadId = this.#pendingOfficialDeletes.get(value.id);
+    if (threadId === undefined) return;
+    this.#pendingOfficialDeletes.delete(value.id);
+    if ("result" in value && !("error" in value))
+      void this.#forgetDeletedThread(threadId).catch((error: unknown) => this.#diagnose(error));
+  }
+
+  /**
+   * Forgets a deleted Thread: its Delegations, as child and as parent, and what the Thread tree
+   * read about it. Its delegated children then stand at the top of the tree.
+   */
+  async #forgetDeletedThread(threadId: string): Promise<void> {
+    for (const delegation of await this.#repository.listDelegations()) {
+      if (delegation.childHostThreadId === threadId || delegation.parentHostThreadId === threadId)
+        await this.#repository.removeDelegation(delegation.delegationId);
+    }
+    this.#treeWatch.forget(threadId);
+    this.clientEvents.changed(threadId, "codexhost/thread/tree/changed");
+  }
+
   #takeConsoleReply(value: JsonValue): boolean {
     if (!isRecord(value) || typeof value.id !== "string") return false;
     const reply = this.#consoleReplies.get(value.id);
@@ -2198,9 +2222,16 @@ export class AppServerHost {
             params: { ...(isRecord(original.params) ? original.params : {}), ...options },
           });
       }
+      if (
+        request.method === "thread/delete" &&
+        isRecord(request.params) &&
+        typeof request.params.threadId === "string"
+      )
+        this.#pendingOfficialDeletes.set(request.id, request.params.threadId);
       await this.#officialRuntime.sendFrame(frame);
       this.#markDesktopRequestAnswered(request.id);
     } catch (error) {
+      this.#pendingOfficialDeletes.delete(request.id);
       if (request.method === "turn/start") {
         this.#pendingOfficialTurnStarts.delete(request.id);
         this.#signalActiveWorkChanged();
@@ -2279,6 +2310,7 @@ export class AppServerHost {
     } finally {
       // A start response settles only its own request, after the response reaches Desktop.
       this.#observeOfficialTurnStartResponse(parsed);
+      this.#observeOfficialDeleteResponse(parsed);
       this.#finishOfficialTurn(parsed);
     }
     this.#nativeAccountObserver?.observe(parsed);
@@ -5240,6 +5272,9 @@ export class AppServerHost {
       method: "thread/deleted",
       params: { threadId: location.record.hostThreadId },
     });
+    await this.#forgetDeletedThread(location.record.hostThreadId).catch((error: unknown) =>
+      this.#diagnose(error),
+    );
   }
 
   async #readExternalThreadMetadata(

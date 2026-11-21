@@ -954,6 +954,25 @@ fn owned_gui_activation(refuse_stop: bool) {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_service_start_explains_missing_home() {
+    let fixture = Fixture::new();
+    for service in ["host", "web-service"] {
+        let started = fixture
+            .command(service, "ensure")
+            .env_remove("HOME")
+            .output()
+            .unwrap();
+        assert!(!started.status.success());
+        let stderr = String::from_utf8_lossy(&started.stderr);
+        assert!(
+            stderr.contains("HOME must be set to an absolute path"),
+            "{service}: {stderr}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
@@ -983,14 +1002,14 @@ fn service_supervisor_hands_off_once_and_can_retry_without_desktop() {
         .unwrap()
         .parse()
         .unwrap();
-    let state = PathBuf::from(
-        environment["CODEXHOST_RUNTIME_DESCRIPTOR_PATH"]
-            .as_str()
-            .unwrap(),
-    )
-    .parent()
-    .unwrap()
-    .join("updates");
+    // Stage the operation where the Host Runtime writes it, even when the
+    // Launcher stores the Desktop runtime descriptor in a different directory.
+    #[cfg(target_os = "linux")]
+    let state = fixture.root.join(".codexhost").join("updates");
+    #[cfg(target_os = "macos")]
+    let state = fixture
+        .root
+        .join("Library/Application Support/codexhost/updates");
     fs::create_dir_all(&state).unwrap();
     let deadline = || Instant::now() + Duration::from_secs(15);
     for attempt in 1..=2 {

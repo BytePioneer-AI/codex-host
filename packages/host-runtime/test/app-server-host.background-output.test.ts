@@ -430,6 +430,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
     ["reasoning", "partial native tail", "native ta", "tail plus", "native tail plus"],
     ["reasoning", "one-character prefix", "T", "T1", "T1"],
     ["reasoning", "no overlap", "native tail", "different", null],
+    ["reasoning", "identical preview only", "native tail", "**native tail**", null],
   ] as const)(
     "aligns %s %s with background text",
     async (type, _name, historical, live, merged) => {
@@ -474,12 +475,12 @@ describe("Host runtime idle background output on a completed Turn", () => {
           const native = items.find((entry) => entry.id === nativeId);
           expect(native).toMatchObject(
             type === "reasoning"
-              ? { summary: [merged ?? historical] }
+              ? { summary: [`**${merged ?? historical}**`] }
               : { text: merged ?? historical },
           );
-          if (type === "reasoning" && historical === "T") {
+          if (type === "reasoning") {
             expect(items.find((entry) => entry.id === "native-tail")).toMatchObject({
-              aggregatedOutput: merged,
+              aggregatedOutput: merged ?? historical,
             });
           }
           expect(items.filter((entry) => entry.id === wireId)).toHaveLength(
@@ -645,7 +646,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
         ["answer 2", "A1", "A2"],
       );
       expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
-        [["T1"], ["T2"]],
+        [["**T1**"], ["**T2**"]],
       );
       expect(items.filter((item) => String(item.id).startsWith("live-alternating"))).toHaveLength(
         0,
@@ -852,7 +853,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
         "agentMessage",
       ]);
       expect(items[1]?.text).toBe("task completed");
-      expect(items[2]?.summary).toEqual(["new episode"]);
+      expect(items[2]?.summary).toEqual(["**new episode**"]);
       expect(items[3]?.aggregatedOutput).toBe("new episode");
       expect(items[4]?.text).toBe("ed notification");
     } finally {
@@ -897,7 +898,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
       }
       const items = await readHistoryItems(fixture, threadId, 3);
       expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
-        [["analysis: tail"], ["il again"]],
+        [["**analysis: tail**"], []],
       );
       expect(
         items.find((item) => item.command === REASONING_TRANSCRIPT_COMMAND)?.aggregatedOutput,
@@ -949,7 +950,7 @@ describe("Host runtime idle background output on a completed Turn", () => {
       }
       const items = await readHistoryItems(fixture, threadId, 5);
       expect(items.filter((item) => item.type === "reasoning").map((item) => item.summary)).toEqual(
-        [["part-1"], ["part-2"]],
+        [["**part-1**"], ["**part-2**"]],
       );
       expect(items.some((item) => String(item.id).startsWith("live-reasoning"))).toBe(false);
     } finally {

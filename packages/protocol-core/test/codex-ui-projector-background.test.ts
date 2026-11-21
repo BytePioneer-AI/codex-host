@@ -344,6 +344,47 @@ describe("Codex UI projector background Items", () => {
     expect(projector.hasOpenDetachedItems).toBe(true);
   });
 
+  it("reuses streamed summary parts when reading an open background Reasoning Item", () => {
+    const projector = completedProjector();
+    const item = { type: "reasoning" as const, itemId: message.itemId, text: "Reading the con" };
+    projector.project({ type: "item.background.started", turnId, item }, 2_000);
+    expect(projector.backgroundWireItems().get(item.itemId)).toMatchObject({
+      type: "reasoning",
+      summary: [],
+    });
+
+    const delta = projector.project(
+      {
+        type: "item.updated",
+        turnId,
+        itemId: item.itemId,
+        update: { type: "text.append", text: "fig. Next" },
+      },
+      2_100,
+    );
+    const summary = ["**Reading the config**\n\nNext"];
+    expect(delta.messages).toContainEqual(
+      expect.objectContaining({
+        method: "item/reasoning/summaryTextDelta",
+        params: expect.objectContaining({ delta: summary[0] }),
+      }),
+    );
+    expect(projector.backgroundWireItems().get(item.itemId)).toMatchObject({ summary });
+
+    projector.project(
+      {
+        type: "item.completed",
+        turnId,
+        snapshot: {
+          item: { ...item, text: "Reading the config. Next" },
+          outcome: { status: "succeeded" },
+        },
+      },
+      2_200,
+    );
+    expect(projector.backgroundWireItems().get(item.itemId)).toMatchObject({ summary });
+  });
+
   it("keeps foreground and background wire Items separately", () => {
     const projector = new CodexTurnProjector({
       threadId: "thread-1",

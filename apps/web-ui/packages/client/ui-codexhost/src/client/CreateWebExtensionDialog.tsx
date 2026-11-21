@@ -8,7 +8,8 @@ import {
   Modal,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import { copyText } from "./api.ts";
-import type { Translate } from "./web-extensions-helpers.ts";
+import { en, zh, type ImportLocaleKey } from "./locales.ts";
+import type { ExtensionLocale } from "./web-extensions-helpers.ts";
 import css from "./CreateWebExtensionDialog.module.css";
 
 const EXTENSION_DOCS_URL =
@@ -19,11 +20,13 @@ const MARKETPLACE_SUBMIT_URL =
 interface Props {
   open: boolean;
   onClose: () => void;
-  t: Translate;
+  contentLocale: ExtensionLocale;
 }
 
-export function CreateWebExtensionDialog({ open, onClose, t }: Props): ReactNode {
-  const defaultPrompt = t("extensions.create.promptTemplate");
+export function CreateWebExtensionDialog({ open, onClose, contentLocale }: Props): ReactNode {
+  const dict = contentLocale === "zh-CN" ? zh : en;
+  const copy = (key: ImportLocaleKey): string => dict[key];
+  const defaultPrompt = copy("extensions.create.promptTemplate");
   const [prompt, setPrompt] = useState(defaultPrompt);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const promptId = useId();
@@ -60,8 +63,8 @@ export function CreateWebExtensionDialog({ open, onClose, t }: Props): ReactNode
     <Modal
       open={open}
       onClose={onClose}
-      title={t("extensions.create.title")}
-      closeLabel={t("extensions.close")}
+      title={copy("extensions.create.title")}
+      closeLabel={copy("extensions.close")}
       className={css.dialog}
       contentClassName={css.content}
       footer={
@@ -73,7 +76,7 @@ export function CreateWebExtensionDialog({ open, onClose, t }: Props): ReactNode
               target="_blank"
               rel="noopener noreferrer"
             >
-              <span>{t("extensions.create.docs")}</span>
+              <span>{copy("extensions.create.docs")}</span>
               <IconRightUpOutlineRegular size={12} />
             </a>
             <a
@@ -82,7 +85,7 @@ export function CreateWebExtensionDialog({ open, onClose, t }: Props): ReactNode
               target="_blank"
               rel="noopener noreferrer"
             >
-              <span>{t("extensions.create.submit")}</span>
+              <span>{copy("extensions.create.submit")}</span>
               <IconRightUpOutlineRegular size={12} />
             </a>
           </div>
@@ -97,21 +100,21 @@ export function CreateWebExtensionDialog({ open, onClose, t }: Props): ReactNode
             }
             onClick={handleCopy}
           >
-            {t(copyState === "copied" ? "extensions.create.copied" : "extensions.create.copy")}
+            {copy(copyState === "copied" ? "extensions.create.copied" : "extensions.create.copy")}
           </Button>
         </div>
       }
     >
       <div className={css.body}>
         <ol className={css.steps}>
-          <li>{t("extensions.create.step1")}</li>
-          <li>{t("extensions.create.step2")}</li>
-          <li>{t("extensions.create.step3")}</li>
+          <li>{copy("extensions.create.step1")}</li>
+          <li>{copy("extensions.create.step2")}</li>
+          <li>{copy("extensions.create.step3")}</li>
         </ol>
 
         <div className={css.field}>
           <label htmlFor={promptId} className={css.label}>
-            {t("extensions.create.promptLabel")}
+            {copy("extensions.create.promptLabel")}
           </label>
           <textarea
             id={promptId}
@@ -123,12 +126,12 @@ export function CreateWebExtensionDialog({ open, onClose, t }: Props): ReactNode
           />
           {copyState === "copied" && (
             <p className={css.status} data-tone="success" role="status">
-              {t("extensions.create.copiedHint")}
+              {copy("extensions.create.copiedHint")}
             </p>
           )}
           {copyState === "failed" && (
             <p className={css.status} data-tone="danger" role="alert">
-              {t("extensions.create.copyFailed")}
+              {copy("extensions.create.copyFailed")}
             </p>
           )}
         </div>

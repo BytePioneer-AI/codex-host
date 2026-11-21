@@ -10,14 +10,16 @@ import {
 } from "react";
 import {
   Button,
+  IconCheckOutlineRegular,
+  IconChevronDownOutlineRegular,
   IconCloseOutlineRegular,
+  IconEllipsisOutlineRegular,
+  IconGlobeOutlineRegular,
   IconInfoOutlineRegular,
-  IconPlusOutlineRegular,
   IconRefreshOutlineRegular,
   IconSearchOutlineRegular,
   IconSparkleRegular,
   Switch,
-  Tooltip,
 } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { PropsLocale } from "@deepseek-ai/dsh-client-ui-slots";
 import {
@@ -38,12 +40,11 @@ import {
 } from "./web-native-extension-management-api.ts";
 import {
   CATEGORY_ORDER,
-  categoryLabel,
+  categoryLabelForLocale,
   dshText,
   extensionKey,
   formatManagementError,
   hasNativeCatalogUpdate,
-  hasWebBackend,
   isCatalogEntryWebCompatible,
   isNativeExtension,
   isNativeToggleBlocked,
@@ -56,6 +57,7 @@ import {
   resolveOptionalLocalizedText,
   toExtensionLocale,
   type ExtensionGroupId,
+  type ExtensionLocale,
   type WebExtensionItem,
 } from "./web-extensions-helpers.ts";
 import { InstalledCheckIcon, WebExtensionCard } from "./WebExtensionCard.tsx";
@@ -68,6 +70,7 @@ import { CreateWebExtensionDialog } from "./CreateWebExtensionDialog.tsx";
 import css from "./WebExtensionsSection.module.css";
 
 type ActiveTab = "installed" | "market";
+type ContentLocalePreference = "system" | ExtensionLocale;
 
 type ListView =
   | { readonly kind: "loading" }
@@ -95,6 +98,7 @@ export interface WebExtensionsFace {
 }
 
 const GROUP_ORDER: readonly ExtensionGroupId[] = ["attention", "enabled", "disabled"];
+const CONTENT_LOCALE_STORAGE_KEY = "codexhost.webExtensions.contentLocale";
 
 const INITIAL_MARKET: MarketState = {
   loading: false,
@@ -104,6 +108,47 @@ const INITIAL_MARKET: MarketState = {
   error: null,
 };
 
+function readContentLocalePreference(): ContentLocalePreference {
+  try {
+    const stored =
+      typeof localStorage !== "undefined" ? localStorage.getItem(CONTENT_LOCALE_STORAGE_KEY) : null;
+    if (stored === "system" || stored === "zh-CN" || stored === "en") return stored;
+  } catch {
+    // Ignore restricted storage environments.
+  }
+  return "system";
+}
+
+function writeContentLocalePreference(preference: ContentLocalePreference): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(CONTENT_LOCALE_STORAGE_KEY, preference);
+    }
+  } catch {
+    // Ignore restricted storage environments.
+  }
+}
+
+function UploadArrowIcon(): ReactNode {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  );
+}
+
 /** Settings section for Web native (`codexhost`) and legacy (`dsh`) extensions + Marketplace. */
 export function WebExtensionsSection({
   t,
@@ -111,7 +156,12 @@ export function WebExtensionsSection({
   locale,
 }: PropsLocale<"codexhostImport"> & WebExtensionsFace): ReactNode {
   const activeLocaleRaw = useSyncExternalStore(locale.subscribe, locale.get);
-  const contentLocale = toExtensionLocale(activeLocaleRaw);
+  const systemLocale = toExtensionLocale(activeLocaleRaw);
+  const [contentLocalePref, setContentLocalePref] = useState<ContentLocalePreference>(() =>
+    readContentLocalePreference(),
+  );
+  const contentLocale: ExtensionLocale =
+    contentLocalePref === "system" ? systemLocale : contentLocalePref;
 
   const [listView, setListView] = useState<ListView>({ kind: "loading" });
   const [market, setMarket] = useState<MarketState>(INITIAL_MARKET);
@@ -119,6 +169,8 @@ export function WebExtensionsSection({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<DesktopExtensionCategory | null>(null);
 
+  const [localeMenuOpen, setLocaleMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [installOpen, setInstallOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedRef, setSelectedRef] = useState<SelectedRef | null>(null);
@@ -128,6 +180,8 @@ export function WebExtensionsSection({
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [modalFeedback, setModalFeedback] = useState<Feedback | null>(null);
 
+  const localeWrapRef = useRef<HTMLDivElement | null>(null);
+  const moreWrapRef = useRef<HTMLDivElement | null>(null);
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
 
@@ -137,6 +191,38 @@ export function WebExtensionsSection({
       mountedRef.current = false;
     };
   }, []);
+
+  // Dismiss dropdown menus on outside pointerdown or Escape.
+  useEffect(() => {
+    if (!localeMenuOpen && !moreMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (localeMenuOpen && localeWrapRef.current && !localeWrapRef.current.contains(target)) {
+        setLocaleMenuOpen(false);
+      }
+      if (moreMenuOpen && moreWrapRef.current && !moreWrapRef.current.contains(target)) {
+        setMoreMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setLocaleMenuOpen(false);
+        setMoreMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [localeMenuOpen, moreMenuOpen]);
+
+  const selectContentLocale = (next: ContentLocalePreference) => {
+    setContentLocalePref(next);
+    writeContentLocalePreference(next);
+    setLocaleMenuOpen(false);
+  };
 
   const refreshList = useCallback(
     async (signal?: AbortSignal): Promise<void> => {
@@ -258,8 +344,6 @@ export function WebExtensionsSection({
   const safeMode = listView.kind === "ready" ? listView.data.safeMode : false;
   const storeError = listView.kind === "ready" ? listView.data.storeError : undefined;
 
-  // Lookup maps strictly respect `(format, id)` separation:
-  // Market only ever matches `format: "codexhost"` installations.
   const nativeById = useMemo(() => {
     const map = new Map<string, WebNativeExtensionListItem>();
     for (const item of extensions) {
@@ -284,7 +368,6 @@ export function WebExtensionsSection({
     return map;
   }, [market.entries]);
 
-  // Available categories for the active tab
   const availableCategories = useMemo(() => {
     const present = new Set<DesktopExtensionCategory>();
     if (activeTab === "installed") {
@@ -536,42 +619,190 @@ export function WebExtensionsSection({
     void refreshMarket();
   };
 
-  const recovery = (
-    <div className={css.recovery}>
-      <a className={css.link} href="/extensions">
-        {t("extensions.recovery")}
-      </a>
-      <a className={css.link} href="/?extensions=off">
-        {t("extensions.builtinsOnly")}
-      </a>
-    </div>
+  const renderHeader = (options: { readonly canMutate: boolean }) => (
+    <header className={css.header}>
+      <h2 className={css.title}>{t("settings.extensions")}</h2>
+
+      <div className={css.toolbar}>
+        {/* Content language switcher (matching Desktop EN / 中文 dropdown) */}
+        <div ref={localeWrapRef} className={css.menuAnchor}>
+          <button
+            type="button"
+            className={css.toolbarButton}
+            data-action="content-locale-menu"
+            aria-label={t("extensions.contentLocaleLabel")}
+            title={t("extensions.contentLocaleLabel")}
+            aria-haspopup="menu"
+            aria-expanded={localeMenuOpen}
+            disabled={busy}
+            onClick={() => {
+              setMoreMenuOpen(false);
+              setLocaleMenuOpen((open) => !open);
+            }}
+          >
+            <IconGlobeOutlineRegular size={13} />
+            <span className={css.localeLabel}>{contentLocale === "zh-CN" ? "中文" : "EN"}</span>
+            <IconChevronDownOutlineRegular size={12} />
+          </button>
+
+          {localeMenuOpen && (
+            <div
+              className={`${css.menu} ${css.menuCompact}`}
+              role="menu"
+              aria-label={t("extensions.contentLocaleLabel")}
+            >
+              {(
+                [
+                  ["system", t("extensions.contentLocaleFollowSystem")],
+                  ["zh-CN", t("extensions.contentLocaleZh")],
+                  ["en", t("extensions.contentLocaleEn")],
+                ] as const
+              ).map(([value, label]) => {
+                const selected = contentLocalePref === value;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    className={`${css.menuItem} ${css.menuItemRadio}`}
+                    onClick={() => selectContentLocale(value)}
+                  >
+                    <span>{label}</span>
+                    {selected && (
+                      <span className={css.menuCheck} aria-hidden="true">
+                        <IconCheckOutlineRegular size={13} />
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Create plugin button (light outline matching Desktop) */}
+        <button
+          type="button"
+          className={css.toolbarButton}
+          data-action="open-create"
+          disabled={busy}
+          onClick={() => {
+            setLocaleMenuOpen(false);
+            setMoreMenuOpen(false);
+            setCreateOpen(true);
+          }}
+        >
+          <IconSparkleRegular size={13} />
+          <span>{t("extensions.create.button")}</span>
+        </button>
+
+        {/* Import plugin button (light outline matching Desktop) */}
+        <button
+          type="button"
+          className={css.toolbarButton}
+          data-action="open-import"
+          disabled={busy || !options.canMutate}
+          onClick={() => {
+            setLocaleMenuOpen(false);
+            setMoreMenuOpen(false);
+            setInstallError(null);
+            setInstallOpen(true);
+          }}
+        >
+          <UploadArrowIcon />
+          <span>{t("extensions.add")}</span>
+        </button>
+
+        {/* Refresh icon button */}
+        <button
+          type="button"
+          className={css.iconButton}
+          aria-label={t("extensions.refresh")}
+          title={t("extensions.refresh")}
+          disabled={busy || market.loading}
+          aria-busy={market.loading}
+          onClick={handleRefreshAll}
+        >
+          <IconRefreshOutlineRegular size={15} />
+        </button>
+
+        {/* More ("...") menu containing recovery actions */}
+        <div ref={moreWrapRef} className={css.menuAnchor}>
+          <button
+            type="button"
+            className={css.iconButton}
+            data-action="more-menu"
+            aria-label={t("extensions.moreActions")}
+            title={t("extensions.moreActions")}
+            aria-haspopup="menu"
+            aria-expanded={moreMenuOpen}
+            disabled={busy}
+            onClick={() => {
+              setLocaleMenuOpen(false);
+              setMoreMenuOpen((open) => !open);
+            }}
+          >
+            <IconEllipsisOutlineRegular size={16} />
+          </button>
+
+          {moreMenuOpen && (
+            <div className={css.menu} role="menu" aria-label={t("extensions.moreActions")}>
+              <a
+                className={css.menuItem}
+                role="menuitem"
+                href="/extensions"
+                onClick={() => setMoreMenuOpen(false)}
+              >
+                {t("extensions.recovery")}
+              </a>
+              <a
+                className={css.menuItem}
+                role="menuitem"
+                href="/?extensions=off"
+                onClick={() => setMoreMenuOpen(false)}
+              >
+                {t("extensions.builtinsOnly")}
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </header>
   );
 
   if (listView.kind === "loading") {
-    return <p className={css.hint}>{t("extensions.loading")}</p>;
+    return (
+      <div className={css.page} data-web-extensions>
+        {renderHeader({ canMutate: false })}
+        <p className={css.hint}>{t("extensions.loading")}</p>
+      </div>
+    );
   }
 
   if (listView.kind === "disabled") {
     return (
-      <div className={css.page}>
-        <p className={css.notice} data-web-extensions-notice="disabled">
-          {t("extensions.authDisabled")}
-        </p>
-        {recovery}
+      <div className={css.page} data-web-extensions>
+        {renderHeader({ canMutate: false })}
+        <div className={css.emptyCard} data-web-extensions-notice="disabled">
+          <div className={css.emptyCopy}>
+            <p className={css.emptyDesc}>{t("extensions.authDisabled")}</p>
+          </div>
+        </div>
       </div>
     );
   }
 
   if (listView.kind === "failed") {
     return (
-      <div className={css.page}>
+      <div className={css.page} data-web-extensions>
+        {renderHeader({ canMutate: false })}
         <div className={css.banner} data-tone="danger" role="alert">
           <span>{t("extensions.loadFailed", { message: listView.message })}</span>
           <Button variant="outline" size="sm" onClick={() => void refreshList()}>
             {t("extensions.retry")}
           </Button>
         </div>
-        {recovery}
       </div>
     );
   }
@@ -589,62 +820,9 @@ export function WebExtensionsSection({
 
   return (
     <div className={css.page} data-web-extensions>
-      <header className={css.header}>
-        <div className={css.heading}>
-          <div className={css.titleLine}>
-            <h2 className={css.title}>{t("settings.extensions")}</h2>
-            <Tooltip
-              label={t("extensions.restart")}
-              side="bottom"
-              maxWidth={320}
-              portal
-              openOnClick
-            >
-              <button type="button" className={css.infoButton} aria-label={t("extensions.info")}>
-                <IconInfoOutlineRegular size={15} />
-              </button>
-            </Tooltip>
-          </div>
-          <p className={css.subtitle}>{t("extensions.description")}</p>
-        </div>
+      {renderHeader({ canMutate: storeError === undefined })}
 
-        <div className={css.toolbar}>
-          <Button
-            variant="outline"
-            size="sm"
-            icon={<IconSparkleRegular size={14} />}
-            disabled={busy}
-            onClick={() => setCreateOpen(true)}
-          >
-            {t("extensions.create.button")}
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<IconPlusOutlineRegular size={14} />}
-            disabled={busy || storeError !== undefined}
-            onClick={() => {
-              setInstallError(null);
-              setInstallOpen(true);
-            }}
-          >
-            {t("extensions.add")}
-          </Button>
-          <button
-            type="button"
-            className={css.iconButton}
-            aria-label={t("extensions.refresh")}
-            title={t("extensions.refresh")}
-            disabled={busy || market.loading}
-            aria-busy={market.loading}
-            onClick={handleRefreshAll}
-          >
-            <IconRefreshOutlineRegular size={16} />
-          </button>
-        </div>
-      </header>
-
-      {/* Tabs + Search bar (Desktop-aligned) */}
+      {/* Tabs + Search bar (1:1 Desktop layout) */}
       <div className={css.controlsBar}>
         <div className={css.segmented} role="tablist" aria-label={t("extensions.tabListLabel")}>
           <button
@@ -676,7 +854,7 @@ export function WebExtensionsSection({
 
         <div className={css.searchBox}>
           <span className={css.searchIcon} aria-hidden="true">
-            <IconSearchOutlineRegular size={14} />
+            <IconSearchOutlineRegular size={13} />
           </span>
           <input
             type="search"
@@ -723,7 +901,7 @@ export function WebExtensionsSection({
               aria-pressed={selectedCategory === cat}
               onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
             >
-              {categoryLabel(cat, t)}
+              {categoryLabelForLocale(cat, contentLocale)}
             </button>
           ))}
         </div>
@@ -819,16 +997,13 @@ export function WebExtensionsSection({
                       const description = nativeDescription(item, contentLocale, catalogEntry);
                       const updateAvailable = hasNativeCatalogUpdate(item, catalogEntry);
                       const blocked = isNativeToggleBlocked(item);
-                      const showBackend = hasWebBackend(item) && item.backendState !== "none";
 
                       const statusDot =
                         item.error !== undefined || item.manifest === undefined
                           ? { tone: "danger" as const, label: t("extensions.state.error") }
                           : item.backendState === "failed"
                             ? { tone: "danger" as const, label: t("extensions.backend.failed") }
-                            : item.backendState === "starting"
-                              ? { tone: "info" as const, label: t("extensions.backend.starting") }
-                              : undefined;
+                            : undefined;
 
                       const attention = item.error
                         ? { tone: "danger" as const, text: item.error }
@@ -837,19 +1012,6 @@ export function WebExtensionsSection({
                           : item.backendState === "failed"
                             ? { tone: "danger" as const, text: t("extensions.backendFailedNotice") }
                             : undefined;
-
-                      const backendBadge = showBackend
-                        ? item.backendState === "running"
-                          ? { label: t("extensions.backendRunningBadge"), tone: "success" as const }
-                          : item.backendState === "starting"
-                            ? { label: t("extensions.backendStartingBadge"), tone: "info" as const }
-                            : item.backendState === "failed"
-                              ? {
-                                  label: t("extensions.backendFailedBadge"),
-                                  tone: "danger" as const,
-                                }
-                              : undefined
-                        : undefined;
 
                       return (
                         <WebExtensionCard
@@ -879,9 +1041,9 @@ export function WebExtensionsSection({
                                 }
                               : undefined
                           }
-                          backendBadge={backendBadge}
                           attention={attention}
                           busy={activeAction === `toggle:codexhost:${item.id}`}
+                          contentLocale={contentLocale}
                           t={t}
                           actionControl={
                             <Switch
@@ -937,6 +1099,7 @@ export function WebExtensionsSection({
                         statusDot={statusDot}
                         attention={attention}
                         busy={activeAction === `toggle:dsh:${item.id}`}
+                        contentLocale={contentLocale}
                         t={t}
                         actionControl={
                           <Switch
@@ -1107,6 +1270,7 @@ export function WebExtensionsSection({
                         : undefined
                     }
                     busy={isInstalling || isUpdating}
+                    contentLocale={contentLocale}
                     t={t}
                     actionControl={actionButton}
                     onOpenDetails={() => {
@@ -1121,8 +1285,6 @@ export function WebExtensionsSection({
         </div>
       )}
 
-      {recovery}
-
       <InstallWebExtensionDialog
         t={t}
         open={installOpen}
@@ -1132,7 +1294,11 @@ export function WebExtensionsSection({
         onInstall={handleManualInstall}
       />
 
-      <CreateWebExtensionDialog open={createOpen} onClose={() => setCreateOpen(false)} t={t} />
+      <CreateWebExtensionDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        contentLocale={contentLocale}
+      />
 
       <WebExtensionDetailModal
         open={detailTarget !== null}

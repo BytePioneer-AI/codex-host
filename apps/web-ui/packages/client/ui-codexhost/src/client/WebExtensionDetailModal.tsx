@@ -24,7 +24,7 @@ import {
 import { formatWebExtensionError } from "./web-extension-errors.ts";
 import {
   backendStateLabel,
-  categoryLabel,
+  categoryLabelForLocale,
   dshText,
   formatExtensionCount,
   hasNativeCatalogUpdate,
@@ -329,7 +329,7 @@ export function WebExtensionDetailModal({
                     <div className={css.categories}>
                       {categories.map((cat) => (
                         <span key={cat} className={css.categoryChip}>
-                          {categoryLabel(cat, t)}
+                          {categoryLabelForLocale(cat, locale)}
                         </span>
                       ))}
                     </div>

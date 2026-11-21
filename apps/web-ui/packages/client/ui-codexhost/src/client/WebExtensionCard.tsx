@@ -1,9 +1,8 @@
-/** Desktop-aligned extension card & category-tinted icon for Installed and Market views. */
+/** Desktop-aligned 3-row extension card & category-tinted icon for Installed and Market views. */
 import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
   IconCheckCircleFillRegular,
   IconCheckOutlineRegular,
-  IconCodeOutlineRegular,
   IconCordisPluginOutlineRegular,
   IconDataOutlineRegular,
   IconDownloadOutlineRegular,
@@ -19,11 +18,12 @@ import type {
 } from "@codexhost/shared-contracts";
 import {
   MAX_CARD_CATEGORIES,
-  categoryLabel,
+  categoryLabelForLocale,
   formatExtensionCount,
   isValidExtensionCount,
   parseSafeHttpUrl,
   parseSafeIconUrl,
+  type ExtensionLocale,
   type Translate,
 } from "./web-extensions-helpers.ts";
 import css from "./WebExtensionsSection.module.css";
@@ -40,7 +40,7 @@ export function ExtensionIcon({
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const safeUrl = parseSafeIconUrl(src);
   const category = categories?.[0] ?? "tools";
-  const glyphSize = size === "detail" ? 22 : 17;
+  const glyphSize = size === "detail" ? 22 : 16;
 
   const fallbackGlyph = (() => {
     switch (category) {
@@ -103,12 +103,10 @@ export interface WebExtensionCardProps {
   readonly statusDot?:
     { readonly tone: "info" | "warning" | "danger"; readonly label: string } | undefined;
   readonly updateHint?: { readonly label: string; readonly title: string } | undefined;
-  readonly backendBadge?:
-    | { readonly label: string; readonly tone: "neutral" | "info" | "success" | "danger" }
-    | undefined;
   readonly attention?: { readonly tone: "warning" | "danger"; readonly text: string } | undefined;
   readonly actionControl: ReactNode;
   readonly busy?: boolean | undefined;
+  readonly contentLocale: ExtensionLocale;
   readonly onOpenDetails: () => void;
   readonly t: Translate;
 }
@@ -140,10 +138,10 @@ export function WebExtensionCard({
   categories,
   statusDot,
   updateHint,
-  backendBadge,
   attention,
   actionControl,
   busy = false,
+  contentLocale,
   onOpenDetails,
   t,
 }: WebExtensionCardProps): ReactNode {
@@ -155,9 +153,16 @@ export function WebExtensionCard({
     : null;
   const categoryLabels = (categories ?? [])
     .slice(0, MAX_CARD_CATEGORIES)
-    .map((cat) => categoryLabel(cat, t));
+    .map((cat) => categoryLabelForLocale(cat, contentLocale));
   const categoriesText = categoryLabels.join(" · ");
   const trimmedDescription = description?.trim() ?? "";
+  const showMeta =
+    authorVersion !== "" ||
+    updateHint !== undefined ||
+    repositoryHref !== null ||
+    formattedStars !== null ||
+    formattedDownloads !== null ||
+    categoriesText !== "";
 
   const stopBubble = (event: MouseEvent | KeyboardEvent) => {
     event.stopPropagation();
@@ -183,6 +188,7 @@ export function WebExtensionCard({
         }
       }}
     >
+      {/* Row 1: 32x32 icon + title (+ optional official shield / error dot) on left; control on right */}
       <div className={css.cardTop}>
         <div className={css.cardIdentity}>
           <ExtensionIcon src={iconUrl} categories={categories} size="card" />
@@ -216,20 +222,13 @@ export function WebExtensionCard({
         </div>
       </div>
 
-      {(trimmedDescription !== "" || attention !== undefined || backendBadge !== undefined) && (
+      {/* Row 2: 2-line muted description + compact error callout only when abnormal */}
+      {(trimmedDescription !== "" || attention !== undefined) && (
         <div className={css.cardBody}>
           {trimmedDescription !== "" && (
             <p className={css.cardDescription} title={trimmedDescription}>
               {trimmedDescription}
             </p>
-          )}
-          {backendBadge !== undefined && (
-            <div className={css.cardBadgesRow}>
-              <span className={css.miniBadge} data-tone={backendBadge.tone}>
-                <IconCodeOutlineRegular size={11} />
-                <span>{backendBadge.label}</span>
-              </span>
-            </div>
           )}
           {attention !== undefined && (
             <div className={css.cardAttention} data-tone={attention.tone} role="alert">
@@ -240,86 +239,78 @@ export function WebExtensionCard({
         </div>
       )}
 
-      <div className={css.cardMeta}>
-        <div className={css.cardMetaLeft}>
-          <span
-            className={css.formatTag}
-            data-format={format}
-            title={t(
-              format === "codexhost"
-                ? "extensions.format.nativeTitle"
-                : "extensions.format.dshTitle",
-            )}
-          >
-            {t(format === "codexhost" ? "extensions.format.native" : "extensions.format.dsh")}
-          </span>
-          {(authorVersion !== "" || updateHint !== undefined) && (
-            <span
-              className={css.authorVersion}
-              title={
-                updateHint
-                  ? authorVersion
-                    ? `${authorVersion} · ${updateHint.title}`
-                    : updateHint.title
-                  : authorVersion
-              }
-            >
-              {authorVersion !== "" && <span>{authorVersion}</span>}
-              {updateHint !== undefined && (
-                <span className={css.updateCue} data-update-available="true">
-                  {authorVersion !== "" ? ` · ${updateHint.label}` : updateHint.label}
-                </span>
-              )}
-            </span>
-          )}
-          {repositoryHref !== null && (
-            <a
-              href={repositoryHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={css.metaMetricLink}
-              title={
-                formattedStars
-                  ? `${t("extensions.githubRepo")} · ${formattedStars}`
-                  : t("extensions.githubRepo")
-              }
-              aria-label={
-                formattedStars
-                  ? `${t("extensions.githubRepo")} · ${formattedStars}`
-                  : t("extensions.githubRepo")
-              }
-              onClick={stopBubble}
-              onKeyDown={stopBubble}
-            >
-              <svg
-                width="11"
-                height="11"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                aria-hidden="true"
+      {/* Row 3: Borderless muted metadata line matching Desktop card */}
+      {showMeta && (
+        <div className={css.cardMeta}>
+          <div className={css.cardMetaLeft}>
+            {(authorVersion !== "" || updateHint !== undefined) && (
+              <span
+                className={css.authorVersion}
+                title={
+                  updateHint
+                    ? authorVersion
+                      ? `${authorVersion} · ${updateHint.title}`
+                      : updateHint.title
+                    : authorVersion
+                }
               >
-                <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-              </svg>
-              {formattedStars !== null && <span>{formattedStars}</span>}
-            </a>
-          )}
-          {formattedDownloads !== null && (
-            <span
-              className={css.metaMetric}
-              title={t("extensions.downloadsLabel", { count: formattedDownloads })}
-              aria-label={t("extensions.downloadsLabel", { count: formattedDownloads })}
-            >
-              <IconDownloadOutlineRegular size={11} />
-              <span>{formattedDownloads}</span>
+                {authorVersion !== "" && <span>{authorVersion}</span>}
+                {updateHint !== undefined && (
+                  <span className={css.updateCue} data-update-available="true">
+                    {authorVersion !== "" ? ` · ${updateHint.label}` : updateHint.label}
+                  </span>
+                )}
+              </span>
+            )}
+            {repositoryHref !== null && (
+              <a
+                href={repositoryHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={css.metaMetricLink}
+                title={
+                  formattedStars
+                    ? `${t("extensions.githubRepo")} · ${formattedStars}`
+                    : t("extensions.githubRepo")
+                }
+                aria-label={
+                  formattedStars
+                    ? `${t("extensions.githubRepo")} · ${formattedStars}`
+                    : t("extensions.githubRepo")
+                }
+                onClick={stopBubble}
+                onKeyDown={stopBubble}
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                </svg>
+                {formattedStars !== null && <span>{formattedStars}</span>}
+              </a>
+            )}
+            {formattedDownloads !== null && (
+              <span
+                className={css.metaMetric}
+                title={t("extensions.downloadsLabel", { count: formattedDownloads })}
+                aria-label={t("extensions.downloadsLabel", { count: formattedDownloads })}
+              >
+                <IconDownloadOutlineRegular size={11} />
+                <span>{formattedDownloads}</span>
+              </span>
+            )}
+          </div>
+          {categoriesText !== "" && (
+            <span className={css.cardCategoriesText} title={categoriesText}>
+              {categoriesText}
             </span>
           )}
         </div>
-        {categoriesText !== "" && (
-          <span className={css.cardCategoriesText} title={categoriesText}>
-            {categoriesText}
-          </span>
-        )}
-      </div>
+      )}
     </article>
   );
 }

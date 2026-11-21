@@ -1,11 +1,75 @@
 /** Authenticated original-file downloads and local desktop handoff. */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename, isAbsolute, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { RpcError } from "./transport.ts";
+
+const DOWNLOAD_TICKET_TTL_MS = 60_000;
+const MAX_DOWNLOAD_TICKETS = 256;
+
+export interface WorkspaceDownloadGrant {
+  readonly sessionId: string;
+  readonly path: string;
+}
+
+interface StoredDownloadTicket extends WorkspaceDownloadGrant {
+  readonly owner: string | undefined;
+  readonly expiresAt: number;
+}
+
+/**
+ * Short-lived, file-scoped download tickets for browsers (such as iOS standalone PWA modal sheets)
+ * that open file downloads in an isolated view without sharing the app's session cookies.
+ */
+export class WorkspaceDownloadTickets {
+  private readonly tickets = new Map<string, StoredDownloadTicket>();
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  issue(input: { sessionId: string; path: string; owner?: string }): string {
+    const current = this.now();
+    this.prune(current);
+    while (this.tickets.size >= MAX_DOWNLOAD_TICKETS) {
+      const oldest = this.tickets.keys().next().value;
+      if (oldest === undefined) break;
+      this.tickets.delete(oldest);
+    }
+    const token = randomBytes(32).toString("base64url");
+    this.tickets.set(token, {
+      sessionId: input.sessionId,
+      path: input.path,
+      owner: input.owner,
+      expiresAt: current + DOWNLOAD_TICKET_TTL_MS,
+    });
+    return token;
+  }
+
+  resolve(token: string): WorkspaceDownloadGrant | undefined {
+    const entry = this.tickets.get(token);
+    if (entry === undefined) return undefined;
+    if (entry.expiresAt <= this.now()) {
+      this.tickets.delete(token);
+      return undefined;
+    }
+    return { sessionId: entry.sessionId, path: entry.path };
+  }
+
+  revokeOwner(owner: string): void {
+    for (const [token, entry] of this.tickets) {
+      if (entry.owner === owner) this.tickets.delete(token);
+    }
+  }
+
+  private prune(current: number): void {
+    for (const [token, entry] of this.tickets) {
+      if (entry.expiresAt <= current) this.tickets.delete(token);
+    }
+  }
+}
 
 export async function openWorkspaceFile(
   launcher: string,
@@ -69,16 +133,63 @@ export async function openWorkspaceFile(
   return { opened: true };
 }
 
+/** Issue a short-lived ticket scoped to one verified workspace file. */
+export async function issueWorkspaceDownloadTicket(
+  response: ServerResponse,
+  body: string,
+  workspace: (sessionId: string) => string | undefined,
+  tickets: WorkspaceDownloadTickets,
+  owner?: string,
+): Promise<void> {
+  response.setHeader("Cache-Control", "private, no-store");
+  let sessionId = "";
+  let path = "";
+  try {
+    const parsed = JSON.parse(body) as { sessionId?: unknown; path?: unknown };
+    if (typeof parsed.sessionId === "string") sessionId = parsed.sessionId;
+    if (typeof parsed.path === "string") path = parsed.path;
+  } catch {
+    response.writeHead(400, { "content-type": "text/plain" }).end("invalid json");
+    return;
+  }
+  const root = workspace(sessionId);
+  if (!root || !path || path.includes("\0")) {
+    response.writeHead(404).end();
+    return;
+  }
+  let file;
+  try {
+    file = await open(resolve(root, path), constants.O_RDONLY | constants.O_NONBLOCK);
+    const meta = await file.stat();
+    if (!meta.isFile()) throw new Error("not a regular file");
+    const ticket = tickets.issue({
+      sessionId,
+      path,
+      ...(owner !== undefined ? { owner } : {}),
+    });
+    response
+      .writeHead(200, { "content-type": "application/json; charset=utf-8" })
+      .end(JSON.stringify({ ticket, name: basename(path), size: meta.size }));
+  } catch {
+    if (!response.headersSent) response.writeHead(404).end();
+    else response.destroy();
+  } finally {
+    await file?.close();
+  }
+}
+
 /** Download bytes without preview conversion or application-level size limits. */
 export async function downloadWorkspaceFile(
   request: IncomingMessage,
   response: ServerResponse,
   url: URL,
   workspace: (sessionId: string) => string | undefined,
+  grant?: WorkspaceDownloadGrant,
 ): Promise<void> {
   response.setHeader("Cache-Control", "private, no-store");
-  const root = workspace(url.searchParams.get("sessionId") ?? "");
-  const path = url.searchParams.get("path");
+  const sessionId = grant ? grant.sessionId : (url.searchParams.get("sessionId") ?? "");
+  const path = grant ? grant.path : url.searchParams.get("path");
+  const root = workspace(sessionId);
   if (!root || !path || path.includes("\0")) {
     response.writeHead(404).end();
     return;

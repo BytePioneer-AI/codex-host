@@ -30,7 +30,12 @@ import {
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
 import { registerWebExtensionRpc } from "./web-extension-rpc.ts";
 import { WebNativeExtensions } from "./web-native-extensions.ts";
-import { downloadWorkspaceFile, openWorkspaceFile } from "./workspace-file-actions.ts";
+import {
+  downloadWorkspaceFile,
+  issueWorkspaceDownloadTicket,
+  openWorkspaceFile,
+  WorkspaceDownloadTickets,
+} from "./workspace-file-actions.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
 import { AccessTokenStore } from "./access-tokens.ts";
@@ -298,11 +303,13 @@ const dsh = await DshWebServices.open({
 if (dsh) streams.setFallback((endpoint, args, sink) => dsh.stream(endpoint, args, sink));
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
+const downloadTickets = new WorkspaceDownloadTickets();
 if (accessTokens !== undefined) {
   push.retainOwners((owner) => owner === LOCAL_CREDENTIAL || accessTokens.has(owner));
   accessTokens.onRevoked((id) => {
     connections.revoke(id);
     push.dropOwner(id);
+    downloadTickets.revokeOwner(id);
   });
 }
 const pushNotifications = chHost.realtime
@@ -521,6 +528,30 @@ const server = createWebServer((request, response) => {
     response.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
     if (trust.relaySockets.has(request.socket))
       response.setHeader("Strict-Transport-Security", "max-age=31536000");
+    if (
+      pathname === "/api/workspace-file/download" &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      const requestUrl = new URL(url, "http://localhost");
+      const ticket = requestUrl.searchParams.get("ticket");
+      if (ticket !== null) {
+        const grant = downloadTickets.resolve(ticket);
+        if (grant === undefined) {
+          response
+            .writeHead(401, { "content-type": "text/plain", "cache-control": "no-store" })
+            .end("download link expired");
+          return;
+        }
+        await downloadWorkspaceFile(
+          request,
+          response,
+          requestUrl,
+          (id) => sessions.fileWorkspaceRoot(id),
+          grant,
+        );
+        return;
+      }
+    }
     let requestAuth: RequestAuth | undefined;
     if (auth !== undefined) {
       const admission = await auth.gate(request, response, pathname);
@@ -583,6 +614,18 @@ const server = createWebServer((request, response) => {
       }
       if (pathname === "/api/session/uploadFileBinary") {
         await serveFileUpload(sessions, request, response, trust.relaySockets.has(request.socket));
+        return;
+      }
+      if (pathname === "/api/workspace-file/download-ticket") {
+        const body = await readBody(request, response);
+        if (body === undefined) return;
+        await issueWorkspaceDownloadTicket(
+          response,
+          body,
+          (id) => sessions.fileWorkspaceRoot(id),
+          downloadTickets,
+          requestAuth?.credential,
+        );
         return;
       }
       const body = await readBody(request, response);

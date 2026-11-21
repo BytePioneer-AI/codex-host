@@ -6571,6 +6571,7 @@ export class AppServerHost {
         status: status === "active" ? { type: "active", activeFlags: [] } : { type: "idle" },
       },
     });
+    if (status === "idle") this.#notifyThreadIdle(threadId);
   }
 
   async #projectApproval(

@@ -9,6 +9,8 @@
 - 没有 catalog 且只有一个注册时，直接透传该注册的列表和 cursor。
 - 没有 catalog 且有多个独立注册时，Registry 按请求的 created、updated 或 recency 时间升／降序归并各来源。各来源内部的同时间戳顺序由来源维护，不建立新的全局同时间戳次序契约。
 
+开启[委派并发上限](delegation-capacity.md)时，排队中和正在创建的委派 Thread 只存在于 Registry 持有的队列中。不带 cursor 的请求把它们按队列顺序放在第一页最前面，同样按 `--parent` 或 cwd 过滤；它们不占 `limit`，不进入任何 cursor，续页不再出现。
+
 全局列表不加载外部 Harness Session 来枚举历史。发送、读取等 Thread 操作仍走既有所有权路由，不因列表 catalog 转移执行归属。
 
 ## 独立来源的复合 cursor

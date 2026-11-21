@@ -10,6 +10,7 @@ import {
   type RendererHostRouting,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { createRendererHostClients } from "./renderer-host-clients.js";
+import { installDelegationCapacityPreferenceSync } from "./renderer-delegation-capacity-preference.js";
 import { installIdleReleasePreferenceSync } from "./renderer-idle-release-preference.js";
 import { installRendererHarnessPreferenceSync } from "./renderer-harness-preferences.js";
 import {
@@ -889,6 +890,7 @@ export function installCurrentRendererAdapter(): {
   const usageSubscription = createThreadUsageSubscriptionRelay();
   const idleReleaseSync = installIdleReleasePreferenceSync(window);
   const preferencesSync = installRendererHarnessPreferenceSync(window);
+  const delegationCapacitySync = installDelegationCapacityPreferenceSync(window);
   const clients = createRendererHostClients(() => window.__codexhostHostRoutingV1, window);
   const stopGroupSync = startAgentGroupSync(
     getSharedAgentGroupPreferenceStore(),
@@ -918,6 +920,7 @@ export function installCurrentRendererAdapter(): {
     stopGroupSync.connect();
     preferencesSync.connect("local", localClient);
     if (route?.hostId && route.hostId !== "local") preferencesSync.connect(route.hostId, client);
+    delegationCapacitySync.connect(localClient);
     // Adapter readiness describes native connections, not a unique global
     // Composer route. Never use this aggregate readiness to choose a request Host.
     const connected =
@@ -1160,6 +1163,7 @@ export function installCurrentRendererAdapter(): {
         () => usageSubscription.dispose(),
         () => idleReleaseSync.dispose(),
         () => preferencesSync.dispose(),
+        () => delegationCapacitySync.dispose(),
       ];
       selectedPolicies.clear();
       for (const cleanup of cleanups) {

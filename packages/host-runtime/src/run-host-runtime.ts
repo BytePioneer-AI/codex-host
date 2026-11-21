@@ -12,6 +12,10 @@ import { prepareLocalCodex } from "./native-account-host.js";
 import { SingleNativeCodexAccount } from "./account/codex-account-control.js";
 import { OfficialRuntimeScope } from "./codex-runtime/official-runtime-scope.js";
 import { createOwnedUnixBackend } from "./codex-runtime/owned-official-backends.js";
+import {
+  FileDelegationQueueStore,
+  defaultDelegationQueueDirectory,
+} from "./delegation-capacity-store.js";
 import { DelegationControlRegistry } from "./delegation-control-registry.js";
 import {
   FileDelegationWatchStore,
@@ -204,6 +208,10 @@ export async function prepareDelegationRuntime(input: {
     process.stderr.write(
       `codexhost delegation watch: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
     );
+  const diagnoseQueue = (error: unknown) =>
+    process.stderr.write(
+      `codexhost delegation queue: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+    );
   const events = new ClientEventLog({
     directory: path.join(codexhostDataDirectory(input.environment), "client-events"),
     retentionDays: eventRetentionDays(input.environment),
@@ -219,6 +227,13 @@ export async function prepareDelegationRuntime(input: {
       path.join(codexhostDataDirectory(input.environment), "thread-refs"),
     ),
     clientEvents: events,
+    capacity: {
+      store: new FileDelegationQueueStore(
+        defaultDelegationQueueDirectory(input.environment),
+        diagnoseQueue,
+      ),
+      diagnose: diagnoseQueue,
+    },
   });
   const token = randomBytes(32).toString("hex");
   const inventory = new HostInventory(input.environment);
@@ -266,7 +281,7 @@ export async function prepareDelegationRuntime(input: {
   try {
     return await input.createHost(environment, (value) => registry.register(value), registry);
   } finally {
-    registry.close();
+    await registry.close();
     await externalServer?.close();
     await server.close();
   }

@@ -121,7 +121,7 @@ const TOOLS: Tool[] = [
   {
     name: "delegate_start",
     description:
-      "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. worktree creates a new branch and isolated Git checkout on this Host from the required absolute cwd; base defaults to its HEAD. Returns worktree {path, branch, base}; failures after creation retain it in error details.worktree. watch=true watches the Thread after starting and returns watch (including notRegistered if registration fails); without parentThread, notifications go to this client's event log (events_poll or SSE).",
+      "Start a task in a new Thread and return at once. Without parentThread the work belongs to this client and cwd is required. worktree creates a new branch and isolated Git checkout on this Host from the required absolute cwd; base defaults to its HEAD. Returns worktree {path, branch, base}; failures after creation retain it in error details.worktree. watch=true watches the Thread after starting and returns watch (including notRegistered if registration fails); without parentThread, notifications go to this client's event log (events_poll or SSE). When the local limit on running delegations is reached, the Thread is queued (status queued, queue.position) and starts by itself later.",
     inputSchema: {
       type: "object",
       properties: {

@@ -56,6 +56,11 @@ describe("ThreadActivity", () => {
       params: { threadId: "grandchild", delta: "progress" },
     });
     expect(listener).toHaveBeenLastCalledWith(["grandchild", "child", "parent"]);
+    expect(["parent", "child", "grandchild"].map((id) => activity.isSubagent(id))).toEqual([
+      false,
+      true,
+      true,
+    ]);
   });
 
   function nativeChain(activity: ThreadActivity): void {
@@ -156,6 +161,7 @@ describe("ThreadActivity", () => {
     });
     activity.note("other");
     expect(listener).toHaveBeenLastCalledWith(["other"]);
+    expect(activity.isSubagent("other")).toBe(false);
     activity.note("a", "b");
     activity.note("b", "a");
     expect(listener).toHaveBeenLastCalledWith(["b", "a"]);

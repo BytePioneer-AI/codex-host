@@ -11,7 +11,8 @@ const status = z.enum(["creating", "running", "completed", "failed", "interrupte
 const snapshot = z.object({
   threadId: z.string(),
   harnessId: z.union([z.literal("codex"), harnessIdSchema]),
-  status,
+  status: z.union([z.literal("queued"), status]),
+  queue: z.object({ position: z.number().int().positive() }).optional(),
   turn: z.object({ turnId: z.string(), status }).nullable(),
   progress: z.array(z.object({ id: z.string(), turnId: z.string(), text: z.string() })),
   result: z.object({

@@ -40,6 +40,28 @@ function fixture() {
   return { target, routes, read, requests, route };
 }
 describe("Desktop remote session boundary", () => {
+  it("retains a new Thread that persists and unloads during catalog discovery", async () => {
+    const f = fixture();
+    const hostId = "remote-ssh-discovered:a";
+    let persisted = false;
+    f.route(hostId).manager.sendRequest.mockImplementation(async (method) => {
+      const page =
+        method === "thread/loaded/list"
+          ? { data: persisted ? [] : ["same"] }
+          : { data: persisted ? [{ id: "same" }] : [], nextCursor: null };
+      persisted = true;
+      return page;
+    });
+    const page = await rendererRemoteSession(f.target, {
+      kind: "list",
+      hostId,
+      archived: false,
+      cursor: null,
+      includeLoaded: true,
+    });
+    expect(page).toMatchObject({ data: [{ id: "same" }], loaded: ["same"] });
+  });
+
   it.each([true, false])("opens unmaterialized first-turn history (paged=%s)", async (paged) => {
     const f = fixture();
     const hostId = "remote-ssh-discovered:a";

@@ -456,6 +456,7 @@ export {
   remoteSessionOperationSchema,
   remoteSessionRequestBytes,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
+  REMOTE_IDENTITY_MAX_LENGTH,
   type RemoteSessionOperation,
 } from "./remote-sessions.js";
 

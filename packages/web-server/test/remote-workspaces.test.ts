@@ -108,6 +108,8 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
     status: { type: "idle" },
   };
   const writes: unknown[] = [];
+  const prompted = Promise.withResolvers<undefined>();
+  const acknowledge = Promise.withResolvers<undefined>();
   const remote = new RemoteSessions(
     new EventHub("create"),
     async (op) => {
@@ -139,6 +141,10 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
       if (op.kind !== "startSelected" && op.kind !== "prompt")
         throw new Error("unexpected operation");
       writes.push(op);
+      if (op.kind === "prompt") {
+        prompted.resolve(undefined);
+        await acknowledge.promise;
+      }
       return { thread };
     },
     workspaces,
@@ -184,8 +190,28 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
     false,
   );
   assert.deepEqual(writes, []);
+  assert.ok((await call("session/list", {})).ok);
+  const withCursor = await call("session/list", { cursor: "next" });
+  assert.ok(!withCursor.ok);
+  assert.equal(withCursor.error.code, "session/list-invalid");
+  assert.equal(
+    (await call("session/prompt", { content: [{ type: "text", text: "界".repeat(5100) }] })).ok,
+    false,
+  );
+  assert.deepEqual(writes, []);
   const prompt = { content: [{ type: "text", text: "ping" }], requestId: "first" };
-  const sent = await Promise.all([call("session/prompt", prompt), call("session/prompt", prompt)]);
+  const sending = Promise.all([call("session/prompt", prompt), call("session/prompt", prompt)]);
+  await prompted.promise;
+  const duplicate = call("session/prompt", { ...prompt, sessionId });
+  try {
+    const second = await call("session/prompt", { ...prompt, sessionId, requestId: "second" });
+    assert.ok(!second.ok);
+    assert.equal(second.error.code, "session/busy");
+  } finally {
+    acknowledge.resolve(undefined);
+  }
+  assert.ok((await duplicate).ok);
+  const sent = await sending;
   for (const reply of sent) assert.ok(reply.ok, JSON.stringify(reply));
   const direct = await call("session/list", {});
   assert.ok(direct.ok);

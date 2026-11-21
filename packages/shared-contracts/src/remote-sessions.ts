@@ -12,7 +12,8 @@ export function remoteSessionRequestBytes(operation: RemoteSessionOperation): nu
   return bytes;
 }
 
-const identity = z.string().min(1).max(1024);
+export const REMOTE_IDENTITY_MAX_LENGTH = 1024;
+const identity = z.string().min(1).max(REMOTE_IDENTITY_MAX_LENGTH);
 const target = { hostId: identity.regex(/^remote-(?:ssh(?:-|:)|control:)/u) };
 const thread = { ...target, threadId: identity };
 /** Operations on existing Desktop connections; no connection or credential management. */

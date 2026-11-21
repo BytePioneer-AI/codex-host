@@ -8,6 +8,7 @@ import {
   remoteSessionRequestBytes,
   threadUsageInspectionSchema,
   REMOTE_CONTROLLER_REQUEST_MAX_BYTES,
+  REMOTE_IDENTITY_MAX_LENGTH,
   webToolOutputReferenceSchema,
   type RemoteSessionOperation,
   type SidebarAction,
@@ -130,6 +131,7 @@ type Call = (operation: RemoteSessionOperation) => Promise<unknown>;
  * retain their own lifecycle; remote cwd and attachment paths never reach local tools. */
 export class RemoteSessions {
   private drafts = new Map<string, RemoteProjectDraft>();
+  private pendingFirstTurns = new Map<string, RemoteProjectDraft>();
   private entries = new Map<string, Entry>();
   private hosts = new Map<string, RemoteWorkspaceHost>();
   private controls = new Set<StreamSink>();
@@ -386,7 +388,8 @@ export class RemoteSessions {
       text,
       ...(typeof request.requestId === "string" ? { requestId: request.requestId } : {}),
     };
-    const probe = { ...prompt, threadId: "0".repeat(128) };
+    // The ID is assigned only after creation. Each UTF-16 unit can take six JSON bytes.
+    const probe = { ...prompt, threadId: "\u0000".repeat(REMOTE_IDENTITY_MAX_LENGTH) };
     if (
       !text.trim() ||
       request.mode === "steer" ||
@@ -442,11 +445,16 @@ export class RemoteSessions {
         console.warn("[remote-sessions] Could not persist the remote project assignment.");
       }
       draft.canonicalId = id;
-      this.syncGroups();
-      this.events.emit("api-session/added", this.summary(id, entry));
-      this.events.emit("codexhost/session-bound", draft.id, id);
-      this.events.emit("api-session/removed", draft.id);
-      await this.invoke({ ...prompt, threadId: thread.id });
+      this.pendingFirstTurns.set(id, draft);
+      try {
+        this.syncGroups();
+        this.events.emit("api-session/added", this.summary(id, entry));
+        this.events.emit("codexhost/session-bound", draft.id, id);
+        this.events.emit("api-session/removed", draft.id);
+        await this.invoke({ ...prompt, threadId: thread.id });
+      } finally {
+        this.pendingFirstTurns.delete(id);
+      }
       void this.read(id).catch(() => undefined);
       return { accepted: true };
     })().catch((error: unknown) => {
@@ -877,13 +885,13 @@ export class RemoteSessions {
         if (request.sessionId !== undefined) {
           const id = request.sessionId;
           if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+          if (request.cursor !== undefined)
+            throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
           const draft = this.drafts.get(id);
           if (draft && !draft.canonicalId)
             return { items: [draft.summary()], archivedSessionIds: this.syncArchives() };
           const canonicalId = draft?.canonicalId ?? id;
           remoteSessionIdentity(canonicalId);
-          if (request.cursor !== undefined)
-            throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
           if (!this.entries.has(canonicalId)) await this.refresh();
           const entry = this.entries.get(canonicalId);
           if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
@@ -910,6 +918,10 @@ export class RemoteSessions {
       }>(args);
       const id = request.sessionId ?? request.address?.sessionId ?? request.agentId ?? args.agentId;
       if (typeof id !== "string" || !id.startsWith(PREFIX)) return next();
+      if (method === "session/prompt") {
+        const pending = this.pendingFirstTurns.get(id);
+        if (pending) return this.firstTurn(pending, request as Record<string, unknown>);
+      }
       const draft = this.drafts.get(id);
       if (draft) {
         draft.lastUsed = Date.now();

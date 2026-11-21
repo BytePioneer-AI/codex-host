@@ -262,6 +262,10 @@ export async function rendererRemoteSession(
     return result;
   }
   if (operation.kind === "list") {
+    // An unlisted Thread can be persisted and unloaded between the two reads.
+    const loaded = operation.includeLoaded
+      ? ((await read(() => manager.sendRequest("thread/loaded/list", {}))) as { data: string[] })
+      : undefined;
     const page = await read(() =>
       manager.sendRequest("thread/list", {
         cursor: operation.cursor,
@@ -269,11 +273,7 @@ export async function rendererRemoteSession(
         limit: 100,
       }),
     );
-    if (!operation.includeLoaded) return page;
-    const loaded = (await read(() => manager.sendRequest("thread/loaded/list", {}))) as {
-      data: string[];
-    };
-    return { ...(page as object), loaded: loaded.data, epoch: generation.epoch };
+    return loaded ? { ...(page as object), loaded: loaded.data, epoch: generation.epoch } : page;
   }
   const threadId = operation.threadId;
   if (operation.kind === "usage")

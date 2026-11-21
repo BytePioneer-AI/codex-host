@@ -16,7 +16,17 @@ const contracts = {
     sendButtonCount: 1,
     trailingActionOwnerCount: 1,
   },
-  model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
+  model: {
+    draftCount: 1,
+    conversationCount: 0,
+    missingCount: 0,
+    ambiguousCount: 0,
+    writerBoundCount: 1,
+    writerAmbiguousCount: 0,
+    creationModeBoundCount: 1,
+    creationModeAmbiguousCount: 0,
+    creationModeUnmarkableCount: 0,
+  },
   settings: { railCount: 1, visibleRailCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
   transcript: {
@@ -92,6 +102,20 @@ describe("Codex Desktop contract audit report", () => {
     expect(gate?.evidence.static).toBe("not-run");
   });
 
+  it("does not use legacy Model trigger counts as a baseline for the new surfaces", () => {
+    const oldSurfaces = buildSurfaceResults(contracts)
+      .filter(({ id }) => !["draft-writer", "creation-mode", "model-button"].includes(id))
+      .map((surface) =>
+        surface.id === "model"
+          ? { ...surface, observed: { ...surface.observed, verifiedTriggerCount: 0 } }
+          : surface,
+      );
+    const baseline = validateAuditReport(reportFor(oldSurfaces), { baseline: true });
+    const surfaces = buildSurfaceResults(contracts, baseline);
+    expect(surfaces.find(({ id }) => id === "model")?.baselineChanged).toBe(false);
+    expect(surfaces.find(({ id }) => id === "model-button")?.evidence.static).toBe("not-run");
+  });
+
   it("reports ambiguous active ownership as confirmed impact", () => {
     const surfaces = buildSurfaceResults({
       ...contracts,
@@ -99,6 +123,34 @@ describe("Codex Desktop contract audit report", () => {
     });
     expect(surfaces.find(({ id }) => id === "model")?.verdict).toBe("confirmed-impact");
     expect(aggregateVerdict(surfaces)).toBe("confirmed-impact");
+  });
+
+  it("does not infer writer, creation mode or button readiness from a resolved draft identity", () => {
+    const verdicts = (input) =>
+      Object.fromEntries(buildSurfaceResults(input).map(({ id, verdict }) => [id, verdict]));
+    expect(
+      verdicts({
+        ...contracts,
+        model: { ...contracts.model, writerBoundCount: 0, creationModeBoundCount: 0 },
+      }),
+    ).toMatchObject({
+      model: "no-impact",
+      "draft-writer": "confirmed-impact",
+      "creation-mode": "unverified",
+      "model-button": "no-impact",
+    });
+    expect(
+      verdicts({
+        ...contracts,
+        model: { ...contracts.model, creationModeBoundCount: 0, creationModeUnmarkableCount: 1 },
+        composer: { ...contracts.composer, verifiedModelCandidateCount: 2 },
+      }),
+    ).toMatchObject({
+      model: "no-impact",
+      "draft-writer": "no-impact",
+      "creation-mode": "confirmed-impact",
+      "model-button": "confirmed-impact",
+    });
   });
 
   it("separates controlled installation from unexercised behavior", () => {

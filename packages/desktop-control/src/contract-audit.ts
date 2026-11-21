@@ -30,6 +30,11 @@ export interface RendererContractAuditInspection {
     conversationCount: number;
     missingCount: number;
     ambiguousCount: number;
+    writerBoundCount: number;
+    writerAmbiguousCount: number;
+    creationModeBoundCount: number;
+    creationModeAmbiguousCount: number;
+    creationModeUnmarkableCount: number;
   };
   settings: {
     railCount: number;
@@ -188,7 +193,17 @@ export function validateRendererContractAuditInspection(
     ),
     model: integerRecord(
       value.model,
-      ["draftCount", "conversationCount", "missingCount", "ambiguousCount"] as const,
+      [
+        "draftCount",
+        "conversationCount",
+        "missingCount",
+        "ambiguousCount",
+        "writerBoundCount",
+        "writerAmbiguousCount",
+        "creationModeBoundCount",
+        "creationModeAmbiguousCount",
+        "creationModeUnmarkableCount",
+      ] as const,
       "Renderer model contract",
     ),
     settings: integerRecord(

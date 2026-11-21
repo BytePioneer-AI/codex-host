@@ -9,6 +9,9 @@ export const AUDIT_VERDICTS = Object.freeze([
 export const AUDIT_SURFACE_IDS = Object.freeze([
   "composer",
   "model",
+  "draft-writer",
+  "creation-mode",
+  "model-button",
   "permission",
   "request-prewarm",
   "title",
@@ -202,7 +205,15 @@ function baselineSurface(baseline, id) {
 
 function compareObserved(baseline, id, observed) {
   const previous = baselineSurface(baseline, id);
-  return previous !== null && JSON.stringify(previous.observed) !== JSON.stringify(observed);
+  if (!previous) return false;
+  // Older reports counted the button on the identity surface; it now has its own baseline.
+  const baselineValues =
+    id === "model"
+      ? Object.fromEntries(
+          Object.entries(previous.observed).filter(([key]) => key !== "verifiedTriggerCount"),
+        )
+      : previous.observed;
+  return JSON.stringify(baselineValues) !== JSON.stringify(observed);
 }
 
 function classifySurface({
@@ -274,7 +285,6 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
       resolvedTargetCount: modelResolved,
       missingCount: contracts.model.missingCount,
       ambiguousCount: contracts.model.ambiguousCount,
-      verifiedTriggerCount: contracts.composer.verifiedModelCandidateCount,
     },
     live:
       activeComposer && modelResolved === 1 && contracts.model.ambiguousCount === 0
@@ -284,6 +294,59 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
           : "inactive",
     active: activeComposer,
     reason: activeComposer ? "composer-model-target" : "composer-state-not-active",
+    baseline,
+  });
+  const {
+    draftCount,
+    writerBoundCount,
+    writerAmbiguousCount,
+    creationModeBoundCount,
+    creationModeAmbiguousCount,
+    creationModeUnmarkableCount,
+  } = contracts.model;
+  const draftActive = activeComposer && draftCount === 1;
+  const draftWriter = classifySurface({
+    id: "draft-writer",
+    observed: { boundCount: writerBoundCount, ambiguousCount: writerAmbiguousCount },
+    live: stateForUnique(writerBoundCount, draftActive),
+    active: draftActive,
+    reason: !draftActive
+      ? "draft-not-active"
+      : writerAmbiguousCount > 0
+        ? "draft-writer-ambiguous"
+        : "draft-writer-cardinality",
+    baseline,
+  });
+  const creationModeActive =
+    draftActive && (writerBoundCount === 1 || creationModeAmbiguousCount > 0);
+  const creationMode = classifySurface({
+    id: "creation-mode",
+    observed: {
+      boundCount: creationModeBoundCount,
+      ambiguousCount: creationModeAmbiguousCount,
+      unmarkableCount: creationModeUnmarkableCount,
+    },
+    live: stateForUnique(creationModeBoundCount, creationModeActive),
+    active: creationModeActive,
+    reason: !creationModeActive
+      ? "draft-writer-not-resolved"
+      : creationModeUnmarkableCount > 0
+        ? "creation-mode-unmarkable"
+        : creationModeAmbiguousCount > 0
+          ? "creation-mode-ambiguous"
+          : "creation-mode-cardinality",
+    baseline,
+  });
+  const buttonActive = activeComposer && contracts.composer.modelCandidateCount > 0;
+  const modelButton = classifySurface({
+    id: "model-button",
+    observed: {
+      candidateCount: contracts.composer.modelCandidateCount,
+      verifiedCount: contracts.composer.verifiedModelCandidateCount,
+    },
+    live: stateForUnique(contracts.composer.verifiedModelCandidateCount, buttonActive),
+    active: buttonActive,
+    reason: buttonActive ? "model-button-cardinality" : "model-button-state-not-active",
     baseline,
   });
   const permissionActive = contracts.composer.permissionCandidateCount > 0;
@@ -446,6 +509,9 @@ export function buildSurfaceResults(contracts, baseline = null, controlled = nul
   return [
     composer,
     model,
+    draftWriter,
+    creationMode,
+    modelButton,
     permission,
     request,
     title,

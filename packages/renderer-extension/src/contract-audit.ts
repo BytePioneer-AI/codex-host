@@ -1,3 +1,4 @@
+import { inspectScopedDraftModelBinding } from "@codexhost/desktop-control/renderer-bindings";
 import {
   CODEX_COMPOSER_SELECTOR,
   inspectRendererComposerContract,
@@ -24,8 +25,8 @@ import {
   type RendererSettingsContractInspection,
 } from "./settings/trigger.js";
 import {
+  findComposerModelTarget,
   inspectComposerModelContract,
-  type RendererComposerModelContractState,
 } from "./versioned-renderer-adapter.js";
 
 export const RENDERER_CONTRACT_AUDIT_SCHEMA_VERSION = 1 as const;
@@ -42,6 +43,11 @@ export interface RendererContractAuditInspection {
     conversationCount: number;
     missingCount: number;
     ambiguousCount: number;
+    writerBoundCount: number;
+    writerAmbiguousCount: number;
+    creationModeBoundCount: number;
+    creationModeAmbiguousCount: number;
+    creationModeUnmarkableCount: number;
   };
   settings: RendererSettingsContractInspection;
   sidebar: RendererSidebarContractInspection;
@@ -63,18 +69,31 @@ declare global {
   }
 }
 
-function modelCounts(states: readonly RendererComposerModelContractState[]): {
-  draftCount: number;
-  conversationCount: number;
-  missingCount: number;
-  ambiguousCount: number;
-} {
-  return {
-    draftCount: states.filter((state) => state === "draft").length,
-    conversationCount: states.filter((state) => state === "conversation").length,
-    missingCount: states.filter((state) => state === "missing").length,
-    ambiguousCount: states.filter((state) => state === "ambiguous").length,
+function modelCounts(composers: readonly Element[]): RendererContractAuditInspection["model"] {
+  const counts = {
+    draftCount: 0,
+    conversationCount: 0,
+    missingCount: 0,
+    ambiguousCount: 0,
+    writerBoundCount: 0,
+    writerAmbiguousCount: 0,
+    creationModeBoundCount: 0,
+    creationModeAmbiguousCount: 0,
+    creationModeUnmarkableCount: 0,
   };
+  for (const composer of composers) {
+    const target = findComposerModelTarget(composer);
+    const identity = inspectComposerModelContract(composer, target);
+    counts[`${identity}Count`] += 1;
+    if (identity !== "draft" || typeof target?.[1] !== "string") continue;
+    const { writer, creationMode } = inspectScopedDraftModelBinding(composer, target[1]);
+    if (writer === "bound") counts.writerBoundCount += 1;
+    if (writer === "ambiguous") counts.writerAmbiguousCount += 1;
+    if (creationMode === "bound") counts.creationModeBoundCount += 1;
+    if (creationMode === "ambiguous") counts.creationModeAmbiguousCount += 1;
+    if (creationMode === "unmarkable") counts.creationModeUnmarkableCount += 1;
+  }
+  return counts;
 }
 
 /** Composers with an editor; each should expose one owner and one reserve gate. */
@@ -111,7 +130,7 @@ export function inspectRendererContracts(
   return {
     schemaVersion: RENDERER_CONTRACT_AUDIT_SCHEMA_VERSION,
     composer: inspectRendererComposerContract(ownerWindow.document),
-    model: modelCounts(composers.map(inspectComposerModelContract)),
+    model: modelCounts(composers),
     settings: inspectRendererSettingsContract(ownerWindow.document),
     sidebar: inspectRendererSidebarContract(ownerWindow.document),
     transcript: inspectRendererTranscriptContract(ownerWindow.document),

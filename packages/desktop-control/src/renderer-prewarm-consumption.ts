@@ -113,15 +113,21 @@ export function isolateRendererPrewarmConsumption(
       else {
         if (!draftId.startsWith("client-new-thread:") || !external(model))
           throw new Error("External draft route is missing its client Thread identity");
-        draftModels.set(draftId, model);
+        const unmarked = creationModes.filter((mode) => {
+          const marker = Object.getOwnPropertyDescriptor(mode, draftIdentity);
+          if (marker ? marker.value !== draftId : !Object.isExtensible(mode))
+            throw new Error("External creation mode cannot be marked for this draft");
+          return !marker;
+        });
         // Native preparation shallow-copies modes when it overrides effort.
         // Symbols survive those copies and are omitted from RPC JSON.
-        for (const mode of creationModes)
+        for (const mode of unmarked)
           Object.defineProperty(mode, draftIdentity, {
             configurable: true,
             enumerable: true,
             value: draftId,
           });
+        draftModels.set(draftId, model);
       }
     },
     dispose() {

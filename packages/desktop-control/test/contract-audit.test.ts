@@ -17,7 +17,17 @@ const validInspection = {
     sendButtonCount: 1,
     trailingActionOwnerCount: 1,
   },
-  model: { draftCount: 1, conversationCount: 0, missingCount: 0, ambiguousCount: 0 },
+  model: {
+    draftCount: 1,
+    conversationCount: 0,
+    missingCount: 0,
+    ambiguousCount: 0,
+    writerBoundCount: 1,
+    writerAmbiguousCount: 0,
+    creationModeBoundCount: 1,
+    creationModeAmbiguousCount: 0,
+    creationModeUnmarkableCount: 0,
+  },
   settings: { railCount: 1, visibleRailCount: 1, insertionPointCount: 1 },
   sidebar: { rowCount: 0, titleOwnerCount: 0, resolvedThreadCount: 0, ambiguousThreadCount: 0 },
   transcript: {

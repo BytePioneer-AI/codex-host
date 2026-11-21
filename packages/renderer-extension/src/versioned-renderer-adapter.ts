@@ -795,8 +795,8 @@ export type RendererComposerModelContractState = "draft" | "conversation" | "mis
 
 export function inspectComposerModelContract(
   composer: Element,
+  target = findComposerModelTarget(composer),
 ): RendererComposerModelContractState {
-  const target = findComposerModelTarget(composer);
   if (target?.[0] === "default") return "draft";
   if (target?.[0] === "conversation") return "conversation";
   const domIdentity = findComposerDomIdentity(composer);
@@ -1114,6 +1114,8 @@ export function installCurrentRendererAdapter(): {
       const draftKey = target[1];
       if (!binding || !route.policy.scopedCreation)
         return agent === "codex" && !draftModels.has(draftKey);
+      if (carrier && route.policy.requiresCreationMode && !binding.creationModes?.length)
+        return false;
       // The draft write may synchronously render a new creation mode.
       const previous = draftModels.model(draftKey);
       const policyChanged = route.policy.select(carrier ?? null, draftKey, binding.creationModes);

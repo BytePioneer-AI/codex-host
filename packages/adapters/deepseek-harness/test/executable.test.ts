@@ -207,7 +207,7 @@ describe("DeepSeek executable helpers", () => {
     vi.mocked(spawnSync).mockReturnValue({ status: 128, signal: null } as ReturnType<
       typeof spawnSync
     >);
-    expect(() => killDeepSeekProcessTree(child, "win32", 50)).not.toThrow();
+    expect(() => killDeepSeekProcessTree(child, "win32", 50)).toThrow("status 128");
     vi.mocked(spawnSync).mockReturnValue({ status: 1, signal: null } as ReturnType<
       typeof spawnSync
     >);

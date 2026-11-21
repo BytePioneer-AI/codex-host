@@ -121,7 +121,7 @@ export function killDeepSeekProcessTree(
     if (result.signal) {
       throw new Error(`Windows taskkill terminated with signal ${result.signal}`);
     }
-    if (result.status !== 0 && result.status !== 128) {
+    if (result.status !== 0) {
       throw new Error(`Windows taskkill exited with status ${String(result.status)}`);
     }
     return;

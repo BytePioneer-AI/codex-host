@@ -3202,6 +3202,59 @@ describe("Modern DeepSeek Harness Adapter", () => {
     await expect(adapter.close()).resolves.toBeUndefined();
   });
 
+  it("resumes on the first Host-order release when the journal faults before the connection", async () => {
+    const { adapter, connection } = setup(["journal-first", "req-1"]);
+    const replacement = setup();
+    const cwd = path.resolve("fixture-first-fault-release");
+    const sessionId = "session-journal-first";
+    connection.expectedCwds.set(sessionId, cwd);
+    replacement.connection.expectedCwds.set(sessionId, cwd);
+    const opened = await adapter.open({ kind: "create", cwd });
+    if (!opened.ok) throw new Error(opened.error.message);
+    const session = opened.value;
+    const nativeRef = session.initialState.nativeRef;
+    if (!nativeRef) throw new Error("missing Native Session reference");
+    const outputs = await startRunningTurn(connection, session, sessionId, "turn-1", "req-1");
+    const feed = connection.follows.get(sessionId);
+    if (!feed) throw new Error("missing journal feed");
+    const localCleanup = Promise.withResolvers<undefined>();
+    const returnFollow = feed.return.bind(feed);
+    vi.spyOn(feed, "return").mockImplementation(async () => {
+      const result = await returnFollow();
+      await localCleanup.promise;
+      return result;
+    });
+    feed.push({ type: "event", event: { invalid: true } });
+    await expect(outputs.next()).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "turn.completed", outcome: { status: "failed" } } },
+    });
+    await expect(outputs.next()).resolves.toMatchObject({
+      value: { kind: "event", event: { type: "session.faulted" } },
+    });
+
+    const processStop = Promise.withResolvers<undefined>();
+    connection.closeResult = processStop.promise;
+    const recovering = session.close().then(() =>
+      replacement.adapter.open({
+        kind: "resume",
+        cwd,
+        nativeRef,
+      }),
+    );
+    const result = expect(recovering).resolves.toMatchObject({
+      ok: true,
+      value: { initialState: { nativeRef } },
+    });
+    connection.fault(new ModernRemoteConnectionError("unavailable", "stream closed"));
+    localCleanup.resolve(undefined);
+    processStop.resolve(undefined);
+
+    await result;
+    const resumed = await recovering;
+    if (resumed.ok) await resumed.value.close();
+    await Promise.all([adapter.close(), replacement.adapter.close()]);
+  });
+
   it("releases a cancel-failed Session after managed process exit without masking flush failure", async () => {
     const { adapter, connection } = setup(["cancel-failed", "flush-failed", "req-1", "req-2"]);
     const cwd = path.resolve("fixture-close-before-fault");

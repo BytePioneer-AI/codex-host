@@ -133,7 +133,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
   /** Aborted by close() so a balance request in flight does not outlive the Adapter. */
   readonly #accountInspection = new AbortController();
   #candidate: DelegateOwner | undefined;
-  #cleanupFailedDuringClose = false;
+  #cleanupFailed = false;
   #closePromise: Promise<void> | undefined;
   #closed = false;
   #delegate: DelegateOwner | undefined;
@@ -307,7 +307,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
           stage: "version",
           durationMs: Math.max(0, Date.now() - startedAt),
         } satisfies HarnessError;
-        if (this.#closed || signal.aborted) this.#cleanupFailedDuringClose = true;
+        if (this.#closed || signal.aborted) this.#cleanupFailed = true;
         else this.#terminalFailure ??= failure;
         throw new DelegateSelectionError(this.#terminalFailure ?? failure);
       }
@@ -375,7 +375,9 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         this.#closeOwner(owner),
       );
       if (inspection.status !== "ready") {
-        throw new DelegateSelectionError(normalizeInspectionError(inspection.error));
+        throw new DelegateSelectionError(
+          owner.faultError ?? normalizeInspectionError(inspection.error),
+        );
       }
       owner.inspection = inspection;
       return owner;
@@ -394,7 +396,6 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
     const retiring = previous
       .then(() =>
         this.#closeOwner(owner).catch(() => {
-          this.#cleanupFailedDuringClose = true;
           this.#recordCleanupFailure();
         }),
       )
@@ -433,7 +434,7 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
         cleanupFailed = true;
       });
     }
-    if (cleanupFailed || this.#cleanupFailedDuringClose) {
+    if (cleanupFailed || this.#cleanupFailed) {
       throw new Error("DeepSeek Harness Adapter cleanup did not complete");
     }
   }
@@ -460,8 +461,8 @@ export class DeepSeekHarnessAdapter implements HarnessAdapter {
       retryable: false,
       stage: "cleanup",
     };
-    if (this.#closed) this.#cleanupFailedDuringClose = true;
-    else this.#terminalFailure ??= failure;
+    this.#cleanupFailed = true;
+    if (!this.#closed) this.#terminalFailure ??= failure;
     return new DelegateSelectionError(this.#terminalFailure ?? failure);
   }
 

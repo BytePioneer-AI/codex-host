@@ -641,10 +641,10 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
   close(): Promise<void> {
     if ((this.#faulted || this.#closeStopUnconfirmed) && this.#closePromise) {
       this.#closing = true;
-      const processStop = this.#managedProcessStop?.();
       return this.#closePromise.then(
         () => {
           if (!this.#faultMayHaveNativeWork) return;
+          const processStop = this.#managedProcessStop?.();
           if (processStop) return processStop;
           // Fault cleanup retires local projection, but cannot certify native execution stopped
           // until the owning managed DSH process tree is confirmed exited.
@@ -653,6 +653,7 @@ export class ModernHarnessSession implements HarnessSession, ModernEventSink {
           );
         },
         (error: unknown) => {
+          const processStop = this.#managedProcessStop?.();
           if (processStop) return processStop;
           throw error;
         },

@@ -831,12 +831,16 @@ export function projectHistoricalTurn(
     status: historicalStatus(snapshot.outcome),
     ...(snapshot.outcome.status === "unknown" ? { codexhostTurnOutcome: snapshot.outcome } : {}),
     items: [
-      {
-        id: `${turnId}-user`,
-        type: "userMessage",
-        clientId: null,
-        content: projectUserInput(snapshot.input),
-      },
+      ...(snapshot.input.length === 0
+        ? []
+        : [
+            {
+              id: `${turnId}-user`,
+              type: "userMessage",
+              clientId: null,
+              content: projectUserInput(snapshot.input),
+            },
+          ]),
       ...entries.flatMap(({ entry, projected }) =>
         finalAnswer && entry === lastVisible
           ? projected.map((item) =>

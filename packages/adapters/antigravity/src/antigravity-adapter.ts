@@ -94,6 +94,7 @@ import {
   readAcpEffectiveModelState,
   splitAntigravityModelAndEffort,
 } from "./model-catalog.js";
+import { AntigravityWakeObserver } from "./wake-observer.js";
 import { readNativeHistory } from "./native-replay.js";
 import { readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
@@ -119,7 +120,7 @@ export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   },
   history: { fork: true, forkAcrossCwd: true, rollbackLastTurn: true },
   subagents: { observe: true, readTranscript: true },
-  autonomousTurns: { observe: false },
+  autonomousTurns: { observe: true },
 };
 export interface AntigravityAdapterOptions {
   command?: string;
@@ -295,22 +296,6 @@ interface PendingInteraction {
   resolve(value: RequestPermissionResponse | CreateElicitationResponse): void;
   cancelValue: RequestPermissionResponse | CreateElicitationResponse;
 }
-/**
- * One idle-output episode on the most recently completed user Turn: the text
- * Item streams as a background (detached) Item and settles at the next
- * provable boundary — successor prompt, Skip restart, close or fault. No timers involved.
- */
-interface BackgroundEpisode {
-  turnId: HostTurnId;
-  textItem:
-    | {
-        type: "agentMessage" | "reasoning";
-        itemId: ReturnType<typeof hostItemIdSchema.parse>;
-        text: string;
-      }
-    | undefined;
-}
-
 export class AntigravitySession implements HarnessSession {
   readonly harnessId = harnessId;
   readonly capabilities = antigravitySessionCapabilities;
@@ -329,9 +314,8 @@ export class AntigravitySession implements HarnessSession {
   #turnCount = 0;
   readonly #confirmedCheckpoints = new Set<string>();
   #active: ActiveTurn | undefined;
-  #lastCompletedTurnId: HostTurnId | undefined;
-  #background: BackgroundEpisode | undefined;
-  #postPromptBackground: Array<{ type: "agentMessage" | "reasoning"; text: string }> = [];
+  #wakes: AntigravityWakeObserver | undefined;
+  #postPromptWake = false;
   #pending = new Map<string, PendingInteraction>();
   #usage: AntigravitySessionUsageTracker | undefined;
   #usageWork: Promise<void> | undefined;
@@ -375,7 +359,7 @@ export class AntigravitySession implements HarnessSession {
     return !!this.#active || !!this.#opening || this.#configuring || this.#subagents.running;
   }
   hasBackgroundWork(): boolean {
-    return this.#subagents.running;
+    return this.#subagents.running || !!this.#wakes?.observing;
   }
   activeForkTurnIndex(checkpointId: string, home: string): number | undefined {
     if (
@@ -392,7 +376,14 @@ export class AntigravitySession implements HarnessSession {
       return this.#turnCount;
   }
   reserveHistoryOperation(): (() => void) | null {
-    if (this.isActive || this.#historyOperation || this.#closed || this.#faulted) return null;
+    if (
+      this.isActive ||
+      this.#wakes?.observing ||
+      this.#historyOperation ||
+      this.#closed ||
+      this.#faulted
+    )
+      return null;
     this.#historyOperation = true;
     return () => {
       this.#historyOperation = false;
@@ -478,6 +469,25 @@ export class AntigravitySession implements HarnessSession {
         nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
       ).catch(() => this.#turnCount);
       this.#initializeUsage(opened.sessionId);
+      if (!this.#wakes) {
+        const home = antigravityHome(this.#options.environment);
+        const cursor = ref
+          ? await readNativeHistory(opened.sessionId, home).then(
+              (value) => value.wakeWatermark,
+              () => -1,
+            )
+          : -1;
+        if (this.#closed || this.#faulted) return;
+        this.#wakes = new AntigravityWakeObserver({
+          nativeSessionId: opened.sessionId,
+          cwd: this.#options.cwd,
+          home,
+          cursor,
+          outputLimit: this.#options.adapter.toolOutputLimit,
+          canPublish: () => this.#active?.promptPhase !== "returned",
+          publish: (snapshot) => this.#emit({ type: "turn.autonomous.completed", snapshot }),
+        });
+      }
       transport.setSessionEventHandler((event) => {
         if (this.#transport === transport && !this.#closed && !this.#faulted)
           this.#sessionEvent(event);
@@ -655,11 +665,15 @@ export class AntigravitySession implements HarnessSession {
     this.#applyConfig(confirmed);
   }
   #sessionEvent(event: AntigravityAcpEvent): void {
-    if (event.type === "agent.text" || event.type === "agent.thought") {
-      this.#appendBackgroundText(
-        event.type === "agent.text" ? "agentMessage" : "reasoning",
-        event.text,
-      );
+    if (
+      ((event.type === "agent.text" || event.type === "agent.thought") && event.text.trim()) ||
+      event.type === "tool.call" ||
+      event.type === "tool.update"
+    ) {
+      if (this.#opening || this.#historyOperation || this.#active?.cancelled) return;
+      // The response boundary can precede completion of user Turn accounting.
+      if (this.#active?.promptPhase === "returned") this.#postPromptWake = true;
+      else if (this.#active?.promptPhase !== "submitted") this.#wakes?.observe();
       return;
     }
     switch (event.type) {
@@ -900,7 +914,7 @@ export class AntigravitySession implements HarnessSession {
     )
       return err("invalidRequest", "Prompt and Turn ID must not be empty");
     try {
-      this.#postPromptBackground.length = 0;
+      this.#postPromptWake = false;
       const turn: ActiveTurn = {
         turnId: command.turnId,
         cancelled: false,
@@ -908,10 +922,6 @@ export class AntigravitySession implements HarnessSession {
         promptPhase: "notSubmitted",
       };
       this.#active = turn;
-      // A successor prompt ends the idle-output window of the previous Turn
-      // before the new Turn announces itself.
-      this.#settleBackground({ status: "succeeded" });
-      this.#lastCompletedTurnId = undefined;
       this.#emit({ type: "turn.started", turnId: turn.turnId });
       void this.#runTurn(turn, command, catalogCommand);
       return ok({ turnId: command.turnId });
@@ -980,7 +990,6 @@ export class AntigravitySession implements HarnessSession {
             thinkingOptionId: this.#state.effectiveThinkingOptionId,
             permissionModeId: command.permissionModeId,
           };
-          this.#settleBackground({ status: "succeeded" });
           old.setSessionEventHandler(null);
           await old.close();
           this.#transport = undefined;
@@ -1024,6 +1033,7 @@ export class AntigravitySession implements HarnessSession {
     try {
       await this.initialize();
       await this.#usageWork;
+      await this.#wakes?.flush();
       if (!this.#isCurrent(turn)) return;
       if (turn.cancelled) {
         this.#finish(turn, { status: "cancelled" });
@@ -1174,67 +1184,6 @@ export class AntigravitySession implements HarnessSession {
     });
     turn.textItem = undefined;
   }
-  /** Idle Harness output lands on the most recently completed user Turn. */
-  #appendBackgroundText(type: "agentMessage" | "reasoning", text: string): void {
-    if (!text) return;
-    if (this.#active) {
-      if (this.#active.promptPhase === "returned") {
-        if (
-          !this.#active.ended &&
-          !this.#active.cancelled &&
-          !this.#opening &&
-          !this.#configuring &&
-          !this.#historyOperation
-        )
-          this.#postPromptBackground.push({ type, text });
-        return;
-      }
-      return;
-    }
-    if (this.#opening || this.#configuring || this.#historyOperation) return;
-    const turnId = this.#lastCompletedTurnId;
-    if (!turnId) {
-      // No completed Turn to attach to (e.g. tail output after resume); the
-      // content stays recoverable through the next history read.
-      return;
-    }
-    this.#background ??= { turnId, textItem: undefined };
-    const episode = this.#background;
-    if (episode.turnId !== turnId || episode.textItem?.type !== type) {
-      this.#settleBackground({ status: "succeeded" });
-      this.#background = { turnId, textItem: undefined };
-    }
-    const current = this.#background;
-    if (!current.textItem) {
-      current.textItem = { type, itemId: hostItemIdSchema.parse(randomUUID()), text: "" };
-      this.#emit({
-        type: "item.background.started",
-        turnId,
-        item: { ...current.textItem },
-      });
-    }
-    current.textItem.text += text;
-    this.#emit({
-      type: "item.updated",
-      turnId,
-      itemId: current.textItem.itemId,
-      update: { type: "text.append", text },
-    });
-  }
-  /** Close the pending idle-output Item; the emitted content stays real output. */
-  #settleBackground(outcome: HostItemOutcome): void {
-    const episode = this.#background;
-    if (!episode?.textItem) {
-      this.#background = undefined;
-      return;
-    }
-    this.#emit({
-      type: "item.completed",
-      turnId: episode.turnId,
-      snapshot: { item: { ...episode.textItem }, outcome },
-    });
-    this.#background = undefined;
-  }
   #finish(turn: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (!this.#isCurrent(turn)) return;
     this.#closeInteractions("cancelled");
@@ -1242,9 +1191,6 @@ export class AntigravitySession implements HarnessSession {
     turn.tracker?.finishPending(outcome);
     turn.ended = true;
     this.#active = undefined;
-    // Only a Turn present in native history can own later idle output.
-    if (nativeTurnRef) this.#lastCompletedTurnId = turn.turnId;
-    this.#settleBackground({ status: "succeeded" });
     this.#emit({
       type: "turn.completed",
       turnId: turn.turnId,
@@ -1255,12 +1201,8 @@ export class AntigravitySession implements HarnessSession {
           : {}),
       outcome,
     });
-    if (outcome.status === "succeeded" && !turn.cancelled && !this.#closed && !this.#faulted) {
-      for (const entry of this.#postPromptBackground.splice(0))
-        this.#appendBackgroundText(entry.type, entry.text);
-    } else {
-      this.#postPromptBackground.length = 0;
-    }
+    if (this.#postPromptWake && !this.#closed && !this.#faulted) this.#wakes?.observe();
+    this.#postPromptWake = false;
   }
   #permission(
     turn: ActiveTurn,
@@ -1387,13 +1329,11 @@ export class AntigravitySession implements HarnessSession {
     this.#faulted = true;
     clearTimeout(this.#usageRetry);
     this.#abort.abort();
-    this.#postPromptBackground.length = 0;
+    this.#wakes?.close();
+    this.#postPromptWake = false;
     this.#closeInteractions("cancelled");
     if (this.#active)
       this.#finish(this.#active, { status: "failed", error: normalizeAntigravityError(error) });
-    // Delivered idle output is real work; settle it before the fault closes
-    // the stream so it is not swept to failed.
-    this.#settleBackground({ status: "succeeded" });
     this.#emit({ type: "session.faulted", error: normalizeAntigravityError(error) });
     this.#channel.end();
     this.#subagents.stop();
@@ -1409,10 +1349,9 @@ export class AntigravitySession implements HarnessSession {
     this.#closed = true;
     clearTimeout(this.#usageRetry);
     this.#abort.abort();
-    this.#postPromptBackground.length = 0;
+    this.#wakes?.close();
+    this.#postPromptWake = false;
     this.#closeInteractions("cancelled");
-    // The native transcript persists what was already delivered.
-    this.#settleBackground({ status: "succeeded" });
     const active = this.#active;
     if (active) this.#finish(active, { status: "cancelled", reason: "Session closed" });
     this.#channel.end();
@@ -1474,8 +1413,8 @@ export class AntigravityAdapter implements HarnessAdapter {
     if (!input.refresh && cached) return cached;
     if (!input.refresh && inFlight) return inFlight;
     if (input.refresh) {
-      this.#cache.delete(`${cwd}\0catalog`);
-      this.#cache.delete(`${cwd}\0availability`);
+      this.#cache.clear();
+      this.#inflight.clear();
     }
     const pending = this.#inspect(cwd, input.purpose)
       .then((result) => {

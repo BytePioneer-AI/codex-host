@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { setImmediate } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
@@ -41,6 +41,7 @@ import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
   createNativeHistoryDatabase,
+  systemStep,
   userStep,
 } from "./support/native-history-fixture.js";
 import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
@@ -588,7 +589,10 @@ describe("Antigravity ACP Session", () => {
         ...busy,
         error: { ...busy.error, message: expect.stringContaining("no committed user input") },
       });
-      userStep(db, 2, "source-only input");
+      // A committed wake between these prompts is outside the earlier user checkpoint.
+      systemStep(db, 2, "wake-between-prompts");
+      answerStep(db, 3, "timer expired", "wake-between-prompts");
+      userStep(db, 4, "source-only input");
       expect(
         await adapter.open({
           ...request,
@@ -602,7 +606,7 @@ describe("Antigravity ACP Session", () => {
       const forked = adapter.open(request);
       await vi.waitFor(() => expect(transports).toHaveLength(2));
       expect(transport.cancel).not.toHaveBeenCalled();
-      answerStep(db, 3, "source-only answer");
+      answerStep(db, 5, "source-only answer");
       transport.result.resolve({ stopReason: "end_turn" });
       await completed(source.outputs, "t2");
       transport.result = deferred();
@@ -637,6 +641,7 @@ describe("Antigravity ACP Session", () => {
       ]);
       expect(await inputs(source.session)).toEqual([
         [{ type: "text", text: "early input" }],
+        [],
         [{ type: "text", text: "source-only input" }],
       ]);
     } finally {
@@ -1434,6 +1439,34 @@ describe("inspection and errors", () => {
     },
   );
   it.skipIf(process.platform === "win32")(
+    "refreshing project availability invalidates the default model catalog without mixing directories",
+    async () => {
+      const project = await mkdtemp(path.join(os.tmpdir(), "agy-catalog-"));
+      directories.push(project);
+      const command = path.join(project, "agy");
+      const writeModels = (model: string) =>
+        writeFile(
+          command,
+          `#!/bin/sh\nif [ "$1" = '--version' ]; then echo 'agy 1.5.8'; else printf '${model}\\t%s\\n' "$PWD"; fi\n`,
+          { mode: 0o755 },
+        );
+      const { adapter } = fixture({ command });
+      await writeModels("old-model");
+      expect(await adapter.inspect()).toMatchObject({
+        catalog: { models: [{ ref: { id: "old-model" } }] },
+      });
+      await adapter.inspect({ cwd: project });
+      await writeModels("new-model");
+      await adapter.inspect({ cwd: project, purpose: "availability", refresh: true });
+      expect(await adapter.inspect()).toMatchObject({
+        catalog: { models: [{ ref: { id: "new-model" }, label: await realpath(process.cwd()) }] },
+      });
+      expect(await adapter.inspect({ cwd: project })).toMatchObject({
+        catalog: { models: [{ ref: { id: "new-model" }, label: await realpath(project) }] },
+      });
+    },
+  );
+  it.skipIf(process.platform === "win32")(
     "resolves inspectAccount on the usage command_result line before CLI teardown",
     async () => {
       const home = await mkdtemp(path.join(os.tmpdir(), "agy-quota-"));
@@ -1462,364 +1495,245 @@ describe("inspection and errors", () => {
   );
 });
 
-describe("Antigravity idle background output episodes", () => {
-  it("closes the idle output window when a pre-submit successor starts", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "agy-background-cancel-"));
-    directories.push(home);
-    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
-    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
-    const first = await start(session, transports, "t1");
-    const db = await createNativeHistoryDatabase(home, required(first.sessionId));
-    userStep(db, 0, "hello");
-    db.close();
-    first.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs, "t1");
-    expect(events(outputs)).toContainEqual(
-      expect.objectContaining({
-        type: "turn.completed",
-        turnId: "t1",
-        nativeTurnRef: expect.anything(),
-      }),
-    );
-    const usageGate =
-      deferred<
-        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
-      >();
-    const collect = vi
-      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
-      .mockReturnValueOnce(usageGate.promise);
-    const refresh = session.refreshUsage?.();
-    await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
-    await session.execute({
-      type: "turn.start",
-      turnId: turnId("cancel-before-submit"),
-      input: [{ type: "text", text: "hello" }],
-    });
-    await vi.waitFor(() => expect(transports.at(-1)?.eventHandler).toBeDefined());
-    expect(
-      await session.execute({
-        type: "turn.cancel",
-        turnId: turnId("cancel-before-submit"),
-      }),
-    ).toEqual({ ok: true, value: { cancellationRequested: true } });
-    usageGate.resolve({ requests: [], timings: [], complete: true, usage: null });
-    await refresh;
-    await completed(outputs, "cancel-before-submit");
-    transports.at(-1)?.eventHandler?.({ type: "agent.text", text: "orphan" });
-    await setImmediate();
-    expect(events(outputs)).not.toContainEqual(
-      expect.objectContaining({ type: "item.background.started" }),
-    );
-  });
+describe("Antigravity idle wake Turns", () => {
+  const wakes = (outputs: HarnessOutput[]) =>
+    events(outputs).filter((event) => event.type === "turn.autonomous.completed");
 
-  it("keeps pre-submit idle output on the preceding native Turn", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "agy-background-pre-submit-"));
+  async function setup() {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-wake-"));
     directories.push(home);
     const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
     const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
     const transport = await start(session, transports);
     const db = await createNativeHistoryDatabase(home, required(transport.sessionId));
-    userStep(db, 0, "hello");
-    answerStep(db, 1, "wake");
-    db.close();
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs, "t1");
+    userStep(db, 0, "hello", "prompt");
+    answerStep(db, 1, "hello there", "prompt");
+    return { home, adapter, transports, session, outputs, transport, db };
+  }
 
-    const usageGate =
-      deferred<
-        Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
-      >();
-    const collect = vi
-      .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
-      .mockReturnValueOnce(usageGate.promise);
-    const refresh = session.refreshUsage?.();
-    await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
-    transport.result = deferred();
-    expect(
-      await session.execute({
-        type: "turn.start",
-        turnId: turnId("t2"),
-        input: [{ type: "text", text: "next" }],
-      }),
-    ).toEqual({ ok: true, value: { turnId: "t2" } });
-    await vi.waitFor(() =>
-      expect(events(outputs)).toContainEqual({ type: "turn.started", turnId: "t2" }),
-    );
-    transport.eventHandler?.({ type: "agent.text", text: "wake" });
-    expect(events(outputs)).not.toContainEqual(
-      expect.objectContaining({ type: "item.background.started" }),
-    );
-
-    usageGate.resolve({ requests: [], timings: [], complete: true, usage: null });
-    await refresh;
-    await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs, "t2");
-    expect(events(outputs)).not.toContainEqual(
-      expect.objectContaining({ type: "item.background.started" }),
-    );
-    const snapshot = await session.readSnapshot();
-    expect(snapshot).toMatchObject({
-      ok: true,
-      value: {
-        turns: [
-          {
-            input: [{ text: "hello" }],
-            items: [{ item: { type: "agentMessage", text: "wake" } }],
-          },
-        ],
-      },
-    });
-    const nativeRef = session.initialState.nativeRef;
-    if (!nativeRef) throw new Error("First Turn has no Native Session");
-    await session.close();
-    const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });
-    if (!reopened.ok) throw new Error(reopened.error.message);
-    const coldSnapshot = await reopened.value.readSnapshot();
-    expect(coldSnapshot).toMatchObject({ ok: true });
-    const coldWake = (coldSnapshot.ok ? coldSnapshot.value.turns : []).flatMap((turn) =>
-      turn.items.filter((item) => item.item.type === "agentMessage" && item.item.text === "wake"),
-    );
-    expect(coldWake).toHaveLength(1);
+  it("keeps pre-submit idle output on the preceding native Turn", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      const usageGate =
+        deferred<
+          Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+        >();
+      const collect = vi
+        .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+        .mockReturnValueOnce(usageGate.promise);
+      const refresh = session.refreshUsage?.();
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      // Same run ID as the first prompt, not a new autonomous wake.
+      systemStep(db, 2, "prompt");
+      answerStep(db, 3, "late reply", "prompt");
+      transport.eventHandler?.({ type: "agent.text", text: "late reply" });
+      usageGate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      await refresh;
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+      expect(events(outputs).some(({ type }) => type === "item.background.started")).toBe(false);
+      const snapshot = await session.readSnapshot();
+      expect(snapshot).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              input: [{ text: "hello" }],
+              items: [{ item: { text: "hello there\n\nlate reply" } }],
+            },
+          ],
+        },
+      });
+      const nativeRef = required(session.initialState.nativeRef);
+      await session.close();
+      const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });
+      assert(reopened.ok);
+      const cold = await reopened.value.readSnapshot();
+      assert(snapshot.ok && cold.ok);
+      expect(cold.value.turns).toEqual(snapshot.value.turns);
+    } finally {
+      db.close();
+    }
   });
 
-  it("attributes idle agent output to the most recently completed Turn and settles it on the next prompt", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    const transport = await start(session, transports);
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs);
+  it("does not assign orphan idle output to a cancelled pre-submit successor or its predecessor", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      const usageGate =
+        deferred<
+          Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+        >();
+      const collect = vi
+        .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+        .mockReturnValueOnce(usageGate.promise);
+      const refresh = session.refreshUsage?.();
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      await start(session, [transport], "cancel-before-submit");
+      expect(
+        await session.execute({ type: "turn.cancel", turnId: turnId("cancel-before-submit") }),
+      ).toEqual({ ok: true, value: { cancellationRequested: true } });
+      usageGate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      await refresh;
+      await completed(outputs, "cancel-before-submit");
+      transport.eventHandler?.({ type: "agent.text", text: "orphan" });
+      await setImmediate();
+      expect(wakes(outputs)).toEqual([]);
+      expect(events(outputs).some(({ type }) => type === "item.background.started")).toBe(false);
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
 
-    transport.eventHandler?.({ type: "agent.text", text: "awake: " });
-    transport.eventHandler?.({ type: "agent.text", text: "done\n" });
-
-    await vi.waitFor(() =>
+  it("publishes committed idle output once, with the same identity and items as cold history", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "wake");
+      systemStep(db, 3, "wake");
+      transport.eventHandler?.({ type: "agent.thought", text: "wake in progress" });
+      expect(wakes(outputs)).toEqual([]);
+      answerStep(db, 4, "wake answer", "wake");
+      // No ACP stop response is sent for a wake, and no new user prompt is needed.
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs)[0]?.snapshot).toMatchObject({
+        input: [],
+        nativeTurnRef: { nativeTurnKey: "wake-2" },
+        items: [{ item: { type: "agentMessage", text: "wake answer" } }],
+      });
+      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      userStep(db, 5, "next", "next");
+      answerStep(db, 6, "next answer", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
       expect(events(outputs)).toContainEqual(
         expect.objectContaining({
-          type: "item.background.started",
-          turnId: "t1",
-          item: expect.objectContaining({ type: "agentMessage" }),
+          type: "turn.completed",
+          turnId: "t2",
+          nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-1" }),
         }),
-      ),
-    );
-    await vi.waitFor(() =>
+      );
+      const nativeRef = required(session.initialState.nativeRef);
+      await session.close();
+      const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });
+      assert(reopened.ok);
+      const snapshot = await reopened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+        "wake-2",
+        "turn-1",
+      ]);
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toMatchObject([
+        { text: "hello there" },
+      ]);
+      expect(wakes(outputs).map((event) => event.snapshot)).toEqual([snapshot.value.turns[1]]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps polling after a notification whose wake has not reached SQLite", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "first-wake");
+      answerStep(db, 3, "first answer", "first-wake");
+      // At the first poll only A exists; B's sole notification precedes even its system step.
+      transport.eventHandler?.({ type: "agent.text", text: "second answer" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs)[0]?.snapshot.nativeTurnRef.nativeTurnKey).toBe("wake-2");
+      systemStep(db, 4, "second-wake");
+      answerStep(db, 5, "second answer", "second-wake");
+      await vi.waitFor(() =>
+        expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+          "wake-2",
+          "wake-4",
+        ]),
+      );
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
+  it("accepts a new prompt while an idle tool wake is not ready to publish", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "wake");
+      transport.eventHandler?.({ type: "tool.call", toolCallId: "shell", name: "run_command" });
+      transport.result = deferred();
       expect(
-        events(outputs).filter((event) => event.type === "item.updated" && event.turnId === "t1"),
-      ).toHaveLength(2),
-    );
-
-    // The successor prompt settles the episode before the new Turn completes.
-    expect(
-      await session.execute({
-        type: "turn.start",
-        turnId: turnId("t2"),
-        input: [{ type: "text", text: "next" }],
-      }),
-    ).toEqual({ ok: true, value: { turnId: "t2" } });
-    await vi.waitFor(() =>
-      expect(
-        events(outputs).filter((event) => event.type === "turn.completed" && event.turnId === "t2"),
-      ).toHaveLength(1),
-    );
-    const all = events(outputs);
-    const settleIndex = all.findIndex(
-      (event) => event.type === "item.completed" && event.turnId === "t1",
-    );
-    const nextTurnIndex = all.findIndex(
-      (event) => event.type === "turn.started" && event.turnId === "t2",
-    );
-    expect(settleIndex).toBeGreaterThanOrEqual(0);
-    expect(nextTurnIndex).toBeGreaterThan(settleIndex);
-    expect(all[settleIndex]).toMatchObject({
-      type: "item.completed",
-      snapshot: {
-        item: { type: "agentMessage", text: "awake: done\n" },
-        outcome: { status: "succeeded" },
-      },
-    });
-    await session.close();
-  });
-
-  it("drops idle output when no user Turn has completed", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    const transport = await start(session, transports);
-    transport.eventHandler?.({ type: "agent.text", text: "orphan" });
-    expect(events(outputs)).not.toContainEqual(
-      expect.objectContaining({ type: "item.background.started" }),
-    );
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs);
-    await session.close();
-  });
-
-  it("settles a pending episode as succeeded when the Session faults", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    const transport = await start(session, transports);
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs);
-    transport.eventHandler?.({ type: "agent.thought", text: "thinking in the dark" });
-    await vi.waitFor(() =>
-      expect(events(outputs)).toContainEqual(
-        expect.objectContaining({
-          type: "item.background.started",
-          item: expect.objectContaining({ type: "reasoning" }),
-        }),
-      ),
-    );
-    transport.options.onFault?.(
-      new AntigravityTransportError("processExited", "Antigravity ACP exited (code 8)"),
-    );
-    await vi.waitFor(() =>
-      expect(
-        events(outputs).find((event) => event.type === "item.completed" && event.turnId === "t1"),
-      ).toMatchObject({ snapshot: { outcome: { status: "succeeded" } } }),
-    );
-    expect(events(outputs)).toContainEqual(expect.objectContaining({ type: "session.faulted" }));
-  });
-
-  it("settles a pending episode as succeeded on close", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    const transport = await start(session, transports);
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs);
-    transport.eventHandler?.({ type: "agent.text", text: "tail" });
-    await vi.waitFor(() =>
-      expect(events(outputs)).toContainEqual(
-        expect.objectContaining({ type: "item.background.started" }),
-      ),
-    );
-    await session.close();
-    expect(events(outputs).find((event) => event.type === "item.completed")).toMatchObject({
-      snapshot: { item: { text: "tail" }, outcome: { status: "succeeded" } },
-    });
-  });
-
-  it("merges consecutive same-type idle chunks into one Item and switches Items on type change", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    const transport = await start(session, transports);
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs);
-    transport.eventHandler?.({ type: "agent.text", text: "one" });
-    transport.eventHandler?.({ type: "agent.text", text: " two" });
-    transport.eventHandler?.({ type: "agent.thought", text: " pondering" });
-    await vi.waitFor(() =>
-      expect(
-        events(outputs).filter((event) => event.type === "item.background.started"),
-      ).toHaveLength(2),
-    );
-    await session.close();
-    await vi.waitFor(() => {
-      const settledTexts = events(outputs)
-        .filter((event) => event.type === "item.completed" && event.turnId === "t1")
-        .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
-      expect(settledTexts).toEqual(["one two", " pondering"]);
-    });
-  });
-
-  it("settles the open idle Item and keeps its Turn across a Skip permissions restart", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    const transport = await start(session, transports);
-    transport.result.resolve({ stopReason: "end_turn" });
-    await completed(outputs);
-    transport.eventHandler?.({ type: "agent.text", text: "before restart" });
-    await vi.waitFor(() =>
-      expect(events(outputs)).toContainEqual(
-        expect.objectContaining({
-          type: "item.background.started",
-          turnId: "t1",
-          item: expect.objectContaining({ type: "agentMessage" }),
-        }),
-      ),
-    );
-
-    expect(
-      (
         await session.execute({
-          type: "permissionMode.select",
-          permissionModeId: mode("dangerously-skip-permissions"),
-        })
-      ).ok,
-    ).toBe(true);
-    expect(transports).toHaveLength(2);
-    expect(events(outputs).find((event) => event.type === "item.completed")).toMatchObject({
-      turnId: "t1",
-      snapshot: {
-        item: { type: "agentMessage", text: "before restart" },
-        outcome: { status: "succeeded" },
-      },
-    });
-
-    transports[1]?.eventHandler?.({ type: "agent.text", text: "after restart" });
-    await vi.waitFor(() =>
-      expect(
-        events(outputs).filter(
-          (event) => event.type === "item.background.started" && event.turnId === "t1",
-        ),
-      ).toHaveLength(2),
-    );
-    await session.close();
-    const settledTexts = events(outputs)
-      .filter((event) => event.type === "item.completed" && event.turnId === "t1")
-      .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
-    expect(settledTexts).toEqual(["before restart", "after restart"]);
+          type: "turn.start",
+          turnId: turnId("t2"),
+          input: [{ type: "text", text: "next" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      expect(wakes(outputs)).toEqual([]);
+      userStep(db, 4, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 
-  it("buffers output that arrives after prompt() returns but before usage observation finishes", async () => {
-    const { adapter, transports } = fixture();
-    const { session, outputs } = await sessionOf(
-      await adapter.open({ kind: "create", cwd: process.cwd() }),
-    );
-    const transport = await start(session, transports);
-    const gate = deferred<number>();
-    const readCount = vi
-      .spyOn(nativeBoundaries, "readNativeTurnCount")
-      .mockReturnValue(gate.promise);
+  it("observes updates after the wire response without publishing ahead of the user terminal", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      const gate = deferred<number>();
+      vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockReturnValueOnce(gate.promise);
+      transport.handler?.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      systemStep(db, 2, "wake");
+      answerStep(db, 3, "wake answer", "wake");
+      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      expect(wakes(outputs)).toEqual([]);
+      gate.resolve(1);
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      const all = events(outputs);
+      expect(all.findIndex((event) => event.type === "turn.autonomous.completed")).toBeGreaterThan(
+        all.findIndex((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      );
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
 
-    transport.result.resolve({ stopReason: "end_turn" });
-    await vi.waitFor(() => expect(readCount).toHaveBeenCalledOnce());
-    transport.eventHandler?.({ type: "agent.text", text: "late text" });
-    transport.eventHandler?.({ type: "agent.thought", text: "late thought" });
-    expect(events(outputs).some((event) => event.type === "item.background.started")).toBe(false);
-
-    gate.resolve(1);
-    await completed(outputs);
-    const all = events(outputs);
-    const completedIndex = all.findIndex(
-      (event) => event.type === "turn.completed" && event.turnId === "t1",
-    );
-    const firstBackgroundIndex = all.findIndex(
-      (event) => event.type === "item.background.started" && event.turnId === "t1",
-    );
-    expect(completedIndex).toBeGreaterThanOrEqual(0);
-    expect(firstBackgroundIndex).toBeGreaterThan(completedIndex);
-    expect(
-      all.filter((event) => event.type === "item.updated" && event.turnId === "t1"),
-    ).toMatchObject([
-      { update: { type: "text.append", text: "late text" } },
-      { update: { type: "text.append", text: "late thought" } },
-    ]);
-
-    await session.close();
-    const settledTexts = events(outputs)
-      .filter((event) => event.type === "item.completed" && event.turnId === "t1")
-      .map((event) => (event as { snapshot: { item: { text: string } } }).snapshot.item.text);
-    expect(settledTexts).toEqual(["late text", "late thought"]);
+  it.each(["close", "fault"])("does not publish an incomplete wake after %s", async (end) => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "wake");
+      transport.eventHandler?.({ type: "agent.thought", text: "partial" });
+      if (end === "close") await session.close();
+      else
+        transport.options.onFault?.(new AntigravityTransportError("processExited", "ACP exited"));
+      answerStep(db, 3, "too late", "wake");
+      await setImmediate();
+      expect(wakes(outputs)).toEqual([]);
+    } finally {
+      db.close();
+    }
   });
 });

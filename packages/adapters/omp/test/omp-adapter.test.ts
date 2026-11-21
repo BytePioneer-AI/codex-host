@@ -678,6 +678,37 @@ describe("OMP Adapter Session environment", () => {
 });
 
 describe("OMP Adapter inspection", () => {
+  it("does not publish Thinking support from an older cwd after a refresh", async () => {
+    const pending = Promise.withResolvers<null>();
+    const oldTransport = new FakeOmpTransport();
+    vi.spyOn(oldTransport, "getAvailableThinkingLevels").mockReturnValueOnce(pending.promise);
+    const createTransport = vi.fn(() => new FakeOmpTransport()).mockReturnValueOnce(oldTransport);
+    const adapter = new OmpAdapter({}, { createTransport });
+    const stale = adapter.inspect({ cwd: "/synthetic" });
+
+    const refreshed = await adapter.inspect({ cwd: "/other", refresh: true });
+    expect(refreshed).toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    pending.resolve(null);
+    await expect(stale).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: false } },
+    });
+    await expect(adapter.inspect({ cwd: "/other" })).resolves.toBe(refreshed);
+    await expect(adapter.open({ kind: "create", cwd: "/other" })).resolves.toMatchObject({
+      ok: true,
+      value: { capabilities: { configuration: { selectThinkingOption: true } } },
+    });
+    await expect(adapter.inspect({ cwd: "/synthetic" })).resolves.toMatchObject({
+      status: "ready",
+      capabilities: { configuration: { selectThinkingOption: true } },
+    });
+    expect(createTransport).toHaveBeenCalledTimes(3);
+    await adapter.close();
+  });
+
   it.each([
     [
       "No models available. Use /login or set an API key environment variable. Then use /model to select a model.",

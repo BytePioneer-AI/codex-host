@@ -13,9 +13,7 @@
   flex-direction: column;
   width: 100%;
   max-width: var(--dsh-chat-content-width);
-  /* Composer seat sits in a fixed-height conversation column (overflow
-     hidden): cap the card against the viewport and scroll the option list
-     so header and footer actions stay reachable on long batches. */
+  /* Cap the card against the viewport so the footer stays accessible. */
   max-height: min(60vh, 520px);
   min-width: 0;
   padding: 0;
@@ -26,11 +24,7 @@
   box-shadow: var(--dsw-elevation-panel);
   color: var(--dsw-alias-label-primary);
   overflow: hidden;
-  /* Elevated surface in dark, same as the menus: the body inside scrolls
-     once the card hits the cap above, so the thumb takes the l2 pair. Declared
-     on the card because the elevation belongs to the surface, and the custom
-     properties inherit down to `.body` (see ui-theme styles/scrollbar.css
-     for the rebinding contract). */
+  /* The scroll area inherits the scrollbar colors of the elevated surface. */
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
@@ -40,17 +34,29 @@
   box-sizing: border-box;
 }
 
-/* Collapsed to the header strip: drop the height cap and the inner scroll
-   seat so the card hugs the title row, freeing the viewport for the
-   conversation above while the question stays pending. */
-.cardMinimized {
-  max-height: none;
+.scrollArea {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.scrollArea:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
 }
 
 /* The header strip is the whole card when collapsed: the title row needs
    bottom padding once the body that normally carries it is hidden. */
 .cardMinimized .header {
   padding-bottom: 16px;
+}
+
+.cardMinimized .eyebrow,
+.cardMinimized .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Header button group: minimize sits next to the close action, both on the
@@ -79,7 +85,6 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  flex-shrink: 0;
   padding: 16px 16px 0 20px;
 }
 
@@ -104,10 +109,6 @@
 
 .detail {
   min-width: 0;
-  max-height: min(24vh, 160px);
-  flex-shrink: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   margin: 12px 20px 4px;
   padding: 10px 12px;
   border: 1px solid var(--dsw-alias-border-l2);
@@ -171,7 +172,6 @@
 }
 
 .iconButton:focus-visible,
-.detail:focus-visible,
 .option:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
@@ -184,11 +184,7 @@
 
 .body {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .options {

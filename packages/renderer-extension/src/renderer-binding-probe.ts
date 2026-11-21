@@ -201,6 +201,11 @@ interface HostHarnessAvailabilityState {
 
 const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
 
+/** Desktop-internal environments are not connectable Hosts. */
+export function isListedConnectionHost(hostId: string): boolean {
+  return hostId !== "durable" && !hostId.startsWith("env_e_");
+}
+
 export function refreshConnectionHosts(
   hostIds: Iterable<string>,
   refreshHost: (hostId: string) => Promise<void>,
@@ -631,6 +636,7 @@ interface MountedCatalogRequest {
   hostId: string;
   agent: ExternalRendererAgent;
   generation: number;
+  refreshing?: true;
 }
 
 interface PendingComposerReplacement {
@@ -1096,13 +1102,17 @@ export function installRendererBindingProbe(
     const currentCodexAccount = accounts?.accounts.find(
       ({ accountId }) => accountId === accounts.readyAccountId,
     );
+    const catalogRequest = catalogRequests.get(mounted);
+    const refreshing =
+      catalogRequest?.refreshing &&
+      controller.isCurrentModelRequest(mounted.composer, catalogRequest.generation);
     const externalSubmissionReady = renderComposerAgentControl(
       mounted.control,
       controller.get(mounted.composer),
       composerAdapterState(mounted),
       controller.isSwitching(mounted.composer) || mounted.ownershipStatus === "loading",
       composerAvailability(mounted),
-      mounted.modelView,
+      refreshing ? { ...mounted.modelView, refreshing } : mounted.modelView,
       mounted.permissionModeView,
       mounted.usage,
       mounted.accountCredits,
@@ -1635,6 +1645,15 @@ export function installRendererBindingProbe(
       return;
     }
     if (isDraft) mounted.hostId = requestHostId;
+    const pending = catalogRequests.get(mounted);
+    if (
+      pending?.refreshing &&
+      pending.agent === agent &&
+      pending.hostId === requestHostId &&
+      pending.client === composerClient(mounted) &&
+      isCurrentModelRequest(mounted, pending.generation)
+    )
+      return;
     const hostState = hostHarnessAvailabilityState(requestHostId);
     if (!hostState.plugins) void refreshHarnessAvailabilityForHost(requestHostId);
     const availability =
@@ -1889,6 +1908,90 @@ export function installRendererBindingProbe(
         catalogRequests.delete(mounted);
       }
       finishModelRequest(mounted, generation);
+    }
+  };
+
+  const refreshExternalModels = async (mounted: MountedComposer): Promise<void> => {
+    const { agent } = controller.get(mounted.composer);
+    const hostId = mounted.hostId;
+    const client = composerClient(mounted);
+    const requestControl = modelControl;
+    if (agent === "codex" || !hostId || !client) return;
+    const matchesTarget = (candidate: MountedComposer): boolean =>
+      isMountedComposer(candidate.composer) &&
+      mountedByComposer.get(candidate.composer) === candidate &&
+      candidate.hostId === hostId &&
+      activeModelHostId(candidate.composer) === hostId &&
+      modelControl === requestControl &&
+      composerClient(candidate) === client &&
+      controller.get(candidate.composer).agent === agent &&
+      !controller.isSwitching(candidate.composer);
+    const canRefresh = (candidate: MountedComposer): boolean =>
+      matchesTarget(candidate) &&
+      candidate.modelView.catalog !== undefined &&
+      (candidate.modelView.status === "ready" || candidate.modelView.status === "error");
+    const active = catalogRequests.get(mounted);
+    if (
+      !canRefresh(mounted) ||
+      (active?.refreshing && isCurrentModelRequest(mounted, active.generation))
+    )
+      return;
+
+    const targets = new Map<MountedComposer, MountedCatalogRequest>();
+    for (const candidate of mountedByComposer.values()) {
+      if (!canRefresh(candidate)) continue;
+      const request: MountedCatalogRequest = {
+        client,
+        hostId,
+        agent,
+        // Observe invalidation without invalidating an outstanding selection.
+        generation: controller.modelRequestGeneration(candidate.composer),
+        refreshing: true,
+      };
+      targets.set(candidate, request);
+      catalogRequests.set(candidate, request);
+      renderMounted(candidate);
+    }
+    try {
+      const inspection = await client.inspectHarness({
+        harnessId: harnessIdSchema.parse(agent),
+        refresh: true,
+      });
+      if (inspection.status !== "ready") return;
+      for (const [candidate, request] of targets) {
+        if (
+          catalogRequests.get(candidate) !== request ||
+          !matchesTarget(candidate) ||
+          !isCurrentModelRequest(candidate, request.generation)
+        )
+          continue;
+        // A catalog refresh does not write the Composer's confirmed selection.
+        const { selected, selectedThinkingOptionId, resolvedModelLabel } = candidate.modelView;
+        const catalog =
+          selected && candidate.threadConfiguration
+            ? catalogWithConfigurationState(
+                inspection.catalog,
+                selected,
+                candidate.threadConfiguration,
+              )
+            : inspection.catalog;
+        candidate.modelView = {
+          status: "ready",
+          catalog,
+          ...(selected ? { selected } : {}),
+          ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
+          ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
+          thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
+        };
+      }
+    } catch {
+      // Keep the usable catalog when the Host could not refresh it.
+    } finally {
+      for (const [candidate, request] of targets) {
+        if (catalogRequests.get(candidate) !== request) continue;
+        catalogRequests.delete(candidate);
+        finishModelRequest(candidate, request.generation);
+      }
     }
   };
 
@@ -2745,7 +2848,7 @@ export function installRendererBindingProbe(
     // Settings lists observed Hosts even when multiple Composers make the
     // active route ambiguous. Requests still resolve each Host independently.
     for (const hostId of modelControl?.knownHostIds?.() ?? []) {
-      if (hostId !== "durable") hostHarnessAvailabilityState(hostId);
+      if (isListedConnectionHost(hostId)) hostHarnessAvailabilityState(hostId);
     }
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
@@ -2824,7 +2927,7 @@ export function installRendererBindingProbe(
       const hostIds = [
         "local",
         ...[...harnessAvailabilityByHost.keys()]
-          .filter((hostId) => hostId !== "local" && hostId !== "durable")
+          .filter((hostId) => hostId !== "local" && isListedConnectionHost(hostId))
           .sort(),
       ];
       return {
@@ -2857,7 +2960,7 @@ export function installRendererBindingProbe(
       }
       reconcileHarnessAvailabilityHost();
       return refreshConnectionHosts(
-        [...harnessAvailabilityByHost.keys()].filter((target) => target !== "durable"),
+        [...harnessAvailabilityByHost.keys()].filter(isListedConnectionHost),
         (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
       );
     },
@@ -2993,6 +3096,10 @@ export function installRendererBindingProbe(
         // The button is the discoverable entry to the `#` menu.
         const editor = composer.querySelector<HTMLElement>(EDITOR_SELECTOR);
         if (editor) delegationMention?.openFor(editor);
+      },
+      () => {
+        const mounted = mountedByComposer.get(composer);
+        if (mounted) void refreshExternalModels(mounted);
       },
     );
     if (!pendingDefaultPreferences.has(state.composerId)) {

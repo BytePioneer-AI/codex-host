@@ -25,7 +25,7 @@ interface SocketRequest {
 class FakeSocket {
   readonly requests: SocketRequest[] = [];
   evaluation: unknown = { result: { type: "number", value: 42 } };
-  evaluationDelayMs = 0;
+  responseDelayMs = 0;
   releaseError = false;
   readonly #listeners = new Map<string, Set<SocketListener>>();
 
@@ -65,8 +65,7 @@ class FakeSocket {
         }),
       });
     };
-    if (request.method === "Runtime.evaluate" && this.evaluationDelayMs > 0)
-      setTimeout(respond, this.evaluationDelayMs);
+    if (this.responseDelayMs > 0) setTimeout(respond, this.responseDelayMs);
     else queueMicrotask(respond);
   }
 
@@ -80,10 +79,34 @@ class FakeSocket {
 }
 
 describe("CDP client", () => {
+  it("allows a slow heap query to finish and expires a stalled query after one minute", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const socket = new FakeSocket();
+    const client = await CdpClient.connect("ws://127.0.0.1:9222/devtools/page/page-1", {
+      socketFactory: () => socket,
+    });
+    try {
+      socket.responseDelayMs = 19_500;
+      const slow = Promise.allSettled([client.command("Runtime.queryObjects")]);
+      socket.responseDelayMs = 90_000;
+      const stalled = Promise.allSettled([client.command("Runtime.queryObjects")]);
+      await vi.advanceTimersByTimeAsync(19_500);
+      expect(await slow).toEqual([{ status: "fulfilled", value: { accepted: true } }]);
+      await vi.advanceTimersByTimeAsync(40_500);
+      expect(await stalled).toEqual([
+        { status: "rejected", reason: new Error("CDP command 'Runtime.queryObjects' timed out") },
+      ]);
+    } finally {
+      client.close();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("uses the remote operation deadline without changing the ordinary command deadline", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const socket = new FakeSocket();
-    socket.evaluationDelayMs = 10_800;
+    socket.responseDelayMs = 10_800;
     const client = await CdpClient.connect("ws://127.0.0.1:9222/devtools/page/page-1", {
       socketFactory: () => socket,
     });
@@ -109,7 +132,7 @@ describe("CDP client", () => {
   it("still expires a remote evaluation at its explicit deadline without replaying it", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const socket = new FakeSocket();
-    socket.evaluationDelayMs = 60_000;
+    socket.responseDelayMs = 60_000;
     const client = await CdpClient.connect("ws://127.0.0.1:9222/devtools/page/page-1", {
       socketFactory: () => socket,
     });

@@ -36,7 +36,7 @@ import {
   type VoiceInputFace,
 } from "./VoiceInput.tsx";
 import { ImportIcon } from "./ImportIcon.tsx";
-import { DocumentDownload } from "./DocumentDownload.tsx";
+import { DocumentDownload, DocumentDownloadAction } from "./DocumentDownload.tsx";
 import { RemoteAccessAction, type RemoteAccessActionFace } from "./RemoteAccessAction.tsx";
 import type {} from "@deepseek-ai/dsh-api-session-controller/client";
 import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
@@ -125,6 +125,11 @@ export function apply(ctx: ClientContext): void {
         inject: (sessionId) => ({
           sessionId,
           label: t("file.download"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
           openFolderLabel: t("file.openFolder"),
           openFolderFailedLabel: t("file.openFolder.failed"),
           revealFolder: (path: string) =>
@@ -132,6 +137,25 @@ export function apply(ctx: ClientContext): void {
         }),
       },
       DocumentDownload,
+    ),
+  );
+  ctx.slots.inject("sidebar.right.tab.document.unpreviewable", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.right.tab.document.unpreviewable",
+        id: "codexhost-download-action",
+        inject: (sessionId) => ({
+          sessionId,
+          ctaLabel: t("file.download.cta"),
+          preparingLabel: t("file.download.preparing"),
+          downloadFailedLabel: t("file.download.failed"),
+          downloadReadyLabel: (name: string) => t("file.download.ready", { name }),
+          downloadSaveLabel: t("file.download.saveAction"),
+          downloadOpenLabel: t("file.download.openAction"),
+          downloadDismissLabel: t("file.download.dismiss"),
+        }),
+      },
+      DocumentDownloadAction,
     ),
   );
   const installation = ctx.get("pwaInstall");

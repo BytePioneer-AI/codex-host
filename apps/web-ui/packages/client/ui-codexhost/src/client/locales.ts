@@ -1,6 +1,13 @@
 /** Copy for the CodexHost import panel. */
 export const en = {
   "file.download": "Download",
+  "file.download.cta": "Download file",
+  "file.download.preparing": "Preparing…",
+  "file.download.failed": "Could not download this file.",
+  "file.download.ready": "{name} is ready",
+  "file.download.saveAction": "Save / Share",
+  "file.download.openAction": "Open download",
+  "file.download.dismiss": "Dismiss",
   "file.openFolder": "Open containing folder",
   "file.openFolder.failed": "Could not open the containing folder.",
   "discovery.agents": "Delegation Agents",
@@ -653,6 +660,13 @@ export type ImportLocaleKey = keyof typeof en;
 
 export const zh: Record<ImportLocaleKey, string> = {
   "file.download": "下载",
+  "file.download.cta": "下载文件",
+  "file.download.preparing": "正在准备…",
+  "file.download.failed": "下载文件失败。",
+  "file.download.ready": "{name} 已就绪",
+  "file.download.saveAction": "保存 / 分享",
+  "file.download.openAction": "打开下载",
+  "file.download.dismiss": "关闭",
   "file.openFolder": "打开所在文件夹",
   "file.openFolder.failed": "打开所在文件夹失败。",
   "discovery.agents": "委派 Agent",

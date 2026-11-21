@@ -397,7 +397,10 @@ export function apply(ctx: ClientContext): void {
         order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
-        inject: (): WebExtensionsFace => ({ resolveText: (text) => ctx.locale.resolveText(text) }),
+        inject: (): WebExtensionsFace => ({
+          resolveText: (text) => ctx.locale.resolveText(text),
+          locale,
+        }),
       },
       WebExtensionsSection,
     ),

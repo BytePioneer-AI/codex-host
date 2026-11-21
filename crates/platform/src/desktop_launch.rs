@@ -410,11 +410,7 @@ fn desktop_launch_command(
                 "LaunchServices is available on macOS only",
             ));
         }
-        #[cfg(target_os = "linux")]
-        let program = &installation.desktop_executable;
-        #[cfg(target_os = "windows")]
-        let program = &installation.desktop_launcher;
-        let mut command = Command::new(program);
+        let mut command = Command::new(&installation.desktop_executable);
         command.args(additional_arguments);
         #[cfg(target_os = "linux")]
         super::background::start_in_new_session(&mut command);
@@ -484,6 +480,7 @@ pub fn launch_desktop(
                 &appx_activation.app_user_model_id,
                 additional_arguments,
                 &environment,
+                None,
             )
         }
         None => {
@@ -501,6 +498,42 @@ pub fn launch_desktop(
             ))
         }
     }
+}
+
+/// Production Windows launch. Direct launch keeps the selected installation's
+/// identity and runnable official CLI, even for a registered Store package.
+#[cfg(target_os = "windows")]
+pub fn launch_windows_managed_desktop(
+    installation: &DesktopInstallation,
+    shim_path: &Path,
+    direct: bool,
+    arguments: &[OsString],
+    environment: &[(OsString, OsString)],
+) -> Result<DesktopProcess, PlatformError> {
+    if !direct
+        && let DesktopIdentity::WindowsPackage {
+            appx_activation: Some(identity),
+            ..
+        } = &installation.identity
+    {
+        let environment = managed_desktop_environment(installation, shim_path, environment)?;
+        return super::windows_desktop::activate_packaged_desktop(
+            &identity.package_full_name,
+            &identity.app_user_model_id,
+            arguments,
+            &environment,
+            Some(installation),
+        );
+    }
+    let mut command = desktop_launch_command(
+        installation,
+        shim_path,
+        DesktopLaunchMode::DirectExecutable,
+        arguments,
+        environment,
+    )?;
+    super::require_no_windows_desktop(installation)?;
+    Ok(DesktopProcess::from_child(command.spawn()?))
 }
 
 #[cfg(target_os = "linux")]

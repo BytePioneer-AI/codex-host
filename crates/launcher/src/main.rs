@@ -6,6 +6,8 @@ mod compatibility;
 mod console;
 mod desktop_attachment;
 mod desktop_path_overrides;
+#[cfg(any(target_os = "windows", test))]
+mod desktop_retry;
 mod host_service;
 mod installation_layout;
 mod native_harness_broker;
@@ -17,11 +19,13 @@ mod services;
 mod startup_record;
 mod system_proxy_environment;
 mod web_service;
+#[cfg(target_os = "windows")]
+mod windows_startup;
 
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use std::fmt::{self, Display, Formatter};
 use std::io::{IsTerminal, Read, Write};
 use std::net::SocketAddr;
@@ -37,27 +41,28 @@ use std::time::{Duration, Instant};
 use active_update::start_pending_update;
 use active_update::update_waiting_for_launcher_exit;
 #[cfg(target_os = "windows")]
+use codexhost_platform::{APPX_RESUME_ARGUMENT, DesktopProcess, resume_packaged_application};
 use codexhost_platform::{
-    APPX_RESUME_ARGUMENT, DesktopProcess, launch_desktop, resume_packaged_application,
-};
-use codexhost_platform::{
-    DesktopIdentity, DesktopInstallation, DesktopLaunchMode, SupervisedChild,
-    canonical_existing_file, configure_background_command,
-    desktop_root_process_ids_for_installation, discover_codex_desktop, node_entrypoint_path,
-    spawn_supervised,
+    DesktopIdentity, DesktopInstallation, SupervisedChild, canonical_existing_file,
+    configure_background_command, desktop_root_process_ids_for_installation,
+    discover_codex_desktop, node_entrypoint_path, spawn_supervised,
 };
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use codexhost_platform::{DesktopSession, launch_desktop_session};
+use codexhost_platform::{DesktopLaunchMode, DesktopSession, launch_desktop_session};
 #[cfg(target_os = "windows")]
 use codexhost_platform::{
     RunningDesktopChoice, hide_console_window, process_executable_path, process_exists,
     prompt_running_desktop, show_error_dialog, terminate_process_by_id,
 };
 use compatibility::{MAX_CONTROLLER_READINESS_LINE_BYTES, parse_controller_readiness_line};
+#[cfg(any(not(target_os = "windows"), test))]
+use desktop_attachment::allocate_runtime_control;
 use desktop_attachment::{
-    LauncherOwnership, RuntimeControl, acquire_launcher_ownership, allocate_runtime_control,
-    endpoint_ready, publish_runtime_descriptor, stop_stale_launcher, wait_for_host_chain,
+    LauncherOwnership, RuntimeControl, acquire_launcher_ownership, endpoint_ready,
+    stop_stale_launcher,
 };
+#[cfg(not(target_os = "windows"))]
+use desktop_attachment::{publish_runtime_descriptor, wait_for_host_chain};
 use installation_layout::InstalledResources;
 use native_harness_broker::run_native_harness_broker_cli;
 use runtime_instance::{
@@ -96,7 +101,7 @@ const STARTUP_TRACE_ENV: &str = "CODEXHOST_STARTUP_TRACE";
 const CONTROLLER_STOP_GRACE: Duration = Duration::from_secs(1);
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const DESKTOP_TREE_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 const UNMANAGED_DESKTOP_MESSAGE: &str = "Codex Desktop is already running outside codexhost; completely quit it before starting codexhost";
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -115,18 +120,18 @@ fn managed_desktop_data_directory(
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct UnmanagedDesktopConflict;
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 impl Display for UnmanagedDesktopConflict {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(UNMANAGED_DESKTOP_MESSAGE)
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 impl Error for UnmanagedDesktopConflict {}
 
 const USAGE: &str = "usage:
@@ -140,7 +145,7 @@ const USAGE: &str = "usage:
   codexhost autostart on|off|status
   codexhost console
   codexhost update
-  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
+  codexhost launch [--windows-direct] [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
   codexhost desktop-screenshot
   codexhost broker install|status|stop|uninstall
   codexhost delegate --help
@@ -352,6 +357,7 @@ fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn
 #[derive(Debug)]
 struct LaunchOptions {
     update_recovery: bool,
+    windows_direct: bool,
     shim: Option<PathBuf>,
     node: Option<PathBuf>,
     host_runtime: Option<PathBuf>,
@@ -382,6 +388,7 @@ fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Resul
 
 fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut update_recovery = false;
+    let mut windows_direct = false;
     let mut shim = None;
     let mut node = None;
     let mut host_runtime = None;
@@ -394,6 +401,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--update-recovery" => update_recovery = true,
+            "--windows-direct" => windows_direct = true,
             "--shim" => shim = Some(required_path(arguments, &mut index, "--shim")?),
             "--node" => node = Some(required_path(arguments, &mut index, "--node")?),
             "--host-runtime" => {
@@ -423,6 +431,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     }
     Ok(LaunchOptions {
         update_recovery,
+        windows_direct,
         shim,
         node,
         host_runtime,
@@ -624,10 +633,9 @@ fn read_bounded_controller_line(mut input: impl Read) -> std::io::Result<Vec<u8>
     Ok(line)
 }
 
-fn wait_for_controller_ready(
+fn controller_readiness_receiver(
     controller: &mut SupervisedChild,
-    timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<mpsc::Receiver<std::io::Result<Vec<u8>>>, Box<dyn Error>> {
     let stdout = controller
         .take_stdout()
         .ok_or("Desktop Controller stdout is unavailable")?;
@@ -635,14 +643,27 @@ fn wait_for_controller_ready(
     thread::spawn(move || {
         let _ = sender.send(read_bounded_controller_line(stdout));
     });
-    let line = receiver
-        .recv_timeout(timeout)
-        .map_err(|_| "Desktop Controller did not become ready before timeout")??;
-    parse_controller_readiness_line(&line)
+    Ok(receiver)
+}
+
+fn validate_controller_readiness(line: &[u8]) -> Result<(), Box<dyn Error>> {
+    parse_controller_readiness_line(line)
         .map(|_| ())
         .map_err(|error| format!("Desktop Controller returned invalid readiness: {error}").into())
 }
 
+#[cfg(not(target_os = "windows"))]
+fn wait_for_controller_ready(
+    controller: &mut SupervisedChild,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let line = controller_readiness_receiver(controller)?
+        .recv_timeout(timeout)
+        .map_err(|_| "Desktop Controller did not become ready before timeout")??;
+    validate_controller_readiness(&line)
+}
+
+#[cfg(not(target_os = "windows"))]
 fn start_desktop_controller(
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
@@ -665,41 +686,6 @@ fn start_desktop_controller(
             let _ = controller.wait();
             Err(error)
         }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn wait_for_launched_desktop_ownership(
-    installation: &DesktopInstallation,
-    desktop: &mut DesktopProcess,
-    timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
-    let desktop_pid = desktop.id();
-    let started = Instant::now();
-    loop {
-        let roots = desktop_root_process_ids_for_installation(installation)?;
-        if roots.iter().any(|process_id| *process_id != desktop_pid) {
-            if desktop.try_wait()?.is_none() {
-                let _ = desktop.kill();
-                let _ = desktop.wait();
-            }
-            return Err(Box::new(UnmanagedDesktopConflict));
-        }
-        if roots.contains(&desktop_pid) {
-            return Ok(());
-        }
-        if let Some(status) = desktop.try_wait()? {
-            return Err(format!(
-                "Codex Desktop exited before launch ownership was established: {status}"
-            )
-            .into());
-        }
-        if started.elapsed() >= timeout {
-            let _ = desktop.kill();
-            let _ = desktop.wait();
-            return Err("Codex Desktop root did not appear before timeout".into());
-        }
-        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -872,105 +858,6 @@ fn supervise_desktop(
     }
 }
 
-#[cfg(target_os = "windows")]
-fn supervise_desktop(
-    installation: &DesktopInstallation,
-    options: &ResolvedLaunchOptions,
-    desktop_arguments: &[OsString],
-    environment: &[(OsString, OsString)],
-    control: &RuntimeControl,
-    descriptor_path: &Path,
-) -> Result<(), Box<dyn Error>> {
-    startup_trace("launching Codex Desktop");
-    let desktop_arguments =
-        desktop_path_overrides::launch_arguments(desktop_arguments, environment);
-    let mut desktop = launch_desktop(
-        installation,
-        &options.shim,
-        DesktopLaunchMode::DirectExecutable,
-        &desktop_arguments,
-        environment,
-    )?;
-    startup_trace("Codex Desktop launched");
-    let desktop_pid = desktop.id();
-    wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
-    let desktop_snapshot = match codexhost_platform::process_snapshot(desktop_pid) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            let _ = desktop.kill();
-            let _ = desktop.wait();
-            return Err(error.into());
-        }
-    };
-    let mut controller = match start_desktop_controller(options, control, environment) {
-        Ok(started) => started,
-        Err(error) => {
-            let _ = desktop.kill();
-            let _ = desktop.wait();
-            return Err(error);
-        }
-    };
-    startup_trace("waiting for Host chain");
-    if !wait_for_host_chain(&desktop_snapshot, options, Duration::from_secs(30))? {
-        let _ = stop_desktop_controller(&mut controller);
-        let _ = desktop.kill();
-        let _ = desktop.wait();
-        return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
-    }
-    startup_trace("Host chain ready");
-    let _runtime = match publish_runtime_descriptor(descriptor_path, control) {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = stop_desktop_controller(&mut controller);
-            let _ = desktop.kill();
-            let _ = desktop.wait();
-            return Err(error);
-        }
-    };
-    startup_trace("runtime descriptor published");
-    notify_ready_and_detach()?;
-    let mut started_update_request = None;
-    loop {
-        if let Err(error) = start_pending_update(&mut started_update_request) {
-            eprintln!("codexhost launcher: pending update could not be started: {error}");
-        }
-        if should_stop_desktop_for_update(started_update_request.is_some()) {
-            if let Err(error) = stop_managed_desktop_for_update(&mut desktop, &mut controller) {
-                eprintln!(
-                    "codexhost launcher: managed Desktop could not be stopped for update: {error}"
-                );
-            } else {
-                return Ok(());
-            }
-        }
-        if let Some(status) = controller.try_wait()? {
-            if let Some(desktop_status) =
-                wait_for_desktop_exit(&mut desktop, Duration::from_secs(1))?
-            {
-                if desktop_status.success() {
-                    return Ok(());
-                }
-                return Err(
-                    format!("Codex Desktop exited unsuccessfully: {desktop_status}").into(),
-                );
-            }
-            let _ = desktop.kill();
-            let _ = desktop.wait();
-            return Err(
-                format!("Desktop Controller exited while Desktop was running: {status}").into(),
-            );
-        }
-        if let Some(status) = desktop.try_wait()? {
-            stop_desktop_controller(&mut controller)?;
-            if !status.success() {
-                return Err(format!("Codex Desktop exited unsuccessfully: {status}").into());
-            }
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
 fn desktop_environment(
     options: &ResolvedLaunchOptions,
     control: &RuntimeControl,
@@ -1134,6 +1021,9 @@ fn force_stop_external_desktop(
 }
 
 fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
+    if options.windows_direct && !cfg!(target_os = "windows") {
+        return Err("--windows-direct is supported on Windows only".into());
+    }
     autostart::refresh();
     start_launch_console(&options);
     let installation = discover_desktop(options.custom_install_root.as_deref());
@@ -1146,7 +1036,8 @@ fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error
                 .map(|desktop| desktop.install_root.as_path()),
         )?;
     }
-    if services::web_enabled()
+    if !options.windows_direct
+        && services::web_enabled()
         && installation.as_ref().is_err_and(|error| {
             matches!(
                 error.downcast_ref::<codexhost_platform::PlatformError>(),
@@ -1188,6 +1079,8 @@ fn launch_gui(
     installation: Result<DesktopInstallation, Box<dyn Error>>,
     _interactive_running_desktop: bool,
 ) -> Result<(), Box<dyn Error>> {
+    #[cfg(target_os = "windows")]
+    let explicit_direct = options.windows_direct;
     startup_trace("launch requested");
     // 优先报告安装资源缺失，避免 Desktop 探测错误遮住损坏的 Host 安装。
     let options = options.resolve(
@@ -1205,6 +1098,24 @@ fn launch_gui(
     );
     startup_trace("Codex Desktop installation discovered");
     startup_trace("acquiring Launcher ownership");
+    #[cfg(target_os = "windows")]
+    if explicit_direct {
+        let _guard = desktop_attachment::acquire_clean_launcher_ownership()?;
+        codexhost_platform::require_no_windows_desktop(&installation)?;
+        let descriptor_path = default_descriptor_path()?;
+        if let Some(descriptor) = read_descriptor(&descriptor_path)? {
+            if endpoint_ready(descriptor.control_port, Duration::from_millis(300)) {
+                return Err("codexhost control endpoint is still active; completely quit Codex Desktop before requesting a direct launch".into());
+            }
+            let _ = remove_matching_descriptor(&descriptor_path, &descriptor)?;
+        }
+        let result =
+            windows_startup::supervise_desktop(&installation, &options, &descriptor_path, true);
+        if result.is_ok() {
+            console::stop_for_launch();
+        }
+        return result;
+    }
     let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
     {
         LauncherOwnership::Acquired(guard) => {
@@ -1283,54 +1194,36 @@ fn launch_gui(
             }
         }
 
-        let control = allocate_runtime_control()?;
-        let launcher_executable = env::current_exe()?.canonicalize()?;
-        let environment = desktop_environment(
-            &options,
-            &control,
-            &launcher_executable,
-            &descriptor_path,
-            managed_desktop_data_directory(
-                env::var_os(DATA_DIRECTORY_ENV),
-                env::var_os(REMOTE_SSH_MANAGED_ENV),
-            ),
-        );
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let environment = {
-            let mut environment = environment;
-            environment.extend(codexhost_platform::proxy_environment());
-            environment
-        };
-        let result = supervise_desktop(
-            &installation,
-            &options,
-            &control.renderer_cdp_arguments,
-            &environment,
-            &control,
-            &descriptor_path,
-        );
         #[cfg(target_os = "windows")]
-        match result {
-            Err(error)
-                if _interactive_running_desktop
-                    && (error.downcast_ref::<UnmanagedDesktopConflict>().is_some()
-                        || error.to_string() == UNMANAGED_DESKTOP_MESSAGE) =>
-            {
-                continue;
-            }
-            Ok(()) => {
-                console::stop_for_launch();
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        }
+        let result =
+            windows_startup::supervise_desktop(&installation, &options, &descriptor_path, false);
         #[cfg(target_os = "macos")]
-        {
-            if result.is_ok() {
-                console::stop_for_launch();
-            }
-            return result;
+        let result = {
+            let control = allocate_runtime_control()?;
+            let mut environment = desktop_environment(
+                &options,
+                &control,
+                &env::current_exe()?.canonicalize()?,
+                &descriptor_path,
+                managed_desktop_data_directory(
+                    env::var_os(DATA_DIRECTORY_ENV),
+                    env::var_os(REMOTE_SSH_MANAGED_ENV),
+                ),
+            );
+            environment.extend(codexhost_platform::proxy_environment());
+            supervise_desktop(
+                &installation,
+                &options,
+                &control.renderer_cdp_arguments,
+                &environment,
+                &control,
+                &descriptor_path,
+            )
+        };
+        if result.is_ok() {
+            console::stop_for_launch();
         }
+        return result;
     }
 }
 
@@ -1487,6 +1380,7 @@ fn is_launch_command(arguments: &[String]) -> bool {
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
         update_recovery: false,
+        windows_direct: false,
         shim: None,
         node: None,
         host_runtime: None,
@@ -1831,6 +1725,7 @@ mod tests {
             let expected = node.clone().unwrap_or_else(|| desktop_node.clone());
             let options = super::LaunchOptions {
                 update_recovery: false,
+                windows_direct: false,
                 shim: Some(executable.clone()),
                 node,
                 host_runtime: Some(executable.clone()),
@@ -1870,6 +1765,71 @@ mod tests {
         assert_eq!(
             super::macos_default_node(Some(&missing), missing.clone(), None),
             missing
+        );
+    }
+
+    #[test]
+    fn windows_direct_is_opt_in() {
+        assert!(!parse_launch_options(&[]).unwrap().windows_direct);
+        assert!(
+            parse_launch_options(&["--windows-direct".into()])
+                .unwrap()
+                .windows_direct
+        );
+    }
+
+    #[test]
+    fn retry_uses_new_control_ports_and_matching_desktop_and_controller_configuration() {
+        let previous = allocate_runtime_control().unwrap();
+        let retry =
+            super::desktop_attachment::allocate_runtime_control_avoiding(Some(&previous)).unwrap();
+        assert_ne!(previous.attachment_port, retry.attachment_port);
+        assert_ne!(previous.renderer_cdp_endpoint, retry.renderer_cdp_endpoint);
+        assert_ne!(previous.nonce, retry.nonce);
+        let options = resolved_options();
+        let profile = std::env::temp_dir().join("retry electron profile");
+        let mut environment = desktop_environment(
+            &options,
+            &retry,
+            Path::new("launcher"),
+            Path::new("runtime.json"),
+            Some("retry-host-data".into()),
+        );
+        environment.push((
+            "CODEX_ELECTRON_USER_DATA_PATH".into(),
+            profile.clone().into_os_string(),
+        ));
+        let arguments = super::desktop_path_overrides::launch_arguments(
+            &retry.renderer_cdp_arguments,
+            &environment,
+        );
+        assert_eq!(arguments[0], "--remote-debugging-address=127.0.0.1");
+        assert_eq!(
+            arguments[1].to_string_lossy(),
+            format!(
+                "--remote-debugging-port={}",
+                retry.renderer_cdp_endpoint.rsplit_once(':').unwrap().1
+            )
+        );
+        assert_eq!(
+            arguments[2].to_string_lossy(),
+            format!("--user-data-dir={}", profile.display())
+        );
+        assert!(environment.contains(&(
+            CONTROL_PORT_ENV.into(),
+            retry.attachment_port.to_string().into()
+        )));
+        assert!(environment.contains(&(CONTROL_NONCE_ENV.into(), retry.nonce.clone().into())));
+        let controller = desktop_controller_command(&options, &retry, &environment);
+        let args: Vec<_> = controller.get_args().collect();
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                "--renderer-cdp-endpoint",
+                retry.renderer_cdp_endpoint.as_str()
+            ]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--attachment-nonce", retry.nonce.as_str()])
         );
     }
 

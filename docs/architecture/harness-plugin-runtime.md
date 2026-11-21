@@ -308,7 +308,9 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 支持配置选择的 Adapter 不因已有活动 Turn 而拒绝 `model.select` / `thinking.select`；通过原生配置接口执行，或更新供下一次原生调用使用的配置。生效时机由 Harness 决定，Host 不承诺当前 Turn 中途换模型，也不统一排队到 Turn 结束。原生拒绝仍作为失败返回，配置成功后发布已确认的 `session.state.changed`。
 
-仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 通过 ACP `session/set_config_option` 切换模型与推理档位，并按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 逐请求计费，后续配置选择不会重标已完成请求。
+第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 按会话串行处理配置选择；冷态首个 Model 选择以新 Model 打开会话，不重放已被替换的旧 Model 或 Thinking。如果打开已经在进行，选择等待打开结果，期间不发布中间配置。Model 和 Thinking 以 ACP `session/set_config_option` 的响应为准。已经完成的请求仍按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 计费。
+
+Host 按 Thread 串行处理配置 RPC（包括观察确认状态和写入映射）。切换 Model 后，映射保存当前确认的 Thinking；原生未报告 Thinking 时清除旧值。Model 或 Thinking 已生效但映射写入失败时，RPC 返回错误，不承诺重启后能恢复这次选择。
 
 ## 已结算的自主 Turn
 

@@ -1737,10 +1737,25 @@ export class AppServerHost {
         timeoutMs,
       );
     });
-    this.#dispatchDesktopRequest(() =>
+    const configurationThreadId =
+      (method === "codexhost/thread/model/select" ||
+        method === "codexhost/thread/thinking/select" ||
+        method === "codexhost/thread/permission-mode/select") &&
+      isRecord(request.params) &&
+      typeof request.params.threadId === "string"
+        ? request.params.threadId
+        : undefined;
+    const handle = () =>
       this.#guardReply(request, () =>
         this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request)), origin),
-      ),
+      );
+    // Keep a selection's state observation and save in the same queue as Desktop.
+    this.#dispatchDesktopRequest(() =>
+      configurationThreadId
+        ? this.#desktopRequests.run(configurationThreadId, () =>
+            this.#externalRuntime.idleRelease.runOperation(configurationThreadId, handle),
+          )
+        : handle(),
     );
     try {
       const message = await reply;
@@ -4556,13 +4571,33 @@ export class AppServerHost {
       if (!projected.effectiveModel) {
         throw new Error("Harness Session did not report an effective Model");
       }
-      // Resume and Fork read the saved selection, so keep it on the confirmed Model.
-      const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+      // Resume and Fork read the saved selection, so keep it on the confirmed Model
+      // and update or clear Thinking so incompatible options are not replayed on Resume.
+      const nextSelection = {
         ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
         model: projected.effectiveModel,
-      });
+      };
+      if (projected.effectiveThinkingOptionId) {
+        nextSelection.thinkingOptionId = projected.effectiveThinkingOptionId;
+      } else {
+        delete nextSelection.thinkingOptionId;
+      }
+      const transportModelId = encodeExternalTransportSelection(thread.harnessId, nextSelection);
       thread.transportModelId = transportModelId;
       thread.requestedModel = projected.effectiveModel;
+      if (projected.effectiveThinkingOptionId) {
+        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+      } else {
+        delete thread.requestedThinkingOptionId;
+      }
+      thread.thread = externalThreadValue({
+        record: { ...thread.record, transportModelId },
+        turns: thread.turns,
+        sessionId: thread.sessionId,
+        running: thread.running,
+      });
+      // Resume restores the saved selection, so an unsaved change must not
+      // be reported as a completed selection.
       try {
         thread.record = await this.#repository.setTransportModelId(
           thread.record.hostThreadId,
@@ -4570,9 +4605,17 @@ export class AppServerHost {
         );
       } catch (error) {
         this.#diagnose(error);
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32078,
+            `Model was applied but could not be saved: ${errorMessage(error)}`,
+          ),
+        );
+        return;
       }
       thread.thread = externalThreadValue({
-        record: { ...thread.record, transportModelId },
+        record: thread.record,
         turns: thread.turns,
         sessionId: thread.sessionId,
         running: thread.running,
@@ -4660,13 +4703,22 @@ export class AppServerHost {
           );
         } catch (error) {
           this.#diagnose(error);
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32078,
+              `Thinking was applied but could not be saved: ${errorMessage(error)}`,
+            ),
+          );
+          return;
+        } finally {
+          thread.thread = externalThreadValue({
+            record: { ...thread.record, transportModelId },
+            turns: thread.turns,
+            sessionId: thread.sessionId,
+            running: thread.running,
+          });
         }
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
       }
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {

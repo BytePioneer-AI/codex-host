@@ -886,6 +886,7 @@ describe("Antigravity ACP Session", () => {
     await completed(outputs);
     transport.result = deferred();
     await start(session, transports, "t2");
+    await vi.waitFor(() => expect(transport.handler).not.toBe(oldHandler));
     oldHandler.onEvent({ type: "agent.text", text: "late" });
     required(transport.handler).onEvent({ type: "agent.text", text: "new" });
     transport.result.resolve({ stopReason: "end_turn" });
@@ -935,6 +936,243 @@ describe("Antigravity ACP Session", () => {
     );
     expect(session.initialState.effectiveModel).toEqual(model("claude"));
     expect(events(outputs).some((event) => event.type === "session.state.changed")).toBe(true);
+  });
+  it("switches away from a retired resume Model when opening a cold Session", async () => {
+    const { adapter, transports } = fixture();
+    const nativeRef = ref();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef,
+        model: model("gemini-4-carbon"),
+        thinkingOptionId: thinking("xhigh"),
+        permissionModeId: mode("dangerously-skip-permissions"),
+      }),
+    );
+    expect(transports).toHaveLength(0);
+    expect(
+      await session.execute({ type: "model.select", model: model("still-retired") }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "unsupported", message: expect.stringContaining("still-retired") },
+    });
+    expect(transports).toHaveLength(1);
+    expect(transports[0]?.close).toHaveBeenCalledTimes(1);
+
+    expect(await session.execute({ type: "model.select", model: model("claude") })).toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    expect(transports).toHaveLength(2);
+    expect(transports[1]?.skipPermissions).toBe(true);
+    expect(transports[1]?.setConfigOption.mock.calls).toEqual([["model", "claude"]]);
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model("claude"),
+      effectiveThinkingOptionId: "low",
+      effectivePermissionModeId: "dangerously-skip-permissions",
+    });
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toEqual([
+      expect.objectContaining({
+        type: "session.state.changed",
+        state: expect.objectContaining({
+          effectiveModel: model("claude"),
+          effectiveThinkingOptionId: "low",
+          effectivePermissionModeId: "dangerously-skip-permissions",
+        }),
+      }),
+    ]);
+  });
+  it("does not publish or submit a prompt on the old Model when selection overlaps a successful cold open", async () => {
+    const opening = deferred<undefined>();
+    const confirmed = deferred<AntigravityAcpConfigOption[]>();
+    const { adapter, transports } = fixture({}, (transport) => {
+      transport.initialize.mockImplementationOnce(async () => {
+        await opening.promise;
+        return { protocolVersion: 1, agentCapabilities: {} };
+      });
+      transport.queuedSessionEvents.push({ type: "config.update", configOptions: config() });
+    });
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "resume", cwd: process.cwd(), nativeRef: ref() }),
+    );
+    expect(
+      await session.execute({
+        type: "turn.start",
+        turnId: turnId("t1"),
+        input: [{ type: "text", text: "hello" }],
+      }),
+    ).toMatchObject({ ok: true });
+    const transport = required(transports[0]);
+    transport.setConfigOption.mockImplementationOnce(async () => {
+      transport.eventHandler?.({ type: "config.update", configOptions: config() });
+      return confirmed.promise;
+    });
+    const selected = session.execute({ type: "model.select", model: model("claude") });
+    const states = () => events(outputs).filter((event) => event.type === "session.state.changed");
+    opening.resolve(undefined);
+    await vi.waitFor(() => expect(transport.setConfigOption).toHaveBeenCalled());
+    expect(states()).toEqual([]);
+    expect(transport.prompt).not.toHaveBeenCalled();
+    confirmed.resolve(
+      config().map((entry) =>
+        entry.id === "model" ? { ...entry, currentValue: "claude" } : entry,
+      ),
+    );
+    expect(await selected).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalled());
+    expect(states()).toMatchObject([{ state: { effectiveModel: model("claude") } }]);
+    transport.result.resolve({ stopReason: "end_turn" });
+    await completed(outputs);
+  });
+  it("recovers cold Model selection when an in-flight cold open fails on a retired Model", async () => {
+    const gate = deferred<{
+      opened: {
+        sessionId: string;
+        configOptions: AntigravityAcpConfigOption[];
+        modes: { currentModeId: string; availableModes: [] };
+      };
+    }>();
+    const { adapter, transports } = fixture();
+    const originalCreate = required(adapter.options.createTransport);
+    adapter.options.createTransport = (options) => {
+      const transport = originalCreate(options) as FakeTransport;
+      if (transports.length === 1) {
+        transport.openSession.mockImplementationOnce(() => gate.promise);
+      }
+      return transport;
+    };
+    const nativeRef = ref();
+    const { session } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef,
+        model: model("gemini-4-carbon"),
+        thinkingOptionId: thinking("high"),
+      }),
+    );
+    if (!(session instanceof AntigravitySession)) throw new Error("Expected AntigravitySession");
+    const initPromise = session.initialize().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(transports[0]?.openSession).toHaveBeenCalledTimes(1));
+
+    const selectPromise = session.execute({ type: "model.select", model: model("claude") });
+    gate.resolve({
+      opened: {
+        sessionId: nativeRef.nativeSessionId,
+        configOptions: config(),
+        modes: { currentModeId: "default", availableModes: [] },
+      },
+    });
+
+    expect(await initPromise).toBeInstanceOf(AntigravityTransportError);
+    expect(await selectPromise).toEqual({ ok: true, value: { completed: true } });
+    expect(transports).toHaveLength(2);
+    expect(session.initialState.effectiveModel).toEqual(model("claude"));
+  });
+  it("ignores an unsupported saved Thinking option when resuming a cold Session", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef: ref(),
+        model: model("claude"),
+        thinkingOptionId: thinking("xhigh"),
+      }),
+    );
+    expect(
+      await session.execute({
+        type: "permissionMode.select",
+        permissionModeId: mode("plan"),
+      }),
+    ).toEqual({ ok: true, value: { completed: true } });
+    expect(transports[0]?.setConfigOption.mock.calls).toEqual([["model", "claude"]]);
+    expect(transports[0]?.setMode).toHaveBeenCalledWith("plan");
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model("claude"),
+      effectiveThinkingOptionId: "low",
+      effectivePermissionModeId: "plan",
+    });
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toEqual([
+      expect.objectContaining({
+        type: "session.state.changed",
+        state: expect.objectContaining({
+          effectiveModel: model("claude"),
+          effectiveThinkingOptionId: "low",
+          effectivePermissionModeId: "plan",
+        }),
+      }),
+    ]);
+  });
+  it("publishes final thinking state in a single change on effort-suffixed Model selection", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({ kind: "create", cwd: process.cwd() }),
+    );
+    await start(session, transports);
+    const before = events(outputs).filter((event) => event.type === "session.state.changed").length;
+    expect(await session.execute({ type: "model.select", model: model("gemini-high") })).toEqual({
+      ok: true,
+      value: { completed: true },
+    });
+    const stateEvents = events(outputs).filter((event) => event.type === "session.state.changed");
+    expect(stateEvents).toHaveLength(before + 1);
+    expect(stateEvents.at(-1)).toMatchObject({
+      type: "session.state.changed",
+      state: expect.objectContaining({
+        effectiveModel: model("gemini"),
+        effectiveThinkingOptionId: "high",
+      }),
+    });
+  });
+  it("selects a valid Thinking option on a cold Session with stale unsupported Thinking and serializes concurrent selections", async () => {
+    const { adapter, transports } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef: ref(),
+        model: model("claude"),
+        thinkingOptionId: thinking("xhigh"),
+      }),
+    );
+    const [first, second] = await Promise.all([
+      session.execute({ type: "model.select", model: model("gemini") }),
+      session.execute({ type: "thinking.select", thinkingOptionId: thinking("high") }),
+    ]);
+    expect(first).toEqual({ ok: true, value: { completed: true } });
+    expect(second).toEqual({ ok: true, value: { completed: true } });
+    expect(transports).toHaveLength(1);
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model("gemini"),
+      effectiveThinkingOptionId: "high",
+    });
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toHaveLength(
+      2,
+    );
+  });
+  it("publishes the opened connected state when a cold Thinking selection rejects", async () => {
+    const { adapter } = fixture();
+    const { session, outputs } = await sessionOf(
+      await adapter.open({
+        kind: "resume",
+        cwd: process.cwd(),
+        nativeRef: ref(),
+        model: model("claude"),
+        thinkingOptionId: thinking("xhigh"),
+      }),
+    );
+    expect(
+      await session.execute({ type: "thinking.select", thinkingOptionId: thinking("xhigh") }),
+    ).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(session.initialState).toMatchObject({
+      effectiveModel: model("claude"),
+      effectiveThinkingOptionId: "low",
+    });
+    expect(events(outputs).filter((event) => event.type === "session.state.changed")).toHaveLength(
+      1,
+    );
   });
   it("restarts only across Skip permissions, keeps identity, and rejects a busy restart", async () => {
     const { adapter, transports } = fixture();

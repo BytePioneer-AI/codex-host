@@ -260,6 +260,73 @@ describe("Claude SendMessage occupancy", () => {
     }
   });
 
+  it("retires an unknown named send target on task_started before the tool result", async () => {
+    const live = await liveSession();
+    const callId = "toolu_named_send";
+    try {
+      await expect(live.session.execute(textTurn("root"))).resolves.toMatchObject({ ok: true });
+      // Claude Code 2.1.328, resumed send with no cached name binding in this transport.
+      live.push(
+        toolCall("SendMessage", callId, {
+          to: "worker",
+          message: "Reply PONG.",
+          type: "message",
+          recipient: "worker",
+          recipient_kind: "name",
+          content: "Reply PONG.",
+        }),
+        {
+          type: "system",
+          subtype: "task_started",
+          session_id: sessionId,
+          task_id: resumedId,
+          tool_use_id: callId,
+        },
+      );
+      await vi.waitFor(() =>
+        expect(live.events).toContainEqual(
+          expect.objectContaining({
+            type: "item.updated",
+            update: {
+              type: "subagents.replace",
+              subagents: [
+                expect.objectContaining({ nativeSubagentId: resumedId, status: "running" }),
+              ],
+            },
+          }),
+        ),
+      );
+      expect(live.events).toContainEqual(
+        expect.objectContaining({
+          type: "item.started",
+          item: expect.objectContaining({
+            operation: "send",
+            subagents: [expect.objectContaining({ nativeSubagentId: "worker", status: "running" })],
+          }),
+        }),
+      );
+      const retiredName = {
+        type: "subagent.state.changed",
+        nativeSubagentId: "worker",
+        status: "completed",
+      };
+      // No tool result has been delivered, so completion cannot retire the provisional child.
+      expect(live.events).toContainEqual(retiredName);
+
+      live.push(toolResult(callId, resumed, false, JSON.stringify(resumedText)), answer("sent"));
+      live.result();
+      live.push({ ...taskNotification(resumedId), tool_use_id: callId }, answer("continuation"));
+      live.result();
+      await vi.waitFor(() => expect(completions(live.events)).toHaveLength(1));
+      expect(live.events.filter((event) => event.type === "subagent.state.changed")).toEqual([
+        retiredName,
+        expect.objectContaining({ nativeSubagentId: resumedId, status: "completed" }),
+      ]);
+    } finally {
+      await live.close();
+    }
+  });
+
   it.each([resumedText, queued])(
     "replays name bindings from a text-only $message result",
     (result) => {

@@ -9,6 +9,9 @@ import { it } from "node:test";
 import {
   DESKTOP_EXTENSIONS_LIST_METHOD,
   DESKTOP_EXTENSIONS_RECOVER_METHOD,
+  HOST_EXTENSIONS_RPC,
+  HOST_EXTENSION_ASSETS_PREFIX,
+  HOST_EXTENSION_UPLOAD_PATH,
   clientChannelEventSchema,
 } from "@codexhost/shared-contracts";
 import { FakeChChannel, startFakeChChannel } from "./support/ch-channel.ts";
@@ -67,8 +70,26 @@ it(
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
     assert.equal((await fetch(`${origin}/api/ch/v1/events`)).status, 401);
     const listBody = JSON.stringify({ method: DESKTOP_EXTENSIONS_LIST_METHOD, params: {} });
+    for (const method of [DESKTOP_EXTENSIONS_LIST_METHOD, HOST_EXTENSIONS_RPC.snapshot]) {
+      const denied = await fetch(`${origin}/api/ch/v1/rpc`, {
+        method: "POST",
+        body: JSON.stringify({ method, params: {} }),
+      });
+      assert.equal(denied.status, 401);
+      assert.equal(await denied.text(), "authentication required");
+    }
     assert.equal(
-      (await fetch(`${origin}/api/ch/v1/rpc`, { method: "POST", body: listBody })).status,
+      (
+        await fetch(`${origin}/api/ch/v1/rpc`, {
+          method: "POST",
+          body: "not JSON",
+        })
+      ).status,
+      401,
+    );
+    assert.equal((await fetch(`${origin}${HOST_EXTENSION_ASSETS_PREFIX}sample`)).status, 401);
+    assert.equal(
+      (await fetch(`${origin}${HOST_EXTENSION_UPLOAD_PATH}`, { method: "POST" })).status,
       401,
     );
     const listed = await fetch(`${origin}/api/ch/v1/rpc`, {

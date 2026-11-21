@@ -16,6 +16,7 @@
   background: transparent;
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
   -webkit-app-region: no-drag;
 }
 
@@ -68,6 +69,7 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .clear:active {

@@ -1,6 +1,6 @@
 # 委派默认模型与设置页
 
-Codex Desktop 与独立 Web 设置共用「委派」页面（`packages/renderer-extension/src/settings/delegation-page.ts`），用于展示多 Agent 委派回流示意与配置各 Harness 被委派时的默认 Model 与 Thinking 选项。
+Codex Desktop 与独立 Web 设置共用「多 Agent 协作」页面（`packages/renderer-extension/src/settings/delegation-page.ts`，page ID `delegation`），用于展示多 Agent 委派回流示意与配置各 Harness 被委派时的默认 Model 与 Thinking 选项。
 
 ## 存储与共享
 

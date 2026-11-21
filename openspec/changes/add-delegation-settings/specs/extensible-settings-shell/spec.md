@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: 设置壳提供双端共用的委派设置页
-codexhost 设置壳 SHALL 提供一个在 Codex Desktop 与独立 Web 设置中共用的「委派」页面，用于展示多 Agent 委派回流示意图、`#` 唤起示例，以及为本机已就绪的 Harness 配置被委派时的默认模型与思考强度。
+codexhost 设置壳 SHALL 提供一个在 Codex Desktop 与独立 Web 设置中共用的「多 Agent 协作」页面（id 为 `delegation`），用于展示多 Agent 委派回流示意图、`#` 唤起示例，以及为本机已就绪的 Harness 配置被委派时的默认模型与思考强度。
 
 #### Scenario: 首屏仅展示本机已就绪的可配置 Agent 且不触发全量模型探测
-- **WHEN** 用户打开「委派」设置页
+- **WHEN** 用户打开「多 Agent 协作」设置页
 - **THEN** 页面 SHALL 复用既有本地连接状态缓存，仅展示内置 Codex 与本机已就绪的 Harness 及其已保存的委派默认状态
 - **AND** 页面 MUST NOT 在首屏并发调用所有 Harness 的完整模型目录探测，也不展示无法选择模型的未安装或未就绪项
 

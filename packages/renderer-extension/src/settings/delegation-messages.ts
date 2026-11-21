@@ -50,7 +50,7 @@ export interface DelegationMessages {
 }
 
 export const delegationEnglish: DelegationMessages = Object.freeze({
-  title: "Delegation",
+  title: "Multi-Agent Collaboration",
   description:
     "Delegate tasks from your main session to other Agents. Each runs in parallel in its own session, returns results when done, and stays open for follow-ups.",
   heroAriaLabel: "Multi-Agent delegation and return flow",
@@ -107,7 +107,7 @@ export const delegationEnglish: DelegationMessages = Object.freeze({
 });
 
 export const delegationChinese: DelegationMessages = Object.freeze({
-  title: "委派",
+  title: "多 Agent 协作",
   description: "在主会话把任务交给其他 Agent，各自开独立会话并行处理，完成后回流结果并可继续追问。",
   heroAriaLabel: "多 Agent 委派与回流示意图",
   eyebrowOrigin: "发起",

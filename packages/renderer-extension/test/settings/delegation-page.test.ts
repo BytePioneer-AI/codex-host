@@ -360,8 +360,8 @@ describe("Delegation settings page", () => {
     const enPage = createDefaultRendererSettingsPages(rendererSettingsMessages("en")).find(
       ({ id }) => id === "delegation",
     );
-    expect(zhPage?.label).toBe("委派");
-    expect(enPage?.label).toBe("Delegation");
+    expect(zhPage?.label).toBe("多 Agent 协作");
+    expect(enPage?.label).toBe("Multi-Agent");
     expect(zhPage?.icon).toBe("delegation");
   });
 

@@ -262,12 +262,13 @@ button.crumb:hover {
   top: 0;
   right: 0;
   left: 0;
-  height: calc(var(--dsh-phone-header-height) + 14px);
+  height: calc(var(--dsh-phone-header-height) + 32px);
   z-index: -1;
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 58%, transparent) 0%,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 36%, transparent) 68%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 62%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 44%, transparent) 42%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 18%, transparent) 72%,
     transparent 100%
   );
   pointer-events: none;
@@ -280,15 +281,19 @@ button.crumb:hover {
     -webkit-mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 68%,
-      rgb(0 0 0 / 0.45) 86%,
+      rgb(0 0 0 / 0.88) 38%,
+      rgb(0 0 0 / 0.52) 58%,
+      rgb(0 0 0 / 0.2) 76%,
+      rgb(0 0 0 / 0.05) 90%,
       transparent 100%
     );
     mask-image: linear-gradient(
       to bottom,
       #000 0%,
-      #000 68%,
-      rgb(0 0 0 / 0.45) 86%,
+      rgb(0 0 0 / 0.88) 38%,
+      rgb(0 0 0 / 0.52) 58%,
+      rgb(0 0 0 / 0.2) 76%,
+      rgb(0 0 0 / 0.05) 90%,
       transparent 100%
     );
   }
@@ -297,8 +302,9 @@ button.crumb:hover {
 :global(body[data-codexhost-wallpaper] [data-phone]) .root[data-phase="active"] .header::before {
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 44%, transparent) 0%,
-    color-mix(in srgb, var(--dsw-alias-bg-base) 24%, transparent) 68%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 46%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 28%, transparent) 42%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 10%, transparent) 72%,
     transparent 100%
   );
 }

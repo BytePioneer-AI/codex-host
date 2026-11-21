@@ -338,7 +338,12 @@ pub fn reveal_file(path: &Path) -> Result<(), PlatformError> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn reveal_file(path: &Path) -> Result<(), PlatformError> {
+    super::windows_ui::reveal_file(path).map_err(PlatformError::Io)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn reveal_file(path: &Path) -> Result<(), PlatformError> {
     let folder = path.parent().and_then(Path::to_str).ok_or_else(|| {
         PlatformError::Invalid("revealing a file requires a valid parent folder".into())

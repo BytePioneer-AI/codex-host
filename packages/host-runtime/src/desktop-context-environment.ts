@@ -13,10 +13,17 @@ export const DESKTOP_BROWSER_ACCESS_ENV: readonly string[] = [
 ];
 
 export const DESKTOP_BROWSER_MCP_ARGUMENTS_ENV = "CODEXHOST_DESKTOP_BROWSER_MCP_ARGUMENTS";
-export const DESKTOP_BROWSER_CONTEXT_ENV: readonly string[] = [
+export const DESKTOP_TOOL_CONTEXT_ENV: readonly string[] = [
+  DESKTOP_APP_TOOLS_PIPE_ENV,
   ...DESKTOP_BROWSER_ACCESS_ENV,
   DESKTOP_BROWSER_MCP_ARGUMENTS_ENV,
 ];
+
+export function withoutDesktopToolContext(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(environment).filter(([key]) => !DESKTOP_TOOL_CONTEXT_ENV.includes(key)),
+  );
+}
 
 /** Desktop variables the Independent Host accepts besides codexhost's own `CODEXHOST_*` context. */
 export function isDesktopContextVariable(key: string): boolean {

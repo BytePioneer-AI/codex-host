@@ -38,7 +38,7 @@ export function isLocalConnection(request: IncomingMessage): boolean {
   try {
     const { hostname, port } = new URL(`http://${request.headers.host ?? ""}`);
     return (
-      (hostname === "127.0.0.1" || hostname === "localhost") &&
+      (hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "localhost") &&
       Number(port || 80) === request.socket.localPort
     );
   } catch {
@@ -57,6 +57,25 @@ export class RequestTrust {
       authenticated?: () => void;
     }
   >();
+
+  /** Direct ICE is useful only when the existing connection goes through an intermediary. */
+  offersSidebarDirect(request: IncomingMessage): boolean {
+    if (isLocalConnection(request)) return false;
+    const address = normalizedAddress(request.socket.remoteAddress);
+    if (this.relaySockets.has(request.socket) || this.proxies.has(address)) return true;
+    if (!isLoopbackAddress(address)) return false;
+    const client = normalizedAddress(lastHeaderValue(request.headers["x-forwarded-for"]));
+    const family = isIP(client);
+    if (family === 4) {
+      const [first, second] = client.split(".").map(Number);
+      return first !== 100 || (second !== undefined && (second < 64 || second > 127));
+    }
+    // Canonicalize the Serve address without changing what the auth layer trusts.
+    return (
+      family !== 6 ||
+      !new URL(`http://[${client.split("%")[0]}]`).hostname.startsWith("[fd7a:115c:a1e0:")
+    );
+  }
 
   /** Notify only the relay connection bound by the TLS bridge, never client-provided headers. */
   authenticated(request: IncomingMessage): void {
@@ -116,11 +135,7 @@ export class RequestTrust {
       ? lastHeaderValue(request.headers["x-forwarded-host"])
       : undefined;
     try {
-      const url = new URL(origin);
-      return (
-        url.host === (forwardedHost ?? request.headers.host) &&
-        url.protocol === (this.secure(request) ? "https:" : "http:")
-      );
+      return new URL(origin).host === (forwardedHost ?? request.headers.host);
     } catch {
       return false;
     }

@@ -18,6 +18,7 @@ export {
 export type { CodexRateLimitResetCredits } from "./codex-native-usage.js";
 export {
   CodexTurnProjector,
+  historicalPlanUpdate,
   projectHistoricalTurn,
   reasoningPreviewItemId,
 } from "./codex-ui-projector.js";
@@ -27,6 +28,7 @@ export type {
   CodexTurnProjection,
   HistoricalTurnProjectionInput,
   ProjectableHostEvent,
+  TodoPlan,
 } from "./codex-ui-projector.js";
 export {
   decodeThreadForkRequest,

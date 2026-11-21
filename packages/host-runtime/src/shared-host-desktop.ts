@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { AppServerHost } from "./app-server-host.js";
+import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
 import { SharedThreadBridge } from "./shared-thread-bridge.js";
 import type { SharedThreadOwner } from "./shared-thread-owner.js";
 import type { ExternalThreadStore } from "./external-thread-repository.js";
@@ -19,8 +20,8 @@ import { consoleEntrypoint, createHostConsoleOpener } from "./console-opener.js"
 import { createHostWebOpener } from "./web-opener.js";
 import type { HostUpdateCoordinator } from "./update-coordinator.js";
 import {
-  DESKTOP_BROWSER_CONTEXT_ENV,
   isDesktopContextVariable,
+  withoutDesktopToolContext,
 } from "./desktop-context-environment.js";
 
 /** Runtime/control context is private to an authenticated Desktop connection. It
@@ -55,9 +56,7 @@ function desktopContext(
   return {
     arguments: envelope.arguments as string[],
     environment: {
-      ...Object.fromEntries(
-        Object.entries(base).filter(([key]) => !DESKTOP_BROWSER_CONTEXT_ENV.includes(key)),
-      ),
+      ...withoutDesktopToolContext(base),
       ...context,
       CODEXHOST_DATA_DIR: base.CODEXHOST_DATA_DIR,
       CODEX_HOME: base.CODEX_HOME,
@@ -74,6 +73,7 @@ export function sharedHostDesktop(
     stockCodex: string;
     official: PreparedLocalCodex;
     owner: SharedThreadOwner;
+    desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
     store: ExternalThreadStore;
     prices: ModelPriceCatalog;
     updateCoordinator?: HostUpdateCoordinator;
@@ -86,17 +86,9 @@ export function sharedHostDesktop(
   request?: IncomingMessage,
 ): RemoteAppServerSession {
   const { environment, arguments: nativeArguments } = desktopContext(options.environment, request);
-  let startup: Promise<void> | undefined;
-  if (nativeArguments) {
-    const stockCodexPath = environment.CODEXHOST_STOCK_CODEX_PATH ?? options.stockCodex;
-    if (!path.isAbsolute(stockCodexPath))
-      throw new Error("Desktop requires an absolute native Codex executable");
-    startup = options.official.configureStartup({
-      stockCodexPath,
-      arguments: nativeArguments,
-      environment,
-    });
-  }
+  const stockCodexPath = environment.CODEXHOST_STOCK_CODEX_PATH ?? options.stockCodex;
+  if (nativeArguments && !path.isAbsolute(stockCodexPath))
+    throw new Error("Desktop requires an absolute native Codex executable");
   const runtime = environment.CODEXHOST_HOST_RUNTIME_PATH;
   const runtimePath = runtime && path.isAbsolute(runtime) ? runtime : undefined;
   const entry = runtimePath ? consoleEntrypoint(runtimePath) : null;
@@ -107,6 +99,7 @@ export function sharedHostDesktop(
       stockCodexPath: options.stockCodex,
       arguments: [],
       environment,
+      desktopExtensionBackends: options.desktopExtensionBackends,
       desktopInput: streams.input,
       desktopOutput: streams.output,
       diagnosticOutput: streams.diagnosticOutput,
@@ -139,28 +132,35 @@ export function sharedHostDesktop(
       onDelegationApi: options.register,
     });
   let host: AppServerHost | undefined;
-  let closed = false;
+  const attachment = new AbortController();
   return {
     run: async () => {
-      await startup;
-      if (closed) return 0;
-      const active = (host = createHost());
-      options.connected.add(active);
-      const running = active.run();
-      options.running.add(running);
+      let running: Promise<number> | undefined;
       try {
+        if (nativeArguments) {
+          await options.official.configureStartup(
+            { stockCodexPath, arguments: nativeArguments, environment },
+            attachment.signal,
+          );
+        }
+        if (attachment.signal.aborted) return 0;
+        host = createHost();
+        options.connected.add(host);
+        running = host.run();
+        options.running.add(running);
         return await running;
       } finally {
-        options.connected.delete(active);
-        options.running.delete(running);
+        attachment.abort();
+        if (host) options.connected.delete(host);
+        if (running) options.running.delete(running);
       }
     },
     disconnect: () => {
-      closed = true;
+      attachment.abort();
       host?.disconnect();
     },
     close: () => {
-      closed = true;
+      attachment.abort();
       host?.close();
     },
   };

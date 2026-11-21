@@ -2662,6 +2662,47 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it("resolves an official Item anchor on the first history request after a Turn completes", async () => {
+    const fixture = createFixture();
+    try {
+      const threadId = await startExternalThread(fixture, "codexhost/pi-native", 1, {
+        historyMode: "paginated",
+      });
+      const turnId = await completePiTurn(fixture, threadId, 2);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Fake Pi Session was not opened");
+      const snapshot = session.persistedSnapshot();
+      const turn = snapshot.turns[0];
+      if (!turn) throw new Error("Fake Pi Session did not persist the Turn");
+      // This Item exists in native history but was not streamed to the Host.
+      const itemId = hostItemIdSchema.parse("native-history-anchor");
+      turn.items.push({
+        item: { type: "agentMessage", itemId, text: "native follow-up" },
+        outcome: { status: "succeeded" },
+      });
+      vi.spyOn(session, "readSnapshot").mockResolvedValue({ ok: true, value: snapshot });
+
+      writeRequest(fixture.desktopInput, {
+        id: 3,
+        method: "thread/items/list",
+        params: { threadId, turnId, sortDirection: "desc", cursor: { type: "item", itemId } },
+      });
+      await expect(
+        fixture.collector.waitFor((message) => requestId(message, 3)),
+      ).resolves.toMatchObject({
+        result: {
+          data: [
+            { turnId, item: { type: "agentMessage", text: "answer 2" } },
+            { turnId, item: { type: "userMessage" } },
+          ],
+          nextCursor: null,
+        },
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("selects an existing Pi Thread Model from ordered Session state", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

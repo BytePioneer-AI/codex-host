@@ -174,7 +174,10 @@ function* orderedMatches(
   for (const [evidence, indexes] of groupByEvidence(refreshed)) {
     const matches = previousGroups.get(evidence);
     if (matches?.length === indexes.length) {
-      for (const [offset, index] of indexes.entries()) proposals.set(index, matches[offset]!);
+      for (const [offset, index] of indexes.entries()) {
+        const match = matches[offset];
+        if (match !== undefined) proposals.set(index, match);
+      }
     }
   }
   let leftMax = -1;
@@ -190,7 +193,9 @@ function* orderedMatches(
     const match = proposals.get(index);
     if (match === undefined) continue;
     if (match < rightMin && increasingFromLeft.has(index)) {
-      yield [previous[match]!, refreshed[index]!];
+      const previousUnit = previous[match];
+      const refreshedUnit = refreshed[index];
+      if (previousUnit && refreshedUnit) yield [previousUnit, refreshedUnit];
     }
     rightMin = Math.min(rightMin, match);
   }
@@ -221,15 +226,15 @@ function reconcileTurn(previousTurn: JsonObject, refreshedTurn: JsonObject): Jso
       const ids = reservedIds(live);
       if (ids.some((id) => occupied.has(id) || previousIdCounts.get(id) !== 1)) continue;
       for (const id of ids) occupied.add(id);
+      const liveFirst = live.items[0];
       for (const item of history.items) {
-        remapped.set(
-          item.id,
+        const targetId =
           live.reasoningBase === undefined
-            ? live.items[0]!.id
+            ? liveFirst?.id
             : item.type === "reasoning"
               ? previewId(live.reasoningBase)
-              : live.reasoningBase,
-        );
+              : live.reasoningBase;
+        if (targetId !== undefined) remapped.set(item.id, targetId);
       }
     }
     previousStart = previousEnd + 1;

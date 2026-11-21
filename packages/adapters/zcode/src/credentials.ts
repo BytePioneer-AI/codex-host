@@ -5,9 +5,11 @@ import { homedir, platform, userInfo } from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import {
+  invalidateSystemCredentialKey,
   KeychainReadTimeout,
   readSystemCredentialKey,
   type ReadSystemKey,
+  type ReadSystemKeyOptions,
 } from "./credential-keyring.js";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
@@ -74,7 +76,7 @@ function decodeSegment(value: string): Buffer {
 }
 
 type KeySource = "os" | "env";
-type KeyMaterial = { source: KeySource; key: Buffer };
+type KeyMaterial = { source: KeySource; key: Buffer; account?: string };
 async function decryptV2(value: string, getKey: () => Promise<KeyMaterial>) {
   const [source, fingerprint, payload, extra] = value.slice(V2.length).split(":");
   if (
@@ -94,8 +96,10 @@ async function decryptV2(value: string, getKey: () => Promise<KeyMaterial>) {
   if (iv.length !== 12 || tag.length !== 16) throw invalidV2();
   const material = await getKey();
   const { key } = material;
-  if (source !== material.source || digest(key).toString("hex").slice(0, 24) !== fingerprint)
+  if (source !== material.source || digest(key).toString("hex").slice(0, 24) !== fingerprint) {
+    if (material.account) invalidateSystemCredentialKey(material.account);
     throw unavailableV2();
+  }
   try {
     return decryptGcm(iv, tag, data, key);
   } catch {
@@ -129,6 +133,7 @@ async function loadV2Key(
   values: Record<string, string>,
   environment: NodeJS.ProcessEnv,
   readSystemKey: ReadSystemKey,
+  readSystemKeyOptions?: ReadSystemKeyOptions,
 ): Promise<KeyMaterial> {
   try {
     const secret = environment.ZCODE_CREDENTIAL_SECRET;
@@ -153,11 +158,14 @@ async function loadV2Key(
         key: digest(await readSecretFile(path.join(directory, "credential-secret"), true)),
       };
     }
-    const encoded = await readSystemKey(digest(file).toString("hex"));
+    const account = digest(file).toString("hex");
+    const encoded = readSystemKeyOptions
+      ? await readSystemKey(account, readSystemKeyOptions)
+      : await readSystemKey(account);
     if (!encoded || encoded.length !== 43) throw unavailableV2();
     const key = decodeSegment(encoded);
     if (key.length !== 32) throw unavailableV2();
-    return { source: "os", key };
+    return { source: "os", key, account };
   } catch (error) {
     if (error instanceof KeychainReadTimeout)
       throw new ZcodeCredentialError(
@@ -181,6 +189,7 @@ export async function readCredentials(
   installation: ZcodeInstallation,
   environment: NodeJS.ProcessEnv,
   readSystemKey = readSystemCredentialKey,
+  readSystemKeyOptions?: ReadSystemKeyOptions,
 ): Promise<(key: string) => Promise<string>> {
   const file = path.resolve(installation.dataRoot, "credentials.json");
   let values: Record<string, string>;
@@ -200,7 +209,14 @@ export async function readCredentials(
         : value.startsWith(V2)
           ? await decryptV2(
               value,
-              () => (keyMaterial ??= loadV2Key(file, values, environment, readSystemKey)),
+              () =>
+                (keyMaterial ??= loadV2Key(
+                  file,
+                  values,
+                  environment,
+                  readSystemKey,
+                  readSystemKeyOptions,
+                )),
             )
           : value,
     );

@@ -13,6 +13,7 @@ import {
   webRelayStateSchema,
   webTurnDiffsResultSchema,
   skillsListResultSchema,
+  workspaceGitStatusSchema,
   type HarnessCommandCatalog,
   type ThreadCommandExecuteResult,
   type HarnessSessionImportCandidate,
@@ -41,10 +42,15 @@ export class ApiError extends Error {
   }
 }
 
-async function call<T>(method: string, args: Record<string, unknown>): Promise<T> {
+async function call<T>(
+  method: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
   const response = await fetch(`api/${method}`, {
     method: "POST",
     credentials: "same-origin",
+    signal,
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       type: "client-request",
@@ -81,6 +87,12 @@ export async function checkHostUpdate(signal: AbortSignal) {
   };
   if (reply.error) throw new Error(reply.error.message ?? "Update check failed");
   return updateCheckResultSchema.parse(reply.result);
+}
+
+export async function readWorkspaceGitStatus(sessionId: string, signal: AbortSignal) {
+  return workspaceGitStatusSchema.parse(
+    await call("workspace/gitStatus", { request: { sessionId } }, signal),
+  );
 }
 
 export const voiceApi = {

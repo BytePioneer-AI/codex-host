@@ -20,6 +20,7 @@ export * from "./usage-statistics.js";
 export * from "./thread-prewarm.js";
 export * from "./thread-questions.js";
 export * from "./web.js";
+export * from "./workspace-git-status.js";
 export * from "./web-tool-output.js";
 export {
   CONSOLE_HOST_METHODS,

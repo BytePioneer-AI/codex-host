@@ -43,6 +43,7 @@ import { SessionHarnessIcon } from "./SessionHarnessIcon.tsx";
 import { HostConnectionStatus } from "./HostConnectionStatus.tsx";
 import { SessionOpeningNotice } from "./SessionOpeningNotice.tsx";
 import { HostUsageDock } from "./HostUsageDock.tsx";
+import { HostGitDock } from "./HostGitDock.tsx";
 import type {
   ComposerAttachment,
   ConversationController,
@@ -470,6 +471,12 @@ export function apply(ctx: ClientContext): void {
         inject: () => ({ navigation: ctx.uiWorkspace }),
       },
       SessionOpeningNotice,
+    ),
+  );
+  ctx.slots.inject("conversation.composer.dock", () =>
+    ctx.slots.register(
+      { name: "conversation.composer.dock", id: "codexhost.git", order: 1, locale: NS },
+      HostGitDock,
     ),
   );
   ctx.slots.inject("conversation.composer.dock", () =>

@@ -632,6 +632,9 @@ export class RemoteSessions {
   }
   install(rpc: RpcRegistry, streams: StreamRegistry): void {
     rpc.routeSessions(async (method, args, next) => {
+      // Git status owns an explicit remote-unavailable result; never execute a
+      // remote cwd through the local Git reader or forward it as a session RPC.
+      if (method === "workspace/gitStatus") return next();
       if (method === "session/list") {
         const request = requestOf<{ sessionId?: unknown; cursor?: unknown }>(args);
         if (request.sessionId !== undefined) {

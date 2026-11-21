@@ -122,6 +122,18 @@ it("refreshes cached branch facts and reads tracking divergence and real merge c
     assert.equal(tracking.ahead, 1);
     assert.equal(tracking.behind, 0);
   }
+  git("config", "remote.origin.url", "https://example.invalid/no-network");
+  git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("branch", "--set-upstream-to=origin/main");
+  git("update-ref", "-d", "refs/remotes/origin/main");
+  const gone = await new WorkspaceGitStatusReader().read(root);
+  assert.equal(gone.state, "ready");
+  if (gone.state === "ready") {
+    assert.equal(gone.upstream, "origin/main");
+    assert.equal(gone.ahead, null, "a missing tracking ref is unknown, not in sync");
+    assert.equal(gone.behind, null);
+  }
   assert.throws(() => git("merge", "feature"));
   const conflict = await new WorkspaceGitStatusReader().read(root);
   assert.equal(conflict.state, "ready");

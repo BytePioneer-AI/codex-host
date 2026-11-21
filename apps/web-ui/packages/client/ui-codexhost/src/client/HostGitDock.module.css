@@ -80,11 +80,6 @@
   margin: 6px 0;
   color: var(--dsw-alias-label-tertiary);
 }
-.panel button {
-  font: inherit;
-  cursor: pointer;
-}
-
 @media (max-width: 480px) {
   .anchor {
     max-width: 25vw;

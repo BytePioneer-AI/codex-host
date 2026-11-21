@@ -4,6 +4,8 @@ import type { WorkspaceGitStatus } from "@codexhost/shared-contracts";
 import type { PropsLocale, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import {
+  Button,
+  IconRefreshOutlineRegular,
   useAnchoredPosition,
   useDismissOnOutsidePointer,
 } from "@deepseek-ai/dsh-client-ui-primitives";
@@ -50,7 +52,8 @@ export function HostGitDock({ sessionId, useSession, t }: Props) {
       const controller = new AbortController();
       active = controller;
       setBusy(true);
-      const timeout = window.setTimeout(() => controller.abort(), 8_000);
+      // Two bounded Git commands plus network time; do not time out before the server.
+      const timeout = window.setTimeout(() => controller.abort(), 12_000);
       try {
         const value = await readWorkspaceGitStatus(sessionId, controller.signal);
         if (!disposed && !controller.signal.aborted) setSnapshot({ id: sessionId, value });
@@ -100,7 +103,16 @@ export function HostGitDock({ sessionId, useSession, t }: Props) {
         [t("git.branch"), label],
         [t("git.root"), ready.root],
         [t("git.upstream"), ready.upstream ?? "—"],
-        ...(ready.upstream ? [[t("git.sync"), `↑${ready.ahead} ↓${ready.behind}`]] : []),
+        ...(ready.upstream
+          ? [
+              [
+                t("git.sync"),
+                ready.ahead === null || ready.behind === null
+                  ? t("git.unknown")
+                  : `↑${ready.ahead} ↓${ready.behind}`,
+              ],
+            ]
+          : []),
         [t("git.staged"), String(ready.staged)],
         [t("git.unstaged"), String(ready.unstaged)],
         [t("git.untracked"), String(ready.untracked)],
@@ -175,9 +187,16 @@ export function HostGitDock({ sessionId, useSession, t }: Props) {
                   : t("git.failed")}
               </p>
             )}
-            <button type="button" disabled={busy} onClick={() => refresh.current()}>
+            <Button
+              variant="outline"
+              size="sm"
+              icon={<IconRefreshOutlineRegular size={14} />}
+              disabled={busy}
+              aria-busy={busy}
+              onClick={() => refresh.current()}
+            >
               {t("git.refresh")}
-            </button>
+            </Button>
           </div>,
           document.body,
         )}

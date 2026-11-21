@@ -86,7 +86,11 @@ export class DelegationControlRegistry implements DelegationControlApi, Delegati
     this.#registrations.add(registration);
     this.#registrationGeneration += 1;
     if (options.harnessCatalog) this.#harnessCatalog = registration;
+    const unsubscribeIdle = registration.onThreadIdle?.((threadId) =>
+      this.#watchService.nudge(threadId),
+    );
     return () => {
+      unsubscribeIdle?.();
       if (this.#registrations.delete(registration)) this.#registrationGeneration += 1;
       if (this.#harnessCatalog === registration) this.#harnessCatalog = undefined;
     };

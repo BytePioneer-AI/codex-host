@@ -42,8 +42,8 @@
   color: var(--dsw-alias-label-primary);
 }
 
-.projectRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen),
-.sessionRow:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+.projectRow:is(:focus-visible, :has(:focus-visible), .menuOpen),
+.sessionRow:is(:focus-visible, :has(:focus-visible), .menuOpen) {
   --dsh-row-surface: color-mix(
     in srgb,
     var(--dsw-alias-label-primary) 4%,
@@ -61,12 +61,32 @@
   background: var(--dsh-row-surface);
 }
 
-.sessionRow.selected:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+.sessionRow.selected:is(:focus-visible, :has(:focus-visible), .menuOpen) {
   --dsh-row-surface: color-mix(
     in srgb,
     var(--dsw-alias-label-primary) 8%,
     var(--dsw-specific-sidebar-fill)
   );
+}
+
+@media (hover: hover) {
+  .projectRow:hover,
+  .sessionRow:hover {
+    --dsh-row-surface: color-mix(
+      in srgb,
+      var(--dsw-alias-label-primary) 4%,
+      var(--dsw-specific-sidebar-fill)
+    );
+    background: var(--dsh-row-surface);
+  }
+
+  .sessionRow.selected:hover {
+    --dsh-row-surface: color-mix(
+      in srgb,
+      var(--dsw-alias-label-primary) 8%,
+      var(--dsw-specific-sidebar-fill)
+    );
+  }
 }
 
 /* Match Codex Desktop 26.1007 sidebar typography and text-primary/85.
@@ -652,9 +672,11 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-.iconButton:hover {
-  color: var(--dsw-alias-label-primary);
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+@media (hover: hover) {
+  .iconButton:hover {
+    color: var(--dsw-alias-label-primary);
+    background: color-mix(in srgb, var(--dsw-alias-label-primary) 7%, transparent);
+  }
 }
 
 /* Phone rows tint the drawer material without covering it with an opaque card.
@@ -683,7 +705,7 @@
 }
 
 :global(body[data-codexhost-wallpaper])
-  :is(.projectRow, .sessionRow):is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  :is(.projectRow, .sessionRow):is(:focus-visible, :has(:focus-visible), .menuOpen) {
   --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
 }
 
@@ -692,8 +714,18 @@
 }
 
 :global(body[data-codexhost-wallpaper])
-  .sessionRow.selected:is(:hover, :focus-visible, :has(:focus-visible), .menuOpen) {
+  .sessionRow.selected:is(:focus-visible, :has(:focus-visible), .menuOpen) {
   --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+}
+
+@media (hover: hover) {
+  :global(body[data-codexhost-wallpaper]) :is(.projectRow, .sessionRow):hover {
+    --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent);
+  }
+
+  :global(body[data-codexhost-wallpaper]) .sessionRow.selected:hover {
+    --dsh-row-surface: color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent);
+  }
 }
 
 @media (hover: hover) and (pointer: fine) {

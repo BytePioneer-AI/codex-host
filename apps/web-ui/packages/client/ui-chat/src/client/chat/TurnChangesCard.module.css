@@ -68,9 +68,17 @@
   white-space: nowrap;
 }
 
-.review:hover,
-.fileHead:hover,
-.more:hover {
+@media (hover: hover) {
+  .review:hover,
+  .fileHead:hover,
+  .more:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.review:active,
+.fileHead:active,
+.more:active {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 

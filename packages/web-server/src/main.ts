@@ -28,6 +28,8 @@ import {
   takeNpmEntrypoint,
 } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
+import { registerWebExtensionRpc } from "./web-extension-rpc.ts";
+import { WebNativeExtensions } from "./web-native-extensions.ts";
 import { downloadWorkspaceFile, openWorkspaceFile } from "./workspace-file-actions.ts";
 import { UI_EXTENSION_PAGE } from "./ui-extension-page.ts";
 import { WebUiExtensions } from "./ui-extensions.ts";
@@ -447,6 +449,8 @@ registerBackgroundControls(rpc, accessTokens, {
 });
 registerMisc(rpc, { events });
 registerUiExtensionRpc(rpc, extensions);
+const nativeExtensions = new WebNativeExtensions(data, auth !== undefined && !values["safe-mode"]);
+const webExtensionHttp = registerWebExtensionRpc(rpc, nativeExtensions, extensions, trust);
 registerVoiceStatus(rpc, chHost);
 
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
@@ -523,6 +527,7 @@ const server = createWebServer((request, response) => {
       if (admission.handled) return;
       requestAuth = admission.auth;
     }
+    if (await webExtensionHttp.serve(request, response, pathname, requestAuth)) return;
     if (
       pathname === "/api/workspace-file/download" &&
       (request.method === "GET" || request.method === "HEAD")
@@ -781,6 +786,10 @@ server.listen(Number(values.port), values.host, async () => {
     }
   }
   console.log(`codexhost web: ${localUrl}`);
+  // The recovery route is already listening, even if extension activation hangs or fails.
+  void nativeExtensions.start().catch(() => {
+    console.warn("[extensions] Web native packages could not be restored; see /extensions");
+  });
   const urls = reachableNetworkUrls(
     accessTokens !== undefined && local
       ? (await readNetworkAccess()).networkUrls
@@ -820,21 +829,33 @@ server.listen(Number(values.port), values.host, async () => {
   });
 });
 
-async function shutdown(exitCode = 0): Promise<void> {
-  relay.close();
-  shellReload?.close();
-  accessTokens?.close();
-  server.close();
-  desktopScreenshots.close();
-  await sidebarBrowser.close();
-  await dsh?.close();
-  await extensions.cleanup(true);
-  pushNotifications?.close();
-  await sessions.close();
-  remoteSessions.close();
-  await preferences?.close();
-  displaySettings.close();
-  process.exit(exitCode);
+let shuttingDown: Promise<void> | undefined;
+function shutdown(exitCode = 0): Promise<void> {
+  return (shuttingDown ??= (async () => {
+    const stoppingNative = nativeExtensions.stop();
+    const closingUploads = webExtensionHttp.close();
+    try {
+      relay.close();
+      shellReload?.close();
+      accessTokens?.close();
+      server.close();
+      desktopScreenshots.close();
+      await sidebarBrowser.close();
+      await dsh?.close();
+      await extensions.cleanup(true);
+      pushNotifications?.close();
+      await sessions.close();
+      remoteSessions.close();
+      await preferences?.close();
+      displaySettings.close();
+    } catch (error) {
+      console.error("[web] shutdown failed", error);
+      exitCode ||= 1;
+    } finally {
+      await Promise.allSettled([stoppingNative, closingUploads]);
+      process.exit(exitCode);
+    }
+  })());
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());

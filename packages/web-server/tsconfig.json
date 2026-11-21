@@ -13,6 +13,7 @@
   },
   "references": [
     { "path": "../remote-relay/tsconfig.json" },
+    { "path": "../extension-backend/tsconfig.json" },
     { "path": "../harness-discovery/tsconfig.json" },
     {
       "path": "../session-runtime/tsconfig.json"

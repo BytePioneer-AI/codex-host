@@ -425,6 +425,7 @@ export function AppFrame({
       data-rightbar-instant={layoutInfo.rightbarInstant || undefined}
       data-dragging={dragging || undefined}
       data-animating={animating > 0 || undefined}
+      data-cx-region="app"
     >
       <DocumentTitle productTitle={productTitle} />
       {phone ? (

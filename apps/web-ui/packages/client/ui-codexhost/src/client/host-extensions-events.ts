@@ -1,8 +1,9 @@
 /**
- * Lightweight NDJSON event stream subscriber for `GET api/ch/v1/events`.
+ * Shared NDJSON event stream subscriber for `GET api/ch/v1/events`.
  *
- * Tracks the Host cursor `(epoch, sequence)` for seamless reconnects, pauses while the
- * document is hidden, and delivers `extensions-changed` notifications to listeners.
+ * Shares a single connection per browser tab via per-document ref-counting and coordinates
+ * across visible same-origin tabs via Web Locks + BroadcastChannel so concurrent tabs do not
+ * exhaust the browser's HTTP/1.1 per-origin connection pool.
  */
 import { clientChannelEventSchema, type ClientChannelCursor } from "@codexhost/shared-contracts";
 
@@ -12,20 +13,87 @@ export interface SubscribeHostExtensionEventsOptions {
   readonly onReconnect?: (() => void) | undefined;
 }
 
+interface EventListener {
+  readonly onExtensionsChanged: (revision: number) => void;
+  readonly onReconnect?: (() => void) | undefined;
+}
+
+type BroadcastPayload =
+  | { readonly type: "extensions-changed"; readonly revision: number }
+  | { readonly type: "reconnect" };
+
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
+const LOCK_AND_CHANNEL_NAME = "codexhost:host-extensions-events:v1";
 
-export function subscribeHostExtensionEvents(
-  options: SubscribeHostExtensionEventsOptions,
-): () => void {
-  const { document: doc, onExtensionsChanged, onReconnect } = options;
+interface SharedStreamHandle {
+  subscribe(listener: EventListener): () => void;
+}
 
-  let stopped = false;
+const streamsByDocument = new WeakMap<Document, SharedStreamHandle>();
+let fallbackStream: SharedStreamHandle | undefined;
+
+function canCoordinateAcrossTabs(): boolean {
+  return (
+    typeof BroadcastChannel === "function" &&
+    typeof navigator !== "undefined" &&
+    typeof navigator.locks?.request === "function"
+  );
+}
+
+function createSharedEventStream(
+  doc: Document | undefined,
+  onEmpty: () => void,
+): SharedStreamHandle {
+  const listeners = new Set<EventListener>();
+  const crossTab = canCoordinateAcrossTabs();
+  const channel = crossTab ? new BroadcastChannel(LOCK_AND_CHANNEL_NAME) : undefined;
+
+  let disposed = false;
+  let isLeader = false;
+  let hasConnectedOnce = false;
   let cursor: ClientChannelCursor | undefined;
   let streamAbort: AbortController | undefined;
+  let lockAbort: AbortController | undefined;
+  let releaseLock: (() => void) | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let backoffMs = INITIAL_BACKOFF_MS;
-  let hasConnectedOnce = false;
+
+  const emitExtensionsChanged = (revision: number, propagate: boolean): void => {
+    if (disposed) return;
+    for (const listener of [...listeners]) {
+      try {
+        listener.onExtensionsChanged(revision);
+      } catch {
+        // Isolate subscriber errors.
+      }
+    }
+    if (propagate && channel) {
+      try {
+        channel.postMessage({ type: "extensions-changed", revision } satisfies BroadcastPayload);
+      } catch {
+        // Ignore closed-channel races during teardown.
+      }
+    }
+  };
+
+  const emitReconnect = (propagate: boolean): void => {
+    if (disposed) return;
+    for (const listener of [...listeners]) {
+      try {
+        listener.onReconnect?.();
+      } catch {
+        // Isolate subscriber errors.
+      }
+    }
+    if (propagate && channel) {
+      try {
+        channel.postMessage({ type: "reconnect" } satisfies BroadcastPayload);
+      } catch {
+        // Ignore closed-channel races during teardown.
+      }
+    }
+  };
 
   const clearReconnect = (): void => {
     if (reconnectTimer !== undefined) {
@@ -41,7 +109,7 @@ export function subscribeHostExtensionEvents(
 
   const scheduleReconnect = (): void => {
     clearReconnect();
-    if (stopped || doc?.visibilityState === "hidden") return;
+    if (disposed || !isLeader || doc?.visibilityState === "hidden") return;
     const delay = backoffMs;
     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
     reconnectTimer = setTimeout(() => {
@@ -51,7 +119,7 @@ export function subscribeHostExtensionEvents(
   };
 
   const connect = async (): Promise<void> => {
-    if (stopped || doc?.visibilityState === "hidden") return;
+    if (disposed || !isLeader || doc?.visibilityState === "hidden") return;
     abortStream();
     const controller = new AbortController();
     streamAbort = controller;
@@ -77,7 +145,7 @@ export function subscribeHostExtensionEvents(
 
       backoffMs = INITIAL_BACKOFF_MS;
       if (hasConnectedOnce) {
-        onReconnect?.();
+        emitReconnect(true);
       }
       hasConnectedOnce = true;
 
@@ -87,7 +155,7 @@ export function subscribeHostExtensionEvents(
 
       for (;;) {
         const { done, value } = await reader.read();
-        if (done || stopped || controller.signal.aborted) break;
+        if (done || disposed || !isLeader || controller.signal.aborted) break;
         buffer += decoder.decode(value, { stream: true });
         let newlineIndex = buffer.indexOf("\n");
         while (newlineIndex !== -1) {
@@ -100,9 +168,9 @@ export function subscribeHostExtensionEvents(
                 const event = parsed.data;
                 cursor = event.cursor;
                 if (event.type === "extensions-changed") {
-                  onExtensionsChanged(event.revision);
+                  emitExtensionsChanged(event.revision, true);
                 } else if (event.type === "hello" && event.reset) {
-                  onReconnect?.();
+                  emitReconnect(true);
                 }
               }
             } catch {
@@ -113,37 +181,124 @@ export function subscribeHostExtensionEvents(
         }
       }
     } catch {
-      // Transport drop or abort; reconnect below if still active.
+      // Transport drop or abort; reconnect below if still active leader.
     } finally {
       if (streamAbort === controller) {
         streamAbort = undefined;
       }
-      if (!stopped && !controller.signal.aborted) {
+      if (!disposed && isLeader && !controller.signal.aborted) {
         scheduleReconnect();
       }
     }
   };
 
-  const onVisibilityChange = (): void => {
-    if (stopped) return;
-    if (doc?.visibilityState === "hidden") {
-      clearReconnect();
-      abortStream();
-      return;
-    }
-    backoffMs = INITIAL_BACKOFF_MS;
-    clearReconnect();
-    void connect();
-  };
-
-  doc?.addEventListener("visibilitychange", onVisibilityChange);
-  void connect();
-
-  return () => {
-    if (stopped) return;
-    stopped = true;
+  const stopLeadership = (): void => {
+    isLeader = false;
     clearReconnect();
     abortStream();
-    doc?.removeEventListener("visibilitychange", onVisibilityChange);
+    lockAbort?.abort();
+    lockAbort = undefined;
+    const release = releaseLock;
+    releaseLock = undefined;
+    release?.();
   };
+
+  const startLeadership = (): void => {
+    if (disposed || doc?.visibilityState === "hidden") return;
+    if (!crossTab) {
+      if (isLeader) return;
+      isLeader = true;
+      backoffMs = INITIAL_BACKOFF_MS;
+      void connect();
+      return;
+    }
+    if (isLeader || lockAbort !== undefined) return;
+    const controller = new AbortController();
+    lockAbort = controller;
+    void navigator.locks
+      .request(LOCK_AND_CHANNEL_NAME, { signal: controller.signal }, async () => {
+        if (disposed || controller.signal.aborted || doc?.visibilityState === "hidden") return;
+        isLeader = true;
+        backoffMs = INITIAL_BACKOFF_MS;
+        await new Promise<void>((resolve) => {
+          releaseLock = resolve;
+          // If this tab takes over leadership from another tab, resync subscribers.
+          if (hasConnectedOnce) emitReconnect(false);
+          void connect();
+        });
+      })
+      .catch(() => {
+        // Expected AbortError when tab hides or all subscribers disconnect before acquiring lock.
+      })
+      .finally(() => {
+        if (lockAbort === controller) lockAbort = undefined;
+      });
+  };
+
+  const onChannelMessage = (event: MessageEvent<unknown>): void => {
+    if (disposed || isLeader) return;
+    const payload = event.data as Partial<BroadcastPayload> | null | undefined;
+    if (!payload || typeof payload !== "object") return;
+    if (payload.type === "extensions-changed" && typeof payload.revision === "number") {
+      emitExtensionsChanged(payload.revision, false);
+    } else if (payload.type === "reconnect") {
+      emitReconnect(false);
+    }
+  };
+  channel?.addEventListener("message", onChannelMessage);
+
+  const onVisibilityChange = (): void => {
+    if (disposed) return;
+    if (doc?.visibilityState === "hidden") {
+      stopLeadership();
+      return;
+    }
+    // Resync local subscribers after returning from hidden state, then rejoin leader election.
+    emitReconnect(false);
+    startLeadership();
+  };
+  doc?.addEventListener("visibilitychange", onVisibilityChange);
+
+  startLeadership();
+
+  const destroy = (): void => {
+    if (disposed) return;
+    disposed = true;
+    stopLeadership();
+    doc?.removeEventListener("visibilitychange", onVisibilityChange);
+    channel?.removeEventListener("message", onChannelMessage);
+    channel?.close();
+    onEmpty();
+  };
+
+  return {
+    subscribe(listener: EventListener): () => void {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          destroy();
+        }
+      };
+    },
+  };
+}
+
+export function subscribeHostExtensionEvents(
+  options: SubscribeHostExtensionEventsOptions,
+): () => void {
+  const { document: doc, onExtensionsChanged, onReconnect } = options;
+  let shared = doc ? streamsByDocument.get(doc) : fallbackStream;
+  if (!shared) {
+    shared = createSharedEventStream(doc, () => {
+      if (doc) {
+        if (streamsByDocument.get(doc) === shared) streamsByDocument.delete(doc);
+      } else if (fallbackStream === shared) {
+        fallbackStream = undefined;
+      }
+    });
+    if (doc) streamsByDocument.set(doc, shared);
+    else fallbackStream = shared;
+  }
+  return shared.subscribe({ onExtensionsChanged, onReconnect });
 }

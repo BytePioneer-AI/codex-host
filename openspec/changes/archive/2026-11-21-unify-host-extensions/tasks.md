@@ -13,5 +13,5 @@
 
 ## 3. 端到端集成验证与文档同步
 
-- [ ] 3.1 使用一个包含 `backend` + 通用 `page` 的最小示例插件在隔离临时目录与随机端口实测：Web 端安装并启用一次，验证共享 Host 仅起 1 个后端进程、Web 与 Desktop 加载同一份 `page` 并共享同一份配置数据、纯前端无后端插件不起后台进程。验证：隔离实测报告与聚焦集成测试通过。
-- [ ] 3.2 更新 `docs/architecture/desktop-ui-extensions.md`（及 `docs/index.md` 如改名）与 `.agents/skills/codexhost-add-desktop-extension/SKILL.md` 反映现行统一扩展契约，并在完成后归档 OpenSpec 变更。验证：`openspec validate unify-host-extensions`。
+- [x] 3.1 使用一个包含 `backend` + 通用 `page` 的最小示例插件在隔离临时目录与随机端口实测：Web 端安装并启用一次，验证共享 Host 仅起 1 个后端进程、Web 与 Desktop 加载同一份 `page` 并共享同一份配置数据、纯前端无后端插件不起后台进程。验证：隔离实测报告与聚焦集成测试通过。
+- [x] 3.2 更新 `docs/architecture/desktop-ui-extensions.md`（及 `docs/index.md` 如改名）与 `.agents/skills/codexhost-add-desktop-extension/SKILL.md` 反映现行统一扩展契约，并在完成后归档 OpenSpec 变更。验证：`openspec validate unify-host-extensions`。

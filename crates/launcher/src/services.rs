@@ -82,7 +82,7 @@ fn replace_outdated(options: &Options, changed: bool) -> Result<(), Box<dyn Erro
         owner.runtime != options.runtime || owner.version != env!("CARGO_PKG_VERSION")
     });
     if changed || host_mismatched || web_mismatched {
-        web_service::stop(options)?;
+        web_service::stop(options, None)?;
     }
     if host_mismatched {
         println!("codexhost: switching Host to this version and installation");
@@ -254,7 +254,11 @@ fn stop_for_update(options: &Options) -> Result<(), Box<dyn Error>> {
     let _guard = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock")?;
     validate_installation(options)?;
     desktop_attachment::stop_managed(&options.data)?;
-    web_service::stop(options)?;
+    // The orphan cleanup must apply the installation check to the record it
+    // actually cleans: validate_installation only inspects the live owner
+    // record, so a Web from another installation sharing this data directory
+    // would otherwise be terminated here.
+    web_service::stop(options, Some(&options.runtime))?;
     if host_service::current_runtime(&options.data).is_some() {
         host_service::run(&options.host_arguments("stop"))?;
     }
@@ -272,7 +276,7 @@ fn stop_all(options: &Options) -> Result<(), Box<dyn Error>> {
     }
     let web_lock = host_service::lifecycle_lock(&options.data, "web-service-lifecycle.lock");
     let web = match &web_lock {
-        Ok(_) => web_service::stop(options),
+        Ok(_) => web_service::stop(options, None),
         Err(error) => Err(error.to_string().into()),
     };
     match web {

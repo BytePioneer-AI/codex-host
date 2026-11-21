@@ -73,7 +73,12 @@ pub(super) fn owner(data: &Path) -> Result<Option<ReadyOwner>, Box<dyn Error>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let record: ReadyOwner = serde_json::from_slice(&bytes)?;
+    // A corrupt record cannot be acted on. Treat it as absent so both ensure
+    // and stop reach the cleanup that discards it under the ready lock,
+    // instead of failing on every retry.
+    let Ok(record) = serde_json::from_slice::<ReadyOwner>(&bytes) else {
+        return Ok(None);
+    };
     Ok(codexhost_platform::process_instance(record.pid, record.started_at_micros).map(|_| record))
 }
 
@@ -113,7 +118,7 @@ pub(super) fn ensure(options: &Options) -> Result<(), Box<dyn Error>> {
         }
         thread::sleep(Duration::from_millis(25));
     }
-    stop_orphaned_web_service(&options.data)?;
+    stop_orphaned_web_service(&options.data, None)?;
     let launches = options.data.join("service-launches");
     fs::create_dir_all(&launches)?;
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -341,9 +346,20 @@ fn remove_ready_record_if_owned(
 // startup would launch a new Web that cannot bind the port. When the record
 // identifies a still-live Web child of this installation, stop it first;
 // otherwise the stale record is dropped and the port conflict is reported
-// against whatever actually listens.
-fn stop_orphaned_web_service(data: &Path) -> Result<bool, Box<dyn Error>> {
-    let bytes = match fs::read(data.join(READY)) {
+// against whatever actually listens. The ready lock spans read, judgment,
+// and deletion: a supervisor that publishes a new record while this cleanup
+// waits must not lose it, and the record is kept until the orphan's exit is
+// confirmed so stop and ensure retries can still act on it. Callers that
+// act on behalf of an update pass `expected_runtime`; records belonging to
+// another installation sharing this data directory are left to their own
+// installation.
+fn stop_orphaned_web_service(
+    data: &Path,
+    expected_runtime: Option<&Path>,
+) -> Result<bool, Box<dyn Error>> {
+    let _guard = lifecycle_lock(data, READY_LOCK)?;
+    let file = data.join(READY);
+    let bytes = match fs::read(&file) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
@@ -351,22 +367,33 @@ fn stop_orphaned_web_service(data: &Path) -> Result<bool, Box<dyn Error>> {
     let record: ReadyOwner = match serde_json::from_slice(&bytes) {
         Ok(record) => record,
         Err(_) => {
-            remove_file(&data.join(READY))?;
+            // A corrupt record cannot be acted on; drop it so the next
+            // startup can publish a fresh one.
+            remove_file(&file)?;
             return Ok(false);
         }
     };
     if codexhost_platform::process_instance(record.pid, record.started_at_micros).is_some() {
         return Ok(false);
     }
-    remove_file(&data.join(READY))?;
+    if let Some(runtime) = expected_runtime
+        && record.runtime.canonicalize().ok().as_deref() != runtime.canonicalize().ok().as_deref()
+    {
+        return Ok(false);
+    }
     if record.web_started_at_micros == 0 {
+        remove_file(&file)?;
         return Ok(false);
     }
     let snapshot = match codexhost_platform::process_snapshot(record.web_pid) {
         Ok(snapshot) => snapshot,
-        Err(_) => return Ok(false),
+        Err(_) => {
+            remove_file(&file)?;
+            return Ok(false);
+        }
     };
     if snapshot.started_at_micros != record.web_started_at_micros {
+        remove_file(&file)?;
         return Ok(false);
     }
     codexhost_platform::terminate_process_group_instance(&snapshot, false)?;
@@ -380,16 +407,22 @@ fn stop_orphaned_web_service(data: &Path) -> Result<bool, Box<dyn Error>> {
             forced = true;
         }
         if started.elapsed() > Duration::from_secs(10) {
+            // Keep the record: a retry of stop or ensure must still be able
+            // to terminate the Web that holds the port.
             return Err("The orphaned Web process did not exit".into());
         }
         thread::sleep(Duration::from_millis(25));
     }
+    remove_file(&file)?;
     Ok(true)
 }
 
-pub(super) fn stop(options: &Options) -> Result<bool, Box<dyn Error>> {
+pub(super) fn stop(
+    options: &Options,
+    expected_runtime: Option<&Path>,
+) -> Result<bool, Box<dyn Error>> {
     let Some(record) = owner(&options.data)? else {
-        return stop_orphaned_web_service(&options.data);
+        return stop_orphaned_web_service(&options.data, expected_runtime);
     };
     publish_status(&options.data.join(STOP), "stop\n")?;
     let started = Instant::now();
@@ -444,7 +477,7 @@ pub fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
     match action {
         "ensure" => ensure(&options),
         "serve" => serve(&options),
-        "stop" => stop(&options).map(|_| ()),
+        "stop" => stop(&options, None).map(|_| ()),
         _ => Err("usage: codexhost web-service <ensure|stop> --node <file> --host-node <file> --web-runtime <file> --host-runtime <file> --data <directory>".into()),
     }
 }

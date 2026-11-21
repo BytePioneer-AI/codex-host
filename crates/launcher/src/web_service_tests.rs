@@ -71,7 +71,7 @@ fn stop_waits_for_the_recorded_instance_without_its_original_image() {
             data: root.clone(),
             ready: None,
         };
-        assert!(super::stop(&options).unwrap());
+        assert!(super::stop(&options, None).unwrap());
         assert_eq!(
             fs::read_to_string(root.join("stopped")).unwrap(),
             "done",
@@ -110,25 +110,24 @@ fn stop_recovers_an_orphaned_web_child_of_a_dead_supervisor() {
     ));
     fs::create_dir_all(&root).unwrap();
     let executable = env::current_exe().unwrap();
-    // Launch the fixture detached: its shell parent exits immediately, so the
-    // fixture is reparented to init like a real orphaned Web child and is
-    // reaped when signalled, leaving no zombie to confuse identity checks.
+    // Launch the fixture directly (never by interpolating its path into a
+    // shell script) in a new session, so it becomes its own process-group
+    // leader exactly like the supervised Web child in production. A reaper
+    // thread waits on it concurrently, so it is reaped as soon as it is
+    // signalled and leaves no zombie to confuse identity checks.
     let spawn_orphan = || -> u32 {
-        let script = format!(
-            "\"{}\" --exact \"{}\" >/dev/null 2>&1 & echo $!",
-            executable.display(),
-            TEST
-        );
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(&script)
+        let mut command = Command::new(&executable);
+        command
+            .args(["--exact", TEST])
             .env("CODEXHOST_WEB_ORPHAN_TEST", &root)
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .expect("fixture pid")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        codexhost_platform::configure_detached_service_command(&mut command).unwrap();
+        let mut child = command.spawn().unwrap();
+        let pid = child.id();
+        thread::spawn(move || child.wait());
+        pid
     };
     let wait_started = |deadline: Instant| {
         while !root.join("started").exists() {
@@ -138,6 +137,10 @@ fn stop_recovers_an_orphaned_web_child_of_a_dead_supervisor() {
     };
     let live = codexhost_platform::process_identity(spawn_orphan()).unwrap();
     wait_started(Instant::now() + Duration::from_secs(10));
+    assert_eq!(
+        live.process_group_id, live.id,
+        "the fixture must lead its own process group"
+    );
     let mut record = ReadyOwner {
         pid: live.id,
         // A started_at that matches no live process models a supervisor that
@@ -155,19 +158,22 @@ fn stop_recovers_an_orphaned_web_child_of_a_dead_supervisor() {
     };
     let file = root.join(super::READY);
     fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
-    assert!(super::stop_orphaned_web_service(&root).unwrap());
+    assert!(super::stop_orphaned_web_service(&root, None).unwrap());
     assert!(!file.exists(), "the stale record must be removed");
     assert!(
         codexhost_platform::process_identity(record.web_pid).is_err(),
         "the confirmed orphan must be terminated"
     );
     // A legacy record without the web identity must never kill anything.
+    // The first fixture's marker must not satisfy the second launch's wait,
+    // so it is removed before the new fixture starts.
+    fs::remove_file(root.join("started")).unwrap();
     let orphan = spawn_orphan();
     wait_started(Instant::now() + Duration::from_secs(10));
     record.web_pid = orphan;
     record.web_started_at_micros = 0;
     fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
-    assert!(!super::stop_orphaned_web_service(&root).unwrap());
+    assert!(!super::stop_orphaned_web_service(&root, None).unwrap());
     assert!(!file.exists(), "the unverifiable record is dropped");
     assert!(
         codexhost_platform::process_identity(orphan).is_ok(),

@@ -89,7 +89,8 @@ pub use process::force_stop_desktop;
 pub use process::{
     ProcessSnapshot, desktop_process_ids_for_installation,
     desktop_root_process_ids_for_installation, parent_process_id, process_executable_path,
-    process_exists, process_snapshot, terminate_process_by_id,
+    process_exists, process_identity, process_instance, process_snapshot,
+    terminate_process_by_id,
 };
 #[cfg(target_os = "windows")]
 pub use process::{desktop_process_ids, desktop_root_process_ids, process_started_at_micros};

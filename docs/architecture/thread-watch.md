@@ -1,4 +1,4 @@
-# Thread watch：一次性的 Thread 停下或等待回答通知
+# Thread watch：停下、等待回答与可选卡住提醒
 
 `codexhost thread watch` 让一个 Thread 在另一个 Thread **停下（不再运行）或等待回答问题**时收到一次通知。调用方注册后立即返回，可以继续工作或结束自己的 Turn，不需要等待或轮询。
 
@@ -30,8 +30,8 @@
 
 | 命令 | 用途 |
 | --- | --- |
-| `thread watch <thread> [--notify <thread>] [--timeout-ms <n>]` | 观察一个已有 Thread |
-| `delegate start ... --watch true` | 创建委派后顺手观察，通知 Host 解析出的发起方 |
+| `thread watch <thread> [--notify <thread>] [--timeout-ms <n>] [--stall-after-ms <n>]` | 观察一个已有 Thread |
+| `delegate start ... --watch true [--stall-after-ms <n>]` | 创建委派后顺手观察，通知 Host 解析出的发起方 |
 | `thread send <thread> ... --watch true` | 成功发送新消息后观察，通知解析出的调用方 |
 | `thread watches` | 列出尚未送达的 watch |
 
@@ -66,12 +66,15 @@ EOF
 | `timedOut` | 到期时 Thread 仍未停下；也覆盖 Harness 停止但没有报告的情况 |
 | `unreadable` | 连续 60 秒读取失败，状态未知 |
 | `notFound` | Thread 已不存在 |
+| `stalled` | Thread 仍在运行，但在配置时长内没有观察到 Harness 事件；只是静默提醒，不代表失败 |
 
 默认观察 29 分钟，`--timeout-ms` 可调整；到期报告 `timedOut`，需要继续等待时再注册一次。
 
 注册和轮询都优先判断终态：已是终态时返回 `alreadyTerminal` 或报告终态结果；只有非终态且有待答题时，才返回 `alreadyNeedsInput` 或报告 `needsInput`。`alreadyNeedsInput` 响应带上 `pendingQuestions`；两种即时返回都不注册、不通知。回答问题后可再次注册，等待下一个问题或终态。
 
 问题请求本身来自结构化原生请求，读取与回答方式见[委派问题交互](delegation-questions.md)；题目不改变 Thread 的实际执行状态。异步题可以在 Thread 空闲时仍待答；此时终态优先，调用方应在收到终态通知或 `alreadyTerminal` 后 read，查看并处理仍未答的题目。
+
+卡住提醒默认关闭。设置正整数 `stallAfterMs` 后，运行中的 Thread 达到静默阈值时报告一次 `stalled` 并继续观察；新的 Harness 活动会重新计时。提醒只表示 Host 未观察到事件，长操作也可能触发。阈值随 watch 保存，活动时间和待投递的卡住提醒只保存在内存，重启后重新计时。
 
 ## 送达
 
@@ -82,6 +85,7 @@ EOF
   - 被通知 Thread 不存在或只读：立即标记 `undeliverable`；
   - 其他失败都视为结果未知，包括 Harness 启动确认超时后包装成的 `DELEGATION_FAILED`：原生可能已经启动了 Turn，为避免重复唤醒不再重试，标记 `undeliverable` 并在原因中说明。
 - 每次投递将同一个被通知 Thread 当前所有待送达通知合并为一条消息，包括此前轮询积累的通知，只启动一个 Turn。
+- 接收方为外部客户端时，同批通知写入该客户端的事件日志，不启动 Turn。卡住事件使用 `outcome: "stalled"`，`note` 与发给 Thread 的提醒文字相同，说明 Thread 仍在运行、至少多长时间没有观察到事件以及观察会继续；事件通过同一游标、SSE 和轮询接口读取。
 - 被通知 Thread 不存在、只读，或超过 6 小时仍无法送达时，watch 标记为 `undeliverable` 并保留原因，可由 `thread watches` 查看；最多保留最近 50 条无法送达记录。
 
 ## 与 Stop 的关系
@@ -105,7 +109,8 @@ EOF
 - `packages/host-runtime/src/delegation-watch.ts` 只依赖公开的 `read` 与 `send`，每轮完成后间隔 2 秒继续轮询（现有 `thread wait` 同样基于轮询）。它不依赖具体 Harness、Desktop、Renderer 或委派血缘；就绪条件为终态或 `pendingQuestions` 非空。
 - 服务由 `DelegationControlRegistry` 持有，位于各 Host 会话之上，因此两端可以属于不同的 Host 会话。CLI 与 Runtime 控制接口的 cancel 都经此入口：取消结果未定时暂停该 Thread 的通知投递，接受后删除所有通知目标的 watch，否则恢复投递。异步观察和投递准备在继续时检查 watch 是否仍有效；已经发起的投递无法撤回，仍按原有规则清理。
 - watch 持久保存在 `<数据目录>/delegation-watches/`（默认 `~/.codexhost`），每个 watch 一个仅当前用户可读写的记录，只含 Thread 标识、状态、期限与原因。Runtime 重启后恢复观察与投递，调用方无需重新注册；期限按绝对时间计算，停机时间计入。
-- 多个 Runtime 进程可共用数据目录（例如 Desktop 与远程监听同时运行）。每个进程只写自己的记录；启动时接管已退出进程（或上次开机遗留）的记录，以原子重命名认领，同一记录只被一个进程接管。
+- 多个 Runtime 进程可共用数据目录（例如 Desktop 与远程监听同时运行）。每个进程只写自己的记录；启动时接管已退出进程（或上次开机遗留）的记录，通过跨进程文件锁串行处理，并以原子重命名认领，同一记录只被一个进程接管。
+- 活动时间只放在 Host 内存中，不增加定时器、后台进程或 rollout 扫描。原生 Codex 使用已有 app-server 通知和请求中的 Thread 标识、`thread/started` 的子代理来源与 `spawnAgent` 接收方建立祖先关系；外部 Harness 在输出消费入口记录全部事件与交互，并使用已知子代理身份传播活动。原生祖先关系只在 Thread 启动时获知，因此原生 Thread 收到 `thread/closed` 后，只要还有未关闭的后代，通往祖先的整条链就保留，整棵子树都关闭后才清除；外部 Harness 的关系随每个事件重新记录，会话输出结束（包括空闲释放）即清除；官方 app-server 停止时全部清除，不随 Host 运行时间增长。未接入当前 Host 事件流的 Thread、没有上报活动的 Adapter，或未公布身份关系的子代理无法提供完整活动证据；静默提醒只表示“Host 没有观察到事件”，长工具执行也可能触发。
 - 恢复后的 watch 最多等待 5 分钟让持有 Thread 的会话重新注册：这期间读取失败不计入 60 秒 `unreadable` 宽限，也不报告 `notFound` 或 `timedOut`；待投递通知要等被通知 Thread 可读后再发送。
 - Host Runtime 重启会结束它持有的 Harness 进程，正在运行的 Turn 随之中断。之后读取时它可能显示为已完成（有的 Harness 恢复后还会换一个 Turn 标识），也可能根本无法重新打开。因此，重启前处于观察中的 watch，恢复后第一次成功读取若已是终态，或宽限结束后仍报告 Thread 不存在，都按 `interrupted` 通知并说明原因；原因随记录保存，再次重启也不丢失。代价是：由长期运行的远程监听持有、在停机期间真正完成的 Thread 也会被报告为 `interrupted`；被通知方本来就要先读取 Thread 再行动。
 - 发送前先把通知记为“投递中”。Runtime 在发送途中退出时，恢复后再投一次，因此重启可能重复通知，但不会丢失。运行期间“投递结果未知”仍标记为 `undeliverable`，不重试。

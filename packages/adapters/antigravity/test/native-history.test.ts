@@ -95,10 +95,13 @@ describe("native session history", () => {
 
       const snapshot = await opened.value.readSnapshot();
       assert(snapshot.ok);
-      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef)).toEqual(knownTurnRefs);
-      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
         "turn-0",
+        "turn-2",
+      ]);
+      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
         "turn-1",
+        "turn-2",
       ]);
       expect(snapshot.value.turns.map((turn) => turn.input)).toEqual([
         [{ type: "text", text: "First question" }],

@@ -183,7 +183,8 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
   const ids = new Set<string>();
   let promptId: string | null = null;
   const occupancy = new ClaudeBackgroundOccupancy();
-  let accumulator = new ClaudeNativeTurnAccumulator();
+  const subagentIdsByName = new Map<string, string>();
+  let accumulator = new ClaudeNativeTurnAccumulator({ subagentIdsByName });
   const sends = new Map<string, string | undefined>();
   let pendingNotification = false;
   for (const value of values) {
@@ -256,7 +257,7 @@ function conversationMessages(values: unknown[], sessionId: string): ClaudeHisto
     if (message.startsTurn) {
       occupancy.clear();
       sends.clear();
-      accumulator = new ClaudeNativeTurnAccumulator();
+      accumulator = new ClaudeNativeTurnAccumulator({ subagentIdsByName });
     }
     for (const event of accumulator.consume(value).events) {
       if (event.type === "subagent.started") {

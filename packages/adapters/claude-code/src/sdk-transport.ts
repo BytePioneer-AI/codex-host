@@ -503,6 +503,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   #threadEventHandler: ((event: ClaudeTurnEvent) => void) | null = null;
   #idleLive = false;
   #idleAccumulator: ClaudeNativeTurnAccumulator | null = null;
+  readonly #subagentIdsByName = new Map<string, string>();
   readonly #interactions = new Map<string, PendingInteraction>();
   readonly #controlRequestIds = new Set<string>();
   readonly #workflowAgentLabels = new Map<string, string>();
@@ -855,9 +856,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const promise = new Promise<ClaudeTransportTurnResult>((resolve, reject) => {
       this.#rootToolCalls.clear();
       this.#active = {
-        accumulator:
-          takeover?.accumulator ??
-          new ClaudeNativeTurnAccumulator(this.#provider ? { provider: this.#provider } : {}),
+        accumulator: takeover?.accumulator ?? this.#newAccumulator(),
         onEvent,
         resolve,
         reject,
@@ -1026,9 +1025,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     const activeQuery = this.#query;
     if (!activeQuery) throw new Error("Claude SDK transport is not running");
     // A steer takeover can interrupt on its first idle frame, before consume creates the accumulator.
-    const idle = (this.#idleAccumulator ??= new ClaudeNativeTurnAccumulator(
-      this.#provider ? { provider: this.#provider } : {},
-    ));
+    const idle = (this.#idleAccumulator ??= this.#newAccumulator());
     idle.requestCancel();
     try {
       await this.#stopRequest(activeQuery.interrupt(), INTERRUPT_TIMEOUT_MESSAGE);
@@ -1388,6 +1385,13 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
+  #newAccumulator(): ClaudeNativeTurnAccumulator {
+    return new ClaudeNativeTurnAccumulator({
+      subagentIdsByName: this.#subagentIdsByName,
+      ...(this.#provider ? { provider: this.#provider } : {}),
+    });
+  }
+
   async #consume(activeQuery: Query): Promise<void> {
     try {
       for await (const message of activeQuery) {
@@ -1417,11 +1421,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
           continue;
         }
         if (this.#idleLive && this.#idleHandler) {
-          const idle =
-            this.#idleAccumulator ??
-            (this.#idleAccumulator = new ClaudeNativeTurnAccumulator(
-              this.#provider ? { provider: this.#provider } : {},
-            ));
+          const idle = (this.#idleAccumulator ??= this.#newAccumulator());
           const interpreted = idle.consume(message);
           for (const event of interpreted.events) this.#idleHandler.onEvent(event);
           if (interpreted.terminal) {
@@ -1436,9 +1436,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         const autonomous =
           this.#autonomous ??
           (this.#autonomous = {
-            accumulator: new ClaudeNativeTurnAccumulator(
-              this.#provider ? { provider: this.#provider } : {},
-            ),
+            accumulator: this.#newAccumulator(),
             events: [],
             userMessageId: null,
             live: false,

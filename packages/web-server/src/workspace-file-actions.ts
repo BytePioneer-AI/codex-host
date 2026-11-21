@@ -1,6 +1,5 @@
 /** Authenticated original-file downloads and local desktop handoff. */
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { constants } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -42,13 +41,25 @@ export async function openWorkspaceFile(
   // DETACHED_PROCESS skips the console without passing SW_HIDE to Explorer.
   const detached = process.platform === "win32" && action === "reveal";
   const child = spawn(launcher, [command, target], {
-    timeout: 10_000,
     stdio: "ignore",
     detached,
     windowsHide: !detached,
   });
-  const [code] = await once(child, "close").catch(() => []);
-  if (code !== 0)
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const opened = await new Promise<boolean>((resolve) => {
+    let timedOut = false;
+    child.on("error", () => resolve(false));
+    child.once("close", (code) => resolve(!timedOut && code === 0));
+    timeout = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        resolve(false);
+      }
+    }, 10_000);
+  }).finally(() => clearTimeout(timeout));
+  if (!opened)
     throw new RpcError(
       "session/open-failed",
       action === "reveal"

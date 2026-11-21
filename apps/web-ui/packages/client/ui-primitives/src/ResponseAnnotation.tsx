@@ -99,6 +99,7 @@ interface CardPosition {
  * @param props.labels - localized headings.
  * @param props.className - anchor styling from the caller.
  * @param props.open - opens the card on mount (the rail entry's first paint).
+ * @param props.onActivate - runs when the trigger is clicked, before toggling the card.
  * @returns the trigger and, while open, its portaled card.
  */
 export function ResponseAnnotationPopover({
@@ -108,6 +109,7 @@ export function ResponseAnnotationPopover({
   className,
   title,
   open: initialOpen = false,
+  onActivate,
 }: {
   anchor: ReactNode;
   annotation: ResponseAnnotationView;
@@ -115,6 +117,7 @@ export function ResponseAnnotationPopover({
   className?: string | undefined;
   title?: string | undefined;
   open?: boolean;
+  onActivate?: (() => void) | undefined;
 }): ReactNode {
   const [open, setOpen] = useState(initialOpen);
   const anchorRef = useRef<HTMLSpanElement>(null);
@@ -181,6 +184,7 @@ export function ResponseAnnotationPopover({
         title={title}
         aria-expanded={open}
         onClick={() => {
+          onActivate?.();
           setOpen((current) => !current);
         }}
       >
@@ -215,6 +219,7 @@ export function ResponseAnnotationPopover({
  * @param props.index - one-based annotation position.
  * @param props.annotation - the annotation.
  * @param props.labels - localized strings.
+ * @param props.onActivate - runs when the chip body is clicked, before toggling the card.
  * @param props.onRemove - removes this annotation from the draft.
  * @returns the rail entry.
  */
@@ -222,11 +227,13 @@ export function ResponseAnnotationChip({
   index,
   annotation,
   labels,
+  onActivate,
   onRemove,
 }: {
   index: number;
   annotation: ResponseAnnotationView;
   labels: ResponseAnnotationLabels;
+  onActivate?: (() => void) | undefined;
   /** Omitted for a sent message: its annotations are history and cannot be removed. */
   onRemove?: (() => void) | undefined;
 }): ReactNode {
@@ -237,6 +244,7 @@ export function ResponseAnnotationChip({
         labels={labels}
         title={labels.railTitle(index, excerptOf(annotation.text))}
         className={css.chipBody}
+        onActivate={onActivate}
         anchor={
           <>
             <span className={css.chipNumber}>{labels.railLabel(index)}</span>

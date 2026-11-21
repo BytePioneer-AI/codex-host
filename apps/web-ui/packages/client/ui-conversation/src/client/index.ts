@@ -159,6 +159,8 @@ export type {
   DraftInitializationOptions,
   DraftInitializationResult,
   DraftReferenceInsertion,
+  DraftResponseAnnotation,
+  DraftResponseAnnotationInput,
   InputActions,
   InputState,
   InsertReferenceRequest,
@@ -169,6 +171,7 @@ export type {
   SubmitAttachment,
   SubmitOutcome,
 } from "./contract/input.ts";
+export type { ResponseAnnotationAnchor } from "./contract/response-annotation-anchor.ts";
 export type {
   ArbitrateKey,
   ArbitrateOutcome,

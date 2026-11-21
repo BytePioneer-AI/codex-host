@@ -4,6 +4,7 @@
 import {
   memo,
   useCallback,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,6 +12,7 @@ import {
   type ComponentProps,
 } from "react";
 import type {
+  DraftResponseAnnotationInput,
   NodeKey,
   RenderEntry,
   RenderMessageImages,
@@ -198,7 +200,10 @@ export function ChatView({
   fileMentions,
   usePresentation,
   useProjection,
+  useInput,
   inputActions,
+  viewRequest,
+  completeViewRequest,
   t,
 }: ChatViewSlotProps) {
   const order = useChat((s) => s.order);
@@ -250,16 +255,8 @@ export function ChatView({
   // The transcript column holds every rendered answer: a selection is offered
   // the attach action only when it stays inside one of them.
   const attachSelection = useCallback(
-    (text: string) => {
-      return inputActions?.addResponseAnnotation({ text }, { focus: "end" }) !== undefined;
-    },
-    [inputActions],
-  );
-  const attachComment = useCallback(
-    (text: string, annotation: string) => {
-      return (
-        inputActions?.addResponseAnnotation({ text, annotation }, { focus: "end" }) !== undefined
-      );
+    (annotation: DraftResponseAnnotationInput) => {
+      return inputActions?.addResponseAnnotation(annotation, { focus: "end" }) !== undefined;
     },
     [inputActions],
   );
@@ -413,6 +410,15 @@ export function ChatView({
     submissionId: visibleSubmissions.at(-1)?.requestId ?? null,
     loadedTurns: turnNavigationItems,
   });
+  const annotationToReveal = useInput((state) =>
+    state.responseAnnotations.find((annotation) => annotation.id === viewRequest?.focus),
+  );
+  const { initialized, revealResponseAnnotation } = scroll;
+  useLayoutEffect(() => {
+    if (!initialized || viewRequest?.view !== "chat") return;
+    if (annotationToReveal !== undefined) revealResponseAnnotation(annotationToReveal);
+    completeViewRequest();
+  }, [initialized, viewRequest, annotationToReveal, revealResponseAnnotation, completeViewRequest]);
 
   return (
     <div className={css.frame}>
@@ -515,17 +521,21 @@ export function ChatView({
           </div>
         </div>
       </div>
-      <SelectionActions
-        labels={{
-          addToChat: t("selection.addToChat"),
-          comment: t("selection.comment"),
-          placeholder: t("selection.commentPlaceholder"),
-          submit: t("selection.commentSubmit"),
-        }}
-        onAdd={attachSelection}
-        onComment={attachComment}
-        container={() => scroll.columnRef.current}
-      />
+      {inputActions !== undefined && (
+        <SelectionActions
+          key={sessionId}
+          labels={{
+            addToChat: t("selection.addToChat"),
+            comment: t("selection.comment"),
+            placeholder: t("selection.commentPlaceholder"),
+            submit: t("selection.commentSubmit"),
+            cancel: t("message.edit.cancel"),
+            unavailable: t("selection.commentUnavailable"),
+          }}
+          onAdd={attachSelection}
+          container={scroll.columnRef}
+        />
+      )}
       {!scroll.followingTail && (
         <div className={css.toBottomSlot}>
           <button

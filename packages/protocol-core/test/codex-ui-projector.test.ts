@@ -1758,7 +1758,7 @@ describe("Codex UI projector", () => {
                   status === "failed"
                     ? {
                         status,
-                        error: { code: "unknown", message: "todo failed", retryable: false },
+                        error: { code: "nativeFailure", message: "todo failed", retryable: false },
                       }
                     : { status },
               },
@@ -1800,7 +1800,7 @@ describe("Codex UI projector", () => {
         item,
         outcome: {
           status: "failed",
-          error: { code: "unknown", message: "todo failed", retryable: false },
+          error: { code: "nativeFailure", message: "todo failed", retryable: false },
         },
       },
     });

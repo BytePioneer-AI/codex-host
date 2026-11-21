@@ -178,9 +178,10 @@ export async function prepareLocalCodex(input: {
   });
   async function applyStartup(configuration: NativeStartup, attachment: AbortSignal) {
     if (!input.deferStart || scope.closed || attachment.aborted) return;
-    const lockRemoteInvocation =
+    const isRemoteInvocationLocked = () =>
       Boolean(input.remoteControl) &&
       (startupConfigured || scope.owner.running || scope.owner.hasActiveWork);
+    let lockRemoteInvocation = isRemoteInvocationLocked();
     let next: NativeStartup;
     if (lockRemoteInvocation) {
       next = {
@@ -194,9 +195,18 @@ export async function prepareLocalCodex(input: {
         configuration.environment,
       );
       if (scope.closed || attachment.aborted) return;
-      if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
-      next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
-      if (input.remoteControl) startupConfigured = true;
+      lockRemoteInvocation = isRemoteInvocationLocked();
+      if (lockRemoteInvocation) {
+        next = {
+          ...startup,
+          arguments: [...startup.arguments],
+          environment: configuration.environment,
+        };
+      } else {
+        if (!stockCodexPath) throw new Error("Official Codex executable is a shim or proxy");
+        next = { ...configuration, stockCodexPath, arguments: [...configuration.arguments] };
+        if (input.remoteControl) startupConfigured = true;
+      }
     }
     if (startupFile) {
       try {

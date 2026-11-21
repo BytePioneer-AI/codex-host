@@ -58,7 +58,11 @@ it("flushes external metrics at completion into metadata and restores them with 
       expect((await inspect(first, id))?.outputTokensPerSecond).toBe(200),
     );
     const metadata = join(first.mappingStoreDirectory, "thread-metadata", `${id}.json`);
-    expect(JSON.parse(await readFile(metadata, "utf8")).usageMeasurements).toBeUndefined();
+    const beforeCompletion = await readFile(metadata, "utf8").catch((error: unknown) => {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      return "{}";
+    });
+    expect(JSON.parse(beforeCompletion)).not.toHaveProperty("usageMeasurements");
     session.succeedTurn();
     await first.collector.waitFor((message) => turnEvent(message, "turn/completed", turn));
     const saved = JSON.parse(await readFile(metadata, "utf8"));

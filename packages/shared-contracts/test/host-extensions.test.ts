@@ -2,12 +2,14 @@ import { expect, it } from "vitest";
 import {
   CLIENT_CHANNEL_METHODS,
   clientChannelEventSchema,
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   HOST_EXTENSION_MANAGEMENT_METHODS,
   HOST_EXTENSION_PAGE_API_VERSION,
   HOST_EXTENSION_PAGE_CSS_VARIABLES,
   HOST_EXTENSIONS_RPC,
   hostExtensionAssetUrl,
   hostExtensionCapabilities,
+  hostExtensionListItemSchema,
   hostExtensionManifestV2Schema,
   hostExtensionTargets,
   hostExtensionsRpcSchemas,
@@ -27,6 +29,33 @@ const desktop = { apiVersion: 1, script: "desktop.js" };
 const web = { apiVersion: 1, style: "web.css" };
 const page = { apiVersion: 1, entry: "ui/page.mjs", style: "page.css", title: localized };
 const backend = { apiVersion: 1, entry: "backend.mjs" };
+
+it.each([
+  ["data:image/png;base64,YQ==", true, true],
+  ["data:image/svg+xml;base64,YQ==", false, false],
+  ["file:///tmp/screenshot.png", false, false],
+  [
+    `data:image/png;base64,${"AAAA".repeat(Math.ceil(DESKTOP_EXTENSION_ICON_MAX_BYTES / 3) + 1)}`,
+    false,
+    true,
+  ],
+])("validates raster previews (case %#)", (url, iconValid, screenshotValid) => {
+  const item = {
+    state: "valid",
+    id: header.id,
+    activationId: "00000000-0000-4000-8000-000000000000",
+    digest: "a".repeat(64),
+    installedAt: "2026-01-01T00:00:00.000Z",
+    enabled: false,
+    manifest: { ...header, desktop },
+  };
+  expect(hostExtensionListItemSchema.safeParse({ ...item, iconDataUrl: url }).success).toBe(
+    iconValid,
+  );
+  expect(
+    hostExtensionListItemSchema.safeParse({ ...item, screenshotDataUrls: [url] }).success,
+  ).toBe(screenshotValid);
+});
 
 it.each([
   [{ desktop }, ["desktop"], [false, true, false, false]],
@@ -97,6 +126,9 @@ it("registers the entire RPC namespace and its invalidation event on the client 
     expect(hostExtensionsRpcSchemas[method]).toHaveProperty("result");
   }
   expect(isHostExtensionManagementMethod("codexhost/extensions/unknown")).toBe(false);
+  expect(
+    CLIENT_CHANNEL_METHODS.some((method) => method.startsWith("codexhost/desktop/extensions/")),
+  ).toBe(false);
   const event = {
     type: "extensions-changed",
     cursor: { epoch: "00000000-0000-4000-8000-000000000000", sequence: 1 },

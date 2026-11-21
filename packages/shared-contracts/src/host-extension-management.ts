@@ -1,8 +1,10 @@
 import { z } from "zod";
-import { desktopExtensionListItemSchema } from "./desktop-extension-management.js";
 import {
   DESKTOP_EXTENSION_ASSET_MAX_BYTES,
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   DESKTOP_EXTENSION_LIMIT,
+  DESKTOP_EXTENSION_SCREENSHOT_LIMIT,
+  DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   DESKTOP_EXTENSION_ZIP_MAX_BYTES,
   desktopExtensionCatalogEntrySchema,
   desktopExtensionHttpUrlSchema,
@@ -14,10 +16,10 @@ import {
   hostExtensionIdSchema,
   hostExtensionManifestV2Schema,
   hostExtensionResourcePathSchema,
+  hostExtensionTargetSchema,
   targetsForCapabilities,
 } from "./host-extensions.js";
 import { jsonObjectSchema, jsonValueSchema } from "./json-value.js";
-import { extensionTargetsSchema } from "./web-native-extensions.js";
 
 export const HOST_EXTENSION_ZIP_MAX_BYTES = DESKTOP_EXTENSION_ZIP_MAX_BYTES;
 export const HOST_EXTENSION_CATALOG_URL =
@@ -42,7 +44,11 @@ export const hostExtensionCatalogEntrySchema = z
     ...catalogMetadata,
     id: hostExtensionIdSchema,
     format: z.literal("codexhost"),
-    targets: extensionTargetsSchema,
+    targets: z
+      .array(hostExtensionTargetSchema)
+      .min(1)
+      .max(2)
+      .refine((targets) => new Set(targets).size === targets.length, "Duplicate targets"),
     apis: z.strictObject({
       page: z.int().positive().optional(),
       desktop: z.int().positive().optional(),
@@ -168,7 +174,11 @@ export const hostExtensionInstallationSchema = z.strictObject({
 });
 export type HostExtensionInstallation = z.infer<typeof hostExtensionInstallationSchema>;
 
-const artwork = desktopExtensionListItemSchema.shape;
+const rasterDataUrlSchema = (maxBytes: number) =>
+  z
+    .string()
+    .max("data:image/jpeg;base64,".length + 4 * Math.ceil(maxBytes / 3))
+    .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u);
 const desktopConflict = { desktopConflictWith: hostExtensionIdSchema.optional() };
 const backendState = z.enum(["none", "inactive", "starting", "running", "failed"]);
 export const hostExtensionListItemSchema = z.discriminatedUnion("state", [
@@ -176,8 +186,11 @@ export const hostExtensionListItemSchema = z.discriminatedUnion("state", [
     state: z.literal("valid"),
     enabled: z.boolean(),
     ...desktopConflict,
-    iconDataUrl: artwork.iconDataUrl,
-    screenshotDataUrls: artwork.screenshotDataUrls,
+    iconDataUrl: rasterDataUrlSchema(DESKTOP_EXTENSION_ICON_MAX_BYTES).optional(),
+    screenshotDataUrls: z
+      .array(rasterDataUrlSchema(DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES))
+      .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
+      .optional(),
     backendState: backendState.optional(),
     backendError: z.string().optional(),
   }),

@@ -4,7 +4,6 @@ import {
   clientChannelResponseSchema,
   clientSnapshotRequestSchema,
   CLIENT_REQUEST_LIMIT_BYTES,
-  isDesktopExtensionManagementMethod,
   isHostExtensionManagementMethod,
 } from "@codexhost/shared-contracts";
 import type { ChHostClient } from "./ch-host-client.ts";
@@ -101,11 +100,7 @@ export async function serveChClientGateway(
       typeof input.params === "object" &&
       !Array.isArray(input.params)
     ) {
-      if (
-        (!authenticated || safeMode) &&
-        (isHostExtensionManagementMethod(input.method) ||
-          isDesktopExtensionManagementMethod(input.method))
-      ) {
+      if ((!authenticated || safeMode) && isHostExtensionManagementMethod(input.method)) {
         reply(403, {
           error: {
             code: -32000,

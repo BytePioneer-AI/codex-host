@@ -1,8 +1,8 @@
 import {
   resolveLocalizedExtensionText,
-  type DesktopExtensionConfiguration,
-  type DesktopExtensionManifest,
   type DesktopExtensionStatus,
+  type HostExtensionConfiguration,
+  type HostExtensionManifest,
 } from "@codexhost/shared-contracts";
 import type { RendererSettingsPageDefinition } from "../../settings/core.js";
 import { consoleGet, consolePost } from "../api.js";
@@ -10,12 +10,12 @@ import { confirmAction } from "../confirm.js";
 import { button, h } from "../dom.js";
 
 interface Listing {
-  configuration: DesktopExtensionConfiguration;
+  configuration: HostExtensionConfiguration;
   desktopConnected: boolean;
   diagnostics: string[];
   extensions: Array<{
     id: string;
-    manifest?: DesktopExtensionManifest;
+    manifest?: HostExtensionManifest;
     enabled: boolean;
     status: DesktopExtensionStatus;
   }>;
@@ -115,7 +115,7 @@ export function createExtensionsPage(locale: string): RendererSettingsPageDefini
                       document,
                       "div",
                       { className: "console-muted" },
-                      `${manifest.version} · ${manifest.slots.join(", ") || (zh ? "无独占槽位" : "No exclusive slots")}`,
+                      `${manifest.version} · ${manifest.slots?.join(", ") || (zh ? "无独占槽位" : "No exclusive slots")}`,
                     )
                   : null,
               ),

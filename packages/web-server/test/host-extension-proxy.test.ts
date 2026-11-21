@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import {
-  DESKTOP_EXTENSIONS_RECOVER_METHOD,
   HOST_EXTENSION_ASSETS_PREFIX,
   HOST_EXTENSION_MANAGEMENT_METHODS,
   HOST_EXTENSION_UPLOAD_PATH,
@@ -283,7 +282,7 @@ test("ZIP proxy rejects unsupported media, partial update parameters and oversiz
   assert.deepEqual(calls(), []);
 });
 
-test("the client RPC gateway gates all unified and legacy management methods and otherwise forwards", async (t) => {
+test("the client RPC gateway gates all Host extension management methods and otherwise forwards", async (t) => {
   const result = { revision: 1 };
   for (const [mode, status] of [
     ["signed out", 401],
@@ -298,9 +297,7 @@ test("the client RPC gateway gates all unified and legacy management methods and
       result,
     });
     const methods =
-      mode === "authenticated"
-        ? [HOST_EXTENSIONS_RPC.snapshot]
-        : [...HOST_EXTENSION_MANAGEMENT_METHODS, DESKTOP_EXTENSIONS_RECOVER_METHOD];
+      mode === "authenticated" ? [HOST_EXTENSIONS_RPC.snapshot] : HOST_EXTENSION_MANAGEMENT_METHODS;
     const headers =
       mode === "signed out"
         ? { origin }

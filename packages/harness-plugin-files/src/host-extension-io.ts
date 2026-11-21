@@ -1,12 +1,35 @@
-import { constants } from "node:fs";
-import { lstat, mkdir, open } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { constants, type Stats } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import lockfile from "proper-lockfile";
 import {
   hostExtensionIdSchema,
   hostExtensionResourcePathSchema,
 } from "@codexhost/shared-contracts";
-import { withDesktopExtensionDirectoryLock } from "./extension-configuration.js";
-import { extensionFileMissing, privateExtensionDirectory } from "./extension-discovery.js";
+
+export function desktopExtensionsStatusPath(dataDirectory: string): string {
+  return path.join(dataDirectory, "diagnostics", "desktop-extensions-v1.json");
+}
+
+export function extensionFileMissing(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+export function assertPrivateExtensionEntry(file: string, info: Stats, directory: boolean): void {
+  if (directory ? !info.isDirectory() : !info.isFile())
+    throw new Error(`${path.basename(file)} must be a regular ${directory ? "directory" : "file"}`);
+  if (!privateMode(info))
+    throw new Error(
+      `${path.basename(file)} must belong to the current user and not permit group/other writes`,
+    );
+}
+
+export async function privateExtensionDirectory(directory: string): Promise<string> {
+  assertPrivateExtensionEntry(directory, await lstat(directory), true);
+  return realpath(directory);
+}
 
 export const hostExtensionsRoot = (dataDir: string) => path.join(dataDir, "host-extensions");
 export const hostExtensionDataRoot = (dataDir: string) => path.join(dataDir, "host-extension-data");
@@ -51,7 +74,24 @@ export async function withHostExtensionWrite<T>(
   operation: (root: string, assertLocked: () => void) => Promise<T>,
 ) {
   const root = await storeRoot(hostExtensionsRoot(dataDir), true);
-  return withDesktopExtensionDirectoryLock(root, (assertLocked) => operation(root, assertLocked));
+  let compromised: Error | undefined;
+  const release = await lockfile.lock(root, {
+    lockfilePath: path.join(root, ".enabled.lock"),
+    retries: { retries: 24, minTimeout: 50, maxTimeout: 500 },
+    onCompromised(error) {
+      compromised = error;
+    },
+  });
+  const assertLocked = () => {
+    if (compromised) throw compromised;
+  };
+  try {
+    const result = await operation(root, assertLocked);
+    assertLocked();
+    return result;
+  } finally {
+    if (!compromised) await release();
+  }
 }
 
 /** Check each segment before opening and verify the opened inode. The store root is owner-controlled. */
@@ -100,6 +140,43 @@ export async function readHostFile(
     return buffer.subarray(0, offset);
   } finally {
     await handle.close();
+  }
+}
+
+const WINDOWS_RENAME_DELAYS_MS = [10, 30, 70, 150, 300] as const;
+
+async function replacePrivateExtensionFile(temporary: string, destination: string) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(temporary, destination);
+      return;
+    } catch (error) {
+      const wait = WINDOWS_RENAME_DELAYS_MS[attempt];
+      const code = (error as NodeJS.ErrnoException).code;
+      if (
+        process.platform !== "win32" ||
+        wait === undefined ||
+        !["EPERM", "EACCES", "EBUSY"].includes(code ?? "")
+      )
+        throw error;
+      await delay(wait);
+    }
+  }
+}
+
+export async function writePrivateExtensionFile(
+  directory: string,
+  name: string,
+  text: string,
+  assertLocked?: () => void,
+) {
+  const temporary = path.join(directory, `.write-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
+    assertLocked?.();
+    await replacePrivateExtensionFile(temporary, path.join(directory, name));
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined);
   }
 }
 

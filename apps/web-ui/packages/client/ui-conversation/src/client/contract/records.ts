@@ -35,6 +35,7 @@ export type AssistantBlock =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string }
   | { kind: "image"; attachment: ImageAttachmentRef }
+  | { kind: "viewed-images"; attachment: ImageAttachmentRef }
   | { kind: "tool-call"; callId: string; name: string; argsRaw: string }
   | { kind: "other"; block: unknown };
 

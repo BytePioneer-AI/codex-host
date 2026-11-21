@@ -125,7 +125,9 @@ export function toAssistantBlock(block: ContentBlock): AssistantBlock {
     case "reasoning":
       return { kind: "reasoning", text: block.text };
     case "image":
-      return { kind: "image", attachment: block.attachment };
+      return (block as ContentBlock & { codexhostImageView?: unknown }).codexhostImageView === true
+        ? { kind: "viewed-images", attachment: block.attachment }
+        : { kind: "image", attachment: block.attachment };
     case "tool-call":
       return {
         kind: "tool-call",

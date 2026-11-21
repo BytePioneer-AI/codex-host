@@ -1064,6 +1064,7 @@ export class AppServerHost {
       refreshBeforeRequests: !options.externalOnly,
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
+        this.#pendingOfficialDeletes.clear();
         this.#activeOfficialTurns.clear();
         this.#treeWatch?.resetOfficial();
         this.#client.resetNativeSession();
@@ -1686,7 +1687,12 @@ export class AppServerHost {
   }
 
   #observeOfficialDeleteResponse(value: JsonValue): void {
-    if (!isRecord(value) || (typeof value.id !== "string" && typeof value.id !== "number")) return;
+    if (
+      !isRecord(value) ||
+      "method" in value ||
+      (typeof value.id !== "string" && typeof value.id !== "number")
+    )
+      return;
     const threadId = this.#pendingOfficialDeletes.get(value.id);
     if (threadId === undefined) return;
     this.#pendingOfficialDeletes.delete(value.id);

@@ -406,9 +406,15 @@ it.each(["official", "external"])(
     writeRequest(fixture.desktopInput, request);
     if (kind === "official") {
       expect(await readJsonLine(fixture.official.stdin)).toEqual(request);
+      // A colliding server-initiated request ID must not retire the pending delete.
+      fixture.official.stdout.write(
+        `${JSON.stringify({ id: 921, method: "item/tool/requestUserInput", params: { threadId: "other", questions: [] } })}\n`,
+      );
       fixture.official.stdout.write(`${JSON.stringify({ id: 921, result: {} })}\n`);
     }
-    expect(await fixture.collector.waitFor((message) => message.id === 921)).toEqual({
+    expect(
+      await fixture.collector.waitFor((message) => message.id === 921 && !("method" in message)),
+    ).toEqual({
       id: 921,
       result: {},
     });

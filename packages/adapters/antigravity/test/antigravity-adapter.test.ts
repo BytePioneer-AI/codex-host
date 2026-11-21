@@ -1788,7 +1788,10 @@ describe("Antigravity foreground native commits", () => {
 
   const terminal = (outputs: HarnessOutput[], id = "t1") =>
     required(
-      events(outputs).find((event) => event.type === "turn.completed" && event.turnId === id),
+      events(outputs).find(
+        (event): event is Extract<typeof event, { type: "turn.completed" }> =>
+          event.type === "turn.completed" && event.turnId === id,
+      ),
     );
 
   it("publishes a durable Turn when the WAL commits at 200ms", async () => {

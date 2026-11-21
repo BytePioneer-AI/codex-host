@@ -20,6 +20,7 @@ import qrcode from "qrcode-terminal";
 import { createBrowserWebSocketServer } from "./browser-websocket.ts";
 import { createWebServer } from "./http-server.ts";
 import { compressResponse } from "./compression.ts";
+import { IMMUTABLE_CACHE, sendAsset as send } from "./static-response.ts";
 
 import { registerAccessTokenRpc } from "./access-token-rpc.ts";
 import {
@@ -75,7 +76,7 @@ import { formatWebStartup } from "./startup-display.ts";
 import { DataDir } from "./store.ts";
 import { EventHub, RpcRegistry, StreamRegistry } from "./transport.ts";
 import type { SessionListTiming } from "./session-list-timing.ts";
-import { WebAssets, type AssetResponse, type WebAssetOptions } from "./web-assets.ts";
+import { WebAssets, type WebAssetOptions } from "./web-assets.ts";
 import { SHELL_EVENTS_PATH, WebShellReload } from "./web-hmr.ts";
 import { Workspaces } from "./workspaces.ts";
 import { inspectImage, readImageFile, WebImages } from "./web-images.ts";
@@ -460,36 +461,10 @@ const nativeExtensions = new WebNativeExtensions(data, auth !== undefined && !va
 const webExtensionHttp = registerWebExtensionRpc(rpc, nativeExtensions, extensions, trust);
 registerVoiceStatus(rpc, chHost);
 
-const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 /** Harness icon URLs are stable; serve the cached copy while revalidating in the background.
  * `--dev-web-ui` keeps them fresh so icon changes show on reload. */
 const HARNESS_ICON_CACHE =
   devWebUi === undefined ? "private, max-age=86400, stale-while-revalidate=604800" : "no-cache";
-
-async function send(
-  request: IncomingMessage,
-  response: ServerResponse,
-  asset: AssetResponse | undefined,
-  cacheControl = "no-cache",
-): Promise<void> {
-  if (asset === undefined) {
-    response.writeHead(404, { "content-type": "text/plain" }).end("not found");
-    return;
-  }
-  const compressed = await compressResponse(
-    asset.body,
-    asset.contentType,
-    request.headers["accept-encoding"],
-    cacheControl === IMMUTABLE_CACHE ? request.url : undefined,
-  );
-  response
-    .writeHead(200, {
-      "content-type": asset.contentType,
-      "cache-control": cacheControl,
-      ...compressed.headers,
-    })
-    .end(compressed.body);
-}
 
 async function readBody(
   request: IncomingMessage,
@@ -749,6 +724,7 @@ const server = createWebServer((request, response) => {
       response,
       assets.dist(pathname),
       pathname.startsWith("/assets/") ? IMMUTABLE_CACHE : undefined,
+      pathname === "/codexhost-settings.js",
     );
   })().catch((error: unknown) => {
     console.error("[http] request failed", error);

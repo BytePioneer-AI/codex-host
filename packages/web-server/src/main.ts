@@ -389,7 +389,7 @@ const shellReload = devWebUi === undefined ? undefined : new WebShellReload(asse
 streams.register("$events", events.handler);
 workspaces.register(rpc, streams);
 sessions.register(rpc, streams);
-registerWorkspaceGitStatus(rpc, (id) => sessions.fileWorkspaceRoot(id));
+registerWorkspaceGitStatus(rpc, (id) => sessions.gitWorkspaceRoot(id));
 sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
 const remoteSessions = new RemoteSessions(events, undefined, workspaces);

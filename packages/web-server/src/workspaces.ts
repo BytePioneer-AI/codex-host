@@ -232,6 +232,15 @@ export class Workspaces {
     return this.state.items.find((item) => item.workspaceId === workspaceId);
   }
 
+  /** Explicitly added Web folders or native project roots, not cwd-only draft mirrors. */
+  gitWorkspace(workspaceId: string): WorkspaceView | undefined {
+    const workspace = this.get(workspaceId);
+    return workspace &&
+      (workspace.origin === "web" || this.referenceProjectRoots.has(workspace.path))
+      ? workspace
+      : undefined;
+  }
+
   byPath(path: string): WorkspaceView | undefined {
     return this.state.items.find((item) => item.path === path);
   }

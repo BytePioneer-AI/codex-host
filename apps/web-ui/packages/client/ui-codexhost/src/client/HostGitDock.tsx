@@ -52,8 +52,8 @@ export function HostGitDock({ sessionId, useSession, t }: Props) {
       const controller = new AbortController();
       active = controller;
       setBusy(true);
-      // Two bounded Git commands plus network time; do not time out before the server.
-      const timeout = window.setTimeout(() => controller.abort(), 12_000);
+      // Three bounded Git commands plus network time; do not time out before the server.
+      const timeout = window.setTimeout(() => controller.abort(), 17_000);
       try {
         const value = await readWorkspaceGitStatus(sessionId, controller.signal);
         if (!disposed && !controller.signal.aborted) setSnapshot({ id: sessionId, value });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -141,6 +141,93 @@ it("refreshes cached branch facts and reads tracking divergence and real merge c
     assert.equal(conflict.conflicted, 1);
     assert.equal(conflict.changedFiles, 1);
   }
+});
+
+it("never runs configured clean/process filters, including included config and submodules", async (t) => {
+  const { root, git } = fixture(t);
+  const marker = join(root, "filter-executed");
+  writeFileSync(join(root, "file"), "base\n");
+  writeFileSync(join(root, "process-file"), "base\n");
+  writeFileSync(
+    join(root, ".gitattributes"),
+    "file filter=danger\nprocess-file filter=process-driver\n",
+  );
+  git("add", ".");
+  git("commit", "-m", "base");
+  const include = join(root, "included-config");
+  // The sentinel is harmless; a normal unprotected status would execute it.
+  const command = `echo executed > '${marker.replaceAll("'", "'\\''")}'; cat`;
+  writeFileSync(
+    include,
+    `[filter "danger"]\nclean = ${command}\nrequired = true\n[filter "process-driver"]\nprocess = ${command}\n`,
+  );
+  git("config", "include.path", include);
+  // Same-size edits force content comparison rather than a size-only dirty result.
+  writeFileSync(join(root, "file"), "edit\n");
+  writeFileSync(join(root, "process-file"), "edit\n");
+  const status = await new WorkspaceGitStatusReader().read(root);
+  assert.equal(existsSync(marker), false, "status must not run repository clean/process commands");
+  assert.equal(status.state, "ready");
+  git(
+    "-c",
+    "filter.danger.clean=",
+    "-c",
+    "filter.danger.required=false",
+    "-c",
+    "filter.process-driver.process=",
+    "add",
+    "file",
+    "process-file",
+  );
+  git(
+    "-c",
+    "filter.danger.clean=",
+    "-c",
+    "filter.danger.required=false",
+    "-c",
+    "filter.process-driver.process=",
+    "commit",
+    "-m",
+    "changed",
+  );
+  // A real submodule contains an independently configured filter, not in parent config.
+  const child = fixture(t);
+  writeFileSync(join(child.root, "file"), "child\n");
+  child.git("add", ".");
+  child.git("commit", "-m", "child");
+  git(
+    "-c",
+    "filter.danger.clean=",
+    "-c",
+    "filter.danger.required=false",
+    "-c",
+    "filter.process-driver.process=",
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    child.root,
+    "child",
+  );
+  git(
+    "-c",
+    "filter.danger.clean=",
+    "-c",
+    "filter.danger.required=false",
+    "-c",
+    "filter.process-driver.process=",
+    "commit",
+    "-am",
+    "submodule",
+  );
+  const childGit = (...args: string[]) => execFileSync("git", ["-C", join(root, "child"), ...args]);
+  writeFileSync(join(root, "child", ".gitattributes"), "file filter=danger\n");
+  childGit("config", "filter.danger.clean", command);
+  writeFileSync(join(root, "child", "file"), "modified child\n");
+  // Fixture setup commands are not the read-only endpoint under test.
+  rmSync(marker, { force: true });
+  assert.equal((await new WorkspaceGitStatusReader().read(root)).state, "ready");
+  assert.equal(existsSync(marker), false, "parent status must not run child filters");
 });
 
 it("does not label inaccessible paths or Git failures as clean; refuses remote and unknown scopes", async (t) => {

@@ -27,7 +27,7 @@ export function parseGitStatus(output: string, root: string): Ready {
   };
   const records = output.split("\0");
   for (let index = 0; index < records.length; index++) {
-    const record = records[index]!;
+    const record = records[index];
     if (!record) continue;
     if (record.startsWith("# branch.head ")) {
       const branch = record.slice(14);
@@ -115,23 +115,64 @@ export class WorkspaceGitStatusReader {
   }
 
   private async inspect(cwd: string): Promise<WorkspaceGitStatus> {
-    const run = (args: string[]) =>
-      exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-C", cwd, ...args], {
-        env: gitEnvironment(),
-        timeout: 5_000,
-        maxBuffer: 2 * 1024 * 1024,
-        windowsHide: true,
-      });
+    const run = (args: string[], config: string[] = []) =>
+      exec(
+        "git",
+        ["--no-optional-locks", "-c", "core.fsmonitor=false", ...config, "-C", cwd, ...args],
+        {
+          env: gitEnvironment(),
+          timeout: 5_000,
+          maxBuffer: 2 * 1024 * 1024,
+          windowsHide: true,
+        },
+      );
     try {
       const { stdout: root } = await run(["rev-parse", "--show-toplevel"]);
-      const { stdout } = await run([
-        "status",
-        "--porcelain=v2",
-        "--branch",
-        "-z",
-        "--untracked-files=all",
-        "--ignore-submodules=none",
+      // status may run clean/process filters while comparing file contents.
+      // Read names only (not executable values), then override every effective
+      // driver, including those supplied by user config or included files.
+      let names = "";
+      try {
+        names = (
+          await run([
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            "^filter\\..*\\.(clean|process|required)$",
+          ])
+        ).stdout;
+      } catch (error) {
+        if ((error as { code?: unknown }).code !== 1) throw error;
+      }
+      const drivers = new Set(
+        names
+          .split("\0")
+          .filter(Boolean)
+          .map((key) => key.slice(7, key.lastIndexOf("."))),
+      );
+      if (drivers.size > 128) throw new Error("Too many Git filters");
+      const config = [...drivers].flatMap((driver) => [
+        "-c",
+        `filter.${driver}.clean=`,
+        "-c",
+        `filter.${driver}.process=`,
+        "-c",
+        `filter.${driver}.required=false`,
       ]);
+      const { stdout } = await run(
+        [
+          "status",
+          "--porcelain=v2",
+          "--branch",
+          "-z",
+          "--untracked-files=all",
+          // Submodule subprocesses have their own config/filter scope. Report
+          // recorded commit changes only, never recurse into their dirty files.
+          "--ignore-submodules=dirty",
+        ],
+        config,
+      );
       return parseGitStatus(stdout, root.replace(/[\r\n]+$/u, ""));
     } catch (error) {
       const failure = error as { stderr?: string; code?: unknown };

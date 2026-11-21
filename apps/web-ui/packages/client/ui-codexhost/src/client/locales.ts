@@ -19,7 +19,7 @@ export const en = {
   "git.changed": "{n} changed files (categories can overlap)",
   "git.unborn": "No commits yet",
   "git.localRefs":
-    "Ahead/behind uses local tracking refs; no fetch is performed. Submodules count as one entry.",
+    "Ahead/behind uses local tracking refs; no fetch is performed. Submodule commit changes count as one entry; their dirty files are not scanned. External clean/process filters are disabled, so filter-backed files may appear modified.",
   "git.checkedAt": "Checked at {time}",
   "file.download": "Download",
   "file.openFolder": "Open containing folder",
@@ -531,7 +531,8 @@ export const zh: Record<ImportLocaleKey, string> = {
   "git.clean": "工作目录干净",
   "git.changed": "{n} 个变更文件（分类可能重叠）",
   "git.unborn": "尚无提交",
-  "git.localRefs": "领先／落后基于本地跟踪引用，不自动 fetch。子模块按一项统计。",
+  "git.localRefs":
+    "领先／落后基于本地跟踪引用，不自动 fetch。子模块仅统计提交号变化，不扫描内部脏文件。外部 clean/process 过滤器已禁用，依赖过滤器的文件可能显示为已修改。",
   "git.checkedAt": "查询时间：{time}",
   "file.download": "下载",
   "file.openFolder": "打开所在文件夹",

@@ -68,6 +68,8 @@ function globalProjectionValues(values: Record<string, unknown>): Record<string,
 interface Draft {
   id: string;
   cwd?: string;
+  /** Explicit server registry binding, never inferred from a browser-supplied cwd. */
+  gitWorkspaceId?: string;
   selection: ModelSelection;
   permissionModeId?: string;
   createdAt: number;
@@ -773,7 +775,20 @@ export class ChSessions {
     if (existing || this.rows.has(id))
       throw new RpcError("session/busy", "This Session already exists; start a new draft.");
     const selection = configuration?.selection ?? (await this.catalog.models()).default;
-    const draft: Draft = { id, ...(cwd ? { cwd } : {}), selection, createdAt: Date.now() };
+    const selectedWorkspace = request.workspaceId
+      ? this.workspaces.gitWorkspace(request.workspaceId)
+      : undefined;
+    const gitWorkspaceId =
+      selectedWorkspace && cwd && resolve(cwd) === resolve(selectedWorkspace.path)
+        ? selectedWorkspace.workspaceId
+        : undefined;
+    const draft: Draft = {
+      id,
+      ...(cwd ? { cwd } : {}),
+      ...(gitWorkspaceId ? { gitWorkspaceId } : {}),
+      selection,
+      createdAt: Date.now(),
+    };
     if (configuration) {
       if (configuration.permissionModeId) draft.permissionModeId = configuration.permissionModeId;
     } else {
@@ -906,6 +921,20 @@ export class ChSessions {
     const id = this.id(sessionId);
     const session = this.drafts.get(id) ?? this.rows.get(id);
     return session === undefined ? undefined : session.cwd || homedir();
+  }
+
+  /** Git may inspect Host-confirmed Threads or an explicitly bound registered workspace.
+   * A draft's cwd is untrusted: creating one also mirrors its path into navigation. */
+  gitWorkspaceRoot(sessionId: string): string | undefined {
+    const id = this.id(sessionId);
+    const draft = this.drafts.get(id);
+    if (!draft) return this.localWorkspaceRoot(id);
+    const workspace = draft.gitWorkspaceId
+      ? this.workspaces.gitWorkspace(draft.gitWorkspaceId)
+      : undefined;
+    return workspace && draft.cwd && resolve(workspace.path) === resolve(draft.cwd)
+      ? workspace.path
+      : undefined;
   }
 
   /** Workspace files are also available before a draft creates its native Thread. */

@@ -42,6 +42,15 @@ function desktopToolContextChanged(current: NativeStartup, next: NativeStartup):
   return DESKTOP_TOOL_CONTEXT_ENV.some((key) => current.environment[key] !== next.environment[key]);
 }
 
+function withDesktopTools(startup: NativeStartup, desktop: NodeJS.ProcessEnv): NativeStartup {
+  const environment = withoutDesktopToolContext(startup.environment);
+  for (const key of DESKTOP_TOOL_CONTEXT_ENV) {
+    const value = desktop[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return { ...startup, environment };
+}
+
 async function canonicalCodexHome(home: string): Promise<string> {
   const absolute = path.resolve(home);
   try {
@@ -122,7 +131,12 @@ export async function prepareLocalCodex(input: {
         codexRuntimeFilesChanged(backendFiles)),
     createBackend: () => {
       try {
-        const configuration = nextStartup();
+        const next = nextStartup();
+        // An older attachment can outlive a failed first launch and its subsequent recovery.
+        const configuration =
+          input.remoteControl && next !== startup
+            ? withDesktopTools(startup, next.environment)
+            : next;
         if (!configuration.stockCodexPath) throw new Error("Official Codex is unavailable");
         backendFiles = captureCodexRuntimeFiles(configuration.stockCodexPath);
         running = configuration;
@@ -136,7 +150,7 @@ export async function prepareLocalCodex(input: {
           environment: { ...officialEnvironment(configuration.environment), CODEX_HOME: home },
         });
         startupConfigured = true;
-        // Keep the invocation fixed through startup and until backend exit is confirmed.
+        // Before the first successful start, a failed backend may release this provisional choice.
         void backend.closed.then(() => {
           startupConfigured = false;
         });
@@ -177,7 +191,7 @@ export async function prepareLocalCodex(input: {
     return snapshot();
   });
   const remoteInvocationFixed = () =>
-    input.remoteControl && (startupConfigured || scope.owner.running || scope.owner.hasActiveWork);
+    input.remoteControl && (startupConfigured || scope.owner.hasStartedSuccessfully);
 
   async function applyStartup(configuration: NativeStartup, attachment: AbortSignal) {
     if (!input.deferStart || scope.closed || attachment.aborted) return;
@@ -195,12 +209,7 @@ export async function prepareLocalCodex(input: {
     }
     if (input.remoteControl) {
       // The listener pins the native invocation. Tool endpoints belong to each attached Desktop.
-      const environment = withoutDesktopToolContext(next.environment);
-      for (const key of DESKTOP_TOOL_CONTEXT_ENV) {
-        const value = configuration.environment[key];
-        if (value !== undefined) environment[key] = value;
-      }
-      next = { ...next, environment };
+      next = withDesktopTools(next, configuration.environment);
       startupConfigured = true;
     }
     if (startupFile) {

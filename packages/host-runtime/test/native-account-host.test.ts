@@ -381,19 +381,29 @@ describe("local Codex read-only identity startup", () => {
       remoteControl: true,
     });
     prepared.add(local);
+    await configureStartup(local, {
+      stockCodexPath: "/synthetic/broken",
+      arguments: ["app-server"],
+      environment: { BROWSER_USE_ACCESS_PIPE_PATH: "first" },
+    });
     await expect(local.officialRuntimeScope.start()).rejects.toThrow("unavailable");
+    const attachment = new AbortController();
     const configuration = {
       stockCodexPath: "/synthetic/desktop-codex",
       arguments: ["-c", "features.recovered=true", "app-server"],
-      environment: {},
+      environment: { BROWSER_USE_ACCESS_PIPE_PATH: "recovered" },
     };
-    await configureStartup(local, configuration);
+    await configureStartup(local, configuration, attachment.signal);
     await local.officialRuntimeScope.start();
     expect(createOwnedLoopbackBackend).toHaveBeenCalledTimes(2);
+    attachment.abort();
+    nativeFixture();
+    await local.officialRuntimeScope.refreshBeforeRequest();
     expect(createOwnedLoopbackBackend).toHaveBeenLastCalledWith(
       expect.objectContaining({
         stockCodexPath: configuration.stockCodexPath,
         arguments: configuration.arguments,
+        environment: expect.objectContaining({ BROWSER_USE_ACCESS_PIPE_PATH: "first" }),
       }),
     );
   });
@@ -504,8 +514,6 @@ describe("local Codex read-only identity startup", () => {
         },
         attachment.signal,
       );
-      nativeFixture();
-      await scope.start();
       return attachment;
     };
     const verify = (pipe?: string) => {
@@ -515,8 +523,9 @@ describe("local Codex read-only identity startup", () => {
       expect(options?.environment.BROWSER_USE_ACCESS_PIPE_PATH).toBe(pipe);
     };
     const first = await attach("first");
-    verify("first");
     const second = await attach("second");
+    nativeFixture();
+    await scope.start();
     verify("second");
     second.abort();
     nativeFixture();

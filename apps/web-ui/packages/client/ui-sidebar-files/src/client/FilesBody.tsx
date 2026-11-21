@@ -226,7 +226,7 @@ export function FilesBody({
   const { signal, actions: tabActions } = tab;
   const cwd = useSessions((sessions) => {
     const row = sessions.byId[sessionId];
-    return row?.projectionValues?.remoteWorkspacePath ?? row?.cwd;
+    return row?.projectionValues?.remoteWorkspacePath || row?.cwd || undefined;
   });
   const state = useStore((store) => store.byTab[tab.id]);
   const bodyRef = useRef<HTMLDivElement>(null);

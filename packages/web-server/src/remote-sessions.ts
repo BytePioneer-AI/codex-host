@@ -880,13 +880,17 @@ export class RemoteSessions {
           const draft = this.drafts.get(id);
           if (draft && !draft.canonicalId)
             return { items: [draft.summary()], archivedSessionIds: this.syncArchives() };
-          remoteSessionIdentity(id);
+          const canonicalId = draft?.canonicalId ?? id;
+          remoteSessionIdentity(canonicalId);
           if (request.cursor !== undefined)
             throw new RpcError("session/list-invalid", "Invalid direct-link identity.");
-          if (!this.entries.has(id)) await this.refresh();
-          const entry = this.entries.get(id);
+          if (!this.entries.has(canonicalId)) await this.refresh();
+          const entry = this.entries.get(canonicalId);
           if (!entry) throw new RpcError("remote/not-found", "Remote Thread not found");
-          return { items: [this.summary(id, entry)], archivedSessionIds: this.syncArchives() };
+          return {
+            items: [this.summary(canonicalId, entry)],
+            archivedSessionIds: this.syncArchives(),
+          };
         }
         void this.refresh().catch(() => undefined);
         const local = await next();

@@ -165,6 +165,7 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   const call = (method: string, request: Record<string, unknown>) =>
     rpc.dispatch(method, { args: { request: { sessionId: draftId, ...request } } });
   for (const method of [
+    "session/list",
     "session/modelCatalog",
     "session/prompt",
     "session/selectModel",
@@ -186,6 +187,13 @@ it("creates on the registered owner, publishes the real ID, and retains the unli
   const prompt = { content: [{ type: "text", text: "ping" }], requestId: "first" };
   const sent = await Promise.all([call("session/prompt", prompt), call("session/prompt", prompt)]);
   for (const reply of sent) assert.ok(reply.ok, JSON.stringify(reply));
+  const direct = await call("session/list", {});
+  assert.ok(direct.ok);
+  assert.deepEqual(
+    (direct.value as { items: { sessionId: string }[] }).items.map((row) => row.sessionId),
+    [sessionId],
+  );
+  assert.equal((await call("session/list", { cursor: "next" })).ok, false);
   const members = () =>
     workspaces
       .list()

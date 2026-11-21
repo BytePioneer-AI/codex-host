@@ -467,7 +467,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
   readonly #children: {
     child: ChildProcessWithoutNullStreams;
     exited: Promise<void>;
-    fenceConfirmed: boolean;
+    fence: "unattempted" | "unconfirmed" | "confirmed";
   }[] = [];
   readonly #abortTimeoutMs: number;
   readonly #closeTimeoutMs: number;
@@ -1061,9 +1061,8 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
 
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
-    const first = !this.#closing;
     this.#closing = true;
-    const attempt = Promise.resolve().then(() => this.#close(first));
+    const attempt = Promise.resolve().then(() => this.#close());
     this.#closePromise = attempt;
     void attempt.catch(() => {
       // Retire only the attempt, never reopen admission to this Transport.
@@ -1206,12 +1205,10 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
     }
   }
 
-  async #close(first: boolean): Promise<void> {
+  async #close(): Promise<void> {
     const failures: unknown[] = [];
-    if (first) {
-      this.#rejectPendingSteers();
-      this.#closeInteractions("all", "cancelled");
-    }
+    this.#rejectPendingSteers();
+    this.#closeInteractions("all", "cancelled");
     const hasOwnedProcess = this.#children.some(({ child }) => child.pid !== undefined);
     if (this.#backgroundTasks.size > 0) {
       // A timeout does not cancel the outstanding native request.
@@ -1233,9 +1230,11 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
       const stopped = await Promise.allSettled(
         this.#children.map(async (owned) => {
           // Do not signal a previously confirmed group again: its PID may have been reused.
-          if (owned.fenceConfirmed) return;
-          await closeClaudeProcessGroup(owned.child, this.#closeTimeoutMs);
-          owned.fenceConfirmed = true;
+          if (owned.fence === "confirmed") return;
+          const retry = owned.fence === "unconfirmed";
+          owned.fence = "unconfirmed";
+          await closeClaudeProcessGroup(owned.child, this.#closeTimeoutMs, retry);
+          owned.fence = "confirmed";
         }),
       );
       for (const result of stopped) if (result.status === "rejected") failures.push(result.reason);
@@ -1542,7 +1541,7 @@ export class ClaudeSdkTransport implements ClaudeTurnTransport {
         if (child.pid === undefined) resolve();
       });
     });
-    this.#children.push({ child, exited, fenceConfirmed: false });
+    this.#children.push({ child, exited, fence: "unattempted" });
     return child;
   }
 }

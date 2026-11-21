@@ -827,21 +827,22 @@ describe("HarnessDelegationCoordinator", () => {
       value.runtime.markSessionUnavailable(thread);
       const close = vi.spyOn(thread.session, "close").mockRejectedValue(new Error("private cause"));
       try {
-        await expect(value.runtime.resolve(threadId)).resolves.toMatchObject({
-          kind: "error",
-          error: { code: -32075 },
-        });
         const error = {
           code: "INTERNAL_ERROR",
           message: expect.stringContaining("External Session shutdown could not be confirmed"),
           details: { externalThreadCode: -32075 },
         };
+        const sendError = { ...error, details: { ...error.details, notStarted: true } };
+        // Resolution first hits the release failure; the next locate hits the same blocker.
+        for (const message of ["send", "retry"]) {
+          await expect(value.coordinator.send({ threadId, message })).rejects.toMatchObject(
+            sendError,
+          );
+        }
+        expect(value.delivered).toEqual(["synthetic pending release"]);
         for (const view of ["result", "messages"] as const) {
           await expect(value.coordinator.read({ threadId, view })).rejects.toMatchObject(error);
         }
-        await expect(value.coordinator.send({ threadId, message: "retry" })).rejects.toMatchObject(
-          error,
-        );
         await expect(value.coordinator.cancel({ threadId })).rejects.toMatchObject(error);
         await expect(
           value.coordinator.exportThread({ threadId, out: path.join(value.directory, "out.json") }),

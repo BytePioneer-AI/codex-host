@@ -34,7 +34,7 @@ it("retries the real Claude Session's failed close before starting a same-native
   const history: unknown[] = [];
   const inputs: Parameters<ClaudeDependencies["createTransport"]>[0][] = [];
   const transports: ClaudeTransport[] = [];
-  const failed = Promise.withResolvers<void>();
+  const failed = deferred();
   const gate = deferred();
   const closing = deferred();
   const retrying = deferred();

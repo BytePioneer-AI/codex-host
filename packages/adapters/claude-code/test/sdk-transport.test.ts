@@ -2471,6 +2471,48 @@ describe("Claude history replacement fence", () => {
     },
   );
 
+  it.skipIf(process.platform === "win32")(
+    "does not signal a reused process group when retrying a timed-out shutdown",
+    async () => {
+      const value = fixture();
+      await value.transport.start();
+      const spawnProcess = options(value).spawnClaudeCodeProcess;
+      if (!spawnProcess) throw new Error("Missing native process ownership hook");
+      const child = spawnProcess({
+        command: process.execPath,
+        args: ["-e", ""],
+        signal: new AbortController().signal,
+        cwd: process.cwd(),
+        env: process.env,
+      }) as ChildProcessWithoutNullStreams;
+      await once(child, "exit");
+      if (!child.pid) throw new Error("Missing spawned process ID");
+      const pgid = -child.pid;
+      const realKill = process.kill.bind(process);
+      let groupExists = true;
+      const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid !== pgid) return realKill(pid, signal);
+        if (!groupExists) throw Object.assign(new Error("No such group"), { code: "ESRCH" });
+        return true;
+      });
+      try {
+        // The original group outlives its wrapper and does not exit before the deadline.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill).toHaveBeenCalledWith(pgid, "SIGTERM");
+        kill.mockClear();
+
+        // The kernel now reports an unrelated group at the same PGID.
+        await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+        expect(kill.mock.calls.filter(([pid]) => pid === pgid)).toEqual([[pgid, 0]]);
+
+        groupExists = false;
+        await expect(value.transport.close()).resolves.toBeUndefined();
+      } finally {
+        kill.mockRestore();
+      }
+    },
+  );
+
   it("rechecks a late SDK output drain after a failed close without closing the Query again", async () => {
     const value = fixture();
     await value.transport.start();

@@ -69,9 +69,13 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function externalThreadError(error: ExternalThreadRpcError): DelegationControlError {
+function externalThreadError(
+  error: ExternalThreadRpcError,
+  details?: { notStarted: true },
+): DelegationControlError {
   return new DelegationControlError("INTERNAL_ERROR", error.message, {
     externalThreadCode: error.code,
+    ...details,
   });
 }
 
@@ -471,8 +475,8 @@ export class HarnessDelegationCoordinator {
     }
     const location = await this.#externalRuntime.locate(input.threadId);
     if (location.kind === "official") return this.#sendOfficial(input);
-    if (location.kind === "error") throw externalThreadError(location.error);
-    const { thread } = await this.#resolveExternalThread(input.threadId);
+    if (location.kind === "error") throw externalThreadError(location.error, { notStarted: true });
+    const { thread } = await this.#resolveExternalThread(input.threadId, { notStarted: true });
     if (thread.record.subagent) {
       throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only", {
         readOnly: true,
@@ -580,9 +584,9 @@ export class HarnessDelegationCoordinator {
     });
   }
 
-  async #resolveExternalThread(threadId: string) {
+  async #resolveExternalThread(threadId: string, details?: { notStarted: true }) {
     const resolution = await this.#externalRuntime.resolve(threadId);
-    if (resolution.kind === "error") throw externalThreadError(resolution.error);
+    if (resolution.kind === "error") throw externalThreadError(resolution.error, details);
     if (resolution.kind === "official") {
       // We already located an external mapping; it disappeared before resolution.
       throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");

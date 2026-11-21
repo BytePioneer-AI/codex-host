@@ -478,6 +478,56 @@ describe("local Codex read-only identity startup", () => {
     );
   });
 
+  it("keeps the Remote Control invocation while Desktop tool connections attach and detach", async () => {
+    nativeFixture();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-remote-tools-"));
+    temporaryDirectories.add(directory);
+    const local = await prepareLocalCodex({
+      stockCodexPath: "/synthetic/remote-codex",
+      arguments: ["app-server", "--analytics-default-enabled"],
+      environment: { CODEX_HOME: directory },
+      diagnosticOutput: new PassThrough(),
+      deferStart: true,
+      remoteControl: true,
+    });
+    prepared.add(local);
+    const scope = local.officialRuntimeScope;
+    await scope.start();
+    const attach = async (pipe: string) => {
+      const attachment = new AbortController();
+      await configureStartup(
+        local,
+        {
+          stockCodexPath: "/synthetic/desktop-codex",
+          arguments: ["app-server"],
+          environment: { BROWSER_USE_ACCESS_PIPE_PATH: pipe },
+        },
+        attachment.signal,
+      );
+      nativeFixture();
+      await scope.start();
+      return attachment;
+    };
+    const verify = (pipe?: string) => {
+      const options = vi.mocked(createOwnedLoopbackBackend).mock.lastCall?.[0];
+      expect(options?.stockCodexPath).toBe("/synthetic/remote-codex");
+      expect(options?.arguments).toEqual(["app-server", "--analytics-default-enabled"]);
+      expect(options?.environment.BROWSER_USE_ACCESS_PIPE_PATH).toBe(pipe);
+    };
+    const first = await attach("first");
+    verify("first");
+    const second = await attach("second");
+    verify("second");
+    second.abort();
+    nativeFixture();
+    await scope.refreshBeforeRequest();
+    verify("first");
+    first.abort();
+    nativeFixture();
+    await scope.refreshBeforeRequest();
+    verify();
+  });
+
   it.each([false, true])(
     "preserves Remote Control startup without reading, writing or replacing recorded startup (configure first: %s)",
     async (configureFirst) => {

@@ -3,6 +3,8 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import lockfile from "proper-lockfile";
+
 import { DelegationControlError } from "./delegation-types.js";
 
 /** `read` observes; `dispatch` may also start, steer, answer, export, cancel and watch work. */
@@ -118,20 +120,20 @@ export class ExternalClientRegistry {
         "INVALID_ARGUMENT",
         "Client name 'local-cli' is reserved for the local CLI",
       );
-    const clients = await this.#read();
-    if (clients.some((client) => client.name === name))
-      throw new DelegationControlError("INVALID_ARGUMENT", `Client '${name}' already exists`);
-    const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-    const salt = randomBytes(16).toString("hex");
-    const client: StoredClient = {
-      name,
-      createdAt: now.toISOString(),
-      scope,
-      salt,
-      tokenHash: hashToken(salt, token),
-    };
-    await this.#write([...clients, client]);
-    return { client: publicClient(client), token };
+    return this.#mutate((clients) => {
+      if (clients.some((client) => client.name === name))
+        throw new DelegationControlError("INVALID_ARGUMENT", `Client '${name}' already exists`);
+      const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+      const salt = randomBytes(16).toString("hex");
+      const client: StoredClient = {
+        name,
+        createdAt: now.toISOString(),
+        scope,
+        salt,
+        tokenHash: hashToken(salt, token),
+      };
+      return { clients: [...clients, client], result: { client: publicClient(client), token } };
+    });
   }
 
   async list(): Promise<ExternalClient[]> {
@@ -141,20 +143,24 @@ export class ExternalClientRegistry {
   /** Takes effect on the client's next request; the token is unchanged. */
   async setScope(name: string, scope: ClientScope): Promise<ExternalClient> {
     validScope(scope);
-    const clients = await this.#read();
-    const current = clients.find((client) => client.name === name);
-    if (!current)
-      throw new DelegationControlError("INVALID_ARGUMENT", `Client '${name}' does not exist`);
-    const updated: StoredClient = { ...current, scope };
-    await this.#write(clients.map((client) => (client.name === name ? updated : client)));
-    return publicClient(updated);
+    return this.#mutate((clients) => {
+      const current = clients.find((client) => client.name === name);
+      if (!current)
+        throw new DelegationControlError("INVALID_ARGUMENT", `Client '${name}' does not exist`);
+      const updated: StoredClient = { ...current, scope };
+      return {
+        clients: clients.map((client) => (client.name === name ? updated : client)),
+        result: publicClient(updated),
+      };
+    });
   }
 
   async remove(name: string): Promise<void> {
-    const clients = await this.#read();
-    if (!clients.some((client) => client.name === name))
-      throw new DelegationControlError("INVALID_ARGUMENT", `Client '${name}' does not exist`);
-    await this.#write(clients.filter((client) => client.name !== name));
+    await this.#mutate((clients) => {
+      if (!clients.some((client) => client.name === name))
+        throw new DelegationControlError("INVALID_ARGUMENT", `Client '${name}' does not exist`);
+      return { clients: clients.filter((client) => client.name !== name), result: undefined };
+    });
   }
 
   /** The client the token belongs to, or undefined. Every entry is compared, so timing reveals nothing. */
@@ -203,12 +209,38 @@ export class ExternalClientRegistry {
     }
   }
 
-  async #write(clients: StoredClient[]): Promise<void> {
-    await mkdir(path.dirname(this.#filePath), { recursive: true, mode: 0o700 });
+  async #mutate<T>(
+    update: (clients: StoredClient[]) => { clients: StoredClient[]; result: T },
+  ): Promise<T> {
+    const directory = path.dirname(this.#filePath);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    let compromised: Error | undefined;
+    const release = await lockfile.lock(directory, {
+      lockfilePath: `${this.#filePath}.lock`,
+      retries: { retries: 24, minTimeout: 50, maxTimeout: 500 },
+      onCompromised(error) {
+        compromised = error;
+      },
+    });
+    const assertLocked = () => {
+      if (compromised) throw compromised;
+    };
+    try {
+      const { clients, result } = update(await this.#read());
+      await this.#write(clients, assertLocked);
+      assertLocked();
+      return result;
+    } finally {
+      if (!compromised) await release();
+    }
+  }
+
+  async #write(clients: StoredClient[], assertLocked: () => void): Promise<void> {
     const file: ClientsFile = { formatVersion: 1, clients };
     const temporary = `${this.#filePath}.${randomBytes(6).toString("hex")}.tmp`;
     try {
       await writeFile(temporary, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      assertLocked();
       await rename(temporary, this.#filePath);
     } finally {
       await rm(temporary, { force: true });

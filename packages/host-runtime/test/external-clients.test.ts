@@ -88,6 +88,17 @@ describe("external clients", () => {
     expect(JSON.stringify(listed.body)).not.toContain(token);
   });
 
+  it("preserves both independent registrations when writers share the registry", async () => {
+    const filePath = defaultExternalClientsPath(environment);
+    const first = new ExternalClientRegistry(filePath);
+    const second = new ExternalClientRegistry(filePath);
+
+    await Promise.all([first.add("first", "read"), second.add("second", "read")]);
+
+    const names = (await first.list()).map(({ name }) => name).sort();
+    expect(names).toEqual(["first", "second"]);
+  });
+
   it("rejects invalid and duplicate names without replacing the token", async () => {
     expect((await cli(["client", "add", "Grok_Bot"], environment)).body).toMatchObject({
       error: { code: "INVALID_ARGUMENT" },

@@ -30,6 +30,10 @@
     "@codexhost/update-manager": "0.0.0",
     "@deepseek-ai/cordis": "4.0.4",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "proper-lockfile": "^4.1.2",
     "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "^4.1.4"
   }
 }

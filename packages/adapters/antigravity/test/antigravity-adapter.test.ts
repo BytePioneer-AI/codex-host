@@ -1970,6 +1970,36 @@ describe("Antigravity foreground native commits", () => {
     },
   );
 
+  it("does not claim a prior Turn's second late input when count advances by one", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      const firstInputAt = Date.now();
+      userStep(db, 0, "first-a", "first");
+      stampInput(db, 0, firstInputAt);
+      const secondLateInputAt = Date.now();
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      expect(terminal(outputs, "t1")).toMatchObject({
+        nativeTurnRef: { nativeTurnKey: "turn-0" },
+      });
+
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      // Turn A's second native input commits late during Turn B while Turn B has not written yet.
+      userStep(db, 1, "first-b", "first");
+      stampInput(db, 1, secondLateInputAt);
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
+      expect(terminal(outputs, "t2").outcome).not.toHaveProperty("checkpoint");
+    } finally {
+      db.close();
+    }
+  });
+
   it.each(["quick Stop", "tool-only output"])(
     "recovers live identity and Fork after %s without a committed input",
     async (previous) => {

@@ -19,6 +19,15 @@ function countInputs(db: DatabaseSync): number {
   return Number(db.prepare("SELECT count(*) AS n FROM steps WHERE step_type = 14").get()?.n ?? 0);
 }
 
+function latestInputCreatedAtMs(db: DatabaseSync): number | undefined {
+  const columns = db.prepare("PRAGMA table_info(steps)").all() as { name?: unknown }[];
+  if (!columns.some((column) => column.name === "metadata")) return undefined;
+  const row = db
+    .prepare("SELECT metadata FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1")
+    .get();
+  return nativeStepCreatedAtMs(row?.metadata);
+}
+
 async function withReadSnapshot<T>(dbPath: string, read: (db: DatabaseSync) => T): Promise<T> {
   await access(dbPath);
   const { DatabaseSync } = await import("node:sqlite");
@@ -56,18 +65,13 @@ export async function observeNativeTurnCount(
       const confirmed = await withReadSnapshot(dbPath, (db) => {
         const count = countInputs(db);
         if (count <= (before ?? 0)) return null;
-        if (before !== null && count === before + 1) return count;
         // Commit time and prompt text cannot distinguish an earlier late write.
         // Use the native input's creation time, not any reply or tool output.
-        const row = db
-          .prepare("SELECT metadata FROM steps WHERE step_type = 14 ORDER BY idx DESC LIMIT 1")
-          .get();
-        const createdAtMs = nativeStepCreatedAtMs(row?.metadata);
-        return createdAtMs !== undefined &&
-          createdAtMs > submittedAtMs &&
-          createdAtMs <= completedAtMs
-          ? count
-          : null;
+        const createdAtMs = latestInputCreatedAtMs(db);
+        if (createdAtMs !== undefined) {
+          return createdAtMs > submittedAtMs && createdAtMs <= completedAtMs ? count : null;
+        }
+        return before !== null && count === before + 1 ? count : null;
       });
       if (confirmed !== null) return confirmed;
     } catch (error) {

@@ -17,6 +17,7 @@ import {
 } from "../src/client/tree.ts";
 import { threadTreeOrderSource } from "../src/client/thread-tree-order.ts";
 import {
+  archiveCandidates,
   isLocalThreadTreeMember,
   runningSubagentsInThreadSubtree,
   runningThreadSubtree,
@@ -350,4 +351,33 @@ it("defaults Thread folds to collapsed and keeps Thread and Workspace folds inde
   view.actions.setThreadsExpanded(["a"], false);
   assert.equal(view.getSnapshot().threadExpansion?.a, false);
   assert.equal(view.getSnapshot().threadExpansion?.b, true);
+});
+
+it("captures only rendered, unarchived delegated descendants and native forks", () => {
+  const fold = row("fold", "root");
+  const fork = row("fork");
+  const subagent = row("subagent", "root");
+  const remote = row("remote", "root");
+  const list = catalog(
+    row("root"),
+    fold,
+    row("hidden", "fold"),
+    row("archived", "root"),
+    { ...fork, projectionValues: { ...fork.projectionValues, archiveForkParent: "fold" } },
+    { ...subagent, origin: "subagent" },
+    {
+      ...remote,
+      projectionValues: {
+        ...remote.projectionValues,
+        remoteHost: { hostId: "other", displayName: "Other", state: "ready" },
+      },
+    },
+  );
+  const rendered = ["fold", "fork", "fork", "archived", "subagent", "remote"];
+  const selection = archiveCandidates(list, id("root"), rendered, new Set([id("archived")]));
+  rendered.push("hidden");
+  assert.deepEqual(selection, [
+    { id: id("fold"), title: "fold" },
+    { id: id("fork"), title: "fork" },
+  ]);
 });

@@ -690,6 +690,10 @@ export class ChSessions {
           .map((key) => [key, projections[key]]),
       ),
       threadTreeParent: this.tree.parent(row.id),
+      archiveForkParent:
+        harnessId === "codex" && !row.parentThreadId && typeof row.forkedFromId === "string"
+          ? row.forkedFromId
+          : null,
       nativeDiscovery: !row.parentThreadId && row.canAcceptDirectInput !== false,
       threadReference: { hostId: "local" },
       title: threadListTitle(row),
@@ -1534,15 +1538,27 @@ export class ChSessions {
       ["session/unarchive", false],
     ] as const)
       rpc.register(method, async (args) => {
-        const { sessionId } = requestOf<{ sessionId: string }>(args);
-        this.archiveOperations.delete(this.id(sessionId));
+        const { sessionId, scope } = requestOf<{ sessionId: string; scope?: "single" }>(args);
+        const id = this.id(sessionId);
+        if (scope !== undefined && scope !== "single")
+          throw new RpcError("session/archive-invalid", "Invalid archive scope.");
+        this.archiveOperations.delete(id);
         try {
-          await this.tree.archive(
-            this.id(sessionId),
-            archived,
-            new Set(this.workspaces.localArchivedSessionIds()),
-            (id) => this.setArchived(id, archived),
-          );
+          if (scope === "single") {
+            await this.setArchived(id, archived);
+            if (this.workspaces.localArchivedSessionIds().includes(id) !== archived)
+              throw new RpcError(
+                "session/archive-unconfirmed",
+                "The requested archive state was not confirmed.",
+              );
+          } else {
+            await this.tree.archive(
+              id,
+              archived,
+              new Set(this.workspaces.localArchivedSessionIds()),
+              (member) => this.setArchived(member, archived),
+            );
+          }
         } finally {
           await this.refresh().catch(() => undefined);
         }

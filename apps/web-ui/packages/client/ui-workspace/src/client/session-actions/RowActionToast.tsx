@@ -40,8 +40,14 @@ export function RowActionToast({
     return (
       <Toast
         key={`toast-${String(toast.seq)}`}
-        text={t(toast.kind === "archived" ? "toast.archived" : "toast.stoppedAndArchived")}
-        tone="success"
+        text={
+          toast.failedChildren
+            ? t("archive.children.partial", { n: toast.failedChildren })
+            : t(toast.kind === "archived" ? "toast.archived" : "toast.stoppedAndArchived")
+        }
+        {...(toast.failedChildren
+          ? { icon: <IconWarningOutlineRegular /> }
+          : { tone: "success" as const })}
         holdMs={LONG_TOAST_HOLD_MS}
         actions={[
           {

@@ -524,6 +524,7 @@ export function SessionNodeItem({
     <div
       ref={rowRef}
       data-row-key={rowKey}
+      data-sidebar-session-id={node.id}
       data-thread-parent={node.tree?.parentId ?? undefined}
       data-thread-depth={depth}
       data-thread-sortable={String(reorderable)}

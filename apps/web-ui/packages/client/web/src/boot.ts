@@ -14,6 +14,7 @@ import type {
 } from "@deepseek-ai/dsh-client-modules/client";
 import { bootClient } from "./boot-client.ts";
 import { BootPage } from "./boot-page.ts";
+import { installComposerDiagnostic } from "./composer-diagnostic.ts";
 import { PwaInstall } from "./pwa-install.ts";
 import { preventIosFocusZoom } from "./ios-focus-zoom.ts";
 import { guardIosComposerPageScroll } from "./ios-composer-scroll.ts";
@@ -55,6 +56,7 @@ export class AppWebEntry {
     }
     preventIosFocusZoom();
     guardIosComposerPageScroll();
+    installComposerDiagnostic(container.ownerDocument);
     this.page = new BootPage(container);
   }
 

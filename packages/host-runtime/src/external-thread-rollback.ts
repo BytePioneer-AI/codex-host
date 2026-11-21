@@ -216,6 +216,7 @@ async function executeCurrentLastTurnRollback(input: {
     sessionId: current.sessionId,
     thread,
     turns: aligned.turns,
+    historicalPlans: aligned.historicalPlans,
     restoredState: replacementState,
   });
   return { ok: true, thread };
@@ -422,6 +423,7 @@ export async function executeExternalThreadRollback(input: {
     sessionId: derived.sessionId,
     thread,
     turns: aligned.turns,
+    historicalPlans: aligned.historicalPlans,
   });
   return { ok: true, thread };
 }

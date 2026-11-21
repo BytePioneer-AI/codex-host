@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { ServerResponse } from "node:http";
+import { once } from "node:events";
+import { request as httpRequest, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -624,6 +625,55 @@ it("reaps a session whose client died without DELETE and keeps connected idle se
   expect(
     (await connected.client.callTool({ name: "echo", arguments: {} })).structuredContent,
   ).toMatchObject({ pid: kept.pid, calls: 2 });
+}, 20_000);
+
+it("keeps a session without SSE alive while a POST body is still arriving", async () => {
+  const timeout = 500;
+  const f = await setup({ detachedSessionTimeoutMs: timeout });
+  const url = String((f.config.args as string[])[2]);
+  const headers = {
+    ...f.headers(),
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+  };
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const initialized = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(initializationRequest),
+    });
+    expect(initialized.status).toBe(200);
+    await initialized.text();
+    const sessionId = initialized.headers.get("mcp-session-id");
+    if (!sessionId) throw new Error("Missing MCP session ID");
+    const upload = httpRequest(url, {
+      method: "POST",
+      headers: { ...headers, "mcp-session-id": sessionId, expect: "100-continue" },
+    });
+    try {
+      const ready = once(upload, "continue");
+      upload.flushHeaders();
+      await ready;
+      upload.write('{"jsonrpc":"2.0","method":"notifications/initialized"');
+      await vi.advanceTimersByTimeAsync(timeout * 2);
+      const reply = once(upload, "response");
+      upload.end("}");
+      const [response] = await reply;
+      response.resume();
+      expect(response.statusCode).toBe(202);
+
+      // Once the POST ends, the session can be reaped again.
+      await vi.advanceTimersByTimeAsync(timeout);
+    } finally {
+      upload.destroy();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+  const pid = (await f.records()).find((record) => record.event === "started")?.pid;
+  expect(pid).toEqual(expect.any(Number));
+  await vi.waitFor(() => expect(() => process.kill(Number(pid), 0)).toThrow(), { timeout: 6_000 });
 }, 20_000);
 
 it("stops an owned tool that ignores EOF and termination", async () => {

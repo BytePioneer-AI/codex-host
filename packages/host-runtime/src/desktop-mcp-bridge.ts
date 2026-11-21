@@ -322,6 +322,9 @@ export async function createDesktopMcpBridge(options: {
       response.writeHead(401, { "www-authenticate": "Bearer" }).end();
       return;
     }
+    const id = request.headers["mcp-session-id"];
+    let session = typeof id === "string" ? profile.sessions.get(id) : undefined;
+    if (session) response.once("close", session.attach());
     let body: Record<string, unknown> | undefined;
     if (request.method === "POST") {
       try {
@@ -331,8 +334,6 @@ export async function createDesktopMcpBridge(options: {
         return;
       }
     }
-    const id = request.headers["mcp-session-id"];
-    let session = typeof id === "string" ? profile.sessions.get(id) : undefined;
     const initializing = session === undefined;
     const controller = new AbortController();
     response.once("close", () => {
@@ -356,8 +357,8 @@ export async function createDesktopMcpBridge(options: {
       );
       sessions.add(created);
       session = created;
+      response.once("close", session.attach());
     }
-    response.once("close", session.attach());
     if (initializing) await session.start();
     if (controller.signal.aborted) {
       if (initializing) await session.close();

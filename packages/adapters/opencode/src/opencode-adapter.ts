@@ -1576,13 +1576,17 @@ export class OpenCodeAdapter implements HarnessAdapter {
     }
     const cwd = input.cwd ?? process.cwd();
     const inFlight = this.#inspectionInFlight.get(cwd);
-    if (inFlight) return inFlight;
-    if (!input.refresh) {
-      const cached = this.#inspectionCache.get(cwd);
-      if (cached) return cached;
+    if (input.refresh) {
+      this.#inspectionCache.clear();
+      this.#inspectionInFlight.clear();
+      if (inFlight) this.#inspectionInFlight.set(cwd, inFlight);
     }
+    if (inFlight) return inFlight;
+    const cached = this.#inspectionCache.get(cwd);
+    if (cached) return cached;
     const inspection = this.#inspectCwd(cwd).then((result) => {
-      if (result.status === "ready") this.#inspectionCache.set(cwd, result);
+      if (result.status === "ready" && this.#inspectionInFlight.get(cwd) === inspection)
+        this.#inspectionCache.set(cwd, result);
       return result;
     });
     this.#inspectionInFlight.set(cwd, inspection);

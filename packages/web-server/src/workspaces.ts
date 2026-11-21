@@ -48,9 +48,8 @@ interface ProjectRoot {
  * Several projects may list the same folder. A folder that is the first root of a project
  * carries that project's name (the earliest such project); any other folder uses its folder
  * name, or the full path when that name is empty (the filesystem root). Titles are compared
- * between different folders only: a project name that another project name repeats, or a
- * folder name that any other title repeats, falls back to the full path so the Web sidebar
- * keeps the folders apart. */
+ * between different folders only. Duplicate project names fall back to full paths; a folder
+ * name falls back to its full path if it matches another folder or a project name. */
 function projectRoots(projects: readonly NativeProject[]): ProjectRoot[] {
   const named = new Map<string, NativeProject>();
   for (const project of projects) {
@@ -380,7 +379,7 @@ export class Workspaces {
     sessions: readonly { sessionId: string; cwd: string; title?: string }[],
     groups: Map<string, string | undefined>,
     projectless: ReadonlySet<string> = new Set(),
-    projects: readonly { name: string; rootPaths: string[] }[] = [],
+    projects: readonly NativeProject[] = [],
   ): void {
     const before = new Map(
       this.list().map((workspace) => [workspace.workspaceId, JSON.stringify(workspace)]),
@@ -454,9 +453,11 @@ export class Workspaces {
           ...roots.flatMap((root) => byPath.get(root.path) ?? []),
           ...items.filter((workspace) => !rootPaths.has(workspace.path)),
         ];
-    let changed = ordered.some(
-      (workspace, index) => workspace.workspaceId !== this.state.items[index]?.workspaceId,
-    );
+    let changed =
+      ordered.length !== this.state.items.length ||
+      ordered.some(
+        (workspace, index) => workspace.workspaceId !== this.state.items[index]?.workspaceId,
+      );
     const originals = new Map(
       this.state.items.map((workspace) => [workspace.workspaceId, workspace]),
     );
@@ -542,15 +543,21 @@ export class Workspaces {
     rpc.register("workspace/insertBefore", async (args) => {
       const request = requestOf<{ workspaceId: string; beforeWorkspaceId?: string }>(args);
       const workspace = this.require(request.workspaceId);
-      const rest = this.state.items.filter((item) => item !== workspace);
+      const items = this.state.items;
+      const rest = items.filter((item) => item !== workspace);
       const index =
         request.beforeWorkspaceId === undefined
           ? rest.length
           : rest.findIndex((item) => item.workspaceId === request.beforeWorkspaceId);
       rest.splice(index < 0 ? rest.length : index, 0, workspace);
-      this.state.items = rest;
-      this.state.manualOrder = true;
-      this.save();
+      if (
+        request.beforeWorkspaceId === workspace.workspaceId ||
+        rest.every((item, i) => item === items[i])
+      )
+        return { workspaceIds: items.map((item) => item.workspaceId) };
+      const state = { ...this.state, items: rest, manualOrder: true };
+      this.data.writeJson(FILE, state);
+      this.state = state;
       const workspaceIds = rest.map((item) => item.workspaceId);
       this.broadcast({ type: "order", workspaceIds });
       return { workspaceIds };

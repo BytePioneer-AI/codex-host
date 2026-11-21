@@ -26,13 +26,18 @@ function toolCall(name: string, id: string, input: Record<string, unknown>) {
   return message("assistant", `call-${id}`, [{ type: "tool_use", name, id, input }]);
 }
 
-function toolResult(id: string, native: Record<string, unknown>, isError = false) {
+function toolResult(
+  id: string,
+  native: Record<string, unknown>,
+  isError = false,
+  text = JSON.stringify(native),
+) {
   return {
     ...message("user", `result-${id}`, [
       {
         type: "tool_result",
         tool_use_id: id,
-        content: [{ type: "text", text: JSON.stringify(native) }],
+        content: [{ type: "text", text }],
         ...(isError ? { is_error: true } : {}),
       },
     ]),
@@ -53,10 +58,19 @@ function answer(uuid: string) {
   return { ...value, message: { ...value.message, stop_reason: "end_turn" } };
 }
 
-function spawn(agentId: string) {
+function spawn(agentId: string, name?: string) {
   return [
-    toolCall("Agent", `spawn-${agentId}`, { prompt: "work", run_in_background: true }),
-    toolResult(`spawn-${agentId}`, { isAsync: true, agentId }),
+    toolCall("Agent", `spawn-${agentId}`, {
+      ...(name ? { name } : {}),
+      prompt: "work",
+      run_in_background: true,
+    }),
+    toolResult(
+      `spawn-${agentId}`,
+      { isAsync: true, status: "async_launched", agentId },
+      false,
+      `Async agent launched successfully.\nagentId: ${agentId} (internal ID - do not mention to user.)\nThe agent is working in the background.`,
+    ),
   ];
 }
 
@@ -138,7 +152,213 @@ function completions(events: HostEvent[]) {
 
 const refusal = { success: false, message: "Agent was stopped by the user and won't be resumed." };
 
+const resumedId = "a45fecc62e5c2aff6";
+const queuedId = "ae463978a2c44bbd5";
+const resumedText = {
+  success: true,
+  message: "Resuming agent worker",
+  resumedAgentId: resumedId,
+  pin: { id: resumedId, name: "worker", ref: "40dd34" },
+};
+const resumed = { ...resumedText, revivedAgentId: resumedId };
+const queued = {
+  success: true,
+  message:
+    "Message queued for delivery to worker at its next tool round. If it finishes first, it is resumed with the message and notifies again, so wait for that notification before resending.",
+  pin: { id: queuedId, name: "worker", ref: "8cb3b3" },
+};
+
+function taskNotification(taskId: string) {
+  return { type: "system", subtype: "task_notification", task_id: taskId, status: "completed" };
+}
+
 describe("Claude SendMessage occupancy", () => {
+  it.each([
+    { mode: "resumed", agentId: resumedId, result: resumed },
+    { mode: "queued", agentId: queuedId, result: queued },
+  ])("settles a named $mode send by native ID", async ({ mode, agentId, result }) => {
+    const live = await liveSession();
+    try {
+      if (mode === "resumed") {
+        await live.session.execute(textTurn("initial"));
+        live.push(...spawn(agentId, "worker"), taskNotification(agentId), answer("initial-answer"));
+        live.result();
+        await vi.waitFor(() =>
+          expect(live.events).toContainEqual(
+            expect.objectContaining({ type: "turn.completed", turnId: "initial" }),
+          ),
+        );
+      }
+      await live.session.execute(textTurn("root"));
+      // The queued Agent is running, but its name was not observed at launch.
+      if (mode === "queued") live.push(...spawn(agentId));
+      live.push(toolCall("SendMessage", "send", { to: "worker", message: "continue" }));
+      if (mode === "resumed") {
+        await vi.waitFor(() =>
+          expect(live.events).toContainEqual(
+            expect.objectContaining({
+              type: "item.started",
+              item: expect.objectContaining({
+                operation: "send",
+                subagents: [expect.objectContaining({ nativeSubagentId: agentId })],
+              }),
+            }),
+          ),
+        );
+      }
+      live.push(
+        toolResult(
+          "send",
+          result,
+          false,
+          JSON.stringify(mode === "resumed" ? resumedText : queued),
+        ),
+        answer("root-answer"),
+      );
+      live.result();
+      await vi.waitFor(() =>
+        expect(live.events).toContainEqual(
+          expect.objectContaining({
+            type: "item.completed",
+            snapshot: expect.objectContaining({
+              item: expect.objectContaining({
+                operation: "send",
+                subagents: [
+                  expect.objectContaining({ nativeSubagentId: agentId, status: "running" }),
+                ],
+              }),
+            }),
+          }),
+        ),
+      );
+      if (mode === "queued") {
+        expect(live.events).toContainEqual({
+          type: "subagent.state.changed",
+          nativeSubagentId: "worker",
+          status: "completed",
+        });
+      }
+      await expect(live.session.execute(textTurn("early"))).resolves.toMatchObject({
+        ok: false,
+        error: { code: "sessionBusy" },
+      });
+      live.push(taskNotification(agentId), answer("continuation"));
+      live.result();
+      await vi.waitFor(() => expect(completions(live.events)).toHaveLength(1));
+      expect(live.events).toContainEqual(
+        expect.objectContaining({
+          type: "subagent.state.changed",
+          nativeSubagentId: agentId,
+          status: "completed",
+        }),
+      );
+      await expect(live.session.execute(textTurn("next"))).resolves.toMatchObject({ ok: true });
+      live.push(answer("next-answer"));
+      live.result();
+    } finally {
+      await live.close();
+    }
+  });
+
+  it("retires an unknown named send target on task_started before the tool result", async () => {
+    const live = await liveSession();
+    const callId = "toolu_named_send";
+    try {
+      await expect(live.session.execute(textTurn("root"))).resolves.toMatchObject({ ok: true });
+      // Claude Code 2.1.328, resumed send with no cached name binding in this transport.
+      live.push(
+        toolCall("SendMessage", callId, {
+          to: "worker",
+          message: "Reply PONG.",
+          type: "message",
+          recipient: "worker",
+          recipient_kind: "name",
+          content: "Reply PONG.",
+        }),
+        {
+          type: "system",
+          subtype: "task_started",
+          session_id: sessionId,
+          task_id: resumedId,
+          tool_use_id: callId,
+        },
+      );
+      await vi.waitFor(() =>
+        expect(live.events).toContainEqual(
+          expect.objectContaining({
+            type: "item.updated",
+            update: {
+              type: "subagents.replace",
+              subagents: [
+                expect.objectContaining({ nativeSubagentId: resumedId, status: "running" }),
+              ],
+            },
+          }),
+        ),
+      );
+      expect(live.events).toContainEqual(
+        expect.objectContaining({
+          type: "item.started",
+          item: expect.objectContaining({
+            operation: "send",
+            subagents: [expect.objectContaining({ nativeSubagentId: "worker", status: "running" })],
+          }),
+        }),
+      );
+      const retiredName = {
+        type: "subagent.state.changed",
+        nativeSubagentId: "worker",
+        status: "completed",
+      };
+      // No tool result has been delivered, so completion cannot retire the provisional child.
+      expect(live.events).toContainEqual(retiredName);
+
+      live.push(toolResult(callId, resumed, false, JSON.stringify(resumedText)), answer("sent"));
+      live.result();
+      live.push({ ...taskNotification(resumedId), tool_use_id: callId }, answer("continuation"));
+      live.result();
+      await vi.waitFor(() => expect(completions(live.events)).toHaveLength(1));
+      expect(live.events.filter((event) => event.type === "subagent.state.changed")).toEqual([
+        retiredName,
+        expect.objectContaining({ nativeSubagentId: resumedId, status: "completed" }),
+      ]);
+    } finally {
+      await live.close();
+    }
+  });
+
+  it.each([resumedText, queued])(
+    "replays name bindings from a text-only $message result",
+    (result) => {
+      const agentId = result.pin.id;
+      const firstSend = toolResult("send", result);
+      const snapshot = mapClaudeSnapshot(
+        [
+          message("user", "first", "continue"),
+          toolCall("SendMessage", "send", { to: "worker", message: "work" }),
+          { ...firstSend, tool_use_result: undefined },
+          notification(agentId),
+          answer("first-answer"),
+          message("user", "second", "again"),
+          toolCall("SendMessage", "again", { to: "worker", message: "work" }),
+          toolResult("again", { success: true }),
+          answer("second-answer"),
+          { ...notification(agentId), uuid: "second-notification" },
+          answer("continuation"),
+          notification("unrelated"),
+          answer("autonomous"),
+        ],
+        sessionId,
+      );
+      expect(snapshot.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+        "first",
+        "second",
+        "notification-unrelated",
+      ]);
+      expect(snapshot.turns[1]?.checkpoint?.checkpointId).toBe("continuation");
+    },
+  );
+
   it.each(
     (["none", "same-running", "other-running", "same-notified"] as const).flatMap((existing) =>
       [false, true].map((isError) => ({ existing, isError })),

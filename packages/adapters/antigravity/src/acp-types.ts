@@ -99,7 +99,7 @@ export interface AntigravityAcpSessionOpenResult {
 }
 
 export type AntigravityAcpEvent =
-  | { type: "user.text"; text: string }
+  | { type: "user.text"; text: string; nativeTurnIndex?: number }
   | { type: "agent.text"; text: string }
   | { type: "agent.thought"; text: string }
   | {
@@ -152,6 +152,8 @@ export type AntigravityPromptInputPart =
   { type: "text"; text: string } | { type: "image"; mimeType: string; data: string };
 
 export interface AntigravityActivePromptHandler {
+  /** Called at the wire response boundary, before any subsequent Session events. */
+  onResponse?(): void;
   onEvent(event: AntigravityAcpEvent): void;
   onPermission(request: RequestPermissionRequest): Promise<RequestPermissionResponse>;
   onElicitation(request: CreateElicitationRequest): Promise<CreateElicitationResponse>;

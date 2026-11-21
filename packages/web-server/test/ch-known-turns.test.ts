@@ -79,14 +79,16 @@ it("asks for fingerprints first, then skips completed Turns it already holds", a
   assert.ok(view.ownerSnapshot?.turnsPage.data.every((value) => value.items.length === 3));
 });
 
-it("re-sends a changed completed Turn and rebuilds its finished projection", async () => {
+it("re-sends a completed Turn with idle background output even when updatedAt is unchanged", async () => {
   const { host, row, view } = fixture();
   await view.refresh();
   const edited = row.turns.at(-1);
   assert.ok(edited);
-  // A late native refresh may add an Item to a settled Turn.
+  // Background output can arrive in the same second as Turn completion.
+  assert.equal(row.status.type, "idle");
+  assert.equal(row.updatedAt, view.thread.updatedAt);
   edited.items.push({ id: "late", type: "agentMessage", text: "late" });
-  await assert.rejects(view.refresh(true), { code: "host/items-replaced" });
+  await assert.rejects(view.refresh(), { code: "host/items-replaced" });
   assert.deepEqual(host.snapshotPlaceholders, [0, 4]);
   const rebuilt = new ChThreadHistory(host, row, "fake", () => {});
   await rebuilt.refresh();
@@ -95,6 +97,46 @@ it("re-sends a changed completed Turn and rebuilds its finished projection", asy
     JSON.stringify(rebuilt.log.events.filter((event) => event.type === "assistant/message")),
     /"text":"late"/u,
   );
+});
+
+it("appends a live autonomous final answer and replays it without an empty user message", async () => {
+  const { host, row, view } = fixture(1);
+  const previous = row.turns[0];
+  assert.ok(previous);
+  const answer = previous.items.at(-1);
+  assert.ok(answer);
+  answer.phase = "final_answer";
+  await view.refresh();
+  const messages = (value: ChThreadHistory) =>
+    value.log.events
+      .filter(
+        ({ type }) =>
+          type === "user/message" || type === "assistant/message" || type === "turn/end",
+      )
+      .map(({ type, data }) => ({ type, data }));
+  const before = messages(view);
+  row.turns.push({
+    id: "wake-12",
+    status: "completed",
+    startedAt: 1_700_000_060,
+    completedAt: 1_700_000_062,
+    items: [
+      { id: "wake-reply", type: "agentMessage", text: "Timer expired", phase: "final_answer" },
+    ],
+  });
+  await view.refresh(true);
+  assert.deepEqual(messages(view).slice(0, before.length), before);
+  assert.equal(userMessages(view), 1);
+  assert.equal(view.log.events.filter(({ type }) => type === "turn/end").length, 2);
+  for (const { data } of view.log.events.filter(({ type }) => type === "turn/end")) {
+    assert.equal(typeof (data as { finalAssistantStep?: unknown }).finalAssistantStep, "number");
+  }
+  const reloaded = new ChThreadHistory(host, row, "fake", () => {});
+  await reloaded.refresh();
+  // The Web log allocates fresh presentation IDs on each load.
+  const withoutMessageIds = (value: ChThreadHistory) =>
+    JSON.stringify(messages(value), (key, entry) => (key === "id" ? undefined : entry));
+  assert.equal(withoutMessageIds(reloaded), withoutMessageIds(view));
 });
 
 it("reads a full snapshot again when a placeholder does not match the held Turn", async () => {

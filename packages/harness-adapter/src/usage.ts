@@ -34,6 +34,8 @@ export interface HostUsage {
   sessionCacheHitRatePercent?: number;
   /** Host-derived: latest Turn start to its first reasoning or text output, as observed by Host. */
   timeToFirstOutputMs?: number;
+  /** Host-derived: latest verified native request's time to first output. */
+  latestRequestTimeToFirstOutputMs?: number;
   /** How `totalCostUsd` was obtained; present only with `totalCostUsd`. */
   costSource?: HostUsageCostSource;
   /**
@@ -50,6 +52,7 @@ export const hostDerivedUsageFields = [
   "sessionCacheHitRatePercent",
   "sessionOutputTokensPerSecond",
   "timeToFirstOutputMs",
+  "latestRequestTimeToFirstOutputMs",
   "costSource",
   "unpricedModels",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
@@ -69,6 +72,7 @@ const safeIntegerFields = [
   "planFiveHourResetsAtUnix",
   "planSevenDayResetsAtUnix",
   "timeToFirstOutputMs",
+  "latestRequestTimeToFirstOutputMs",
 ] as const satisfies ReadonlyArray<keyof HostUsage>;
 
 const percentFields = [
@@ -262,6 +266,19 @@ export interface HostUsageRequest {
   startedAtMs?: number;
   completedAtMs?: number;
 }
+
+type RequestOutputInterval = { startedAtMs: number; completedAtMs: number; outputTokens: number };
+
+/** Timing that can arrive independently of billable request usage. */
+export type HostUsageRequestTiming = { requestId: string } & (
+  | {
+      /** Native request start (Unix ms), used to order TTFT independent of delivery order. */
+      requestStartedAtMs: number;
+      timeToFirstOutputMs: number;
+      output?: RequestOutputInterval;
+    }
+  | { requestStartedAtMs?: never; timeToFirstOutputMs?: never; output: RequestOutputInterval }
+);
 
 const requestTokenFields = [
   "inputTokens",

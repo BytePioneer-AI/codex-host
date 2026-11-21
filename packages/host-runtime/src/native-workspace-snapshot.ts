@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import type { StoredSectionPlacementV1, StoredThreadRecordV1 } from "@codexhost/mapping-store";
 import {
   clientWorkspaceSnapshotSchema,
+  desktopProjectDefinitions,
   type ClientWorkspaceSnapshot,
 } from "@codexhost/shared-contracts";
 
@@ -13,10 +14,8 @@ import { externalPinIds } from "./external-thread-pins.js";
 export async function readNativeWorkspaceSnapshot(
   environment: NodeJS.ProcessEnv,
 ): Promise<ClientWorkspaceSnapshot> {
-  const file = path.join(
-    environment.CODEX_HOME ?? path.join(homedir(), ".codex"),
-    ".codex-global-state.json",
-  );
+  const codexHome = environment.CODEX_HOME ?? path.join(homedir(), ".codex");
+  const file = path.join(codexHome, ".codex-global-state.json");
   let text: string;
   try {
     const handle = await open(file, "r");
@@ -53,18 +52,8 @@ export async function readNativeWorkspaceSnapshot(
     Array.isArray(assigned)
   )
     throw new Error("Invalid native project metadata");
-  // `project-order` is both the visible set and Desktop's sidebar order; the object's own key
-  // order is only the order projects were first stored in.
-  const projects = new Map<unknown, { id: unknown; name: unknown; rootPaths: unknown }>();
-  for (const value of Object.values(local)) {
-    if (value && typeof value === "object" && !projects.has(value.id))
-      projects.set(value.id, value);
-  }
   return clientWorkspaceSnapshotSchema.parse({
-    projects: order.flatMap((id, index) => {
-      const project = order.indexOf(id) === index ? projects.get(id) : undefined;
-      return project ? [{ id: project.id, name: project.name, rootPaths: project.rootPaths }] : [];
-    }),
+    projects: desktopProjectDefinitions(state, `local:${path.resolve(codexHome)}`),
     assignments: Object.fromEntries(
       Object.entries(assigned).flatMap(([id, value]) => {
         if (!value || typeof value !== "object") return [];

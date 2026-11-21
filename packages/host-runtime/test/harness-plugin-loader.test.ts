@@ -72,7 +72,7 @@ afterEach(async () => {
 });
 
 describe("Harness plugin discovery and loading", () => {
-  it.each(["credits", "refreshCredits"])(
+  it.each(["credits", "refreshCredits", "balance", "refreshBalance"])(
     "rejects malformed optional %s capabilities",
     async (method) => {
       const directory = await root(["broken-quota"]);

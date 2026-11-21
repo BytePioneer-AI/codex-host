@@ -109,7 +109,7 @@ interface HarnessSessionImportSource {
 - 原生引用只保存 Harness 和 Session ID，不增加 locator；Claude Adapter 已用该 ID 和 cwd 执行 `resume`，而 locator 在现有实现中专属于尚未启动的 codexhost Pending Session。
 - Claude Code 没有可靠的跨进程运行标记，因此候选为 `running: null`。导入前应在 CLI 或其他客户端关闭该会话，避免同时追加同一 Transcript。
 - 扫描只读、流式解析，不启动 Claude、不发送 Turn、不改写 JSONL。读取前后检查设备、inode、大小、mtime 和 ctime；活动写入的文件暂时跳过，导入提交前重新读取所选会话。
-- 每个 Adapter 实例按文件指纹缓存候选元数据；翻页、搜索和刷新不会重复解析未变化的完整 Transcript。重复 Session ID 明确失败，不静默选择其中一个。
+- 每个 Adapter 实例按文件指纹缓存候选元数据；翻页、搜索和刷新不会重复解析未变化的完整 Transcript。同一 Session ID 出现在多个项目目录时，列表隐藏该 ID 的全部副本，其余会话仍可导入；即使其中一个副本无效，也不展示解析时会被拒绝的 ID。直接导入重复 ID 仍明确失败，不静默选择其中一个。移除冲突副本后，刷新可重新发现剩余会话。
 
 导入能力与 Claude CLI 的原生会话列表是两条边界：本页可以导入旧 `sdk-ts` 会话；codexhost 新建 SDK 会话另以 `codexhost-sdk` entrypoint 持久化，使当前 Claude CLI 版本的原生 picker 也能列出它们。
 

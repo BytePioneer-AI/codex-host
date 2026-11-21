@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   HostClientChannel,
@@ -9,10 +10,18 @@ import {
 } from "@codexhost/desktop-control";
 import type { ClientChannelEvent } from "@codexhost/shared-contracts";
 import { ClientChannelEvents } from "../src/client-channel-events.js";
+import { routeDelegationRequest } from "../src/delegation-control-server.js";
+import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
 import { ClientCommandReceipts } from "../src/client-command-receipts.js";
 import { startClientChannelServer } from "../src/client-channel-server.js";
 import {
+  createOwnedConnectionBackend,
+  OfficialRuntimeScope,
+} from "../src/codex-runtime/official-runtime-scope.js";
+import type { OfficialAppServerExit } from "../src/official-app-server-connection.js";
+import {
   createFixture,
+  JsonLineCollector,
   startPiThread,
   startExternalThread,
   completePiTurn,
@@ -58,6 +67,20 @@ function current(fixture: ReturnType<typeof createFixture>) {
 }
 
 describe("public authenticated owner channel", () => {
+  it("rejects non-Codex draft command inspection before reading the Adapter catalog", async () => {
+    const { fixture, a } = await setup();
+    const readCatalog = vi.fn(() => ({ commands: [] }));
+    Object.defineProperty(fixture.adapter, "commandCatalog", { get: readCatalog });
+
+    await expect(
+      a.request("codexhost/harness/commands/inspect", { harnessId: "pi", cwd: "/synthetic" }),
+    ).rejects.toMatchObject({
+      code: -32602,
+      message: 'Client draft command inspection requires harnessId "codex"',
+    });
+    expect(readCatalog).not.toHaveBeenCalled();
+  });
+
   it("broadcasts completed explicit inspection refreshes, including normalized failures", async () => {
     const { fixture, a, events } = await setup();
     const inspect = vi.spyOn(fixture.adapter, "inspect");
@@ -98,6 +121,28 @@ describe("public authenticated owner channel", () => {
     expect(fixture.adapter.sessions).toHaveLength(0);
   });
 
+  it("notifies Web clients when the CLI control route refreshes a project catalog", async () => {
+    const api = new DelegationControlRegistry();
+    const { fixture, events } = await setup({
+      onDelegationApi: (registration) => api.register(registration, { harnessCatalog: true }),
+    });
+    const inspect = vi.spyOn(fixture.adapter, "inspect");
+    const call = (refresh: boolean) =>
+      routeDelegationRequest({ api }, "/v1/harness/inspect", {
+        harnessId: "pi",
+        cwd: process.cwd(),
+        refresh,
+      });
+    const changes = () => events.filter((event) => event.type === "harness-inspection-changed");
+    await call(false);
+    expect(changes()).toHaveLength(0);
+    await call(true);
+    expect(inspect).toHaveBeenLastCalledWith({ cwd: process.cwd(), refresh: true });
+    await vi.waitFor(() =>
+      expect(changes()).toEqual([expect.objectContaining({ harnessId: "pi" })]),
+    );
+  });
+
   it.each([false, true])(
     "broadcasts a Codex refresh after its failure=%s result",
     async (fails) => {
@@ -136,6 +181,80 @@ describe("public authenticated owner channel", () => {
       );
     },
   );
+
+  it("broadcasts one Codex catalog invalidation when the replacement backend is ready", async () => {
+    const starting = Promise.withResolvers<undefined>();
+    const ready = Promise.withResolvers<undefined>();
+    let replace = false;
+    const scope = new OfficialRuntimeScope({
+      permanentHome: tmpdir(),
+      diagnosticOutput: new PassThrough(),
+      shouldReplaceIdleBackend: () => replace,
+      createBackend: () => {
+        const model = replace ? "updated-model" : "original-model";
+        replace = false;
+        return createOwnedConnectionBackend(async () => {
+          if (model === "updated-model") {
+            starting.resolve(undefined);
+            await ready.promise;
+          }
+          const stdin = new PassThrough();
+          const stdout = new PassThrough();
+          const stderr = new PassThrough();
+          const closed = Promise.withResolvers<OfficialAppServerExit>();
+          const requests = new JsonLineCollector(stdin);
+          stdin.on("data", () => {
+            for (const { id, method } of requests.messages.splice(0)) {
+              if (id === undefined) continue;
+              const result =
+                method === "initialize"
+                  ? { userAgent: "fixture" }
+                  : { data: method === "model/list" ? [{ model, isDefault: true }] : [] };
+              stdout.write(`${JSON.stringify({ id, result })}\n`);
+            }
+          });
+          return {
+            stdin,
+            stdout,
+            stderr,
+            closed: closed.promise,
+            close() {
+              stdin.end();
+              stdout.end();
+              stderr.end();
+              closed.resolve({ code: 0, signal: null });
+            },
+          };
+        });
+      },
+    });
+    cleanup.push(() => scope.close());
+    const { fixture, a, events } = await setup({ externalOnly: true, officialRuntimeScope: scope });
+    const journal = fixture.host.clientEvents;
+    const before = journal.cursor;
+    const inspect = () => a.request("codexhost/harness/inspect", { harnessId: "codex" });
+    await expect(inspect()).resolves.toMatchObject({
+      catalog: { models: [expect.objectContaining({ label: "original-model" })] },
+    });
+    expect(journal.cursor).toEqual(before);
+
+    replace = true;
+    const refreshed = inspect();
+    await starting.promise;
+    const whileStarting = journal.cursor;
+    ready.resolve(undefined);
+    await expect(refreshed).resolves.toMatchObject({
+      catalog: { models: [expect.objectContaining({ label: "updated-model" })] },
+    });
+    expect(whileStarting).toEqual(before);
+    await inspect();
+    await vi.waitFor(() =>
+      expect(events.filter((event) => event.type === "harness-inspection-changed")).toEqual([
+        expect.objectContaining({ harnessId: "codex" }),
+      ]),
+    );
+    expect(journal.cursor.sequence).toBe(before.sequence + 1);
+  });
 
   it("forwards the GUI's paginated Revert with canonical identities and notifies both clients", async () => {
     const adapter = rollbackCapableAdapter();

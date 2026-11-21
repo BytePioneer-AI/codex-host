@@ -195,8 +195,14 @@ selection inserts canonical `@path` text without reading contents or starting a 
 through `codexhost/thread/commands/inspect`; execution addresses the stable command ID
 through `codexhost/thread/command/execute`. It first confirms an existing local external
 Thread and direct input eligibility. Unbound drafts, child/read-only Threads and official
-Codex/remote sources do not gain discovery. Reads never create or resume a Session, and
-Web does not expose `codexhost/harness/commands/inspect` or extend the client allowlist.
+Codex/remote sources do not gain discovery. Reads never create or resume a Session.
+
+One exception: an official Codex draft has no Thread, so Web asks
+`codexhost/harness/commands/inspect { harnessId: "codex", cwd }` (the only draft-level
+catalog on the client allowlist) for its workspace's native Skills. The Host calls the
+official `skills/list` for that `cwd` without starting a Thread, and returns Skills
+only, because `/compact` and `/review` need a Thread. A draft without a workspace gets
+an empty catalog. Other Harnesses' drafts keep using the Skill library.
 
 Each menu opening refreshes the Thread catalog; search filters that snapshot locally.
 Thread and connection generations fence late results. A static source has an explicit

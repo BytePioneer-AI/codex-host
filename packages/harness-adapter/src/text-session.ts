@@ -1,6 +1,7 @@
 import type { HarnessUsageStatisticsCapability } from "./usage-statistics.js";
 import type {
   HarnessAccountSnapshot,
+  AccountBalanceSnapshot,
   AccountCreditsSnapshot,
   HarnessInstallationState,
   HarnessCommandCatalog,
@@ -22,7 +23,7 @@ import type {
   NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import type { HostUsage, HostUsageRequest } from "./usage.js";
+import type { HostUsage, HostUsageRequest, HostUsageRequestTiming } from "./usage.js";
 import type { HarnessSessionUsageCapability } from "./session-usage.js";
 import type { HarnessCredentialExport, HarnessCredentialImports } from "./credential-imports.js";
 
@@ -508,6 +509,12 @@ export interface UsageRequestEvent {
   request: HostUsageRequest;
 }
 
+export interface UsageRequestTimingEvent {
+  type: "usage.request.timing";
+  turnId: HostTurnId;
+  timing: HostUsageRequestTiming;
+}
+
 /**
  * Sent after replaying native history on every open, and again with `complete: false` when a
  * running request's usage is missing. The first one switches the Thread to Host metering.
@@ -540,6 +547,13 @@ export interface AutonomousTurnStartedEvent {
   input: HostTextInput[];
 }
 
+/** A native autonomous Turn observed only after it commits. It does not acquire
+ * the foreground execution slot and its snapshot must also appear in history. */
+export interface AutonomousTurnCompletedEvent {
+  type: "turn.autonomous.completed";
+  snapshot: HostTurnSnapshot;
+}
+
 export interface ItemStartedEvent {
   type: "item.started";
   turnId: HostTurnId;
@@ -569,6 +583,19 @@ export interface ItemDetachedEvent {
   itemId: HostItemId;
 }
 
+/**
+ * The Harness produced new output after its Turn completed (idle-time
+ * background work). The Item starts and stays detached on the completed
+ * Turn; it settles later with `item.updated` / `item.completed` on the
+ * same Turn, exactly like an `item.detached` Item. Adapters must emit it
+ * only while no successor Turn has started, and only for text Items.
+ */
+export interface ItemBackgroundStartedEvent {
+  type: "item.background.started";
+  turnId: HostTurnId;
+  item: HostItem;
+}
+
 export interface TurnCompletedEvent {
   type: "turn.completed";
   turnId: HostTurnId;
@@ -594,15 +621,18 @@ export type HostEvent =
   | SessionStateChangedEvent
   | SessionUsageChangedEvent
   | UsageRequestEvent
+  | UsageRequestTimingEvent
   | UsageHistoryEvent
   | SubagentStateChangedEvent
   | SubagentTranscriptChangedEvent
   | TurnStartedEvent
   | AutonomousTurnStartedEvent
+  | AutonomousTurnCompletedEvent
   | ItemStartedEvent
   | ItemUpdatedEvent
   | ItemCompletedEvent
   | ItemDetachedEvent
+  | ItemBackgroundStartedEvent
   | InteractionClosedEvent
   | TurnCompletedEvent
   | SessionFaultedEvent;
@@ -728,6 +758,14 @@ export interface HarnessAdapter {
    * observes a later read, does not await this call, and isolates rejection.
    */
   refreshCredits?(): Promise<AccountCreditsSnapshot | null>;
+  /** Optional cached prepaid balance for Harnesses whose Billing Source reports funds, not a
+   * percentage quota. Same contract as `credits()`: synchronous, no I/O, null when unknown.
+   */
+  balance?(): AccountBalanceSnapshot | null;
+  /** Best-effort refresh of the `balance()` cache. Must not start a model Turn; Host does
+   * not await it and isolates rejection.
+   */
+  refreshBalance?(): Promise<AccountBalanceSnapshot | null>;
   /**
    * The same read when one Harness exposes several Billing Sources. Host prefers
    * this method and retains the first snapshot as the compatibility `account`.

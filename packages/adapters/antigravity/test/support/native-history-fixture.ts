@@ -19,13 +19,24 @@ export function textField(tag: number, text: string): Buffer {
   return bytes(tag, Buffer.from(text));
 }
 
-export function userStep(db: DatabaseSync, idx: number, text: string): void {
+export function runField(run: string): Buffer {
+  return run ? bytes(5, textField(12, run)) : Buffer.alloc(0);
+}
+
+export function userStep(db: DatabaseSync, idx: number, text: string, run = ""): void {
   db.prepare("INSERT INTO steps VALUES (?, 14, 3, ?)").run(
     idx,
-    bytes(19, bytes(3, textField(1, text))),
+    Buffer.concat([runField(run), bytes(19, bytes(3, textField(1, text)))]),
   );
 }
 
-export function answerStep(db: DatabaseSync, idx: number, text: string): void {
-  db.prepare("INSERT INTO steps VALUES (?, 15, 3, ?)").run(idx, bytes(20, textField(1, text)));
+export function answerStep(db: DatabaseSync, idx: number, text: string, run = ""): void {
+  db.prepare("INSERT INTO steps VALUES (?, 15, 3, ?)").run(
+    idx,
+    Buffer.concat([runField(run), bytes(20, textField(1, text))]),
+  );
+}
+
+export function systemStep(db: DatabaseSync, idx: number, run: string): void {
+  db.prepare("INSERT INTO steps VALUES (?, 101, 3, ?)").run(idx, runField(run));
 }

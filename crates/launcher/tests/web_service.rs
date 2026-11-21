@@ -455,6 +455,44 @@ fn supervises_only_ready_web_and_serializes_ensure_and_stop() {
 }
 
 #[test]
+fn failed_supervisor_preserves_the_live_web_ready_record() {
+    #[cfg(windows)]
+    if windows_service::run_in_service_job() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let record = fixture.root.join("web-service-ready.json");
+    assert!(fixture.run("ensure").status.success());
+    let original = fs::read(&record).unwrap();
+    fs::write(fixture.root.join("fail"), "fail").unwrap();
+    let failed_ready = fixture.root.join("failed.ready");
+    let output = fixture
+        .command("web-service", "serve")
+        .arg("--ready-file")
+        .arg(&failed_ready)
+        .output()
+        .unwrap();
+    let remaining = fs::read(&record).ok();
+    if remaining.is_none() {
+        // Keep the original supervisor reachable for fixture teardown on regression.
+        fs::write(&record, &original).unwrap();
+    }
+    assert!(output.status.success());
+    assert!(
+        fs::read_to_string(failed_ready)
+            .unwrap()
+            .contains("fixture port is occupied")
+    );
+    assert!(
+        remaining.as_deref() == Some(original.as_slice()),
+        "failed supervisor removed or changed the live Web ready record"
+    );
+
+    assert!(fixture.run("stop").status.success());
+    assert!(!record.exists());
+}
+
+#[test]
 fn connect_devices_flag_keeps_printed_login_and_ready_record_unchanged() {
     #[cfg(windows)]
     if windows_service::run_in_service_job() {

@@ -735,6 +735,7 @@ it("projectRootTitles: falls back to the full path when the basename is empty or
     { name: "thesis", rootPaths: ["/docs/writing"] },
     { name: "chapter3", rootPaths: ["/docs/chapter3", "/docs/writing"] },
     { name: "chapter4", rootPaths: ["/docs/chapter4", "/docs/writing", "/docs/chapter3"] },
+    { name: "another name for thesis", rootPaths: ["/docs/./writing"] },
   ]);
   assert.equal(
     shared.get(resolve("/docs/writing")),
@@ -760,13 +761,27 @@ it("workspace mirror: native project roots follow the project order until reorde
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const data = new DataDir(root);
   const workspaces = new Workspaces(data, root);
-  const paths = { a: join(root, "a"), b: join(root, "b"), c: join(root, "c") };
-  const project = (name: keyof typeof paths) => ({ name, rootPaths: [paths[name]] });
+  const project = (name: string) => ({ name, rootPaths: [join(root, name)] });
   const web = workspaces.create(root).workspace;
-  // An older build stored the roots in the order it first saw them.
+  const rpc = new RpcRegistry();
+  workspaces.register(rpc, new StreamRegistry());
+  const idOf = (name: string) => workspaces.byPath(join(root, name))?.workspaceId;
+  const reorder = (name: string, before: string) =>
+    rpc.dispatch("workspace/insertBefore", {
+      args: { request: { workspaceId: idOf(name), beforeWorkspaceId: idOf(before) } },
+    });
   workspaces.syncReferencedSessions([], new Map(), new Set(), [project("c"), project("a")]);
   const titles = () => workspaces.list().map((workspace) => workspace.title);
   assert.deepEqual(titles(), ["c", "a", web.title], "project roots come first, in project order");
+  assert.ok((await reorder("c", "a")).ok, "a no-op drop does not disable Desktop order");
+  assert.ok((await reorder("c", "c")).ok, "a drop onto itself does not move the workspace");
+  assert.deepEqual(titles(), ["c", "a", web.title]);
+  const failSave = t.mock.method(data, "writeJson", () => {
+    throw new Error("disk full");
+  });
+  assert.equal((await reorder("a", "c")).ok, false);
+  assert.deepEqual(titles(), ["c", "a", web.title], "an unsuccessful drop does not change order");
+  failSave.mock.restore();
   workspaces.syncReferencedSessions([], new Map(), new Set(), [
     project("b"),
     project("a"),
@@ -787,22 +802,19 @@ it("workspace mirror: native project roots follow the project order until reorde
   assert.equal(writes.mock.callCount(), 0, "an unchanged order is not rewritten");
   writes.mock.restore();
 
-  const rpc = new RpcRegistry();
-  workspaces.register(rpc, new StreamRegistry());
-  const idOf = (path: string) => workspaces.byPath(path)?.workspaceId;
-  assert.ok(
-    (
-      await rpc.dispatch("workspace/insertBefore", {
-        args: { request: { workspaceId: idOf(paths.c), beforeWorkspaceId: idOf(paths.b) } },
-      })
-    ).ok,
-  );
-  workspaces.syncReferencedSessions([], new Map(), new Set(), [
+  assert.ok((await reorder("c", "b")).ok);
+  const reopened = new Workspaces(data, root);
+  reopened.syncReferencedSessions([], new Map(), new Set(), [
+    project("d"),
     project("a"),
     project("b"),
     project("c"),
   ]);
-  assert.deepEqual(titles(), ["c", "b", "a", web.title], "a Web reorder is kept afterwards");
+  assert.deepEqual(
+    reopened.list().map((workspace) => workspace.title),
+    ["c", "b", "a", web.title, "d"],
+    "a Web reorder survives reopening and new roots append even if first in Desktop",
+  );
 });
 
 it("workspace mirror: propagates a failed save without accepting the mirror", (t) => {

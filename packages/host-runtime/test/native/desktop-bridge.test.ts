@@ -19,7 +19,7 @@ const launcher = path.join(
 const runtime = path.join(repository, "packages/host-runtime/dist/main.js");
 
 it(
-  "actual Desktop stdio bridge retains native flags and a native Turn after Desktop exits",
+  "actual Desktop stdio bridge retires browser access after draining a native Turn",
   { timeout: 60_000 },
   async (t) => {
     const root = await mkdtemp(path.join(tmpdir(), "codexhost-desktop-bridge-"));
@@ -65,7 +65,13 @@ it(
         Object.entries(process.env).filter(
           ([key]) =>
             !key.toUpperCase().startsWith("CODEXHOST_") &&
-            !["NODE_OPTIONS", "NODE_PATH", "NODE_USE_ENV_PROXY"].includes(key.toUpperCase()),
+            !key.toUpperCase().startsWith("BROWSER_USE_ACCESS_") &&
+            ![
+              "CODEX_APP_TOOLS_PIPE_PATH",
+              "NODE_OPTIONS",
+              "NODE_PATH",
+              "NODE_USE_ENV_PROXY",
+            ].includes(key.toUpperCase()),
         ),
       ),
       HOME: root,
@@ -110,7 +116,16 @@ it(
     t.after(() => web.close());
     await web.start();
 
-    async function desktop() {
+    const readNativeCalls = async () =>
+      (await readFile(path.join(codexHome, "native-calls.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map(
+          (line) =>
+            JSON.parse(line) as { type: string; feature?: boolean; browserAccess?: boolean },
+        );
+
+    async function desktop(browserPipe: string) {
       const child = spawn(
         process.execPath,
         [runtime, "-c", "features.fixture=true", "app-server"],
@@ -122,6 +137,7 @@ it(
             CODEXHOST_LAUNCHER_EXECUTABLE: launcher,
             CODEXHOST_HOST_RUNTIME_PATH: runtime,
             CODEXHOST_STOCK_CODEX_PATH: stockCodex,
+            BROWSER_USE_ACCESS_PIPE_PATH: path.join(root, browserPipe),
           },
           stdio: ["pipe", "pipe", "pipe"],
         },
@@ -176,9 +192,14 @@ it(
       });
       return { child, request };
     }
-    const first = await desktop();
+    const first = await desktop("first-browser.sock");
     const created = await first.request("thread/start", { cwd: root });
     const id = (created.thread as { id: string }).id;
+    let turnCompleted = false;
+    const unsubscribe = web.subscribe((event) => {
+      if (event.type === "changed" && event.threadId === id && event.method === "turn/completed")
+        turnCompleted = true;
+    });
     await first.request("turn/start", {
       threadId: id,
       input: [{ type: "text", text: "native fixture only" }],
@@ -187,15 +208,20 @@ it(
     first.child.stdin.end();
     assert.deepEqual(await exited, [0, null]);
     const until = Date.now() + 10_000;
-    while (
-      !(await readFile(path.join(codexHome, "native-calls.jsonl"), "utf8")).includes(
-        "turn/completed",
-      )
-    ) {
+    while (!turnCompleted) {
       assert.ok(Date.now() < until, "native Turn did not finish after viewer exit");
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    const second = await desktop();
+    unsubscribe();
+    const afterExit = await web.snapshot(id);
+    assert.match(JSON.stringify(afterExit), /native turn survived Desktop exit/u);
+    assert.deepEqual(
+      (await readNativeCalls())
+        .filter((entry) => entry.type === "startup")
+        .map((entry) => entry.browserAccess),
+      [true, false],
+    );
+    const second = await desktop("second-browser.sock");
     assert.match(
       JSON.stringify(await second.request("thread/read", { threadId: id, includeTurns: true })),
       /native turn survived Desktop exit/u,
@@ -232,12 +258,17 @@ it(
     const final = await web2.snapshot(id);
     assert.match(JSON.stringify(final), /native turn survived Desktop exit/u);
     assert.equal(final.turnsPage.data.length, 2);
-    const log = (await readFile(path.join(codexHome, "native-calls.jsonl"), "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { type: string; feature?: boolean });
-    assert.equal(log.filter((entry) => entry.type === "startup").length, 1);
-    assert.equal(log.find((entry) => entry.type === "startup")?.feature, true);
+    const log = await readNativeCalls();
+    assert.deepEqual(
+      log
+        .filter((entry) => entry.type === "startup")
+        .map(({ feature, browserAccess }) => [feature, browserAccess]),
+      [
+        [true, true],
+        [true, false],
+        [true, true],
+      ],
+    );
     assert.equal(log.filter((entry) => entry.type === "turn/start").length, 2);
     assert.equal(
       (await discoverHostClientChannel(path.join(data, "client-hosts")))?.pid,

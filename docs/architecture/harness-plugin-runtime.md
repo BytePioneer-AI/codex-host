@@ -298,7 +298,9 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 
 `HarnessAdapter.credits?()` / `refreshCredits?()` 是正式可选接口：前者无 I/O 地同步读取账号级缓存，后者异步刷新同一缓存，原生认证、有效期、并发合并及失效策略仍归插件。Host 不等待刷新，读取后校验公开结构，隔离同步读取异常与刷新拒绝；旧缓存的私有 `fetchedAt` 不传给客户端。`inspectAccount(s)` 继续负责设置页的新鲜账号查询，不用当前账号额度替代历史 Thread 的实际计费事实。
 
-`thread/usage/inspect` 的结果通过可选 `accountCreditsSupported` 告诉客户端是否应在会话用量已到达后继续等待额度；无需 Harness 名单。旧 Host 未给此字段时不额外等待账号额度。Broker 插件通过构造选项 `accountCredits` 声明是否暴露缓存能力，不支持的 CodeBuddy/WorkBuddy/Cursor 路径不会假报可用；为兼容既有调用方该选项默认 true。Broker 的 Credits 转发保留刷新合并、无数据清空、失败保留最近值的既有行为，不等于其他可选能力已经全部转发。
+`HarnessAdapter.balance?()` / `refreshBalance?()` 是同样语义的预付费余额缓存，用于只报告金额、没有百分比额度的 Billing Source（当前为 DeepSeek Harness）。只在 `credits()` 没有有效快照时读取；Host 用 `accountBalanceSnapshotSchema` 校验并以可选 `accountBalance` 返回，异常与刷新拒绝同样隔离。
+
+`thread/usage/inspect` 的结果通过可选 `accountCreditsSupported` 告诉客户端是否应在会话用量已到达后继续等待额度（百分比额度或预付费余额任一到达即停止等待；会话用量已到达而两者都没有返回时，只按退避节奏重试一轮，不持续轮询）；无需 Harness 名单。停止定时重试不影响用量更新通知触发的读取。旧 Host 未给此字段时不额外等待账号额度。Broker 插件通过构造选项 `accountCredits` 声明是否暴露缓存能力，不支持的 CodeBuddy/WorkBuddy/Cursor 路径不会假报可用；为兼容既有调用方该选项默认 true。Broker 的 Credits 转发保留刷新合并、无数据清空、失败保留最近值的既有行为，不等于其他可选能力已经全部转发。
 
 以上字段对新 Host 是可选扩展，旧插件仍可加载。新增元数据须配合同版本 Host/客户端共享 schema 部署；旧版严格 schema 不保证接受新字段。本阶段没有引入 API 版本范围协商、插件热替换或原生会话迁移。安装未知 ID 的插件，经真实 Loader、Host RPC 和共享展示函数的测试覆盖权限、命令、更新说明、额度，以及缺失/失败能力；模拟验收不等于所有 Harness 的原生或 GUI 验收。
 
@@ -307,6 +309,10 @@ Desktop 使用同一浏览器安全的解析函数展示菜单、当前选择和
 支持配置选择的 Adapter 不因已有活动 Turn 而拒绝 `model.select` / `thinking.select`；通过原生配置接口执行，或更新供下一次原生调用使用的配置。生效时机由 Harness 决定，Host 不承诺当前 Turn 中途换模型，也不统一排队到 Turn 结束。原生拒绝仍作为失败返回，配置成功后发布已确认的 `session.state.changed`。
 
 仅放开运行中配置选择：初始化/Turn 接收过程、并行配置写入和历史读取的一致性保护仍保留；第二个 Turn、历史变更、关闭/故障和 Permission Mode 的既有约束不变。Antigravity 通过 ACP `session/set_config_option` 切换模型与推理档位，并按原生 `transcript.jsonl` 每条 `PLANNER_RESPONSE` 记录的实际 `model` 逐请求计费，后续配置选择不会重标已完成请求。
+
+## 已结算的自主 Turn
+
+原生只在提交后才能确认边界的 Adapter，可以在 `outputs` 上发送 `turn.autonomous.completed`，携带与原生 `readSnapshot()` 一致的 `HostTurnSnapshot`（无用户输入用 `[]`）。同一个原生 Turn 不应再发送流式自主 Turn 生命周期。Host 按 `nativeTurnRef` 对齐和去重，把快照作为独立历史 Turn 追加，不占用前台执行位，也不改写前一轮的回答。自主快照无法写入映射或投影时记录诊断，可由后续历史读取恢复，不终止输出流或结算前台 Turn。能观测完整实时生命周期的插件继续使用 `turn.autonomous.started` 和普通 Item/终态事件。
 
 ## 运行中调整方向
 

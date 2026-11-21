@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import * as fs from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { setImmediate } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
@@ -33,13 +36,20 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
+import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
   createNativeHistoryDatabase,
+  systemStep,
   userStep,
 } from "./support/native-history-fixture.js";
 import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof fs>();
+  return { ...actual, createReadStream: vi.fn(actual.createReadStream) };
+});
 
 const mode = harnessPermissionModeIdSchema.parse;
 const model = (id: string) => harnessModelRefSchema.parse({ id });
@@ -140,12 +150,16 @@ class FakeTransport implements AntigravityAcpTransportLike {
 }
 const adapters: AntigravityAdapter[] = [];
 const directories: string[] = [];
-function fixture(options: ConstructorParameters<typeof AntigravityAdapter>[0] = {}) {
+function fixture(
+  options: ConstructorParameters<typeof AntigravityAdapter>[0] = {},
+  configureTransport?: (transport: FakeTransport, index: number) => void,
+) {
   const transports: FakeTransport[] = [];
   const adapter = new AntigravityAdapter({
     ...options,
     createTransport: (input) => {
       const transport = new FakeTransport(input);
+      configureTransport?.(transport, transports.length);
       transports.push(transport);
       return transport;
     },
@@ -527,84 +541,266 @@ describe("Antigravity ACP Session", () => {
     await forked;
     await start(session, transports);
   });
-  it("publishes native request timing once and completes metering with output that includes reasoning", async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), "agy-native-metering-"));
+  it("forks a committed prefix without holding up the running or next source Turn", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-live-fork-"));
     directories.push(home);
-    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
-    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
-    const transport = await start(session, transports);
-    const sessionId = required(transport.sessionId);
-    const created = Date.now();
-    await writeNativeTimingDatabase(
-      home,
-      [
+    const resume = deferred<undefined>();
+    const { adapter, transports } = fixture(
+      { environment: { HOME: home, USERPROFILE: home } },
+      (transport, index) => {
+        if (index === 1) {
+          const open = required(transport.openSession.getMockImplementation());
+          transport.openSession.mockImplementation(async (input) => {
+            await resume.promise;
+            return open(input);
+          });
+        }
+      },
+    );
+    const nativeRef = ref();
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    db.exec(`PRAGMA journal_mode = WAL;
+      CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+      CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);`);
+    db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
+      randomUUID(),
+      nativeRef.nativeSessionId,
+    );
+    try {
+      const source = await sessionOf(await adapter.open({ kind: "resume", cwd: home, nativeRef }));
+      const transport = await start(source.session, transports);
+      userStep(db, 0, "early input");
+      answerStep(db, 1, "early answer");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(source.outputs);
+      const terminal = events(source.outputs).find((event) => event.type === "turn.completed");
+      assert(terminal?.outcome.checkpoint);
+      const request = {
+        kind: "fork" as const,
+        cwd: home,
+        sourceRef: nativeRef,
+        checkpoint: terminal.outcome.checkpoint,
+      };
+      transport.result = deferred();
+      await start(source.session, transports, "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      const busy = { ok: false, error: { code: "sessionBusy", retryable: true } };
+      expect(await adapter.open(request)).toMatchObject({
+        ...busy,
+        error: { ...busy.error, message: expect.stringContaining("no committed user input") },
+      });
+      // A committed wake between these prompts is outside the earlier user checkpoint.
+      systemStep(db, 2, "wake-between-prompts");
+      answerStep(db, 3, "timer expired", "wake-between-prompts");
+      userStep(db, 4, "source-only input");
+      expect(
+        await adapter.open({
+          ...request,
+          checkpoint: { ...request.checkpoint, checkpointId: "turn-1" },
+        }),
+      ).toMatchObject(busy);
+      expect(
+        await adapter.open({ kind: "rollbackLastTurn", cwd: home, sourceRef: nativeRef }),
+      ).toMatchObject(busy);
+
+      const forked = adapter.open(request);
+      await vi.waitFor(() => expect(transports).toHaveLength(2));
+      expect(transport.cancel).not.toHaveBeenCalled();
+      answerStep(db, 5, "source-only answer");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(source.outputs, "t2");
+      transport.result = deferred();
+      await start(source.session, [transport], "t3");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(3));
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(source.outputs, "t3");
+      resume.resolve(undefined);
+
+      const branch = await sessionOf(await forked);
+      const derivedId = required(branch.session.initialState.nativeRef).nativeSessionId;
+      expect(derivedId).not.toBe(nativeRef.nativeSessionId);
+      const inputs = async (session: HarnessSession) => {
+        const snapshot = await session.readSnapshot();
+        assert(snapshot.ok);
+        return snapshot.value.turns.map((turn) => turn.input);
+      };
+      expect(await inputs(branch.session)).toEqual([[{ type: "text", text: "early input" }]]);
+      const branchTransport = await start(branch.session, transports, "branch");
+      const derivedDb = new DatabaseSync(nativeFork.nativeConversationDbPath(derivedId, home));
+      try {
+        userStep(derivedDb, 2, "branch-only input");
+        answerStep(derivedDb, 3, "branch-only answer");
+      } finally {
+        derivedDb.close();
+      }
+      branchTransport.result.resolve({ stopReason: "end_turn" });
+      await completed(branch.outputs, "branch");
+      expect(await inputs(branch.session)).toEqual([
+        [{ type: "text", text: "early input" }],
+        [{ type: "text", text: "branch-only input" }],
+      ]);
+      expect(await inputs(source.session)).toEqual([
+        [{ type: "text", text: "early input" }],
+        [],
+        [{ type: "text", text: "source-only input" }],
+      ]);
+    } finally {
+      resume.resolve(undefined);
+      db.close();
+    }
+  });
+  it.each(["retry", "trailing"])(
+    "collects a late transcript via %s and attributes cross-Turn timing",
+    async (mode) => {
+      const home = await mkdtemp(path.join(os.tmpdir(), "agy-native-metering-"));
+      directories.push(home);
+      const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+      const { session, outputs } = await sessionOf(
+        await adapter.open({ kind: "create", cwd: home }),
+      );
+      const transport = await start(session, transports);
+      const sessionId = required(transport.sessionId);
+      const created = Date.now();
+      const metadata = [
         {
           step: 1,
           input: 13035,
           cached: 0,
           output: 146,
+          thought: 107,
           created,
           started: created + 1,
           completed: created + 3,
         },
-      ],
-      sessionId,
-    );
-    const log = path.join(
-      home,
-      ".gemini/antigravity-cli/brain",
-      sessionId,
-      ".system_generated/logs/transcript.jsonl",
-    );
-    await mkdir(path.dirname(log), { recursive: true });
-    await writeFile(
-      log,
-      JSON.stringify({
-        type: "PLANNER_RESPONSE",
-        status: "DONE",
-        step_index: 1,
-        model: "gemini-4-carbon-medium",
-        input_tokens: 13035,
-        cache_read_tokens: 0,
-        output_tokens: 146,
-      }) + "\n",
-    );
-    await vi.waitFor(() => expect(Date.now()).toBeGreaterThanOrEqual(created + 3));
-    required(transport.handler).onEvent({ type: "usage.context", used: 13181, size: 1048576 });
-    await vi.waitFor(() =>
-      expect(events(outputs).filter((event) => event.type === "usage.request")).toHaveLength(1),
-    );
-    await vi.waitFor(() =>
+      ];
+      const database = new DatabaseSync(await writeNativeTimingDatabase(home, metadata, sessionId));
+      try {
+        database.exec("DELETE FROM gen_metadata");
+      } finally {
+        database.close();
+      }
+      const log = path.join(
+        home,
+        ".gemini/antigravity-cli/brain",
+        sessionId,
+        ".system_generated/logs/transcript.jsonl",
+      );
+      await mkdir(path.dirname(log), { recursive: true });
+      const notice = () =>
+        required(transport.handler).onEvent({ type: "usage.context", used: 13181, size: 1048576 });
+      const commitTranscript = () =>
+        writeFile(
+          log,
+          JSON.stringify({
+            type: "PLANNER_RESPONSE",
+            status: "DONE",
+            step_index: 1,
+            model: "gemini-4-carbon-medium",
+            input_tokens: 13035,
+            cache_read_tokens: 0,
+            output_tokens: 146,
+          }) + "\n",
+        );
+      const expectRequest = () =>
+        expect(events(outputs).filter((event) => event.type === "usage.request")).toMatchObject([
+          { request: { outputTokens: 146, cacheWriteInputTokens: 0, reasoningOutputTokens: 107 } },
+        ]);
+      if (mode === "retry") {
+        const historyCount = () =>
+          events(outputs).filter((event) => event.type === "usage.history").length;
+        const before = historyCount();
+        notice();
+        await vi.waitFor(() => expect(historyCount()).toBeGreaterThan(before));
+        expect(events(outputs).filter((event) => event.type === "usage.request")).toEqual([]);
+        await commitTranscript();
+        await vi.waitFor(expectRequest);
+      } else {
+        // Hold the first filesystem read at EOF so the next scan is the only one that sees the commit.
+        await writeFile(log, "");
+        const eof = deferred<undefined>();
+        const release = deferred<undefined>();
+        const { createReadStream, read, open, close } = await vi.importActual<typeof fs>("node:fs");
+        vi.mocked(fs.createReadStream).mockImplementationOnce((file, options) =>
+          createReadStream(file, {
+            ...(typeof options === "string" ? { encoding: options } : options),
+            fs: {
+              open,
+              close,
+              read: (fd, buffer, offset, length, position, callback) => {
+                read(fd, buffer, offset, length, position, (error, bytesRead, data) => {
+                  eof.resolve(undefined);
+                  void release.promise.then(() => callback(error, bytesRead, data));
+                });
+              },
+            },
+          }),
+        );
+        const work = session.refreshUsage?.();
+        await eof.promise;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          await commitTranscript();
+          notice();
+          notice();
+          release.resolve(undefined);
+          await work;
+          await setImmediate();
+          expectRequest();
+        } finally {
+          release.resolve(undefined);
+          await vi.runAllTimersAsync();
+          vi.useRealTimers();
+        }
+      }
+      expect(events(outputs).filter((event) => event.type === "usage.request.timing")).toEqual([]);
+      await vi.waitFor(() =>
+        expect(
+          events(outputs)
+            .filter((event) => event.type === "usage.history")
+            .at(-1),
+        ).toEqual({ type: "usage.history", complete: true }),
+      );
+      expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
+      transport.result.resolve({
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 13035,
+          cachedReadTokens: 0,
+          cachedWriteTokens: 0,
+          outputTokens: 146,
+          thoughtTokens: 107,
+          totalTokens: 13181,
+        },
+      });
+      await completed(outputs);
+      expect(events(outputs).filter((event) => event.type === "usage.request.timing")).toEqual([]);
+      delete transport.handler;
+      transport.result = deferred<AntigravityPromptResult>();
+      await start(session, transports, "t2");
+      await writeNativeTimingDatabase(home, metadata, sessionId);
+      notice();
+      await vi.waitFor(() =>
+        expect(events(outputs).filter((event) => event.type === "usage.request.timing")).toEqual([
+          {
+            type: "usage.request.timing",
+            turnId: "t1",
+            timing: {
+              requestId: "step:1",
+              requestStartedAtMs: created,
+              timeToFirstOutputMs: 1,
+              output: { outputTokens: 39, startedAtMs: created + 1, completedAtMs: created + 3 },
+            },
+          },
+        ]),
+      );
+      expect(events(outputs).filter((event) => event.type === "usage.request")).toHaveLength(1);
       expect(
         events(outputs)
           .filter((event) => event.type === "usage.history")
           .at(-1),
-      ).toEqual({ type: "usage.history", complete: true }),
-    );
-    expect(events(outputs).some((event) => event.type === "turn.completed")).toBe(false);
-    transport.result.resolve({
-      stopReason: "end_turn",
-      usage: {
-        inputTokens: 13035,
-        cachedReadTokens: 0,
-        cachedWriteTokens: 0,
-        outputTokens: 146,
-        thoughtTokens: 107,
-        totalTokens: 13181,
-      },
-    });
-    await completed(outputs);
-    expect(events(outputs).filter((event) => event.type === "usage.request")).toMatchObject([
-      {
-        request: { outputTokens: 146, startedAtMs: created + 1, completedAtMs: created + 3 },
-      },
-    ]);
-    expect(
-      events(outputs)
-        .filter((event) => event.type === "usage.history")
-        .at(-1),
-    ).toEqual({ type: "usage.history", complete: true });
-  });
+      ).toEqual({ type: "usage.history", complete: true });
+    },
+  );
 
   it("streams ordered text/reasoning, usage and stable Turn identity", async () => {
     const { adapter, transports } = fixture();
@@ -875,6 +1071,8 @@ describe("Antigravity ACP Session", () => {
     for (const value of ["private-cli", "private-endpoint", "secret-token", "thread-override"])
       expect(prompt).not.toContain(value);
     expect(prompt).toContain("CODEXHOST_RUNTIME_TOKEN");
+    expect(prompt).toContain("harness inspect --help");
+    expect(prompt).toContain("the exact advertised Model Ref for the requested speed");
   });
   it("reads cold SQLite history, then resumes with the saved configuration for writing", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "agy-history-resume-"));
@@ -1241,6 +1439,34 @@ describe("inspection and errors", () => {
     },
   );
   it.skipIf(process.platform === "win32")(
+    "refreshing project availability invalidates the default model catalog without mixing directories",
+    async () => {
+      const project = await mkdtemp(path.join(os.tmpdir(), "agy-catalog-"));
+      directories.push(project);
+      const command = path.join(project, "agy");
+      const writeModels = (model: string) =>
+        writeFile(
+          command,
+          `#!/bin/sh\nif [ "$1" = '--version' ]; then echo 'agy 1.5.8'; else printf '${model}\\t%s\\n' "$PWD"; fi\n`,
+          { mode: 0o755 },
+        );
+      const { adapter } = fixture({ command });
+      await writeModels("old-model");
+      expect(await adapter.inspect()).toMatchObject({
+        catalog: { models: [{ ref: { id: "old-model" } }] },
+      });
+      await adapter.inspect({ cwd: project });
+      await writeModels("new-model");
+      await adapter.inspect({ cwd: project, purpose: "availability", refresh: true });
+      expect(await adapter.inspect()).toMatchObject({
+        catalog: { models: [{ ref: { id: "new-model" }, label: await realpath(process.cwd()) }] },
+      });
+      expect(await adapter.inspect({ cwd: project })).toMatchObject({
+        catalog: { models: [{ ref: { id: "new-model" }, label: await realpath(project) }] },
+      });
+    },
+  );
+  it.skipIf(process.platform === "win32")(
     "resolves inspectAccount on the usage command_result line before CLI teardown",
     async () => {
       const home = await mkdtemp(path.join(os.tmpdir(), "agy-quota-"));
@@ -1267,4 +1493,247 @@ describe("inspection and errors", () => {
       await adapter.close();
     },
   );
+});
+
+describe("Antigravity idle wake Turns", () => {
+  const wakes = (outputs: HarnessOutput[]) =>
+    events(outputs).filter((event) => event.type === "turn.autonomous.completed");
+
+  async function setup() {
+    const home = await mkdtemp(path.join(os.tmpdir(), "agy-wake-"));
+    directories.push(home);
+    const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
+    const { session, outputs } = await sessionOf(await adapter.open({ kind: "create", cwd: home }));
+    const transport = await start(session, transports);
+    const db = await createNativeHistoryDatabase(home, required(transport.sessionId));
+    userStep(db, 0, "hello", "prompt");
+    answerStep(db, 1, "hello there", "prompt");
+    return { home, adapter, transports, session, outputs, transport, db };
+  }
+
+  it("keeps pre-submit idle output on the preceding native Turn", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      const usageGate =
+        deferred<
+          Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+        >();
+      const collect = vi
+        .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+        .mockReturnValueOnce(usageGate.promise);
+      const refresh = session.refreshUsage?.();
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      // Same run ID as the first prompt, not a new autonomous wake.
+      systemStep(db, 2, "prompt");
+      answerStep(db, 3, "late reply", "prompt");
+      transport.eventHandler?.({ type: "agent.text", text: "late reply" });
+      usageGate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      await refresh;
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+      expect(events(outputs).some(({ type }) => type === "item.background.started")).toBe(false);
+      const snapshot = await session.readSnapshot();
+      expect(snapshot).toMatchObject({
+        ok: true,
+        value: {
+          turns: [
+            {
+              input: [{ text: "hello" }],
+              items: [{ item: { text: "hello there\n\nlate reply" } }],
+            },
+          ],
+        },
+      });
+      const nativeRef = required(session.initialState.nativeRef);
+      await session.close();
+      const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });
+      assert(reopened.ok);
+      const cold = await reopened.value.readSnapshot();
+      assert(snapshot.ok && cold.ok);
+      expect(cold.value.turns).toEqual(snapshot.value.turns);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not assign orphan idle output to a cancelled pre-submit successor or its predecessor", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      const usageGate =
+        deferred<
+          Awaited<ReturnType<AntigravitySessionUsageTracker["collectNewTranscriptRequests"]>>
+        >();
+      const collect = vi
+        .spyOn(AntigravitySessionUsageTracker.prototype, "collectNewTranscriptRequests")
+        .mockReturnValueOnce(usageGate.promise);
+      const refresh = session.refreshUsage?.();
+      await vi.waitFor(() => expect(collect).toHaveBeenCalledOnce());
+      await start(session, [transport], "cancel-before-submit");
+      expect(
+        await session.execute({ type: "turn.cancel", turnId: turnId("cancel-before-submit") }),
+      ).toEqual({ ok: true, value: { cancellationRequested: true } });
+      usageGate.resolve({ requests: [], timings: [], complete: true, usage: null });
+      await refresh;
+      await completed(outputs, "cancel-before-submit");
+      transport.eventHandler?.({ type: "agent.text", text: "orphan" });
+      await setImmediate();
+      expect(wakes(outputs)).toEqual([]);
+      expect(events(outputs).some(({ type }) => type === "item.background.started")).toBe(false);
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
+  it("publishes committed idle output once, with the same identity and items as cold history", async () => {
+    const { home, adapter, session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "wake");
+      systemStep(db, 3, "wake");
+      transport.eventHandler?.({ type: "agent.thought", text: "wake in progress" });
+      expect(wakes(outputs)).toEqual([]);
+      answerStep(db, 4, "wake answer", "wake");
+      // No ACP stop response is sent for a wake, and no new user prompt is needed.
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs)[0]?.snapshot).toMatchObject({
+        input: [],
+        nativeTurnRef: { nativeTurnKey: "wake-2" },
+        items: [{ item: { type: "agentMessage", text: "wake answer" } }],
+      });
+      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      transport.result = deferred();
+      await start(session, [transport], "t2");
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      userStep(db, 5, "next", "next");
+      answerStep(db, 6, "next answer", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(events(outputs)).toContainEqual(
+        expect.objectContaining({
+          type: "turn.completed",
+          turnId: "t2",
+          nativeTurnRef: expect.objectContaining({ nativeTurnKey: "turn-1" }),
+        }),
+      );
+      const nativeRef = required(session.initialState.nativeRef);
+      await session.close();
+      const reopened = await adapter.open({ kind: "resume", cwd: home, nativeRef });
+      assert(reopened.ok);
+      const snapshot = await reopened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
+        "turn-0",
+        "wake-2",
+        "turn-1",
+      ]);
+      expect(snapshot.value.turns[0]?.items.map(({ item }) => item)).toMatchObject([
+        { text: "hello there" },
+      ]);
+      expect(wakes(outputs).map((event) => event.snapshot)).toEqual([snapshot.value.turns[1]]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps polling after a notification whose wake has not reached SQLite", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "first-wake");
+      answerStep(db, 3, "first answer", "first-wake");
+      // At the first poll only A exists; B's sole notification precedes even its system step.
+      transport.eventHandler?.({ type: "agent.text", text: "second answer" });
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      expect(wakes(outputs)[0]?.snapshot.nativeTurnRef.nativeTurnKey).toBe("wake-2");
+      systemStep(db, 4, "second-wake");
+      answerStep(db, 5, "second answer", "second-wake");
+      await vi.waitFor(() =>
+        expect(wakes(outputs).map(({ snapshot }) => snapshot.nativeTurnRef.nativeTurnKey)).toEqual([
+          "wake-2",
+          "wake-4",
+        ]),
+      );
+    } finally {
+      await session.close();
+      db.close();
+    }
+  });
+
+  it("accepts a new prompt while an idle tool wake is not ready to publish", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "wake");
+      transport.eventHandler?.({ type: "tool.call", toolCallId: "shell", name: "run_command" });
+      transport.result = deferred();
+      expect(
+        await session.execute({
+          type: "turn.start",
+          turnId: turnId("t2"),
+          input: [{ type: "text", text: "next" }],
+        }),
+      ).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+      expect(wakes(outputs)).toEqual([]);
+      userStep(db, 4, "next", "next");
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t2");
+      expect(wakes(outputs)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("observes updates after the wire response without publishing ahead of the user terminal", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      const gate = deferred<number>();
+      vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockReturnValueOnce(gate.promise);
+      transport.handler?.onResponse?.();
+      transport.result.resolve({ stopReason: "end_turn" });
+      systemStep(db, 2, "wake");
+      answerStep(db, 3, "wake answer", "wake");
+      transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
+      expect(wakes(outputs)).toEqual([]);
+      gate.resolve(1);
+      await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
+      const all = events(outputs);
+      expect(all.findIndex((event) => event.type === "turn.autonomous.completed")).toBeGreaterThan(
+        all.findIndex((event) => event.type === "turn.completed" && event.turnId === "t1"),
+      );
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["close", "fault"])("does not publish an incomplete wake after %s", async (end) => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs);
+      systemStep(db, 2, "wake");
+      transport.eventHandler?.({ type: "agent.thought", text: "partial" });
+      if (end === "close") await session.close();
+      else
+        transport.options.onFault?.(new AntigravityTransportError("processExited", "ACP exited"));
+      answerStep(db, 3, "too late", "wake");
+      await setImmediate();
+      expect(wakes(outputs)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
 });

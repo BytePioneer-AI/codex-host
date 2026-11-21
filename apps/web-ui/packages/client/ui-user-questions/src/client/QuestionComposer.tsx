@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -310,6 +311,10 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
   // the input, so focus is granted once per question index.
   const focusedQuestions = useRef(new Set<number>());
   const answerSurface = useRef<HTMLDivElement>(null);
+  const questionScroll = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (questionScroll.current !== null) questionScroll.current.scrollTop = 0;
+  }, [index]);
   // Every navigation write stays in bounds and drafts mirrors questions 1:1.
   // oxlint-disable-next-line typescript/no-non-null-assertion
   const question = questions[index]!;
@@ -520,79 +525,85 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
         className={clsx(css.card, minimized && css.cardMinimized)}
         aria-labelledby={`question-${pending.key}-${String(index)}`}
       >
-        <header className={css.header}>
-          <div className={css.headingBlock}>
-            {question.header !== undefined && <div className={css.eyebrow}>{question.header}</div>}
-            <h2 className={css.title} id={`question-${pending.key}-${String(index)}`}>
-              {question.question}
-            </h2>
-          </div>
-          <div className={css.headerActions}>
-            {countdown !== undefined &&
-              card.waitState !== "waiting" &&
-              card.waitState !== "editing" &&
-              card.waitState !== "continued" && (
-                <span className={css.waitStatus}>
-                  {t(countdown.running ? "wait.countdown" : "wait.paused", {
-                    seconds: Math.ceil(countdown.remainingMs / 1000),
-                  })}
-                </span>
+        <div
+          ref={questionScroll}
+          className={css.scrollArea}
+          data-question-scroll
+          tabIndex={minimized ? undefined : 0}
+        >
+          <header className={css.header}>
+            <div className={css.headingBlock}>
+              {question.header !== undefined && (
+                <div className={css.eyebrow}>{question.header}</div>
               )}
-            {countdown !== undefined &&
-              card.waitState !== "waiting" &&
-              card.waitState !== "editing" &&
-              card.waitState !== "continued" && (
-                <Button variant="outline" className={css.waitButton} onClick={takeTime}>
-                  {t("wait.takeTime")}
-                </Button>
+              <h2 className={css.title} id={`question-${pending.key}-${String(index)}`}>
+                {question.question}
+              </h2>
+            </div>
+            <div className={css.headerActions}>
+              {countdown !== undefined &&
+                card.waitState !== "waiting" &&
+                card.waitState !== "editing" &&
+                card.waitState !== "continued" && (
+                  <span className={css.waitStatus}>
+                    {t(countdown.running ? "wait.countdown" : "wait.paused", {
+                      seconds: Math.ceil(countdown.remainingMs / 1000),
+                    })}
+                  </span>
+                )}
+              {countdown !== undefined &&
+                card.waitState !== "waiting" &&
+                card.waitState !== "editing" &&
+                card.waitState !== "continued" && (
+                  <Button variant="outline" className={css.waitButton} onClick={takeTime}>
+                    {t("wait.takeTime")}
+                  </Button>
+                )}
+              {card.state === "continued" && (
+                <span className={css.waitStatus}>{t("wait.continued")}</span>
               )}
-            {card.state === "continued" && (
-              <span className={css.waitStatus}>{t("wait.continued")}</span>
-            )}
-            {/* A held or frozen countdown says so; a request that never carried
+              {/* A held or frozen countdown says so; a request that never carried
                 one waits silently, as the blocking question always has. */}
-            {countdown !== undefined &&
-              (card.waitState === "waiting" || card.waitState === "editing") && (
-                <span className={css.waitStatus}>{t("wait.held")}</span>
-              )}
-            {review !== undefined && <span className={css.waitStatus}>{t("review.status")}</span>}
-            <button
-              type="button"
-              className={css.iconButton}
-              aria-label={t(minimized ? "nav.maximize" : "nav.minimize")}
-              title={t(minimized ? "nav.maximize" : "nav.minimize")}
-              aria-expanded={!minimized}
-              disabled={busy !== null}
-              onClick={() => {
-                setMinimized((current) => !current);
-              }}
-            >
-              {minimized ? <IconChevronUpOutlineRegular /> : <IconChevronDownOutlineRegular />}
-            </button>
-            <button
-              type="button"
-              className={css.iconButton}
-              aria-label={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
-              title={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
-              disabled={busy !== null}
-              onClick={dismissFlow}
-            >
-              <IconCloseOutlineRegular />
-            </button>
-          </div>
-        </header>
+              {countdown !== undefined &&
+                (card.waitState === "waiting" || card.waitState === "editing") && (
+                  <span className={css.waitStatus}>{t("wait.held")}</span>
+                )}
+              {review !== undefined && <span className={css.waitStatus}>{t("review.status")}</span>}
+              <button
+                type="button"
+                className={css.iconButton}
+                aria-label={t(minimized ? "nav.maximize" : "nav.minimize")}
+                title={t(minimized ? "nav.maximize" : "nav.minimize")}
+                aria-expanded={!minimized}
+                disabled={busy !== null}
+                onClick={() => {
+                  setMinimized((current) => !current);
+                }}
+              >
+                {minimized ? <IconChevronUpOutlineRegular /> : <IconChevronDownOutlineRegular />}
+              </button>
+              <button
+                type="button"
+                className={css.iconButton}
+                aria-label={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
+                title={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
+                disabled={busy !== null}
+                onClick={dismissFlow}
+              >
+                <IconCloseOutlineRegular />
+              </button>
+            </div>
+          </header>
 
-        {!minimized && (
-          <>
+          {!minimized && (
             <div
               ref={answerSurface}
               className={css.body}
-              data-question-scroll
               onFocusCapture={focusAnswerSurface}
               onBlurCapture={blurAnswerSurface}
             >
               {question.detail !== undefined && (
-                <div className={css.detail} tabIndex={0}>
+                <div className={css.detail}>
                   <MarkdownText text={question.detail} labels={markdownLabels} />
                 </div>
               )}
@@ -703,67 +714,69 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
                   ))}
               </div>
             </div>
+          )}
+        </div>
 
-            <footer className={css.footer}>
-              {questions.length > 1 && (
-                <div className={css.pager}>
-                  <button
-                    type="button"
-                    className={css.iconButton}
-                    aria-label={t("nav.prev")}
-                    disabled={index === 0 || busy !== null}
-                    onClick={() => {
-                      replaceProgress(index - 1, drafts);
-                      setError(null);
-                    }}
-                  >
-                    <IconChevronLeftOutlineRegular />
-                  </button>
-                  <span className={css.progress}>
-                    {index + 1} / {questions.length}
-                  </span>
-                  <button
-                    type="button"
-                    className={css.iconButton}
-                    aria-label={t("nav.next")}
-                    disabled={index === questions.length - 1 || busy !== null}
-                    onClick={() => {
-                      replaceProgress(index + 1, drafts);
-                      setError(null);
-                    }}
-                  >
-                    <IconChevronRightOutlineRegular />
-                  </button>
-                </div>
-              )}
-              <div className={css.feedback} role="status">
-                {error === null ? null : "key" in error ? t(error.key) : error.text}
+        {!minimized && (
+          <footer className={css.footer}>
+            {questions.length > 1 && (
+              <div className={css.pager}>
+                <button
+                  type="button"
+                  className={css.iconButton}
+                  aria-label={t("nav.prev")}
+                  disabled={index === 0 || busy !== null}
+                  onClick={() => {
+                    replaceProgress(index - 1, drafts);
+                    setError(null);
+                  }}
+                >
+                  <IconChevronLeftOutlineRegular />
+                </button>
+                <span className={css.progress}>
+                  {index + 1} / {questions.length}
+                </span>
+                <button
+                  type="button"
+                  className={css.iconButton}
+                  aria-label={t("nav.next")}
+                  disabled={index === questions.length - 1 || busy !== null}
+                  onClick={() => {
+                    replaceProgress(index + 1, drafts);
+                    setError(null);
+                  }}
+                >
+                  <IconChevronRightOutlineRegular />
+                </button>
               </div>
-              {/* A review card has nothing to send: the pager alone walks the record. */}
-              {review === undefined && (
-                <div className={css.footerActions}>
-                  <Button variant="ghost" disabled={busy !== null} onClick={skipQuestion}>
-                    {t("action.skip")}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    disabled={
-                      busy !== null ||
-                      !answered(draft) ||
-                      (index === questions.length - 1 && !canSubmit)
-                    }
-                    onClick={continueFlow}
-                  >
-                    {busy === "answer"
-                      ? t("submitting")
-                      : index === questions.length - 1
-                        ? t("submit")
-                        : t("action.next")}
-                  </Button>
-                </div>
-              )}
-            </footer>
-          </>
+            )}
+            <div className={css.feedback} role="status">
+              {error === null ? null : "key" in error ? t(error.key) : error.text}
+            </div>
+            {/* A review card has nothing to send: the pager alone walks the record. */}
+            {review === undefined && (
+              <div className={css.footerActions}>
+                <Button variant="ghost" disabled={busy !== null} onClick={skipQuestion}>
+                  {t("action.skip")}
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={
+                    busy !== null ||
+                    !answered(draft) ||
+                    (index === questions.length - 1 && !canSubmit)
+                  }
+                  onClick={continueFlow}
+                >
+                  {busy === "answer"
+                    ? t("submitting")
+                    : index === questions.length - 1
+                      ? t("submit")
+                      : t("action.next")}
+                </Button>
+              </div>
+            )}
+          </footer>
         )}
       </section>
     </div>

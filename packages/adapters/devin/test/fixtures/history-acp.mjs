@@ -112,6 +112,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       };
       break;
     case "_cognition.ai/revert/listSteps":
+      if (scenario === "pre-prompt-timeout" && !continued) continue;
       if (continued) {
         if (scenario === "checkpoint-exit") process.exit(7);
         if (scenario === "checkpoint-timeout") continue;

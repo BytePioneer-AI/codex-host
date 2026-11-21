@@ -137,8 +137,13 @@ beforeEach(() => {
         steps: [
           // Deliberately reordered and interleaved question steps: never map by position/text.
           ...turns
-            .toReversed()
-            .map((id) => ({ stepId: `step-${id}`, kind: "prompt", userMessageId: id })),
+            .map((id, index) => ({
+              // A reused user message ID still gets its own native step.
+              stepId: turns.indexOf(id) === index ? `step-${id}` : `step-${id}-${index}`,
+              kind: "prompt",
+              userMessageId: id,
+            }))
+            .toReversed(),
           { stepId: "question", kind: "questionAnswer", userMessageId: "u1" },
         ],
       };
@@ -465,6 +470,49 @@ describe("Devin exact native history", () => {
     release();
     await deriving;
   });
+  it.each([
+    { added: ["compacted"], key: "compacted", status: "succeeded" },
+    { added: [], key: undefined, status: "failed" },
+    { added: ["one", "two"], key: undefined, status: "failed" },
+    { added: ["u3"], key: undefined, status: "failed" },
+  ])(
+    "recovers a result without user message ID only from one added prompt step ($added)",
+    async ({ added, key, status }) => {
+      const source = await value(await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd }));
+      const outputs: HarnessOutput[] = [];
+      const done = (async () => {
+        for await (const output of source.outputs) outputs.push(output);
+      })();
+      // Devin omits _meta.userMessageId after compacting context mid-Turn.
+      vi.spyOn(DevinTransport.prototype, "prompt").mockImplementation(async () => {
+        histories.set("source", [...present(histories.get("source")), ...added]);
+        return { stopReason: "end_turn" };
+      });
+      await source.execute({
+        type: "turn.start",
+        turnId: hostTurnIdSchema.parse("compacted-turn"),
+        input: [{ type: "text", text: "long task" }],
+      });
+      try {
+        await vi.waitFor(() =>
+          expect(outputs).toContainEqual(
+            expect.objectContaining({ event: expect.objectContaining({ type: "turn.completed" }) }),
+          ),
+        );
+        const completed = outputs.find(
+          (output) => output.kind === "event" && output.event.type === "turn.completed",
+        );
+        const event = completed?.kind === "event" ? completed.event : undefined;
+        expect(event).toMatchObject({ outcome: { status } });
+        if (event?.type !== "turn.completed") throw new Error("Missing terminal");
+        expect(event.nativeTurnRef?.nativeTurnKey).toBe(key);
+        if (key) expect(event.outcome.checkpoint?.checkpointId).toBe(`step-${key}`);
+      } finally {
+        await source.close();
+        await done;
+      }
+    },
+  );
   it("keeps a healthy Session usable when optional checkpoint discovery fails", async () => {
     const source = await value(await adapter.open({ kind: "resume", nativeRef: sourceRef, cwd }));
     const outputs: HarnessOutput[] = [];

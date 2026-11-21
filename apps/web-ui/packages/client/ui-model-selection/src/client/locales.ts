@@ -42,6 +42,7 @@ export const zh = {
   "error.sessionInUse":
     "当前会话已被占用，可能是其他正在运行的 DSH 导致的（如其他 dsh web、桌面端），请退出其他正在运行的 DSH 后重试。",
   "action.reload": "重新加载",
+  "action.refreshModels": "刷新模型列表",
   "warning.groupLoad": "{name} 加载失败：{message}",
   "search.placeholder": "搜索模型…",
   "search.clear": "清除搜索",
@@ -95,6 +96,7 @@ export const en = {
   "error.sessionInUse":
     "This session is already in use, possibly by another running DSH instance (such as dsh web or the desktop app). Quit other running DSH instances and try again.",
   "action.reload": "Reload",
+  "action.refreshModels": "Refresh models",
   "warning.groupLoad": "{name} failed to load: {message}",
   "search.placeholder": "Search models…",
   "search.clear": "Clear search",

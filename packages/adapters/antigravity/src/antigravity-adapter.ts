@@ -1474,8 +1474,8 @@ export class AntigravityAdapter implements HarnessAdapter {
     if (!input.refresh && cached) return cached;
     if (!input.refresh && inFlight) return inFlight;
     if (input.refresh) {
-      this.#cache.delete(`${cwd}\0catalog`);
-      this.#cache.delete(`${cwd}\0availability`);
+      this.#cache.clear();
+      this.#inflight.clear();
     }
     const pending = this.#inspect(cwd, input.purpose)
       .then((result) => {

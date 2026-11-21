@@ -40,6 +40,11 @@ const testState = vi.hoisted(() => ({
   editor: null as unknown as Element,
   sendButton: null as unknown as HTMLButtonElement,
   renderedModelViews: [] as RendererModelControlView[],
+  selectAgent: null as null | Parameters<typeof RendererComposerDom.mountComposerAgentControl>[4],
+  refreshModels: null as null | (() => void),
+  selectPermissionMode: null as null | ((permissionModeId: string) => void),
+  renderedPermissionMode: null as
+    null | Parameters<typeof RendererComposerDom.renderComposerAgentControl>[6],
   renderedCredits: null as AccountCreditsSnapshot | null,
   selectModel: null as null | ((modelId: string) => void),
   selectThinking: null as null | ((thinkingOptionId: string) => void),
@@ -66,8 +71,11 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
     mountComposerAgentControl: (
       ...args: Parameters<typeof RendererComposerDom.mountComposerAgentControl>
     ) => {
+      testState.selectAgent = args[4];
+      testState.refreshModels = args[11] ?? null;
       testState.selectModel = args[7];
       testState.selectThinking = args[8];
+      testState.selectPermissionMode = args[9];
       return {
         composer: testState.composer,
         composerId: "composer-1",
@@ -100,11 +108,12 @@ vi.mock("../src/renderer-composer-dom.js", async (importOriginal) => {
       _switching: unknown,
       _availability: unknown,
       modelView: RendererModelControlView,
-      _permissionModeView: unknown,
+      permissionModeView: Parameters<typeof RendererComposerDom.renderComposerAgentControl>[6],
       _usage: unknown,
       credits: AccountCreditsSnapshot | null,
     ) => {
       testState.renderedModelViews.push({ ...modelView });
+      testState.renderedPermissionMode = permissionModeView;
       testState.renderedCredits = credits;
     },
     reconcileComposerNativeControls: vi.fn(),
@@ -239,6 +248,10 @@ function installFakeBrowser(): void {
   testState.editor = editor;
   testState.sendButton = sendButton;
   testState.renderedModelViews = [];
+  testState.selectAgent = null;
+  testState.refreshModels = null;
+  testState.selectPermissionMode = null;
+  testState.renderedPermissionMode = null;
   testState.renderedCredits = null;
   testState.selectModel = null;
   testState.selectThinking = null;
@@ -1777,6 +1790,238 @@ describe("Renderer binding Host-scoped Claude catalogs", () => {
     expect(applyAgent.mock.calls.length).toBeGreaterThan(applicationsBeforeSwitch);
     expect(applyAgent.mock.calls.at(-1)?.[0]).toBe("claude-code");
     expect(testState.prewarmClears).toBeGreaterThan(clearsBeforeSwitch);
+  });
+
+  it("refreshes only the selected Harness without replacing its ready view in flight", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async ({ refresh }: { refresh?: boolean }) =>
+        refresh ? pending.promise : readyInspection(),
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    const original = readyInspection();
+    const refresh = testState.refreshModels;
+    assert(refresh);
+    refresh();
+    refresh();
+    expect(latest()).toMatchObject({
+      status: "ready",
+      refreshing: true,
+      catalog: original.catalog,
+    });
+    expect(client.inspectHarness.mock.calls.flat().filter(({ refresh }) => refresh)).toEqual([
+      { harnessId: "claude-code", refresh: true },
+    ]);
+    pending.resolve({
+      ...original,
+      catalog: {
+        ...original.catalog,
+        models: [...original.catalog.models, ...readyInspection("new-model").catalog.models],
+      },
+    });
+    await vi.waitFor(() => expect(latest()?.catalog?.models.at(-1)?.ref.id).toBe("new-model"));
+    expect(latest()).toMatchObject({ status: "ready", selected: original.catalog.defaultModel });
+    expect(latest()?.refreshing).not.toBe(true);
+
+    client.inspectHarness.mockRejectedValueOnce(new Error("Refresh failed"));
+    refresh();
+    expect(latest()?.refreshing).toBe(true);
+    await vi.waitFor(() => expect(latest()?.refreshing).not.toBe(true));
+    expect(latest()?.status).toBe("ready");
+    expect(latest()?.catalog?.models.at(-1)?.ref.id).toBe("new-model");
+  });
+
+  it("confirms a pending Permission Mode selection while models refresh", async () => {
+    installFakeBrowser();
+    const inspection = {
+      ...readyInspection(),
+      permissionModes: {
+        modes: [
+          { id: "default", label: "Default" },
+          { id: "acceptEdits", label: "Accept edits" },
+        ],
+        defaultModeId: "default",
+      },
+    };
+    inspection.capabilities.configuration.selectPermissionMode = true;
+    const model = inspection.catalog.defaultModel;
+    const permission = Promise.withResolvers<{ effectivePermissionModeId: string }>();
+    const pendingRefresh = Promise.withResolvers<typeof inspection>();
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async ({ refresh }: { refresh?: boolean }) =>
+        refresh ? pendingRefresh.promise : inspection,
+      ),
+      inspectThread: async () => ({
+        owner: "external" as const,
+        harnessId: "claude-code",
+        transportModelId: "codexhost/claude-code-native@claude-model-v1.b3B1cw@default@auto",
+        effectiveModel: model,
+        effectivePermissionModeId: "default",
+        locked: true,
+      }),
+      inspectThreadCommands: async () => ({ commands: [] }),
+      inspectThreadUsage: async () => ({ usage: null, accountCredits: null }),
+      selectThreadPermissionMode: vi.fn(() => permission.promise),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "codex",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    await vi.waitFor(() => {
+      expect(testState.renderedPermissionMode).toMatchObject({
+        status: "ready",
+        selected: "default",
+      });
+    });
+    const { selectPermissionMode, refreshModels } = testState;
+    assert(selectPermissionMode && refreshModels);
+    selectPermissionMode("acceptEdits");
+    expect(client.selectThreadPermissionMode).toHaveBeenCalledWith({
+      threadId: "thread-a",
+      permissionModeId: "acceptEdits",
+    });
+    expect(testState.renderedPermissionMode?.status).toBe("selecting");
+    refreshModels();
+    expect(testState.renderedModelViews.at(-1)?.refreshing).toBe(true);
+
+    permission.resolve({ effectivePermissionModeId: "acceptEdits" });
+    await vi.waitFor(() => {
+      expect(testState.renderedPermissionMode).toMatchObject({
+        status: "ready",
+        selected: "acceptEdits",
+      });
+    });
+    expect(testState.renderedModelViews.at(-1)?.refreshing).toBe(true);
+    pendingRefresh.resolve(inspection);
+    await vi.waitFor(() => expect(testState.renderedModelViews.at(-1)?.refreshing).not.toBe(true));
+    expect(testState.renderedPermissionMode).toMatchObject({
+      status: "ready",
+      selected: "acceptEdits",
+    });
+  });
+
+  it("discards a model refresh after replacing its Composer", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(async ({ refresh }: { refresh?: boolean }) =>
+        refresh ? pending.promise : readyInspection(),
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    const { composer, refreshModels, notifyMutations } = testState;
+    assert(refreshModels && notifyMutations);
+    refreshModels();
+    const refreshResponse = client.inspectHarness.mock.results.at(-1)?.value;
+    assert(refreshResponse);
+    expect(latest()?.refreshing).toBe(true);
+
+    const replacement = Object.assign(Object.create(Element.prototype) as Element, composer);
+    Object.assign(composer, { isConnected: false });
+    testState.composer = replacement;
+    notifyMutations([
+      {
+        type: "childList",
+        target: document.body,
+        addedNodes: [replacement],
+        removedNodes: [composer],
+      } as unknown as MutationRecord,
+    ]);
+    for (const callback of testState.animationFrames.splice(0)) callback(performance.now());
+    await vi.waitFor(() => {
+      expect(testState.refreshModels).not.toBe(refreshModels);
+      expect(latest()?.status).toBe("ready");
+      expect(latest()?.refreshing).not.toBe(true);
+    });
+    pending.resolve(readyInspection("stale-model"));
+    await refreshResponse;
+    expect(latest()?.catalog).toEqual(readyInspection().catalog);
+    expect(
+      testState.renderedModelViews.some(
+        ({ catalog }) => catalog?.defaultModel?.id === "stale-model",
+      ),
+    ).toBe(false);
+  });
+
+  it("discards a model refresh that finishes after switching Harnesses", async () => {
+    installFakeBrowser();
+    testState.modelTarget = ["default"];
+    const pending = Promise.withResolvers<ReturnType<typeof readyInspection>>();
+    const client = {
+      listHarnessPlugins,
+      inspectHarness: vi.fn(
+        async ({ harnessId, refresh }: { harnessId: string; refresh?: boolean }) =>
+          refresh ? pending.promise : readyInspection(harnessId === "pi" ? "pi-model" : undefined),
+      ),
+    };
+    const { installRendererBindingProbe } = await import("../src/renderer-binding-probe.js");
+    const probe = installRendererBindingProbe({
+      enabledAgents: ["codex", "claude-code", "pi"],
+      defaultAgent: "claude-code",
+    });
+    probe.setAdapter(
+      { state: "ready", reason: "ready", modelUpdates: 0, hook: "request-bridge" },
+      undefined,
+      () => true,
+      { currentHostId: () => "local", clientForHost: () => client } as never,
+    );
+    const latest = () => testState.renderedModelViews.at(-1);
+    await vi.waitFor(() => expect(latest()?.status).toBe("ready"));
+    testState.refreshModels?.();
+    expect(latest()?.refreshing).toBe(true);
+    testState.selectAgent?.("pi");
+    await vi.waitFor(() => expect(latest()?.selected?.id).toBe("pi-model"));
+    pending.resolve(readyInspection("stale-claude-model"));
+    await pending.promise;
+    await Promise.resolve();
+    expect(latest()).toMatchObject({
+      status: "ready",
+      catalog: readyInspection("pi-model").catalog,
+    });
+    expect(latest()?.refreshing).not.toBe(true);
+    expect(
+      testState.renderedModelViews.some((view) =>
+        view.catalog?.models.some(({ ref }) => ref.id === "stale-claude-model"),
+      ),
+    ).toBe(false);
   });
 
   it("reloads a same-Host empty Claude catalog on explicit refresh", async () => {

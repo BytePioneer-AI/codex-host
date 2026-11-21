@@ -92,6 +92,7 @@ class FakePiRpcProcess extends EventEmitter {
   #sessionFile: string | null = "/synthetic/session.jsonl";
   #stateRequestCount = 0;
   #isStreaming = false;
+  #isCompacting = false;
   #provider = "synthetic-provider";
   #modelId = "synthetic-model";
   #thinkingLevel = "high";
@@ -110,6 +111,17 @@ class FakePiRpcProcess extends EventEmitter {
   emitAgentStart(): void {
     this.#isStreaming = true;
     this.#output({ type: "agent_start" });
+  }
+
+  startCompaction(): void {
+    this.#isCompacting = true;
+    this.#output({ type: "compaction_start" });
+  }
+
+  finishCancelledCompaction(emitTerminal: boolean): void {
+    this.#isCompacting = false;
+    this.#isStreaming = false;
+    if (emitTerminal) this.#output({ type: "compaction_end", aborted: true });
   }
 
   releaseEntries(): void {
@@ -349,6 +361,7 @@ class FakePiRpcProcess extends EventEmitter {
         },
         thinkingLevel: this.#thinkingLevel,
         isStreaming: this.#isStreaming,
+        isCompacting: this.#isCompacting,
         contextUsage: { tokens: 45, contextWindow: 200 },
       });
       return;
@@ -728,12 +741,14 @@ class FakePiRpcProcess extends EventEmitter {
       this.#scenario === "settled-streaming" ||
       ((this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-no-settle" ||
         this.#scenario === "long-running") &&
         this.#promptCount > 1)
     ) {
       const text =
         this.#scenario === "cancel" ||
         this.#scenario === "cancel-slow-settle" ||
+        this.#scenario === "cancel-no-settle" ||
         this.#scenario === "long-running"
           ? "continued"
           : "synthetic final text";
@@ -3425,28 +3440,105 @@ describe("Pi RPC Turn aggregation", () => {
     }
   });
 
-  it("fails and closes a cancellation that does not reach stable settlement", async () => {
+  it.each([
+    { trigger: "terminal event", emitTerminal: true, holdFirstProbe: false, clockAdvance: 0 },
+    {
+      trigger: "recovery deadline",
+      emitTerminal: false,
+      holdFirstProbe: false,
+      clockAdvance: 60_000,
+    },
+    {
+      trigger: "terminal event during a probe",
+      emitTerminal: true,
+      holdFirstProbe: true,
+      clockAdvance: 2_000,
+    },
+  ])(
+    "preserves a quarantined Session once native compaction is idle ($trigger)",
+    async ({ emitTerminal, holdFirstProbe, clockAdvance }) => {
+      vi.useFakeTimers();
+      const native = new FakePiRpcProcess("cancel-no-settle");
+      const onFault = vi.fn();
+      const rpc = new PiRpcSession(
+        { cwd: process.cwd(), cancelTimeoutMs: 10, onFault },
+        {
+          spawn: () => native as unknown as ChildProcessWithoutNullStreams,
+        },
+      );
+
+      try {
+        await rpc.start();
+        const events: PiTurnEvent[] = [];
+        const turn = rpc.runTurn("cancel me", (event) => events.push(event));
+        void turn.catch(() => undefined);
+        native.startCompaction();
+        native.holdStates = holdFirstProbe;
+        native.holdAborts = true;
+        const stopping = rpc.abort();
+        void stopping.catch(() => undefined);
+
+        await vi.advanceTimersByTimeAsync(10);
+        await expect(stopping).resolves.toBeUndefined();
+        await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+        expect(events).toContainEqual({ type: "compaction.completed", outcome: "cancelled" });
+        await expect(rpc.runTurn("while busy", () => undefined)).rejects.toThrow("still running");
+        await expect(rpc.compact(undefined, () => undefined)).rejects.toThrow("active operation");
+
+        native.releaseAborts();
+        expect(onFault).not.toHaveBeenCalled();
+        native.holdStates = false;
+        native.finishCancelledCompaction(emitTerminal);
+        await vi.advanceTimersByTimeAsync(clockAdvance);
+        native.releaseStates();
+        expect(rpc.isBusy).toBe(false);
+        expect(native.exitCode).toBeNull();
+        expect(onFault).not.toHaveBeenCalled();
+        await expect(rpc.runTurn("continue", () => undefined)).resolves.toEqual({
+          text: "continued",
+          cancelled: false,
+        });
+      } finally {
+        await rpc.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("closes a quarantined Pi process before faulting when it never returns to idle", async () => {
     vi.useFakeTimers();
-    const onFault = vi.fn();
-    const rpc = session("cancel-no-settle", onFault, { cancelTimeoutMs: 10 });
+    const native = new FakePiRpcProcess("cancel-no-settle");
+    const exitsObservedAtFault: (number | null)[] = [];
+    const onFault = vi.fn(() => {
+      exitsObservedAtFault.push(native.exitCode);
+    });
+    const rpc = new PiRpcSession(
+      { cwd: process.cwd(), cancelTimeoutMs: 10, onFault },
+      {
+        spawn: () => native as unknown as ChildProcessWithoutNullStreams,
+      },
+    );
 
     try {
       await rpc.start();
       const turn = rpc.runTurn("cancel me", () => undefined);
-      const rejected = expect(turn).rejects.toThrow(
-        "Pi Turn cancellation did not settle within its bound",
-      );
+      void turn.catch(() => undefined);
       await rpc.abort();
 
       await vi.advanceTimersByTimeAsync(10);
 
-      await rejected;
+      await expect(turn).resolves.toEqual({ text: "", cancelled: true });
+      expect(onFault).not.toHaveBeenCalled();
+      expect(native.exitCode).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(onFault).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: "protocolError",
-          message: "Pi Turn cancellation did not settle within its bound",
+          message: expect.stringContaining("did not return to confirmed idle"),
         }),
       );
+      expect(exitsObservedAtFault).toEqual([0]);
       await expect(rpc.runTurn("unavailable", () => undefined)).rejects.toThrow("unavailable");
     } finally {
       await rpc.close();

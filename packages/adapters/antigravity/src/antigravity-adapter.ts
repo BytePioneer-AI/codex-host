@@ -80,6 +80,8 @@ import {
   buildAcpElicitationResponse,
   buildAcpPermissionResponse,
   buildLiveCommandCatalog,
+  compactionItemId,
+  compactionOutcome,
   projectAcpApprovalInteraction,
   projectAcpQuestionInteraction,
   projectReplayedEventsToTurns,
@@ -95,7 +97,11 @@ import {
   splitAntigravityModelAndEffort,
 } from "./model-catalog.js";
 import { AntigravityWakeObserver } from "./wake-observer.js";
-import { readNativeHistory } from "./native-replay.js";
+import {
+  readNativeHistory,
+  readNativeStepWatermark,
+  readNativeTurnCompactions,
+} from "./native-replay.js";
 import { observeNativeTurnCount, readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
@@ -281,6 +287,9 @@ interface ActiveTurn {
   readonly accounting: AbortController;
   firstOutputAtMs?: number;
   hasToolCalls?: boolean;
+  dbPath?: string;
+  compactionAfterStep?: number;
+  readonly emittedCompactions: Set<number>;
   tracker?: AntigravityToolTracker;
   textItem?:
     | {
@@ -718,6 +727,7 @@ export class AntigravitySession implements HarnessSession {
         if (usage) this.#emit({ type: "session.usage.changed", usage });
         if (this.#active?.promptPhase === "submitted") {
           void this.refreshUsage();
+          void this.#syncTurnCompactions(this.#active);
           this.#scheduleUsageRetry();
         }
         break;
@@ -964,6 +974,7 @@ export class AntigravitySession implements HarnessSession {
         ended: false,
         promptPhase: "notSubmitted",
         accounting: new AbortController(),
+        emittedCompactions: new Set(),
       };
       this.#active = turn;
       this.#emit({ type: "turn.started", turnId: turn.turnId });
@@ -1157,6 +1168,9 @@ export class AntigravitySession implements HarnessSession {
         onSubagentSpawned: (id, item) => this.#subagents.track(id, item),
       });
       const before = this.#confirmedCount;
+      turn.dbPath = file;
+      turn.compactionAfterStep = await readNativeStepWatermark(file);
+      if (!this.#isCurrent(turn)) return;
       const submittedAtMs = Date.now();
       this.#usage?.beginTurn(submittedAtMs, turn.turnId);
       this.#usageTurnId = turn.turnId;
@@ -1234,6 +1248,7 @@ export class AntigravitySession implements HarnessSession {
           this.#collectUsage({ turn, completedAtMs, ...(result.usage && { usage: result.usage }) }),
         ),
       );
+      await this.#syncTurnCompactions(turn);
       this.#scheduleUsageRetry();
     } catch (error) {
       if (
@@ -1289,6 +1304,32 @@ export class AntigravitySession implements HarnessSession {
       snapshot: { item: { ...turn.textItem }, outcome },
     });
     turn.textItem = undefined;
+  }
+  async #syncTurnCompactions(turn: ActiveTurn): Promise<void> {
+    if (
+      !this.#isCurrent(turn) ||
+      turn.cancelled ||
+      turn.dbPath === undefined ||
+      turn.compactionAfterStep === undefined
+    )
+      return;
+    const compactions = await readNativeTurnCompactions(turn.dbPath, turn.compactionAfterStep);
+    if (!this.#isCurrent(turn) || turn.cancelled) return;
+    for (const compaction of compactions) {
+      if (turn.emittedCompactions.has(compaction.stepIndex)) continue;
+      turn.emittedCompactions.add(compaction.stepIndex);
+      this.#completeText(turn, { status: "succeeded" });
+      const item = {
+        type: "contextCompaction" as const,
+        itemId: compactionItemId(compaction.stepIndex),
+      };
+      this.#emit({ type: "item.started", turnId: turn.turnId, item });
+      this.#emit({
+        type: "item.completed",
+        turnId: turn.turnId,
+        snapshot: { item, outcome: compactionOutcome(compaction) },
+      });
+    }
   }
   #finish(turn: ActiveTurn, outcome: TurnOutcome, nativeTurnRef?: NativeTurnRef): void {
     if (!this.#isCurrent(turn)) return;

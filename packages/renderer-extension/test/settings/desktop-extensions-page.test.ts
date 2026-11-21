@@ -560,7 +560,7 @@ describe("Desktop extensions settings page", () => {
   it("renders empty-state directory guidance in Chinese and English", async () => {
     const client: RendererDesktopExtensionsClient = {
       listDesktopExtensions: vi.fn(async () => ({
-        configuration: { version: 1, revision: 0, enabled: [] },
+        configuration: { version: 1 as const, revision: 0, enabled: [] },
         desktopConnected: false,
         diagnostics: [],
         extensions: [],
@@ -1793,7 +1793,9 @@ describe("Desktop extensions settings page", () => {
   it("shows an unavailable state when the Host does not support Desktop extension RPCs", async () => {
     const mounted = mountPage("en", () => ({
       listDesktopExtensions: vi.fn(async () => {
-        throw new RendererMethodUnavailableError("codexhost/desktop/extensions/list");
+        throw new RendererMethodUnavailableError("codexhost/desktop/extensions/list", {
+          code: -32601,
+        });
       }),
     }));
     await vi.waitFor(() =>

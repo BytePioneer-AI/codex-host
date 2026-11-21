@@ -1,6 +1,7 @@
 {
   "name": "codexhost-extensions-registry",
   "private": true,
+  "type": "module",
   "engines": {
     "node": ">=24"
   },

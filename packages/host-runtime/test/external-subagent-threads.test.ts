@@ -229,6 +229,7 @@ describe("External native child identity", () => {
           sessionId: parentId,
           thread: { id: parentId },
           turns: next.turns,
+          historicalPlans: new Map(),
           restoredState: { nativeRef: replacementRef },
         });
         release();

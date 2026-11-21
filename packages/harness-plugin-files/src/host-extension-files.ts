@@ -25,7 +25,6 @@ import {
   type HostExtensionsRpcResult,
   HOST_EXTENSIONS_RPC,
 } from "@codexhost/shared-contracts";
-import { writePrivateExtensionFile } from "./desktop-extension-data.js";
 import {
   errorMessage,
   hostExtensionDataDirectory,
@@ -36,6 +35,7 @@ import {
   storeRoot,
   utf8,
   withHostExtensionWrite,
+  writePrivateExtensionFile,
   type HostExtensionLocation,
 } from "./host-extension-io.js";
 import {

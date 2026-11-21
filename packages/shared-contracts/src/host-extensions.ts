@@ -2,28 +2,35 @@ import { z } from "zod";
 import {
   desktopExtensionBackendMethodSchema,
   desktopExtensionHashSchema,
+  desktopExtensionIdSchema,
   desktopExtensionManifestSchema,
   parseDesktopExtensionManifest,
   type DesktopExtensionBackendContext,
   type DesktopExtensionDispose,
 } from "./desktop-extensions.js";
+import { pluginRelativeResourceSchema } from "./harness-plugins.js";
 import type { JsonObject, JsonValue } from "./json-value.js";
-import {
-  extensionTargetSchema,
-  webExtensionActivationIdSchema,
-  webExtensionResourcePathSchema,
-  webNativeExtensionIdSchema,
-} from "./web-native-extensions.js";
 
+const reservedName = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]) *(?:\.|$)/iu;
 export const HOST_EXTENSION_PAGE_API_VERSION = 1;
-export const hostExtensionIdSchema = webNativeExtensionIdSchema;
-export const hostExtensionTargetSchema = extensionTargetSchema;
-export const hostExtensionDigestSchema = desktopExtensionHashSchema;
-export const hostExtensionActivationIdSchema = webExtensionActivationIdSchema;
-export const hostExtensionResourcePathSchema = webExtensionResourcePathSchema.refine(
-  (path) => path.split("/").length <= 32,
-  "Extension resources may be at most 32 segments deep",
+export const hostExtensionIdSchema = desktopExtensionIdSchema.refine(
+  (id) => !reservedName.test(id),
+  "Reserved extension ID",
 );
+export const hostExtensionTargetSchema = z.enum(["desktop", "web"]);
+export const hostExtensionDigestSchema = desktopExtensionHashSchema;
+export const hostExtensionActivationIdSchema = z.uuid();
+export const hostExtensionResourcePathSchema = pluginRelativeResourceSchema
+  .refine(
+    (resource) =>
+      !/[\x00-\x1f\x7f<>"|*]/u.test(resource) &&
+      resource.split("/").every((part) => !/[. ]$/u.test(part) && !reservedName.test(part)),
+    "Expected a portable relative resource path",
+  )
+  .refine(
+    (path) => path.split("/").length <= 32,
+    "Extension resources may be at most 32 segments deep",
+  );
 
 export type HostExtensionTarget = z.infer<typeof hostExtensionTargetSchema>;
 export type HostExtensionBackendContext = DesktopExtensionBackendContext;

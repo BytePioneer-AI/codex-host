@@ -183,7 +183,6 @@ export async function runSharedHostService(
           stockCodex: values["stock-codex"] ?? "",
           official,
           owner,
-          desktopExtensionBackends: host.desktopExtensionBackends,
           hostExtensions: host.hostExtensions,
           store,
           prices,

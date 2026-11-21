@@ -3729,58 +3729,44 @@ export function installRendererBindingProbe(
       ),
     readAsset: async (id, path) => {
       const client = modelClientForHost("local");
-      if (client?.readHostExtensionAsset) {
-        const asset = await client.readHostExtensionAsset({ id, path });
-        return {
-          mimeType: asset.mimeType,
-          dataUrl: `data:${asset.mimeType};base64,${asset.base64}`,
-        };
-      }
-      const reader = client?.readDesktopExtensionAsset;
-      if (!reader) throw new Error("Desktop extension assets RPC is unavailable");
-      return reader({ id, path });
+      if (!client?.readHostExtensionAsset)
+        throw new Error("Host extension assets RPC is unavailable");
+      const asset = await client.readHostExtensionAsset({ id, path });
+      return {
+        mimeType: asset.mimeType,
+        dataUrl: `data:${asset.mimeType};base64,${asset.base64}`,
+      };
     },
     getSettings: async (id) => {
       const client = modelClientForHost("local");
-      if (client?.getHostExtensionSettings) {
-        return (await client.getHostExtensionSettings({ id })).values;
-      }
-      const reader = client?.getDesktopExtensionSettings;
-      if (!reader) throw new Error("Desktop extension settings RPC is unavailable");
-      return (await reader({ id })).values;
+      if (!client?.getHostExtensionSettings)
+        throw new Error("Host extension settings RPC is unavailable");
+      return (await client.getHostExtensionSettings({ id })).values;
     },
     setSettings: async (id, values) => {
       const client = modelClientForHost("local");
-      if (client?.setHostExtensionSettings) {
-        const current = client.getHostExtensionSettings
-          ? await client.getHostExtensionSettings({ id })
-          : { settingsRevision: 0 };
-        return (
-          await client.setHostExtensionSettings({
-            id,
-            expectedSettingsRevision: current.settingsRevision,
-            values: values as Record<string, never>,
-          })
-        ).values;
-      }
-      const writer = client?.setDesktopExtensionSettings;
-      if (!writer) throw new Error("Desktop extension settings RPC is unavailable");
-      return (await writer({ id, values })).values;
+      if (!client?.getHostExtensionSettings || !client.setHostExtensionSettings)
+        throw new Error("Host extension settings RPC is unavailable");
+      const { settingsRevision } = await client.getHostExtensionSettings({ id });
+      return (
+        await client.setHostExtensionSettings({
+          id,
+          expectedSettingsRevision: settingsRevision,
+          values: values as Record<string, never>,
+        })
+      ).values;
     },
     invokeBackend: async (id, method, params) => {
       const client = modelClientForHost("local");
-      if (client?.invokeHostExtensionBackend) {
-        return (
-          await client.invokeHostExtensionBackend({
-            id,
-            method,
-            ...(params !== undefined ? { params: params as never } : {}),
-          })
-        ).result;
-      }
-      const invoker = client?.invokeDesktopExtensionBackend;
-      if (!invoker) throw new Error("Desktop extension backend RPC is unavailable");
-      return (await invoker({ id, method, ...(params !== undefined ? { params } : {}) })).result;
+      if (!client?.invokeHostExtensionBackend)
+        throw new Error("Host extension backend RPC is unavailable");
+      return (
+        await client.invokeHostExtensionBackend({
+          id,
+          method,
+          ...(params !== undefined ? { params: params as never } : {}),
+        })
+      ).result;
     },
   });
   const api: RendererBindingProbeApi = {

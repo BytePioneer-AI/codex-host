@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
-import type {
-  DesktopExtensionSettingField,
-  DesktopExtensionsListResult,
+import {
+  jsonObjectSchema,
+  type DesktopExtensionSettingField,
+  type HostExtensionListItem,
+  type HostExtensionsListResult,
+  type JsonObject,
+  type JsonValue,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -96,6 +100,30 @@ const SAMPLE_SCHEMA: readonly DesktopExtensionSettingField[] = [
   },
 ];
 
+function schemaExtension(
+  id: string,
+  name: { en: string; "zh-CN": string },
+  schema: readonly DesktopExtensionSettingField[],
+): Extract<HostExtensionListItem, { state: "valid" }> {
+  return {
+    id,
+    state: "valid",
+    enabled: true,
+    activationId: "00000000-0000-4000-8000-000000000000",
+    digest: "a".repeat(64),
+    installedAt: "2026-07-01T00:00:00.000Z",
+    manifest: {
+      manifestVersion: 2,
+      id,
+      name,
+      description: name,
+      version: "1.0.0",
+      desktop: { apiVersion: 1, script: "desktop.js" },
+      settingsSchema: [...schema],
+    },
+  };
+}
+
 function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
   const host = createDesktopExtensionHost(document);
   let settingsStore: Record<string, Record<string, unknown>> = {
@@ -107,9 +135,9 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
       preset: "solar",
     },
   };
-  let listResponse: DesktopExtensionsListResult = {
-    configuration: { version: 1, revision: 1, enabled: [] },
-    desktopConnected: true,
+  let listResponse: HostExtensionsListResult = {
+    revision: 1,
+    configuration: { revision: 1, enabled: [] },
     diagnostics: [],
     extensions: [],
   };
@@ -142,73 +170,38 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
   };
   const unbind = host.bind(bridge);
 
+  const settingsRevisions = new Map<string, number>();
   const desktopClient = {
-    listDesktopExtensions: vi.fn(async () => listResponse),
-    listHostExtensions: vi.fn(async () => ({
-      revision: listResponse.configuration.revision,
-      configuration: {
-        revision: listResponse.configuration.revision,
-        enabled: listResponse.configuration.enabled,
+    listHostExtensions: vi.fn(async () => listResponse),
+    readHostExtensionAsset: vi.fn(async ({ id, path }: { id: string; path: string }) => {
+      const { mimeType, dataUrl } = await readAsset(id, path);
+      return { mimeType, base64: dataUrl.split(",")[1]!, digest: "a".repeat(64) };
+    }),
+    getHostExtensionSettings: vi.fn(async ({ id }: { id: string }) => ({
+      settingsRevision: settingsRevisions.get(id) ?? 0,
+      values: jsonObjectSchema.parse(await getSettings(id)),
+    })),
+    setHostExtensionSettings: vi.fn(
+      async ({
+        id,
+        values,
+        expectedSettingsRevision,
+      }: {
+        id: string;
+        values: JsonObject;
+        expectedSettingsRevision: number;
+      }) => {
+        if (expectedSettingsRevision !== (settingsRevisions.get(id) ?? 0))
+          throw new Error("Stale settings revision");
+        const saved = jsonObjectSchema.parse(await setSettings(id, values));
+        const settingsRevision = expectedSettingsRevision + 1;
+        settingsRevisions.set(id, settingsRevision);
+        return { settingsRevision, values: saved };
       },
-      diagnostics: listResponse.diagnostics,
-      extensions: listResponse.extensions.map((ext) => {
-        if (!ext.manifest) {
-          return {
-            state: "invalid" as const,
-            id: ext.id,
-            enabled: ext.enabled,
-            error: "Invalid manifest",
-          };
-        }
-        const rawName = ext.manifest.name;
-        const name =
-          typeof rawName === "string"
-            ? { en: rawName, "zh-CN": rawName }
-            : { en: rawName.en, "zh-CN": rawName["zh-CN"] ?? rawName.en };
-        const rawDesc = ext.manifest.description;
-        const description =
-          rawDesc === undefined
-            ? { en: ext.id, "zh-CN": ext.id }
-            : typeof rawDesc === "string"
-              ? { en: rawDesc, "zh-CN": rawDesc }
-              : { en: rawDesc.en, "zh-CN": rawDesc["zh-CN"] ?? rawDesc.en };
-        return {
-          state: "valid" as const,
-          id: ext.id,
-          activationId: `act-${ext.id}`,
-          digest: "a".repeat(64),
-          installedAt: "2026-07-01T00:00:00.000Z",
-          enabled: ext.enabled,
-          manifest: {
-            manifestVersion: 2 as const,
-            id: ext.id,
-            name,
-            version: ext.manifest.version,
-            description,
-            desktop: {
-              apiVersion: 1 as const,
-              entry: ext.manifest.desktop.script,
-              slots: ext.manifest.slots,
-            },
-            ...(ext.manifest.settingsSchema ? { settingsSchema: ext.manifest.settingsSchema } : {}),
-          },
-        };
-      }),
-    })),
-    readDesktopExtensionAsset: vi.fn(({ id, path }: { id: string; path: string }) =>
-      readAsset(id, path),
     ),
-    getDesktopExtensionSettings: vi.fn(async ({ id }: { id: string }) => ({
-      values: await getSettings(id),
-    })),
-    setDesktopExtensionSettings: vi.fn(
-      async ({ id, values }: { id: string; values: Record<string, unknown> }) => ({
-        values: await setSettings(id, values),
-      }),
-    ),
-    invokeDesktopExtensionBackend: vi.fn(
-      async ({ id, method, params }: { id: string; method: string; params?: unknown }) => ({
-        result: await invokeBackend(id, method, params),
+    invokeHostExtensionBackend: vi.fn(
+      async ({ id, method, params }: { id: string; method: string; params?: JsonValue }) => ({
+        result: jsonObjectSchema.parse(await invokeBackend(id, method, params ?? null)),
       }),
     ),
   };
@@ -253,7 +246,7 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
     desktopClient,
     setSettings,
     getSettings,
-    setListResponse(next: DesktopExtensionsListResult) {
+    setListResponse(next: HostExtensionsListResult) {
       listResponse = next;
     },
     navSections() {
@@ -390,26 +383,15 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     ]);
 
     harness.setListResponse({
-      configuration: { version: 1, revision: 2, enabled: ["schema-theme"] },
-      desktopConnected: true,
+      revision: 2,
+      configuration: { revision: 2, enabled: ["schema-theme"] },
       diagnostics: [],
       extensions: [
-        {
-          id: "schema-theme",
-          enabled: true,
-          status: { state: "running" },
-          manifest: {
-            manifestVersion: 1,
-            id: "schema-theme",
-            name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-            version: "1.0.0",
-            description: { en: "Declarative theme", "zh-CN": "声明式主题扩展" },
-            desktopApi: 1,
-            desktop: { script: "desktop.js" },
-            slots: ["appearance.theme"],
-            settingsSchema: [...SAMPLE_SCHEMA],
-          },
-        },
+        schemaExtension(
+          "schema-theme",
+          { en: "Schema Theme", "zh-CN": "声明式主题" },
+          SAMPLE_SCHEMA,
+        ),
       ],
     });
 
@@ -564,21 +546,7 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
       },
     ]);
     harness.pluginPages.syncInstalledExtensions?.([
-      {
-        id: "schema-theme",
-        enabled: true,
-        status: { state: "running" },
-        manifest: {
-          manifestVersion: 1,
-          id: "schema-theme",
-          name: { en: "Schema Theme", "zh-CN": "声明式主题" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [...initialSchema],
-        },
-      },
+      schemaExtension("schema-theme", { en: "Schema Theme", "zh-CN": "声明式主题" }, initialSchema),
     ]);
 
     const schemaPageId = must(harness.pluginPages.getPageIdForExtension("schema-theme"));
@@ -611,44 +579,17 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
 
     // Declarative-only page (synced without a live host instance) also unmounts & falls back when
     // an external sync reports enabled: false.
-    harness.pluginPages.syncInstalledExtensions?.([
-      {
-        id: "external-schema-ext",
-        enabled: true,
-        status: { state: "waiting" },
-        manifest: {
-          manifestVersion: 1,
-          id: "external-schema-ext",
-          name: { en: "External Schema", "zh-CN": "外部声明式扩展" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [...initialSchema],
-        },
-      },
-    ]);
+    const external = schemaExtension(
+      "external-schema-ext",
+      { en: "External Schema", "zh-CN": "外部声明式扩展" },
+      initialSchema,
+    );
+    harness.pluginPages.syncInstalledExtensions?.([external]);
     const externalPageId = must(harness.pluginPages.getPageIdForExtension("external-schema-ext"));
     expect(harness.shell.navigateToPage(externalPageId)).toBe(true);
     expect(harness.shell.activePageId).toBe(externalPageId);
 
-    harness.pluginPages.syncInstalledExtensions?.([
-      {
-        id: "external-schema-ext",
-        enabled: false,
-        status: { state: "disabled" },
-        manifest: {
-          manifestVersion: 1,
-          id: "external-schema-ext",
-          name: { en: "External Schema", "zh-CN": "外部声明式扩展" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [...initialSchema],
-        },
-      },
-    ]);
+    harness.pluginPages.syncInstalledExtensions?.([{ ...external, enabled: false }]);
     expect(harness.pluginPages.hasPageForExtension("external-schema-ext")).toBe(false);
     expect(harness.shell.activePageId).toBe("desktop-extensions");
   });
@@ -779,30 +720,11 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
 
   it("ignores out-of-order syncInstalledExtensions responses with a stale configRevision", () => {
     const harness = createHarness("zh-CN");
-    const extEnabled: DesktopExtensionsListResult["extensions"] = [
-      {
-        id: "stale-sync-ext",
-        enabled: true,
-        status: { state: "waiting" },
-        manifest: {
-          manifestVersion: 1,
-          id: "stale-sync-ext",
-          name: { en: "Stale Sync", "zh-CN": "同步防回退" },
-          version: "1.0.0",
-          desktopApi: 1,
-          desktop: { script: "desktop.js" },
-          slots: [],
-          settingsSchema: [must(SAMPLE_SCHEMA[0])],
-        },
-      },
-    ];
-    const extDisabled: DesktopExtensionsListResult["extensions"] = [
-      {
-        ...must(extEnabled[0]),
-        enabled: false,
-        status: { state: "disabled" },
-      },
-    ];
+    const ext = schemaExtension("stale-sync-ext", { en: "Stale Sync", "zh-CN": "同步防回退" }, [
+      must(SAMPLE_SCHEMA[0]),
+    ]);
+    const extEnabled = [ext];
+    const extDisabled = [{ ...ext, enabled: false }];
 
     harness.pluginPages.syncInstalledExtensions?.(extEnabled, 2);
     const pageId = must(harness.pluginPages.getPageIdForExtension("stale-sync-ext"));

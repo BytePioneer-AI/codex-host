@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
 import {
-  DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH,
+  HOST_EXTENSION_ZIP_MAX_BYTES,
   isConsoleHostMethod,
   type ConsoleAnnouncement,
 } from "@codexhost/shared-contracts";
@@ -34,7 +34,8 @@ import { webConnectionRequest, WEB_CONNECTION_METHODS } from "./web-client.js";
 
 export const CONSOLE_SERVICE = "codexhost-console";
 const MAX_BODY_BYTES = 16 * 1024;
-const MAX_EXTENSION_INSTALL_BODY_BYTES = DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH + MAX_BODY_BYTES;
+const MAX_EXTENSION_INSTALL_BODY_BYTES =
+  4 * Math.ceil(HOST_EXTENSION_ZIP_MAX_BYTES / 3) + MAX_BODY_BYTES;
 const INSPECT_CACHE_MS = 2_000;
 
 export interface ConsoleServerOptions {

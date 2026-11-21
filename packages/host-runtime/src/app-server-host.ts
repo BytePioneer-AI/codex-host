@@ -49,7 +49,6 @@ import {
 import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
   isConsoleHostMethod,
-  isDesktopExtensionManagementMethod,
   isHostExtensionManagementMethod,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
@@ -292,7 +291,6 @@ import {
   type ExternalThreadStatus,
   type ProjectedTurn,
 } from "./external-turn-projection.js";
-import { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
 import { HostExtensionManager } from "./host-extension-manager.js";
 import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { codexhostDataDirectory } from "./external-clients.js";
@@ -403,7 +401,6 @@ import {
 } from "@codexhost/protocol-core";
 
 export interface AppServerHostOptions {
-  desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
   hostExtensions?: HostExtensionManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
@@ -889,7 +886,6 @@ export class AppServerHost {
   readonly clientEvents = new ClientChannelEvents();
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
-  readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
   readonly hostExtensions: HostExtensionManager | undefined;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
@@ -1301,14 +1297,6 @@ export class AppServerHost {
       startNextQueuedExternalTurn: (thread) => this.#startNextQueuedExternalTurn(thread),
     });
     const desktopEnvironment = options.environment ?? process.env;
-    this.desktopExtensionBackends =
-      desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
-        ? undefined
-        : (options.desktopExtensionBackends ??
-          new DesktopExtensionBackendManager(
-            codexhostDataDirectory(desktopEnvironment),
-            (message) => this.#diagnose(message),
-          ));
     this.hostExtensions =
       desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
         ? undefined
@@ -1320,7 +1308,6 @@ export class AppServerHost {
           ));
     this.#desktopControl = new DesktopControlRequests({
       hostExtensions: this.hostExtensions,
-      desktopExtensionBackends: this.desktopExtensionBackends,
       writeJson: (value) => this.#writer.json(value),
       dispatchReply: (request, run, threadId) => this.#dispatchDesktopReply(request, run, threadId),
       waitForPlugins: () => this.#waitForPlugins(),
@@ -1595,8 +1582,6 @@ export class AppServerHost {
       }
     }
     if (!this.#closeRequested && !this.#options.hostExtensions) void this.hostExtensions?.start();
-    if (!this.#closeRequested && !this.#options.desktopExtensionBackends)
-      this.desktopExtensionBackends?.start();
     // Load statistics plugins before native subscription negotiation; Session plugins continue
     // independently and must not hold up the official initialization.
     void this.#waitForPlugins().then(() => this.#attachUsageStatistics());
@@ -1619,10 +1604,7 @@ export class AppServerHost {
       this.#treeWatch.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
-      await Promise.all([
-        this.#options.hostExtensions ? undefined : this.hostExtensions?.close(),
-        this.#options.desktopExtensionBackends ? undefined : this.desktopExtensionBackends?.close(),
-      ]);
+      if (!this.#options.hostExtensions) await this.hostExtensions?.close();
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
       await this.#desktopRequests.drain();
@@ -2109,7 +2091,6 @@ export class AppServerHost {
         request.method.startsWith("codexhost/account/") ||
         request.method.startsWith("codexhost/update/") ||
         isModelPriceOverridesMethod(request.method) ||
-        isDesktopExtensionManagementMethod(request.method) ||
         isHostExtensionManagementMethod(request.method)
       )
     ) {

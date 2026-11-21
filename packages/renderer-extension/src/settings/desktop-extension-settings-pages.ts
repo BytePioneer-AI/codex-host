@@ -1,7 +1,6 @@
 import {
   resolveLocalizedExtensionText,
   type DesktopExtensionSettingField,
-  type DesktopExtensionsListResult,
   type HOST_EXTENSIONS_RPC,
   type HostExtensionListItem,
   type HostExtensionsListResult,
@@ -30,31 +29,16 @@ import {
 } from "./preference-ui.js";
 
 export interface DesktopExtensionSettingsRpcClient {
-  listDesktopExtensions?(): Promise<DesktopExtensionsListResult>;
   listHostExtensions?(): Promise<HostExtensionsListResult>;
-  readDesktopExtensionAsset?(input: {
-    id: string;
-    path: string;
-  }): Promise<{ mimeType: string; dataUrl: string }>;
   readHostExtensionAsset?(
     input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.asset>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.asset>>;
-  getDesktopExtensionSettings?(input: { id: string }): Promise<{ values: Record<string, unknown> }>;
   getHostExtensionSettings?(
     input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsGet>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsGet>>;
-  setDesktopExtensionSettings?(input: {
-    id: string;
-    values: Record<string, unknown>;
-  }): Promise<{ values: Record<string, unknown> }>;
   setHostExtensionSettings?(
     input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.settingsSet>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.settingsSet>>;
-  invokeDesktopExtensionBackend?(input: {
-    id: string;
-    method: string;
-    params?: unknown;
-  }): Promise<{ result: unknown }>;
   invokeHostExtensionBackend?(
     input: HostExtensionsRpcParams<typeof HOST_EXTENSIONS_RPC.backendInvoke>,
   ): Promise<HostExtensionsRpcResult<typeof HOST_EXTENSIONS_RPC.backendInvoke>>;
@@ -71,7 +55,7 @@ export interface RendererSettingsPluginPagesSource {
   getPageIdForExtension(extensionId: string): string | undefined;
   hasPageForExtension(extensionId: string): boolean;
   syncInstalledExtensions?(
-    extensions: readonly HostExtensionListItem[] | DesktopExtensionsListResult["extensions"],
+    extensions: readonly HostExtensionListItem[],
     configRevision?: number,
   ): void;
   subscribe(listener: () => void): () => void;
@@ -618,54 +602,38 @@ export function createDesktopExtensionPluginPagesSource(options: {
     const assets: DesktopExtensionAssetsApi = {
       async readDataUrl(relativePath: string) {
         const client = getClient();
-        if (client?.readHostExtensionAsset) {
-          const asset = await client.readHostExtensionAsset({
-            id: extensionId,
-            path: relativePath,
-          });
-          return {
-            mimeType: asset.mimeType,
-            dataUrl: `data:${asset.mimeType};base64,${asset.base64}`,
-          };
-        }
-        const reader = client?.readDesktopExtensionAsset;
-        if (!reader) throw new Error("Desktop extension assets RPC is unavailable");
-        return reader({ id: extensionId, path: relativePath });
+        if (!client?.readHostExtensionAsset)
+          throw new Error("Host extension assets RPC is unavailable");
+        const asset = await client.readHostExtensionAsset({ id: extensionId, path: relativePath });
+        return {
+          mimeType: asset.mimeType,
+          dataUrl: `data:${asset.mimeType};base64,${asset.base64}`,
+        };
       },
     };
     const storage: DesktopExtensionStorageApi = {
       async get() {
         const client = getClient();
-        if (client?.getHostExtensionSettings) {
-          const result = await client.getHostExtensionSettings({ id: extensionId });
-          settingsRevisions.set(extensionId, result.settingsRevision);
-          return cloneStorageValues(result.values);
-        }
-        const reader = client?.getDesktopExtensionSettings;
-        if (!reader) throw new Error("Desktop extension settings RPC is unavailable");
-        return cloneStorageValues((await reader({ id: extensionId })).values);
+        if (!client?.getHostExtensionSettings)
+          throw new Error("Host extension settings RPC is unavailable");
+        const result = await client.getHostExtensionSettings({ id: extensionId });
+        settingsRevisions.set(extensionId, result.settingsRevision);
+        return cloneStorageValues(result.values);
       },
       async set(values: Record<string, unknown>) {
         const client = getClient();
-        let updated: Record<string, unknown>;
-        if (client?.setHostExtensionSettings) {
-          let expectedSettingsRevision = settingsRevisions.get(extensionId);
-          if (expectedSettingsRevision === undefined && client.getHostExtensionSettings) {
-            const current = await client.getHostExtensionSettings({ id: extensionId });
-            expectedSettingsRevision = current.settingsRevision;
-          }
-          const saved = await client.setHostExtensionSettings({
-            id: extensionId,
-            expectedSettingsRevision: expectedSettingsRevision ?? 0,
-            values: values as JsonObject,
-          });
-          settingsRevisions.set(extensionId, saved.settingsRevision);
-          updated = saved.values;
-        } else {
-          const writer = client?.setDesktopExtensionSettings;
-          if (!writer) throw new Error("Desktop extension settings RPC is unavailable");
-          updated = (await writer({ id: extensionId, values })).values;
-        }
+        if (!client?.getHostExtensionSettings || !client.setHostExtensionSettings)
+          throw new Error("Host extension settings RPC is unavailable");
+        const expectedSettingsRevision =
+          settingsRevisions.get(extensionId) ??
+          (await client.getHostExtensionSettings({ id: extensionId })).settingsRevision;
+        const saved = await client.setHostExtensionSettings({
+          id: extensionId,
+          expectedSettingsRevision,
+          values: values as JsonObject,
+        });
+        settingsRevisions.set(extensionId, saved.settingsRevision);
+        const updated = saved.values;
         getHost()?.notifyStorageChange(extensionId, updated);
         const bucket = localStorageListeners.get(extensionId);
         if (bucket) {
@@ -690,22 +658,13 @@ export function createDesktopExtensionPluginPagesSource(options: {
     const backend: DesktopExtensionBackendApi = {
       async invoke(method: string, params?: unknown) {
         const client = getClient();
-        if (client?.invokeHostExtensionBackend) {
-          return (
-            await client.invokeHostExtensionBackend({
-              id: extensionId,
-              method,
-              ...(params !== undefined ? { params: params as JsonValue } : {}),
-            })
-          ).result;
-        }
-        const invoker = client?.invokeDesktopExtensionBackend;
-        if (!invoker) throw new Error("Desktop extension backend RPC is unavailable");
+        if (!client?.invokeHostExtensionBackend)
+          throw new Error("Host extension backend RPC is unavailable");
         return (
-          await invoker({
+          await client.invokeHostExtensionBackend({
             id: extensionId,
             method,
-            ...(params !== undefined ? { params } : {}),
+            ...(params !== undefined ? { params: params as JsonValue } : {}),
           })
         ).result;
       },
@@ -747,12 +706,7 @@ export function createDesktopExtensionPluginPagesSource(options: {
     // Prefer direct RPC client when available so settings pages work even without a bound bridge,
     // while still broadcasting storage updates into the live DesktopExtensionHost.
     const client = getClient();
-    if (
-      client?.getHostExtensionSettings ||
-      client?.setHostExtensionSettings ||
-      client?.getDesktopExtensionSettings ||
-      client?.setDesktopExtensionSettings
-    ) {
+    if (client?.getHostExtensionSettings || client?.setHostExtensionSettings) {
       return createFallbackServices(extensionId);
     }
     return host ? host.createExtensionServices(extensionId) : createFallbackServices(extensionId);
@@ -883,23 +837,9 @@ export function createDesktopExtensionPluginPagesSource(options: {
       }
       const nextSchemaExtensions: typeof installedSchemaExtensions = [];
       for (const item of extensions) {
-        if (!item.enabled) continue;
-        if ("state" in item) {
-          if (item.state !== "valid") continue;
-          const manifest = item.manifest;
-          if (!manifest.settingsSchema || manifest.settingsSchema.length === 0) continue;
-          nextSchemaExtensions.push({
-            id: item.id,
-            name: manifest.name,
-            schema: manifest.settingsSchema,
-          });
-          continue;
-        }
-        if (item.status.state === "invalid" || item.status.state === "incompatible") {
-          continue;
-        }
+        if (!item.enabled || item.state !== "valid") continue;
         const manifest = item.manifest;
-        if (!manifest?.settingsSchema || manifest.settingsSchema.length === 0) continue;
+        if (!manifest.settingsSchema?.length) continue;
         nextSchemaExtensions.push({
           id: item.id,
           name: manifest.name,

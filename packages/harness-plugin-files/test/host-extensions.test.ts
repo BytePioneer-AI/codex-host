@@ -59,6 +59,25 @@ const zipSource = (data: object, files: Record<string, string | Buffer>) => ({
   zipBuffer: archive(data, files),
 });
 
+import { readExtensionZip } from "../src/extension-zip.js";
+
+it("rejects invalid ZIP entries even outside the selected subtree", async () => {
+  for (const extras of [
+    [{ name: "release/../escape" }],
+    [{ name: "release/link", mode: 0xa000 }],
+    [{ name: "release/Other/one" }, { name: "release/other/two" }],
+    [{ name: "release/oversized", data: Buffer.alloc(17 * 1024 * 1024), deflate: true }],
+  ]) {
+    await expect(
+      readExtensionZip(
+        makeZip([{ name: "release/pkg/manifest.json" }, ...extras]),
+        "pkg",
+        16 * 1024 * 1024,
+      ),
+    ).rejects.toThrow();
+  }
+});
+
 let dataDir: string;
 beforeEach(async () => {
   dataDir = await mkdtemp(path.join(tmpdir(), "host-extension-files-"));

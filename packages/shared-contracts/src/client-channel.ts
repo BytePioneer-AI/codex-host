@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { DESKTOP_EXTENSION_MANAGEMENT_METHODS } from "./desktop-extension-management.js";
 import { harnessModelRefSchema, harnessThinkingOptionIdSchema } from "./harness-models.js";
 import { harnessPermissionModeIdSchema } from "./harness-permission-modes.js";
 import {
@@ -66,7 +65,6 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/harness/session-import/list",
   "codexhost/harness/session-import/import",
   // Host settings shared across Desktop and Web.
-  ...DESKTOP_EXTENSION_MANAGEMENT_METHODS,
   ...HOST_EXTENSION_MANAGEMENT_METHODS,
   "codexhost/harness/installation",
   "codexhost/harness/installation/start",

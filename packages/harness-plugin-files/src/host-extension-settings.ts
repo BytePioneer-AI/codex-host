@@ -8,7 +8,6 @@ import {
   type HostExtensionsRpcParams,
   type JsonObject,
 } from "@codexhost/shared-contracts";
-import { writePrivateExtensionFile } from "./desktop-extension-data.js";
 import { HostExtensionInstallConflict, readHostExtension } from "./host-extension-files.js";
 import {
   hostExtensionDataDirectory,
@@ -16,6 +15,7 @@ import {
   readHostFile,
   utf8,
   withHostExtensionWrite,
+  writePrivateExtensionFile,
   type HostExtensionLocation,
 } from "./host-extension-io.js";
 

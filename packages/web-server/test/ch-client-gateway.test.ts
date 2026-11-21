@@ -7,8 +7,6 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { it } from "node:test";
 import {
-  DESKTOP_EXTENSIONS_LIST_METHOD,
-  DESKTOP_EXTENSIONS_RECOVER_METHOD,
   HOST_EXTENSIONS_RPC,
   HOST_EXTENSION_ASSETS_PREFIX,
   HOST_EXTENSION_UPLOAD_PATH,
@@ -34,16 +32,14 @@ it(
     const host = new FakeChChannel();
     host.add("shared", "/computer/shared");
     const list = {
-      configuration: { version: 1, revision: 2, enabled: [] },
-      desktopConnected: false,
+      revision: 2,
+      configuration: { revision: 2, enabled: [] },
       diagnostics: [],
       extensions: [],
     };
     const requestHost = host.request.bind(host);
     t.mock.method(host, "request", (method: string, params: Record<string, unknown>) =>
-      method === DESKTOP_EXTENSIONS_LIST_METHOD
-        ? Promise.resolve(list)
-        : requestHost(method, params),
+      method === HOST_EXTENSIONS_RPC.list ? Promise.resolve(list) : requestHost(method, params),
     );
     const control = await startFakeChChannel(host, directory);
     t.after(() => control.close());
@@ -69,8 +65,8 @@ it(
     const origin = new URL(url).origin;
     const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
     assert.equal((await fetch(`${origin}/api/ch/v1/events`)).status, 401);
-    const listBody = JSON.stringify({ method: DESKTOP_EXTENSIONS_LIST_METHOD, params: {} });
-    for (const method of [DESKTOP_EXTENSIONS_LIST_METHOD, HOST_EXTENSIONS_RPC.snapshot]) {
+    const listBody = JSON.stringify({ method: HOST_EXTENSIONS_RPC.list, params: {} });
+    for (const method of [HOST_EXTENSIONS_RPC.list, HOST_EXTENSIONS_RPC.snapshot]) {
       const denied = await fetch(`${origin}/api/ch/v1/rpc`, {
         method: "POST",
         body: JSON.stringify({ method, params: {} }),
@@ -236,7 +232,7 @@ it("preserves numeric Host errors on every native client operation", async (t) =
   const denied = await fetch(`${base}/rpc`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ method: DESKTOP_EXTENSIONS_RECOVER_METHOD, params: {} }),
+    body: JSON.stringify({ method: HOST_EXTENSIONS_RPC.recover, params: {} }),
   });
   assert.equal(denied.status, 403);
   assert.match(await denied.text(), /Authentication must be enabled/u);

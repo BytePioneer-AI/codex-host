@@ -182,7 +182,7 @@ function recordFile(files: Map<string, Buffer>, entry: ZipEntry, bytes: Buffer) 
   if (!entry.directory) files.set(entry.name, bytes);
 }
 
-/** Preserve the synchronous Desktop installation path. */
+/** Synchronous reader for the standalone Desktop extension registry validator. */
 export function readDesktopExtensionZip(zip: Buffer, subpath?: string): Map<string, Buffer> {
   const entries = [...indexExtensionZip(zip, false)];
   const files = new Map<string, Buffer>();

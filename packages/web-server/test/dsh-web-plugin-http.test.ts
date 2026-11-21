@@ -211,8 +211,13 @@ it(
     assert.equal(await upgrade(url, { ...headers, origin: new URL(url).origin }), 101);
     assert.match(await (await get("/")).text(), /plugin-injection/);
     assert.match(await (await get("/")).text(), /plugin-tap/);
-    for (const path of ["/extensions", "/?extensions=off"])
-      assert.doesNotMatch(await (await get(path)).text(), /plugin-injection|plugin-tap/);
+    const recoveryPage = await (await get("/extensions")).text();
+    assert.match(recoveryPage, /codexhost\/uiExtensions\//u);
+    assert.doesNotMatch(recoveryPage, /codexhost\/webExtensions\/|plugin-injection|plugin-tap/u);
+    assert.doesNotMatch(
+      await (await get("/?extensions=off")).text(),
+      /plugin-injection|plugin-tap/,
+    );
     assert.equal((await get("/test-host")).status, 200);
     // Public shell filenames remain core-owned, even with a user plugin mounted.
     assert.equal((await fetch(new URL("/manifest.webmanifest", url))).status, 200);

@@ -13,10 +13,9 @@ import {
   type HostExtensionsCatalogResult,
 } from "@codexhost/shared-contracts";
 import { downloadExtensionBytes, ExtensionHttpError } from "./desktop-extension-download.js";
-import { privateExtensionDirectory } from "./extension-discovery.js";
 import { readExtensionZip } from "./extension-zip.js";
 import { stageHostExtension, type HostExtensionCommitExpectation } from "./host-extension-files.js";
-import { readHostFile, utf8 } from "./host-extension-io.js";
+import { privateExtensionDirectory, readHostFile, utf8 } from "./host-extension-io.js";
 import { readLocalHostPackage, sha256 } from "./host-extension-package.js";
 
 const TTL = 5 * 60 * 1000;

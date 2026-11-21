@@ -18,7 +18,7 @@ const { outputFiles } = await build({
         desktopExtensionScreenshotMimeType, desktopExtensionZipUrlSchema,
         isGitHubDesktopExtensionZipballUrl
       } from './packages/shared-contracts/src/desktop-extensions.ts';
-      export { readDesktopExtensionZip } from './packages/harness-plugin-files/src/desktop-extension-zip.ts';
+      export { readDesktopExtensionZip } from './packages/harness-plugin-files/src/extension-zip.ts';
     `,
     resolveDir: root,
   },

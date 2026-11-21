@@ -1,10 +1,16 @@
+import { rmSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
 import { harnessIdSchema } from "@codexhost/shared-contracts";
 import { DelegationControlRegistry } from "../src/delegation-control-registry.js";
-import type { DelegationControlApi, DelegationThreadSnapshot } from "../src/delegation-types.js";
+import type {
+  DelegationControlApi,
+  DelegationControlRegistration,
+  DelegationThreadSnapshot,
+} from "../src/delegation-types.js";
 import { DelegationWatchService } from "../src/delegation-watch.js";
+import { ThreadActivity } from "../src/thread-activity.js";
 import {
   bindOfficialThread,
   createFixture,
@@ -18,6 +24,108 @@ import {
   threadStatus,
   turnEvent,
 } from "./app-server-host-fixture.js";
+
+describe("watch activity from Host Harness streams", () => {
+  it("publishes native tool events and external subagent events through the registration", async () => {
+    let registration: DelegationControlRegistration | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        registration = api;
+        return undefined;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!registration?.subscribeActivity) throw new Error("Missing activity subscription");
+      const activity = vi.fn();
+      const unsubscribe = registration.subscribeActivity(activity);
+      fixture.official.stdout.write(
+        `${JSON.stringify({ method: "item/commandExecution/outputDelta", params: { threadId: "native", delta: "output" } })}\n`,
+      );
+      await vi.waitFor(() => expect(activity).toHaveBeenCalledWith(["native"]));
+      const threadId = await startPiThread(fixture);
+      await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Harness session");
+      activity.mockClear();
+      session.emitSubagentState("worker", "running");
+      await vi.waitFor(() => expect(activity).toHaveBeenCalledWith([threadId]));
+      unsubscribe();
+      activity.mockClear();
+      session.emitSubagentTranscriptChanged("worker");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(activity).not.toHaveBeenCalled();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("forgets native subagent ancestry when the official Thread closes", async () => {
+    let registration: DelegationControlRegistration | undefined;
+    const fixture = createFixture({
+      onDelegationApi: (api) => {
+        registration = api;
+        return undefined;
+      },
+    });
+    const official = (message: JsonObject) =>
+      fixture.official.stdout.write(`${JSON.stringify(message)}\n`);
+    const progress = () =>
+      official({
+        method: "item/agentMessage/delta",
+        params: { threadId: "native-child", delta: "progress" },
+      });
+    try {
+      await fixture.ready;
+      if (!registration?.subscribeActivity) throw new Error("Missing activity subscription");
+      const activity = vi.fn();
+      registration.subscribeActivity(activity);
+      official({
+        method: "thread/started",
+        params: {
+          thread: {
+            id: "native-child",
+            source: { subAgent: { thread_spawn: { parent_thread_id: "native-parent" } } },
+          },
+        },
+      });
+      progress();
+      await vi.waitFor(() =>
+        expect(activity).toHaveBeenLastCalledWith(["native-child", "native-parent"]),
+      );
+      official({ method: "thread/closed", params: { threadId: "native-child" } });
+      progress();
+      await vi.waitFor(() => expect(activity).toHaveBeenLastCalledWith(["native-child"]));
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("releases ancestry when an external session ends and when the official backend stops", async () => {
+    const forget = vi.spyOn(ThreadActivity.prototype, "forget");
+    const clear = vi.spyOn(ThreadActivity.prototype, "clear");
+    const fixture = createFixture();
+    try {
+      const threadId = await startPiThread(fixture);
+      await startPiTurn(fixture, threadId);
+      const session = fixture.adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Harness session");
+      expect(forget).not.toHaveBeenCalled();
+      await session.close();
+      await vi.waitFor(() => expect(forget).toHaveBeenCalledWith(threadId));
+
+      expect(clear).not.toHaveBeenCalled();
+      fixture.official.emit("exit", 1, null);
+      await vi.waitFor(() => expect(clear).toHaveBeenCalled());
+    } finally {
+      forget.mockRestore();
+      clear.mockRestore();
+      fixture.host.close();
+      await fixture.running;
+      rmSync(fixture.mappingStoreDirectory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("watch delivery on Host idle events", () => {
   it.each(["Thread", "Subagent"])("nudges watch before polling on %s idle", async (target) => {

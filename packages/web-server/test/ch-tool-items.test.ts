@@ -108,3 +108,73 @@ it("completes a live CH web search row while its Turn is still running", () => {
   assert.equal(results.length, 1);
   assert.equal((results[0]?.data as { message: { isError: boolean } }).message.isError, false);
 });
+
+it("groups consecutive native imageView items into one assistant image gallery", () => {
+  const view = new ChThreadView(
+    thread(),
+    "codex",
+    () => {},
+    0,
+    0,
+    () => false,
+    undefined,
+    (path) => ({
+      attachmentId: `image:${path}`,
+      name: path.split("/").at(-1),
+      mediaType: "image/png",
+      bytes: 1,
+      width: 1,
+      height: 1,
+    }),
+  );
+  view.update(
+    thread(
+      [
+        {
+          id: "image-1",
+          type: "imageView",
+          path: "/w/photo with spaces.png",
+        },
+        {
+          id: "image-2",
+          type: "imageView",
+          path: "/w/second.png",
+        },
+      ],
+      "completed",
+    ),
+  );
+
+  const messages = view.log.events.filter((entry) => entry.type === "assistant/message");
+  assert.equal(
+    messages.length,
+    1,
+    "completed imageViews must not be projected again at Turn close",
+  );
+  assert.deepEqual((messages[0]?.data as { message: { content: unknown[] } }).message.content, [
+    {
+      type: "image",
+      codexhostImageView: true,
+      attachment: {
+        attachmentId: "image:/w/photo with spaces.png",
+        name: "photo with spaces.png",
+        mediaType: "image/png",
+        bytes: 1,
+        width: 1,
+        height: 1,
+      },
+    },
+    {
+      type: "image",
+      codexhostImageView: true,
+      attachment: {
+        attachmentId: "image:/w/second.png",
+        name: "second.png",
+        mediaType: "image/png",
+        bytes: 1,
+        width: 1,
+        height: 1,
+      },
+    },
+  ]);
+});

@@ -20,6 +20,69 @@
   gap: 16px;
 }
 
+.viewedImages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.viewedImagesToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.viewedImagesToggle:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.viewedImagesToggle:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+  border-radius: var(--dsw-radius-sm);
+}
+
+.viewedImagesIcon {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.viewedImagesIcon::before,
+.viewedImagesIcon::after {
+  position: absolute;
+  width: 11px;
+  height: 9px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  content: "";
+}
+
+.viewedImagesIcon::before {
+  top: 2px;
+  left: 2px;
+}
+
+.viewedImagesIcon::after {
+  top: 5px;
+  left: 5px;
+}
+
+.viewedImagesChevron {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
 /* Wide markdown tables (the renderer's ≥4-column md-table-wide hook) span
    the whole transcript width instead of clipping at the 748px message
    column, while the table content keeps starting at its normal x (the lead

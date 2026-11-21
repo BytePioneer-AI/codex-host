@@ -23,6 +23,7 @@ export interface HostFileChange {
 
 export type HostItem =
   | { type: "agentMessage"; itemId: string; text: string; phase?: string }
+  | { type: "imageView"; itemId: string; attachment: unknown }
   | { type: "reasoning"; itemId: string; text: string }
   | { type: "contextCompaction"; itemId: string }
   | {
@@ -98,13 +99,14 @@ export type TurnOutcomeShape =
 
 // ---- Projection ------------------------------------------------------------------------------
 
-type BlockKind = "reasoning" | "text";
+type BlockKind = "reasoning" | "text" | "image";
 
 interface NarrationBlock {
   itemId: string;
   kind: BlockKind;
   index: number;
   text: string;
+  attachment?: unknown;
   ended: boolean;
 }
 
@@ -119,6 +121,10 @@ interface ToolState {
 }
 
 const NARRATION = new Set(["agentMessage", "reasoning"]);
+
+function isNarration(item: HostItem): boolean {
+  return NARRATION.has(item.type) || item.type === "imageView";
+}
 
 /** Cap one tool result's text so a runaway command output cannot bloat the journal. */
 export const MAX_TOOL_TEXT = 100_000;
@@ -400,7 +406,10 @@ export class TurnProjector {
   private blocks: NarrationBlock[] = [];
   private blockByItem = new Map<string, NarrationBlock>();
   /** Narration Items seen in this Turn: their kind and the text already projected. */
-  private readonly narration = new Map<string, { kind: BlockKind; text: string; step?: number }>();
+  private readonly narration = new Map<
+    string,
+    { kind: BlockKind; text: string; attachment?: unknown; step?: number }
+  >();
   private readonly tools = new Map<string, ToolState>();
   /** Output that arrived before its tool's `item.started` (Harnesses may race the two). */
   private readonly earlyOutput = new Map<string, string>();
@@ -475,7 +484,10 @@ export class TurnProjector {
 
   private closeStep(): void {
     if (!this.stepOpen) return;
-    if (!this.messageCommitted && this.blocks.some((block) => block.text !== ""))
+    if (
+      !this.messageCommitted &&
+      this.blocks.some((block) => block.text !== "" || block.attachment !== undefined)
+    )
       this.commitMessage([]);
     else this.log.endAttempt(undefined);
     // A steer or new narration can start another Step while this one's tool is
@@ -493,7 +505,7 @@ export class TurnProjector {
   private endBlock(block: NarrationBlock): void {
     if (block.ended) return;
     block.ended = true;
-    if (this.options.live && this.log.activeAttempt !== undefined) {
+    if (this.options.live && block.kind !== "image" && this.log.activeAttempt !== undefined) {
       this.log.chunk({
         type: "block-end",
         index: block.index,
@@ -507,12 +519,13 @@ export class TurnProjector {
   ): WireEvent {
     for (const block of this.blocks) this.endBlock(block);
     const content: unknown[] = this.blocks
-      .filter((block) => block.text !== "")
-      .map((block) =>
-        block.kind === "reasoning"
-          ? { type: "reasoning", text: block.text }
-          : { type: "text", text: block.text },
-      );
+      .filter((block) => block.text !== "" || block.attachment !== undefined)
+      .map((block) => {
+        if (block.kind === "reasoning") return { type: "reasoning", text: block.text };
+        if (block.kind === "image")
+          return { type: "image", attachment: block.attachment, codexhostImageView: true };
+        return { type: "text", text: block.text };
+      });
     for (const call of toolCalls) content.push({ type: "tool-call", ...call });
     if (this.options.live && this.log.activeAttempt !== undefined) {
       this.log.chunk({
@@ -546,6 +559,12 @@ export class TurnProjector {
 
   itemStarted(item: HostItem): void {
     if (this.finished) return;
+    if (item.type === "imageView") {
+      if (!this.narration.has(item.itemId))
+        this.narration.set(item.itemId, { kind: "image", text: "" });
+      this.setImage(item.itemId, item.attachment);
+      return;
+    }
     if (NARRATION.has(item.type)) {
       const kind: BlockKind = item.type === "reasoning" ? "reasoning" : "text";
       if (!this.narration.has(item.itemId)) this.narration.set(item.itemId, { kind, text: "" });
@@ -565,10 +584,15 @@ export class TurnProjector {
    */
   private writableBlock(itemId: string): NarrationBlock {
     const existing = this.blockByItem.get(itemId);
-    if (existing !== undefined && !existing.ended && !this.messageCommitted && !this.stepHasTools)
-      return existing;
     const narration = this.narration.get(itemId);
     const kind = narration?.kind ?? "text";
+    if (
+      existing !== undefined &&
+      !this.messageCommitted &&
+      !this.stepHasTools &&
+      (kind === "image" || !existing.ended)
+    )
+      return existing;
     if (
       !this.stepOpen ||
       this.stepHasTools ||
@@ -590,9 +614,14 @@ export class TurnProjector {
     this.blocks.push(block);
     this.blockByItem.set(itemId, block);
     this.ensureAttempt();
-    if (this.options.live)
+    if (this.options.live && kind !== "image")
       this.log.chunk({ type: "block-start", index: block.index, blockType: kind });
     return block;
+  }
+
+  private setImage(itemId: string, attachment: unknown): void {
+    const block = this.writableBlock(itemId);
+    block.attachment = attachment;
   }
 
   private appendNarration(itemId: string, text: string): void {
@@ -683,7 +712,14 @@ export class TurnProjector {
 
   itemCompleted(item: HostItem, outcome: HostItemOutcome): void {
     if (this.finished) return;
-    if (NARRATION.has(item.type)) {
+    if (isNarration(item)) {
+      if (item.type === "imageView") {
+        if (!this.narration.has(item.itemId)) this.itemStarted(item);
+        this.setImage(item.itemId, item.attachment);
+        const image = this.blockByItem.get(item.itemId);
+        if (image !== undefined) this.endBlock(image);
+        return;
+      }
       // Completed without a start is common in history snapshots.
       if (!this.narration.has(item.itemId)) this.itemStarted({ ...item, text: "" } as HostItem);
       const state = this.narration.get(item.itemId) as { kind: BlockKind; text: string };

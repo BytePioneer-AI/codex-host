@@ -83,6 +83,42 @@ it("renders and authorizes native clipboard/file paths without copying bytes or 
   assert.throws(() => attachments.read(rendered, ref.attachmentId), /unavailable/u);
 });
 
+it("loads grouped native imageView attachments from the authoritative Thread", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-views-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "first.png");
+  writeFileSync(path, Buffer.from(PNG, "base64"));
+  const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
+  const host = new FakeChHost();
+  const row = host.add("image-views", "/workspace");
+  const turn = row.turns[0];
+  assert.ok(turn);
+  turn.items = [
+    { id: "u", type: "userMessage", content: [{ type: "text", text: "look" }] },
+    { id: "image-1", type: "imageView", path },
+  ];
+  const rendered = new ChThreadView(
+    { ...row, turns: [] },
+    "fake",
+    () => {},
+    0,
+    0,
+    () => false,
+    (parts) => attachments.project("image-views", parts),
+    (image) => attachments.projectImageView("image-views", image),
+  );
+  rendered.update(structuredClone(row));
+  const message = rendered.log.events.find((event) => event.type === "assistant/message");
+  assert.ok(message);
+  const content = (message.data as { message: { content: unknown[] } }).message.content;
+  const ref = (
+    content.find((part) => (part as { type?: string }).type === "image") as {
+      attachment: { attachmentId: string };
+    }
+  ).attachment;
+  assert.equal(attachments.read(rendered, ref.attachmentId).data, PNG);
+});
+
 it("handles structured localImage/file URLs and inline images; never fetches external URLs", (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-image-sources-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

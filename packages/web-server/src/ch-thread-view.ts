@@ -105,7 +105,38 @@ function mcpResultText(item: ChItem): string {
     .join("\n");
 }
 
-function itemOf(item: ChItem, reasoningPreviewIds: ReadonlySet<string>): HostItem | undefined {
+/** Resolve the local path carried by an `imageView` display item. */
+function imageViewPath(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const path = value.trim();
+  if (!path.startsWith("file://")) return path;
+  try {
+    const url = new URL(path);
+    return url.protocol === "file:" ? decodeURIComponent(url.pathname) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Encode a local image path for a Markdown destination without changing its path semantics. */
+function markdownImageDestination(path: string): string {
+  return encodeURI(path.replace(/\\/gu, "/")).replace(
+    /[()<>#?]/gu,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+/** Escape a local filename for the image's Markdown alt text. */
+function markdownImageAlt(path: string): string {
+  const name = path.split(/[\\/]/u).pop() ?? "image";
+  return name.replace(/[\\[\]]/gu, (character) => `\\${character}`);
+}
+
+function itemOf(
+  item: ChItem,
+  reasoningPreviewIds: ReadonlySet<string>,
+  projectImage: (path: string) => unknown,
+): HostItem | undefined {
   const itemId = item.id;
   switch (item.type) {
     case "agentMessage":
@@ -162,6 +193,19 @@ function itemOf(item: ChItem, reasoningPreviewIds: ReadonlySet<string>): HostIte
         toolName: "web_search",
         arguments: { query: String(item.query ?? "") },
       };
+    case "imageView": {
+      // Native ImageView carries only a local path. Prefer a durable attachment
+      // so consecutive images share Web's existing assistant-image gallery.
+      const path = imageViewPath(item.path);
+      if (path === undefined) return undefined;
+      const attachment = projectImage(path);
+      if (attachment !== undefined) return { type: "imageView", itemId, attachment };
+      return {
+        type: "agentMessage",
+        itemId,
+        text: `![${markdownImageAlt(path)}](${markdownImageDestination(path)})`,
+      };
+    }
     case "dynamicToolCall":
       return {
         type: "toolExecution",
@@ -240,6 +284,7 @@ export class ChThreadView {
     sequenceStart = 0,
     hasEarlier: () => boolean = () => false,
     private readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
+    private readonly projectImage: (path: string) => unknown = () => undefined,
   ) {
     const published = new Map<string, string>();
     this.log = new SessionLog(
@@ -347,7 +392,7 @@ export class ChThreadView {
         items.filter((item) => item.type === "reasoning").map((item) => item.id),
       );
       const projections = new Map(
-        items.map((item) => [item.id, itemOf(item, reasoningPreviewIds)]),
+        items.map((item) => [item.id, itemOf(item, reasoningPreviewIds, this.projectImage)]),
       );
       const retained = items.filter((item) => {
         const projected = projections.get(item.id);
@@ -520,7 +565,7 @@ export class ChThreadView {
           }
           continue;
         }
-        const projected = itemOf(item, reasoningPreviewIds);
+        const projected = itemOf(item, reasoningPreviewIds, this.projectImage);
         if (!projected) continue;
         if (view.completed.has(item.id)) continue;
         const old = view.items.get(item.id);
@@ -575,9 +620,9 @@ export class ChThreadView {
           });
         }
         view.items.set(item.id, projected);
-        // CH publishes a web search Item only once it has succeeded; it carries no status.
+        // CH publishes these display Items only once they have succeeded; they carry no status.
         const itemOutcome: HostItemOutcome | undefined =
-          item.status === "completed" || item.type === "webSearch"
+          item.status === "completed" || item.type === "webSearch" || item.type === "imageView"
             ? { status: "succeeded" }
             : item.status === "failed"
               ? {

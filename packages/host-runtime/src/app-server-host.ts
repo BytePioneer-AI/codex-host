@@ -363,6 +363,7 @@ import { USAGE_STATISTICS_METHOD } from "@codexhost/shared-contracts";
 import {
   CodexTurnProjector,
   decodeCreateRoute,
+  historicalPlanUpdate,
   decodeExternalTransportSelection,
   encodeExternalTransportSelection,
   decodeThreadListRequest,
@@ -1202,8 +1203,19 @@ export class AppServerHost {
       {
         listHarnesses: () =>
           this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
-        inspect: (input) =>
-          this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
+        inspect: async (input) => {
+          await this.#waitForPlugins();
+          try {
+            return await this.#delegationCoordinator.inspect(input);
+          } finally {
+            if (
+              input.refresh === true &&
+              (input.harnessId === "codex" || this.#externalAdapters.has(input.harnessId))
+            ) {
+              this.clientEvents.harnessInspectionChanged(input.harnessId);
+            }
+          }
+        },
         start: (input) =>
           maintenanceOperation(async () => {
             if (options.sharedDelegation && input.harnessId !== "codex") {
@@ -5259,7 +5271,10 @@ export class AppServerHost {
         },
       }),
     );
-    if (includeTurns) this.#markExternalHistoryRead(thread, readTurns);
+    if (includeTurns) {
+      this.#markExternalHistoryRead(thread, readTurns);
+      await this.#replayExternalPlan(thread);
+    }
     await this.#replayExternalUsage(thread);
   }
 
@@ -5376,7 +5391,9 @@ export class AppServerHost {
             : "External Thread history projection failed",
         ),
       );
+      return;
     }
+    await this.#replayExternalPlan(thread);
   }
 
   #externalHistoryTurns(thread: ExternalThread, forClient = false): JsonObject[] {
@@ -6318,14 +6335,12 @@ export class AppServerHost {
         thread.id,
         new Error("External Harness output ended before replacement"),
       );
-      const needsSettlement = thread.running || Boolean(thread.activeTurnId);
+      const needsSettlement = thread.running || thread.activeTurnId !== null;
+      // A readonly Subagent can outlive the Turn without ever ending its own
+      // output stream. Retire it when the parent stream ends, even if the Turn settled.
       if (!this.#closeRequested && (needsSettlement || this.#hasRunningSubagents(thread.id))) {
         if (needsSettlement) {
-          // Readonly snapshot Subagent Sessions (for example Claude Code native
-          // subagents restored through ReadonlySnapshotSession) never end their
-          // output stream, so their Host-side "active" status is only retired
-          // when the parent's own output stream ends here. Retire them before
-          // the Turn settles so the settled status can go idle.
+          // Retire Subagents before projecting failure so the parent can go idle.
           await this.#retireRunningSubagents(thread);
           // A Session that died (for example a Harness subagent that was killed
           // natively) can end its output stream without a terminal Turn event.
@@ -6364,10 +6379,8 @@ export class AppServerHost {
           }
         }
         this.#signalActiveWorkChanged();
-        // A settled Turn that ends as a failure already pauses the queue with
-        // "failed" and publishes once from the Turn projection; only pause with
-        // "outcome-unknown" when no pause was published, so the Desktop never
-        // receives two inconsistent pause notifications.
+        // Subagent cleanup alone does not pause or start queued work. Only an
+        // unfinished Turn needs the fallback, unless its failure already paused the queue.
         if (
           needsSettlement &&
           !this.#externalQueue.isPaused(thread.id) &&
@@ -6390,6 +6403,50 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "turn.autonomous.completed") {
+      let turn: JsonObject | undefined;
+      try {
+        if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+          await this.#notifyExternalThreadStarted(thread.thread);
+        }
+        turn = await this.#externalRuntime.appendAutonomousTurn(thread, event.snapshot);
+      } catch (error) {
+        // The committed native Turn can be recovered by a history read. It does not own the
+        // foreground Turn or the output stream.
+        this.#diagnose(
+          `External autonomous Turn could not be recorded (threadId=${thread.id}): ${errorMessage(error)}`,
+        );
+        return;
+      }
+      if (!turn) {
+        // A concurrent native-history read may already have installed this Turn.
+        this.clientEvents.changed(thread.id, "turn/completed");
+        return;
+      }
+      const threadId = thread.id;
+      const turnId = hostTurnIdSchema.parse(turn.id);
+      const items = Array.isArray(turn.items) ? turn.items : [];
+      await this.#writer.json({
+        method: "turn/started",
+        params: {
+          threadId,
+          turn: {
+            ...turn,
+            items: items.filter((item) => isRecord(item) && item.type === "userMessage"),
+            status: "inProgress",
+            completedAt: null,
+            durationMs: null,
+          },
+        },
+      });
+      for (const item of items) {
+        if (isRecord(item) && item.type === "userMessage") continue;
+        await this.#writer.json({ method: "item/started", params: { threadId, turnId, item } });
+        await this.#writer.json({ method: "item/completed", params: { threadId, turnId, item } });
+      }
+      await this.#writer.json({ method: "turn/completed", params: { threadId, turn } });
+      return;
+    }
     if (thread.sessionUnavailable && "turnId" in event) {
       const projector = thread.projectedTurns.get(event.turnId)?.projector;
       if (!projector) return;
@@ -6501,9 +6558,15 @@ export class AppServerHost {
       });
       return;
     }
-    if (event.type === "usage.request" || event.type === "usage.history") {
+    if (
+      event.type === "usage.request" ||
+      event.type === "usage.request.timing" ||
+      event.type === "usage.history"
+    ) {
       if (this.#externalRuntime.get(thread.id) !== thread) return;
-      if (event.type === "usage.request") {
+      if (event.type === "usage.request.timing") {
+        if (!thread.usageMeter.recordRequestTiming(event.timing, event.turnId)) return;
+      } else if (event.type === "usage.request") {
         const changed = thread.usageMeter.recordRequest(event.request, thread.activeTurnId);
         // Replayed history is announced once by the following usage.history.
         if (!changed || event.request.historical === true) return;
@@ -7285,6 +7348,22 @@ export class AppServerHost {
   #meterTurnTiming(thread: ExternalThread, event: HostEvent): boolean {
     if (this.#externalRuntime.get(thread.id) !== thread) return false;
     return thread.usageMeter.observeTurn(event);
+  }
+
+  /**
+   * Desktop restores a plan only from turn/plan/updated, never from Thread history. Only a
+   * Harness whose plan outlives its Turn gets it replayed; other plans stay with their Turn.
+   */
+  async #replayExternalPlan(thread: ExternalThread): Promise<void> {
+    if (thread.session.capabilities.persistentPlan !== true) return;
+    const update = thread.livePlan
+      ? { method: "turn/plan/updated", params: thread.livePlan }
+      : historicalPlanUpdate(
+          thread.id,
+          ownTurns(thread.record, thread.turns),
+          thread.historicalPlans,
+        );
+    if (update) await this.#writer.json(update);
   }
 
   async #replayExternalUsage(thread: ExternalThread): Promise<void> {

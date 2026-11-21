@@ -13,7 +13,12 @@ export { sanitizeDiagnosticTail, filterAmbientNodeWarnings } from "./diagnostics
 export { validateHostQuestionResponse } from "./question.js";
 export { unsupportedSteer } from "./steer.js";
 export { hostDerivedUsageFields, parseHostUsage, parseHostUsageRequest } from "./usage.js";
-export type { HostUsage, HostUsageCostSource, HostUsageRequest } from "./usage.js";
+export type {
+  HostUsage,
+  HostUsageCostSource,
+  HostUsageRequest,
+  HostUsageRequestTiming,
+} from "./usage.js";
 export type {
   HarnessUsageEntry,
   HarnessUsageSession,
@@ -108,6 +113,7 @@ export type {
   SubagentStateChangedEvent,
   UsageHistoryEvent,
   UsageRequestEvent,
+  UsageRequestTimingEvent,
   SubagentTranscriptChangedEvent,
   ThinkingSelectCommand,
   ThinkingSelectCompleted,

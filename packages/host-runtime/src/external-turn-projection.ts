@@ -31,10 +31,12 @@ export type TurnScopedEvent = Exclude<
       | "session.state.changed"
       | "session.usage.changed"
       | "usage.request"
+      | "usage.request.timing"
       | "usage.history"
       | "subagent.state.changed"
       | "subagent.transcript.changed"
-      | "session.faulted";
+      | "session.faulted"
+      | "turn.autonomous.completed";
   }
 >;
 
@@ -266,7 +268,18 @@ export class ExternalTurnProjection {
       )
         thread.projectedTurns.delete(event.turnId);
     }
-    for (const message of result.messages) await this.#host.writeJson(message);
+    for (const message of result.messages) {
+      const params = message.params;
+      if (
+        message.method === "turn/plan/updated" &&
+        typeof params === "object" &&
+        params !== null &&
+        !Array.isArray(params)
+      ) {
+        thread.livePlan = params;
+      }
+      await this.#host.writeJson(message);
+    }
     if (event.type === "turn.completed") {
       await this.#host.setThreadStatus(
         thread,

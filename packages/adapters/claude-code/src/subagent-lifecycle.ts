@@ -74,6 +74,7 @@ export class ClaudeSubagentLifecycle {
     if (!active) return;
     const current = active.item.subagents[0];
     if (!current) throw new Error("Claude Code Subagent delegation has no Agent state");
+    this.#retireSendTarget(active.item, current.nativeSubagentId, event.nativeSubagentId);
     const subagent: HostSubagentState = {
       ...current,
       ...subagentConfiguration(event),
@@ -103,6 +104,7 @@ export class ClaudeSubagentLifecycle {
     this.#delegations.delete(event.callId);
     const current = active.item.subagents[0];
     if (!current) throw new Error("Claude Code Subagent delegation has no Agent state");
+    this.#retireSendTarget(active.item, current.nativeSubagentId, event.nativeSubagentId);
     const status = cancellationRequested
       ? "interrupted"
       : event.isError
@@ -130,6 +132,18 @@ export class ClaudeSubagentLifecycle {
         : { status: "succeeded" };
     this.#emit({ type: "item.completed", turnId, snapshot: { item, outcome } });
     return { operation: active.item.operation, subagent };
+  }
+
+  #retireSendTarget(item: HostSubagentDelegationItem, previous?: string, resolved?: string): void {
+    // An unrecognized recipient may already have a Host child. Retire that projection,
+    // not the native task: only a real task notification settles background occupancy.
+    if (item.operation === "send" && previous && resolved && previous !== resolved) {
+      this.#emit({
+        type: "subagent.state.changed",
+        nativeSubagentId: previous,
+        status: "completed",
+      });
+    }
   }
 
   finalize(turnId: HostTurnId, outcome: HostItemOutcome): void {

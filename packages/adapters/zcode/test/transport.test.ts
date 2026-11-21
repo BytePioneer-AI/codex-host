@@ -3,6 +3,7 @@ import { copyFile, link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ZcodeAdapter } from "../src/adapter.js";
 import { CliTransport, type TransportOptions } from "../src/transport.js";
 import { resolveInstallation } from "../src/installation.js";
 import type { ZcodeVerifier } from "../src/verification/index.js";
@@ -269,6 +270,71 @@ describe("ZCode installed CLI transport", () => {
     });
   });
 
+  it.each([false, true])(
+    "isolates unreadable account credentials (personal model: %s)",
+    async (personal) => {
+      const { root, options, log } = await fixture(`
+if(method==='session/create')return reply(${JSON.stringify({
+        protocol: { name: "ZCode Protocol", version: 1 },
+        session: {
+          sessionId: "draft",
+          workspace: { workspaceKey: "fixture", workspacePath: "fixture" },
+          title: "",
+          status: "idle",
+          mode: "build",
+          createdAt: 0,
+          updatedAt: 0,
+          sessionKind: "main",
+        },
+        settings: {
+          model: {
+            available: personal
+              ? [{ ref: { providerId: "personal", modelId: "fixture" }, label: "Fixture" }]
+              : [],
+          },
+          thoughtLevel: { enabled: false, available: [] },
+          mode: { current: "build" },
+        },
+        projection: { status: "idle", contextUsed: 0, contextWindow: 0 },
+        messages: [],
+        runtime: {},
+      })});reply(null);`);
+      const family = "enc:v2:os:synthetic-family-ciphertext";
+      const jwt = "enc:v2:os:synthetic-jwt-ciphertext";
+      await writeFile(
+        path.join(root, ".zcode/v2/credentials.json"),
+        JSON.stringify({
+          "oauth:active_provider": family,
+          zcodejwttoken: jwt,
+        }),
+      );
+      const adapter = new ZcodeAdapter({ createTransport: () => new CliTransport(options()) });
+      try {
+        const result = await adapter.inspect({ cwd: root });
+        expect(fetch).not.toHaveBeenCalled();
+        const [launch] = await log();
+        expect(launch).toMatchObject({ params: { providers: {}, states: {} } });
+        for (const value of [family, jwt])
+          expect(JSON.stringify([launch, result])).not.toContain(value);
+        if (personal)
+          expect(result).toMatchObject({
+            status: "ready",
+            catalog: { models: [{ label: "Fixture" }] },
+          });
+        else
+          expect(result).toMatchObject({
+            status: "unavailable",
+            error: {
+              code: "configurationRequired",
+              message: expect.stringMatching(/enc:v2:.*subscription status is unknown/i),
+            },
+          });
+      } finally {
+        await adapter.close();
+      }
+    },
+  );
+
   it("routes Personal Coding Plan reverse requests without JWT or verification", async () => {
     const providerId = "account:zai-individual-coding-plan";
     const apiKey = "synthetic-personal-key";
@@ -408,9 +474,21 @@ describe("ZCode installed CLI transport", () => {
       const transport = new CliTransport(
         options({ environment: { ...options().environment, ZCODE_CREDENTIAL_SECRET: "other" } }),
       );
-      const failure = await transport.start().catch((error: Error) => error);
-      expect(failure).toMatchObject({ code: "authenticationRequired" });
-      expect(String(failure)).not.toContain(JWT);
+      try {
+        await transport.start();
+        expect(transport.signedIn).toBe(false);
+        expect(transport.credentialIssue).toMatch(/Cannot decrypt ZCode credentials/);
+        expect(transport.credentialIssue).not.toContain(JWT);
+        expect(fetch).not.toHaveBeenCalled();
+        expect(await transport.request("readSession", { sessionId: "start-plan" })).toMatchObject({
+          result: {
+            headersApplied: false,
+            errorMessage: expect.stringMatching(/Cannot decrypt ZCode credentials/),
+          },
+        });
+      } finally {
+        await transport.close();
+      }
     });
 
     it("aborts verification when the CLI cancels the header request", async () => {

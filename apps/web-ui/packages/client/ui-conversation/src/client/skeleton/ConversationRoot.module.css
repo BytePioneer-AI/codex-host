@@ -84,15 +84,12 @@
   padding-inline-start: max(0px, calc(var(--dsh-frame-leading-clearance, 0px) - 20px));
 }
 
-/* A phone title control owns a full touch row, aligned with the frame's leading controls. */
-:global([data-phone]) .header:has(:global([data-slot="conversation.header.navigation"]) button) {
-  padding-top: env(safe-area-inset-top);
+.titleCenter {
+  display: contents;
 }
 
-:global([data-phone])
-  .header:has(:global([data-slot="conversation.header.navigation"]) button)
-  .titleRow {
-  min-height: 44px;
+.phoneTrailingAction {
+  display: none;
 }
 
 .titleCluster {
@@ -199,8 +196,392 @@ button.crumb:hover {
   margin-right: -16px;
 }
 
-.headerCorner:empty {
+.headerCorner:empty,
+.headerCorner:not(:has(:global([data-slot="conversation.session.header.corner"]) > *)) {
   display: none;
+}
+
+/* ---- Phone: iOS 26 crystal-clear liquid glass row-1 chrome (row 2 untouched) ------------ */
+
+:global([data-phone]) .root[data-phase="active"] {
+  --dsh-phone-header-height: calc(env(safe-area-inset-top) + 44px);
+}
+
+:global([data-phone])
+  .root[data-phase="active"]:has(:global([data-slot="conversation.header.shortcuts"]) nav) {
+  --dsh-phone-header-height: calc(env(safe-area-inset-top) + 88px);
+}
+
+:global([data-phone]) .header {
+  position: relative;
+  z-index: 8;
+  row-gap: 0;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: 0;
+  border-bottom: none;
+  background: transparent;
+}
+
+/* Active conversations float the transparent header over the scrollport so messages,
+   bubbles, and wallpaper glide behind the crystal-clear liquid glass controls without
+   adding extra vertical chrome height. */
+:global([data-phone]) .root[data-phase="active"] .header {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+:global([data-phone])
+  .root[data-phase="active"]
+  .header
+  :global([data-slot="conversation.header.shortcuts"]) {
+  pointer-events: auto;
+}
+
+:global([data-phone])
+  .root[data-phase="active"]:not(:has(:global([data-slot="conversation.header.notice"]) > *))
+  .scrollBody {
+  padding-top: var(--dsh-phone-header-height);
+}
+
+:global([data-phone])
+  .root[data-phase="active"]
+  > :global([data-slot="conversation.header.notice"]:not(:empty)) {
+  margin-top: var(--dsh-phone-header-height);
+  position: relative;
+  z-index: 5;
+}
+
+/* Progressive top veil adapts to the active header height (1 row or 2 rows) so scrolled
+   lines dissolve smoothly beneath the chrome without colliding with the frameless title. */
+:global([data-phone]) .root[data-phase="active"] .header::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: calc(var(--dsh-phone-header-height) + 32px);
+  z-index: -1;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 78%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 58%, transparent) 44%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 24%, transparent) 74%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+@supports (backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px)) {
+  :global([data-phone]) .root[data-phase="active"] .header::before {
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      #000 0%,
+      rgb(0 0 0 / 0.92) 42%,
+      rgb(0 0 0 / 0.56) 62%,
+      rgb(0 0 0 / 0.22) 78%,
+      rgb(0 0 0 / 0.05) 91%,
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      #000 0%,
+      rgb(0 0 0 / 0.92) 42%,
+      rgb(0 0 0 / 0.56) 62%,
+      rgb(0 0 0 / 0.22) 78%,
+      rgb(0 0 0 / 0.05) 91%,
+      transparent 100%
+    );
+  }
+}
+
+:global(body[data-codexhost-wallpaper] [data-phone]) .root[data-phase="active"] .header::before {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 64%, transparent) 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 42%, transparent) 44%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 16%, transparent) 74%,
+    transparent 100%
+  );
+}
+
+:global([data-phone]) .headerLeading {
+  display: none;
+}
+
+:global([data-phone]) .titleRow {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(0, auto) minmax(80px, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding-inline-start: 0;
+  margin-inline: -8px -16px;
+}
+
+:global([data-phone]) .titleCluster {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:global([data-phone]) .titleCenter {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 0 2px;
+  border-radius: 8px;
+  pointer-events: auto;
+  transition: opacity 120ms ease;
+}
+
+/* Soft, edgeless radial mist directly behind frameless title glyphs prevents scrolled text
+   from colliding with the title without drawing any pill, box, or border. */
+:global([data-phone]) .root[data-phase="active"] .titleCenter::before {
+  content: "";
+  position: absolute;
+  inset: -4px -22px;
+  z-index: -1;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 88%, transparent) 38%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 42%, transparent) 72%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+:global(body[data-codexhost-wallpaper] [data-phone])
+  .root[data-phase="active"]
+  .titleCenter::before {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 68%, transparent) 38%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 28%, transparent) 72%,
+    transparent 100%
+  );
+}
+
+:global(body[data-codexhost-wallpaper][data-ds-dark-theme] [data-phone]) .titleCenter {
+  text-shadow: 0 1px 10px rgb(0 0 0 / 0.42);
+}
+
+:global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return])) {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:global([data-phone]) .titleRow > .titleCenter,
+:global([data-phone]) .titleRow > :global([data-slot="conversation.header.navigation"]) {
+  grid-column: 2;
+  justify-self: center;
+  pointer-events: auto;
+}
+
+:global([data-phone]) .titleCenter > :global([data-slot="conversation.header.navigation"]) {
+  display: contents;
+}
+
+:global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return])):active {
+  opacity: 0.52;
+}
+
+:global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return]):focus-visible) {
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return]):focus-visible) {
+    outline: 2px solid var(--dsw-alias-label-primary);
+    outline-offset: 2px;
+  }
+}
+
+:global([data-phone]) .crumbs {
+  justify-content: center;
+  gap: 3px;
+}
+
+:global([data-phone]) .crumb {
+  max-width: none;
+  padding: 0;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+:global([data-phone]) button.crumb {
+  position: relative;
+  z-index: 1;
+}
+
+:global([data-phone]) .headerActions:not(:has(button)),
+:global([data-phone]) .headerUtilities {
+  display: none;
+}
+
+:global([data-phone]) .phoneTrailingAction,
+:global([data-phone]) .headerCorner > :global([data-slot="conversation.session.header.corner"]),
+:global([data-phone]) .phoneTrailingAction > :global([data-slot="conversation.header.trailing"]) {
+  display: contents;
+}
+
+:global([data-phone]) .headerCorner:has(button) {
+  box-sizing: border-box;
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 36px;
+  margin: 0;
+  padding: 0 3px;
+  border: 0.5px solid rgb(15 17 21 / 0.1);
+  border-radius: 9999px;
+  corner-shape: round;
+  pointer-events: auto;
+  background: rgb(255 255 255 / 0.84);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.72),
+    inset 0 -0.5px 0 rgb(255 255 255 / 0.28),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.22),
+    0 1px 2px rgb(15 17 21 / 0.05),
+    0 6px 18px -4px rgb(15 17 21 / 0.11);
+}
+
+/* Single-button state collapses the capsule cleanly into a matching 36px circle. */
+:global([data-phone])
+  .headerCorner:has(button):not(:has([data-phone-new-session]):has([data-sidebar-right-expand])) {
+  width: 36px;
+  padding: 0;
+}
+
+:global([data-ds-dark-theme] [data-phone]) .headerCorner:has(button) {
+  border-color: rgb(255 255 255 / 0.14);
+  background: rgb(36 38 44 / 0.78);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    inset 0 -0.5px 0 rgb(255 255 255 / 0.08),
+    0 2px 8px rgb(0 0 0 / 0.26),
+    0 8px 22px -6px rgb(0 0 0 / 0.42);
+}
+
+@supports (backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px)) {
+  :global([data-phone]) .headerCorner:has(button) {
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.22) 0%, rgb(255 255 255 / 0.09) 100%);
+    -webkit-backdrop-filter: blur(8px) saturate(180%);
+    backdrop-filter: blur(8px) saturate(180%);
+    box-shadow:
+      inset 0 1px 0.5px rgb(255 255 255 / 0.85),
+      inset 0 -0.5px 0 rgb(15 17 21 / 0.06),
+      0 1px 2px rgb(15 17 21 / 0.06),
+      0 6px 16px -4px rgb(15 17 21 / 0.12);
+  }
+
+  :global([data-ds-dark-theme] [data-phone]) .headerCorner:has(button) {
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.12) 0%, rgb(255 255 255 / 0.05) 100%);
+    -webkit-backdrop-filter: blur(10px) saturate(180%);
+    backdrop-filter: blur(10px) saturate(180%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :global([data-phone]) .titleCenter {
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :global([data-phone]) .root[data-phase="active"] .header {
+    position: relative;
+    pointer-events: auto;
+    background: var(--dsw-alias-bg-base);
+    border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+  }
+
+  :global([data-phone]) .root[data-phase="active"] .header::before {
+    display: none;
+  }
+
+  :global([data-phone])
+    .root[data-phase="active"]:not(:has(:global([data-slot="conversation.header.notice"]) > *))
+    .scrollBody {
+    padding-top: 0;
+  }
+
+  :global([data-phone])
+    .root[data-phase="active"]
+    > :global([data-slot="conversation.header.notice"]:not(:empty)) {
+    margin-top: 0;
+  }
+
+  :global([data-phone]) .headerCorner:has(button),
+  :global([data-ds-dark-theme] [data-phone]) .headerCorner:has(button) {
+    border: 1px solid var(--dsw-alias-border-l3);
+    background: var(--dsw-alias-bg-layer-1);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+  }
+}
+
+@media (prefers-contrast: more) {
+  :global([data-phone]) .headerCorner:has(button),
+  :global([data-ds-dark-theme] [data-phone]) .headerCorner:has(button) {
+    border-color: var(--dsw-alias-label-secondary);
+    box-shadow: none;
+  }
+}
+
+@media (forced-colors: active) {
+  :global([data-phone]) .root[data-phase="active"] .header {
+    position: relative;
+    pointer-events: auto;
+    background: Canvas;
+    border-bottom: 1px solid CanvasText;
+  }
+
+  :global([data-phone]) .root[data-phase="active"] .header::before {
+    display: none;
+  }
+
+  :global([data-phone])
+    .root[data-phase="active"]:not(:has(:global([data-slot="conversation.header.notice"]) > *))
+    .scrollBody {
+    padding-top: 0;
+  }
+
+  :global([data-phone])
+    .root[data-phase="active"]
+    > :global([data-slot="conversation.header.notice"]:not(:empty)) {
+    margin-top: 0;
+  }
+
+  :global([data-phone]) .headerCorner:has(button),
+  :global([data-ds-dark-theme] [data-phone]) .headerCorner:has(button) {
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+  }
 }
 
 /* figma Tab_Group 34:11441: 35px strip, gap 36, pad-left 8, tabs bottom-aligned.
@@ -419,6 +800,7 @@ button.crumb:hover {
      `.list`, ui-sidebar-files FilesBody `.body`): the bar sits 2px clear of
      the column's edge instead of flush against it. */
   margin-right: 2px;
+  overflow-x: hidden;
   overflow-y: auto;
   /* Reserved unconditionally: the composer seat rides this box's content box in
      Chat and its padding box under a view's composer overlay, so an `auto`

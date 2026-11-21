@@ -115,7 +115,7 @@ const match = processes.match(
 const inspectorEndpoint = `http://127.0.0.1:${match[1]}`;
 ```
 
-### Windows：Host chain 未启动（AppX 容器被提前销毁）
+### Windows：AppX 提前退出或 Host chain 未启动
 
 若启动在约 30 秒后以 exit code 1 结束，日志停在
 
@@ -125,7 +125,7 @@ launcher: waiting for Host chain
 codexhost launcher: Codex Desktop did not start the codexhost Host chain before timeout
 ```
 
-且 `~/.codexhost/logs/` 下没有产生新的 `host-runtime-*.log`，说明失败在最外层：Desktop 已经被拉起，但注入从未建立，Host 根本没有启动。此时不要先怀疑网络、账号、Harness 或 Renderer 代码。
+且没有新的 `host-runtime-*.log`，先确认本次 Desktop 根是否仍在运行，以及真实进程是否收到托管环境。`Desktop Controller ready` 只代表 attachment server 就绪；`Host chain ready` 和 `Renderer Session installed` 是不同的成功信号。超时本身不能证明容器被销毁。
 
 按以下三步确认：
 
@@ -135,23 +135,15 @@ codexhost launcher: Codex Desktop did not start the codexhost Host chain before 
 
 对应 issue：#637、#566、#532、#361。
 
-**临时规避（生效条件尚未确认）**：当前 Windows Launcher 根据安装身份中的 `appx_activation` 选择 AppX 激活或直接 spawn 打包 exe；`CODEXHOST_STOCK_CODEX_PATH` 本身不参与该分支。已有实机曾在该变量存在时观察到直接 spawn 后恢复正常，但当前代码没有建立二者之间的自动关联，不能把它当作通用的 AppX 绕过开关。
+**显式直接启动。** 已注册的 Store 安装默认使用 AppX 激活，不会自动回退。如果 AppX 启动提前退出（如 #637），或未收到托管环境（如 #361），先完整退出 Codex Desktop（包括托盘实例）和托管 Launcher，再在 Windows 终端运行：
 
-本次实机使用的命令仅作为现场复现记录：
-
-```bat
-for /f "delims=" %%p in ('powershell -NoProfile -Command "(Get-AppxPackage -Name OpenAI.Codex).InstallLocation" 2^>nul') do set "CODEXHOST_STOCK_CODEX_PATH=%%p\app\ChatGPT.exe"
+```powershell
+codexhost launch --windows-direct
 ```
 
-不要写死 `WindowsApps` 目录名，它随每次 Codex 更新变化。如需稳定走直接 spawn，应先确认安装是否通过 `CODEXHOST_INSTALL_ROOT` 被识别为便携 / 未打包安装，并验证该路径对已安装 MSIX 包是否适用，再整理为受支持的步骤。
+此选项仅使用当前用户已注册的 Store 安装，不可与 `--custom-install` 混用，也不使用 `CODEXHOST_INSTALL_ROOT` 等安装覆盖。它直接启动发现的 exe，跳过 `EnableDebugging` 和 AUMID 激活，保留该安装的官方 CLI、托管环境和 loopback CDP 参数。发现已有 Store 实例时会拒绝启动，不会附加或强制结束外部实例。
 
-实测（Windows 11 x64 / Desktop `26.1027.6604.0` / codexhost `0.17.0`）：
-
-- 直接 spawn 打包 exe 并带 CDP 参数时，调试端口返回 `Chrome/156.0.8078.79`，容器不再被销毁；
-- 设置该变量后，Launcher 日志出现 `launcher: Host chain ready`（约 +5.7 秒）与 `controller: Renderer Session installed`，并正常生成 `host-runtime-*.log`；
-- 主进程命令行带上 `--remote-debugging-address=127.0.0.1 --remote-debugging-port=<port>`，`launch-managed.ps1` 仍能把它识别为托管实例。
-
-边界：上面的实机结果说明“直接 spawn 打包 exe”在该环境中恢复了 Host chain，但不能证明 `CODEXHOST_STOCK_CODEX_PATH` 是触发原因，也不能证明该做法适用于其他安装方式或版本。该规避不修复容器生命周期本身；根因修复后应删除，回归默认激活路径。
+`CODEXHOST_STOCK_CODEX_PATH` 指向官方 CLI，不是启动方式开关，不要将它设为 GUI exe。直启是绕行方式，不是 AppX 生命周期修复；不同 Store 版本的权限、包标识及数据目录行为仍需在 Windows 实机验证。
 
 ## 三、第二步：建立最小的真实反馈闭环
 

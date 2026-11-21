@@ -23,6 +23,8 @@ Desktop 原生 Browser IPC 要求调用进程位于当前 Desktop 的进程树�
 
 共享 Host 使用最近接入且仍在线的 Desktop 提供的 Browser 授权、临时 MCP 覆盖与 app tools 管道。这些配置在连接断开时失效。共享 app-server 完成正在执行的官方任务，空闲后在下一次原生请求前按仍有效的配置重建。没有在线 Desktop 时，后端沿用已记录的原生启动参数，浏览器授权由官方工具按当前环境判定。
 
+Windows 共享 Host 同时提供 Remote Control 监听时，原生进程沿用首次确认的可执行文件与启动参数。每个本地 Desktop 连接单独提供当前工具端点。断开最近的 Desktop 后，下一次空闲请求使用上一个仍在线的 Desktop 的端点。Remote Control 观察者可以在此过程中继续使用原有 Thread。
+
 ## 原生 Codex Fork 的模型继承
 
 Desktop 可能在 `thread/fork` 中省略 Model，原生 app-server 因此使用全局默认配置，而不是来源 Thread 的配置。共享原生通道对 Desktop 与 Web 一致补齐省略的 Model、Provider、Thinking 和 Fast：来源只取当前原生进程通过 `thread/start`、`thread/resume`、`thread/fork` 响应或 `thread/settings/updated` 确认的设置，不读取 Host 的最后一次草稿选择，也不复制权限、指令或其他配置。

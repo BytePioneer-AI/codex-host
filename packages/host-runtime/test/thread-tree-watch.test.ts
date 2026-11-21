@@ -55,3 +55,45 @@ it("reprobes official threads on reconnect and ignores reads from the retired ge
     vi.useRealTimers();
   }
 });
+
+it("drops a deleted Thread from the next snapshot", async () => {
+  vi.useFakeTimers();
+  const send = vi.fn<(message: JsonObject) => Promise<void>>(async () => {});
+  const parents: Record<string, string> = { child: "parent" };
+  const watch = new ThreadTreeWatch({
+    tree: { read: async () => ({ parents: { ...parents } }) },
+    repository: { listSummaries: async () => [] },
+    events: new ClientChannelEvents(),
+    localStatus: () => undefined,
+    waiting: () => false,
+    readOfficial: async (id) => ({
+      result: { thread: { id, name: `${id} title`, status: { type: "idle" } } },
+    }),
+    send,
+    diagnose: (error) => {
+      throw error;
+    },
+  });
+  const latest = () => {
+    const message = send.mock.lastCall?.[0];
+    return message?.method === THREAD_TREE_SNAPSHOT_METHOD
+      ? threadTreeWatchResultSchema.parse(message.params).snapshot
+      : threadTreeWatchResultSchema.parse(message?.result).snapshot;
+  };
+  try {
+    const start = watch.handle({ id: 1, method: THREAD_TREE_WATCH_METHOD, params: {} });
+    await vi.advanceTimersByTimeAsync(200);
+    await start;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(latest().nodes).toHaveProperty("child.title", "child title");
+
+    delete parents.child;
+    watch.observe({ method: "thread/deleted", params: { threadId: "child" } }, true);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(latest().parents).toEqual({});
+    expect(latest().nodes).not.toHaveProperty("child");
+  } finally {
+    watch.close();
+    vi.useRealTimers();
+  }
+});

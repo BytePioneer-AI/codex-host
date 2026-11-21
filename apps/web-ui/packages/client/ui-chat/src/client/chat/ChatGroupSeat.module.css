@@ -18,7 +18,13 @@
   transition: color 100ms ease;
 }
 
-.title:hover {
+@media (hover: hover) {
+  .title:hover {
+    color: var(--dsw-alias-label-secondary);
+  }
+}
+
+.title:active {
   color: var(--dsw-alias-label-secondary);
 }
 
@@ -63,12 +69,22 @@
   opacity: 0;
 }
 
-.title:is(:hover, :focus-visible) .activityIcon {
+:global(html:not([data-input-modality="pointer"])) .title:focus-visible .activityIcon {
   opacity: 0;
 }
 
-.title:is(:hover, :focus-visible) .chevron {
+:global(html:not([data-input-modality="pointer"])) .title:focus-visible .chevron {
   opacity: 1;
+}
+
+@media (hover: hover) {
+  .title:hover .activityIcon {
+    opacity: 0;
+  }
+
+  .title:hover .chevron {
+    opacity: 1;
+  }
 }
 
 .title[aria-expanded="true"] .activityIcon {

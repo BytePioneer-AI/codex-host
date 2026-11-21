@@ -105,6 +105,10 @@ export class ThreadTreeWatch {
     const { method, params } = value;
     if (typeof params.threadId !== "string") return;
     const id = params.threadId;
+    if (method === "thread/deleted") {
+      this.forget(id);
+      return;
+    }
     const turn = object(params.turn) ? params.turn : {};
     if (official) {
       const before = this.#official.get(id) ?? {};
@@ -150,6 +154,15 @@ export class ThreadTreeWatch {
 
   resolveOfficial(id: string | number): void {
     if (this.#interactions.delete(id)) this.changed();
+  }
+
+  /** A deleted Thread: drop what was read about it, so snapshots stop carrying it. */
+  forget(id: string): void {
+    this.#official.delete(id);
+    this.#read.delete(id);
+    for (const [requestId, threadId] of this.#interactions)
+      if (threadId === id) this.#interactions.delete(requestId);
+    this.changed();
   }
 
   resetOfficial(): void {

@@ -123,6 +123,18 @@ unsafe extern "system" {
 pub struct ProcessEntry {
     pub id: u32,
     pub parent_id: u32,
+    executable_name: [u16; 260],
+}
+
+impl ProcessEntry {
+    pub fn has_executable_name(&self, name: &str) -> bool {
+        let end = self
+            .executable_name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(260);
+        name.eq_ignore_ascii_case(&String::from_utf16_lossy(&self.executable_name[..end]))
+    }
 }
 
 pub struct ChildJob(Handle);
@@ -184,18 +196,20 @@ pub fn process_entries() -> io::Result<Vec<ProcessEntry>> {
         let mut entry: NativeProcessEntry = zeroed();
         entry.size = size_of::<NativeProcessEntry>() as u32;
         let mut entries = Vec::new();
-        if Process32FirstW(snapshot, &mut entry) != 0 {
-            loop {
-                entries.push(ProcessEntry {
-                    id: entry.process_id,
-                    parent_id: entry.parent_process_id,
-                });
-                if Process32NextW(snapshot, &mut entry) == 0 {
-                    break;
-                }
-            }
+        let mut found = Process32FirstW(snapshot, &mut entry);
+        while found != 0 {
+            entries.push(ProcessEntry {
+                id: entry.process_id,
+                parent_id: entry.parent_process_id,
+                executable_name: entry.executable_name,
+            });
+            found = Process32NextW(snapshot, &mut entry);
         }
+        let error = io::Error::last_os_error();
         CloseHandle(snapshot);
+        if error.raw_os_error() != Some(windows::Win32::Foundation::ERROR_NO_MORE_FILES.0 as i32) {
+            return Err(error);
+        }
         Ok(entries)
     }
 }
@@ -209,9 +223,10 @@ pub fn process_image_path(process_id: u32) -> io::Result<PathBuf> {
         let mut buffer = vec![0_u16; 32_768];
         let mut length = buffer.len() as u32;
         let result = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length);
+        let error = (result == 0).then(io::Error::last_os_error);
         CloseHandle(process);
-        if result == 0 {
-            return Err(io::Error::last_os_error());
+        if let Some(error) = error {
+            return Err(error);
         }
         buffer.truncate(length as usize);
         Ok(PathBuf::from(String::from_utf16_lossy(&buffer)))

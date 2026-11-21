@@ -982,7 +982,11 @@ describe("HarnessDelegationCoordinator", () => {
       projector.project({
         type: "item.started",
         turnId,
-        item: { type: "reasoning", itemId: hostItemIdSchema.parse("r1"), text: "live reasoning" },
+        item: {
+          type: "reasoning",
+          itemId: hostItemIdSchema.parse("r1"),
+          text: "live reasoning. still streaming",
+        },
       });
       projector.project({
         type: "item.started",
@@ -1018,7 +1022,11 @@ describe("HarnessDelegationCoordinator", () => {
       expect(document.turns[1]).toEqual(projector.snapshotTurn());
       expect(document.turns[1].items).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ type: "reasoning", summary: ["live reasoning"] }),
+          // A settled first sentence titles the part; the open body keeps growing.
+          expect.objectContaining({
+            type: "reasoning",
+            summary: ["**live reasoning**\n\nstill streaming"],
+          }),
           expect.objectContaining({
             type: "commandExecution",
             command: "ls",

@@ -151,10 +151,11 @@ describe("external Turn Item ID reconciliation", () => {
     const live = [summary("live-r", titled), transcript("live-r", text)];
     const matching = [summary("native-r", titled), transcript("native-r", text)];
     const mismatched = [summary("native-r", "**Different**"), transcript("native-r", text)];
-    const samePreview = [summary("native-r", titled), transcript("native-r", titled)];
+    // A twin whose own output is already the titled projection carries the same text.
+    const titledOutput = [summary("native-r", titled), transcript("native-r", titled)];
     expect(ids(live, matching)).toEqual(["live-r-summary", "live-r"]);
     expect(ids(live, mismatched)).toEqual(["native-r-summary", "native-r"]);
-    expect(ids(live, samePreview)).toEqual(["native-r-summary", "native-r"]);
+    expect(ids(live, titledOutput)).toEqual(["live-r-summary", "live-r"]);
   });
 
   it("does not move either reasoning ID if a twin is already anchored or its destination is reserved", () => {

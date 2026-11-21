@@ -41,15 +41,11 @@ function reasoningUnit(base: string, summary?: Item, transcript?: Item): Unit {
   const output = reasoningText(transcript?.aggregatedOutput);
   let text = output ?? preview;
   if (preview && output && preview !== output) {
-    // A generated title is presentation, not new text or evidence of a mismatched twin.
-    const expected = reasoningSummaryParts(output, true);
-    if (
-      !Array.isArray(blocks) ||
-      blocks.length !== expected.length ||
-      !blocks.every((block, index) => block === expected[index])
-    ) {
-      text = null;
-    }
+    // A generated title is presentation, not new text or evidence of a mismatched twin:
+    // both sides agree on the titled projection of the transcript when the preview is
+    // exactly that projection, and a preview that is neither is a mismatched twin.
+    const titled = reasoningSummaryParts(output, true).join("\n");
+    text = preview === titled ? titled : null;
   }
   return {
     items: [summary, transcript].filter((item) => item !== undefined),

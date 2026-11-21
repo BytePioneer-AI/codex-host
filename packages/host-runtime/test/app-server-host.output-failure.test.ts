@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HarnessSession } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter, FakeHarnessSession } from "@codexhost/harness-adapter/testing";
 import type { JsonObject } from "@codexhost/protocol-core";
+import * as attachments from "../src/external-inline-attachments.js";
 import {
   harnessIdSchema,
   harnessPermissionModeCatalogSchema,
@@ -352,6 +353,54 @@ describe("AppServerHost output failure", () => {
       await stopFixture(fixture);
     }
   });
+
+  it.each(["image", "mapping"])(
+    "rejects a Turn when output ends during %s preparation",
+    async (stage) => {
+      const fixture = createFixture();
+      const materialize = attachments.materializeExternalImages;
+      const prepare = vi.spyOn(attachments, "materializeExternalImages");
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Pi Session was not opened");
+        const execute = vi.spyOn(session, "execute");
+        const close = async () => {
+          await session.close();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        };
+        prepare.mockImplementationOnce(async (input, env) => {
+          if (stage === "image") await close();
+          else {
+            const read = fixture.mappingStore.getThread.bind(fixture.mappingStore);
+            vi.spyOn(fixture.mappingStore, "getThread").mockImplementationOnce(async (id) => {
+              await close();
+              return read(id);
+            });
+          }
+          return materialize(input, env);
+        });
+        writeRequest(fixture.desktopInput, {
+          id: 2,
+          method: "turn/start",
+          params: {
+            threadId,
+            input: [
+              { type: "text", text: "inspect" },
+              { type: "image", url: "data:image/png;base64,Ag==" },
+            ],
+          },
+        });
+        expect(await fixture.collector.waitFor((msg) => requestId(msg, 2))).toMatchObject({
+          error: { code: -32073, message: expect.stringContaining("no longer available") },
+        });
+        expect(execute).not.toHaveBeenCalled();
+      } finally {
+        prepare.mockRestore();
+        await stopFixture(fixture);
+      }
+    },
+  );
 
   const parentEndings = [
     { parent: "active", ending: "EOF", error: "output ended before the active Turn settled" },

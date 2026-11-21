@@ -147,6 +147,8 @@ export function findScopedDraftModelBinding(
   const creationOwners = writers.filter(({ modes }) => modes.size > 0);
   const selected =
     writers.length === 1 ? writers[0] : creationOwners.length === 1 ? creationOwners[0] : undefined;
+  // Desktop can allocate a different store wrapper for each hook on the same draft.
+  // The unique creation owner identifies the writer when those hooks agree on draft state.
   if (
     !selected ||
     (writers.length > 1 &&
@@ -154,7 +156,6 @@ export function findScopedDraftModelBinding(
         typeof record(selected.store)?.set !== "function" ||
         writers.some(
           (writer) =>
-            writer.store !== selected.store ||
             writer.draft !== selected.draft ||
             writer.usesAccountPreferences !== selected.usesAccountPreferences,
         )))

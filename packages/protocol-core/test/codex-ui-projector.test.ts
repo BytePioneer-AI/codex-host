@@ -2178,7 +2178,7 @@ describe("Codex UI projector", () => {
     });
   });
 
-  it("opens and closes a synthetic Question after its Turn completed", () => {
+  it("rejects a synthetic Question after its Turn completed", () => {
     const value = projector();
     const question: HostQuestionInteraction = {
       type: "question",
@@ -2206,26 +2206,8 @@ describe("Codex UI projector", () => {
     value.project({ type: "item.started", turnId, item: owner });
     value.project({ type: "item.detached", turnId, itemId: owner.itemId });
     value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
-    const opened = value.projectQuestion(question, itemId("completed-question"), 2_000);
-    expect(opened.questionRequest.request).toMatchObject({
-      params: { itemId: "completed-question", turnId },
-    });
-    const closed = value.project(
-      {
-        type: "interaction.closed",
-        interactionId: question.interactionId,
-        turnId,
-        reason: "responded",
-      },
-      2_100,
-    );
-    expect(closed.messages).toContainEqual(
-      expect.objectContaining({
-        method: "item/completed",
-        params: expect.objectContaining({
-          item: expect.objectContaining({ id: "completed-question" }),
-        }),
-      }),
+    expect(() => value.projectQuestion(question, itemId("completed-question"), 2_000)).toThrow(
+      "follows the Turn terminal",
     );
   });
 
@@ -2328,7 +2310,7 @@ describe("Codex UI projector", () => {
     expect(value.hasOpenDetachedItems).toBe(false);
   });
 
-  it("allows terminal approval only while a successful detached owner is open", () => {
+  it("rejects terminal approval without an explicit detached owner", () => {
     const value = projector();
     const command: HostCommandExecutionItem = {
       type: "commandExecution",
@@ -2350,18 +2332,14 @@ describe("Codex UI projector", () => {
     value.project({ type: "item.started", turnId, item: command });
     value.project({ type: "item.detached", turnId, itemId: command.itemId });
     value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
-    expect(value.projectApproval(approval, "test-server").approvalRequest).toBeDefined();
-    value.project({
-      type: "interaction.closed",
-      interactionId: approval.interactionId,
-      turnId,
-      reason: "cancelled",
-    });
+    expect(() => value.projectApproval(approval, "test-server")).toThrow(
+      "follows the Turn terminal",
+    );
     expect(value.hasOpenDetachedItems).toBe(true);
   });
 
   it.each(["succeeded", "failed", "cancelled"] as const)(
-    "keeps pending owned approvals only across successful completion: %s",
+    "rejects pending approvals without an explicit owner: %s",
     (status) => {
       const value = projector();
       const owner = {
@@ -2399,12 +2377,7 @@ describe("Codex UI projector", () => {
                 ? { status, error: { code: "nativeFailure", message: "failed", retryable: false } }
                 : { status, reason: "cancelled" },
         });
-      if (status === "succeeded") {
-        expect(complete).not.toThrow();
-        expect(value.hasOpenDetachedItems).toBe(true);
-      } else {
-        expect(complete).toThrow("pending Interactions");
-      }
+      expect(complete).toThrow("pending Interactions");
     },
   );
 
@@ -2480,7 +2453,9 @@ describe("Codex UI projector", () => {
     value.project({ type: "item.started", turnId, item: owner });
     value.project({ type: "item.detached", turnId, itemId: owner.itemId });
     value.project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
-    value.projectQuestion(firstQuestion, itemId("synthetic-pending"));
+    expect(() => value.projectQuestion(firstQuestion, itemId("synthetic-pending"))).toThrow(
+      "follows the Turn terminal",
+    );
     value.project({
       type: "item.completed",
       turnId,
@@ -2495,13 +2470,6 @@ describe("Codex UI projector", () => {
     expect(() => value.projectQuestion(secondQuestion, itemId("synthetic-second"))).toThrow(
       "follows the Turn terminal",
     );
-    expect(value.hasOpenDetachedItems).toBe(true);
-    value.project({
-      type: "interaction.closed",
-      interactionId: firstQuestion.interactionId,
-      turnId,
-      reason: "cancelled",
-    });
     expect(value.hasOpenDetachedItems).toBe(false);
   });
 

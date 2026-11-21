@@ -997,17 +997,15 @@ export class CodexTurnProjector {
       return projected?.item.type === "fileChange" && this.hasOpenDetachedItem(itemId);
     });
     for (const itemId of this.#wireItemOrder) {
-      if (!this.#detached.has(itemId)) continue;
+      const isFileSummary = itemId === this.#fileItemId;
+      if (!this.#detached.has(itemId) && !(isFileSummary && hasOpenDetachedFileChange)) continue;
       const projected = this.#items.get(itemId);
-      if (
-        !projected ||
-        (projected.outcome && !(itemId === this.#fileItemId && hasOpenDetachedFileChange))
-      )
+      if (!projected || (projected.outcome && !(isFileSummary && hasOpenDetachedFileChange)))
         continue;
       items.set(
         itemId,
         projectItem(
-          itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
+          isFileSummary ? this.#fileSummary() : projected.item,
           null,
           this.#cwd,
           true,
@@ -1604,7 +1602,7 @@ export class CodexTurnProjector {
       const hasOwner =
         interaction.type === "question"
           ? !interaction.syntheticItem && this.hasOpenDetachedTool(interaction.itemId)
-          : this.hasOpenDetachedTool();
+          : false;
       if (event.outcome.status !== "succeeded" || !hasOwner)
         throw new Error("Host Turn completed with pending Interactions");
     }
@@ -1922,7 +1920,7 @@ export class CodexTurnProjector {
     if (!this.#completed) return;
     if (this.#terminalOutcome?.status !== "succeeded")
       throw new Error("Host Interaction follows a non-successful Turn terminal event");
-    if (!this.hasOpenDetachedTool(itemId))
+    if (itemId === undefined || !this.hasOpenDetachedTool(itemId))
       throw new Error("Host Interaction follows the Turn terminal event");
   }
 

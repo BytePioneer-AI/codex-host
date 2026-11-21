@@ -182,17 +182,20 @@ describe("Codex UI projector detached command Items", () => {
       sourceItemIds: [secondCommand.itemId],
       changes: [{ path: "b.ts", kind: "update", unifiedDiff: "-b\n+b" }],
     };
-    project({ type: "item.started", turnId, item: secondCommand });
-    project({ type: "item.detached", turnId, itemId: command.itemId });
     project({ type: "item.started", turnId, item: firstDiff });
-    project({ type: "item.detached", turnId, itemId: firstDiff.itemId });
-    project({ type: "item.detached", turnId, itemId: secondCommand.itemId });
-    project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
     project({
       type: "item.completed",
       turnId,
       snapshot: { item: firstDiff, outcome: { status: "succeeded" } },
     });
+    project({
+      type: "item.completed",
+      turnId,
+      snapshot: { item: command, outcome: { status: "succeeded" } },
+    });
+    project({ type: "item.started", turnId, item: secondCommand });
+    project({ type: "item.detached", turnId, itemId: secondCommand.itemId });
+    project({ type: "turn.completed", turnId, outcome: { status: "succeeded" } });
     project({ type: "item.started", turnId, item: secondDiff });
 
     const changePaths = (item: JsonObject | undefined): string[] =>
@@ -222,7 +225,7 @@ describe("Codex UI projector detached command Items", () => {
     // Later file Items fold into the summary instead of owning a wire slot.
     expect(projector.foregroundWireItems().has(secondDiff.itemId)).toBe(false);
 
-    for (const item of [command, secondCommand, secondDiff]) {
+    for (const item of [secondCommand, secondDiff]) {
       project({
         type: "item.completed",
         turnId,

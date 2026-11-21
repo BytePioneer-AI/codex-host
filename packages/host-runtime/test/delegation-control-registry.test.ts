@@ -154,20 +154,38 @@ describe("DelegationControlRegistry", () => {
 
   it("uses the shared catalog when multiple sessions observe its parent Thread", async () => {
     const registry = new DelegationControlRegistry();
-    const owner = registration("native-parent");
-    const observer = registration("native-parent");
-    registry.register(observer);
-    registry.register(owner, { harnessCatalog: true });
-    await registry.start({
-      harnessId: "pi",
-      task: "review",
-      cwd: "/synthetic",
-      parentThreadId: "native-parent",
+    const threadId = "shared-parent";
+    const hostId = "ssh:mac";
+    const owner = registration(threadId);
+    owner.executionHostId = () => hostId;
+    const readOnlyObserver = async () => {
+      throw new Error("Observer does not handle delegation operations");
+    };
+    registry.register({
+      ...registration(threadId),
+      executionHostId: () => hostId,
+      start: readOnlyObserver,
+      send: readOnlyObserver,
+      cancel: readOnlyObserver,
+      read: readOnlyObserver,
     });
-    await registry.read({ threadId: "native-parent", view: "result" });
-    expect(owner.start).toHaveBeenCalledOnce();
-    expect(owner.read).toHaveBeenCalledOnce();
-    expect(observer.start).not.toHaveBeenCalled();
+    registry.register(owner, { harnessCatalog: true });
+    await expect(
+      registry.start({
+        harnessId: "pi",
+        task: "review",
+        cwd: "/synthetic",
+        parentThreadId: threadId,
+      }),
+    ).resolves.toMatchObject({ threadId: "child-shared-parent" });
+    await expect(registry.read({ threadId, view: "result" })).resolves.toMatchObject({ threadId });
+    await expect(registry.send({ threadId, message: "continue" })).resolves.toMatchObject({
+      threadId,
+    });
+    await expect(registry.cancel({ threadId })).resolves.toMatchObject({ threadId });
+    await expect(
+      registry.read({ threadId, view: "result", hostId, callerThreadId: threadId }),
+    ).resolves.toMatchObject({ threadId, hostId });
     registry.close();
   });
   it("rejects conflicting or non-boolean send options before choosing a session", async () => {
@@ -227,6 +245,23 @@ describe("DelegationControlRegistry", () => {
     expect(first.cancel).toHaveBeenCalledOnce();
     expect(second.answer).toHaveBeenCalledOnce();
     expect(first.answer).not.toHaveBeenCalled();
+  });
+
+  it("rejects implicit start when the catalog and another session have different active parents", async () => {
+    const registry = new DelegationControlRegistry();
+    registry.register({ ...registration("parent-a"), canHandleStart: () => true });
+    registry.register(
+      { ...registration("parent-b"), canHandleStart: () => true },
+      { harnessCatalog: true },
+    );
+
+    await expect(
+      registry.start({ harnessId: "pi", task: "review", cwd: "/synthetic" }),
+    ).rejects.toMatchObject({
+      code: "PARENT_THREAD_AMBIGUOUS",
+      details: { matchingRuntimeCount: 2 },
+    });
+    registry.close();
   });
 
   it("requires a unique active session for implicit start and unscoped list", async () => {

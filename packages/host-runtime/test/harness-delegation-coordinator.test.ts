@@ -12,6 +12,7 @@ import { CodexTurnProjector, type ExternalHarnessId } from "@codexhost/protocol-
 import {
   harnessIdSchema,
   harnessModelCatalogSchema,
+  harnessModelRefIdSchema,
   harnessPreferencePatchSchema,
   harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
@@ -623,9 +624,9 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  const primary = { model: { id: "fake-model-v1.primary" } };
-  const secondary = { model: { id: "fake-model-v1.secondary" } };
-  const retired = { model: { id: "retired" } };
+  const primary = { model: { id: harnessModelRefIdSchema.parse("fake-model-v1.primary") } };
+  const secondary = { model: { id: harnessModelRefIdSchema.parse("fake-model-v1.secondary") } };
+  const retired = { model: { id: harnessModelRefIdSchema.parse("retired") } };
   const low = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("low") };
   const high = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") };
   const off = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("off") };
@@ -678,9 +679,9 @@ describe("HarnessDelegationCoordinator", () => {
         model: { id: "fake-model-v1.primary" },
         thinkingOptionId: "high",
       });
-      await expect(
-        value.coordinator.start({ ...input, model: { id: "retired" } }),
-      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(value.coordinator.start({ ...input, ...retired })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
       await expect(
         value.coordinator.start({
           ...input,

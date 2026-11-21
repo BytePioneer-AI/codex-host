@@ -1751,7 +1751,18 @@ describe("Codex UI projector", () => {
               formatVersion: 1,
             }),
             input: [],
-            items: [{ ...todo(`${id}-todo`, todos), outcome: { status } }],
+            items: [
+              {
+                ...todo(`${id}-todo`, todos),
+                outcome:
+                  status === "failed"
+                    ? {
+                        status,
+                        error: { code: "nativeFailure", message: "todo failed", retryable: false },
+                      }
+                    : { status },
+              },
+            ],
             outcome: { status: "succeeded" },
           },
         },
@@ -1785,7 +1796,13 @@ describe("Codex UI projector", () => {
     const failed = value.project({
       type: "item.completed",
       turnId,
-      snapshot: { item, outcome: { status: "failed" } },
+      snapshot: {
+        item,
+        outcome: {
+          status: "failed",
+          error: { code: "nativeFailure", message: "todo failed", retryable: false },
+        },
+      },
     });
     expect([...started.messages, ...failed.messages]).toEqual([]);
   });

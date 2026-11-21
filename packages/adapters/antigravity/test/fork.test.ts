@@ -25,11 +25,13 @@ const metadataRows = {
   parent_references: [2, 5, 8].map((step) =>
     Buffer.concat([textField(1, `ancestor-${step}`), integer(2, step)]),
   ),
-  battle_mode_infos: [
-    [0, 2],
-    [3, 5],
-    [5, 8],
-  ].map(([start, end]) => Buffer.concat([integer(3, start), integer(4, end), integer(9, 1)])),
+  battle_mode_infos: (
+    [
+      [0, 2],
+      [3, 5],
+      [5, 8],
+    ] as const
+  ).map(([start, end]) => Buffer.concat([integer(3, start), integer(4, end), integer(9, 1)])),
 };
 const homes: string[] = [];
 afterEach(async () => {

@@ -160,6 +160,22 @@ export interface WorkspacePinValue {
   readonly pinnedSessionIds: readonly SessionId[];
 }
 
+export interface WorkspaceMoveSessionToSectionRequest {
+  readonly sessionId: SessionId;
+  readonly sectionId: string | null;
+}
+
+export interface WorkspaceMoveSessionToSectionValue {
+  readonly sectionId: string | null;
+}
+
+/** Groups supplied by the native Codex app-server. */
+export interface WorkspaceThreadSection {
+  readonly id: string;
+  readonly name: string;
+  readonly threadIds: readonly SessionId[];
+}
+
 /** Complete reconnect baseline for Workspace browser state. */
 export interface WorkspaceBaseline {
   /** Shared owner allocates no-project cwd on first submission. */
@@ -168,6 +184,7 @@ export interface WorkspaceBaseline {
   readonly archivedSessionIds: readonly SessionId[];
   /** Registry-global pin set, most recently pinned first. */
   readonly pinnedSessionIds: readonly SessionId[];
+  readonly threadSections?: readonly WorkspaceThreadSection[];
 }
 
 /** One ordered Workspace change after a generation's baseline. */
@@ -176,7 +193,8 @@ export type WorkspaceFollowIncrement =
   | { readonly type: "remove"; readonly workspaceId: WorkspaceId }
   | { readonly type: "order"; readonly workspaceIds: readonly WorkspaceId[] }
   | { readonly type: "archived"; readonly archivedSessionIds: readonly SessionId[] }
-  | { readonly type: "pinned"; readonly pinnedSessionIds: readonly SessionId[] };
+  | { readonly type: "pinned"; readonly pinnedSessionIds: readonly SessionId[] }
+  | { readonly type: "threadSections"; readonly threadSections: readonly WorkspaceThreadSection[] };
 
 /** Workspace state stream; every generation starts with exactly one baseline. */
 export type WorkspaceFollowFrame =

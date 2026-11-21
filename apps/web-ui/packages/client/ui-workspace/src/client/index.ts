@@ -66,6 +66,13 @@ import {
   SessionArchiveConfirmDialog,
 } from "./session-actions/ArchiveSession.tsx";
 import { derive } from "./session-actions/derived.ts";
+import {
+  MoveThreadSectionDialog,
+  MoveThreadSectionMenuItem,
+  type ThreadSectionMenuInjected,
+  type ThreadSectionMoveInjected,
+  type ThreadSectionMoveRequest,
+} from "./session-actions/MoveThreadSection.tsx";
 import { ForkSessionMenuItem } from "./session-actions/ForkSession.tsx";
 import { CopySessionLinkMenuItem } from "./session-actions/CopySessionLink.tsx";
 import {
@@ -245,6 +252,35 @@ export function apply(ctx: Context): void {
     );
     if (!result.ok) throw new Error(result.error.message);
   };
+  const nativeThreadIds = derive(
+    sessions.list,
+    (snapshot) =>
+      new Set(
+        Object.values(snapshot.byId)
+          .filter(
+            (row) =>
+              !row.blank &&
+              row.origin !== "subagent" &&
+              !row.projectionValues?.remoteHost &&
+              row.projectionValues?.harnessIdentity?.id === "codex",
+          )
+          .map((row) => row.id),
+      ),
+  );
+  const threadSectionMove = createSnapshotStore<ThreadSectionMoveRequest | null>(null);
+  const threadSectionMenu = (): ThreadSectionMenuInjected => ({
+    hooks: { nativeThreads: nativeThreadIds, sectionWorkspace: workspaces.list },
+    requestMove: (request) => threadSectionMove.set(request),
+  });
+  const threadSectionDialog = (): ThreadSectionMoveInjected => ({
+    hooks: { threadSectionMove },
+    dismiss: () => threadSectionMove.set(null),
+    move: (sessionId, sectionId) => {
+      if (!workspaces.moveSessionToSection)
+        return Promise.reject(new Error("Section moves are unavailable"));
+      return workspaces.moveSessionToSection(sessionId, sectionId);
+    },
+  });
   const pinInjected = (): PinSessionInjected => ({
     hooks: { pinned: pinnedSet, archived: archivedSet },
     // Pin failures surface as a notice: nothing else on the surface moves, so
@@ -470,6 +506,16 @@ export function apply(ctx: Context): void {
     yield ctx.slots.register(
       {
         name: "sidebar.workspaces.session.menu.item",
+        id: "move-to-section",
+        order: 150,
+        locale: NS,
+        inject: threadSectionMenu,
+      },
+      MoveThreadSectionMenuItem,
+    );
+    yield ctx.slots.register(
+      {
+        name: "sidebar.workspaces.session.menu.item",
         id: "rename",
         order: 200,
         locale: NS,
@@ -533,6 +579,15 @@ export function apply(ctx: Context): void {
   // The surfaces the actions raise live in the frame-wide layer: they must
   // outlive the row menu the action sat in.
   ctx.slots.inject("shell.overlay", function* () {
+    yield ctx.slots.register(
+      {
+        name: "shell.overlay",
+        id: "workspace.move-to-section",
+        locale: NS,
+        inject: threadSectionDialog,
+      },
+      MoveThreadSectionDialog,
+    );
     yield ctx.slots.register(
       {
         name: "shell.overlay",

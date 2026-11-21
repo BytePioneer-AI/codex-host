@@ -111,6 +111,7 @@ import {
   type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
   clientThreadPinParamsSchema,
+  clientThreadSectionMoveSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   type HarnessCommandDescriptor,
@@ -348,8 +349,13 @@ import {
   officialThreadListPageFromResponse,
   OfficialThreadListError,
 } from "./thread-list-aggregator.js";
-import { listSectionThreads, moveThreadSection } from "./external-thread-sections.js";
-import { ThreadPins } from "./external-thread-pins.js";
+import {
+  listSectionThreads,
+  moveThreadSection,
+  officialThreadSections,
+  listAllOfficialRows,
+} from "./external-thread-sections.js";
+import { PINNED_THREAD_SECTION_ID, ThreadPins } from "./external-thread-pins.js";
 import { ThreadTree } from "./thread-tree.js";
 import { ThreadTreeWatch } from "./thread-tree-watch.js";
 import {
@@ -2135,6 +2141,92 @@ export class AppServerHost {
       request.method === "codexhost/thread/pins/set"
     ) {
       this.#dispatchDesktopReply(request, () => this.#handleThreadPins(request));
+      return;
+    }
+    if (request.method === "codexhost/thread/sections/move") {
+      const move = clientThreadSectionMoveSchema.safeParse(request.params);
+      if (!move.success || move.data.sectionId === PINNED_THREAD_SECTION_ID) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section move"));
+        return;
+      }
+      const params = { ...move.data, beforeThreadId: null };
+      this.#dispatchDesktopReply(request, () =>
+        this.#runSectionOperation(async () => {
+          const location = await this.#locateExternalThread(params.threadId);
+          if (await this.#writeResolutionError(request, location)) return;
+          if (location.kind !== "official") {
+            await this.#writer.json(
+              rpcError(
+                request,
+                -32078,
+                "Only native Codex Threads can change custom sections in Web",
+              ),
+            );
+            return;
+          }
+          const current = await this.#requestOfficial("thread/read", {
+            threadId: params.threadId,
+            includeTurns: false,
+          });
+          const thread = (current.result as JsonObject | undefined)?.thread;
+          if (
+            !isRecord(thread) ||
+            thread.id !== params.threadId ||
+            thread.archived === true ||
+            typeof thread.parentThreadId === "string" ||
+            (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID)
+          ) {
+            await this.#writer.json(
+              rpcError(request, -32078, "An active, unpinned Codex Thread is required"),
+            );
+            return;
+          }
+          const sectionId = isRecord(thread.section) ? (thread.section.id ?? null) : null;
+          if (sectionId === params.sectionId) {
+            await this.#writer.json(rpcEnvelope(request, { result: {} }));
+            return;
+          }
+          await this.#moveThreadSection(
+            {
+              id: request.id,
+              ...(request.jsonrpc ? { jsonrpc: request.jsonrpc } : {}),
+              method: "thread/section/move",
+              params,
+            },
+            params,
+          );
+        }),
+      );
+      return;
+    }
+    if (request.method === "codexhost/thread/sections/list") {
+      this.#dispatchDesktopReply(request, async () => {
+        try {
+          const requestOfficial = (method: string, params: JsonObject) =>
+            this.#requestOfficial(method, params);
+          const sections = [];
+          for await (const { id, name } of officialThreadSections(requestOfficial)) {
+            if (id !== PINNED_THREAD_SECTION_ID && name) sections.push({ id, name });
+          }
+          const sectionRows = await Promise.all(
+            sections.map(async (section) => ({
+              ...section,
+              threads: await listAllOfficialRows(requestOfficial, {
+                sectionId: section.id,
+                sortKey: "section_position",
+                modelProviders: [],
+                useStateDbOnly: true,
+              }),
+            })),
+          );
+          await this.#writer.json(rpcEnvelope(request, { result: { sections: sectionRows } }));
+        } catch (error) {
+          this.#diagnose(error);
+          await this.#writer.json(
+            rpcError(request, -32081, "Native Thread sections are unavailable"),
+          );
+        }
+      });
       return;
     }
     if (await this.#threadRouting.handle(request, frame, origin)) return;

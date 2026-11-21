@@ -15,19 +15,19 @@ export interface ProjectCredential {
 }
 
 /** Read only Desktop's exact personal project locator; never select a Team or create a key. */
-export function readProjectCredential(
-  credential: (key: string) => string,
+export async function readProjectCredential(
+  credential: (key: string) => Promise<string>,
   family: "zai" | "bigmodel",
   identity: string,
   origin: string,
-): ProjectCredential | undefined {
+): Promise<ProjectCredential | undefined> {
   const key = `project-key-location:v1:${encodeURIComponent(
     JSON.stringify([origin, family, identity, null, 1, "non-team"]),
   )}`;
-  const raw = credential(key);
+  const raw = await credential(key);
   if (!raw) return undefined;
   const location = locationSchema.parse(JSON.parse(raw));
-  const login = credential(`oauth:${family}:access_token`).trim();
+  const login = (await credential(`oauth:${family}:access_token`)).trim();
   const loginToken = login.replace(/^Bearer\s+/i, "").trim();
   if (!loginToken) throw projectCredentialError();
   // Match Desktop's account scope used by the CLI's rejected-token retry protocol.
@@ -38,7 +38,7 @@ export function readProjectCredential(
         "individual-coding-plan",
         null,
         login,
-        credential("zcodejwttoken").trim() || null,
+        (await credential("zcodejwttoken")).trim() || null,
       ]),
     )
     .digest("hex");

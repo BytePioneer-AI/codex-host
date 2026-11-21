@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { readCredentials } from "./credentials.js";
+import { readCredentials, ZcodeCredentialError } from "./credentials.js";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
 import { ProjectToken, readProjectCredential, type ProjectCredential } from "./project-token.js";
@@ -151,8 +151,8 @@ export class PersonalCodingPlanAccount {
       readCredentials(this.installation, this.environment),
       readSelection(this.environment, family),
     ]);
-    if (credential("oauth:active_provider") !== family) return undefined;
-    const raw = credential(`oauth:${family}:user_info`);
+    if ((await credential("oauth:active_provider")) !== family) return undefined;
+    const raw = await credential(`oauth:${family}:user_info`);
     if (!raw) return undefined;
     const profile = recordSchema.parse(JSON.parse(raw));
     // Desktop stores either a normalized OAuth profile or Z.AI's raw data.user object.
@@ -165,7 +165,7 @@ export class PersonalCodingPlanAccount {
         ? profile.user_id.trim()
         : "";
     if (!identity || identity === "unknown") return undefined;
-    const project = readProjectCredential(
+    const project = await readProjectCredential(
       credential,
       family,
       identity,
@@ -173,7 +173,7 @@ export class PersonalCodingPlanAccount {
     );
     if (project) return { identity, current, apiKey: project.loginToken, project };
     const key = `account-provider:coding-plan:${providerId}:account:${encodeURIComponent(identity)}:api-key`;
-    return { identity, current, apiKey: credential(key).trim() };
+    return { identity, current, apiKey: (await credential(key)).trim() };
   }
 
   async inspect(providerId: string, accountType: string): Promise<AccountState> {
@@ -239,12 +239,14 @@ export class PersonalCodingPlanAccount {
                   : ("credential-failed" as const),
             }),
       };
-    } catch {
+    } catch (error) {
       // Credential/profile reads can fail before #context returns its selection snapshot.
       current = await readSelection(this.environment, family).catch(() => false);
       if (current)
         this.issue =
-          "ZCode Personal Coding Plan credentials could not be read or verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
+          error instanceof ZcodeCredentialError
+            ? `${error.message} Personal Coding Plan subscription status is unknown.`
+            : "ZCode Personal Coding Plan credentials could not be read or verified. Open the personal plan in ZCode Desktop, then re-detect ZCode; subscription status is unknown.";
       // An unreadable personal key/profile/settings must not break Start or personal Providers.
       return { availability: "unknown", entitled: false, current };
     }

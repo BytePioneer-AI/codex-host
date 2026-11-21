@@ -15,11 +15,17 @@ const activeSubscription = { productId: "glm-coding-max", status: "VALID", inCur
 const id = (family: string) => `account:${family}-individual-coding-plan`;
 const keyName = (family: string, user = userId) =>
   `account-provider:coding-plan:${id(family)}:account:${encodeURIComponent(user)}:api-key`;
-function encrypted(value: string) {
+function encrypted(value: string, format: "v1" | "v2" = "v1") {
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", createHash("sha256").update(SECRET).digest(), iv);
+  const key = createHash("sha256").update(SECRET).digest();
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
   const data = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-  return `enc:v1:${[iv, cipher.getAuthTag(), data].map((part) => part.toString("base64url")).join(".")}`;
+  const payload = [iv, cipher.getAuthTag(), data]
+    .map((part) => part.toString("base64url"))
+    .join(".");
+  if (format === "v1") return `enc:v1:${payload}`;
+  const fingerprint = createHash("sha256").update(key).digest("hex").slice(0, 24);
+  return `enc:v2:env:${fingerprint}:${payload}`;
 }
 
 describe("Personal Coding Plan read-only account integration", () => {
@@ -28,12 +34,12 @@ describe("Personal Coding Plan read-only account integration", () => {
   const verifier = vi.fn(() => {
     throw new Error("Coding Plan must not request CAPTCHA");
   });
-  async function saveCredentials() {
+  async function saveCredentials(format: "v1" | "v2" = "v1") {
     await writeFile(
       path.join(installation.dataRoot, "credentials.json"),
       JSON.stringify(
         Object.fromEntries(
-          Object.entries(credentials).map(([key, value]) => [key, encrypted(value)]),
+          Object.entries(credentials).map(([key, value]) => [key, encrypted(value, format)]),
         ),
       ),
     );
@@ -249,10 +255,18 @@ describe("Personal Coding Plan read-only account integration", () => {
     },
   );
 
-  it.each(["zai", "bigmodel"] as const)(
-    "recognizes %s project credentials and authenticates without a legacy key",
-    async (family) => {
+  it.each([
+    ["zai", "v1"],
+    ["bigmodel", "v1"],
+    ["bigmodel", "v2"],
+  ] as const)(
+    "recognizes %s %s project credentials and authenticates without a legacy key",
+    async (family, format) => {
       await projectLogin(family);
+      if (format === "v2") {
+        installation.version = "3.18.2";
+        await saveCredentials(format);
+      }
       const before = await readFile(path.join(installation.dataRoot, "credentials.json"), "utf8");
       const config = await accountConfig(installation, environment);
       expect(config.params.states[id(family)]).toMatchObject({
@@ -504,6 +518,34 @@ describe("Personal Coding Plan read-only account integration", () => {
       expect(config.startPlan).toBe(true);
       expect(config.params.states[id("zai")]).toMatchObject({ entitled: false });
     }
+  });
+
+  it("never sends opaque credentials as Start or Personal Coding Plan authentication", async () => {
+    await projectLogin();
+    await writeFile(
+      path.join(installation.dataRoot, "telemetry-state.json"),
+      JSON.stringify({ deviceMid: "fixture" }),
+    );
+    const file = path.join(installation.dataRoot, "credentials.json");
+    const stored = JSON.parse(await readFile(file, "utf8"));
+    const opaque = "enc:v9:synthetic-opaque";
+    stored.zcodejwttoken = opaque;
+    stored["oauth:bigmodel:access_token"] = `Bearer ${opaque}`;
+    await writeFile(file, JSON.stringify(stored));
+    const config = await accountConfig(installation, environment);
+    expect(config.signedIn).toBe(true);
+    expect(config.startPlanChecked).toBe(false);
+    expect(config.codingPlan.issue).toMatch(
+      /unsupported encrypted credential format.*subscription status is unknown/i,
+    );
+    const start = await auth(config, { accountAccess: { mode: "start-plan" } });
+    expect(start).toMatchObject({ headersApplied: false });
+    expect(await auth(config, request("bigmodel"))).toMatchObject({ headersApplied: false });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(verifier).not.toHaveBeenCalled();
+    expect(
+      JSON.stringify([config.params, config.credentialIssue, config.codingPlan.issue, start]),
+    ).not.toContain(opaque);
   });
 
   it("honors Desktop settings home separately from credential home and reads legacy selections", async () => {

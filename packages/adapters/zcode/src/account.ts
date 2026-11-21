@@ -5,7 +5,7 @@ import { z } from "zod";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
 import type { ZcodeVerifier } from "./verification/index.js";
-import { readCredential } from "./credentials.js";
+import { readCredentials, readCredential, ZcodeCredentialError } from "./credentials.js";
 import { PersonalCodingPlanAccount } from "./personal-coding-plan.js";
 
 // Account configuration and request auth are read-only projections of ZCode Desktop state.
@@ -185,6 +185,7 @@ export async function accountConfig(
    * failed, so an empty Start Plan means "could not check", not "no plan".
    */
   startPlanChecked: boolean;
+  credentialIssue?: string;
   codingPlan: PersonalCodingPlanAccount;
 }> {
   const file = installation.builtinProviderConfig;
@@ -193,19 +194,31 @@ export async function accountConfig(
   const basedOnZCodeBuiltinRevision = `zcode-builtin:${builtin.revision}:${createHash("sha256")
     .update(path.resolve(file))
     .digest("hex")}`;
-  const family = await readCredential(installation, environment, "oauth:active_provider");
+  let family: "zai" | "bigmodel" | undefined;
+  let credentialIssue: string | undefined;
   let balanceData: BalanceData | undefined;
-  if (family) {
-    try {
-      const jwt = await readCredential(installation, environment, "zcodejwttoken");
+  try {
+    const credential = await readCredentials(installation, environment);
+    const active = await credential("oauth:active_provider");
+    if (active === "zai" || active === "bigmodel") family = active;
+    else if (active)
+      throw new ZcodeCredentialError(
+        "The active ZCode login channel is not supported by CodexHost.",
+      );
+    if (family) {
+      const jwt = await credential("zcodejwttoken");
       const deviceMid = await readDeviceMid(installation);
       if (jwt && deviceMid) {
         const origin = resolveEndpointOrigin(environment);
         balanceData = await queryStartPlanBalance(origin, installation.version, jwt, deviceMid);
       }
-    } catch {
-      // A damaged Start credential must not disable a valid Coding Plan or personal Provider.
     }
+  } catch (error) {
+    if (!(error instanceof ZcodeCredentialError)) throw error;
+    // Leave the independent Provider catalog usable even without account credentials.
+    credentialIssue = family
+      ? error.message
+      : `${error.message} Personal Coding Plan subscription status is unknown.`;
   }
   let startPlan = false;
   const codingPlan = new PersonalCodingPlanAccount(installation, environment);
@@ -214,7 +227,7 @@ export async function accountConfig(
   for (const rule of builtin.config.providerConfigRules.providerRules) {
     const access = rule.config.access;
     if (!family || access?.accountType !== family) continue;
-    if (access.mode === "individual-coding-plan" && (family === "zai" || family === "bigmodel")) {
+    if (access.mode === "individual-coding-plan") {
       const state = await codingPlan.inspect(rule.providerId, family);
       providers[rule.providerId] = {
         access: { type: "zhipu-account", entitled: state.entitled },
@@ -249,14 +262,15 @@ export async function accountConfig(
     .slice(0, 16);
   return {
     params: {
-      revision: `codexhost:${family || "signed-out"}:${builtin.revision}:${overlayDigest}`,
+      revision: `codexhost:${family ?? (credentialIssue ? "credentials-unavailable" : "signed-out")}:${builtin.revision}:${overlayDigest}`,
       basedOnZCodeBuiltinRevision,
       providers,
       states,
     },
     startPlan,
     signedIn: Boolean(family),
-    startPlanChecked: !family || balanceData !== undefined,
+    startPlanChecked: !credentialIssue && (!family || balanceData !== undefined),
+    ...(credentialIssue ? { credentialIssue } : {}),
     codingPlan,
   };
 }

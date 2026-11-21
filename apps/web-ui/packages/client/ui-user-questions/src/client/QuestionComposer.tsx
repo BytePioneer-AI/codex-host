@@ -306,14 +306,17 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
   // Collapsed to the header strip so the conversation above stays readable
   // while the user decides; answer drafts live in the Session store above.
   const [minimized, setMinimized] = useState(false);
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [promptOverflow, setPromptOverflow] = useState(false);
   // The free-form textarea autofocuses on first presentation; re-expanding a
   // collapsed question must not steal focus from the expand toggle back into
   // the input, so focus is granted once per question index.
   const focusedQuestions = useRef(new Set<number>());
-  const answerSurface = useRef<HTMLDivElement>(null);
   const questionScroll = useRef<HTMLDivElement>(null);
+  const promptContent = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (questionScroll.current !== null) questionScroll.current.scrollTop = 0;
+    setPromptExpanded(false);
   }, [index]);
   // Every navigation write stays in bounds and drafts mirrors questions 1:1.
   // oxlint-disable-next-line typescript/no-non-null-assertion
@@ -321,6 +324,31 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
   // oxlint-disable-next-line typescript/no-non-null-assertion
   const draft = drafts[index]!;
   const hasOptions = (question.options?.length ?? 0) > 0;
+
+  useLayoutEffect(() => {
+    if (minimized) {
+      setPromptOverflow(false);
+      return;
+    }
+    const el = promptContent.current;
+    if (el === null) return;
+    const measure = (): void => {
+      if (!promptExpanded) {
+        setPromptOverflow(el.scrollHeight > el.clientHeight + 2);
+      }
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, [minimized, promptExpanded, index, question.question, question.detail]);
+
+  useEffect(() => {
+    if (minimized) pending.releaseFocus();
+  }, [minimized, pending]);
 
   const replaceProgress = (nextIndex: number, nextDrafts: QuestionDraftAnswer[]): void => {
     actions.replace(pending.key, {
@@ -359,7 +387,7 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
         pending.engage();
         return;
       }
-      if (answerSurface.current?.contains(document.activeElement) === true) pending.holdFocus();
+      if (questionScroll.current?.contains(document.activeElement) === true) pending.holdFocus();
     };
     const visibilityChanged = (): void => {
       if (document.hidden) release();
@@ -519,94 +547,128 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
     submitDrafts(nextDrafts);
   };
 
+  const showCountdown =
+    countdown !== undefined &&
+    card.waitState !== "waiting" &&
+    card.waitState !== "editing" &&
+    card.waitState !== "continued";
+  const showHeld =
+    countdown !== undefined && (card.waitState === "waiting" || card.waitState === "editing");
+  const hasStatusStrip =
+    showCountdown || card.state === "continued" || showHeld || review !== undefined;
+  const headingId = `question-${pending.key}-${String(index)}`;
+
   return (
     <div className={css.frame} data-question-key={pending.key}>
       <section
         className={clsx(css.card, minimized && css.cardMinimized)}
-        aria-labelledby={`question-${pending.key}-${String(index)}`}
+        aria-labelledby={headingId}
       >
-        <div
-          ref={questionScroll}
-          className={css.scrollArea}
-          data-question-scroll
-          tabIndex={minimized ? undefined : 0}
-        >
-          <header className={css.header}>
-            <div className={css.headingBlock}>
-              {question.header !== undefined && (
-                <div className={css.eyebrow}>{question.header}</div>
-              )}
-              <h2 className={css.title} id={`question-${pending.key}-${String(index)}`}>
+        <header className={css.topBar}>
+          <div className={css.topBarLeading}>
+            {question.header !== undefined && <div className={css.eyebrow}>{question.header}</div>}
+            {minimized && (
+              <h2 className={css.minimizedTitle} id={headingId}>
                 {question.question}
               </h2>
-            </div>
-            <div className={css.headerActions}>
-              {countdown !== undefined &&
-                card.waitState !== "waiting" &&
-                card.waitState !== "editing" &&
-                card.waitState !== "continued" && (
-                  <span className={css.waitStatus}>
-                    {t(countdown.running ? "wait.countdown" : "wait.paused", {
-                      seconds: Math.ceil(countdown.remainingMs / 1000),
-                    })}
-                  </span>
-                )}
-              {countdown !== undefined &&
-                card.waitState !== "waiting" &&
-                card.waitState !== "editing" &&
-                card.waitState !== "continued" && (
-                  <Button variant="outline" className={css.waitButton} onClick={takeTime}>
-                    {t("wait.takeTime")}
-                  </Button>
-                )}
+            )}
+          </div>
+          {hasStatusStrip && (
+            <div className={css.statusGroup}>
+              {showCountdown && (
+                <span className={css.waitStatus}>
+                  {t(countdown.running ? "wait.countdown" : "wait.paused", {
+                    seconds: Math.ceil(countdown.remainingMs / 1000),
+                  })}
+                </span>
+              )}
+              {showCountdown && (
+                <Button variant="outline" size="sm" className={css.waitButton} onClick={takeTime}>
+                  {t("wait.takeTime")}
+                </Button>
+              )}
               {card.state === "continued" && (
                 <span className={css.waitStatus}>{t("wait.continued")}</span>
               )}
               {/* A held or frozen countdown says so; a request that never carried
                 one waits silently, as the blocking question always has. */}
-              {countdown !== undefined &&
-                (card.waitState === "waiting" || card.waitState === "editing") && (
-                  <span className={css.waitStatus}>{t("wait.held")}</span>
-                )}
+              {showHeld && <span className={css.waitStatus}>{t("wait.held")}</span>}
               {review !== undefined && <span className={css.waitStatus}>{t("review.status")}</span>}
-              <button
-                type="button"
-                className={css.iconButton}
-                aria-label={t(minimized ? "nav.maximize" : "nav.minimize")}
-                title={t(minimized ? "nav.maximize" : "nav.minimize")}
-                aria-expanded={!minimized}
-                disabled={busy !== null}
-                onClick={() => {
-                  setMinimized((current) => !current);
-                }}
-              >
-                {minimized ? <IconChevronUpOutlineRegular /> : <IconChevronDownOutlineRegular />}
-              </button>
-              <button
-                type="button"
-                className={css.iconButton}
-                aria-label={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
-                title={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
-                disabled={busy !== null}
-                onClick={dismissFlow}
-              >
-                <IconCloseOutlineRegular />
-              </button>
             </div>
-          </header>
-
-          {!minimized && (
-            <div
-              ref={answerSurface}
-              className={css.body}
-              onFocusCapture={focusAnswerSurface}
-              onBlurCapture={blurAnswerSurface}
+          )}
+          <div className={css.iconActions}>
+            <button
+              type="button"
+              className={css.iconButton}
+              aria-label={t(minimized ? "nav.maximize" : "nav.minimize")}
+              title={t(minimized ? "nav.maximize" : "nav.minimize")}
+              aria-expanded={!minimized}
+              disabled={busy !== null}
+              onClick={() => {
+                setMinimized((current) => !current);
+              }}
             >
-              {question.detail !== undefined && (
-                <div className={css.detail}>
-                  <MarkdownText text={question.detail} labels={markdownLabels} />
+              {minimized ? <IconChevronUpOutlineRegular /> : <IconChevronDownOutlineRegular />}
+            </button>
+            <button
+              type="button"
+              className={css.iconButton}
+              aria-label={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
+              title={t(pending.dismissal === "hide" ? "nav.close" : "nav.cancel")}
+              disabled={busy !== null}
+              onClick={dismissFlow}
+            >
+              <IconCloseOutlineRegular />
+            </button>
+          </div>
+        </header>
+
+        {!minimized && (
+          <div
+            ref={questionScroll}
+            className={css.scrollArea}
+            data-question-scroll
+            tabIndex={0}
+            onFocusCapture={focusAnswerSurface}
+            onBlurCapture={blurAnswerSurface}
+          >
+            <div className={css.body}>
+              <div className={css.promptBlock}>
+                <div
+                  ref={promptContent}
+                  className={clsx(
+                    css.promptContent,
+                    !promptExpanded && css.promptCollapsed,
+                    !promptExpanded && promptOverflow && css.promptFaded,
+                  )}
+                >
+                  <h2 className={css.title} id={headingId}>
+                    {question.question}
+                  </h2>
+                  {question.detail !== undefined && (
+                    <div className={css.detail}>
+                      <MarkdownText text={question.detail} labels={markdownLabels} />
+                    </div>
+                  )}
                 </div>
-              )}
+                {(promptOverflow || promptExpanded) && (
+                  <button
+                    type="button"
+                    className={css.promptToggle}
+                    aria-expanded={promptExpanded}
+                    onClick={() => {
+                      setPromptExpanded((current) => !current);
+                    }}
+                  >
+                    <span>{t(promptExpanded ? "prompt.collapse" : "prompt.expand")}</span>
+                    {promptExpanded ? (
+                      <IconChevronUpOutlineRegular size={14} />
+                    ) : (
+                      <IconChevronDownOutlineRegular size={14} />
+                    )}
+                  </button>
+                )}
+              </div>
               <div
                 className={css.options}
                 role={question.multiSelect === true ? "group" : "radiogroup"}
@@ -714,8 +776,8 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
                   ))}
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {!minimized && (
           <footer className={css.footer}>

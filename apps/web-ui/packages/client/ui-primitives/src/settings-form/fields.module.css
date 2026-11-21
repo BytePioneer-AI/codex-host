@@ -51,10 +51,13 @@
   background: none;
   color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.helpButton:hover,
-.helpButton[aria-expanded="true"] {
+.helpButton[aria-expanded="true"],
+.helpButton:active {
   background: var(--dsw-alias-bg-layer-4);
   color: var(--dsw-alias-label-secondary);
 }
@@ -95,9 +98,12 @@
   line-height: 1.5;
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.reset:hover:not(:disabled) {
+.reset:active:not(:disabled) {
   color: var(--dsw-alias-label-primary);
 }
 
@@ -143,4 +149,32 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--dsw-alias-label-tertiary);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .helpButton:hover {
+    background: var(--dsw-alias-bg-layer-4);
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .reset:hover:not(:disabled) {
+    color: var(--dsw-alias-label-primary);
+  }
+}
+
+@media (pointer: coarse) {
+  .helpButton {
+    width: 44px;
+    height: 44px;
+  }
+
+  .reset {
+    min-height: 44px;
+    padding: 0 6px;
+  }
+
+  .input {
+    min-height: 44px;
+    font-size: 16px;
+  }
 }

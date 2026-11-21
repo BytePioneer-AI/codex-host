@@ -134,22 +134,29 @@
   top: var(--dsh-compaction-header-height);
 }
 
-/* Pinned, the toggle needs an opaque hover fill: the default translucent hover
-   token below would let the scrolling prose show through the moment the pointer
-   lands on the toggle to collapse it. */
-.compactionRow:has(.compactionBody) .compactionButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
+@media (hover: hover) {
+  /* Pinned, the toggle needs an opaque hover fill: the default translucent hover
+     token below would let the scrolling prose show through the moment the pointer
+     lands on the toggle to collapse it. */
+  .compactionRow:has(.compactionBody) .compactionButton:hover {
+    background: var(--dsw-alias-interactive-bg-hover-solid);
+  }
+
+  .compactionButton:hover {
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .compactionButton:not(:disabled):hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .compactionButton:not(:disabled) {
   cursor: pointer;
 }
 
-.compactionButton:hover {
+.compactionButton:not(:disabled):active {
   color: var(--dsw-alias-label-secondary);
-}
-
-.compactionButton:not(:disabled):hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 

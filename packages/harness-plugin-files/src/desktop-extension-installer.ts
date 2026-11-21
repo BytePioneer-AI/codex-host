@@ -21,7 +21,7 @@ import {
   downloadExtensionBytes,
   resolveDesktopExtensionDownload,
 } from "./desktop-extension-download.js";
-import { readDesktopExtensionZip } from "./desktop-extension-zip.js";
+import { readDesktopExtensionZip } from "./extension-zip.js";
 import { withDesktopExtensionConfiguration } from "./extension-configuration.js";
 import {
   desktopExtensionsRoot,

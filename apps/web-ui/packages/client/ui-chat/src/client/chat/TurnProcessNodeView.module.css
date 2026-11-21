@@ -21,7 +21,13 @@
   cursor: default;
 }
 
-.root:hover:not(:disabled) {
+@media (hover: hover) {
+  .root:hover:not(:disabled) {
+    color: var(--dsw-alias-label-secondary);
+  }
+}
+
+.root:active:not(:disabled) {
   color: var(--dsw-alias-label-secondary);
 }
 

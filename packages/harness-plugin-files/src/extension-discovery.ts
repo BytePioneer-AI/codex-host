@@ -59,7 +59,11 @@ export async function privateExtensionDirectory(directory: string): Promise<stri
   return realpath(directory);
 }
 
-async function checkedExtensionResource(root: string, relative: string): Promise<string> {
+async function checkedExtensionResource(
+  root: string,
+  relative: string,
+  noSymlinks = false,
+): Promise<string> {
   const resource = await pluginResourcePath(root, relative);
   // Check every traversed directory, not only the resource's mode. A writable
   // intermediate directory would let another user replace an owned file.
@@ -70,6 +74,7 @@ async function checkedExtensionResource(root: string, relative: string): Promise
       dir = path.dirname(dir);
     }
   }
+  if (noSymlinks) await privateEntry(path.resolve(root, relative), false);
   await privateEntry(resource, false);
   return resource;
 }
@@ -78,8 +83,9 @@ export async function readExtensionResource(
   root: string,
   relative: string,
   max: number,
+  { noSymlinks = false }: { noSymlinks?: boolean } = {},
 ): Promise<Buffer> {
-  return readPluginFile(await checkedExtensionResource(root, relative), max);
+  return readPluginFile(await checkedExtensionResource(root, relative, noSymlinks), max);
 }
 
 export async function readDesktopExtensionBackend(directory: string, script: string) {

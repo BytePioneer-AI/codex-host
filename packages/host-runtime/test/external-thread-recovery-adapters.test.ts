@@ -30,12 +30,14 @@ function deferred() {
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-it("keeps the real Claude Adapter's same-native transports disjoint through Host fault recovery", async () => {
+it("retries the real Claude Session's failed close before starting a same-native replacement", async () => {
   const history: unknown[] = [];
   const inputs: Parameters<ClaudeDependencies["createTransport"]>[0][] = [];
   const transports: ClaudeTransport[] = [];
+  const failed = deferred();
   const gate = deferred();
   const closing = deferred();
+  const retrying = deferred();
   let oldClosed = false;
   let uuid = 0;
   const dependencies: ClaudeDependencies = {
@@ -102,13 +104,19 @@ it("keeps the real Claude Adapter's same-native transports disjoint through Host
         respondToInteraction: async () => undefined,
         abort: async () => undefined,
         abortContinuation: async () => undefined,
-        close: vi.fn(async () => {
-          if (first) {
-            closing.resolve();
-            await gate.promise;
-            oldClosed = true;
-          }
-        }),
+        close: first
+          ? vi
+              .fn(async () => {
+                retrying.resolve();
+                await gate.promise;
+                oldClosed = true;
+              })
+              .mockImplementationOnce(async () => {
+                closing.resolve();
+                await failed.promise;
+                throw new Error("native shutdown not yet confirmed");
+              })
+          : async () => undefined,
       };
       transports.push(transport);
       return transport;
@@ -131,14 +139,22 @@ it("keeps the real Claude Adapter's same-native transports disjoint through Host
     input.onFault(new Error("native protocol fault while the process still needs shutdown"));
     await closing.promise;
     await f.collector.waitFor((message) => turnEvent(message, "turn/completed", turn));
-    // The Host consumes session.faulted and invokes Session.close in addition to the Adapter's
-    // fault-triggered Transport.close. Neither is confirmation until the same gate resolves.
-    await vi.waitFor(() => expect(old.close).toHaveBeenCalledTimes(2));
+    // Whether the Host's discard is already waiting on close or retries after it rejects,
+    // the old Session remains the owner until a close attempt actually succeeds.
+    await flush();
+    expect(transports).toHaveLength(1);
+    const session = await vi.mocked(adapter.open).mock.results[0]?.value;
+    if (!session?.ok) throw new Error("Expected the original Claude Session");
+    const firstClose = session.value.close();
+    failed.resolve();
+    await expect(firstClose).rejects.toThrow("could not stop safely");
+    expect(transports).toHaveLength(1);
     writeRequest(f.desktopInput, {
       id: 513,
       method: "turn/start",
       params: { threadId: id, input: [{ type: "text", text: "retry" }] },
     });
+    await retrying.promise;
     await flush();
     expect(f.collector.messages.some((message) => requestId(message, 513))).toBe(false);
     expect(transports).toHaveLength(1);
@@ -150,6 +166,7 @@ it("keeps the real Claude Adapter's same-native transports disjoint through Host
     expect(transports[1]?.sessionId).toBe(old.sessionId);
     expect(transports[1]?.runTurn).toHaveBeenCalledOnce();
   } finally {
+    failed.resolve();
     gate.resolve();
     await stopFixture(f);
     vi.restoreAllMocks();

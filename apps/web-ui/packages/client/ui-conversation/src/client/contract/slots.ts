@@ -164,6 +164,12 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     };
     /** Persistent product notices below navigation, including without a selected Session. */
     "conversation.header.notice": { kind: "list"; scope: "session-maybe" };
+    /** Resident header trailing action paired with the corner control on phone frames. */
+    "conversation.header.trailing": {
+      kind: "single";
+      scope: "root";
+      owner: ConversationHeaderTrailingOwnerProps;
+    };
     /** Strict per-Session title, actions, and View navigation. */
     "conversation.session.header": {
       kind: "single";
@@ -173,6 +179,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
         hideChrome: boolean;
         /** Resident header-owned control; title and lineage keep their own click behavior. */
         titleNavigation?: ReactNode;
+        /** Resident trailing action housed in the phone right capsule beside the corner button. */
+        trailingAction?: ReactNode;
       };
     };
     /** Optional replacement for one Session breadcrumb title. */
@@ -353,6 +361,12 @@ export interface ConversationHeaderCornerOwnerProps {
 
 /** The leading seat exposes global navigation independently of a Session. */
 export interface ConversationHeaderLeadingOwnerProps {
+  /** Marker field: the occupant receives no owner-specific values. */
+  children?: never;
+}
+
+/** The trailing seat exposes a global header action independently of a Session. */
+export interface ConversationHeaderTrailingOwnerProps {
   /** Marker field: the occupant receives no owner-specific values. */
   children?: never;
 }
@@ -578,6 +592,7 @@ export type ConversationHeaderProps = PropsRuntime<"conversation.header"> &
     | "conversation.header.leading"
     | "conversation.header.navigation"
     | "conversation.header.shortcuts"
+    | "conversation.header.trailing"
     | "conversation.session.header"
   >;
 

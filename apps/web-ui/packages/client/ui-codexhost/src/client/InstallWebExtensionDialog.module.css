@@ -1,7 +1,6 @@
-/* Form layout adapted from DSH ui-plugin-manager's PluginManagerPage (MIT). */
 .dialog {
   width: min(560px, 100%);
-  max-height: min(800px, 100%);
+  max-height: min(820px, 100%);
 }
 
 .content {
@@ -12,24 +11,160 @@
 
 .body,
 .footer,
-.field {
+.field,
+.panel {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
 .body {
+  gap: 14px;
+}
+
+.panel {
   gap: 12px;
 }
 
-.footer {
+.modeTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2);
+}
+
+.modeTab {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.modeTab:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.modeTab[aria-selected="true"] {
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+.modeTab:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 22px 16px;
+  text-align: center;
+  border: 1.5px dashed var(--dsw-alias-border-l4);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-1);
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.dropzone[data-dragging="true"] {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 7%, transparent);
+}
+
+.hiddenInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.dropIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.dropTitle {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.selectedFile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-3);
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.selectedFileName {
   flex: 1;
-  gap: 20px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clearFileButton {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.clearFileButton:hover:not(:disabled) {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .field {
   gap: 6px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--dsw-alias-label-secondary);
 }
 
@@ -37,10 +172,10 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  height: 40px;
-  padding: 0 14px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-md);
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md, 10px);
   outline: none;
   background: var(--dsw-alias-bg-layer-3);
   font: inherit;
@@ -51,10 +186,6 @@
 .field input:focus {
   border-color: var(--dsw-alias-state-business-primary);
   box-shadow: inset 0 0 0 0.5px var(--dsw-alias-state-business-primary);
-}
-
-.field input[aria-invalid="true"] {
-  border-color: var(--dsw-alias-state-error-primary);
 }
 
 .field input:disabled,
@@ -101,8 +232,8 @@
   gap: 6px;
   min-height: 28px;
   padding: 0 8px 0 10px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-md);
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md, 10px);
   background: var(--dsw-alias-bg-layer-2);
   font-size: 12.5px;
   color: var(--dsw-alias-label-secondary);
@@ -110,7 +241,7 @@
 
 .registry select {
   max-width: 100%;
-  min-height: 32px;
+  min-height: 30px;
   border: 0;
   background: var(--dsw-alias-bg-layer-2);
   font: inherit;
@@ -119,8 +250,8 @@
 
 .guide {
   padding: 8px 14px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: var(--dsw-radius-lg);
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-lg, 12px);
   background: var(--dsw-alias-bg-layer-1);
   font-size: 12px;
   line-height: 18px;
@@ -136,7 +267,36 @@
   overflow-wrap: anywhere;
 }
 
-.scope,
+.footer {
+  flex: 1;
+  gap: 14px;
+}
+
+.trustBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 26%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent);
+  color: var(--dsw-alias-state-warn-label);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.trustIcon {
+  flex: none;
+  margin-top: 2px;
+}
+
+.footerActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .hint,
 .error {
   margin: 0;
@@ -150,8 +310,22 @@
   color: var(--dsw-alias-state-error-primary, #d92d20);
 }
 
-.wide {
-  width: 100%;
+@media (max-width: 520px) {
+  .fieldRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+:global([data-phone]) .fieldRow {
+  grid-template-columns: 1fr;
+}
+
+:global([data-phone]) .footerActions {
+  justify-content: stretch;
+}
+
+:global([data-phone]) .footerActions > button {
+  flex: 1;
 }
 
 @media (hover: hover) and (pointer: fine) {

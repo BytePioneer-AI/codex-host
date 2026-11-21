@@ -441,6 +441,12 @@ pub fn discover_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     if let Some(root) = custom_install_root(env::var_os) {
         return discover_codex_desktop_from_root(&root);
     }
+    discover_registered_codex_desktop()
+}
+
+/// Discover the current user's registered Store installation, ignoring overrides.
+#[cfg(target_os = "windows")]
+pub fn discover_registered_codex_desktop() -> Result<DesktopInstallation, PlatformError> {
     let details = discover_installed_windows_package()?;
     windows_installation(details, &windows_local_app_data()?)
 }

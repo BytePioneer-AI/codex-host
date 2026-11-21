@@ -19,3 +19,63 @@
 .icon {
   transform: scaleX(-1);
 }
+
+/* Phone: sits inside the unified right glass capsule beside New Session. */
+:global([data-phone]) .button {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 9999px;
+  corner-shape: round;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform 140ms cubic-bezier(0.25, 0.1, 0.25, 1),
+    background-color 140ms ease;
+}
+
+:global([data-phone]) .button::after {
+  content: "";
+  position: absolute;
+  inset: -5px -1px;
+}
+
+:global([data-phone]) .button svg {
+  width: 17px;
+  height: 17px;
+}
+
+:global([data-phone]) .button:hover:not(:disabled) {
+  background: transparent;
+}
+
+:global([data-phone]) .button:active:not(:disabled) {
+  transform: scale(0.92);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
+}
+
+:global([data-phone]) .button:focus-visible {
+  outline: 2px solid var(--dsw-alias-label-primary);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :global([data-phone]) .button {
+    transition: none;
+  }
+
+  :global([data-phone]) .button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  :global([data-phone]) .button {
+    color: ButtonText;
+  }
+
+  :global([data-phone]) .button:focus-visible {
+    outline-color: Highlight;
+  }
+}

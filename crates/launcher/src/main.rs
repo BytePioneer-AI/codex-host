@@ -149,7 +149,7 @@ const USAGE: &str = "usage:
   codexhost autostart on|off|status
   codexhost console
   codexhost update
-  codexhost launch [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
+  codexhost launch [--windows-direct] [--shim <absolute-file>] [--node <absolute-file>] [--host-runtime <absolute-file>] [--desktop-controller <absolute-file>] [--renderer <absolute-file>] [--pi <absolute-file>] [--custom-install <absolute-directory>]
   codexhost desktop-screenshot
   codexhost broker install|status|stop|uninstall
   codexhost delegate --help
@@ -361,6 +361,7 @@ fn inspect(custom_install_root: Option<&Path>, json: bool) -> Result<(), Box<dyn
 #[derive(Debug)]
 struct LaunchOptions {
     update_recovery: bool,
+    windows_direct: bool,
     shim: Option<PathBuf>,
     node: Option<PathBuf>,
     host_runtime: Option<PathBuf>,
@@ -391,6 +392,7 @@ fn required_path(arguments: &[String], index: &mut usize, option: &str) -> Resul
 
 fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     let mut update_recovery = false;
+    let mut windows_direct = false;
     let mut shim = None;
     let mut node = None;
     let mut host_runtime = None;
@@ -403,6 +405,7 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
     while index < arguments.len() {
         match arguments[index].as_str() {
             "--update-recovery" => update_recovery = true,
+            "--windows-direct" => windows_direct = true,
             "--shim" => shim = Some(required_path(arguments, &mut index, "--shim")?),
             "--node" => node = Some(required_path(arguments, &mut index, "--node")?),
             "--host-runtime" => {
@@ -430,8 +433,15 @@ fn parse_launch_options(arguments: &[String]) -> Result<LaunchOptions, String> {
         }
         index += 1;
     }
+    if windows_direct && custom_install_root.is_some() {
+        return Err("--windows-direct cannot be combined with --custom-install".into());
+    }
+    if windows_direct && !cfg!(target_os = "windows") {
+        return Err("--windows-direct is supported on Windows only".into());
+    }
     Ok(LaunchOptions {
         update_recovery,
+        windows_direct,
         shim,
         node,
         host_runtime,
@@ -950,20 +960,36 @@ fn supervise_desktop(
     environment: &[(OsString, OsString)],
     control: &RuntimeControl,
     descriptor_path: &Path,
+    windows_direct: bool,
 ) -> Result<(), Box<dyn Error>> {
-    startup_trace("launching Codex Desktop");
+    let mode = if windows_direct {
+        startup_trace("launching Codex Desktop via --windows-direct");
+        DesktopLaunchMode::WindowsDirect
+    } else {
+        startup_trace("launching Codex Desktop");
+        DesktopLaunchMode::DirectExecutable
+    };
     let desktop_arguments =
         desktop_path_overrides::launch_arguments(desktop_arguments, environment);
     let mut desktop = launch_desktop(
         installation,
         &options.shim,
-        DesktopLaunchMode::DirectExecutable,
+        mode,
         &desktop_arguments,
         environment,
     )?;
     startup_trace("Codex Desktop launched");
     let desktop_pid = desktop.id();
-    wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))?;
+    if let Err(error) =
+        wait_for_launched_desktop_ownership(installation, &mut desktop, Duration::from_secs(5))
+    {
+        if windows_direct {
+            // Only direct spawn proves ownership of the handle on inspection failure.
+            let _ = desktop.kill();
+            let _ = desktop.wait();
+        }
+        return Err(error);
+    }
     let desktop_snapshot = match codexhost_platform::process_snapshot(desktop_pid) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -981,13 +1007,21 @@ fn supervise_desktop(
         }
     };
     startup_trace("waiting for Host chain");
-    if !wait_for_host_chain(&desktop_snapshot, options, Duration::from_secs(30), || {
+    match wait_for_host_chain(&desktop_snapshot, options, Duration::from_secs(30), || {
         Ok(false)
-    })? {
-        let _ = stop_desktop_controller(&mut controller);
-        let _ = desktop.kill();
-        let _ = desktop.wait();
-        return Err("Codex Desktop did not start the codexhost Host chain before timeout".into());
+    }) {
+        Ok(true) => {}
+        result => {
+            let _ = stop_desktop_controller(&mut controller);
+            let _ = desktop.kill();
+            let _ = desktop.wait();
+            return match result {
+                Err(error) => Err(error),
+                Ok(_) => Err(
+                    "Codex Desktop did not start the codexhost Host chain before timeout".into(),
+                ),
+            };
+        }
     }
     startup_trace("Host chain ready");
     let _runtime = match publish_runtime_descriptor(descriptor_path, control) {
@@ -1208,6 +1242,13 @@ fn force_stop_external_desktop(
 fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error>> {
     autostart::refresh();
     start_launch_console(&options);
+    #[cfg(target_os = "windows")]
+    let installation = if options.windows_direct {
+        codexhost_platform::discover_registered_codex_desktop().map_err(Into::into)
+    } else {
+        discover_desktop(options.custom_install_root.as_deref())
+    };
+    #[cfg(not(target_os = "windows"))]
     let installation = discover_desktop(options.custom_install_root.as_deref());
     if options.update_recovery {
         services::prepare_host_for_update(
@@ -1218,7 +1259,8 @@ fn launch(options: LaunchOptions, interactive: bool) -> Result<(), Box<dyn Error
                 .map(|desktop| desktop.install_root.as_path()),
         )?;
     }
-    if services::web_enabled()
+    if !options.windows_direct
+        && services::web_enabled()
         && installation.as_ref().is_err_and(|error| {
             matches!(
                 error.downcast_ref::<codexhost_platform::PlatformError>(),
@@ -1309,34 +1351,50 @@ fn launch_gui(
     installation: Result<DesktopInstallation, Box<dyn Error>>,
     interactive: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let windows_direct = options.windows_direct;
     let (options, installation) = prepare_gui(options, installation)?;
-    let _launcher_guard = match acquire_launcher_ownership(&installation, Duration::from_secs(120))?
-    {
-        LauncherOwnership::Acquired(guard) => {
-            startup_trace("Launcher ownership acquired");
-            guard
-        }
-        LauncherOwnership::Attached => {
-            startup_trace("attached to existing controlled Desktop");
-            startup_record::finish(StartupOutcome::Attached, None);
-            console::show_for_launch(None);
-            return Ok(());
+    startup_trace("acquiring Launcher ownership");
+    let _launcher_guard = if windows_direct {
+        runtime_instance::try_acquire_launcher_guard(&runtime_instance::default_guard_path()?)?
+            .ok_or("a codexhost Desktop is starting or running; completely quit it before using --windows-direct")?
+    } else {
+        match acquire_launcher_ownership(&installation, Duration::from_secs(120))? {
+            LauncherOwnership::Acquired(guard) => {
+                startup_trace("Launcher ownership acquired");
+                guard
+            }
+            LauncherOwnership::Attached => {
+                startup_trace("attached to existing controlled Desktop");
+                startup_record::finish(StartupOutcome::Attached, None);
+                console::show_for_launch(None);
+                return Ok(());
+            }
         }
     };
 
     loop {
-        let roots = desktop_root_process_ids_for_installation(&installation)?;
         let descriptor_path = default_descriptor_path()?;
-        let descriptor = read_descriptor(&descriptor_path).ok().flatten();
+        let descriptor = if windows_direct {
+            read_descriptor(&descriptor_path)?
+        } else {
+            read_descriptor(&descriptor_path).ok().flatten()
+        };
         let descriptor_present = descriptor_path.exists();
         let control_endpoint_ready = descriptor.as_ref().is_some_and(|descriptor| {
             endpoint_ready(descriptor.control_port, Duration::from_millis(300))
         });
-        let state = classify_startup(StartupObservation {
-            desktop_running: !roots.is_empty(),
-            descriptor_present,
-            control_endpoint_ready,
-        });
+        let state = if windows_direct {
+            // Never attach or terminate based on a descriptor in this mode. The
+            // platform checks for Store Desktop processes just before spawn.
+            StartupState::CleanLaunch
+        } else {
+            classify_startup(StartupObservation {
+                desktop_running: !desktop_root_process_ids_for_installation(&installation)?
+                    .is_empty(),
+                descriptor_present,
+                control_endpoint_ready,
+            })
+        };
 
         match state {
             StartupState::RecoverStale => {
@@ -1367,7 +1425,7 @@ fn launch_gui(
             StartupState::CleanLaunch => {
                 if descriptor_present && control_endpoint_ready {
                     return Err(
-                        "codexhost control endpoint is still active without a live Desktop; retry after it exits"
+                        "codexhost control endpoint is still active without a live Desktop; completely quit Codex Desktop and retry"
                             .into(),
                     );
                 }
@@ -1382,10 +1440,13 @@ fn launch_gui(
             &environment,
             &control,
             &descriptor_path,
+            #[cfg(target_os = "windows")]
+            windows_direct,
         );
         match result {
             Err(error)
-                if interactive
+                if !windows_direct
+                    && interactive
                     && (error.downcast_ref::<UnmanagedDesktopConflict>().is_some()
                         || error.to_string() == UNMANAGED_DESKTOP_MESSAGE) =>
             {
@@ -1520,6 +1581,7 @@ fn is_launch_command(arguments: &[String]) -> bool {
 fn default_launch_options() -> LaunchOptions {
     LaunchOptions {
         update_recovery: false,
+        windows_direct: false,
         shim: None,
         node: None,
         host_runtime: None,
@@ -1845,6 +1907,7 @@ mod tests {
             let expected = node.clone().unwrap_or_else(|| desktop_node.clone());
             let options = super::LaunchOptions {
                 update_recovery: false,
+                windows_direct: false,
                 shim: Some(executable.clone()),
                 node,
                 host_runtime: Some(executable.clone()),
@@ -1884,6 +1947,29 @@ mod tests {
         assert_eq!(
             super::macos_default_node(Some(&missing), missing.clone(), None),
             missing
+        );
+    }
+
+    #[test]
+    fn windows_direct_is_opt_in_and_cannot_choose_a_portable_installation() {
+        assert!(!parse_launch_options(&[]).unwrap().windows_direct);
+        let direct = parse_launch_options(&["--windows-direct".into()]);
+        if cfg!(target_os = "windows") {
+            assert!(direct.unwrap().windows_direct);
+        } else {
+            assert_eq!(
+                direct.unwrap_err(),
+                "--windows-direct is supported on Windows only"
+            );
+        }
+        let mixed = parse_launch_options(&[
+            "--custom-install".into(),
+            "portable".into(),
+            "--windows-direct".into(),
+        ]);
+        assert_eq!(
+            mixed.unwrap_err(),
+            "--windows-direct cannot be combined with --custom-install"
         );
     }
 

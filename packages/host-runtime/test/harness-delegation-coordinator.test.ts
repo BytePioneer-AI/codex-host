@@ -6,11 +6,14 @@ import { PassThrough } from "node:stream";
 import type { HarnessAdapter } from "@codexhost/harness-adapter";
 import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import type { FakeHarnessSession } from "@codexhost/harness-adapter/testing";
+import { HarnessPreferencesStore } from "@codexhost/harness-plugin-files";
 import { MappingStore } from "@codexhost/mapping-store";
 import { CodexTurnProjector, type ExternalHarnessId } from "@codexhost/protocol-core";
 import {
   harnessIdSchema,
   harnessModelCatalogSchema,
+  harnessPreferencePatchSchema,
+  harnessThinkingOptionIdSchema,
   hostThreadIdSchema,
   hostItemIdSchema,
   hostTurnIdSchema,
@@ -20,7 +23,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runDelegationCli } from "../src/delegation-cli.js";
 import { startDelegationControlServer } from "../src/delegation-control-server.js";
 import { HarnessDelegationCoordinator } from "../src/harness-delegation-coordinator.js";
-import type { DelegationPendingQuestion } from "../src/delegation-types.js";
+import type { DelegationPendingQuestion, DelegationStartInput } from "../src/delegation-types.js";
 import { ExternalThreadRepository } from "../src/external-thread-repository.js";
 import { ExternalThreadRuntime, type ExternalThread } from "../src/external-thread-runtime.js";
 
@@ -34,6 +37,7 @@ async function fixture(
 ) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "codexhost-delegation-coordinator-"));
   const store = new MappingStore({ directory });
+  const preferences = new HarnessPreferencesStore(directory);
   await store.initialize();
   const repository = new ExternalThreadRepository(store);
   const adapters = new Map<ExternalHarnessId, HarnessAdapter>([
@@ -79,6 +83,8 @@ async function fixture(
       notifications.push(thread);
     },
     notifyTreeChanged: treeChanged,
+    readDelegationDefault: async (harnessId) =>
+      (await preferences.get()).values.delegation?.byHarness[harnessId],
     inspectOfficial: vi.fn(),
     readOfficial: vi.fn(),
     sendOfficial: vi.fn(),
@@ -105,8 +111,15 @@ async function fixture(
     repository,
     runtime,
     store,
+    setDelegationDefault: (configuration: unknown) =>
+      preferences.patch(
+        harnessPreferencePatchSchema.parse({
+          operations: [{ kind: "delegation", harnessId: adapter.harnessId, configuration }],
+        }),
+      ),
     close: async () => {
       runtime.clear();
+      await preferences.close();
       await repository.close();
       await rm(directory, { recursive: true, force: true });
     },
@@ -582,45 +595,117 @@ describe("HarnessDelegationCoordinator", () => {
     }
   });
 
-  it("deduplicates explicit and implicit retries but not different task text", async () => {
-    const value = await fixture();
+  it("applies saved delegation defaults without changing explicit or implicit retry identity", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    const initial = { model: { id: "fake-model-v1.secondary" }, thinkingOptionId: "low" };
+    const updated = { model: { id: "fake-model-v1.primary" }, thinkingOptionId: "off" };
+    const input = { harnessId: "pi", cwd: "/synthetic", parentThreadId: "parent-thread" };
+    const withRequestId = { ...input, task: "task one", requestId: "request-1" };
+    const withoutRequestId = { ...input, task: "task two" };
     try {
-      const first = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task one",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-        requestId: "request-1",
-      });
-      const explicitRetry = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task one",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-        requestId: "request-1",
-      });
-      const implicit = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task two",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-      });
-      const implicitRetry = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task two",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-      });
-      const different = await value.coordinator.start({
-        harnessId: "pi",
-        task: "task three",
-        cwd: "/synthetic",
-        parentThreadId: "parent-thread",
-      });
+      await value.setDelegationDefault(initial);
+      const first = await value.coordinator.start(withRequestId);
+      const implicit = await value.coordinator.start(withoutRequestId);
+      expect(first.configuration?.requested).toEqual(initial);
+      expect(adapter.openInputs[0]).toMatchObject(initial);
+
+      await value.setDelegationDefault(updated);
+      const explicitRetry = await value.coordinator.start(withRequestId);
+      const implicitRetry = await value.coordinator.start(withoutRequestId);
+      const different = await value.coordinator.start({ ...input, task: "task three" });
       expect(explicitRetry.threadId).toBe(first.threadId);
       expect(implicitRetry.threadId).toBe(implicit.threadId);
       expect(different.threadId).not.toBe(implicit.threadId);
-      expect(value.adapter.sessions).toHaveLength(3);
+      expect(different.configuration?.requested).toEqual(updated);
+    } finally {
+      await value.close();
+    }
+  });
+
+  const primary = { model: { id: "fake-model-v1.primary" } };
+  const secondary = { model: { id: "fake-model-v1.secondary" } };
+  const retired = { model: { id: "retired" } };
+  const low = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("low") };
+  const high = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("high") };
+  const off = { thinkingOptionId: harnessThinkingOptionIdSchema.parse("off") };
+  const secondaryLow = { ...secondary, ...low };
+  const retiredHigh = { ...retired, ...high };
+  type Selection = Pick<DelegationStartInput, "model" | "thinkingOptionId">;
+  it.each<[string, Selection, Selection, Selection]>([
+    ["a different explicit Model", secondaryLow, primary, primary],
+    ["the same explicit Model", secondaryLow, secondary, secondaryLow],
+    ["explicit Thinking supported by the saved Model", secondary, low, secondaryLow],
+    ["explicit Thinking only supported by the native default", secondaryLow, high, high],
+    ["a retired saved Model", retiredHigh, {}, {}],
+    ["a retired saved Model with explicit Thinking", retiredHigh, high, high],
+    ["unsupported saved Thinking", { ...secondary, ...high }, {}, secondary],
+    ["saved Thinking without a saved Model", off, {}, off],
+    ["an explicit Model with only saved Thinking", off, primary, primary],
+  ])("resolves delegation selection with %s", async (_name, saved, explicit, expected) => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    try {
+      await value.setDelegationDefault(saved);
+      const result = await value.coordinator.start({
+        harnessId: "pi",
+        task: "fixture task",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+        ...explicit,
+      });
+      expect(result.configuration?.requested).toEqual(expected);
+      const opened = adapter.openInputs[0];
+      expect(opened?.kind).toBe("create");
+      if (opened?.kind !== "create") throw new Error("Expected a new session");
+      expect(opened.model).toEqual(expected.model);
+      expect(opened.thinkingOptionId).toEqual(expected.thinkingOptionId);
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("rejects unavailable explicit selections even with valid delegation defaults", async () => {
+    const value = await fixture();
+    const input = {
+      harnessId: "pi",
+      task: "fixture task",
+      cwd: "/synthetic",
+      parentThreadId: "parent-thread",
+    };
+    try {
+      await value.setDelegationDefault({
+        model: { id: "fake-model-v1.primary" },
+        thinkingOptionId: "high",
+      });
+      await expect(
+        value.coordinator.start({ ...input, model: { id: "retired" } }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+      await expect(
+        value.coordinator.start({
+          ...input,
+          thinkingOptionId: harnessThinkingOptionIdSchema.parse("low"),
+        }),
+      ).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+    } finally {
+      await value.close();
+    }
+  });
+
+  it("starts natively if a preference-only catalog check fails, then uses the saved selection after recovery", async () => {
+    const adapter = new RecordingAdapter(harnessIdSchema.parse("pi"));
+    const value = await fixture(adapter);
+    const input = { harnessId: "pi", cwd: "/synthetic", parentThreadId: "parent-thread" };
+    const saved = { model: { id: "fake-model-v1.secondary" }, thinkingOptionId: "low" };
+    try {
+      await value.setDelegationDefault(saved);
+      vi.spyOn(adapter, "inspect").mockRejectedValueOnce(new Error("Catalog timed out"));
+      const fallback = await value.coordinator.start({ ...input, task: "catalog offline" });
+      const recovered = await value.coordinator.start({ ...input, task: "catalog recovered" });
+      expect(fallback.configuration?.requested).toEqual({});
+      expect(adapter.openInputs[0]).not.toHaveProperty("model");
+      expect(adapter.openInputs[0]).not.toHaveProperty("thinkingOptionId");
+      expect(recovered.configuration?.requested).toEqual(saved);
     } finally {
       await value.close();
     }
@@ -798,6 +883,7 @@ describe("HarnessDelegationCoordinator", () => {
         const recoveryError = {
           code: "INTERNAL_ERROR",
           message: "External Thread read failed",
+          details: { externalThreadCode: -32076 },
         };
         await expect(
           value.coordinator.read({ threadId: started.threadId, view }),
@@ -810,6 +896,51 @@ describe("HarnessDelegationCoordinator", () => {
       }
     },
   );
+
+  it("does not classify a pending Session release as a missing Thread", async () => {
+    const value = await fixture();
+    try {
+      const { threadId } = await value.coordinator.start({
+        harnessId: "pi",
+        task: "synthetic pending release",
+        parentThreadId: "parent",
+      });
+      const thread = value.registered[0];
+      if (!thread) throw new Error("delegated Thread was not registered");
+      thread.running = false;
+      thread.activeTurnId = null;
+      value.runtime.markSessionUnavailable(thread);
+      const close = vi.spyOn(thread.session, "close").mockRejectedValue(new Error("private cause"));
+      try {
+        const error = {
+          code: "INTERNAL_ERROR",
+          message: expect.stringContaining("External Session shutdown could not be confirmed"),
+          details: { externalThreadCode: -32075 },
+        };
+        const sendError = { ...error, details: { ...error.details, notStarted: true } };
+        // Resolution first hits the release failure; the next locate hits the same blocker.
+        for (const message of ["send", "retry"]) {
+          await expect(value.coordinator.send({ threadId, message })).rejects.toMatchObject(
+            sendError,
+          );
+        }
+        expect(value.delivered).toEqual(["synthetic pending release"]);
+        for (const view of ["result", "messages"] as const) {
+          await expect(value.coordinator.read({ threadId, view })).rejects.toMatchObject(error);
+        }
+        await expect(value.coordinator.cancel({ threadId })).rejects.toMatchObject(error);
+        await expect(
+          value.coordinator.exportThread({ threadId, out: path.join(value.directory, "out.json") }),
+        ).rejects.toMatchObject(error);
+        await expect(value.repository.find(threadId)).resolves.toMatchObject({ state: "ready" });
+      } finally {
+        close.mockRestore();
+        await thread.session.close();
+      }
+    } finally {
+      await value.close();
+    }
+  });
 
   it("retains a missing-Thread error if an external mapping vanishes during resolution", async () => {
     const value = await fixture();
@@ -931,7 +1062,7 @@ describe("HarnessDelegationCoordinator", () => {
         { id: started.turnId, status: "failed", items: [], error: { message: "process exited" } },
       ];
       thread.projectedTerminalTurnId = hostTurnIdSchema.parse(started.turnId);
-      vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
+      const readSnapshot = vi.spyOn(thread.session, "readSnapshot").mockResolvedValue({
         ok: false,
         error: { code: "nativeFailure", message: "Harness is gone", retryable: false },
       });
@@ -956,6 +1087,21 @@ describe("HarnessDelegationCoordinator", () => {
       await expect(
         value.coordinator.read({ threadId: started.threadId, view: "result" }),
       ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+
+      // A failed release during refresh is not an ordinary snapshot error.
+      thread.projectedTerminalTurnId = hostTurnIdSchema.parse(started.turnId);
+      readSnapshot.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "invalidState", message: "Harness is gone", retryable: false },
+      });
+      vi.spyOn(thread.session, "close").mockRejectedValueOnce(new Error("native cleanup failed"));
+      await expect(
+        value.coordinator.read({ threadId: started.threadId, view: "result" }),
+      ).rejects.toMatchObject({
+        code: "INTERNAL_ERROR",
+        message: expect.stringContaining("External Session shutdown could not be confirmed"),
+        details: { externalThreadCode: -32075 },
+      });
     } finally {
       await value.close();
     }

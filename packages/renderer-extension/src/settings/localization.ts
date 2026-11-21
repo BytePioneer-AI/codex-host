@@ -222,6 +222,11 @@ export interface RendererSettingsMessages {
   readonly harnessUpdateAllProgress: string;
   readonly harnessUpdateAllDescription: string;
   readonly harnessUpdateAllResult: string;
+  readonly harnessUpdateAllSkipped: string;
+  readonly harnessUpdateUnverifiedTitle: string;
+  readonly harnessUpdateUnverifiedDetail: string;
+  readonly harnessUpdateSkip: string;
+  readonly harnessUpdateAnyway: string;
   readonly harnessVersionUpdating: string;
   readonly harnessVersionUpToDate: string;
   readonly harnessVersionUpdated: string;
@@ -517,6 +522,12 @@ const ENGLISH_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessUpdateAllProgress: "Updating",
   harnessUpdateAllDescription: "Update all eligible Harnesses on the selected Host.",
   harnessUpdateAllResult: "Updated {succeeded}; failed {failed}.",
+  harnessUpdateAllSkipped: "Skipped {skipped}.",
+  harnessUpdateUnverifiedTitle: "Update to an unverified version?",
+  harnessUpdateUnverifiedDetail:
+    "{name} {target} has not been verified with this adapter. The latest verified version is {verified}.",
+  harnessUpdateSkip: "Skip this update",
+  harnessUpdateAnyway: "Update anyway",
   harnessVersionUpdating: "Updating…",
   harnessVersionUpToDate: "Up to date",
   harnessVersionUpdated: "Update verified. New sessions will use the new version.",
@@ -830,6 +841,12 @@ const CHINESE_MESSAGES: RendererSettingsMessages = Object.freeze({
   harnessUpdateAllProgress: "更新中",
   harnessUpdateAllDescription: "更新当前 Host 上支持自动更新且有新版本的 Harness。",
   harnessUpdateAllResult: "已更新 {succeeded} 项，{failed} 项失败。",
+  harnessUpdateAllSkipped: "已跳过 {skipped} 项。",
+  harnessUpdateUnverifiedTitle: "更新到未经验证的版本？",
+  harnessUpdateUnverifiedDetail:
+    "当前适配器尚未验证 {name} {target}，最新已验证版本为 {verified}。",
+  harnessUpdateSkip: "跳过此项",
+  harnessUpdateAnyway: "继续更新",
   harnessVersionUpdating: "正在更新…",
   harnessVersionUpToDate: "已是最新",
   harnessVersionUpdated: "已确认更新成功，新会话将使用新版本。",

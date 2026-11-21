@@ -11,8 +11,10 @@ export const harnessInstallationParamsSchema = z
   .object({
     harnessId: harnessIdSchema,
     action: z.enum(["check", "update", "install"]),
+    confirmedVersion: z.string().min(1).max(128).optional(),
   })
-  .strict();
+  .strict()
+  .refine(({ action, confirmedVersion }) => action === "update" || confirmedVersion === undefined);
 
 export function harnessInstallationRequestTimeoutMs(
   method: string,
@@ -29,6 +31,8 @@ export const harnessInstallationStateSchema = z
     latestVersion: z.string().min(1).max(128),
     updateAvailable: z.boolean(),
     canUpdate: z.boolean(),
+    /** Present when the Adapter has a verified list and the available target is outside it. */
+    latestVerifiedVersion: z.string().min(1).max(128).optional(),
     /** Defaults to CLI; some Harnesses ship only inside a desktop application. */
     versionKind: z.enum(["cli", "application"]).optional(),
     /** Official download opened by the user; does not imply an automatic installation. */

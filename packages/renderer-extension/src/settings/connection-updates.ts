@@ -8,6 +8,7 @@ interface UpdateBatch {
   total: number;
   succeeded: number;
   failed: number;
+  skipped: number;
 }
 
 interface BatchStore {
@@ -62,13 +63,21 @@ export function createConnectionUpdates(
     if (signal.aborted || store.batches.get(hostId)?.running) return;
     const targets = eligible(panels);
     if (!targets.length) return;
-    const batch: UpdateBatch = { running: true, total: targets.length, succeeded: 0, failed: 0 };
+    const batch: UpdateBatch = {
+      running: true,
+      total: targets.length,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+    };
     store.batches.set(hostId, batch);
     notify();
     await Promise.all(
       targets.map(async (panel) => {
         try {
-          if (await panel.update()) batch.succeeded++;
+          const outcome = await panel.update();
+          if (outcome === "skipped") batch.skipped++;
+          else if (outcome) batch.succeeded++;
           else batch.failed++;
         } catch {
           batch.failed++;
@@ -105,7 +114,7 @@ export function createConnectionUpdates(
         const count = eligible(nextPanels).length;
         button.disabled = signal.aborted || Boolean(batch?.running) || !count;
         const label = batch?.running
-          ? `${messages.harnessUpdateAllProgress} ${batch.succeeded + batch.failed}/${batch.total}`
+          ? `${messages.harnessUpdateAllProgress} ${batch.succeeded + batch.failed + batch.skipped}/${batch.total}`
           : count
             ? `${messages.harnessUpdateAll} (${count})`
             : messages.harnessUpdateAll;
@@ -119,7 +128,10 @@ export function createConnectionUpdates(
           batch && !batch.running
             ? messages.harnessUpdateAllResult
                 .replace("{succeeded}", String(batch.succeeded))
-                .replace("{failed}", String(batch.failed))
+                .replace("{failed}", String(batch.failed)) +
+              (batch.skipped
+                ? ` ${messages.harnessUpdateAllSkipped.replace("{skipped}", String(batch.skipped))}`
+                : "")
             : "";
         if (result.textContent !== resultText) {
           result.textContent = resultText;

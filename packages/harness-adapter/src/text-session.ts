@@ -723,7 +723,10 @@ export interface HarnessAdapter {
   /** Native CLI version checks and explicit updates. Never updates the Host plugin,
    * starts a model Turn, or restarts existing Sessions. Commands are Adapter-owned.
    */
-  installation?(action: "check" | "update"): Promise<HarnessInstallationState>;
+  installation?(
+    action: "check" | "update",
+    confirmedVersion?: string,
+  ): Promise<HarnessInstallationState>;
   /** Explicit first-time CLI installation using an Adapter-owned official source. */
   install?(): Promise<void>;
   readonly credentialExport?: HarnessCredentialExport;

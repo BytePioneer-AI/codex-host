@@ -8,7 +8,7 @@ export interface HarnessVersionPanel {
   readonly element: HTMLElement;
   readonly state: HarnessInstallationState | undefined;
   readonly updating: boolean;
-  update(): Promise<boolean>;
+  update(): Promise<boolean | "skipped">;
 }
 
 export type HarnessVersionStatusKind =
@@ -21,7 +21,7 @@ export interface HarnessVersionSession {
   /** Prepares state for a newly mounted panel; returns true when a fresh check should be scheduled. */
   prepareMount(): boolean;
   check(): Promise<void>;
-  update(): Promise<boolean>;
+  update(confirmedVersion?: string): Promise<boolean>;
   subscribe(listener: (pageChange: boolean) => void): () => void;
 }
 
@@ -35,7 +35,9 @@ function isUnsupportedInstallationError(error: unknown): boolean {
 }
 
 export function createHarnessVersionSession(
-  client: { run(action: "check" | "update"): Promise<HarnessInstallationState> },
+  client: {
+    run(action: "check" | "update", confirmedVersion?: string): Promise<HarnessInstallationState>;
+  },
   options?: { readonly signal?: AbortSignal },
 ): HarnessVersionSession {
   let state: HarnessInstallationState | undefined;
@@ -75,7 +77,7 @@ export function createHarnessVersionSession(
     return checkPromise;
   };
 
-  const update = (): Promise<boolean> => {
+  const update = (confirmedVersion?: string): Promise<boolean> => {
     if (updatePromise) return updatePromise;
     updatePromise = (async () => {
       if (signal?.aborted) return false;
@@ -91,7 +93,9 @@ export function createHarnessVersionSession(
       statusKind = "updating";
       notify(true);
       try {
-        const result = await client.run("update");
+        const result = await (confirmedVersion === undefined
+          ? client.run("update")
+          : client.run("update", confirmedVersion));
         if (signal?.aborted) return false;
         state = result;
         statusKind = !result.canUpdate ? "updated" : result.updateAvailable ? "failed" : "updated";
@@ -143,9 +147,12 @@ export function createHarnessVersionPanel(
   messages: RendererSettingsMessages,
   signal: AbortSignal,
   agent: ExternalRendererAgent,
-  client: { run(action: "check" | "update"): Promise<HarnessInstallationState> },
+  client: {
+    run(action: "check" | "update", confirmedVersion?: string): Promise<HarnessInstallationState>;
+  },
   onChange: () => void = () => undefined,
   sharedSession?: HarnessVersionSession,
+  confirmUnverified?: (target: string, verified: string) => Promise<boolean>,
 ): HarnessVersionPanel {
   const session = sharedSession ?? createHarnessVersionSession(client, { signal });
   const shouldScheduleCheck = session.prepareMount();
@@ -227,8 +234,21 @@ export function createHarnessVersionPanel(
       : messages.harnessVersionNote;
   };
 
+  let confirmation: Promise<boolean | "skipped"> | undefined;
+  const requestUpdate = (): Promise<boolean | "skipped"> => {
+    if (signal.aborted) return Promise.resolve(false);
+    const state = session.state;
+    const verified = state?.latestVerifiedVersion;
+    if (!state || !verified) return session.update();
+    return (confirmation ??= (async () => {
+      const proceed = await confirmUnverified?.(state.latestVersion, verified);
+      return proceed && !signal.aborted ? session.update(state.latestVersion) : "skipped";
+    })().finally(() => {
+      confirmation = undefined;
+    }));
+  };
   update.addEventListener("click", () => {
-    if (!signal.aborted) void session.update();
+    if (!update.disabled) void requestUpdate();
   });
 
   const unsubscribe = session.subscribe((pageChange) => {
@@ -279,6 +299,6 @@ export function createHarnessVersionPanel(
     get updating() {
       return session.updating;
     },
-    update: () => (signal.aborted ? Promise.resolve(false) : session.update()),
+    update: requestUpdate,
   };
 }

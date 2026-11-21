@@ -68,6 +68,7 @@ export interface RendererConnectionDiagnostics {
     hostId: string,
     agent: ExternalRendererAgent,
     action: "check" | "update" | "install",
+    confirmedVersion?: string,
   ): Promise<HarnessInstallationState>;
   getLaunchSettings?(hostId: string, agent: ExternalRendererAgent): Promise<HarnessLaunchSettings>;
   setLaunchSettings?(
@@ -635,7 +636,7 @@ export function createConnectionsSettingsPage(
 
       const diagnostics = getDiagnostics();
       const versions = createConnectionVersions(
-        document,
+        context.content,
         messages,
         context.signal,
         diagnostics,
@@ -943,7 +944,7 @@ export function createConnectionsSettingsPage(
               (item.agentSnapshot?.availability !== "notInstalled" &&
                 availability !== "installing" &&
                 availability !== "checking")
-                ? versions.get(selectedHost.hostId, agent)
+                ? versions.get(selectedHost.hostId, agent, item.name)
                 : undefined;
             return {
               ...item,

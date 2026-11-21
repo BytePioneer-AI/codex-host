@@ -1230,6 +1230,85 @@ describe("Renderer Connections page", () => {
     scope.dispose();
   });
 
+  it.each(["Skip this update", "Update anyway"])(
+    "confirms an exact unverified version before its batch update: %s",
+    async (choice) => {
+      const installation = vi.fn(async (_host, agent, action, _confirmedVersion?) => ({
+        currentVersion: action === "update" ? "2.0.0" : "1.0.0",
+        latestVersion: "2.0.0",
+        canUpdate: true,
+        updateAvailable: action !== "update",
+        ...(agent === "deepseek-harness" && action === "check"
+          ? { latestVerifiedVersion: "1.5.0" }
+          : {}),
+      }));
+      const diagnostics: RendererConnectionDiagnostics = {
+        snapshot: () => ({
+          adapter: { state: "ready", reason: "ready", modelUpdates: 1, hook: "request-bridge" },
+          hosts: [
+            {
+              hostId: "local",
+              active: true,
+              agents: ["pi", "deepseek-harness"].map((agent) => ({
+                agent,
+                availability: "ready" as const,
+                error: null,
+              })),
+            },
+          ],
+        }),
+        installation,
+        refresh: async () => undefined,
+        subscribe: () => () => undefined,
+      };
+      const content = new FakeDocument().createElement("main");
+      const scope = new RendererSettingsPageScope();
+      try {
+        const page = createDefaultRendererSettingsPages(
+          rendererSettingsMessages("en"),
+          () => null,
+          () => diagnostics,
+        ).find(({ id }) => id === "connections");
+        assert(page);
+        page.mount({
+          content: content as unknown as HTMLElement,
+          signal: scope.signal,
+          runLatest: (op, handlers) => scope.runLatest(op, handlers),
+        });
+        const bulk = () =>
+          descendants(content).find(({ dataset }) => dataset.connectionAction === "update-all");
+        const updates = () => installation.mock.calls.filter(([, , action]) => action === "update");
+        await vi.waitFor(() => expect(visibleNotesText(bulk()!)).toContain("Update all (2)"));
+        bulk()?.dispatch("click");
+        const dialog = descendants(content).find(({ tagName }) => tagName === "dialog");
+        assert(dialog?.open);
+        expect(visibleNotesText(dialog)).toContain("2.0.0");
+        expect(visibleNotesText(dialog)).toContain("1.5.0");
+        expect(updates()).toEqual([["local", "pi", "update"]]);
+        descendants(dialog)
+          .find(({ textContent }) => textContent === choice)
+          ?.dispatch("click");
+
+        const skipped = choice === "Skip this update";
+        await vi.waitFor(() =>
+          expect(visibleText(content)).toContain(
+            skipped ? "Updated 1; failed 0. Skipped 1." : "Updated 2; failed 0.",
+          ),
+        );
+        expect(updates()).toEqual(
+          skipped
+            ? [["local", "pi", "update"]]
+            : [
+                ["local", "pi", "update"],
+                ["local", "deepseek-harness", "update", "2.0.0"],
+              ],
+        );
+      } finally {
+        scope.dispose();
+      }
+    },
+  );
+
   it("reuses a single update in a concurrent batch and stops notifying after the page closes", async () => {
     const document = new FakeDocument();
     const abort = new AbortController();

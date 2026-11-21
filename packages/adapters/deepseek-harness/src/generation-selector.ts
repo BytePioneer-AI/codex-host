@@ -93,9 +93,9 @@ const SEMVER_PATTERN = new RegExp(
   "u",
 );
 
-const DEEPSEEK_NEWEST_VERIFIED_VERSION = "0.2.2-rc.2";
+export const DEEPSEEK_NEWEST_VERIFIED_VERSION = "0.2.2-rc.2";
 /** Releases that passed the fixed-tag audit and the real CLI Gate, oldest first. */
-const DEEPSEEK_VERIFIED_VERSIONS = [
+export const DEEPSEEK_VERIFIED_VERSIONS: readonly string[] = [
   "0.1.7-rc.1",
   "0.1.7-rc.2",
   "0.2.0-rc.1",

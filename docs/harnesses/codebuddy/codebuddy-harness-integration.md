@@ -27,7 +27,7 @@ Inspection creates a disposable protocol Session with `--no-session-persistence`
 
 Each writable Session owns one CLI connection. Model IDs are encoded as opaque `cb.<base64url>` refs. Model, thought-level and permission changes wait for native configuration confirmation. A Model change refreshes the complete available thought configuration. Ordinary prompts never travel through shell arguments.
 
-CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prompt. After an acknowledged cancellation, the plugin closes that owned CLI, loads the same Native Session in a fresh process, restores confirmed Model/Thinking/Permission values, and only then completes the Host Turn. Connection generations prevent old updates or replay from contaminating the next Turn. Cancellation has a bounded recovery deadline; recovery failure faults the Session rather than reporting a usable connection.
+CodeBuddy 2.148.0 can retain cancellation state after returning a cancelled prompt. Once ACP reports cancellation, the plugin retires the owned CLI and confirms shutdown before completing the Turn. Connection generations isolate late updates, configuration responses, and interactions. Reading history does not start a replacement process. The next prompt, native command, or configuration change loads the same Native Session in a fresh process, restores any pending rewind, and confirms the saved Model, Thinking, and Permission Mode before publishing the restored configuration. An open or configuration failure rejects that operation without changing the cancelled Turn. The plugin allows an explicit retry only after the failed process has been retired.
 
 ## Capability boundaries
 

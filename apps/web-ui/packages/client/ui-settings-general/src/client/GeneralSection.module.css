@@ -60,25 +60,46 @@
   margin-top: 8px;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 640px) {
   .heading {
-    margin-bottom: 20px;
+    margin-bottom: 16px;
+    padding: 0 4px;
   }
 
   .title {
-    font-size: 20px;
-    line-height: 28px;
+    font-size: 19px;
+    line-height: 26px;
+    letter-spacing: -0.3px;
   }
 
   .description {
-    margin-top: 4px;
+    margin-top: 3px;
+    font-size: 13px;
+    line-height: 19px;
   }
 
   .group + .group {
-    margin-top: 24px;
+    margin-top: 20px;
+  }
+
+  .groupTitle {
+    margin: 0 0 8px;
+    padding: 0 12px;
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+    letter-spacing: 0.02em;
+  }
+
+  .card {
+    border: 0.5px solid var(--dsw-alias-border-l2);
+    border-radius: 16px;
+    background: var(--dsw-alias-bg-layer-2);
+    overflow: hidden;
   }
 
   .item {
-    margin: 0 12px;
+    margin: 0 14px;
   }
 }

@@ -4,36 +4,52 @@
 }
 
 :global([data-phone]) .trigger {
+  position: relative;
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: auto;
+  height: auto;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
-  color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-secondary);
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
   -webkit-app-region: no-drag;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Generous hit surface around the chevron while ConversationSession forwards title taps. */
+:global([data-phone]) .trigger::after {
+  content: "";
+  position: absolute;
+  inset: -12px -10px;
+}
+
+:global([data-phone]) .trigger > svg {
+  display: block;
+  transition: transform 180ms cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 .trigger[aria-disabled="true"] {
   cursor: wait;
 }
 
-.trigger:active {
-  background: color-mix(in srgb, var(--dsw-alias-label-primary) 9%, transparent);
-}
-
 .trigger:focus-visible {
-  outline: 2px solid var(--dsw-alias-label-primary);
-  outline-offset: -2px;
+  outline: none;
 }
 
 .expanded {
   transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :global([data-phone]) .trigger > svg {
+    transition: none;
+  }
 }
 
 :global([data-phone]) .shortcuts {
@@ -68,6 +84,7 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .clear:active {
@@ -75,8 +92,14 @@
 }
 
 .clear:focus-visible {
-  outline: 2px solid var(--dsw-alias-label-primary);
-  outline-offset: -2px;
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .clear:focus-visible {
+    outline: 2px solid var(--dsw-alias-label-primary);
+    outline-offset: -2px;
+  }
 }
 
 .shortcuts::-webkit-scrollbar {

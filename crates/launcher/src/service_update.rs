@@ -33,16 +33,9 @@ fn bind_request(request: &mut Value, data: &Path, desktop_running: bool) -> io::
 
 pub(super) fn prepare_request(path: &Path, data: &Path) -> io::Result<()> {
     let mut request: Value = serde_json::from_slice(&fs::read(path)?)?;
-    let desktop = crate::desktop_attachment::managed_processes(data)
+    let desktop_running = crate::desktop_attachment::running_for_update(data)
         .map_err(|error| invalid(error.to_string()))?;
-    if let Some((launcher, _)) = &desktop
-        && launcher.executable.canonicalize()? != std::env::current_exe()?.canonicalize()?
-    {
-        return Err(invalid(
-            "The running Desktop belongs to a different installation",
-        ));
-    }
-    bind_request(&mut request, data, desktop.is_some())?;
+    bind_request(&mut request, data, desktop_running)?;
     crate::host_service::publish_status(path, &format!("{}\n", serde_json::to_string(&request)?))
         .map_err(|error| invalid(error.to_string()))
 }

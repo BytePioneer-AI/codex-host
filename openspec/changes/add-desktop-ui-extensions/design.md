@@ -173,11 +173,9 @@ interface DesktopSidebarRow {
 | `renderer-extension`                                                          | `desktop-extension-host.ts`、`desktop-extension-api.ts`、Console 扩展页面；不引入 Node 内置模块                                                                                |
 | `host-runtime`                                                                | `thread-tree-watch.ts`、owner 订阅合并，以及 `SharedThreadBridge` 的截获逻辑                                                                                                   |
 | `console-server`                                                              | `extensions.ts` 与路由                                                                                                                                                         |
-| `packages/desktop-extensions/{sidebar-delegation-badges,sidebar-thread-tree}` | 样板扩展：TypeScript 源码，`declare const define` 来自 shared-contracts 的类型                                                                                                 |
 | `tools/build-desktop-extension.mjs`                                           | 用仓库已有的 esbuild 打成单文件经典脚本，写出 manifest；参照 `tools/build-cursor-plugin.mjs`                                                                                   |
-| `tools/check-boundaries.mjs`                                                  | 新规则：`packages/desktop-extensions/**/src` 只能导入相对路径和 `@codexhost/shared-contracts`，禁止 Node 内置模块与 SDK                                                        |
 
-- 样板**不进入**发行 payload，也不预装（`scripts/release/harness-plugins.json` 不变）。
+- #926 和 #947 的适配源码保存在 `handoff/desktop-extensions-926-947`，不随主干分发。
 - Rust 和 Launcher 不改：Controller 已能拿到 `CODEXHOST_DATA_DIR`。
 
 ### D10 v2 后端预留（本变更不实现）

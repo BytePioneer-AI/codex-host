@@ -114,15 +114,25 @@ export function registerTextRefDecoration(
 }
 
 /**
- * Force a re-scan of the whole document (transforms only visit dirty nodes;
- * a lexicon roll change dirties nothing on its own). Queued, not discrete —
- * the caller may sit inside an update listener.
+ * Force a re-scan of nodes that can match or revert a plain-text reference
+ * (transforms only visit dirty nodes; a lexicon roll change dirties nothing
+ * on its own). Plain text without trigger characters is left untouched so
+ * catalog updates do not trigger unnecessary DOM or selection reconciliation.
+ * Queued, not discrete — the caller may sit inside an update listener.
  * @param editor - the shell-owned editor.
  */
 export function rescanTextRefs(editor: LexicalEditor): void {
   editor.update(
     () => {
-      for (const node of $getRoot().getAllTextNodes()) node.markDirty();
+      for (const node of $getRoot().getAllTextNodes()) {
+        if (
+          node instanceof TextRefNode ||
+          node.getPreviousSibling() instanceof TextRefNode ||
+          /[/@]/u.test(node.getTextContent())
+        ) {
+          node.markDirty();
+        }
+      }
     },
     { tag: HISTORY_MERGE_TAG },
   );

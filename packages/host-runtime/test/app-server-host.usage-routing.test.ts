@@ -36,7 +36,7 @@ function accountControl(accountId: string | null) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("Usage inspection request routing", () => {
-  it("loads identity and session credits on demand without an initial account notification", async () => {
+  it("loads session credits on demand after an explicit Account refresh without a native notification", async () => {
     let currentAccountId: string | null = null;
     const snapshot = () => accountControl(currentAccountId).snapshot();
     const refresh = vi.fn(async () => {
@@ -74,7 +74,11 @@ describe("Usage inspection request routing", () => {
       expect(refresh).not.toHaveBeenCalled();
       expect(currentAccountId).toBeNull();
 
-      writeRequest(fixture.desktopInput, { id: 2, method: "codexhost/account/list", params: {} });
+      writeRequest(fixture.desktopInput, {
+        id: 2,
+        method: "codexhost/account/refresh",
+        params: {},
+      });
       expect(await fixture.collector.waitFor((message) => requestId(message, 2))).toMatchObject({
         result: { currentAccountId: "a", accounts: [{ accountId: "a" }] },
       });

@@ -5,9 +5,14 @@ import path from "node:path";
 import { nativeSessionRefSchema, nativeTurnRefSchema } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AntigravityAdapter } from "../src/antigravity-adapter.js";
+import { readDerivationBoundaries } from "../src/fork.js";
+import { nativeConversationDbPath } from "../src/native-turn-boundaries.js";
 import {
   answerStep,
+  checkpointStep,
   createNativeHistoryDatabase,
+  runField,
+  systemStep,
   textField,
   userStep,
 } from "./support/native-history-fixture.js";
@@ -18,14 +23,23 @@ const nativeRef = nativeSessionRefSchema.parse({
   nativeSessionId: "history",
   formatVersion: 1,
 });
-const call = (id: string, name: string, args: object) =>
-  bytes(
-    7,
-    Buffer.concat([textField(1, id), textField(2, name), textField(3, JSON.stringify(args))]),
-  );
+const callFields = (id: string, name: string, args: object) =>
+  Buffer.concat([textField(1, id), textField(2, name), textField(3, JSON.stringify(args))]);
+const call = (id: string, name: string, args: object) => bytes(7, callFields(id, name, args));
 const callMetadata = (id: string) => bytes(5, bytes(4, textField(1, id)));
 const result = (id: string, output: string) =>
   Buffer.concat([callMetadata(id), bytes(140, bytes(2, textField(1, output)))]);
+const commandResult = (id: string, command: string, output?: string, run = "") =>
+  Buffer.concat([
+    bytes(
+      5,
+      Buffer.concat([
+        bytes(4, callFields(id, "run_command", { CommandLine: command })),
+        textField(12, run),
+      ]),
+    ),
+    ...(output === undefined ? [] : [bytes(140, bytes(2, textField(1, output)))]),
+  ]);
 
 describe("native session history", () => {
   let home: string;
@@ -58,7 +72,7 @@ describe("native session history", () => {
     const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
     try {
       const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?)");
-      answerStep(db, 14, "Second reply");
+      answerStep(db, 15, "Second reply");
       userStep(db, 0, "First ");
       insert.run(1, 14, 3, bytes(19, textField(2, "question")));
       insert.run(
@@ -80,25 +94,27 @@ describe("native session history", () => {
         5,
         132,
         7,
-        Buffer.concat([
-          callMetadata("missing"),
-          bytes(140, Buffer.alloc(0)),
-          bytes(31, textField(2, "Not found")),
-        ]),
+        Buffer.concat([callMetadata("missing"), bytes(31, textField(2, "Not found"))]),
       );
       insert.run(6, 132, 3, result("read", "x".repeat(128)));
       insert.run(7, 132, 2, result("pending", "Not settled yet"));
-      answerStep(db, 8, "First paragraph.");
-      answerStep(db, 10, "Second paragraph.");
-      insert.run(11, 17, 3, bytes(24, bytes(3, textField(2, "Retry suggested"))));
-      userStep(db, 13, "Next question");
+      insert.run(8, 132, 3, commandResult("command", "pwd", "/example"));
+      insert.run(9, 132, 3, commandResult("command", "pwd", "duplicate output"));
+      insert.run(10, 132, 5, commandResult("skipped", "pwd"));
+      answerStep(db, 11, "First paragraph.");
+      answerStep(db, 12, "Second paragraph.");
+      insert.run(13, 17, 3, bytes(24, bytes(3, textField(2, "Retry suggested"))));
+      userStep(db, 14, "Next question");
 
       const snapshot = await opened.value.readSnapshot();
       assert(snapshot.ok);
-      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef)).toEqual(knownTurnRefs);
-      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
+      expect(snapshot.value.turns.map((turn) => turn.nativeTurnRef.nativeTurnKey)).toEqual([
         "turn-0",
+        "turn-2",
+      ]);
+      expect(snapshot.value.turns.map((turn) => turn.checkpoint?.checkpointId)).toEqual([
         "turn-1",
+        "turn-2",
       ]);
       expect(snapshot.value.turns.map((turn) => turn.input)).toEqual([
         [{ type: "text", text: "First question" }],
@@ -128,6 +144,10 @@ describe("native session history", () => {
           outcome: { status: "cancelled" },
         },
         {
+          item: { type: "commandExecution", command: "pwd", output: "/example", exitCode: 0 },
+          outcome: { status: "succeeded" },
+        },
+        {
           item: {
             type: "agentMessage",
             text: "First paragraph.\n\nSecond paragraph.\n\n⚠ Retry suggested",
@@ -138,6 +158,222 @@ describe("native session history", () => {
         { item: { type: "agentMessage", text: "Second reply" } },
       ]);
       expect(await opened.value.readSnapshot()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("projects terminal compaction checkpoints across foreground, /compact, and settled wake turns", async () => {
+    const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+    assert(opened.ok);
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      // Passive compaction at turn start + mid-turn + cleared/in-flight skipped + failed error
+      userStep(db, 0, "Work on repo", "r1");
+      checkpointStep(db, 1, { status: 3, run: "r1", summary: "Internal summary not for chat" });
+      answerStep(db, 2, "First part", "r1");
+      checkpointStep(db, 3, { status: 5, run: "r1" });
+      checkpointStep(db, 4, { status: 2, run: "r1" });
+      checkpointStep(db, 5, { status: 7, run: "r1", error: "Compaction limit exceeded" });
+      answerStep(db, 6, "Second part", "r1");
+      // Standalone /compact turn must not merge with the next user turn
+      userStep(db, 7, "/compact", "r2");
+      checkpointStep(db, 8, { status: 3, run: "r2", summary: "Manual compact summary" });
+      userStep(db, 9, "Follow up", "r3");
+      answerStep(db, 10, "Done", "r3");
+      // Settled autonomous wake with compaction before its planner reply
+      systemStep(db, 11, "wake-ok");
+      checkpointStep(db, 12, { status: 3, run: "wake-ok", summary: "Wake summary" });
+      answerStep(db, 13, "Wake reply", "wake-ok");
+      // Unsettled autonomous wake with checkpoint must be dropped
+      systemStep(db, 14, "wake-dropped");
+      checkpointStep(db, 15, { status: 3, run: "wake-dropped", summary: "Orphan summary" });
+
+      const snapshot = await opened.value.readSnapshot();
+      assert(snapshot.ok);
+      expect(snapshot.value.turns).toHaveLength(4);
+      expect(snapshot.value.turns[0]?.items).toMatchObject([
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-1" },
+          outcome: { status: "succeeded" },
+        },
+        { item: { type: "agentMessage", text: "First part" } },
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-5" },
+          outcome: {
+            status: "failed",
+            error: {
+              code: "nativeFailure",
+              message: "Compaction limit exceeded",
+              retryable: false,
+            },
+          },
+        },
+        { item: { type: "agentMessage", text: "Second part" } },
+      ]);
+      expect(snapshot.value.turns[1]?.input).toEqual([{ type: "text", text: "/compact" }]);
+      expect(snapshot.value.turns[1]?.items).toMatchObject([
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-8" },
+          outcome: { status: "succeeded" },
+        },
+      ]);
+      expect(snapshot.value.turns[2]?.input).toEqual([{ type: "text", text: "Follow up" }]);
+      expect(snapshot.value.turns[2]?.items).toMatchObject([
+        { item: { type: "agentMessage", text: "Done" } },
+      ]);
+      expect(snapshot.value.turns[3]?.nativeTurnRef.nativeTurnKey).toBe("wake-11");
+      expect(snapshot.value.turns[3]?.items).toMatchObject([
+        {
+          item: { type: "contextCompaction", itemId: "checkpoint-12" },
+          outcome: { status: "succeeded" },
+        },
+        { item: { type: "agentMessage", text: "Wake reply" } },
+      ]);
+      // Stable across repeated reads
+      expect(await opened.value.readSnapshot()).toEqual(snapshot);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    ["legacy-0", "legacy-1"],
+    ["turn-0", "turn-1"],
+  ])(
+    "splits committed wakes without changing known foreground identities (%s, %s)",
+    async (firstKey, nextKey) => {
+      const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+      try {
+        const insert = db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?)");
+        userStep(db, 0, "你好", "user-1");
+        systemStep(db, 1, "user-1");
+        insert.run(2, 132, 3, commandResult("command", "echo foreground", "foreground", "user-1"));
+        answerStep(db, 3, "你好！👋", "user-1");
+        systemStep(db, 4, "wake-1");
+        systemStep(db, 5, "wake-1");
+        insert.run(6, 132, 3, commandResult("late", "echo late", "late", "user-1"));
+        insert.run(7, 132, 3, commandResult("command", "echo wake", undefined, "wake-1"));
+        insert.run(
+          8,
+          15,
+          3,
+          Buffer.concat([
+            runField("wake-1"),
+            bytes(
+              20,
+              Buffer.concat([
+                call("command", "run_command", { CommandLine: "echo wake" }),
+                call("read", "view_file", { path: "notes" }),
+              ]),
+            ),
+          ]),
+        );
+        insert.run(9, 132, 3, commandResult("command", "echo wake", "late duplicate", "wake-1"));
+        insert.run(10, 132, 3, result("read", "done"));
+        answerStep(db, 11, "定时器已触发", "wake-1");
+        systemStep(db, 12, "no-output");
+        insert.run(13, 132, 3, commandResult("discard", "echo discard", "discard", "no-output"));
+        userStep(db, 14, "next", "user-2");
+        userStep(db, 15, " input", "user-2");
+        answerStep(db, 16, "next answer", "user-2");
+        systemStep(db, 17, "unsettled");
+        insert.run(18, 132, 3, commandResult("defer", "echo defer", "defer", "unsettled"));
+        insert.run(
+          19,
+          15,
+          8,
+          Buffer.concat([runField("unsettled"), bytes(20, textField(1, "partial"))]),
+        );
+
+        const knownTurnRefs = [firstKey, "wake-4", nextKey].map((nativeTurnKey) =>
+          nativeTurnRefSchema.parse({ ...nativeRef, nativeTurnKey }),
+        );
+        const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home, knownTurnRefs });
+        assert(opened.ok);
+        const snapshot = await opened.value.readSnapshot();
+        assert(snapshot.ok);
+        expect(
+          snapshot.value.turns.map(({ input, items, nativeTurnRef, checkpoint }) => ({
+            input: input.map(({ text }) => text),
+            items: items.map(({ item }) => (item.type === "agentMessage" ? item.text : item.type)),
+            key: nativeTurnRef.nativeTurnKey,
+            checkpoint: checkpoint?.checkpointId,
+          })),
+        ).toEqual([
+          {
+            input: ["你好"],
+            items: ["commandExecution", "你好！👋"],
+            key: firstKey,
+            checkpoint: "turn-0",
+          },
+          {
+            input: [],
+            items: ["commandExecution", "toolExecution", "定时器已触发"],
+            key: "wake-4",
+            checkpoint: "wake-4",
+          },
+          { input: ["next input"], items: ["next answer"], key: nextKey, checkpoint: "turn-2" },
+        ]);
+        const foregroundCommand = snapshot.value.turns[0]?.items[0];
+        const wakeCommand = snapshot.value.turns[1]?.items[0];
+        expect(foregroundCommand).toMatchObject({
+          item: { command: "echo foreground", output: "foreground", exitCode: 0 },
+          outcome: { status: "succeeded" },
+        });
+        expect(wakeCommand).toMatchObject({
+          item: { command: "echo wake", exitCode: 0 },
+          outcome: { status: "succeeded" },
+        });
+        expect(wakeCommand?.item).not.toHaveProperty("output");
+        expect(wakeCommand?.item.itemId).not.toBe(foregroundCommand?.item.itemId);
+        expect(
+          await readDerivationBoundaries(nativeConversationDbPath(nativeRef.nativeSessionId, home)),
+        ).toEqual([
+          { idx: 0, checkpointId: "turn-0" },
+          { idx: 4, checkpointId: "wake-4" },
+          { idx: 14, checkpointId: "turn-1" },
+          { idx: 15, checkpointId: "turn-2" },
+        ]);
+        expect(await opened.value.readSnapshot()).toEqual(snapshot);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("keeps a committed wake unchanged while a second wake is generating", async () => {
+    const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+    try {
+      userStep(db, 0, "set two timers", "user");
+      answerStep(db, 1, "timers set", "user");
+      systemStep(db, 2, "first-wake");
+      answerStep(db, 3, "first timer expired", "first-wake");
+      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+      assert(opened.ok);
+      const first = await opened.value.readSnapshot();
+      assert(first.ok);
+      expect(first.value.turns).toHaveLength(2);
+
+      systemStep(db, 4, "second-wake");
+      const payload = Buffer.concat([
+        runField("second-wake"),
+        bytes(20, textField(1, "second timer expired")),
+      ]);
+      db.prepare("INSERT INTO steps VALUES (5, 15, 8, ?)").run(payload);
+      expect(await opened.value.readSnapshot()).toEqual(first);
+
+      db.exec("UPDATE steps SET status = 3 WHERE idx = 5");
+      const both = await opened.value.readSnapshot();
+      assert(both.ok);
+      expect(both.value.turns.slice(0, 2)).toEqual(first.value.turns);
+      expect(both.value.turns.slice(2)).toMatchObject([
+        {
+          nativeTurnRef: { nativeTurnKey: "wake-4" },
+          input: [],
+          items: [{ item: { type: "agentMessage", text: "second timer expired" } }],
+        },
+      ]);
     } finally {
       db.close();
     }
@@ -178,33 +414,39 @@ describe("native session history", () => {
     }
   });
 
-  it.each(["missing", "unknown schema version", "unknown step payload", "invalid protobuf"])(
-    "reports history unavailable for %s, without ACP or transcript fallback",
-    async (failure) => {
-      if (failure !== "missing") {
-        const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
-        try {
-          if (failure === "unknown schema version") db.exec("PRAGMA user_version = 2");
-          else
-            db.prepare("INSERT INTO steps VALUES (0, 15, 3, ?)").run(
-              failure === "unknown step payload"
-                ? textField(99, "Unrecognized")
+  it.each([
+    "missing",
+    "unknown schema version",
+    "unknown step payload",
+    "invalid protobuf",
+    "invalid tool body",
+  ])("reports history unavailable for %s, without ACP or transcript fallback", async (failure) => {
+    if (failure !== "missing") {
+      const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
+      try {
+        if (failure === "unknown schema version") db.exec("PRAGMA user_version = 2");
+        else
+          db.prepare("INSERT INTO steps VALUES (0, ?, 3, ?)").run(
+            failure === "invalid tool body" ? 132 : 15,
+            failure === "unknown step payload"
+              ? textField(99, "Unrecognized")
+              : failure === "invalid tool body"
+                ? bytes(140, Buffer.from([0xff]))
                 : Buffer.from([0xff]),
-            );
-        } finally {
-          db.close();
-        }
+          );
+      } finally {
+        db.close();
       }
-      const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
-      assert(opened.ok);
-      expect(await opened.value.readSnapshot()).toEqual({
-        ok: false,
-        error: {
-          code: "nativeFailure",
-          message: "Antigravity history unavailable",
-          retryable: false,
-        },
-      });
-    },
-  );
+    }
+    const opened = await adapter.open({ kind: "resume", nativeRef, cwd: home });
+    assert(opened.ok);
+    expect(await opened.value.readSnapshot()).toEqual({
+      ok: false,
+      error: {
+        code: "nativeFailure",
+        message: "Antigravity history unavailable",
+        retryable: false,
+      },
+    });
+  });
 });

@@ -19,6 +19,10 @@ export interface SelectionCommentLabels {
   readonly placeholder: string;
   /** Button label: attach the passage together with the note. */
   readonly submit: string;
+  /** Button label: close the note field without attaching it. */
+  readonly cancel: string;
+  /** Feedback shown when the draft can no longer be attached. */
+  readonly unavailable: string;
 }
 
 /**
@@ -50,6 +54,7 @@ export function SelectionCommentCard({
   onCancel: () => void;
 }): ReactNode {
   const [value, setValue] = useState("");
+  const [unavailable, setUnavailable] = useState(false);
   const comment = value.trim();
 
   useEffect(() => {
@@ -59,7 +64,7 @@ export function SelectionCommentCard({
   }, [fieldRef]);
 
   const submit = (): void => {
-    if (comment !== "") onSubmit(comment);
+    if (comment !== "" && !onSubmit(comment)) setUnavailable(true);
   };
 
   return (
@@ -103,9 +108,19 @@ export function SelectionCommentCard({
           }
         }}
       />
-      <button type="button" className={css.submit} disabled={comment === ""} onClick={submit}>
-        {labels.submit}
-      </button>
+      {unavailable && (
+        <div role="alert" className={css.error}>
+          {labels.unavailable}
+        </div>
+      )}
+      <div className={css.actions}>
+        <button type="button" className={css.cancel} onClick={onCancel}>
+          {labels.cancel}
+        </button>
+        <button type="button" className={css.submit} disabled={comment === ""} onClick={submit}>
+          {labels.submit}
+        </button>
+      </div>
     </div>
   );
 }

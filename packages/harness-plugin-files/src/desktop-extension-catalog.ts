@@ -39,25 +39,28 @@ async function readLocalCatalog(file: string) {
   }
 }
 
+async function fetchCandidate(catalogUrl: string): Promise<DesktopExtensionsCatalogResult> {
+  const data = path.isAbsolute(catalogUrl)
+    ? await readLocalCatalog(catalogUrl)
+    : await downloadExtensionBytes(catalogUrl, MAX_BYTES, { accept: "application/json" });
+  const { extensions } = desktopExtensionCatalogSchema.parse(JSON.parse(data.toString("utf8")));
+  return {
+    catalogUrl,
+    source: "remote",
+    fetchedAt: new Date().toISOString(),
+    cached: false,
+    extensions,
+  };
+}
+
 async function refreshCatalog(
   override: string | undefined,
 ): Promise<DesktopExtensionsCatalogResult> {
-  for (const catalogUrl of override ? [override] : [PRIMARY, MIRROR]) {
-    try {
-      const data = path.isAbsolute(catalogUrl)
-        ? await readLocalCatalog(catalogUrl)
-        : await downloadExtensionBytes(catalogUrl, MAX_BYTES, { accept: "application/json" });
-      const { extensions } = desktopExtensionCatalogSchema.parse(JSON.parse(data.toString("utf8")));
-      return {
-        catalogUrl,
-        source: "remote",
-        fetchedAt: new Date().toISOString(),
-        cached: false,
-        extensions,
-      };
-    } catch {
-      // An invalid or unavailable mirror is never used as installation metadata.
-    }
+  const candidates = override ? [override] : [PRIMARY, MIRROR];
+  try {
+    return await Promise.any(candidates.map(fetchCandidate));
+  } catch {
+    // An invalid or unavailable mirror is never used as installation metadata.
   }
   return {
     catalogUrl: override ?? PRIMARY,
@@ -65,7 +68,7 @@ async function refreshCatalog(
     fetchedAt: new Date().toISOString(),
     cached: false,
     extensions: fallback,
-    error: "Desktop extension catalog unavailable; showing the built-in official entries",
+    error: "Desktop extension catalog unavailable",
   };
 }
 

@@ -53,11 +53,7 @@ function useVisitedRows({
       {
         visit,
         summary,
-        // Visit navigation shows only actual activity/interaction, not completion reminders.
-        statuses: sessionStatuses(
-          { ...sessionActivity(summary, list, statuses), completed: false },
-          t,
-        ),
+        statuses: sessionStatuses(sessionActivity(summary, list, statuses), t),
       },
     ];
   });

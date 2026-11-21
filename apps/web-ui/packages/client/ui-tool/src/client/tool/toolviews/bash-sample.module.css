@@ -93,7 +93,13 @@
   transition: color 100ms ease;
 }
 
-.root:hover {
+@media (hover: hover) {
+  .root:hover {
+    color: var(--dsw-alias-label-secondary);
+  }
+}
+
+.root[data-expandable]:active {
   color: var(--dsw-alias-label-secondary);
 }
 
@@ -146,12 +152,14 @@
   transition: opacity 100ms ease;
 }
 
-.root:hover .iconIdle {
-  opacity: 0;
-}
+@media (hover: hover) {
+  .root:hover .iconIdle {
+    opacity: 0;
+  }
 
-.root:hover .chevronHover {
-  opacity: 1;
+  .root:hover .chevronHover {
+    opacity: 1;
+  }
 }
 
 .title {

@@ -164,6 +164,12 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
     };
     /** Persistent product notices below navigation, including without a selected Session. */
     "conversation.header.notice": { kind: "list"; scope: "session-maybe" };
+    /** Resident header trailing action paired with the corner control on phone frames. */
+    "conversation.header.trailing": {
+      kind: "single";
+      scope: "root";
+      owner: ConversationHeaderTrailingOwnerProps;
+    };
     /** Strict per-Session title, actions, and View navigation. */
     "conversation.session.header": {
       kind: "single";
@@ -173,6 +179,8 @@ declare module "@deepseek-ai/dsh-client-ui-slots" {
         hideChrome: boolean;
         /** Resident header-owned control; title and lineage keep their own click behavior. */
         titleNavigation?: ReactNode;
+        /** Resident trailing action housed in the phone right capsule beside the corner button. */
+        trailingAction?: ReactNode;
       };
     };
     /** Optional replacement for one Session breadcrumb title. */
@@ -357,6 +365,12 @@ export interface ConversationHeaderLeadingOwnerProps {
   children?: never;
 }
 
+/** The trailing seat exposes a global header action independently of a Session. */
+export interface ConversationHeaderTrailingOwnerProps {
+  /** Marker field: the occupant receives no owner-specific values. */
+  children?: never;
+}
+
 /** Focus lifetime shared by resident navigation controls, independent of Session incarnations. */
 export interface ConversationHeaderNavigationOwnerProps {
   /** Return to the visible data-navigation-focus-return control, or the header if absent. */
@@ -413,6 +427,8 @@ export interface ConversationSessionInjected {
   };
   /** Bind input draft persistence to the Session-owned store instance. */
   bindDraftPersistence: (write: (draft: DraftSnapshot) => void) => () => void;
+  /** Subscribe to composer requests that reveal an unsent response annotation. */
+  onRevealResponseAnnotation: (listener: (id: DraftAttachmentId) => void) => () => void;
   /** Select and activate one View while addressing an opaque focus request to it. */
   openView: (view: string, focus: string) => void;
 }
@@ -461,6 +477,8 @@ export interface ComposerBarInjected {
     ((ids: readonly DraftAttachmentId[]) => readonly ComposerAttachment[]) | undefined;
   /** Restart one failed file upload; absent without a session. */
   retryFileUpload: ((id: DraftAttachmentId) => void) | undefined;
+  /** Reveal a selected response annotation in the current Chat view. */
+  revealResponseAnnotation: ((id: DraftAttachmentId) => void) | undefined;
   /** Toggle the existing command menu at the editor selection. */
   toggleCommandMenu: ((selection: EditSelection) => void) | undefined;
   stop: (() => void) | undefined;
@@ -574,6 +592,7 @@ export type ConversationHeaderProps = PropsRuntime<"conversation.header"> &
     | "conversation.header.leading"
     | "conversation.header.navigation"
     | "conversation.header.shortcuts"
+    | "conversation.header.trailing"
     | "conversation.session.header"
   >;
 

@@ -21,7 +21,13 @@
   color: var(--dsw-alias-label-secondary);
 }
 
-.toggle:hover:not(:disabled) {
+@media (hover: hover) {
+  .toggle:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.toggle:active:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
@@ -46,6 +52,10 @@
 
 .speed:focus-within {
   box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+
+:global(html[data-input-modality="pointer"]) .speed:focus-within {
+  box-shadow: none;
 }
 
 @media (forced-colors: active) {

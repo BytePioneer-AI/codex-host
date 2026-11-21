@@ -9,7 +9,14 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  if (event.request.mode === "navigate") event.respondWith(navigate(event.request));
+  if (event.request.mode !== "navigate") return;
+  const pathname = new URL(event.request.url).pathname;
+  const apiPrefix = self.registration?.scope
+    ? new URL("api/", self.registration.scope).pathname
+    : "/api/";
+  // Never intercept API navigations (such as file downloads) with the offline timeout wrapper.
+  if (pathname.startsWith(apiPrefix)) return;
+  event.respondWith(navigate(event.request));
 });
 
 const requestTimeout = 10_000;

@@ -13,6 +13,7 @@ import { installIdleReleasePreferenceSync } from "./renderer-idle-release-prefer
 import { createRendererModelClient, type RendererModelClient } from "./renderer-model-client.js";
 import coloredBrandCss from "./renderer-brand-mark.css";
 import accountsCss from "./settings/accounts.css";
+import delegationCss from "./settings/delegation.css";
 import { RendererSettingsPageScope, type RendererSettingsPageDefinition } from "./settings/core.js";
 import { mountIdleReleaseControls } from "./settings/idle-release-controls.js";
 import {
@@ -66,6 +67,17 @@ function resourcesPage(
   };
 }
 
+let cachedSettingsSheet: CSSStyleSheet | undefined;
+function getWebSettingsStyleSheet(): CSSStyleSheet {
+  if (!cachedSettingsSheet) {
+    cachedSettingsSheet = new CSSStyleSheet();
+    cachedSettingsSheet.replaceSync(
+      `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${delegationCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
+    );
+  }
+  return cachedSettingsSheet;
+}
+
 function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptions): () => void {
   const messages = rendererSettingsMessages(resolveRendererSettingsLocale([options.locale]));
   const manager = webRequestManager();
@@ -95,6 +107,8 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
       undefined,
       undefined,
       () => modelClient,
+      undefined,
+      () => modelClient,
     ),
     resourcesPage(messages, modelClient),
   ].find((candidate) => candidate.id === pageId);
@@ -102,11 +116,7 @@ function mount(pageId: string, host: HTMLElement, options: WebSettingsMountOptio
 
   host.style.colorScheme = options.colorScheme;
   const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-  const sheet = new CSSStyleSheet();
-  sheet.replaceSync(
-    `${tailwindCss}\n${settingsCss}\n${accountsCss}\n${consoleComponentsCss}\n${usageCss}\n${coloredBrandCss}\n${WEB_LAYOUT_CSS}`,
-  );
-  shadow.adoptedStyleSheets = [sheet];
+  shadow.adoptedStyleSheets = [getWebSettingsStyleSheet()];
   const content = document.createElement("div");
   content.className = "settings-page__content";
   const root = document.createElement("div");

@@ -14,7 +14,7 @@ import {
 
 import type { ExternalThread, ExternalThreadRuntime } from "./external-thread-runtime.js";
 import type { ExternalThreadQueue } from "./external-thread-queue.js";
-import type { ExternalThreadRepository } from "./external-thread-repository.js";
+import type { ExternalThreadRepository, FailedTurn } from "./external-thread-repository.js";
 import type { ExternalTurnSteering } from "./external-turn-steering.js";
 
 export interface ProjectedTurn {
@@ -22,6 +22,114 @@ export interface ProjectedTurn {
 }
 
 export type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
+export type LiveFailedTurn = { failure: FailedTurn; items: JsonObject[] };
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function userMessageKey(item: JsonObject): string {
+  if (!Array.isArray(item.content)) return "";
+  return JSON.stringify(
+    item.content.map((part) =>
+      isJsonObject(part) && part.type === "text" && typeof part.text === "string"
+        ? { type: "text", text: part.text }
+        : part,
+    ),
+  );
+}
+
+/** Overlay Host failures without reordering Native Turns. Only live memory supplies Items. */
+export function withFailedTurns(
+  native: JsonObject[],
+  failures: readonly FailedTurn[],
+  live: ReadonlyMap<string, LiveFailedTurn> | undefined,
+): JsonObject[] {
+  if (!failures.length) return native;
+  const turns = [...native];
+  const insertedAfter = new Map<string | undefined, string>();
+  for (const failure of failures) {
+    const index = turns.findIndex(({ id }) => id === failure.hostTurnId);
+    const original = turns[index];
+    const items = Array.isArray(original?.items) ? [...original.items] : [];
+    const nativeCount = items.length;
+    const matchedNative = new Set<number>();
+    for (const item of live?.get(failure.hostTurnId)?.items ?? []) {
+      if (item.type === "userMessage") {
+        const key = userMessageKey(item);
+        const matched = items.findIndex(
+          (existing, i) =>
+            i < nativeCount &&
+            !matchedNative.has(i) &&
+            isJsonObject(existing) &&
+            existing.type === "userMessage" &&
+            userMessageKey(existing) === key,
+        );
+        if (matched !== -1) {
+          matchedNative.add(matched);
+          continue;
+        }
+        items.push(item);
+        continue;
+      }
+      if (item.type === "agentMessage" && typeof item.text === "string") {
+        const text = item.text;
+        const covered = items.findIndex(
+          (existing, i) =>
+            i < nativeCount &&
+            !matchedNative.has(i) &&
+            isJsonObject(existing) &&
+            existing.type === "agentMessage" &&
+            typeof existing.text === "string" &&
+            existing.text.startsWith(text),
+        );
+        if (covered !== -1) {
+          matchedNative.add(covered);
+          continue;
+        }
+        const prefix = items.findIndex(
+          (existing, i) =>
+            i < nativeCount &&
+            !matchedNative.has(i) &&
+            isJsonObject(existing) &&
+            existing.type === "agentMessage" &&
+            typeof existing.text === "string" &&
+            text.startsWith(existing.text),
+        );
+        if (prefix !== -1) {
+          matchedNative.add(prefix);
+          items[prefix] = { ...(items[prefix] as JsonObject), text };
+          continue;
+        }
+        items.push(item);
+      }
+    }
+    const failed = {
+      startedAt: null,
+      completedAt: null,
+      durationMs: null,
+      ...original,
+      id: failure.hostTurnId,
+      items,
+      status: "failed",
+      error: {
+        message:
+          failure.error === "authenticationRequired"
+            ? "External Harness authentication required during execution; sign in and retry"
+            : "External Harness failed during execution",
+      },
+    };
+    if (original) {
+      turns[index] = failed;
+    } else {
+      const anchor = insertedAfter.get(failure.afterTurnId) ?? failure.afterTurnId;
+      const boundary = anchor === undefined ? -1 : turns.findIndex(({ id }) => id === anchor);
+      turns.splice(boundary + 1, 0, failed);
+    }
+    insertedAfter.set(failure.afterTurnId, failure.hostTurnId);
+  }
+  return turns;
+}
 
 /** Harness events that belong to one Turn, as opposed to Session, usage and subagent events. */
 export type TurnScopedEvent = Exclude<
@@ -31,10 +139,12 @@ export type TurnScopedEvent = Exclude<
       | "session.state.changed"
       | "session.usage.changed"
       | "usage.request"
+      | "usage.request.timing"
       | "usage.history"
       | "subagent.state.changed"
       | "subagent.transcript.changed"
-      | "session.faulted";
+      | "session.faulted"
+      | "turn.autonomous.completed";
   }
 >;
 
@@ -66,10 +176,13 @@ export interface ExternalTurnProjectionHost {
   outputFailed(thread: ExternalThread): void;
   submitPrewarm(thread: ExternalThread): Promise<boolean>;
   notifyExternalThreadStarted(thread: JsonObject): Promise<void>;
+  touchThread(thread: ExternalThread): Promise<void>;
   persistTerminalIdentity(
     thread: ExternalThread,
     event: Parameters<ExternalThreadRuntime["persistTerminalIdentity"]>[1],
   ): Promise<Error | null>;
+  retainFailedTurn(...args: Parameters<ExternalThreadRuntime["retainFailedTurn"]>): Promise<void>;
+  captureCompletedPreview(thread: ExternalThread, turn: JsonObject): Promise<void>;
   resolveDesktopApproval(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
   resolveDesktopQuestion(interactionId: HostInteractionId, thread: ExternalThread): Promise<void>;
   retireSharedQuestions(thread: ExternalThread, turnId: HostTurnId): void;
@@ -153,9 +266,10 @@ export class ExternalTurnProjection {
         (item) => item.type === "agentMessage" && typeof item.text === "string" && item.text.trim(),
       );
     const ephemeralTurn =
-      event.type === "turn.completed" &&
-      (event.ephemeral === true ||
-        (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand));
+      event.type === "turn.completed"
+        ? event.ephemeral === true ||
+          (thread.ephemeralTurnIds.has(event.turnId) && !conversationalCommand)
+        : thread.ephemeralTurnIds.has(event.turnId);
     if (event.type === "turn.completed" && !ephemeralTurn) {
       const persistenceError = await this.#host.persistTerminalIdentity(thread, event);
       if (persistenceError) {
@@ -163,6 +277,7 @@ export class ExternalTurnProjection {
         event = {
           type: "turn.completed",
           turnId: event.turnId,
+          ...(event.nativeTurnRef ? { nativeTurnRef: event.nativeTurnRef } : {}),
           outcome: {
             status: "failed",
             error: {
@@ -185,16 +300,17 @@ export class ExternalTurnProjection {
       thread.thread.recencyAt = updatedAt;
     }
     if (event.type === "turn.started") {
-      if (thread.clientCommand && !thread.ephemeralTurnIds.has(event.turnId))
+      if (thread.clientCommand && !ephemeralTurn)
         thread.clientCommand.subsequentTurnId ??= event.turnId;
       // A successor Turn ends the attribution window of every earlier Turn.
       this.#dropSettledTurnProjections(thread, event.turnId);
+      // Not awaited: the write must not delay the Turn's first output.
+      if (!ephemeralTurn) void this.#host.touchThread(thread);
       await this.#host.setThreadStatus(thread, { type: "active", activeFlags: [] });
     }
     if (event.type === "turn.completed") {
       this.#host.forgetQueuedTurnStart(thread.id);
       if (!result.completedTurn) throw new Error("Turn projector returned no completed Turn");
-      const completedAt = Math.floor(Date.now() / 1000);
       const turn = projection.projector.snapshotTurn(result.completedTurn);
       if (thread.ephemeralTurnIds.delete(event.turnId)) {
         if (thread.clientCommand?.turn.id === event.turnId) {
@@ -204,14 +320,18 @@ export class ExternalTurnProjection {
         this.#host.manualCompactionTurns.delete(thread);
       }
       if (!ephemeralTurn) {
+        if (event.outcome.status === "failed")
+          await this.#host.retainFailedTurn(thread, event, turn);
+        if (event.outcome.status === "succeeded")
+          await this.#host.captureCompletedPreview(thread, turn);
         thread.turns.push(turn);
         thread.projectedTerminalTurnId = event.turnId;
-        thread.thread.updatedAt = completedAt;
-        thread.thread.recencyAt = completedAt;
       }
       thread.historyHydrated = false;
       thread.running = false;
       thread.activeTurnId = null;
+      // Before any completion message, so a client acting on it reads the touched record.
+      if (!ephemeralTurn) await this.#host.touchThread(thread);
       // Detached Items (native background commands) and idle background output
       // settle on the completed Turn later; keep its projector so late events
       // still project instead of failing on a missing Turn.
@@ -263,7 +383,18 @@ export class ExternalTurnProjection {
       )
         thread.projectedTurns.delete(event.turnId);
     }
-    for (const message of result.messages) await this.#host.writeJson(message);
+    for (const message of result.messages) {
+      const params = message.params;
+      if (
+        message.method === "turn/plan/updated" &&
+        typeof params === "object" &&
+        params !== null &&
+        !Array.isArray(params)
+      ) {
+        thread.livePlan = params;
+      }
+      await this.#host.writeJson(message);
+    }
     if (event.type === "turn.completed") {
       await this.#host.setThreadStatus(
         thread,

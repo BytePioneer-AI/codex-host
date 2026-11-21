@@ -21,7 +21,7 @@ import {
   downloadExtensionBytes,
   resolveDesktopExtensionDownload,
 } from "./desktop-extension-download.js";
-import { readDesktopExtensionZip } from "./desktop-extension-zip.js";
+import { readDesktopExtensionZip } from "./extension-zip.js";
 import { withDesktopExtensionConfiguration } from "./extension-configuration.js";
 import {
   desktopExtensionsRoot,
@@ -218,8 +218,7 @@ export async function installFromUrl({
   });
 }
 
-export const DEFAULT_DESKTOP_EXTENSION_STATS_URL =
-  "https://codexhost-desktop-extension-stats.codexhost-worker-deploy.workers.dev";
+export const DEFAULT_DESKTOP_EXTENSION_STATS_URL = "https://ext-stats.chost.dev";
 
 export function resolveDesktopExtensionStatsUrl(
   environment: NodeJS.ProcessEnv = process.env,

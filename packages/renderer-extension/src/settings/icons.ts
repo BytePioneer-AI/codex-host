@@ -37,6 +37,7 @@ import RotateCcw from "lucide/dist/esm/icons/rotate-ccw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import ShieldCheck from "lucide/dist/esm/icons/shield-check.mjs";
+import Sparkles from "lucide/dist/esm/icons/sparkles.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
@@ -49,6 +50,7 @@ import CircleHelp from "lucide/dist/esm/icons/circle-question-mark.mjs";
 import Upload from "lucide/dist/esm/icons/upload.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import Users from "lucide/dist/esm/icons/users.mjs";
+import Workflow from "lucide/dist/esm/icons/workflow.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
 import Zap from "lucide/dist/esm/icons/zap.mjs";
 
@@ -59,6 +61,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "github",
   "language",
   "connections",
+  "delegation",
   "extensions",
   "accounts",
   "session-import",
@@ -107,6 +110,7 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "chart-column",
   "plug",
   "puzzle",
+  "sparkles",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -127,6 +131,7 @@ const iconNodes = {
   ],
   language: Languages,
   connections: PlugZap,
+  delegation: Workflow,
   extensions: Puzzle,
   accounts: Users,
   "session-import": FolderInput,
@@ -175,6 +180,7 @@ const iconNodes = {
   "chart-column": ChartColumn,
   plug: Plug,
   puzzle: Puzzle,
+  sparkles: Sparkles,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

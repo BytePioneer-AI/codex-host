@@ -552,12 +552,52 @@ pub fn desktop_process_ids() -> Result<Vec<u32>, PlatformError> {
         let Ok(path) = windows_process::process_image_path(process.id) else {
             continue;
         };
-        let path = path.to_string_lossy().replace('/', "\\").to_lowercase();
-        if path.contains("\\windowsapps\\openai.codex_") && path.ends_with("\\app\\chatgpt.exe") {
+        if is_windows_store_desktop_path(&windows_executable_key(&path)) {
             matches.push(process.id);
         }
     }
     Ok(matches)
+}
+
+#[cfg(target_os = "windows")]
+fn is_windows_store_desktop_path(key: &str) -> bool {
+    key.contains("\\windowsapps\\openai.codex_") && key.ends_with("\\app\\chatgpt.exe")
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn require_no_running_store_desktop(
+    installation: &DesktopInstallation,
+) -> Result<(), PlatformError> {
+    let expected = windows_executable_key(&installation.desktop_executable);
+    for entry in windows_process::process_entries()? {
+        if !entry.has_executable_name("ChatGPT.exe") {
+            continue;
+        }
+        // A stale snapshot may include an exited process, but other inspection
+        // failures are not proof that it is safe to start another Desktop.
+        let path = match windows_process::process_image_path(entry.id) {
+            Ok(path) => path,
+            Err(error)
+                if error.raw_os_error()
+                    == Some(windows::Win32::Foundation::ERROR_INVALID_PARAMETER.0 as i32) =>
+            {
+                continue;
+            }
+            Err(source) => {
+                return Err(PlatformError::ProcessInspection {
+                    process_id: entry.id,
+                    operation: "check for a running Codex Desktop before --windows-direct",
+                    source,
+                });
+            }
+        };
+        let key = windows_executable_key(&path);
+        // Store updates can leave the previous version running.
+        if key == expected || is_windows_store_desktop_path(&key) {
+            return Err(PlatformError::UnmanagedDesktopConflict);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -801,7 +841,22 @@ pub fn process_exists(_process_id: u32) -> bool {
 mod windows_tests {
     use std::path::Path;
 
-    use super::windows_executable_key;
+    use super::{is_windows_store_desktop_path, windows_executable_key};
+
+    #[test]
+    fn matches_store_desktop_across_versions_and_volumes_but_not_portable_copies() {
+        for path in [
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.1.0.0_x64__publisher\app\ChatGPT.exe",
+            r"\\?\D:\WindowsApps\OpenAI.Codex_25.9.0.0_x64__publisher\app\ChatGPT.exe",
+        ] {
+            assert!(is_windows_store_desktop_path(&windows_executable_key(
+                Path::new(path)
+            )));
+        }
+        assert!(!is_windows_store_desktop_path(&windows_executable_key(
+            Path::new(r"C:\portable\app\ChatGPT.exe")
+        )));
+    }
 
     #[test]
     fn treats_verbatim_and_regular_windows_executable_paths_as_equal() {

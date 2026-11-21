@@ -308,7 +308,9 @@ const CATALOG_THEME: DesktopExtensionCatalogEntry = {
   updatedAt: "2026-07-01T00:00:00.000Z",
 };
 
-function sampleInstalledList(): DesktopExtensionsListResult {
+function sampleInstalledList(
+  overrides: Partial<DesktopExtensionsListResult> = {},
+): DesktopExtensionsListResult {
   return {
     configuration: { version: 1, revision: 3, enabled: ["sidebar-thread-tree"] },
     desktopConnected: true,
@@ -349,6 +351,7 @@ function sampleInstalledList(): DesktopExtensionsListResult {
         },
       },
     ],
+    ...overrides,
   };
 }
 
@@ -484,7 +487,9 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       ),
     );
     expect(fallbackNotice).toBeDefined();
-    expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
+    expect(textOf(fallbackNotice)).toContain(
+      "远端市场目录暂不可达。你仍可通过链接或 ZIP 安装扩展。",
+    );
     expect(textOf(fallbackNotice)).not.toContain("offline");
 
     // 3 marketplace cards share the exact same 3-row card layout:
@@ -1049,7 +1054,7 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
       });
     const disableDesktopExtension = vi.fn(async () => ({
       state: "saved" as const,
-      configuration: { version: 1, revision: 4, enabled: [] },
+      configuration: { version: 1 as const, revision: 4, enabled: [] },
     }));
     const listDesktopExtensionCatalog = vi
       .fn<() => Promise<DesktopExtensionsCatalogResult>>()
@@ -1109,7 +1114,9 @@ describe("Desktop extensions marketplace, detail actions, and import modal", () 
         el.className.includes("settings-extensions-market__notice"),
       ),
     );
-    expect(textOf(fallbackNotice)).toContain("远端市场目录暂不可达，当前展示内置官方目录。");
+    expect(textOf(fallbackNotice)).toContain(
+      "远端市场目录暂不可达。你仍可通过链接或 ZIP 安装扩展。",
+    );
     expect(textOf(fallbackNotice)).not.toContain("HTTP 404");
 
     // When source is not fallback and the catalog is empty with an error, surface the error notice.

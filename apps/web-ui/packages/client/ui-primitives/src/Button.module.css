@@ -13,6 +13,12 @@
   color: var(--dsw-alias-label-primary);
   background: transparent;
   padding: 0 14px;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    opacity 120ms ease;
 }
 
 .button:disabled {
@@ -38,12 +44,8 @@
   color: var(--dsw-alias-label-primary-foreground);
 }
 
-.primary:hover:not(:disabled) {
-  background: var(--dsw-alias-button-primary-hover);
-}
-
-.ghost:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+.primary:active:not(:disabled) {
+  opacity: 0.86;
 }
 
 .ghost:active:not(:disabled) {
@@ -56,16 +58,34 @@
   background: transparent;
 }
 
-.outline:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+.outline:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .toolbar {
   background: var(--dsw-alias-button-tool-bar-fill);
 }
 
-.toolbar:hover:not(:disabled) {
-  background: var(--dsw-alias-button-tool-bar-hover);
+.toolbar:active:not(:disabled) {
+  opacity: 0.86;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .primary:hover:not(:disabled) {
+    background: var(--dsw-alias-button-primary-hover);
+  }
+
+  .ghost:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+
+  .outline:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+
+  .toolbar:hover:not(:disabled) {
+    background: var(--dsw-alias-button-tool-bar-hover);
+  }
 }
 
 .icon {
@@ -74,4 +94,10 @@
   height: 16px;
   align-items: center;
   justify-content: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
 }

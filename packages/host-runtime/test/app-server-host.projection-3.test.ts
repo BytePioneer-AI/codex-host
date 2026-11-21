@@ -7,6 +7,7 @@ import { FakeHarnessAdapter } from "@codexhost/harness-adapter/testing";
 import { MappingStore } from "@codexhost/mapping-store";
 import {
   CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID,
+  decodeExternalTransportSelection,
   encodeClaudeTransportModel,
   encodeGrokTransportModel,
   encodePiTransportModel,
@@ -17,6 +18,7 @@ import {
   encodeHarnessPluginRoute,
   harnessCommandDescriptorSchema,
   harnessIdSchema,
+  harnessModelCatalogSchema,
   harnessPermissionModeCatalogSchema,
   harnessPermissionModeIdSchema,
   hostItemIdSchema,
@@ -68,6 +70,159 @@ describe("AppServerHost HarnessAdapter projection", () => {
     });
     expect(claude.sessions[0]?.state.effectiveModel).toEqual(model);
     expect(pi.sessions).toHaveLength(0);
+    await stopFixture(fixture);
+  });
+
+  it("updates or clears persisted Thinking when selecting a Model and fails if saving rejects", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "codexhost-host-model-thinking-"));
+    let failSave = false;
+    const mappingStore = new MappingStore({
+      directory,
+      beforeReplace(record) {
+        if (failSave && record.state === "ready") {
+          throw new Error("synthetic model save failure");
+        }
+      },
+    });
+    const catalog = harnessModelCatalogSchema.parse({
+      models: [
+        {
+          ref: { id: "thinking-model" },
+          label: "Thinking Model",
+          resolvedModelLabel: "thinking-model",
+          supportedThinkingOptionIds: ["xhigh", "low"],
+        },
+        {
+          ref: { id: "low-only-model" },
+          label: "Low Only",
+          resolvedModelLabel: "low-only-model",
+          supportedThinkingOptionIds: ["low"],
+        },
+        {
+          ref: { id: "no-thinking-model" },
+          label: "No Thinking",
+          resolvedModelLabel: "no-thinking-model",
+        },
+      ],
+      defaultModel: { id: "thinking-model" },
+      thinkingOptions: [
+        { id: "low", label: "Low" },
+        { id: "xhigh", label: "XHigh" },
+      ],
+      defaultThinkingOptionId: "xhigh",
+    });
+    const antigravity = new FakeHarnessAdapter(harnessIdSchema.parse("antigravity"), catalog);
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([
+        ["antigravity", antigravity],
+      ]),
+      mappingStore,
+      mappingStoreDirectory: directory,
+    });
+    if (!catalog.defaultModel || !catalog.defaultThinkingOptionId) {
+      throw new Error("Custom catalog is missing default Model or Thinking option");
+    }
+    const startRoute = encodeHarnessPluginRoute({
+      harnessId: antigravity.harnessId,
+      model: catalog.defaultModel,
+      thinkingOptionId: catalog.defaultThinkingOptionId,
+    });
+    const threadId = await startExternalThread(fixture, startRoute, 70);
+
+    writeRequest(fixture.desktopInput, {
+      id: 71,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model: { id: "low-only-model" } },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 71)),
+    ).resolves.toMatchObject({
+      id: 71,
+      result: {
+        effectiveModel: { id: "low-only-model" },
+        effectiveThinkingOptionId: "low",
+      },
+    });
+    const afterSecond = await mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(decodeExternalTransportSelection("antigravity", afterSecond?.transportModelId)).toEqual({
+      model: { id: "low-only-model" },
+      thinkingOptionId: "low",
+    });
+
+    writeRequest(fixture.desktopInput, {
+      id: 72,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model: { id: "no-thinking-model" } },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 72)),
+    ).resolves.toMatchObject({
+      id: 72,
+      result: {
+        effectiveModel: { id: "no-thinking-model" },
+        availableThinkingOptions: [],
+      },
+    });
+    const afterThird = await mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(decodeExternalTransportSelection("antigravity", afterThird?.transportModelId)).toEqual({
+      model: { id: "no-thinking-model" },
+    });
+
+    failSave = true;
+    writeRequest(fixture.desktopInput, {
+      id: 73,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model: { id: "thinking-model" } },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 73)),
+    ).resolves.toMatchObject({
+      id: 73,
+      error: { code: -32078, message: expect.stringContaining("could not be saved") },
+    });
+    const afterFailedSave = await mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(
+      decodeExternalTransportSelection("antigravity", afterFailedSave?.transportModelId),
+    ).toEqual({
+      model: { id: "no-thinking-model" },
+    });
+
+    failSave = false;
+    writeRequest(fixture.desktopInput, {
+      id: 74,
+      method: "codexhost/thread/model/select",
+      params: { threadId, model: { id: "thinking-model" } },
+    });
+    await expect(
+      fixture.collector.waitFor((message) => requestId(message, 74)),
+    ).resolves.toMatchObject({
+      id: 74,
+      result: {
+        effectiveModel: { id: "thinking-model" },
+        effectiveThinkingOptionId: "low",
+      },
+    });
+    const afterRetry = await mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+    expect(decodeExternalTransportSelection("antigravity", afterRetry?.transportModelId)).toEqual({
+      model: { id: "thinking-model" },
+      thinkingOptionId: "low",
+    });
+
+    failSave = true;
+    await expect(
+      fixture.host.handleClientRequest("codexhost/thread/thinking/select", {
+        threadId,
+        thinkingOptionId: "xhigh",
+      }),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32078,
+        message: expect.stringContaining("Thinking was applied but could not be saved"),
+      },
+    });
+    expect(await mappingStore.getThread(hostThreadIdSchema.parse(threadId))).toMatchObject({
+      transportModelId: afterRetry?.transportModelId,
+    });
     await stopFixture(fixture);
   });
 
@@ -1143,6 +1298,12 @@ describe("AppServerHost HarnessAdapter projection", () => {
       },
     });
     await vi.waitFor(() => expect(notifications()).toBe(beforeOutput + 2));
+    session.emitEvent({
+      type: "usage.request.timing",
+      turnId: hostTurnIdSchema.parse(turnId),
+      timing: { requestId: "native-2", requestStartedAtMs: 500, timeToFirstOutputMs: 500 },
+    });
+    await vi.waitFor(() => expect(notifications()).toBe(beforeOutput + 3));
     // No Context usage, native Token notification or Turn completion is required to refresh.
     expect(
       fixture.collector.messages.some((message) => method(message, "thread/tokenUsage/updated")),
@@ -1161,6 +1322,7 @@ describe("AppServerHost HarnessAdapter projection", () => {
       costSource: "publicPrice",
       sessionCacheHitRatePercent: (2_000 / 3_000) * 100,
       outputTokensPerSecond: 100,
+      latestRequestTimeToFirstOutputMs: 500,
     });
     expect(response.result.usage.totalCostUsd).not.toBe(99);
     expect(response.result.usage.totalCostUsd).toBeGreaterThan(0);

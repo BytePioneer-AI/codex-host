@@ -31,6 +31,7 @@
   color: inherit;
   font: inherit;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .select {
@@ -44,9 +45,9 @@
 }
 
 .close {
-  flex: 0 0 44px;
+  flex: 0 0 28px;
   justify-content: center;
-  width: 44px;
+  width: 28px;
   color: var(--dsw-alias-label-secondary);
 }
 
@@ -107,8 +108,15 @@
 
 .select:focus-visible,
 .close:focus-visible {
-  outline: 2px solid var(--dsw-alias-label-primary);
-  outline-offset: -2px;
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .select:focus-visible,
+  .close:focus-visible {
+    outline: 2px solid var(--dsw-alias-label-primary);
+    outline-offset: -2px;
+  }
 }
 
 .identity {

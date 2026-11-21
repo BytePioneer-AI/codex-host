@@ -201,6 +201,11 @@ interface HostHarnessAvailabilityState {
 
 const rendererUsageRefreshDelays = [250, 500, 1000, 2000, 4000, 8000] as const;
 
+/** Desktop-internal environments are not connectable Hosts. */
+export function isListedConnectionHost(hostId: string): boolean {
+  return hostId !== "durable" && !hostId.startsWith("env_e_");
+}
+
 export function refreshConnectionHosts(
   hostIds: Iterable<string>,
   refreshHost: (hostId: string) => Promise<void>,
@@ -2745,7 +2750,7 @@ export function installRendererBindingProbe(
     // Settings lists observed Hosts even when multiple Composers make the
     // active route ambiguous. Requests still resolve each Host independently.
     for (const hostId of modelControl?.knownHostIds?.() ?? []) {
-      if (hostId !== "durable") hostHarnessAvailabilityState(hostId);
+      if (isListedConnectionHost(hostId)) hostHarnessAvailabilityState(hostId);
     }
     // Hidden/native Composers can belong to a different Host. Never rebind
     // every Thread to the globally selected Host when navigating between them.
@@ -2824,7 +2829,7 @@ export function installRendererBindingProbe(
       const hostIds = [
         "local",
         ...[...harnessAvailabilityByHost.keys()]
-          .filter((hostId) => hostId !== "local" && hostId !== "durable")
+          .filter((hostId) => hostId !== "local" && isListedConnectionHost(hostId))
           .sort(),
       ];
       return {
@@ -2857,7 +2862,7 @@ export function installRendererBindingProbe(
       }
       reconcileHarnessAvailabilityHost();
       return refreshConnectionHosts(
-        [...harnessAvailabilityByHost.keys()].filter((target) => target !== "durable"),
+        [...harnessAvailabilityByHost.keys()].filter(isListedConnectionHost),
         (target) => refreshHarnessAvailabilityForHost(target, true, false, true),
       );
     },

@@ -24,6 +24,17 @@ import type { RendererConnectionDiagnostics } from "../src/settings/connections-
 import type { RendererSessionImportClient } from "../src/settings/session-import-page.js";
 import type * as VersionedRendererAdapter from "../src/versioned-renderer-adapter.js";
 
+it("filters Desktop internal environments from connection hosts", async () => {
+  installFakeBrowser();
+  const { isListedConnectionHost } = await import("../src/renderer-binding-probe.js");
+  expect(["local", "remote-mac", "ssh:mac"].filter(isListedConnectionHost)).toEqual([
+    "local",
+    "remote-mac",
+    "ssh:mac",
+  ]);
+  expect(["durable", "env_e_internal"].filter(isListedConnectionHost)).toEqual([]);
+});
+
 const testState = vi.hoisted(() => ({
   composer: null as unknown as Element,
   editor: null as unknown as Element,

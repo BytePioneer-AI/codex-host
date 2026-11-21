@@ -42,6 +42,13 @@ export function imagePath(source: NativeImageSource): string | undefined {
   }
 }
 
+/** Normalize the path string carried by a native imageView into one local path form. */
+export function localImagePath(value: string): string | undefined {
+  const candidate = value.trim();
+  if (!candidate) return undefined;
+  return imagePath(candidate.startsWith("file:") ? { url: candidate } : { path: candidate });
+}
+
 function fileHeader(line: string, quoted: boolean): NativeFile | undefined {
   if (!line.startsWith("## ")) return undefined;
   const value = line.slice(3);

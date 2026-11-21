@@ -12,6 +12,7 @@ import { SessionLog, type ProjectionListener } from "./session-log.ts";
 import { threadListTitle } from "./ch-thread-title.ts";
 import { summarizeTurnDiffs } from "./ch-turn-changes.ts";
 import { RpcError } from "./transport.ts";
+import { localImagePath } from "./native-user-input.ts";
 import {
   TurnProjector,
   diffTexts,
@@ -105,17 +106,9 @@ function mcpResultText(item: ChItem): string {
     .join("\n");
 }
 
-/** Resolve the local path carried by an `imageView` display item. */
-function imageViewPath(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.trim() === "") return undefined;
-  const path = value.trim();
-  if (!path.startsWith("file://")) return path;
-  try {
-    const url = new URL(path);
-    return url.protocol === "file:" ? decodeURIComponent(url.pathname) : undefined;
-  } catch {
-    return undefined;
-  }
+/** Stable identity for one native imageView observation within a Thread. */
+export function imageViewProjectionKey(turnId: string, itemId: string): string {
+  return JSON.stringify([turnId, itemId]);
 }
 
 /** Encode a local image path for a Markdown destination without changing its path semantics. */
@@ -135,7 +128,8 @@ function markdownImageAlt(path: string): string {
 function itemOf(
   item: ChItem,
   reasoningPreviewIds: ReadonlySet<string>,
-  projectImage: (path: string) => unknown,
+  projectImage: (path: string, projectionKey: string) => unknown,
+  projectionKey: string,
 ): HostItem | undefined {
   const itemId = item.id;
   switch (item.type) {
@@ -196,9 +190,9 @@ function itemOf(
     case "imageView": {
       // Native ImageView carries only a local path. Prefer a durable attachment
       // so consecutive images share Web's existing assistant-image gallery.
-      const path = imageViewPath(item.path);
+      const path = typeof item.path === "string" ? localImagePath(item.path) : undefined;
       if (path === undefined) return undefined;
-      const attachment = projectImage(path);
+      const attachment = projectImage(path, projectionKey);
       if (attachment !== undefined) return { type: "imageView", itemId, attachment };
       return {
         type: "agentMessage",
@@ -253,20 +247,20 @@ function outcome(turn: ChTurn): TurnOutcomeShape {
       : { status: "succeeded" };
 }
 
+interface TurnView {
+  projector: TurnProjector;
+  items: Map<string, HostItem>;
+  userMessages: Map<string, string>;
+  started: Set<string>;
+  completed: Set<string>;
+  imageViewPaths: Map<string, string | undefined>;
+  done: boolean;
+}
+
 /** The journal is a disposable rendering buffer; every authoritative value remains in CH. */
 export class ChThreadView {
   readonly log: SessionLog;
-  private turns = new Map<
-    string,
-    {
-      projector: TurnProjector;
-      items: Map<string, HostItem>;
-      userMessages: Map<string, string>;
-      started: Set<string>;
-      completed: Set<string>;
-      done: boolean;
-    }
-  >();
+  private turns = new Map<string, TurnView>();
   private readonly liveOutput = new Map<string, string>();
   private retired = false;
   retire(): void {
@@ -284,7 +278,8 @@ export class ChThreadView {
     sequenceStart = 0,
     hasEarlier: () => boolean = () => false,
     private readonly projectInput: (content: unknown[]) => unknown[] = (content) => content,
-    private readonly projectImage: (path: string) => unknown = () => undefined,
+    private readonly projectImage: (path: string, projectionKey: string) => unknown = () =>
+      undefined,
   ) {
     const published = new Map<string, string>();
     this.log = new SessionLog(
@@ -366,6 +361,7 @@ export class ChThreadView {
       0,
       () => false,
       this.projectInput,
+      this.projectImage,
     );
     page.update({ ...this.thread, turns });
     this.log.prepend(page.log.events);
@@ -391,8 +387,14 @@ export class ChThreadView {
       const reasoningPreviewIds = new Set(
         items.filter((item) => item.type === "reasoning").map((item) => item.id),
       );
+      for (const item of items) {
+        if (item.type !== "imageView" || !view.imageViewPaths.has(item.id)) continue;
+        const path = typeof item.path === "string" ? localImagePath(item.path) : undefined;
+        if (view.imageViewPaths.get(item.id) !== path)
+          throw new RpcError("host/items-replaced", "CH replaced already projected Items.");
+      }
       const projections = new Map(
-        items.map((item) => [item.id, itemOf(item, reasoningPreviewIds, this.projectImage)]),
+        items.map((item) => [item.id, this.projectItem(turn.id, item, view, reasoningPreviewIds)]),
       );
       const retained = items.filter((item) => {
         const projected = projections.get(item.id);
@@ -443,6 +445,26 @@ export class ChThreadView {
     this.log.setProjection("codexhostToolOutput", Object.fromEntries(this.liveOutput));
     this.publishMessageTimes();
     this.publishFileChanges();
+  }
+
+  private projectItem(
+    turnId: string,
+    item: ChItem,
+    view: TurnView,
+    reasoningPreviewIds: ReadonlySet<string>,
+  ): HostItem | undefined {
+    return itemOf(
+      item,
+      reasoningPreviewIds,
+      (path, projectionKey) => {
+        if (item.type === "imageView" && view.imageViewPaths.has(item.id)) {
+          const previous = view.items.get(item.id);
+          return previous?.type === "imageView" ? previous.attachment : undefined;
+        }
+        return this.projectImage(path, projectionKey);
+      },
+      imageViewProjectionKey(turnId, item.id),
+    );
   }
 
   private publishMessageTimes(): void {
@@ -544,6 +566,7 @@ export class ChThreadView {
           userMessages: new Map(opening ? [[opening.id, userMessageIdentity(opening)]] : []),
           started: new Set(opening ? [opening.id] : []),
           completed: new Set(),
+          imageViewPaths: new Map(),
           done: false,
         };
         this.turns.set(turn.id, view);
@@ -565,7 +588,18 @@ export class ChThreadView {
           }
           continue;
         }
-        const projected = itemOf(item, reasoningPreviewIds, this.projectImage);
+        const imagePath =
+          item.type === "imageView" && typeof item.path === "string"
+            ? localImagePath(item.path)
+            : undefined;
+        if (
+          item.type === "imageView" &&
+          view.imageViewPaths.has(item.id) &&
+          view.imageViewPaths.get(item.id) !== imagePath
+        )
+          throw new RpcError("host/items-replaced", "CH replaced already projected Items.");
+        const projected = this.projectItem(turn.id, item, view, reasoningPreviewIds);
+        if (item.type === "imageView") view.imageViewPaths.set(item.id, imagePath);
         if (!projected) continue;
         if (view.completed.has(item.id)) continue;
         const old = view.items.get(item.id);

@@ -517,7 +517,9 @@ export class ChSessions {
         this.attachments
           ? (content) => this.attachments?.project(id, content) ?? content
           : undefined,
-        this.attachments ? (path) => this.attachments?.projectImageView(id, path) : undefined,
+        this.attachments
+          ? (path, projectionKey) => this.attachments?.projectImageView(id, path, projectionKey)
+          : undefined,
       );
       view = history;
       view.log.setProjection("threadReference", { hostId: "local" });

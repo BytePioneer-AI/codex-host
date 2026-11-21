@@ -50,6 +50,21 @@ function view(attachments: ChAttachments, input: unknown[], id = "thread") {
   return { rendered, ref, message };
 }
 
+function assistantImageRefs(rendered: ChThreadView) {
+  return rendered.log.events.flatMap((event) => {
+    if (event.type !== "assistant/message") return [];
+    const content = (event.data as { message?: { content?: unknown[] } }).message?.content ?? [];
+    return content.flatMap((part) => {
+      if (!part || typeof part !== "object") return [];
+      const image = part as {
+        type?: string;
+        attachment?: { attachmentId: string; bytes: number; width: number; height: number };
+      };
+      return image.type === "image" && image.attachment ? [image.attachment] : [];
+    });
+  });
+}
+
 it("renders and authorizes native clipboard/file paths without copying bytes or execution context", (t) => {
   const root = mkdtempSync(join(tmpdir(), "ch-native-images-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -105,7 +120,7 @@ it("loads grouped native imageView attachments from the authoritative Thread", (
     0,
     () => false,
     (parts) => attachments.project("image-views", parts),
-    (image) => attachments.projectImageView("image-views", image),
+    (image, itemKey) => attachments.projectImageView("image-views", image, itemKey),
   );
   rendered.update(structuredClone(row));
   const message = rendered.log.events.find((event) => event.type === "assistant/message");
@@ -117,6 +132,191 @@ it("loads grouped native imageView attachments from the authoritative Thread", (
     }
   ).attachment;
   assert.equal(attachments.read(rendered, ref.attachmentId).data, PNG);
+});
+
+it("projects imageViews from older pages with the configured attachment callback", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-view-page-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "older.png");
+  writeFileSync(path, Buffer.from(PNG, "base64"));
+  const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
+  const host = new FakeChHost();
+  const row = host.add("older-image-views", root);
+  row.turns = Array.from({ length: 7 }, (_, index) => ({
+    id: `turn-${index}`,
+    status: "completed",
+    items:
+      index === 0
+        ? [
+            { id: "old-user", type: "userMessage", content: [{ type: "text", text: "look" }] },
+            { id: "old-image", type: "imageView", path },
+          ]
+        : [
+            {
+              id: `user-${index}`,
+              type: "userMessage",
+              content: [{ type: "text", text: `Question ${index}` }],
+            },
+          ],
+  }));
+  const history = new ChThreadHistory(
+    host,
+    row,
+    "fake",
+    () => {},
+    undefined,
+    (parts) => attachments.project(row.id, parts),
+    (image, itemKey) => attachments.projectImageView(row.id, image, itemKey),
+  );
+  await history.refresh();
+  assert.equal(history.thread.turns.length, 5);
+  await history.loadOlder();
+  const ref = assistantImageRefs(history)[0];
+  assert.ok(ref);
+  assert.equal(attachments.read(history, ref.attachmentId).data, PNG);
+});
+
+it("keeps a completed imageView fingerprint when only the backing file changes", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-view-fingerprint-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "captured.png");
+  writeFileSync(path, Buffer.from(PNG, "base64"));
+  const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
+  const host = new FakeChHost();
+  const row = host.add("image-view-fingerprint", root);
+  row.turns = [
+    {
+      id: "turn",
+      status: "completed",
+      items: [
+        { id: "user", type: "userMessage", content: [{ type: "text", text: "look" }] },
+        { id: "image", type: "imageView", path },
+      ],
+    },
+  ];
+  const rendered = new ChThreadView(
+    { ...row, turns: [] },
+    "fake",
+    () => {},
+    0,
+    0,
+    () => false,
+    (parts) => attachments.project(row.id, parts),
+    (image, itemKey) => attachments.projectImageView(row.id, image, itemKey),
+  );
+  rendered.update(structuredClone(row));
+  const projected = assistantImageRefs(rendered);
+  assert.equal(projected.length, 1);
+  assert.equal(attachments.read(rendered, projected[0]?.attachmentId ?? "").data, PNG);
+
+  const changed = Buffer.from(PNG, "base64");
+  changed[changed.length - 1] = (changed[changed.length - 1] ?? 0) ^ 1;
+  writeFileSync(path, changed);
+  assert.doesNotThrow(() => rendered.update(structuredClone(row)));
+  assert.deepEqual(assistantImageRefs(rendered), projected);
+  assert.throws(() => attachments.read(rendered, projected[0]?.attachmentId ?? ""), /unavailable/u);
+  const replacement = join(root, "replacement.png");
+  writeFileSync(replacement, Buffer.from(PNG, "base64"));
+  const imageView = row.turns[0]?.items.find((item) => item.id === "image");
+  assert.ok(imageView);
+  imageView.path = replacement;
+  assert.throws(() => rendered.update(structuredClone(row)), {
+    code: "host/items-replaced",
+  });
+});
+
+it("normalizes imageView file URLs and surrounding whitespace for projection and reads", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-view-path-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "normalized.png");
+  writeFileSync(path, Buffer.from(PNG, "base64"));
+  const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
+  const host = new FakeChHost();
+  const row = host.add("image-view-path", root);
+  row.turns = [
+    {
+      id: "turn",
+      status: "completed",
+      items: [
+        { id: "user", type: "userMessage", content: [{ type: "text", text: "look" }] },
+        {
+          id: "image",
+          type: "imageView",
+          path: `  ${pathToFileURL(path).href.replace(/^file:\/\//u, "file:")}  `,
+        },
+      ],
+    },
+  ];
+  const rendered = new ChThreadView(
+    { ...row, turns: [] },
+    "fake",
+    () => {},
+    0,
+    0,
+    () => false,
+    (parts) => attachments.project(row.id, parts),
+    (image, itemKey) => attachments.projectImageView(row.id, image, itemKey),
+  );
+  rendered.update(structuredClone(row));
+  const ref = assistantImageRefs(rendered)[0];
+  assert.ok(ref);
+  assert.equal(attachments.read(rendered, ref.attachmentId).data, PNG);
+});
+
+it("gives repeated imageViews of one path independent attachment identities", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "ch-image-view-identity-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "reused.png");
+  writeFileSync(path, Buffer.from(PNG, "base64"));
+  const attachments = new ChAttachments(new WebImages(new DataDir(join(root, "web"))));
+  const host = new FakeChHost();
+  const row = host.add("image-view-identity", root);
+  row.turns = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        { id: "user-1", type: "userMessage", content: [{ type: "text", text: "first" }] },
+        { id: "image-1", type: "imageView", path },
+      ],
+    },
+  ];
+  const rendered = new ChThreadView(
+    { ...row, turns: [] },
+    "fake",
+    () => {},
+    0,
+    0,
+    () => false,
+    (parts) => attachments.project(row.id, parts),
+    (image, itemKey) => attachments.projectImageView(row.id, image, itemKey),
+  );
+  rendered.update(structuredClone(row));
+  const first = assistantImageRefs(rendered)[0];
+  assert.ok(first);
+  assert.equal(attachments.read(rendered, first.attachmentId).data, PNG);
+
+  const changed = Buffer.from(PNG, "base64");
+  changed[changed.length - 2] = (changed[changed.length - 2] ?? 0) ^ 1;
+  writeFileSync(path, changed);
+  row.turns.push({
+    id: "turn-2",
+    status: "completed",
+    items: [
+      { id: "user-2", type: "userMessage", content: [{ type: "text", text: "second" }] },
+      { id: "image-2", type: "imageView", path },
+    ],
+  });
+  rendered.update(structuredClone(row));
+
+  const refs = assistantImageRefs(rendered);
+  assert.equal(refs.length, 2);
+  assert.notEqual(refs[0]?.attachmentId, refs[1]?.attachmentId);
+  assert.throws(() => attachments.read(rendered, refs[0]?.attachmentId ?? ""), /unavailable/u);
+  assert.equal(
+    attachments.read(rendered, refs[1]?.attachmentId ?? "").data,
+    changed.toString("base64"),
+  );
 });
 
 it("handles structured localImage/file URLs and inline images; never fetches external URLs", (t) => {

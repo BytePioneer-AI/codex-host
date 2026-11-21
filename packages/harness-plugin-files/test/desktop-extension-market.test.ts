@@ -4,9 +4,17 @@ import type * as FsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
+  type DesktopExtensionCatalog,
+  type DesktopExtensionCatalogEntry,
+} from "@codexhost/shared-contracts";
 import { extensionZip, makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
-import seed from "../../../registry/desktop-extensions/catalog.json";
-import { reportDesktopExtensionInstall } from "../src/desktop-extension-installer.js";
+import {
+  DEFAULT_DESKTOP_EXTENSION_STATS_URL,
+  reportDesktopExtensionInstall,
+  resolveDesktopExtensionStatsUrl,
+} from "../src/desktop-extension-installer.js";
 import {
   desktopExtensionsRoot,
   fetchDesktopExtensionCatalog,
@@ -71,6 +79,36 @@ it("installs STORE and DEFLATE resources, then replaces an enabled extension and
     list: { configuration: { enabled: [], revision: 4 }, extensions: [] },
   });
   expect(await readdir(extensionsRoot)).toEqual(["enabled.json"]);
+});
+
+it("installs a declared logo and exposes it in the management list", async () => {
+  const icon = "images/logo.webp";
+  const bytes = Buffer.from("RIFF\0\0\0\0WEBP");
+  await installFromZipBuffer({
+    extensionsRoot,
+    zipBuffer: extensionZip({ manifest: { icon }, extras: [{ name: icon, data: bytes }] }),
+  });
+  expect((await listDesktopExtensions(dataDir)).extensions).toMatchObject([
+    { manifest: { icon }, iconDataUrl: `data:image/webp;base64,${bytes.toString("base64")}` },
+  ]);
+});
+
+it.each([
+  ["missing", undefined, /file not found/u],
+  ["oversize", Buffer.alloc(DESKTOP_EXTENSION_ICON_MAX_BYTES + 1), /exceeds its limit/u],
+  ["mislabeled", Buffer.from([0xff, 0xd8, 0xff]), /signature does not match image\/png/u],
+] as const)("rejects a ZIP with a %s declared logo", async (_kind, bytes, reason) => {
+  const icon = "images/logo.png";
+  await expect(
+    installFromZipBuffer({
+      extensionsRoot,
+      zipBuffer: extensionZip({
+        manifest: { icon },
+        extras: bytes ? [{ name: icon, data: bytes }] : [],
+      }),
+    }),
+  ).rejects.toThrow(reason);
+  expect(await readdir(extensionsRoot)).toEqual([]);
 });
 
 it.each([
@@ -311,21 +349,39 @@ it("downloads and installs a ZIP above 5 MiB with more than 10 MiB of extracted 
   expect((await readFile(path.join(installedPath, "compressed.bin"))).length).toBe(6 * 1024 * 1024);
 });
 
-it("reads a local override, caches for five minutes, refreshes on demand and falls back to official entries", async () => {
+function catalogEntry(zip: Buffer, id = "sample"): DesktopExtensionCatalogEntry {
+  return {
+    id,
+    version: "1.0.0",
+    name: { en: "Sample", "zh-CN": "示例" },
+    description: { en: "Test extension", "zh-CN": "测试扩展" },
+    author: "Fixture Author",
+    repository: "https://github.com/owner/sample",
+    trustTier: "community",
+    downloadUrl: "https://example.com/sample.zip",
+    sha256: createHash("sha256").update(zip).digest("hex"),
+  };
+}
+
+function catalogFixture(entry: DesktopExtensionCatalogEntry): DesktopExtensionCatalog {
+  return { schemaVersion: 1, generatedAt: "2026-01-01T00:00:00.000Z", extensions: [entry] };
+}
+
+it("reads a local override, caches for five minutes, refreshes on demand and falls back to an empty list", async () => {
   const file = path.join(dataDir, "catalog.json");
   const environment = { CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: file };
+  const catalog = catalogFixture(catalogEntry(extensionZip()));
   const clock = vi.spyOn(Date, "now").mockReturnValue(0);
-  await writeFile(file, JSON.stringify({ ...seed, extensions: [] }));
+  await writeFile(file, JSON.stringify(catalog));
+  const remote = { source: "remote", catalogUrl: file, extensions: catalog.extensions };
   expect(await fetchDesktopExtensionCatalog({ environment })).toMatchObject({
-    source: "remote",
+    ...remote,
     cached: false,
-    catalogUrl: file,
-    extensions: [],
   });
   await writeFile(file, "not JSON");
   clock.mockReturnValue(299_999);
   expect(await fetchDesktopExtensionCatalog({ environment })).toMatchObject({
-    source: "remote",
+    ...remote,
     cached: true,
   });
   clock.mockReturnValue(300_000);
@@ -333,26 +389,20 @@ it("reads a local override, caches for five minutes, refreshes on demand and fal
     source: "fallback",
     cached: false,
     error: expect.any(String),
-    extensions: seed.extensions,
+    extensions: [],
   });
-  await writeFile(file, JSON.stringify(seed));
+  await writeFile(file, JSON.stringify(catalog));
   expect(await fetchDesktopExtensionCatalog({ environment, forceRefresh: true })).toMatchObject({
-    source: "remote",
+    ...remote,
     cached: false,
   });
 });
 
 it("reports a successful catalog install once without waiting for the response", async () => {
   const zip = extensionZip();
-  const entry = {
-    ...seed.extensions[0],
-    id: "sample",
-    version: "1.0.0",
-    downloadUrl: "https://example.com/sample.zip",
-    sha256: createHash("sha256").update(zip).digest("hex"),
-  };
-  const catalog = path.join(dataDir, "catalog.json");
-  await writeFile(catalog, JSON.stringify({ ...seed, extensions: [entry] }));
+  const entry = catalogEntry(zip);
+  const file = path.join(dataDir, "catalog.json");
+  await writeFile(file, JSON.stringify(catalogFixture(entry)));
   const report = vi.fn(() => new Promise<Response>(() => {}));
   vi.stubGlobal("fetch", (input: string | URL, init: RequestInit) => {
     if (input === entry.downloadUrl) return new Response(new Uint8Array(zip));
@@ -365,7 +415,7 @@ it("reports a successful catalog install once without waiting for the response",
       extensionsRoot,
       id: entry.id,
       environment: {
-        CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: catalog,
+        CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: file,
         CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "https://stats.example/",
       },
     }),
@@ -375,14 +425,11 @@ it("reports a successful catalog install once without waiting for the response",
 
 it("uses the mirror on primary failure and refuses an archive with a different catalog ID", async () => {
   const zip = extensionZip();
-  const initial = seed.extensions[0];
-  if (!initial) throw new Error("Missing official seed");
-  const entry = { ...initial, sha256: createHash("sha256").update(zip).digest("hex") };
+  const entry = catalogEntry(zip, "other");
   const fetch = vi.fn(async (url: string) => {
     if (url.startsWith("https://raw.githubusercontent.com/"))
       return new Response(null, { status: 404 });
-    if (url.startsWith("https://cdn.jsdelivr.net/"))
-      return Response.json({ ...seed, extensions: [entry] });
+    if (url.startsWith("https://cdn.jsdelivr.net/")) return Response.json(catalogFixture(entry));
     if (url === entry.downloadUrl) return new Response(new Uint8Array(zip));
     throw new Error(`Unexpected request: ${url}`);
   });
@@ -430,6 +477,27 @@ it.each([
   await expect(
     reportDesktopExtensionInstall("sample", "https://stats.example"),
   ).resolves.toBeUndefined();
+});
+
+it("resolves default, opt-out, custom-catalog, and explicit stats URLs", () => {
+  expect(resolveDesktopExtensionStatsUrl({})).toBe(DEFAULT_DESKTOP_EXTENSION_STATS_URL);
+  expect(resolveDesktopExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "off" })).toBe(
+    undefined,
+  );
+  expect(resolveDesktopExtensionStatsUrl({ CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "none" })).toBe(
+    undefined,
+  );
+  expect(
+    resolveDesktopExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: "https://custom.example/catalog.json",
+    }),
+  ).toBe(undefined);
+  expect(
+    resolveDesktopExtensionStatsUrl({
+      CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: "https://custom.example/catalog.json",
+      CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL: "https://stats.example",
+    }),
+  ).toBe("https://stats.example");
 });
 
 it("skips missing, invalid or credentialed stats URLs", async () => {

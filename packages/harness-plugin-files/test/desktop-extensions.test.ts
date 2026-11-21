@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES,
   DESKTOP_EXTENSION_SCREENSHOT_LIMIT,
   DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
@@ -104,7 +105,7 @@ const png = Buffer.from(
   "base64",
 );
 
-it("lists verified local screenshots in manifest order through the management schema", async () => {
+it("lists a verified local logo and screenshots in manifest order through the management schema", async () => {
   const jpeg = Buffer.from([0xff, 0xd8, 0xff]);
   const webp = Buffer.from("RIFF\0\0\0\0WEBP");
   const previews = [
@@ -113,14 +114,18 @@ it("lists verified local screenshots in manifest order through the management sc
     ["images/preview.webp", webp],
   ] as const;
   const details = { en: "Overview\n\nUsage", "zh-CN": "概览\n\n用法" };
+  const iconBytes = Buffer.alloc(DESKTOP_EXTENSION_ICON_MAX_BYTES);
+  png.copy(iconBytes);
   const metadata = {
     author: "codexhost",
+    icon: "images/logo.png",
     repository: "https://github.com/BytePioneer-AI/codex-host",
     details,
     screenshots: previews.map(([file]) => file),
   };
   const script = await install("gallery", metadata);
   await mkdir(path.join(path.dirname(script), "images"));
+  await writeFile(path.join(path.dirname(script), metadata.icon), iconBytes);
   for (const [file, bytes] of previews) {
     await writeFile(path.join(path.dirname(script), file), bytes);
   }
@@ -131,6 +136,7 @@ it("lists verified local screenshots in manifest order through the management sc
       id: "gallery",
       manifest: metadata,
       status: { state: "disabled" },
+      iconDataUrl: `data:image/png;base64,${iconBytes.toString("base64")}`,
       screenshotDataUrls: [
         `data:image/png;base64,${png.toString("base64")}`,
         `data:image/jpeg;base64,${jpeg.toString("base64")}`,
@@ -168,6 +174,31 @@ it.each([
   });
 });
 
+it.each(["missing", "oversize", "mislabeled", "escape"])(
+  "omits a %s local logo without invalidating the extension",
+  async (kind) => {
+    const icon = "logo.png";
+    const script = await install("with-logo", { icon });
+    const logoPath = path.join(path.dirname(script), icon);
+    if (kind === "oversize") {
+      const bytes = Buffer.alloc(DESKTOP_EXTENSION_ICON_MAX_BYTES + 1);
+      png.copy(bytes);
+      await writeFile(logoPath, bytes);
+    } else if (kind === "mislabeled") {
+      await writeFile(logoPath, Buffer.from([0xff, 0xd8, 0xff]));
+    } else if (kind === "escape") {
+      const outside = path.join(directory, "outside.png");
+      await writeFile(outside, png);
+      await symlink(outside, logoPath);
+    }
+    const { extensions } = await listDesktopExtensions(directory);
+    expect(extensions).toMatchObject([
+      { id: "with-logo", manifest: { icon }, status: { state: "disabled" } },
+    ]);
+    expect(extensions[0]).not.toHaveProperty("iconDataUrl");
+  },
+);
+
 it("rejects unsafe repository protocols during discovery", async () => {
   await install("unsafe-link", { repository: "javascript:alert(1)" });
   const { extensions } = await discoverDesktopExtensions(root);
@@ -201,13 +232,15 @@ it("bounds list previews without marking otherwise valid installations invalid",
   ]);
 });
 
-it("packages nested screenshots and rejects invalid screenshot bytes before publishing", async () => {
+it("packages nested logos and screenshots and rejects invalid image bytes before publishing", async () => {
+  const icon = "images/logo.png";
   const screenshot = "images/sidebar.png";
-  const source = path.dirname(await install("gallery", { screenshots: [screenshot] }));
+  const source = path.dirname(await install("gallery", { icon, screenshots: [screenshot] }));
   await mkdir(path.join(source, "src"));
   await mkdir(path.join(source, "images"));
   await writeFile(path.join(source, "src", "index.ts"), "define({ activate() {} });");
   await writeFile(path.join(source, screenshot), png);
+  await writeFile(path.join(source, icon), png);
   const outputRoot = path.join(directory, "output");
   const buildTool = fileURLToPath(
     new URL("../../../tools/build-desktop-extension.mjs", import.meta.url),
@@ -215,13 +248,19 @@ it("packages nested screenshots and rejects invalid screenshot bytes before publ
   const build = () => promisify(execFile)(process.execPath, [buildTool, source, outputRoot]);
   await build();
   const output = path.join(outputRoot, "gallery", screenshot);
+  const outputIcon = path.join(outputRoot, "gallery", icon);
   expect(await readFile(output)).toEqual(png);
+  expect(await readFile(outputIcon)).toEqual(png);
   expect((await discoverDesktopExtensions(outputRoot)).extensions).toMatchObject([
-    { state: "valid", manifest: { screenshots: [screenshot] } },
+    { state: "valid", manifest: { icon, screenshots: [screenshot] } },
   ]);
   await writeFile(path.join(source, screenshot), "not a PNG");
   await expect(build()).rejects.toThrow(/Screenshot.*does not match image\/png/u);
   expect(await readFile(output)).toEqual(png);
+  await writeFile(path.join(source, screenshot), png);
+  await writeFile(path.join(source, icon), "not a PNG");
+  await expect(build()).rejects.toThrow(/Icon.*does not match image\/png/u);
+  expect(await readFile(outputIcon)).toEqual(png);
 });
 
 it.skipIf(!process.getuid)("rejects another user's writable root and files on POSIX", async () => {

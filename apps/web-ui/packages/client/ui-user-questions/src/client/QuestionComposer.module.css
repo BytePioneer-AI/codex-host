@@ -7,16 +7,15 @@
   padding: 6px calc(var(--dsh-composer-side-clearance) + 16px) 10px;
 }
 
-/* Shared question surface: content scrolls independently of the footer. */
+/* Shared question surface: fixed top chrome and footer frame the scrolling content. */
 .card {
   display: flex;
   flex-direction: column;
   width: 100%;
   max-width: var(--dsh-chat-content-width);
-  /* Composer seat sits in a fixed-height conversation column (overflow
-     hidden): cap the card against the viewport and scroll the option list
-     so header and footer actions stay reachable on long batches. */
+  /* Cap the card against the viewport so header and footer stay accessible. */
   max-height: min(60vh, 520px);
+  max-height: min(60dvh, 520px);
   min-width: 0;
   padding: 0;
   border: 0;
@@ -26,11 +25,7 @@
   box-shadow: var(--dsw-elevation-panel);
   color: var(--dsw-alias-label-primary);
   overflow: hidden;
-  /* Elevated surface in dark, same as the menus: the body inside scrolls
-     once the card hits the cap above, so the thumb takes the l2 pair. Declared
-     on the card because the elevation belongs to the surface, and the custom
-     properties inherit down to `.body` (see ui-theme styles/scrollbar.css
-     for the rebinding contract). */
+  /* The scroll area inherits the scrollbar colors of the elevated surface. */
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
@@ -40,22 +35,55 @@
   box-sizing: border-box;
 }
 
-/* Collapsed to the header strip: drop the height cap and the inner scroll
-   seat so the card hugs the title row, freeing the viewport for the
-   conversation above while the question stays pending. */
-.cardMinimized {
-  max-height: none;
+/* Fixed top bar: eyebrow, countdown status, minimize and close never scroll away. */
+.topBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: 8px 12px;
+  padding: 12px 16px 4px 20px;
 }
 
-/* The header strip is the whole card when collapsed: the title row needs
-   bottom padding once the body that normally carries it is hidden. */
-.cardMinimized .header {
-  padding-bottom: 16px;
+.cardMinimized .topBar {
+  padding-bottom: 14px;
 }
 
-/* Header button group: minimize sits next to the close action, both on the
-   same 24px icon-button grid. */
-.headerActions {
+.topBarLeading {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 2px;
+}
+
+.eyebrow {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.minimizedTitle {
+  margin: 0;
+  font-size: 15px;
+  line-height: 21px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.iconActions {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -64,35 +92,45 @@
 
 .waitButton {
   white-space: nowrap;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .waitStatus {
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
-  line-height: 24px;
+  line-height: 20px;
   white-space: nowrap;
 }
 
-/* Title and header actions share the content's horizontal inset. */
-.header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-shrink: 0;
-  padding: 16px 16px 0 20px;
+.scrollArea {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.headingBlock {
+.scrollArea:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+}
+
+.promptBlock {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 20px 0;
+}
+
+.promptContent {
+  position: relative;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.eyebrow {
-  margin-bottom: 4px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  line-height: 16px;
 }
 
 .title {
@@ -104,11 +142,7 @@
 
 .detail {
   min-width: 0;
-  max-height: min(24vh, 160px);
-  flex-shrink: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  margin: 12px 20px 4px;
+  margin-top: 10px;
   padding: 10px 12px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: var(--dsw-radius-md);
@@ -123,6 +157,38 @@
   max-width: 100%;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.promptToggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-business-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 120ms ease;
+}
+
+.promptToggle:active {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+.promptToggle:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
 }
 
 .footerActions {
@@ -147,6 +213,7 @@
   line-height: 24px;
   font-weight: 400;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
   /* Narrow the plain spaces around the slash without touching glyph tracking. */
   word-spacing: -2px;
 }
@@ -163,15 +230,20 @@
   background: transparent;
   color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
-.iconButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+.iconButton:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
   color: var(--dsw-alias-label-primary);
 }
 
 .iconButton:focus-visible,
-.detail:focus-visible,
 .option:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
@@ -180,15 +252,6 @@
 .iconButton:disabled {
   color: var(--dsw-alias-label-dimmed);
   cursor: default;
-}
-
-.body {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .options {
@@ -220,18 +283,22 @@
   color: inherit;
   text-align: left;
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
   transition:
     background-color 120ms ease,
-    border-color 120ms ease;
+    border-color 120ms ease,
+    transform 100ms ease;
 }
 
-.option:hover:not(:disabled),
 .optionSelected {
   background: var(--dsw-alias-interactive-bg-hover);
+  border-color: var(--dsw-alias-label-secondary);
 }
 
-.optionSelected {
-  border-color: var(--dsw-alias-label-secondary);
+.option:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
 }
 
 .optionSelected .number {
@@ -371,14 +438,9 @@
     border-color 120ms ease;
 }
 
-.customRow:hover,
 .customRow:focus-within,
 .customRowActive {
   background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.customRow:focus-within,
-.customRowActive {
   border-color: var(--dsw-alias-border-l2);
 }
 
@@ -481,47 +543,185 @@
   display: none;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .iconButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+    color: var(--dsw-alias-label-primary);
+  }
+
+  .option:hover:not(:disabled),
+  .customRow:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+
+  .promptToggle:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+@media (pointer: coarse) {
+  .field > * {
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  .iconButton {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 @media (max-width: 720px) {
+  .frame {
+    padding: 4px 8px 8px;
+  }
+
   .card {
-    border-radius: var(--dsw-radius-xl);
+    max-width: 100%;
+    max-height: min(78vh, 640px);
+    max-height: min(78dvh, 640px);
+    border-radius: 22px;
   }
 
-  .header {
-    gap: 8px;
-    padding: 14px 12px 0 16px;
+  .topBar {
+    gap: 0 4px;
+    padding: 4px 4px 4px 14px;
+    border-bottom: 1px solid var(--dsw-alias-border-l1);
   }
 
-  .options {
-    padding: 2px 16px;
+  .cardMinimized .topBar {
+    border-bottom: none;
+    padding-bottom: 4px;
+  }
+
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    color: var(--dsw-alias-label-secondary);
+  }
+
+  .iconButton {
+    width: 44px;
+    height: 44px;
+  }
+
+  .statusGroup {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: space-between;
+    margin-right: 10px;
+    padding: 6px 0 6px;
+    border-top: 1px solid var(--dsw-alias-border-l1);
+  }
+
+  .waitButton {
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 12.5px;
+    border-radius: 999px;
+    corner-shape: round;
+  }
+
+  .promptBlock {
+    padding: 12px 14px 4px;
+  }
+
+  .promptCollapsed {
+    max-height: 92px;
+    overflow: hidden;
+  }
+
+  .promptFaded::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    height: 32px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, transparent, var(--dsw-specific-input-major) 90%);
+  }
+
+  .promptToggle {
+    min-height: 36px;
+    padding: 4px 12px;
+    margin-top: 8px;
+    font-size: 12.5px;
   }
 
   .title {
     font-size: 15px;
-    line-height: 21px;
+    line-height: 22px;
+    font-weight: 600;
+  }
+
+  .detail {
+    margin-top: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 19px;
+  }
+
+  .options {
+    margin: 8px 0 12px;
+    padding: 2px 14px;
+    gap: 8px;
   }
 
   .option,
   .customRow {
-    padding: 9px 10px;
+    min-height: 46px;
+    padding: 10px 12px;
+    border-radius: 14px;
   }
 
-  .detail {
-    margin-right: 16px;
-    margin-left: 16px;
+  .optionLabel {
+    font-size: 14px;
+    line-height: 20px;
+  }
+
+  .description {
+    font-size: 13px;
+    line-height: 19px;
+    margin-top: 2px;
+  }
+
+  .number,
+  .checkbox {
+    margin-top: 1px;
   }
 
   .footer {
-    padding: 10px 12px;
+    padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    gap: 6px 8px;
   }
 
   .footerActions {
     flex-shrink: 0;
+    gap: 6px;
+  }
+
+  .footerActions > button {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .pager {
+    gap: 0;
+  }
+
+  .progress {
+    padding: 0 2px;
+    font-size: 12.5px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .option,
-  .customRow {
+  .customRow,
+  .iconButton,
+  .promptToggle {
     transition: none;
   }
 }

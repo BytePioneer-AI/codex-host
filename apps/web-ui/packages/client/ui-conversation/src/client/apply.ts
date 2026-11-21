@@ -498,6 +498,10 @@ export function apply(ctx: Context, config: Config = Config({})): void {
               },
             },
             bindDraftPersistence: (write) => inputHub.shell(sessionId).bindDraftPersistence(write),
+            onRevealResponseAnnotation: (listener) => {
+              const scope = sessions.scope(sessionId);
+              return scope?.on("conversation/reveal-response-annotation", listener) ?? (() => {});
+            },
             openView,
           };
         },
@@ -573,6 +577,7 @@ export function apply(ctx: Context, config: Config = Config({})): void {
               removeAttachment: undefined,
               resolveDraftAttachments: undefined,
               retryFileUpload: undefined,
+              revealResponseAnnotation: undefined,
               toggleCommandMenu: undefined,
               stop: undefined,
               hooks: {
@@ -650,6 +655,10 @@ export function apply(ctx: Context, config: Config = Config({})): void {
             retryFileUpload: (id) => {
               if (sessions.binding(sessionId) !== undefined)
                 conversation.retryFileUpload(sessionId, id);
+            },
+            revealResponseAnnotation: (id) => {
+              const scope = sessions.scope(sessionId);
+              scope?.emit(scope, "conversation/reveal-response-annotation", id);
             },
             toggleCommandMenu:
               inputTriggers === undefined

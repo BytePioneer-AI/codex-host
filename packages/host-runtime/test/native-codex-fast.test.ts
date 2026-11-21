@@ -159,7 +159,7 @@ it("changes the native speed tier only after matching confirmation, preserving T
   });
 });
 
-it("uses native Model and priority parameters when the shared official catalog is used for delegation", async () => {
+it.each(["priority", "ultrafast"])("delegates %s with Max", async (serviceTier) => {
   let api: DelegationControlApi | undefined;
   const fixture = createFixture({
     onDelegationApi: (value) => {
@@ -185,8 +185,8 @@ it("uses native Model and priority parameters when the shared official catalog i
               data: [
                 {
                   model: "native",
-                  serviceTiers: [{ id: "priority" }],
-                  supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+                  serviceTiers: [{ id: "priority" }, { id: "ultrafast" }],
+                  supportedReasoningEfforts: [{ reasoningEffort: "max" }],
                 },
               ],
             }
@@ -194,7 +194,7 @@ it("uses native Model and priority parameters when the shared official catalog i
             ? {
                 thread: { id: "native-child" },
                 model: "native",
-                serviceTier: "priority",
+                serviceTier,
               }
             : request.method === "turn/start"
               ? { turn: { id: "turn-child" } }
@@ -204,25 +204,31 @@ it("uses native Model and priority parameters when the shared official catalog i
       fixture.official.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
     }
   });
-  const fast = encodeOfficialCodexModelRef("native", "priority");
   if (!api) throw new Error("Delegation API was not registered");
+  const { inspection } = await api.inspect({ harnessId: "codex", cwd: "/synthetic" });
+  if (inspection.status !== "ready") throw new Error("Missing catalog");
+  const model =
+    serviceTier === "priority"
+      ? inspection.catalog.models.find(({ label }) => label === "native")?.fastModel
+      : inspection.catalog.models.find(({ label }) => label === "native · Ultrafast")?.ref;
+  if (!model) throw new Error(`Missing advertised ${serviceTier} selection`);
   const result = await api.start({
     harnessId: "codex",
     parentThreadId: "parent",
     task: "test",
     cwd: "/synthetic",
-    model: fast,
-    thinkingOptionId: harnessThinkingOptionIdSchema.parse("high"),
+    model,
+    thinkingOptionId: harnessThinkingOptionIdSchema.parse("max"),
   });
   for (const method of ["thread/start", "turn/start"])
     expect(calls.find((call) => call.method === method)).toMatchObject({
-      params: { model: "native", serviceTier: "priority" },
+      params: { model: "native", serviceTier },
     });
   expect(calls.find((call) => call.method === "turn/start")).toMatchObject({
-    params: { effort: "high" },
+    params: { effort: "max" },
   });
   expect(result).toMatchObject({
-    configuration: { requested: { model: fast }, effective: { effectiveModel: fast } },
+    configuration: { requested: { model }, effective: { effectiveModel: model } },
   });
 });
 

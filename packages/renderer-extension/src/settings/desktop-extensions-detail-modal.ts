@@ -6,6 +6,7 @@ import {
   catalogDisplayName,
   contentLocaleMessages,
   createEl,
+  createExtensionIconElement,
   createTrustBadge,
   extensionDescription,
   extensionDisplayName,
@@ -16,6 +17,8 @@ import {
   isValidExtensionCount,
   parseSafeRepositoryUrl,
   resolveAttentionDetail,
+  resolveExtensionIconCategory,
+  resolveInstalledExtensionIconUrl,
   resolveOptionalLocalizedText,
   safeScreenshotUrls,
   statusTone,
@@ -80,6 +83,7 @@ export function createDesktopExtensionDetailModal(options: {
   let dialog: HTMLDialogElement | null = null;
   let openExtensionId: string | null = null;
   let activeScreenshotIndex: number | null = null;
+  let renderedIconKey = "";
   let renderedScreenshotsKey = "";
   let renderedDetailsKey = "";
   let confirmingUninstall = false;
@@ -88,6 +92,7 @@ export function createDesktopExtensionDetailModal(options: {
   let currentState: DesktopExtensionDetailModalState | null = null;
 
   // Persistent DOM nodes inside the open modal so background polls update in-place cleanly.
+  let iconSlot: HTMLDivElement | null = null;
   let titleRow: HTMLDivElement | null = null;
   let titleEl: HTMLHeadingElement | null = null;
   let metaRow: HTMLDivElement | null = null;
@@ -381,6 +386,7 @@ export function createDesktopExtensionDetailModal(options: {
   ): void => {
     if (
       !dialog ||
+      !iconSlot ||
       !titleRow ||
       !titleEl ||
       !metaRow ||
@@ -417,6 +423,23 @@ export function createDesktopExtensionDetailModal(options: {
     }
     if (state.activeMutationId === extensionId) dialog.dataset.busy = "true";
     else delete dialog.dataset.busy;
+
+    const categories = installed?.manifest?.categories ?? catalogEntry?.categories;
+    const iconUrl = resolveInstalledExtensionIconUrl(installed, catalogEntry);
+    const primaryIconCategory = resolveExtensionIconCategory(categories);
+    const iconKey = `${extensionId}\0${iconUrl ?? ""}\0${primaryIconCategory}`;
+    if (iconKey !== renderedIconKey) {
+      renderedIconKey = iconKey;
+      iconSlot.replaceChildren(
+        createExtensionIconElement({
+          document,
+          iconUrl,
+          categories,
+          size: "detail",
+          alt: displayName,
+        }),
+      );
+    }
 
     // Title row: bilingual title + trust tier badge + installed status badge + update chip.
     titleEl.textContent = displayName;
@@ -481,7 +504,6 @@ export function createDesktopExtensionDetailModal(options: {
       );
     }
 
-    const categories = installed?.manifest?.categories ?? catalogEntry?.categories;
     if (categories && categories.length > 0) {
       const categoriesRow = createEl(document, "div", "settings-extensions-categories");
       for (const category of categories) {
@@ -612,6 +634,7 @@ export function createDesktopExtensionDetailModal(options: {
     dialog = null;
     openExtensionId = null;
     activeScreenshotIndex = null;
+    renderedIconKey = "";
     renderedScreenshotsKey = "";
     renderedDetailsKey = "";
     confirmingUninstall = false;
@@ -620,6 +643,7 @@ export function createDesktopExtensionDetailModal(options: {
     currentState = null;
     currentScreenshots = [];
     currentDisplayName = "";
+    iconSlot = null;
     titleRow = null;
     titleEl = null;
     metaRow = null;
@@ -657,6 +681,8 @@ export function createDesktopExtensionDetailModal(options: {
     // Header
     const modalHeader = createEl(document, "div", "settings-extensions-detail-modal__header");
     const headerTop = createEl(document, "div", "settings-extensions-detail-modal__header-top");
+    const headerHero = createEl(document, "div", "settings-extensions-detail-modal__hero");
+    iconSlot = createEl(document, "div", "settings-extensions-detail-modal__icon-slot");
     const headerIdentity = createEl(document, "div", "settings-extensions-detail-modal__identity");
     titleRow = createEl(document, "div", "settings-extensions-detail-modal__title-row");
     titleEl = createEl(document, "h2", "settings-extensions-detail-modal__title");
@@ -665,6 +691,7 @@ export function createDesktopExtensionDetailModal(options: {
 
     metaRow = createEl(document, "div", "settings-extensions-detail-modal__meta");
     headerIdentity.append(titleRow, metaRow);
+    headerHero.append(iconSlot, headerIdentity);
 
     const closeButton = createEl(
       document,
@@ -679,7 +706,7 @@ export function createDesktopExtensionDetailModal(options: {
       modal.close();
     });
 
-    headerTop.append(headerIdentity, closeButton);
+    headerTop.append(headerHero, closeButton);
 
     actionBar = createEl(document, "div", "settings-extensions-detail-modal__action-bar");
     modalToggle = createPreferenceSwitch(document, switchId, alertId);
@@ -848,6 +875,7 @@ export function createDesktopExtensionDetailModal(options: {
       if (!installed && !catalogEntry) return;
       if (openExtensionId !== extensionId) {
         activeScreenshotIndex = null;
+        renderedIconKey = "";
         renderedScreenshotsKey = "";
         renderedDetailsKey = "";
         confirmingUninstall = false;

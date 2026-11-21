@@ -11,7 +11,6 @@
   },
   "include": [
     "../packages/**/test/**/*.ts",
-    "../packages/desktop-extensions/**/src/**/*.ts",
     "../packages/renderer-extension/src/assets.d.ts",
     "../packages/web-server/src/web-push.d.ts",
     "../packages/web-server/src/proxy-from-env.d.ts",

@@ -37,6 +37,7 @@
 .control {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 8px;
 }
 
@@ -79,7 +80,6 @@
   opacity: 0;
 }
 
-.stepper:hover .arrows,
 .stepper:focus-within .arrows {
   opacity: 1;
 }
@@ -99,13 +99,69 @@
   background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 75%, transparent);
   color: var(--dsw-alias-label-primary);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.arrow:hover:not(:disabled) {
+.arrow:active:not(:disabled) {
   background: var(--dsw-alias-bg-layer-1);
 }
 
 .arrow:disabled {
   color: var(--dsw-alias-label-caption);
   cursor: default;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .stepper:hover .arrows {
+    opacity: 1;
+  }
+
+  .arrow:hover:not(:disabled) {
+    background: var(--dsw-alias-bg-layer-1);
+  }
+}
+
+@media (max-width: 640px), (hover: none), (pointer: coarse) {
+  .row {
+    min-height: 44px;
+    padding: 12px 0;
+    gap: 12px;
+  }
+
+  .rowText {
+    padding-right: 0;
+  }
+
+  .stepper {
+    min-width: 112px;
+    height: 44px;
+    padding: 0 4px 0 12px;
+    gap: 6px;
+    justify-content: space-between;
+  }
+
+  .value {
+    font-weight: 500;
+  }
+
+  .arrows {
+    position: static;
+    flex-direction: row-reverse;
+    gap: 4px;
+    opacity: 1;
+  }
+
+  .arrow {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--dsw-radius-sm);
+    background: var(--dsw-alias-bg-layer-2);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+  }
+
+  .arrow > svg {
+    transform: scale(1.25);
+  }
 }

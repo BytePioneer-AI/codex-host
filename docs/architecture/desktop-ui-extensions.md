@@ -9,7 +9,7 @@ Desktop 扩展是可选的受信任代码。界面入口只在通过 codexhost �
 ```text
 $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extensions/
   enabled.json                          # 管理入口写入；缺失或损坏时不启用任何扩展
-  sidebar-thread-tree/                  # 必须是实际目录，目录名与 id 一致
+  example-thread-tree/                  # 必须是实际目录，目录名与 id 一致
     manifest.json
     desktop.js
     desktop.css                          # 可选
@@ -21,12 +21,10 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 ```json
 {
   "manifestVersion": 1,
-  "id": "sidebar-thread-tree",
-  "name": { "en": "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
+  "id": "example-thread-tree",
+  "name": { "en": "Example Thread Tree", "zh-CN": "示例委派树" },
   "version": "0.1.0",
   "description": { "en": "Groups delegated Threads", "zh-CN": "归组委派的 Thread" },
-  "author": "codexhost",
-  "repository": "https://github.com/BytePioneer-AI/codex-host",
   "details": {
     "en": "Expand a parent Thread to see its delegated work.\n\nOnly local sidebar rows are affected.",
     "zh-CN": "展开父 Thread，查看委派的工作。\n\n仅影响本机侧栏行。"
@@ -45,11 +43,14 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 - `author`、`repository` 和 `details` 是可选展示字段。作者名去掉首尾空白后为 1–128 字符；仓库链接限 HTTP(S)、至多 2048 字符，推荐 GitHub HTTPS 链接；详细介绍支持多段落，`en` 必填、`zh-CN` 可选，每种语言最多 16384 字符。
 - 资源必须解析到扩展目录内的普通文件。POSIX 上，扩展根、扩展目录、资源经过的子目录和文件须归当前用户所有，且不能允许同组或其他用户写入。新建目录建议使用 `0700`。
 - `screenshots` 可选，最多 4 个不重复的相对路径（以 `/` 分隔；路径段不得以点或空格结尾）。只接受 `.png`、`.jpg`、`.jpeg`、`.webp`（扩展名不区分大小写），文件签名必须与扩展名匹配，每张最多 512 KiB，每扩展合计最多 2 MiB。缺失、越界、超限或类型不符会将扩展标为无效，并报告具体截图及原因。有效扩展的 `screenshotDataUrls` 按 `manifest.screenshots` 顺序返回，可直接作为 `<img src>`，不需要文件 URL 或额外网络请求。每次管理列表最多包含 8 MiB 原始截图（base64 编码前），按扩展目录名排序分配；剩余预算不足时省略该扩展的整组预览，给出列表诊断，不影响扩展状态。截图字节不参与热更新 hash 或注入快照。
+- `icon` 是可选 Logo 路径，沿用截图的路径、文件格式和签名规则，文件最多 128 KiB。管理列表返回通过本地校验的 `iconDataUrl`；若文件缺失、越界、超限或签名不符，则省略该字段，不改变扩展状态。ZIP 安装拒绝声明了不合规 Logo 的包。Logo 字节不参与热更新 hash 或注入快照。
 - 文件上限：manifest 128 KiB、脚本 2 MiB、样式 256 KiB。最多发现 64 个扩展，单次注入的快照最多 8 MiB。
 
 ## 市场与包管理
 
-市场后端默认读取独立索引库的 `main/catalog.json`，GitHub Raw 不可用时尝试 jsDelivr；两者均不可用时返回两条内置官方元数据。进程内缓存 5 分钟；`CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL` 可改为 HTTP(S) 地址或本地绝对路径。详见[独立索引库模板](../../registry/desktop-extensions/README.md)。官方种子 ZIP 在索引库首次发布资产后可下载。
+市场后端默认读取独立索引库的 `main/catalog.json`，GitHub Raw 不可用时尝试 jsDelivr；两者均不可用时返回空的内置回退列表，仍可通过链接或 ZIP 安装扩展。进程内缓存 5 分钟；`CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL` 可改为 HTTP(S) 地址或本地绝对路径。详见[独立索引库模板](../../registry/desktop-extensions/README.md)。
+
+索引条目可用 `icon` 提供公开的 Logo URL。索引生成器校验 URL 返回的图片与包内字节一致。
 
 索引条目可包含可选的 `downloads`（非负整数）。配置 `CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL` 后，Host／Console 只在从索引成功安装后异步向计数服务发送一次扩展 ID（含重装和更新），不发送账号或设备标识；上报失败不影响安装。索引定时合并计数，缺失时不补零。Worker 部署和免费额度限制见上面的索引库模板。
 
@@ -110,14 +111,14 @@ $CODEXHOST_DATA_DIR/desktop-extensions/  # 默认 ~/.codexhost/desktop-extension
 
 ## 作者指南
 
-1. 从仓库中的[角标](../../packages/desktop-extensions/sidebar-delegation-badges)或[委派树](../../packages/desktop-extensions/sidebar-thread-tree)样板开始。角标在父行显示子 Thread 数量与最紧急状态，点开可导航；委派树同时占用两个槽位，在每个列表内归组并显示子 Thread 和实时活动，因此两个样板不能同时启用。
-2. 写 `manifest.json`、`src/index.ts`，需要样式时加 `src/desktop.css` 并在 manifest 声明。仓库样板源码只导入包内相对路径与 `@codexhost/shared-contracts`，不导入 Node 内置模块或 Harness SDK。用 `dom.mount` 挂载自有节点，用 `dom.mark` 加扩展 CSS 隐藏或装饰原生行，**不要直接改原生元素的 `style` 或 `class`**。若 id 含 `.` 或 `_`，生成选择器用 `CSS.escape` 转义完整属性名，例如 `` `[${CSS.escape(`data-cx-${api.id}-hidden`)}]` ``；手写 CSS 可写 `[data-cx-example\.tree\_v1-hidden]`。
+1. 在独立的扩展源码目录写 `manifest.json` 和 `src/index.ts`；需要样式时加 `src/desktop.css` 并在 manifest 声明。入口写法见[扩展开发 Skill](../../.agents/skills/codexhost-add-desktop-extension/SKILL.md)。
+2. 界面入口只导入包内相对路径与 `@codexhost/shared-contracts`，不导入 Node 内置模块或 Harness SDK。用 `dom.mount` 挂载自有节点，用 `dom.mark` 加扩展 CSS 隐藏或装饰原生行，**不要直接改原生元素的 `style` 或 `class`**。若 id 含 `.` 或 `_`，生成选择器用 `CSS.escape` 转义完整属性名，例如 `` `[${CSS.escape(`data-cx-${api.id}-hidden`)}]` ``；手写 CSS 可写 `[data-cx-example\.tree\_v1-hidden]`。
 3. 在仓库根构建，**直接输出到目标扩展目录，不要用符号链接**。下面的根路径须与运行中的 Console 和 Desktop 使用的数据目录一致：
 
    ```bash
+   : "${EXTENSION_SOURCE_DIR:?请先设置扩展源码目录}"
    npx tsc -b packages/harness-plugin-files
-   node tools/build-desktop-extension.mjs \
-     packages/desktop-extensions/sidebar-thread-tree \
+   node tools/build-desktop-extension.mjs "$EXTENSION_SOURCE_DIR" \
      "${CODEXHOST_DATA_DIR:-$HOME/.codexhost}/desktop-extensions"
    ```
 

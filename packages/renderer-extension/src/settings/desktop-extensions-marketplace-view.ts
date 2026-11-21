@@ -150,6 +150,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
         extensionId: entry.id,
         cardKind: "marketplace",
         displayName,
+        iconUrl: (entry as { readonly icon?: string }).icon,
         author: entry.author,
         version: entry.version,
         repository: entry.repository,

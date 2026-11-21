@@ -16,6 +16,17 @@ export interface DesktopExtensionsMessages {
   readonly refresh: string;
   readonly refreshing: string;
   readonly retry: string;
+  readonly createButton: string;
+  readonly createDialogTitle: string;
+  readonly createSteps: readonly string[];
+  readonly createPromptLabel: string;
+  readonly createPromptTemplate: string;
+  readonly createCopyPrompt: string;
+  readonly createPromptCopied: string;
+  readonly createPromptCopiedHint: string;
+  readonly createCopyFailed: string;
+  readonly createViewDocs: string;
+  readonly createSubmitMarketplace: string;
   readonly importButton: string;
   readonly tabListLabel: string;
   readonly tabInstalled: string;
@@ -143,7 +154,33 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   refresh: "Refresh",
   refreshing: "Refreshing…",
   retry: "Retry",
-  importButton: "Import extension",
+  createButton: "Create plugin",
+  createDialogTitle: "Create a codexhost plugin",
+  createSteps: Object.freeze([
+    "Copy the prompt below, replace the idea placeholder, and send it to your AI assistant.",
+    "Test the generated plugin locally via “Import plugin” (GitHub URL or local .zip).",
+    "Push your plugin to a public GitHub repository and submit it to the Marketplace.",
+  ]),
+  createPromptLabel: "Prompt for your AI assistant",
+  createPromptTemplate: [
+    "Please read and strictly follow the official codexhost Desktop plugin authoring guide (Skill):",
+    "https://raw.githubusercontent.com/BytePioneer-AI/codex-host/main/.agents/skills/codexhost-add-desktop-extension/SKILL.md",
+    "",
+    "Build a codexhost Desktop plugin for me with the following goal:",
+    "[Describe what you want the plugin to do, e.g. add a sidebar widget, a full theme skin, or a custom settings dashboard]",
+    "",
+    "Requirements:",
+    "1. Include bilingual (en & zh-CN) name, description, and Markdown details in manifest.json, plus appropriate categories and optional icon / screenshots.",
+    "2. Output ready-to-install manifest.json and built desktop.js (plus optional desktop.css / backend.mjs) so it works without a build step on install.",
+    "3. Show me how to test it locally via Import plugin, and how to publish my public GitHub repo to BytePioneer-AI/codexhost-extensions-registry.",
+  ].join("\n"),
+  createCopyPrompt: "Copy prompt",
+  createPromptCopied: "Copied",
+  createPromptCopiedHint: "Copied — paste this prompt into your AI assistant.",
+  createCopyFailed: "Could not copy prompt",
+  createViewDocs: "Authoring guide",
+  createSubmitMarketplace: "Submit to Marketplace",
+  importButton: "Import plugin",
   tabListLabel: "Desktop extension views",
   tabInstalled: "Installed ({count})",
   tabMarketplace: "Marketplace ({count})",
@@ -202,7 +239,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   marketplaceEmptyDescription:
     "Refresh to check for newly published extensions, or import one from GitHub or a local .zip package.",
   marketplaceFallbackNotice:
-    "Showing the built-in official catalog while the remote catalog is unreachable.",
+    "The remote catalog is unreachable. You can still install extensions from a link or ZIP.",
   marketplaceLoadFailed: "Could not load extension marketplace: {message}",
   installedSuccess: "Installed “{name}” (v{version}). Enable it when ready.",
   updatedSuccess: "Updated “{name}” to v{version}.",
@@ -255,7 +292,7 @@ export const desktopExtensionsEnglish: DesktopExtensionsMessages = Object.freeze
   revisionConflictBanner:
     "Extension settings were updated elsewhere. The latest list has been reloaded—please try again.",
   actionFailed: "Could not update extension settings: {message}",
-  importDialogTitle: "Import Desktop extension",
+  importDialogTitle: "Import plugin",
   importTabUrl: "GitHub link",
   importTabZip: "Local .zip",
   importUrlLabel: "GitHub repository URL",
@@ -299,7 +336,33 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   refresh: "刷新",
   refreshing: "刷新中…",
   retry: "重试",
-  importButton: "导入扩展",
+  createButton: "制作插件",
+  createDialogTitle: "制作 codexhost 插件",
+  createSteps: Object.freeze([
+    "复制下方提示词，把【】里的需求换成你的想法，直接发给你的 AI。",
+    "AI 按规范生成后，点击「导入插件」在本地测试效果。",
+    "推送到你的公开 GitHub 仓库，再点击下方按钮投稿到官方插件市场。",
+  ]),
+  createPromptLabel: "发给 AI 的提示词（可直接编辑后复制）",
+  createPromptTemplate: [
+    "请先阅读并严格遵循 codexhost 官方插件开发规范（Skill）：",
+    "https://raw.githubusercontent.com/BytePioneer-AI/codex-host/main/.agents/skills/codexhost-add-desktop-extension/SKILL.md",
+    "",
+    "帮我开发一个 codexhost Desktop 插件，需求如下：",
+    "【在这里描述你想做的插件功能，例如：在侧栏显示…… / 做一个全皮肤主题 / 做一个带独立设置页的数据统计面板】",
+    "",
+    "要求：",
+    "1. 按 Skill 规范补齐中英文 name、description、Markdown 格式 details、合适分类，以及可选的 icon 图标与 screenshots 截图路径；",
+    "2. 生成可直接安装的 manifest.json 与构建后的 desktop.js（及可选 desktop.css / backend.mjs），保证推送到 GitHub 默认分支即可免打包安装；",
+    "3. 完成后告诉我如何通过「导入插件」在本地测试，以及如何推送到我的公开 GitHub 仓库并投稿到官方索引库 BytePioneer-AI/codexhost-extensions-registry。",
+  ].join("\n"),
+  createCopyPrompt: "复制提示词",
+  createPromptCopied: "已复制",
+  createPromptCopiedHint: "已复制提示词，可直接粘贴发给你的 AI。",
+  createCopyFailed: "复制失败",
+  createViewDocs: "开发规范",
+  createSubmitMarketplace: "投稿到官方市场",
+  importButton: "导入插件",
   tabListLabel: "Desktop 扩展视图",
   tabInstalled: "已安装 ({count})",
   tabMarketplace: "市场 ({count})",
@@ -310,7 +373,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   loadFailed: "无法加载 Desktop 扩展：{message}",
   diagnosticsTitle: "配置诊断",
   emptyTitle: "尚未发现 Desktop 扩展",
-  emptyDescription: "可前往「市场」一键安装、点击「导入扩展」，或将扩展目录放到以下路径后刷新：",
+  emptyDescription: "可前往「市场」一键安装、点击「导入插件」，或将扩展目录放到以下路径后刷新：",
   emptyPathHint: "$CODEXHOST_DATA_DIR/desktop-extensions/<id>/",
   categoryAll: "全部",
   categoryFilterLabel: "按分类筛选",
@@ -353,7 +416,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
   marketplaceUnavailableDescription: "请连接到支持 Desktop 扩展市场的本机 codexhost Host 后再试。",
   marketplaceEmptyTitle: "市场暂无可用扩展",
   marketplaceEmptyDescription: "可点击刷新获取最新目录，或通过 GitHub 链接 / 本地 .zip 包导入。",
-  marketplaceFallbackNotice: "远端市场目录暂不可达，当前展示内置官方目录。",
+  marketplaceFallbackNotice: "远端市场目录暂不可达。你仍可通过链接或 ZIP 安装扩展。",
   marketplaceLoadFailed: "无法加载扩展市场：{message}",
   installedSuccess: "已安装“{name}”（v{version}），可按需开启。",
   updatedSuccess: "已将“{name}”更新至 v{version}。",
@@ -404,7 +467,7 @@ export const desktopExtensionsChinese: DesktopExtensionsMessages = Object.freeze
     "无法启用“{name}”：槽位 {slots} 已被 {other} 占用，请先禁用 {other}。",
   revisionConflictBanner: "扩展配置已在其他入口更新，已自动刷新最新列表，请重试。",
   actionFailed: "更新扩展配置失败：{message}",
-  importDialogTitle: "导入 Desktop 扩展",
+  importDialogTitle: "导入插件",
   importTabUrl: "GitHub 链接",
   importTabZip: "本地 .zip 包",
   importUrlLabel: "GitHub 仓库链接",

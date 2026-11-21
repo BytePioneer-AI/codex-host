@@ -413,6 +413,8 @@ export interface ConversationSessionInjected {
   };
   /** Bind input draft persistence to the Session-owned store instance. */
   bindDraftPersistence: (write: (draft: DraftSnapshot) => void) => () => void;
+  /** Subscribe to composer requests that reveal an unsent response annotation. */
+  onRevealResponseAnnotation: (listener: (id: DraftAttachmentId) => void) => () => void;
   /** Select and activate one View while addressing an opaque focus request to it. */
   openView: (view: string, focus: string) => void;
 }
@@ -461,6 +463,8 @@ export interface ComposerBarInjected {
     ((ids: readonly DraftAttachmentId[]) => readonly ComposerAttachment[]) | undefined;
   /** Restart one failed file upload; absent without a session. */
   retryFileUpload: ((id: DraftAttachmentId) => void) | undefined;
+  /** Reveal a selected response annotation in the current Chat view. */
+  revealResponseAnnotation: ((id: DraftAttachmentId) => void) | undefined;
   /** Toggle the existing command menu at the editor selection. */
   toggleCommandMenu: ((selection: EditSelection) => void) | undefined;
   stop: (() => void) | undefined;

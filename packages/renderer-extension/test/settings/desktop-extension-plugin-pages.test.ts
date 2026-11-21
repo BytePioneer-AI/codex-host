@@ -230,6 +230,11 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     const harness = createHarness("zh-CN");
     harness.shell.openSettings(undefined, "desktop-extensions");
 
+    // Sidebar places Plugins right after Connections at index 1.
+    const initialNavIds = harness.navButtons().map((btn) => btn.dataset.pageId);
+    expect(initialNavIds.slice(0, 3)).toEqual(["connections", "desktop-extensions", "mobile-web"]);
+    expect(harness.navButtons()[1]?.textContent).toBe("插件");
+
     // Empty state: Plugins section is completely hidden.
     expect(harness.navSections()).toEqual([
       { id: "general", text: "通用" },
@@ -262,10 +267,10 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
 
     await harness.host.reconcile([customEntry]);
 
-    // Plugins section now sits cleanly between General and Other.
+    // Plugin Settings section now sits cleanly between General and Other.
     expect(harness.navSections()).toEqual([
       { id: "general", text: "通用" },
-      { id: "plugins", text: "插件" },
+      { id: "plugins", text: "插件设置" },
       { id: "other", text: "其他" },
     ]);
     const pluginButton = must(
@@ -278,18 +283,18 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
     pluginButton.click();
     expect(harness.shell.activePageId).toBe(pluginButton.dataset.pageId);
     expect(harness.contentRoot().textContent).toContain("Custom Studio (zh-CN)");
-    expect(mountedContext).not.toBeNull();
-    await expect(must(mountedContext).assets.readDataUrl("hero.png")).resolves.toEqual({
+    const context = must<DesktopExtensionSettingsPageContext>(mountedContext, "mounted context");
+    await expect(context.assets.readDataUrl("hero.png")).resolves.toEqual({
       mimeType: "image/png",
       dataUrl: "data:image/png;base64,hero.png",
     });
-    await expect(must(mountedContext).backend.invoke("ping", { n: 1 })).resolves.toEqual({
+    await expect(context.backend.invoke("ping", { n: 1 })).resolves.toEqual({
       id: "aurora.dashboard",
       method: "ping",
       params: { n: 1 },
     });
 
-    // Disabling the extension removes the Plugins section, cleans up the custom page, and falls back to desktop-extensions.
+    // Disabling the extension removes the Plugin Settings section, cleans up the custom page, and falls back to desktop-extensions.
     await harness.host.reconcile([]);
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(harness.navSections()).toEqual([
@@ -297,6 +302,19 @@ describe("Settings shell dynamic Plugins section and declarative schema form", (
       { id: "other", text: "其他" },
     ]);
     expect(harness.shell.activePageId).toBe("desktop-extensions");
+    harness.shell.dispose();
+
+    // English locale uses "Plugins" for the page item and "Plugin Settings" for the dynamic group heading.
+    const enHarness = createHarness("en");
+    enHarness.shell.openSettings(undefined, "desktop-extensions");
+    expect(enHarness.navButtons()[1]?.dataset.pageId).toBe("desktop-extensions");
+    expect(enHarness.navButtons()[1]?.textContent).toBe("Plugins");
+    await enHarness.host.reconcile([customEntry]);
+    expect(enHarness.navSections()).toEqual([
+      { id: "general", text: "General" },
+      { id: "plugins", text: "Plugin Settings" },
+      { id: "other", text: "Other" },
+    ]);
   });
 
   it("auto-generates a native preference form from manifest.settingsSchema, saves changes to storage, and jumps from detail modal Open settings button", async () => {

@@ -102,10 +102,19 @@
   font-size: 14px;
   line-height: 22px;
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.button:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+.button:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .button:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .button:focus-visible {

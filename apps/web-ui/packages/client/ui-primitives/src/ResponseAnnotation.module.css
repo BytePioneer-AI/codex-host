@@ -84,6 +84,7 @@
 }
 
 .popover {
+  box-sizing: border-box;
   position: fixed;
   z-index: 40;
   display: flex;

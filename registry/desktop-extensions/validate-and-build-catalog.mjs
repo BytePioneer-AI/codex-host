@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { Script } from "node:vm";
 import { z } from "zod";
 import {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
   DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
@@ -122,7 +123,7 @@ function getResource(files, path, limit) {
   return bytes;
 }
 
-function validateScreenshot(bytes, path) {
+function validateImage(bytes, path, label) {
   const mime = desktopExtensionScreenshotMimeType(path);
   const valid =
     mime === "image/png"
@@ -132,7 +133,7 @@ function validateScreenshot(bytes, path) {
         : mime === "image/webp" &&
           bytes.subarray(0, 4).toString() === "RIFF" &&
           bytes.subarray(8, 12).toString() === "WEBP";
-  if (!valid) throw new Error(`Screenshot type does not match ${path}`);
+  if (!valid) throw new Error(`${label} type does not match ${path}`);
 }
 
 async function loadGitHubJson(url, headers, missingOk = false) {
@@ -270,10 +271,9 @@ async function validateSource(source, previous, starsByRepository, downloads) {
     const hits = checks.filter(([, pattern]) => pattern.test(code)).map(([label]) => label);
     if (hits.length) throw new Error(`Static scan flagged ${file}: ${hits.join(", ")}`);
   }
-  const screenshots = [];
-  for (const path of manifest.screenshots ?? []) {
-    const bytes = getResource(files, path, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES);
-    validateScreenshot(bytes, path);
+  async function resolveImage(path, maxBytes, label) {
+    const bytes = getResource(files, path, maxBytes);
+    validateImage(bytes, path, label);
     let url;
     if (release) {
       const matches = release.assets.filter(({ name }) => name === path.split("/").at(-1));
@@ -283,9 +283,18 @@ async function validateSource(source, previous, starsByRepository, downloads) {
     } else {
       url = `https://raw.githubusercontent.com/${owner}/${repo}/${selected.sha}/${path.split("/").map(encodeURIComponent).join("/")}`;
     }
-    if (!bytes.equals(await download(url, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES)))
-      throw new Error(`Published screenshot differs from ZIP: ${path}`);
-    screenshots.push(url);
+    if (!bytes.equals(await download(url, maxBytes)))
+      throw new Error(`Published ${label.toLowerCase()} differs from ZIP: ${path}`);
+    return url;
+  }
+  const icon = manifest.icon
+    ? await resolveImage(manifest.icon, DESKTOP_EXTENSION_ICON_MAX_BYTES, "Icon")
+    : undefined;
+  const screenshots = [];
+  for (const path of manifest.screenshots ?? []) {
+    screenshots.push(
+      await resolveImage(path, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES, "Screenshot"),
+    );
   }
   // Multiple sources can publish distinct assets from the same GitHub repository.
   const repositoryKey = api.toLowerCase();
@@ -304,6 +313,7 @@ async function validateSource(source, previous, starsByRepository, downloads) {
     categories: manifest.categories,
     slots: manifest.slots,
     trustTier: source.trustTier,
+    icon,
     screenshots: screenshots.length ? screenshots : undefined,
     downloadUrl,
     sha256,
@@ -328,7 +338,7 @@ export async function buildCatalog({
   const report = [
     "# Desktop extension safety report",
     "",
-    "ZIP integrity, bundle layout, metadata, screenshots and static patterns only. Passing is not a code audit or sandbox.",
+    "ZIP integrity, bundle layout, metadata, images and static patterns only. Passing is not a code audit or sandbox.",
     "",
   ];
   const catalogPath = new URL("catalog.json", directory);

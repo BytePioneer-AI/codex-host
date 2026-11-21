@@ -44,9 +44,9 @@
 }
 
 .close {
-  flex: 0 0 44px;
+  flex: 0 0 28px;
   justify-content: center;
-  width: 44px;
+  width: 28px;
   color: var(--dsw-alias-label-secondary);
 }
 

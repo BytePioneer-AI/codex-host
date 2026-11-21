@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   desktopExtensionListItemSchema,
   desktopExtensionSettingFieldSchema,
   desktopExtensionsAssetParamsSchema,
@@ -93,6 +94,16 @@ test("preserves optional details, author, repository, and screenshot paths", () 
   ).toBe("valid");
 });
 
+test.each(["images/logo.png", "images/Logo.JPG", "logo.jpeg", "logo.webp"])(
+  "preserves the relative logo path %s",
+  (icon) => {
+    expect(parseDesktopExtensionManifest({ ...manifest, icon })).toEqual({
+      state: "valid",
+      manifest: { ...manifest, icon },
+    });
+  },
+);
+
 test.each([
   { author: " " },
   { author: "a".repeat(129) },
@@ -104,6 +115,13 @@ test.each([
   { repository: "ftp://example.org/repo" },
   { repository: "//example.org/repo" },
   { repository: "https:example.org/repo" },
+  { icon: "https://example.com/logo.png" },
+  { icon: "/tmp/logo.png" },
+  { icon: "C:\\images\\logo.png" },
+  { icon: "images/../logo.png" },
+  { icon: "images/.. /logo.png" },
+  { icon: "images/logo.svg" },
+  { icon: ["logo.png"] },
   { screenshots: ["https://example.com/preview.png"] },
   { screenshots: ["/tmp/preview.png"] },
   { screenshots: ["C:\\images\\preview.png"] },
@@ -120,15 +138,25 @@ test.each([
   ["data:image/png;base64,YQ==", true],
   ["data:image/svg+xml;base64,YQ==", false],
   ["file:///tmp/screenshot.png", false],
-])("only accepts raster data URLs for rendered screenshots: %s", (url, valid) => {
+])("only accepts raster data URLs for rendered logos and screenshots: %s", (url, valid) => {
+  const item = { id: manifest.id, enabled: false, status: { state: "disabled" } };
+  expect(desktopExtensionListItemSchema.safeParse({ ...item, iconDataUrl: url }).success).toBe(
+    valid,
+  );
   expect(
-    desktopExtensionListItemSchema.safeParse({
-      id: manifest.id,
-      enabled: false,
-      status: { state: "disabled" },
-      screenshotDataUrls: [url],
-    }).success,
+    desktopExtensionListItemSchema.safeParse({ ...item, screenshotDataUrls: [url] }).success,
   ).toBe(valid);
+});
+
+test("bounds encoded logo data more tightly than screenshots", () => {
+  const dataUrl = `data:image/png;base64,${"AAAA".repeat(Math.ceil(DESKTOP_EXTENSION_ICON_MAX_BYTES / 3) + 1)}`;
+  const item = { id: manifest.id, enabled: false, status: { state: "disabled" } };
+  expect(desktopExtensionListItemSchema.safeParse({ ...item, iconDataUrl: dataUrl }).success).toBe(
+    false,
+  );
+  expect(
+    desktopExtensionListItemSchema.safeParse({ ...item, screenshotDataUrls: [dataUrl] }).success,
+  ).toBe(true);
 });
 
 test.each([

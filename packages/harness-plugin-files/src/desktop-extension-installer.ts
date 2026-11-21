@@ -29,6 +29,7 @@ import {
   isDesktopExtensionTransactionEntry,
   privateExtensionDirectory,
   readDesktopExtensionBackend,
+  readDesktopExtensionIcon,
   readDesktopExtensionScreenshot,
   readExtensionResource,
 } from "./extension-discovery.js";
@@ -153,6 +154,7 @@ export async function installFromZipBuffer(
             );
         }
         if (manifest.backend) await readDesktopExtensionBackend(staging, manifest.backend.script);
+        if (manifest.icon) await readDesktopExtensionIcon(staging, manifest.icon);
         for (const screenshot of manifest.screenshots ?? [])
           await readDesktopExtensionScreenshot(staging, screenshot);
         return manifest;
@@ -216,6 +218,21 @@ export async function installFromUrl({
   });
 }
 
+export const DEFAULT_DESKTOP_EXTENSION_STATS_URL = "https://ext-stats.chost.dev";
+
+export function resolveDesktopExtensionStatsUrl(
+  environment: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const configured = environment.CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL;
+  if (configured !== undefined) {
+    const trimmed = configured.trim();
+    if (!trimmed || /^(?:off|none|false|0)$/iu.test(trimmed)) return undefined;
+    return trimmed;
+  }
+  if (environment.CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL?.trim()) return undefined;
+  return DEFAULT_DESKTOP_EXTENSION_STATS_URL;
+}
+
 export async function reportDesktopExtensionInstall(id: string, statsUrl: string | undefined) {
   try {
     const { data } = desktopExtensionHttpUrlSchema.safeParse(statsUrl);
@@ -254,7 +271,7 @@ export async function installFromCatalog({
   );
   void reportDesktopExtensionInstall(
     installed.extensionId,
-    (options.environment ?? process.env).CODEXHOST_DESKTOP_EXTENSIONS_STATS_URL,
+    resolveDesktopExtensionStatsUrl(options.environment ?? process.env),
   );
   return installed;
 }

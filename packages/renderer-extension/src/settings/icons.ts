@@ -3,6 +3,7 @@ import createElement from "lucide/dist/esm/createElement.mjs";
 import Smartphone from "lucide/dist/esm/icons/smartphone.mjs";
 import Boxes from "lucide/dist/esm/icons/boxes.mjs";
 import CalendarClock from "lucide/dist/esm/icons/calendar-clock.mjs";
+import ChartColumn from "lucide/dist/esm/icons/chart-column.mjs";
 import Check from "lucide/dist/esm/icons/circle-check.mjs";
 import ChevronDown from "lucide/dist/esm/icons/chevron-down.mjs";
 import ChevronLeft from "lucide/dist/esm/icons/chevron-left.mjs";
@@ -23,9 +24,12 @@ import GripVertical from "lucide/dist/esm/icons/grip-vertical.mjs";
 import Info from "lucide/dist/esm/icons/info.mjs";
 import Languages from "lucide/dist/esm/icons/languages.mjs";
 import LayoutDashboard from "lucide/dist/esm/icons/layout-dashboard.mjs";
+import LayoutGrid from "lucide/dist/esm/icons/layout-grid.mjs";
 import Link from "lucide/dist/esm/icons/link.mjs";
 import Network from "lucide/dist/esm/icons/network.mjs";
+import Palette from "lucide/dist/esm/icons/palette.mjs";
 import Play from "lucide/dist/esm/icons/play.mjs";
+import Plug from "lucide/dist/esm/icons/plug.mjs";
 import PlugZap from "lucide/dist/esm/icons/plug-zap.mjs";
 import Puzzle from "lucide/dist/esm/icons/puzzle.mjs";
 import RefreshCw from "lucide/dist/esm/icons/refresh-cw.mjs";
@@ -33,6 +37,7 @@ import RotateCcw from "lucide/dist/esm/icons/rotate-ccw.mjs";
 import Route from "lucide/dist/esm/icons/route.mjs";
 import Settings from "lucide/dist/esm/icons/settings.mjs";
 import ShieldCheck from "lucide/dist/esm/icons/shield-check.mjs";
+import Sparkles from "lucide/dist/esm/icons/sparkles.mjs";
 import Stethoscope from "lucide/dist/esm/icons/stethoscope.mjs";
 import Star from "lucide/dist/esm/icons/star.mjs";
 import TriangleAlert from "lucide/dist/esm/icons/triangle-alert.mjs";
@@ -46,6 +51,7 @@ import Upload from "lucide/dist/esm/icons/upload.mjs";
 import X from "lucide/dist/esm/icons/x.mjs";
 import Users from "lucide/dist/esm/icons/users.mjs";
 import Plus from "lucide/dist/esm/icons/plus.mjs";
+import Zap from "lucide/dist/esm/icons/zap.mjs";
 
 export const RENDERER_SETTINGS_ICON_NAMES = [
   "settings",
@@ -96,6 +102,13 @@ export const RENDERER_SETTINGS_ICON_NAMES = [
   "file-archive",
   "link",
   "globe",
+  "palette",
+  "layout-grid",
+  "zap",
+  "chart-column",
+  "plug",
+  "puzzle",
+  "sparkles",
 ] as const;
 
 export type RendererSettingsIconName = (typeof RENDERER_SETTINGS_ICON_NAMES)[number];
@@ -158,6 +171,13 @@ const iconNodes = {
   "file-archive": FileArchive,
   link: Link,
   globe: Globe,
+  palette: Palette,
+  "layout-grid": LayoutGrid,
+  zap: Zap,
+  "chart-column": ChartColumn,
+  plug: Plug,
+  puzzle: Puzzle,
+  sparkles: Sparkles,
 } satisfies Record<RendererSettingsIconName, IconNode>;
 
 export function isRendererSettingsIconName(value: string): value is RendererSettingsIconName {

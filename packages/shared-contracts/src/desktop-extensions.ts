@@ -12,6 +12,7 @@ export const DESKTOP_EXTENSION_ZIP_MAX_BASE64_LENGTH =
 export const DESKTOP_EXTENSION_MANIFEST_MAX_BYTES = 128 * 1024;
 export const DESKTOP_EXTENSION_SCRIPT_MAX_BYTES = 2 * 1024 * 1024;
 export const DESKTOP_EXTENSION_STYLE_MAX_BYTES = 256 * 1024;
+export const DESKTOP_EXTENSION_ICON_MAX_BYTES = 128 * 1024;
 export const DESKTOP_EXTENSION_SCREENSHOT_LIMIT = 4;
 export const DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES = 512 * 1024;
 /** Raw image bytes before base64 encoding, across one management list. */
@@ -81,10 +82,10 @@ export const desktopExtensionAssetPathSchema = pluginRelativeResourceSchema.refi
   "Expected a relative Desktop extension asset path with a supported suffix",
 );
 
-const screenshotPathSchema = pluginRelativeResourceSchema.refine(
+const imagePathSchema = pluginRelativeResourceSchema.refine(
   (resource) =>
     desktopExtensionScreenshotMimeType(resource) !== undefined && hasPortableSegments(resource),
-  "Screenshots must be relative .png, .jpg, .jpeg, or .webp paths with no segments ending in a dot or space",
+  "Images must be relative .png, .jpg, .jpeg, or .webp paths with no segments ending in a dot or space",
 );
 
 export const desktopExtensionHttpUrlSchema = z
@@ -198,8 +199,9 @@ export const desktopExtensionManifestSchema = manifestHeader
     details: z
       .strictObject({ en: z.string().max(16384), "zh-CN": z.string().max(16384).optional() })
       .optional(),
+    icon: imagePathSchema.optional(),
     screenshots: z
-      .array(screenshotPathSchema)
+      .array(imagePathSchema)
       .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)
       .refine(
         (screenshots) => new Set(screenshots).size === screenshots.length,
@@ -332,6 +334,7 @@ export const desktopExtensionCatalogEntrySchema = z.strictObject({
   downloads: z.number().int().min(0).optional(),
   categories: categoriesSchema.optional(),
   trustTier: desktopExtensionTrustTierSchema.default("community"),
+  icon: desktopExtensionHttpUrlSchema.optional(),
   screenshots: z
     .array(desktopExtensionHttpUrlSchema)
     .max(DESKTOP_EXTENSION_SCREENSHOT_LIMIT)

@@ -104,6 +104,7 @@ export async function listDesktopExtensions(
     return {
       id: item.id,
       manifest: item.manifest,
+      ...(item.iconDataUrl ? { iconDataUrl: item.iconDataUrl } : {}),
       ...(item.screenshotDataUrls ? { screenshotDataUrls: item.screenshotDataUrls } : {}),
       enabled,
       status: observed,

@@ -21,6 +21,7 @@ it("defaults to community and rejects invalid catalog metadata or ambiguous IDs"
   expect(parsed.trustTier).toBe("community");
   expect(parsed).not.toHaveProperty("stars");
   expect(parsed).not.toHaveProperty("downloads");
+  expect(parsed).not.toHaveProperty("icon");
   for (const change of [
     { id: "../badge" },
     { name: { en: "Badge" } },
@@ -37,6 +38,9 @@ it("defaults to community and rejects invalid catalog metadata or ambiguous IDs"
     { categories: ["unknown"] },
     { slots: ["unknown"] },
     { downloadUrl: "https://example.com/?file=badge.zip" },
+    { icon: "file:///tmp/logo.png" },
+    { icon: "data:image/png;base64,YQ==" },
+    { icon: "https://user:secret@example.com/logo.png" },
     { screenshots: ["file:///tmp/preview.png"] },
     { screenshots: Array(5).fill("https://example.com/preview.png") },
     { sha256: "A".repeat(64) },
@@ -52,6 +56,13 @@ it("defaults to community and rejects invalid catalog metadata or ambiguous IDs"
     }).success,
   ).toBe(false);
 });
+
+it.each(["http://example.com/logo.png", "https://example.com/logo.webp"])(
+  "preserves a public catalog logo URL %s",
+  (icon) => {
+    expect(desktopExtensionCatalogEntrySchema.parse({ ...entry, icon }).icon).toBe(icon);
+  },
+);
 
 it.each([0, 42])("accepts star and download counts of %i", (count) => {
   expect(

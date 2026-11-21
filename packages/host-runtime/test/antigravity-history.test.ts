@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
+import { decodeExternalTransportSelection } from "@codexhost/protocol-core";
 import { encodeHarnessPluginRoute, harnessPluginRouteSchema } from "@codexhost/shared-contracts";
 import {
   AntigravityAdapter,
@@ -221,6 +222,131 @@ it("reads cold agy history from SQLite and connects ACP only for the first write
     await stopFixture(fixture);
   }
   expect(close).toHaveBeenCalledOnce();
+});
+
+it("returns and saves each confirmed configuration for queued cold agy selections", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "codexhost-agy-cold-config-"));
+  const nativeSessionId = "11111111-1111-4111-8111-111111111111";
+  const environment = { HOME: home, USERPROFILE: home };
+  const modelGate = Promise.withResolvers<undefined>();
+  const thinkingGate = Promise.withResolvers<undefined>();
+  let config = [
+    {
+      id: "model",
+      name: "Model",
+      currentValue: "old",
+      options: [
+        { value: "old", name: "Old" },
+        { value: "new", name: "New" },
+      ],
+    },
+    {
+      id: "thought_level",
+      name: "Thinking",
+      currentValue: "high",
+      options: [
+        { value: "low", name: "Low" },
+        { value: "high", name: "High" },
+      ],
+    },
+  ];
+  let handler: Parameters<AntigravityAcpTransportLike["setSessionEventHandler"]>[0];
+  const setConfigOption = vi.fn(async (id: string, value: string) => {
+    if (id === "model") {
+      handler?.({ type: "config.update", configOptions: config });
+      await modelGate.promise;
+    } else {
+      await thinkingGate.promise;
+    }
+    config = config.map((entry) =>
+      entry.id === id || id === "model"
+        ? { ...entry, currentValue: entry.id === id ? value : "low" }
+        : entry,
+    );
+    return config;
+  });
+  const adapter = new AntigravityAdapter({
+    environment,
+    createTransport: (): AntigravityAcpTransportLike => ({
+      sessionId: nativeSessionId,
+      isClosed: false,
+      skipPermissions: false,
+      initialize: async () => ({ protocolVersion: 1, agentCapabilities: {} }),
+      openSession: async () => ({ opened: { sessionId: nativeSessionId, configOptions: config } }),
+      setSessionEventHandler: (next) => {
+        handler = next;
+      },
+      setConfigOption,
+      setMode: async () => {},
+      prompt: async () => {
+        throw new Error("Configuration selection must not send a prompt");
+      },
+      cancel: async () => {},
+      closeSession: async () => {},
+      close: async () => {},
+    }),
+  });
+  const fixture = createFixture({
+    environment,
+    mappingStoreDirectory: home,
+    additionalAdapters: new Map([["antigravity", adapter]]),
+  });
+  try {
+    await fixture.ready;
+    const conversations = path.join(home, ".gemini", "antigravity-cli", "conversations");
+    mkdirSync(conversations, { recursive: true });
+    seedHistory(path.join(conversations, `${nativeSessionId}.db`), "old");
+    const selection = { model: { id: "retired" }, thinkingOptionId: "high" };
+    const transportModelId = encodeHarnessPluginRoute(
+      harnessPluginRouteSchema.parse({ harnessId: adapter.harnessId, ...selection }),
+    );
+    const { hostThreadId: threadId } = await fixture.mappingStore.createProvisional(
+      createExternalThreadRecordInput({
+        harnessId: adapter.harnessId,
+        cwd: home,
+        title: "Cold configuration",
+        transportModelId,
+        ephemeral: false,
+        historyMode: "paginated",
+      }),
+    );
+    await fixture.mappingStore.commitReady({
+      hostThreadId: threadId,
+      nativeSessionRef: { harnessId: adapter.harnessId, nativeSessionId, formatVersion: 1 },
+    });
+    const modelReply = fixture.host.handleClientRequest("codexhost/thread/model/select", {
+      threadId,
+      model: { id: "new" },
+    });
+    await vi.waitFor(() => expect(setConfigOption).toHaveBeenCalledWith("model", "new"));
+    const thinkingReply = fixture.host.handleClientRequest("codexhost/thread/thinking/select", {
+      threadId,
+      thinkingOptionId: "high",
+    });
+    expect(await fixture.mappingStore.getThread(threadId)).toMatchObject({ transportModelId });
+    modelGate.resolve(undefined);
+    expect(await modelReply).toMatchObject({
+      result: { effectiveModel: { id: "new" }, effectiveThinkingOptionId: "low" },
+    });
+    const afterModel = await fixture.mappingStore.getThread(threadId);
+    expect(decodeExternalTransportSelection("antigravity", afterModel?.transportModelId)).toEqual({
+      model: { id: "new" },
+      thinkingOptionId: "low",
+    });
+    thinkingGate.resolve(undefined);
+    expect(await thinkingReply).toMatchObject({
+      result: { effectiveModel: { id: "new" }, effectiveThinkingOptionId: "high" },
+    });
+    const saved = await fixture.mappingStore.getThread(threadId);
+    expect(decodeExternalTransportSelection("antigravity", saved?.transportModelId)).toEqual({
+      model: { id: "new" },
+      thinkingOptionId: "high",
+    });
+  } finally {
+    modelGate.resolve(undefined);
+    thinkingGate.resolve(undefined);
+    await stopFixture(fixture);
+  }
 });
 
 it("reflects a catalog Skill reply in live agy history without moving local command output", async () => {

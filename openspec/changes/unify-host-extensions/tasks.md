@@ -7,7 +7,7 @@
 
 ## 2. 共享 Host、Web 薄代理与跨端前端（Stage 2，3 路并行）
 
-- [ ] 2.1 在 `packages/host-runtime` 与 `packages/console-server` 实现共享 Host 唯一 `HostExtensionManager`：托管单实例 `ExtensionBackendProcess`（不依赖 Desktop/Web 是否打开）、处理全部 `codexhost/extensions/*` RPC（保留 SSH 托管 `-32601` 拒绝）、推送 `extensions-changed` 事件，并对接 `packages/desktop-control` 仅注入含 `desktop` 入口的启用插件。验证：`npx tsc -b packages/host-runtime packages/desktop-control packages/console-server` 与对应 `packages/host-runtime/test/` 聚焦 Vitest。
+- [x] 2.1 在 `packages/host-runtime` 与 `packages/console-server` 实现共享 Host 唯一 `HostExtensionManager`：托管单实例 `ExtensionBackendProcess`（不依赖 Desktop/Web 是否打开）、处理全部 `codexhost/extensions/*` RPC（保留 SSH 托管 `-32601` 拒绝）、推送 `extensions-changed` 事件，并对接 `packages/desktop-control` 仅注入含 `desktop` 入口的启用插件。验证：`npx tsc -b packages/host-runtime packages/desktop-control packages/console-server` 与对应 `packages/host-runtime/test/` 聚焦 Vitest。
 - [x] 2.2 在 `packages/web-server` 移除平行的 `WebNativeExtensions` 磁盘存储与子进程托管，改为薄代理：保留既有 `auth.gate` / 同源 / `--no-auth` 门禁，透传 `codexhost/extensions/*` RPC，提供 `/api/extensions/upload` 上传中转与 `/api/extensions/assets/:id/:activationId/:digest/*` 资产代理（验证阻断 `backend.entry`、未鉴权 403、不可变缓存头），保持传统 DSH `/extensions` 恢复入口独立可用。验证：`npx tsc -b packages/web-server` 与 `packages/web-server/test/` 对应 `node:test` 套件。
 - [ ] 2.3 在 `packages/renderer-extension` 与 `apps/web-ui/packages/client/ui-codexhost` 落地跨端通用 `page` 加载器（统一 `--cx-page-*` 变量、`HostExtensionPageApi`、关闭/禁用时 `AbortSignal` 回收）、Web 宿主切至共享 Host `snapshot` + `extensions-changed` 事件与 `/api/extensions/assets/`，并将 Desktop 与 Web 两端的设置「插件」中心统一为单一列表 + 能力角标 + 打开独立管理页（移除 `Web | Desktop` 切换壳）。验证：`npm run build:renderer`、`ui-codexhost` `tsdown` 构建、`apps/web-ui` `tsc --noEmit` 与 `packages/renderer-extension/test/settings/` 聚焦 Vitest。
 

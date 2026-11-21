@@ -60,7 +60,6 @@ import { WebHarnessPreferences } from "./harness-preferences.ts";
 import { createChHostClient } from "./ch-host-client.ts";
 import { RemoteSessions } from "./remote-sessions.ts";
 import { serveChClientGateway } from "./ch-client-gateway.ts";
-import { RemoteSidebar } from "./remote-sidebar.ts";
 import { DshWebServices, type WebPluginRuntime } from "./dsh-web-services.ts";
 import { createOfficeEngine } from "./office-engine.ts";
 import { harnessIconStyles } from "./harness-icon-styles.ts";
@@ -294,7 +293,7 @@ const dsh = await DshWebServices.open({
   );
   return undefined;
 });
-
+if (dsh) streams.setFallback((endpoint, args, sink) => dsh.stream(endpoint, args, sink));
 const settings = new Settings(data, events);
 const push = new PushNotifier(data);
 if (accessTokens !== undefined) {
@@ -393,11 +392,6 @@ sessions.registerCommands(rpc);
 sessions.registerImport(rpc);
 const remoteSessions = new RemoteSessions(events, undefined, workspaces);
 remoteSessions.install(rpc, streams);
-const remoteSidebar = new RemoteSidebar((id) => remoteSessions.sidebarChannel(id));
-streams.setFallback(
-  (endpoint, args, sink) =>
-    remoteSidebar.stream(endpoint, args, sink) || (dsh?.stream(endpoint, args, sink) ?? false),
-);
 preferences.register(rpc);
 displaySettings.register(rpc);
 settings.register(rpc);
@@ -588,11 +582,6 @@ const server = createWebServer((request, response) => {
       }
       const body = await readBody(request, response);
       if (body === undefined) return;
-      if (
-        (pathname.startsWith("/api/workspaceFiles/") || pathname.startsWith("/api/terminal/")) &&
-        (await remoteSidebar.unary(body, response))
-      )
-        return;
       if (dsh && (await dsh.handleApiRequest(request, body, response))) return;
       let listTiming: SessionListTiming | undefined;
       let listOk = false;

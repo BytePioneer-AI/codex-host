@@ -201,13 +201,6 @@ export async function rendererRemoteSession(
   const generation = connectionGeneration(route);
   if ("epoch" in operation && operation.epoch !== generation.epoch)
     throw connectionError("Remote connection changed; refresh before operating", true);
-  if (operation.kind === "sidebar")
-    return read(() =>
-      manager.sendRequest("codexhost/web/sidebar", {
-        nativeId: operation.threadId,
-        action: operation.action,
-      }),
-    );
   if (operation.kind === "projectHarnesses") {
     const result = (await read(() =>
       manager.sendRequest("codexhost/harness/plugins/list", {}),

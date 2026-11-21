@@ -1,4 +1,3 @@
-import { RemoteSidebarPeer } from "./remote-sidebar-peer.js";
 import { RuntimeMaintenance } from "./runtime-maintenance.js";
 import { randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
@@ -490,7 +489,6 @@ export async function runHostRuntime(input: {
                 modelPrices,
                 usageStatistics,
                 ...common,
-                sidebarPeer: RemoteSidebarPeer.forEnvironment(delegationEnvironment),
                 desktopExtensionBackends: host.desktopExtensionBackends,
                 arguments: [],
                 desktopInput,
@@ -602,7 +600,6 @@ export async function runHostRuntime(input: {
             modelPrices,
             usageStatistics,
             ...(sharedDelegation ? { sharedDelegation } : {}),
-            sidebarPeer: RemoteSidebarPeer.forEnvironment(delegationEnvironment),
             desktopExtensionBackends: externalHost.desktopExtensionBackends,
             sharedThreads: new SharedThreadBridge({
               connect: async () => sharedOwner.connect(),

@@ -11,7 +11,6 @@ import {
   REMOTE_IDENTITY_MAX_LENGTH,
   webToolOutputReferenceSchema,
   type RemoteSessionOperation,
-  type SidebarAction,
 } from "@codexhost/shared-contracts";
 import { ChThreadView, type ChThread } from "./ch-thread-view.ts";
 import { defaultProjections } from "./session-log.ts";
@@ -173,13 +172,6 @@ export class RemoteSessions {
     try {
       return await this.call(parsed.data);
     } catch (error) {
-      if (operation.kind === "sidebar")
-        throw new RpcError(
-          "remote/sidebar-unavailable",
-          error instanceof RemoteSessionError
-            ? error.message
-            : "The target Host could not be reached. Reconnect Desktop and verify that the target Web service is running.",
-        );
       const write = ![
         "hosts",
         "list",
@@ -552,7 +544,6 @@ export class RemoteSessions {
         values: {
           ...defaultProjections(),
           title: entry.row.name || entry.row.preview || entry.identity.threadId,
-          remoteWorkspacePath: entry.row.cwd,
           remoteHost: {
             ...entry.identity,
             displayName: remoteHostDisplayName(
@@ -575,23 +566,6 @@ export class RemoteSessions {
         },
       },
     };
-  }
-  /** Pin a panel to a confirmed native identity and the current Desktop connection. */
-  async sidebarChannel(id: string) {
-    if (this.drafts.has(id))
-      throw new RpcError(
-        "remote/draft",
-        "Send the first message before opening a remote workspace panel.",
-      );
-    const identity = remoteSessionIdentity(id);
-    if (!identity) throw new RpcError("remote/not-found", "Remote Thread not found.");
-    if (!this.entries.has(id)) await this.refresh();
-    const entry = this.entries.get(id);
-    const host = this.hosts.get(identity.hostId);
-    const epoch = host?.epoch ?? entry?.epoch;
-    if (!host?.online || !entry?.online || !epoch)
-      throw new RpcError("remote/offline", "Reconnect the target Host in Codex Desktop.");
-    return (action: SidebarAction) => this.invoke({ kind: "sidebar", ...identity, epoch, action });
   }
   private offline(entry: Entry): void {
     const changed = entry.online;
@@ -703,7 +677,6 @@ export class RemoteSessions {
               "nativeDiscovery",
               "attachmentInput",
               "remoteHost",
-              "remoteWorkspacePath",
               "harnessIdentity",
               "remoteHistoryError",
             ].includes(key)

@@ -20,6 +20,7 @@ export {
   CodexTurnProjector,
   historicalPlanUpdate,
   projectHistoricalTurn,
+  reasoningPreviewItemId,
 } from "./codex-ui-projector.js";
 export type {
   CodexApprovalProjection,

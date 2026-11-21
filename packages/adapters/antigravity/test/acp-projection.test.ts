@@ -805,8 +805,9 @@ describe("history replay", () => {
   it.each([
     ["turn-0", "stored-key"],
     ["legacy-first", "stored-key"],
+    ["turn-0", "turn-1"], // Upgrade with saved display-position keys.
   ])(
-    "does not consume the next group identity while merging native events (%s)",
+    "does not consume the next group identity while merging native events (%s, %s)",
     (...nativeTurnKeys) => {
       const result = projectReplayedEventsToTurns({
         nativeSessionId: "native",

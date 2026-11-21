@@ -619,6 +619,7 @@ export function projectReplayedEventsToTurns(params: {
   let textItem: HostItemSnapshot | undefined;
   let sequence = 0;
   let nativeTurnIndex: number | undefined;
+  let mergedNativeInputs = false;
   const begin = (boundary?: number) => {
     active?.tracker.finishPending({
       status: "cancelled",
@@ -697,7 +698,10 @@ export function projectReplayedEventsToTurns(params: {
       if (event.nativeTurnIndex !== undefined) {
         const isNewNativeBoundary = nativeTurnIndex !== event.nativeTurnIndex;
         nativeTurnIndex = event.nativeTurnIndex;
-        if (isNewNativeBoundary) updateNativeIdentity(turn, event.nativeTurnIndex);
+        if (isNewNativeBoundary) {
+          mergedNativeInputs = true;
+          updateNativeIdentity(turn, event.nativeTurnIndex);
+        }
         turn.checkpoint = nativeCheckpointRefSchema.parse({
           harnessId: "antigravity",
           nativeSessionId: params.nativeSessionId,
@@ -737,6 +741,18 @@ export function projectReplayedEventsToTurns(params: {
     status: "cancelled",
     reason: "No terminal tool status in native history",
   });
+  // Legacy display-position mappings cover every group with contiguous zero-based keys.
+  // Restore those identities without changing the native checkpoints of the groups.
+  if (
+    mergedNativeInputs &&
+    knownTurnRefs.length === turns.length &&
+    knownTurnRefs.every((ref, index) => ref.nativeTurnKey === `turn-${index}`)
+  ) {
+    for (const [index, turn] of turns.entries()) {
+      const ref = knownTurnRefs[index];
+      if (ref) turn.nativeTurnRef = ref;
+    }
+  }
   return turns;
 }
 

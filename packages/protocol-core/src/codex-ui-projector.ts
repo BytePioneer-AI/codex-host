@@ -568,6 +568,10 @@ function projectUserMessage(
   };
 }
 
+function projectReasoningPreview(itemId: HostItemId, summary: string[]): JsonObject {
+  return { id: reasoningPreviewItemId(itemId), type: "reasoning", summary, content: [] };
+}
+
 function projectItem(
   item: HostItem,
   outcome: HostItemOutcome | null,
@@ -586,15 +590,11 @@ function projectItem(
         phase: item.phase ?? null,
         memoryCitation: null,
       };
-    case "reasoning": {
-      const text = reasoningDisplayText(item.text);
-      return {
-        id: reasoningPreviewItemId(item.itemId),
-        type: "reasoning",
-        summary: reasoningSummaryParts(text, true),
-        content: [],
-      };
-    }
+    case "reasoning":
+      return projectReasoningPreview(
+        item.itemId,
+        reasoningSummaryParts(reasoningDisplayText(item.text), true),
+      );
     case "contextCompaction":
       return { id: item.itemId, type: "contextCompaction" };
     case "commandExecution":
@@ -994,6 +994,12 @@ export class CodexTurnProjector {
         ...this.#wireItemOrder.flatMap((itemId) => {
           const projected = this.#items.get(itemId);
           if (!projected?.wireStarted) return [];
+          // Active snapshots must keep the same prefix as the already streamed preview.
+          if (projected.item.type === "reasoning" && projected.outcome === null) {
+            return [
+              projectReasoningPreview(projected.item.itemId, [...projected.reasoningSummary]),
+            ];
+          }
           const item = this.#projectItem(
             itemId === this.#fileItemId ? this.#fileSummary() : projected.item,
             projected.outcome,

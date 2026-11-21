@@ -5,7 +5,7 @@ import { setImmediate } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import type { InitializeResponse } from "@agentclientprotocol/sdk";
 import type { HarnessOutput, HarnessSession } from "@codexhost/harness-adapter";
 import {
@@ -36,15 +36,15 @@ import {
   type AntigravitySessionEventHandler,
 } from "../src/acp-types.js";
 import * as nativeFork from "../src/fork.js";
-import * as nativeBoundaries from "../src/native-turn-boundaries.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
   createNativeHistoryDatabase,
   systemStep,
+  textField,
   userStep,
 } from "./support/native-history-fixture.js";
-import { writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
+import { bytes, nanoseconds, writeNativeTimingDatabase } from "./support/native-timing-fixture.js";
 
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof fs>();
@@ -1746,24 +1746,44 @@ describe("Antigravity foreground native commits", () => {
     directories.push(home);
     const nativeRef = ref();
     const db = await createNativeHistoryDatabase(home, nativeRef.nativeSessionId);
-    db.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0");
+    db.exec(`PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;
+      ALTER TABLE steps ADD COLUMN metadata BLOB;
+      CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+      CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);`);
+    db.prepare("INSERT INTO trajectory_meta VALUES (?, ?)").run(
+      randomUUID(),
+      nativeRef.nativeSessionId,
+    );
     const { adapter, transports } = fixture({ environment: { HOME: home, USERPROFILE: home } });
     const { session, outputs } = await sessionOf(
       await adapter.open({ kind: "resume", nativeRef, cwd: home }),
     );
     const transport = await start(session, transports);
-    return { home, nativeRef, session, outputs, transport, db };
+    return { adapter, home, nativeRef, session, outputs, transport, db };
   }
 
   function nextRead() {
-    const readCount = nativeBoundaries.readNativeTurnCount;
+    const get = StatementSync.prototype.get;
     const firstRead = deferred<number>();
-    vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockImplementationOnce(async (file) => {
-      const count = await readCount(file);
-      firstRead.resolve(count);
-      return count;
+    const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+      this: StatementSync,
+      ...params: Parameters<StatementSync["get"]>
+    ) {
+      const row = get.apply(this, params);
+      if (this.sourceSQL.includes("count(*) AS n FROM steps WHERE step_type = 14")) {
+        spy.mockRestore();
+        firstRead.resolve(Number(row?.n));
+      }
+      return row;
     });
     return firstRead.promise;
+  }
+
+  function stampInput(db: DatabaseSync, idx: number, atMs: number) {
+    db.prepare("UPDATE steps SET metadata = ? WHERE idx = ?").run(
+      bytes(1, nanoseconds(BigInt(atMs) * 1_000_000n)),
+      idx,
+    );
   }
 
   const terminal = (outputs: HarnessOutput[], id = "t1") =>
@@ -1771,7 +1791,7 @@ describe("Antigravity foreground native commits", () => {
       events(outputs).find((event) => event.type === "turn.completed" && event.turnId === id),
     );
 
-  it("publishes a durable Turn when the input commits after the first post-response read", async () => {
+  it("publishes a durable Turn when the WAL commits at 200ms", async () => {
     const { session, outputs, transport, db } = await setup();
     const firstRead = nextRead();
     try {
@@ -1781,6 +1801,7 @@ describe("Antigravity foreground native commits", () => {
       required(transport.handler).onEvent({ type: "agent.text", text: "hello there" });
       transport.result.resolve({ stopReason: "end_turn" });
       expect(await firstRead).toBe(0);
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
       db.exec("COMMIT");
       await completed(outputs);
       expect(terminal(outputs)).toMatchObject({
@@ -1901,48 +1922,120 @@ describe("Antigravity foreground native commits", () => {
     },
   );
 
-  it.each(["before the successor", "during the successor", "in the same batch as the successor"])(
-    "attributes a late native boundary committed %s",
-    async (when) => {
+  it.each([false, true])(
+    "does not claim the prior Turn's late commit (successor commits: %s)",
+    async (commits) => {
       const { session, outputs, transport, db } = await setup();
-      const writeFirst = () => {
-        userStep(db, 0, "hello", "first");
-        answerStep(db, 1, "first answer", "first");
-      };
+      const firstCreatedAt = Date.now();
       try {
         transport.result.resolve({ stopReason: "end_turn" });
         await completed(outputs);
         expect(terminal(outputs)).toMatchObject({ ephemeral: true });
-        if (when === "before the successor") writeFirst();
         transport.result = deferred();
-        expect(
-          await session.execute({
-            type: "turn.start",
-            turnId: turnId("t2"),
-            input: [{ type: "text", text: "second question" }],
-          }),
-        ).toMatchObject({ ok: true });
+        await start(session, [transport], "t2");
         await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
-        if (when !== "before the successor") writeFirst();
-        if (when !== "during the successor") {
-          userStep(db, 2, "second question", "second");
+        // Native creation must be strictly after submission at millisecond precision.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        // Both prompts have the same input; text equality alone cannot prove ownership.
+        userStep(db, 0, "hello", "first");
+        stampInput(db, 0, firstCreatedAt);
+        answerStep(db, 1, "first answer", "first");
+        const secondCreatedAt = Date.now();
+        const firstRead = nextRead();
+        transport.result.resolve({ stopReason: "end_turn" });
+        expect(await firstRead).toBe(1);
+        if (commits) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 50));
+          userStep(db, 2, "hello", "second");
+          stampInput(db, 2, secondCreatedAt);
           answerStep(db, 3, "second answer", "second");
         }
-        transport.result.resolve({ stopReason: "end_turn" });
         await completed(outputs, "t2");
-        if (when === "during the successor")
-          expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
-        else
+        if (commits) {
           expect(terminal(outputs, "t2")).toMatchObject({
             nativeTurnRef: { nativeTurnKey: "turn-1" },
           });
+        } else {
+          expect(terminal(outputs, "t2")).not.toHaveProperty("nativeTurnRef");
+        }
         const snapshot = await session.readSnapshot();
         assert(snapshot.ok);
         expect(snapshot.value.turns[0]).toMatchObject({
-          input: [{ text: "hello" }],
           nativeTurnRef: { nativeTurnKey: "turn-0" },
           items: [{ item: { text: "first answer" } }],
         });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it.each(["quick Stop", "tool-only output"])(
+    "recovers live identity and Fork after %s without a committed input",
+    async (previous) => {
+      const { adapter, home, nativeRef, session, outputs, transport, db } = await setup();
+      try {
+        if (previous === "quick Stop") {
+          await session.execute({ type: "turn.cancel", turnId: turnId("t1") });
+          transport.result.resolve({ stopReason: "cancelled" });
+        } else {
+          required(transport.handler).onEvent({
+            type: "tool.call",
+            toolCallId: "call",
+            name: "Tool",
+          });
+          required(transport.handler).onEvent({
+            type: "tool.update",
+            toolCallId: "call",
+            status: "completed",
+          });
+          transport.result.resolve({ stopReason: "end_turn" });
+        }
+        await completed(outputs);
+        expect(terminal(outputs)).not.toHaveProperty("nativeTurnRef");
+        transport.result = deferred();
+        await start(session, [transport], "t2");
+        await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(2));
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        userStep(db, 0, "hello", "second");
+        stampInput(db, 0, Date.now());
+        // Commit a generic tool without a planner reply.
+        const tool = bytes(4, Buffer.concat([textField(1, "next"), textField(2, "Tool")]));
+        db.prepare(
+          "INSERT INTO steps (idx, step_type, status, step_payload) VALUES (1, 132, 3, ?)",
+        ).run(Buffer.concat([bytes(5, tool), bytes(140, bytes(2, textField(1, "result")))]));
+        required(transport.handler).onEvent({
+          type: "tool.call",
+          toolCallId: "next",
+          name: "Tool",
+        });
+        required(transport.handler).onEvent({
+          type: "tool.update",
+          toolCallId: "next",
+          status: "completed",
+        });
+        transport.result.resolve({ stopReason: "end_turn" });
+        await completed(outputs, "t2");
+        const end = terminal(outputs, "t2");
+        expect(end).toMatchObject({ nativeTurnRef: { nativeTurnKey: "turn-0" } });
+        expect(await session.readSnapshot()).toMatchObject({
+          ok: true,
+          value: {
+            turns: [{ nativeTurnRef: { nativeTurnKey: "turn-0" }, items: [expect.anything()] }],
+          },
+        });
+        transport.result = deferred();
+        await start(session, [transport], "t3");
+        await vi.waitFor(() => expect(transport.prompt).toHaveBeenCalledTimes(3));
+        userStep(db, 2, "hello", "third");
+        expect(
+          await adapter.open({
+            kind: "fork",
+            cwd: home,
+            sourceRef: nativeRef,
+            checkpoint: required(end.outcome.checkpoint),
+          }),
+        ).toMatchObject({ ok: true });
       } finally {
         db.close();
       }
@@ -1953,12 +2046,14 @@ describe("Antigravity foreground native commits", () => {
     const { session, outputs, transport, db } = await setup();
     const firstRead = nextRead();
     try {
+      const createdAtMs = Date.now();
       required(transport.handler).onResponse?.();
       transport.result.resolve({ stopReason: "end_turn" });
       expect(await firstRead).toBe(0);
       db.exec("BEGIN IMMEDIATE");
       userStep(db, 0, "hel", "prompt");
       userStep(db, 1, "lo", "prompt");
+      stampInput(db, 1, createdAtMs);
       answerStep(db, 2, "hello there", "prompt");
       systemStep(db, 3, "wake");
       answerStep(db, 4, "wake answer", "wake");
@@ -2203,15 +2298,12 @@ describe("Antigravity idle wake Turns", () => {
   it("observes updates after the wire response without publishing ahead of the user terminal", async () => {
     const { session, outputs, transport, db } = await setup();
     try {
-      const gate = deferred<number>();
-      vi.spyOn(nativeBoundaries, "readNativeTurnCount").mockReturnValueOnce(gate.promise);
       transport.handler?.onResponse?.();
-      transport.result.resolve({ stopReason: "end_turn" });
       systemStep(db, 2, "wake");
       answerStep(db, 3, "wake answer", "wake");
       transport.eventHandler?.({ type: "agent.text", text: "wake answer" });
       expect(wakes(outputs)).toEqual([]);
-      gate.resolve(1);
+      transport.result.resolve({ stopReason: "end_turn" });
       await vi.waitFor(() => expect(wakes(outputs)).toHaveLength(1));
       const all = events(outputs);
       expect(all.findIndex((event) => event.type === "turn.autonomous.completed")).toBeGreaterThan(

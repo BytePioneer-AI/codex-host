@@ -1,7 +1,7 @@
 /** Durable preferences. The runtime owner serializes mutations; browsers never write this file. */
 import { randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   harnessPreferencePatchSchema,
@@ -11,6 +11,7 @@ import {
   type HarnessPreferenceScope,
   type HarnessPreferenceSnapshot,
 } from "@codexhost/shared-contracts";
+import { replaceFile } from "./replace-file.js";
 
 type Document = ReturnType<typeof harnessPreferencesDocumentSchema.parse>;
 export class HarnessPreferenceConflict extends Error {}
@@ -117,7 +118,7 @@ export class HarnessPreferencesStore {
             flag: "wx",
             mode: 0o600,
           });
-          await rename(temporary, this.file);
+          await replaceFile(temporary, this.file);
         } finally {
           await rm(temporary, { force: true });
         }

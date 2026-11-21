@@ -96,12 +96,7 @@ import {
 } from "./model-catalog.js";
 import { AntigravityWakeObserver } from "./wake-observer.js";
 import { readNativeHistory } from "./native-replay.js";
-import {
-  matchNativeTurnSuffix,
-  nativeInputFingerprint,
-  observeNativeTurnCount,
-  readNativeTurnCount,
-} from "./native-turn-boundaries.js";
+import { observeNativeTurnCount, readNativeTurnCount } from "./native-turn-boundaries.js";
 import {
   ANTIGRAVITY_PERMISSION_MODE_CATALOG,
   decodeAntigravityPermissionModeId,
@@ -116,7 +111,6 @@ import { antigravityHome, createAntigravityUsageStatistics } from "./usage-stati
 
 const harnessId = harnessIdSchema.parse("antigravity");
 const SKIP = "dangerously-skip-permissions";
-const MAX_UNCONFIRMED_PROMPTS = 8;
 
 export const antigravitySessionCapabilities: HarnessSessionCapabilities = {
   configuration: {
@@ -319,10 +313,8 @@ export class AntigravitySession implements HarnessSession {
   #configOptions: AntigravityAcpConfigOption[] = [];
   #catalog: HarnessModelCatalog | undefined;
   #commands: HarnessCommandCatalog = ANTIGRAVITY_COMMAND_CATALOG;
-  #turnCount = 0;
-  #turnCountKnown = false;
-  // A missing fingerprint or an oversized unresolved suffix requires history-only recovery.
-  #unconfirmedPrompts: readonly string[] | undefined = [];
+  // Null means a raw count increase alone cannot identify the next prompt.
+  #confirmedCount: number | null = null;
   readonly #confirmedCheckpoints = new Set<string>();
   #active: ActiveTurn | undefined;
   #wakes: AntigravityWakeObserver | undefined;
@@ -377,8 +369,7 @@ export class AntigravitySession implements HarnessSession {
   activeForkTurnIndex(checkpointId: string, home: string): number | undefined {
     if (
       this.#active?.promptPhase === "submitted" &&
-      this.#turnCountKnown &&
-      this.#unconfirmedPrompts?.length === 0 &&
+      this.#confirmedCount !== null &&
       !this.#opening &&
       !this.#configurationQueue &&
       !this.#subagents.running &&
@@ -388,7 +379,7 @@ export class AntigravitySession implements HarnessSession {
       home === antigravityHome(this.#options.environment) &&
       this.#confirmedCheckpoints.has(checkpointId)
     )
-      return this.#turnCount;
+      return this.#confirmedCount;
   }
   reserveHistoryOperation(): (() => void) | null {
     if (
@@ -480,12 +471,11 @@ export class AntigravitySession implements HarnessSession {
           "Antigravity returned an invalid native Session ID",
         );
       this.#applyOpened(opened, skip);
-      const count = await readNativeTurnCount(
-        nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
-      ).catch((error: NodeJS.ErrnoException) => (!ref && error.code === "ENOENT" ? 0 : undefined));
-      if (this.#unconfirmedPrompts?.length === 0) {
-        if (count !== undefined) this.#turnCount = count;
-        this.#turnCountKnown = count !== undefined;
+      // A transport rebuild is not proof that a previously unconfirmed write settled.
+      if (!this.#wakes) {
+        this.#confirmedCount = await readNativeTurnCount(
+          nativeConversationDbPath(opened.sessionId, antigravityHome(this.#options.environment)),
+        ).catch((error: NodeJS.ErrnoException) => (!ref && error.code === "ENOENT" ? 0 : null));
       }
       this.#initializeUsage(opened.sessionId);
       if (!this.#wakes) {
@@ -547,7 +537,7 @@ export class AntigravitySession implements HarnessSession {
     this.#usage = new AntigravitySessionUsageTracker({
       nativeSessionId,
       homedir: antigravityHome(this.#options.environment),
-      expectedInitialTurns: this.#turnCount,
+      expectedInitialTurns: this.#confirmedCount ?? 0,
     });
     this.#trackUsageWork(this.#replayUsage());
   }
@@ -866,9 +856,8 @@ export class AntigravitySession implements HarnessSession {
           ? { outputLimit: this.#options.adapter.toolOutputLimit }
           : {}),
       });
-      if (!this.#transport && this.#unconfirmedPrompts?.length === 0) {
-        this.#turnCount = turnCount;
-        this.#turnCountKnown = true;
+      if (!this.#transport && !this.#wakes) {
+        this.#confirmedCount = turnCount;
         this.#initializeUsage(nativeSessionId);
       }
       return ok({ turns, ...(this.#transport ? { state: { ...this.#state } } : {}) });
@@ -1120,7 +1109,6 @@ export class AntigravitySession implements HarnessSession {
     let outcome: TurnOutcome;
     let nativeTurnRef: NativeTurnRef | undefined;
     let confirmedCheckpoint: string | undefined;
-    let promptText: string | undefined;
     let mayWriteInput = true;
     try {
       await this.initialize();
@@ -1137,29 +1125,9 @@ export class AntigravitySession implements HarnessSession {
       const home = antigravityHome(this.#options.environment);
       const file = nativeConversationDbPath(ref.nativeSessionId, home);
       const parts = promptParts(command);
-      const part = parts.length === 1 ? parts[0] : undefined;
-      promptText = part?.type === "text" ? part.text : undefined;
-      mayWriteInput = !catalogCommand || !/^\/(?:compact|help)(?:\s|$)/u.test(promptText ?? "");
-      if (!this.#turnCountKnown && this.#unconfirmedPrompts?.length === 0) {
-        const count = await readNativeTurnCount(file).catch(() => undefined);
-        if (!this.#isCurrent(turn)) return;
-        if (count !== undefined) {
-          this.#turnCount = count;
-          this.#turnCountKnown = true;
-        }
-      } else if (this.#unconfirmedPrompts?.length) {
-        const recovered = await this.#matchNativeSuffix(
-          ref.nativeSessionId,
-          home,
-          this.#unconfirmedPrompts,
-        );
-        if (!this.#isCurrent(turn)) return;
-        if (recovered !== undefined) {
-          this.#turnCount = recovered;
-          this.#unconfirmedPrompts = [];
-        }
-      }
-      // Configuration can be queued while reading an uncertain baseline.
+      const part = parts[0];
+      mayWriteInput =
+        !catalogCommand || part?.type !== "text" || !/^\/(?:compact|help)(?:\s|$)/u.test(part.text);
       while (this.#configurationQueue && !turn.cancelled && this.#isCurrent(turn)) {
         await this.#configurationQueue;
       }
@@ -1188,10 +1156,9 @@ export class AntigravitySession implements HarnessSession {
         },
         onSubagentSpawned: (id, item) => this.#subagents.track(id, item),
       });
-      const before = this.#turnCount;
-      const pending = this.#unconfirmedPrompts;
-      const cleanBaseline = this.#turnCountKnown && pending?.length === 0;
-      this.#usage?.beginTurn(Date.now(), turn.turnId);
+      const before = this.#confirmedCount;
+      const submittedAtMs = Date.now();
+      this.#usage?.beginTurn(submittedAtMs, turn.turnId);
       this.#usageTurnId = turn.turnId;
       turn.promptPhase = "submitted";
       const result = await transport.prompt(parts, {
@@ -1239,28 +1206,18 @@ export class AntigravitySession implements HarnessSession {
                 },
               }
             : { status: "succeeded" };
-      const count = await observeNativeTurnCount(
-        () => readNativeTurnCount(file),
-        before,
-        this.#turnCountKnown &&
-          pending !== undefined &&
-          mayWriteInput &&
-          outcome.status === "succeeded",
-        AbortSignal.any([turn.accounting.signal, this.#abort.signal]),
-      );
+      const confirmedCount = mayWriteInput
+        ? await observeNativeTurnCount(
+            file,
+            before,
+            submittedAtMs,
+            completedAtMs,
+            outcome.status === "succeeded",
+            AbortSignal.any([turn.accounting.signal, this.#abort.signal]),
+          )
+        : null;
       if (!this.#isCurrent(turn)) return;
-      let confirmedCount: number | undefined;
-      if (count !== undefined && count > before) {
-        if (cleanBaseline && count === before + 1) confirmedCount = count;
-        else if (mayWriteInput && pending && promptText !== undefined) {
-          confirmedCount = await this.#matchNativeSuffix(ref.nativeSessionId, home, [
-            ...pending,
-            nativeInputFingerprint(promptText),
-          ]);
-          if (!this.#isCurrent(turn)) return;
-        }
-      }
-      if (confirmedCount !== undefined) {
+      if (confirmedCount !== null) {
         const key = `turn-${confirmedCount - 1}`;
         nativeTurnRef = {
           harnessId,
@@ -1269,8 +1226,7 @@ export class AntigravitySession implements HarnessSession {
           nativeTurnKey: key,
         };
         outcome = { ...outcome, checkpoint: { ...ref, checkpointId: key } };
-        this.#turnCount = confirmedCount;
-        this.#unconfirmedPrompts = [];
+        this.#confirmedCount = confirmedCount;
         confirmedCheckpoint = key;
       }
       await this.#trackUsageWork(
@@ -1295,14 +1251,8 @@ export class AntigravitySession implements HarnessSession {
       this.#usage?.endTurn();
     }
     if (this.#isCurrent(turn)) {
-      if (mayWriteInput && turn.promptPhase !== "notSubmitted" && !nativeTurnRef) {
-        const pending = this.#unconfirmedPrompts;
-        // These prompts may still gain rows while a successor is in flight.
-        this.#unconfirmedPrompts =
-          pending && pending.length < MAX_UNCONFIRMED_PROMPTS && promptText !== undefined
-            ? [...pending, nativeInputFingerprint(promptText)]
-            : undefined;
-      }
+      if (mayWriteInput && turn.promptPhase !== "notSubmitted" && !nativeTurnRef)
+        this.#confirmedCount = null;
       if (turn.cancelled)
         outcome = {
           status: "cancelled",
@@ -1311,26 +1261,6 @@ export class AntigravitySession implements HarnessSession {
       if (confirmedCheckpoint && outcome.checkpoint)
         this.#confirmedCheckpoints.add(confirmedCheckpoint);
       this.#finish(turn, outcome, nativeTurnRef);
-    }
-  }
-  async #matchNativeSuffix(
-    sessionId: string,
-    home: string,
-    expected: readonly string[],
-  ): Promise<number | undefined> {
-    if (!this.#turnCountKnown) return undefined;
-    try {
-      const before = this.#turnCount;
-      const history = await readNativeHistory(sessionId, home);
-      return matchNativeTurnSuffix({
-        ...history,
-        nativeSessionId: sessionId,
-        cwd: this.#options.cwd,
-        before,
-        expected,
-      });
-    } catch {
-      return undefined;
     }
   }
   #isCurrent(turn: ActiveTurn): boolean {

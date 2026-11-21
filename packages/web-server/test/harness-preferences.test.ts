@@ -133,6 +133,7 @@ it("shares GUI file preferences across Web clients and ignores Web-only copies",
   };
   assert.deepEqual(projection.values.permissions, { currentValue: "auto" });
   await call("commands/execute", { agentId: "first", line: "/permission ask" });
+  assert.equal(frames.includes("codexhost/preferences-error"), false, "defaults write failed");
   await call("session/create", { sessionId: "second", cwd: root });
   const next = (await call("session/projections", { sessionId: "second" })) as {
     values: Record<string, unknown>;

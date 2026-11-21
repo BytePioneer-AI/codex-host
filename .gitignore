@@ -44,6 +44,9 @@ node_modules/
 /website/
 /.github/workflows/deploy-website.yml
 
+# Local promotional video workspace (ignored)
+/promo-video/
+
 # Build, test, and coverage output
 target/
 dist/

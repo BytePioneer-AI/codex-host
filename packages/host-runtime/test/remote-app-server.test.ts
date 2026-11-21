@@ -285,6 +285,15 @@ describe("remote SSH app-server transport", () => {
           "github",
         ]),
       ).toThrow("--plugin-mcp-launch-cwd requires 3 values");
+      for (const option of [mcpLaunchCwd, pluginMcpLaunchCwd]) {
+        const emptyDirectory = [...option.slice(0, -1), ""];
+        expect(() =>
+          officialLoopbackListenerArguments([...desktopAppServer, ...emptyDirectory]),
+        ).toThrow(`${option[0]} requires 3 values`);
+        expect(
+          isRemoteUnixListenerInvocation(["app-server", "--listen", "unix://", ...emptyDirectory]),
+        ).toBe(false);
+      }
       expect(() =>
         officialLoopbackListenerArguments([...desktopAppServer, "--unknown-option"]),
       ).toThrow("Unsupported app-server argument for a shared listener: --unknown-option");

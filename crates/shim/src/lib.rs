@@ -51,6 +51,12 @@ fn app_server_multi_value_count(argument: &str) -> Option<usize> {
         .find_map(|&(option, count)| (option == argument).then_some(count))
 }
 
+fn has_app_server_multi_values(arguments: &[OsString], index: usize, count: usize) -> bool {
+    arguments
+        .get(index + 1..=index + count)
+        .is_some_and(|values| values.iter().all(|value| !value.is_empty()))
+}
+
 /// Optional lifecycle hooks for diagnostics around the byte-transparent proxy core.
 pub trait ProxyObserver {
     fn invocation(&self, _arguments: &[OsString], _stock_codex_path: &Path) {}
@@ -456,7 +462,7 @@ fn should_start_host_runtime_for_originator(
             continue;
         }
         if let Some(count) = app_server_multi_value_count(argument) {
-            if arguments.len() <= index + count {
+            if !has_app_server_multi_values(arguments, index, count) {
                 return false;
             }
             index += count + 1;
@@ -529,7 +535,7 @@ fn is_default_remote_unix_listener(arguments: &[OsString]) -> bool {
             continue;
         }
         if let Some(count) = app_server_multi_value_count(argument) {
-            if arguments.len() <= index + count {
+            if !has_app_server_multi_values(arguments, index, count) {
                 return false;
             }
             index += count + 1;
@@ -1255,22 +1261,27 @@ mod tests {
             &["--mcp-launch-cwd"][..],
             &["--mcp-launch-cwd", "files", "/usr/bin/node"],
             &["--plugin-mcp-launch-cwd", "github@openai-curated", "github"],
+            &["--mcp-launch-cwd", "files", "/usr/bin/node", ""],
+            &[
+                "--plugin-mcp-launch-cwd",
+                "github@openai-curated",
+                "github",
+                "",
+            ],
             &["--mcp-launch-cwd=files", "/usr/bin/node", "/tmp/project"],
         ] {
             assert!(
                 !should_start_host_runtime(&with_desktop_app_server(incomplete)),
                 "{incomplete:?}"
             );
+            let remote = [&["app-server", "--listen", "unix://"][..], incomplete].concat();
+            assert!(
+                !is_default_remote_unix_listener(&arguments(&remote)),
+                "{incomplete:?}"
+            );
         }
         assert!(!should_start_host_runtime(&with_desktop_app_server(&[
             "--unknown-option",
-        ])));
-        assert!(!is_default_remote_unix_listener(&arguments(&[
-            "app-server",
-            "--listen",
-            "unix://",
-            "--plugin-mcp-launch-cwd",
-            "github@openai-curated",
         ])));
     }
 

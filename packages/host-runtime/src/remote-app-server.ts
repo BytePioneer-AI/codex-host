@@ -47,6 +47,15 @@ function appServerMultiValueCount(argument: string): number | undefined {
   return APP_SERVER_MULTI_VALUE_OPTIONS.get(argument);
 }
 
+function appServerMultiValues(
+  arguments_: readonly string[],
+  index: number,
+  count: number,
+): string[] | undefined {
+  const values = arguments_.slice(index + 1, index + 1 + count);
+  return values.length === count && values.every((value) => value.length > 0) ? values : undefined;
+}
+
 export interface RemoteAppServerSession {
   run(): Promise<number>;
   /** Ends remote Desktop input without cancelling active work. */
@@ -141,8 +150,8 @@ export function remoteUnixListenerUrl(arguments_: readonly string[]): string | n
     }
     const valueCount = appServerMultiValueCount(argument);
     if (valueCount !== undefined) {
+      if (!appServerMultiValues(arguments_, index, valueCount)) return null;
       index += valueCount;
-      if (index >= arguments_.length) return null;
       continue;
     }
     if (
@@ -289,8 +298,8 @@ export function officialLoopbackListenerArguments(arguments_: readonly string[])
     }
     const valueCount = appServerMultiValueCount(argument);
     if (valueCount !== undefined) {
-      const values = arguments_.slice(index + 1, index + 1 + valueCount);
-      if (values.length < valueCount || values.some((value) => !value)) {
+      const values = appServerMultiValues(arguments_, index, valueCount);
+      if (!values) {
         throw new Error(`${argument} requires ${valueCount} values`);
       }
       result.push(argument, ...values);

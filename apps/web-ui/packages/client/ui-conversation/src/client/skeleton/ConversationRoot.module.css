@@ -396,8 +396,14 @@ button.crumb:hover {
 }
 
 :global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return]):focus-visible) {
-  outline: 2px solid var(--dsw-alias-label-primary);
-  outline-offset: 2px;
+  outline: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :global([data-phone]) .titleCenter:has(:global([data-navigation-focus-return]):focus-visible) {
+    outline: 2px solid var(--dsw-alias-label-primary);
+    outline-offset: 2px;
+  }
 }
 
 :global([data-phone]) .crumbs {

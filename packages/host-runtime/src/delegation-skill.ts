@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const SKILL_VERSION = 15;
+const SKILL_VERSION = 16;
 export const DELEGATION_SKILL_NAME = "codexhost-delegation";
 const SKILL_RELATIVE_PATH = path.join("skills", DELEGATION_SKILL_NAME, "SKILL.md");
 const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
@@ -35,18 +35,20 @@ const PREVIOUS_MANAGED_DIGESTS: readonly string[] = [
   "75eb0ea22c8e3ce875a62133c10d62fedacf381e25202d01688210dd951324c1",
   // Fork v13, before the content split with CLI help.
   "41c2672e34b7a52dee9111f8284a4261b4dbcd42908262dcc814b323bb278e59",
+  // v15, before the CodexHost-specific trigger scope.
+  "1ff56f80948aae392c908ae87e7c3763d329c60fd305c4b1f1a29cf32b8f93a3",
 ];
 
 export const CODEXHOST_DELEGATION_SKILL = `---
 name: codexhost-delegation
 version: ${SKILL_VERSION}
 description: >
-  Delegate tasks to other coding agents, or read and follow up on existing
-  external agent sessions. Use when the user asks another agent (including
-  @agent) to independently perform a task, or asks to view a specified external
-  session's content, progress, or results, send follow-up messages, answer its
-  questions, wait, or cancel a task. Not for recapping the current conversation, discussing or
-  configuring agents, or role-playing.
+  Use in a CodexHost-managed session, or when the user explicitly requests
+  delegation or Thread operations through the codexhost CLI bridge. Delegate
+  tasks to other coding agents (including @agent), or view a CodexHost Thread's
+  content, progress, or results, send follow-up messages, answer questions,
+  wait, or cancel a task. Not for recapping the current conversation,
+  discussing or configuring agents, or role-playing.
 ---
 
 # Execute the task

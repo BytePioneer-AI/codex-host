@@ -893,6 +893,7 @@ export function installRendererBindingProbe(
     getConnectionDiagnostics: () => connectionDiagnostics,
     getLoadedSessionsClient: () => modelClientForHost("local"),
     getDesktopExtensionsClient: () => modelClientForHost("local"),
+    getDelegationClient: () => modelClientForHost("local"),
     requestUsageStatistics: usageStatistics.request,
     usageStatisticsHosts: usageStatistics.hosts,
     getSessionImportClient: (requestedHostId) => {

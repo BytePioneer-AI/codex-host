@@ -376,6 +376,8 @@ import {
   projectCodexThreadUsage,
   readLfFrames,
   jsonRpcRequestSchema,
+  reasoningPreviewItemId,
+  reasoningSummaryParts,
   threadForkResult,
   threadRevertResult,
   threadRollbackResult,
@@ -480,10 +482,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function backgroundItemText(item: JsonObject): string | null {
+function isReasoningTranscript(
+  preview: JsonObject,
+  transcript: JsonObject | undefined,
+): transcript is JsonObject & { aggregatedOutput: string } {
+  return (
+    transcript?.type === "commandExecution" &&
+    transcript.command === REASONING_TRANSCRIPT_COMMAND &&
+    typeof transcript.id === "string" &&
+    preview.id === reasoningPreviewItemId(transcript.id as HostItemId) &&
+    typeof transcript.aggregatedOutput === "string"
+  );
+}
+
+function backgroundItemText(item: JsonObject, transcript?: JsonObject): string | null {
   if (item.type === "agentMessage" && typeof item.text === "string") return item.text;
-  if (item.type === "reasoning" && Array.isArray(item.summary)) {
-    return item.summary.every((part) => typeof part === "string") ? item.summary.join("") : null;
+  // Generated preview titles are not Harness text and cannot prove replay overlap.
+  if (item.type === "reasoning" && isReasoningTranscript(item, transcript)) {
+    return transcript.aggregatedOutput;
   }
   return null;
 }
@@ -508,23 +524,15 @@ function appendBackgroundText(
 ): void {
   const item = items[index];
   if (!item) return;
+  const merged = text + suffix;
   if (item.type !== "reasoning") {
-    items[index] = { ...item, text: text + suffix };
+    items[index] = { ...item, text: merged };
     return;
   }
-  const summary = Array.isArray(item.summary) ? item.summary : [];
-  const last = summary.at(-1);
-  items[index] = {
-    ...item,
-    summary:
-      typeof last === "string" ? [...summary.slice(0, -1), last + suffix] : [...summary, suffix],
-  };
   const transcript = items[index + 1];
-  if (transcript?.command === REASONING_TRANSCRIPT_COMMAND) {
-    const output =
-      typeof transcript.aggregatedOutput === "string" ? transcript.aggregatedOutput : text;
-    items[index + 1] = { ...transcript, aggregatedOutput: output + suffix };
-  }
+  if (!isReasoningTranscript(item, transcript)) return;
+  items[index] = { ...item, summary: reasoningSummaryParts(merged, true) };
+  items[index + 1] = { ...transcript, aggregatedOutput: merged };
 }
 
 interface BackgroundTextRun {
@@ -542,7 +550,7 @@ function backgroundTextCandidates(
     const item = items[index];
     if (item?.type === "commandExecution" && item.command === REASONING_TRANSCRIPT_COMMAND)
       continue;
-    const itemText = item && item.type === type ? backgroundItemText(item) : null;
+    const itemText = item && item.type === type ? backgroundItemText(item, items[index + 1]) : null;
     if (itemText !== null) run.push({ index, text: itemText, start: 0 });
   }
   if (run.length === 0) return null;
@@ -564,13 +572,11 @@ function alignBackgroundTextRun(
   type: string,
   liveText: string,
   consumedEnd: number,
-  foregroundItems: readonly JsonObject[],
+  foregroundText: string,
   allowPartialTail: boolean,
 ): number | null {
   const run = backgroundTextCandidates(items, historicalCount, type);
   if (!run) return null;
-  const foregroundRun = backgroundTextCandidates(foregroundItems, foregroundItems.length, type);
-  const foregroundText = foregroundRun?.text ?? "";
   if (!run.text.startsWith(foregroundText)) return null;
   const searchStart = Math.max(consumedEnd, foregroundText.length);
   const exactStart = run.text.indexOf(liveText, searchStart);
@@ -5498,11 +5504,15 @@ export class AppServerHost {
       const settled = foreground.get(settledItemId);
       if (settled) remaining.set(settledItemId, settled);
     }
+    const projectionText = (id: HostItemId, item: JsonObject): string | null =>
+      item.type === "reasoning" ? projector.reasoningText(id) : backgroundItemText(item);
     // Reads can overlay open text, but only cache it once all detached Items settle.
     const liveItems =
       settledItemId !== undefined && projector.hasOpenDetachedItems
         ? []
-        : [...background.values()].filter((item) => backgroundItemText(item) !== "");
+        : [...background]
+            .map(([id, item]) => ({ item, text: projectionText(id, item) }))
+            .filter(({ text }) => text !== "");
     if (remaining.size === 0 && liveItems.length === 0) return turn;
 
     const items = (turn as { items: JsonObject[] }).items.map((item) => {
@@ -5514,9 +5524,14 @@ export class AppServerHost {
     });
     const historicalCount = items.length;
     const consumedEnd = new Map<string, number>();
-    const foregroundItems = [...foreground.values()];
-    for (const [index, live] of liveItems.entries()) {
-      const liveText = backgroundItemText(live);
+    const foregroundText = new Map<string, string>();
+    for (const [id, item] of foreground) {
+      const text = projectionText(id, item);
+      if (typeof item.type === "string" && text !== null) {
+        foregroundText.set(item.type, (foregroundText.get(item.type) ?? "") + text);
+      }
+    }
+    for (const [index, { item: live, text: liveText }] of liveItems.entries()) {
       if (liveText === null || typeof live.type !== "string") {
         items.push(live);
         continue;
@@ -5527,7 +5542,7 @@ export class AppServerHost {
         live.type,
         liveText,
         consumedEnd.get(live.type) ?? 0,
-        foregroundItems,
+        foregroundText.get(live.type) ?? "",
         index === liveItems.length - 1 && items.length === historicalCount,
       );
       if (aligned === null) {

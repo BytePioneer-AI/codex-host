@@ -1,6 +1,7 @@
 import {
-  desktopExtensionHttpUrlSchema,
-  type DesktopExtensionsInstallParams,
+  HOST_EXTENSION_ZIP_MAX_BYTES,
+  hostExtensionInstallSourceSchema,
+  type HostExtensionInstallSource,
 } from "@codexhost/shared-contracts";
 import {
   arrayBufferToBase64,
@@ -8,12 +9,13 @@ import {
   errorMessage,
   formatByteSize,
   formatMessage,
+  parseGitHubInstallSource,
 } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
 import type { RendererSettingsMessages } from "./localization.js";
 import { preferenceId } from "./preference-ui.js";
 
-type ImportMode = "url" | "zip";
+type ImportMode = "github" | "zip" | "localDir";
 
 export interface DesktopExtensionImportFileLike {
   readonly name: string;
@@ -33,7 +35,7 @@ export function createDesktopExtensionImportModal(options: {
   readonly host: HTMLElement;
   readonly signal: AbortSignal;
   readonly messages: RendererSettingsMessages;
-  readonly onImport: (source: DesktopExtensionsInstallParams["source"]) => Promise<void>;
+  readonly onImport: (source: HostExtensionInstallSource) => Promise<void>;
 }): DesktopExtensionImportModalController {
   const { document, host, signal, messages, onImport } = options;
   const copy = messages.desktopExtensions;
@@ -50,7 +52,7 @@ export function createDesktopExtensionImportModal(options: {
   const open = (): void => {
     if (signal.aborted || dialog?.open) return;
 
-    let mode: ImportMode = "url";
+    let mode: ImportMode = "github";
     let busy = false;
     let selectedFile: DesktopExtensionImportFileLike | null = null;
 
@@ -91,11 +93,11 @@ export function createDesktopExtensionImportModal(options: {
     const modeTabs = createEl(document, "div", "settings-extensions-segmented");
     modeTabs.setAttribute("role", "tablist");
 
-    const urlTabButton = createEl(document, "button", "settings-extensions-segmented__tab");
-    urlTabButton.type = "button";
-    urlTabButton.dataset.importMode = "url";
-    urlTabButton.setAttribute("role", "tab");
-    urlTabButton.append(
+    const githubTabButton = createEl(document, "button", "settings-extensions-segmented__tab");
+    githubTabButton.type = "button";
+    githubTabButton.dataset.importMode = "github";
+    githubTabButton.setAttribute("role", "tab");
+    githubTabButton.append(
       createRendererSettingsIcon("link", 13),
       createEl(document, "span", "", copy.importTabUrl),
     );
@@ -109,14 +111,23 @@ export function createDesktopExtensionImportModal(options: {
       createEl(document, "span", "", copy.importTabZip),
     );
 
-    modeTabs.append(urlTabButton, zipTabButton);
+    const localDirTabButton = createEl(document, "button", "settings-extensions-segmented__tab");
+    localDirTabButton.type = "button";
+    localDirTabButton.dataset.importMode = "localDir";
+    localDirTabButton.setAttribute("role", "tab");
+    localDirTabButton.append(
+      createRendererSettingsIcon("session-import", 13),
+      createEl(document, "span", "", copy.importTabLocalDir),
+    );
+
+    modeTabs.append(githubTabButton, zipTabButton, localDirTabButton);
 
     // Body
     const modalBody = createEl(document, "div", "settings-extensions-import-modal__body");
 
-    // Panel 1: GitHub URL / Release .zip URL
-    const urlPanel = createEl(document, "div", "settings-extensions-import-modal__panel");
-    urlPanel.dataset.importPanel = "url";
+    // Panel 1: GitHub repository / URL
+    const githubPanel = createEl(document, "div", "settings-extensions-import-modal__panel");
+    githubPanel.dataset.importPanel = "github";
 
     const urlField = createEl(document, "div", "settings-extensions-import-modal__field");
     const urlInputId = preferenceId("desktop-ext-import-url");
@@ -124,13 +135,61 @@ export function createDesktopExtensionImportModal(options: {
     urlLabel.setAttribute("for", urlInputId);
     const urlInput = createEl(document, "input", "settings-extensions-import-modal__input");
     urlInput.id = urlInputId;
-    urlInput.type = "url";
+    urlInput.type = "text";
     urlInput.placeholder = copy.importUrlPlaceholder;
-    urlInput.dataset.importField = "url";
+    urlInput.dataset.importField = "github";
     const urlHint = createEl(document, "small", "", copy.importUrlHint);
     urlField.append(urlLabel, urlInput, urlHint);
 
-    urlPanel.append(urlField);
+    const extraRow1 = createEl(document, "div", "settings-extensions-import-modal__row");
+    const refField = createEl(document, "div", "settings-extensions-import-modal__field");
+    const refInputId = preferenceId("desktop-ext-import-ref");
+    const refLabel = createEl(document, "label", "", copy.importRefLabel);
+    refLabel.setAttribute("for", refInputId);
+    const refInput = createEl(document, "input", "settings-extensions-import-modal__input");
+    refInput.id = refInputId;
+    refInput.type = "text";
+    refInput.placeholder = copy.importRefPlaceholder;
+    refInput.dataset.importField = "ref";
+    refField.append(refLabel, refInput);
+
+    const subpathField = createEl(document, "div", "settings-extensions-import-modal__field");
+    const subpathInputId = preferenceId("desktop-ext-import-subpath");
+    const subpathLabel = createEl(document, "label", "", copy.importSubpathLabel);
+    subpathLabel.setAttribute("for", subpathInputId);
+    const subpathInput = createEl(document, "input", "settings-extensions-import-modal__input");
+    subpathInput.id = subpathInputId;
+    subpathInput.type = "text";
+    subpathInput.placeholder = copy.importSubpathPlaceholder;
+    subpathInput.dataset.importField = "subpath";
+    subpathField.append(subpathLabel, subpathInput);
+    extraRow1.append(refField, subpathField);
+
+    const extraRow2 = createEl(document, "div", "settings-extensions-import-modal__row");
+    const tagField = createEl(document, "div", "settings-extensions-import-modal__field");
+    const tagInputId = preferenceId("desktop-ext-import-tag");
+    const tagLabel = createEl(document, "label", "", copy.importTagLabel);
+    tagLabel.setAttribute("for", tagInputId);
+    const tagInput = createEl(document, "input", "settings-extensions-import-modal__input");
+    tagInput.id = tagInputId;
+    tagInput.type = "text";
+    tagInput.placeholder = copy.importTagPlaceholder;
+    tagInput.dataset.importField = "tag";
+    tagField.append(tagLabel, tagInput);
+
+    const assetField = createEl(document, "div", "settings-extensions-import-modal__field");
+    const assetInputId = preferenceId("desktop-ext-import-asset");
+    const assetLabel = createEl(document, "label", "", copy.importAssetLabel);
+    assetLabel.setAttribute("for", assetInputId);
+    const assetInput = createEl(document, "input", "settings-extensions-import-modal__input");
+    assetInput.id = assetInputId;
+    assetInput.type = "text";
+    assetInput.placeholder = copy.importAssetPlaceholder;
+    assetInput.dataset.importField = "asset";
+    assetField.append(assetLabel, assetInput);
+    extraRow2.append(tagField, assetField);
+
+    githubPanel.append(urlField, extraRow1, extraRow2);
 
     // Panel 2: Local .zip upload
     const zipPanel = createEl(document, "div", "settings-extensions-import-modal__panel");
@@ -182,6 +241,24 @@ export function createDesktopExtensionImportModal(options: {
 
     zipPanel.append(dropzone, selectedFileBar);
 
+    // Panel 3: Local directory
+    const localDirPanel = createEl(document, "div", "settings-extensions-import-modal__panel");
+    localDirPanel.dataset.importPanel = "localDir";
+    localDirPanel.hidden = true;
+
+    const localDirField = createEl(document, "div", "settings-extensions-import-modal__field");
+    const localDirInputId = preferenceId("desktop-ext-import-local-dir");
+    const localDirLabel = createEl(document, "label", "", copy.importLocalDirLabel);
+    localDirLabel.setAttribute("for", localDirInputId);
+    const localDirInput = createEl(document, "input", "settings-extensions-import-modal__input");
+    localDirInput.id = localDirInputId;
+    localDirInput.type = "text";
+    localDirInput.placeholder = copy.importLocalDirPlaceholder;
+    localDirInput.dataset.importField = "localDir";
+    const localDirHint = createEl(document, "small", "", copy.importLocalDirHint);
+    localDirField.append(localDirLabel, localDirInput, localDirHint);
+    localDirPanel.append(localDirField);
+
     const errorEl = createEl(
       document,
       "p",
@@ -190,7 +267,7 @@ export function createDesktopExtensionImportModal(options: {
     errorEl.setAttribute("role", "alert");
     errorEl.hidden = true;
 
-    modalBody.append(modeTabs, urlPanel, zipPanel, errorEl);
+    modalBody.append(modeTabs, githubPanel, zipPanel, localDirPanel, errorEl);
 
     // Footer actions
     const actions = createEl(document, "div", "settings-extensions-import-modal__actions");
@@ -233,11 +310,12 @@ export function createDesktopExtensionImportModal(options: {
     };
 
     const syncMode = (): void => {
-      const isUrl = mode === "url";
-      urlTabButton.setAttribute("aria-selected", String(isUrl));
-      zipTabButton.setAttribute("aria-selected", String(!isUrl));
-      urlPanel.hidden = !isUrl;
-      zipPanel.hidden = isUrl;
+      githubTabButton.setAttribute("aria-selected", String(mode === "github"));
+      zipTabButton.setAttribute("aria-selected", String(mode === "zip"));
+      localDirTabButton.setAttribute("aria-selected", String(mode === "localDir"));
+      githubPanel.hidden = mode !== "github";
+      zipPanel.hidden = mode !== "zip";
+      localDirPanel.hidden = mode !== "localDir";
     };
 
     const setBusy = (next: boolean): void => {
@@ -247,9 +325,15 @@ export function createDesktopExtensionImportModal(options: {
       cancelButton.disabled = next;
       submitButton.disabled = next;
       submitButton.textContent = next ? copy.importSubmitting : copy.importSubmit;
-      urlTabButton.disabled = next;
+      githubTabButton.disabled = next;
       zipTabButton.disabled = next;
+      localDirTabButton.disabled = next;
       urlInput.disabled = next;
+      refInput.disabled = next;
+      tagInput.disabled = next;
+      assetInput.disabled = next;
+      subpathInput.disabled = next;
+      localDirInput.disabled = next;
       fileInput.disabled = next;
       chooseFileButton.disabled = next;
       clearFileButton.disabled = next;
@@ -274,24 +358,33 @@ export function createDesktopExtensionImportModal(options: {
         setError(copy.importErrorEmptyFile);
         return;
       }
+      if (file.size > HOST_EXTENSION_ZIP_MAX_BYTES) {
+        selectedFile = null;
+        syncSelectedFile();
+        setError(
+          formatMessage(copy.installFailed, {
+            message: `ZIP exceeds ${formatByteSize(HOST_EXTENSION_ZIP_MAX_BYTES)}`,
+          }),
+        );
+        return;
+      }
       selectedFile = file;
       syncSelectedFile();
     };
 
-    urlTabButton.addEventListener("click", () => {
-      if (busy || mode === "url") return;
-      mode = "url";
+    const switchMode = (next: ImportMode): void => {
+      if (busy || mode === next) return;
+      mode = next;
       setError(null);
       syncMode();
-    });
-    zipTabButton.addEventListener("click", () => {
-      if (busy || mode === "zip") return;
-      mode = "zip";
-      setError(null);
-      syncMode();
-    });
+    };
+    githubTabButton.addEventListener("click", () => switchMode("github"));
+    zipTabButton.addEventListener("click", () => switchMode("zip"));
+    localDirTabButton.addEventListener("click", () => switchMode("localDir"));
 
-    urlInput.addEventListener("input", () => setError(null));
+    for (const input of [urlInput, refInput, tagInput, assetInput, subpathInput, localDirInput]) {
+      input.addEventListener("input", () => setError(null));
+    }
 
     fileInput.addEventListener("change", () => {
       const files = (fileInput as unknown as { files?: ArrayLike<DesktopExtensionImportFileLike> })
@@ -352,20 +445,41 @@ export function createDesktopExtensionImportModal(options: {
       setError(null);
 
       const submit = async (): Promise<void> => {
-        let source: DesktopExtensionsInstallParams["source"];
+        let source: HostExtensionInstallSource;
 
-        if (mode === "url") {
+        if (mode === "github") {
           const rawUrl = urlInput.value.trim();
           if (!rawUrl) {
             setError(copy.importErrorEmptyUrl);
             return;
           }
-          const parsedUrl = desktopExtensionHttpUrlSchema.safeParse(rawUrl);
-          if (!parsedUrl.success) {
+          const parsedGitHub = parseGitHubInstallSource({
+            repoOrUrl: rawUrl,
+            ref: refInput.value,
+            tag: tagInput.value,
+            asset: assetInput.value,
+            subpath: subpathInput.value,
+          });
+          if (!parsedGitHub) {
             setError(copy.importErrorInvalidUrl);
             return;
           }
-          source = { type: "url", url: parsedUrl.data };
+          source = parsedGitHub;
+        } else if (mode === "localDir") {
+          const rawDir = localDirInput.value.trim();
+          if (!rawDir) {
+            setError(copy.importErrorEmptyLocalDir);
+            return;
+          }
+          const parsedDir = hostExtensionInstallSourceSchema.safeParse({
+            type: "localDir",
+            localDir: rawDir,
+          });
+          if (!parsedDir.success) {
+            setError(copy.importErrorInvalidLocalDir);
+            return;
+          }
+          source = parsedDir.data;
         } else {
           if (!selectedFile) {
             setError(copy.importErrorNoFile);
@@ -393,9 +507,8 @@ export function createDesktopExtensionImportModal(options: {
             return;
           }
           source = {
-            type: "zip-base64",
-            fileName: selectedFile.name.trim(),
-            contentBase64: arrayBufferToBase64(buffer),
+            type: "zip",
+            base64: arrayBufferToBase64(buffer),
           };
         }
 

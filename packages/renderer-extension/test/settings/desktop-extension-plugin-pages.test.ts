@@ -144,6 +144,57 @@ function createHarness(locale: "en" | "zh-CN" = "zh-CN") {
 
   const desktopClient = {
     listDesktopExtensions: vi.fn(async () => listResponse),
+    listHostExtensions: vi.fn(async () => ({
+      revision: listResponse.configuration.revision,
+      configuration: {
+        revision: listResponse.configuration.revision,
+        enabled: listResponse.configuration.enabled,
+      },
+      diagnostics: listResponse.diagnostics,
+      extensions: listResponse.extensions.map((ext) => {
+        if (!ext.manifest) {
+          return {
+            state: "invalid" as const,
+            id: ext.id,
+            enabled: ext.enabled,
+            error: "Invalid manifest",
+          };
+        }
+        const rawName = ext.manifest.name;
+        const name =
+          typeof rawName === "string"
+            ? { en: rawName, "zh-CN": rawName }
+            : { en: rawName.en, "zh-CN": rawName["zh-CN"] ?? rawName.en };
+        const rawDesc = ext.manifest.description;
+        const description =
+          rawDesc === undefined
+            ? { en: ext.id, "zh-CN": ext.id }
+            : typeof rawDesc === "string"
+              ? { en: rawDesc, "zh-CN": rawDesc }
+              : { en: rawDesc.en, "zh-CN": rawDesc["zh-CN"] ?? rawDesc.en };
+        return {
+          state: "valid" as const,
+          id: ext.id,
+          activationId: `act-${ext.id}`,
+          digest: "a".repeat(64),
+          installedAt: "2026-07-01T00:00:00.000Z",
+          enabled: ext.enabled,
+          manifest: {
+            manifestVersion: 2 as const,
+            id: ext.id,
+            name,
+            version: ext.manifest.version,
+            description,
+            desktop: {
+              apiVersion: 1 as const,
+              entry: ext.manifest.desktop.script,
+              slots: ext.manifest.slots,
+            },
+            ...(ext.manifest.settingsSchema ? { settingsSchema: ext.manifest.settingsSchema } : {}),
+          },
+        };
+      }),
+    })),
     readDesktopExtensionAsset: vi.fn(({ id, path }: { id: string; path: string }) =>
       readAsset(id, path),
     ),

@@ -1,95 +1,96 @@
 /**
- * Typed RPC client for the Web native extension runtime endpoints.
- * Uses the same `POST api/<method>` client-request envelope as the rest of Web UI.
+ * Typed RPC client for the Web native extension runtime endpoints backed by the shared Host
+ * channel (`POST api/ch/v1/rpc` -> `codexhost/extensions/*`).
  */
 import {
-  WEB_EXTENSIONS_RPC,
-  webExtensionsRpcSchemas,
+  HOST_EXTENSIONS_RPC,
+  hostExtensionsRpcSchemas,
+  type HostExtensionManagementMethod,
+  type HostExtensionSettings,
+  type HostExtensionsRpcParams,
+  type HostExtensionsRpcResult,
+  type HostExtensionsSnapshotResult,
   type JsonObject,
   type JsonValue,
-  type WebExtensionRuntimeSnapshot,
-  type WebExtensionsRpcMethod,
-  type WebExtensionsRpcParams,
-  type WebExtensionsRpcResult,
 } from "@codexhost/shared-contracts";
 
 /** Structured RPC failure preserving the server's error code. */
 export class WebExtensionRpcError extends Error {
   constructor(
     message: string,
-    readonly code: string,
-    readonly details?: unknown,
+    readonly code: number | string,
+    readonly status?: number,
   ) {
     super(message);
     this.name = "WebExtensionRpcError";
   }
 }
 
-function createRpcId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `web-ext-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-async function callWebExtensionsRpc<M extends WebExtensionsRpcMethod>(
+async function callHostExtensionsRpc<M extends HostExtensionManagementMethod>(
   method: M,
-  params: WebExtensionsRpcParams<M>,
+  params: HostExtensionsRpcParams<M>,
   signal?: AbortSignal,
-): Promise<WebExtensionsRpcResult<M>> {
-  const schema = webExtensionsRpcSchemas[method];
-  const args = schema.params.parse(params);
-  const response = await fetch(`api/${method}`, {
+): Promise<HostExtensionsRpcResult<M>> {
+  const schema = hostExtensionsRpcSchemas[method];
+  const validatedParams = schema.params.parse(params);
+  const response = await fetch("api/ch/v1/rpc", {
     method: "POST",
     credentials: "same-origin",
     cache: "no-store",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      type: "client-request",
-      rpcId: createRpcId(),
-      method,
-      payload: { args },
-    }),
+    body: JSON.stringify({ method, params: validatedParams }),
     ...(signal === undefined ? {} : { signal }),
   });
-  let envelope:
+
+  let reply:
     | {
-        result?:
-          | { ok: true; value: unknown }
-          | { ok: false; error: { message: string; code: string; details?: unknown } };
+        result?: unknown;
+        error?: { code?: number | string; message?: string };
       }
     | undefined;
   try {
-    envelope = (await response.json()) as typeof envelope;
+    reply = (await response.json()) as typeof reply;
   } catch {
-    if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
+    if (!response.ok)
+      throw new WebExtensionRpcError(
+        `HTTP ${String(response.status)}`,
+        response.status,
+        response.status,
+      );
     throw new Error(`Invalid RPC response for ${method}`);
   }
-  if (envelope?.result?.ok === false) {
-    const { message, code, details } = envelope.result.error;
-    throw new WebExtensionRpcError(message, code, details);
+  if (reply?.error) {
+    throw new WebExtensionRpcError(
+      reply.error.message ?? `HTTP ${String(response.status)}`,
+      reply.error.code ?? response.status,
+      response.status,
+    );
   }
-  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`);
-  if (envelope?.result?.ok !== true) {
-    throw new Error(`Missing RPC result for ${method}`);
+  if (!response.ok) {
+    throw new WebExtensionRpcError(
+      `HTTP ${String(response.status)}`,
+      response.status,
+      response.status,
+    );
   }
-  return schema.result.parse(envelope.result.value) as WebExtensionsRpcResult<M>;
+  return schema.result.parse(reply?.result) as HostExtensionsRpcResult<M>;
 }
 
 /** Transport surface injected into the Web native extension host (replaceable in tests). */
 export interface WebNativeExtensionRpcClient {
-  snapshot(signal?: AbortSignal): Promise<WebExtensionRuntimeSnapshot>;
+  snapshot(signal?: AbortSignal): Promise<HostExtensionsSnapshotResult>;
   settingsGet(
     id: string,
     activationId: string,
     signal?: AbortSignal,
-  ): Promise<{ values: JsonObject; revision: string }>;
+  ): Promise<HostExtensionSettings>;
   settingsSet(
     id: string,
     activationId: string,
+    expectedSettingsRevision: number,
     values: JsonObject,
     signal?: AbortSignal,
-  ): Promise<{ values: JsonObject; revision: string }>;
+  ): Promise<HostExtensionSettings>;
   backendInvoke(
     id: string,
     activationId: string,
@@ -99,16 +100,20 @@ export interface WebNativeExtensionRpcClient {
   ): Promise<JsonValue>;
 }
 
-/** Default same-origin RPC client backed by `WEB_EXTENSIONS_RPC`. */
+/** Default same-origin RPC client backed by `HOST_EXTENSIONS_RPC` on `POST api/ch/v1/rpc`. */
 export const webNativeExtensionRpcClient: WebNativeExtensionRpcClient = {
-  snapshot: (signal) => callWebExtensionsRpc(WEB_EXTENSIONS_RPC.snapshot, {}, signal),
+  snapshot: (signal) => callHostExtensionsRpc(HOST_EXTENSIONS_RPC.snapshot, {}, signal),
   settingsGet: (id, activationId, signal) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.settingsGet, { id, activationId }, signal),
-  settingsSet: (id, activationId, values, signal) =>
-    callWebExtensionsRpc(WEB_EXTENSIONS_RPC.settingsSet, { id, activationId, values }, signal),
+    callHostExtensionsRpc(HOST_EXTENSIONS_RPC.settingsGet, { id, activationId }, signal),
+  settingsSet: (id, activationId, expectedSettingsRevision, values, signal) =>
+    callHostExtensionsRpc(
+      HOST_EXTENSIONS_RPC.settingsSet,
+      { id, activationId, expectedSettingsRevision, values },
+      signal,
+    ),
   backendInvoke: async (id, activationId, method, params, signal) => {
-    const reply = await callWebExtensionsRpc(
-      WEB_EXTENSIONS_RPC.backendInvoke,
+    const reply = await callHostExtensionsRpc(
+      HOST_EXTENSIONS_RPC.backendInvoke,
       {
         id,
         activationId,

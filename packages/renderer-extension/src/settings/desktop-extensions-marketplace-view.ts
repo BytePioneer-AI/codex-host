@@ -1,16 +1,17 @@
 import type {
-  DesktopExtensionCatalogEntry,
-  DesktopExtensionsCatalogResult,
+  HostExtensionCatalogEntry,
+  HostExtensionListItem,
+  HostExtensionsCatalogResult,
 } from "@codexhost/shared-contracts";
 import { renderDesktopExtensionCard } from "./desktop-extensions-card.js";
 import {
+  catalogCapabilities,
   catalogDescription,
   catalogDisplayName,
   createEl,
-  formatMessage,
+  deriveCapabilityBadges,
   hasCatalogUpdate,
   type DesktopExtensionContentLocale,
-  type DesktopExtensionItem,
   type DesktopExtensionMutationAction,
 } from "./desktop-extensions-shared.js";
 import { createRendererSettingsIcon } from "./icons.js";
@@ -20,15 +21,15 @@ export interface DesktopExtensionsMarketplaceViewOptions {
   readonly document: Document;
   readonly messages: RendererSettingsMessages;
   readonly contentLocale?: DesktopExtensionContentLocale | undefined;
-  readonly catalog: DesktopExtensionsCatalogResult;
-  readonly visibleEntries: readonly DesktopExtensionCatalogEntry[];
-  readonly installedById: ReadonlyMap<string, DesktopExtensionItem>;
+  readonly catalog: HostExtensionsCatalogResult;
+  readonly visibleEntries: readonly HostExtensionCatalogEntry[];
+  readonly installedById: ReadonlyMap<string, HostExtensionListItem>;
   readonly canInstall: boolean;
   readonly mutating: boolean;
   readonly activeMutationId: string | null;
   readonly activeMutationAction: DesktopExtensionMutationAction | null;
   readonly onOpenDetails: (extensionId: string) => void;
-  readonly onInstall: (entry: DesktopExtensionCatalogEntry, isUpdate: boolean) => void;
+  readonly onInstall: (entry: HostExtensionCatalogEntry, isUpdate: boolean) => void;
   readonly onViewInstalled: (extensionId: string) => void;
   readonly onRetryCatalog: () => void;
 }
@@ -36,25 +37,24 @@ export interface DesktopExtensionsMarketplaceViewOptions {
 export function renderMarketplaceFallbackNotice(
   document: Document,
   messages: RendererSettingsMessages,
-  catalog: DesktopExtensionsCatalogResult,
+  catalog: HostExtensionsCatalogResult,
   disabled: boolean,
   onRetry: () => void,
+  catalogError: string | null = null,
 ): HTMLElement | null {
-  const showFallbackNotice = catalog.source === "fallback";
-  const showEmptyErrorNotice =
-    catalog.source !== "fallback" && Boolean(catalog.error) && catalog.extensions.length === 0;
-  if (!showFallbackNotice && !showEmptyErrorNotice) return null;
+  if (!catalogError && !catalog.cached) return null;
+  if (!catalogError) return null;
 
   const copy = messages.desktopExtensions;
   const notice = createEl(document, "div", "settings-extensions-market__notice");
   notice.setAttribute("role", "status");
-  notice.dataset.source = catalog.source;
+  notice.dataset.source = catalog.cached ? "cached" : "error";
 
   const textWrap = createEl(document, "div", "settings-extensions-market__notice-copy");
-  const text = showFallbackNotice
-    ? copy.marketplaceFallbackNotice
-    : formatMessage(copy.marketplaceLoadFailed, { message: catalog.error ?? "" });
-  textWrap.append(createRendererSettingsIcon("info", 14), createEl(document, "span", "", text));
+  textWrap.append(
+    createRendererSettingsIcon("info", 14),
+    createEl(document, "span", "", copy.marketplaceFallbackNotice),
+  );
 
   const retryButton = createEl(
     document,
@@ -142,6 +142,12 @@ export function renderDesktopExtensionsMarketplaceGrid(
       event.stopPropagation?.();
     });
 
+    const capabilityBadges = deriveCapabilityBadges(
+      catalogCapabilities(entry),
+      entry.targets,
+      copy,
+    );
+
     grid.append(
       renderDesktopExtensionCard({
         document,
@@ -150,7 +156,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
         extensionId: entry.id,
         cardKind: "marketplace",
         displayName,
-        iconUrl: (entry as { readonly icon?: string }).icon,
+        iconUrl: entry.icon,
         author: entry.author,
         version: entry.version,
         repository: entry.repository,
@@ -159,6 +165,7 @@ export function renderDesktopExtensionsMarketplaceGrid(
         trustTier: entry.trustTier,
         description: catalogDescription(entry, contentLocale),
         categories: entry.categories,
+        capabilityBadges,
         actionControl: actionButton,
         busy: isBusyCard,
         dataset: {

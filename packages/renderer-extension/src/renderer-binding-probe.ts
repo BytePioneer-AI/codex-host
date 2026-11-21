@@ -3728,22 +3728,57 @@ export function installRendererBindingProbe(
         openCodexThread,
       ),
     readAsset: async (id, path) => {
-      const reader = modelClientForHost("local")?.readDesktopExtensionAsset;
+      const client = modelClientForHost("local");
+      if (client?.readHostExtensionAsset) {
+        const asset = await client.readHostExtensionAsset({ id, path });
+        return {
+          mimeType: asset.mimeType,
+          dataUrl: `data:${asset.mimeType};base64,${asset.base64}`,
+        };
+      }
+      const reader = client?.readDesktopExtensionAsset;
       if (!reader) throw new Error("Desktop extension assets RPC is unavailable");
       return reader({ id, path });
     },
     getSettings: async (id) => {
-      const reader = modelClientForHost("local")?.getDesktopExtensionSettings;
+      const client = modelClientForHost("local");
+      if (client?.getHostExtensionSettings) {
+        return (await client.getHostExtensionSettings({ id })).values;
+      }
+      const reader = client?.getDesktopExtensionSettings;
       if (!reader) throw new Error("Desktop extension settings RPC is unavailable");
       return (await reader({ id })).values;
     },
     setSettings: async (id, values) => {
-      const writer = modelClientForHost("local")?.setDesktopExtensionSettings;
+      const client = modelClientForHost("local");
+      if (client?.setHostExtensionSettings) {
+        const current = client.getHostExtensionSettings
+          ? await client.getHostExtensionSettings({ id })
+          : { settingsRevision: 0 };
+        return (
+          await client.setHostExtensionSettings({
+            id,
+            expectedSettingsRevision: current.settingsRevision,
+            values: values as Record<string, never>,
+          })
+        ).values;
+      }
+      const writer = client?.setDesktopExtensionSettings;
       if (!writer) throw new Error("Desktop extension settings RPC is unavailable");
       return (await writer({ id, values })).values;
     },
     invokeBackend: async (id, method, params) => {
-      const invoker = modelClientForHost("local")?.invokeDesktopExtensionBackend;
+      const client = modelClientForHost("local");
+      if (client?.invokeHostExtensionBackend) {
+        return (
+          await client.invokeHostExtensionBackend({
+            id,
+            method,
+            ...(params !== undefined ? { params: params as never } : {}),
+          })
+        ).result;
+      }
+      const invoker = client?.invokeDesktopExtensionBackend;
       if (!invoker) throw new Error("Desktop extension backend RPC is unavailable");
       return (await invoker({ id, method, ...(params !== undefined ? { params } : {}) })).result;
     },

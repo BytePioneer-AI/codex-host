@@ -422,7 +422,6 @@ export function apply(ctx: ClientContext): void {
         label: () => t("settings.extensions"),
         locale: NS,
         inject: (): PluginsSectionFace => ({
-          resolveText: (text) => ctx.locale.resolveText(text),
           locale,
           colorScheme,
         }),

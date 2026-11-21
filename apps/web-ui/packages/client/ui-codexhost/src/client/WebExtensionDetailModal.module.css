@@ -145,6 +145,17 @@
   background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
 }
 
+.capabilityChip[data-capability="all"],
+.capabilityChip[data-capability="page"] {
+  color: var(--dsw-alias-state-business-primary);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 26%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent);
+}
+
+.capabilityChip[data-capability="backend"] {
+  color: var(--dsw-alias-label-primary);
+}
+
 .metaRow {
   display: flex;
   flex-wrap: wrap;

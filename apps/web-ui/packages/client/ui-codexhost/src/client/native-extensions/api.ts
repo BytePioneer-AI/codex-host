@@ -7,14 +7,14 @@
 import type { Context as ClientContext } from "@deepseek-ai/cordis";
 import {
   WEB_EXTENSION_REGIONS,
-  encodeWebExtensionResourcePath,
+  hostExtensionAssetUrl,
+  type HostExtensionRuntimeEntry,
   type JsonObject,
   type JsonValue,
   type WebExtensionApi,
   type WebExtensionDispose,
   type WebExtensionMount,
   type WebExtensionRegion,
-  type WebExtensionRuntimeEntry,
 } from "@codexhost/shared-contracts";
 import { ExtensionContributionRegistry } from "./contributions.ts";
 import type { WebNativeExtensionRpcClient } from "./rpc.ts";
@@ -30,6 +30,26 @@ export function cloneJsonObject(values: JsonObject): JsonObject {
   } catch {
     return JSON.parse(JSON.stringify(values)) as JsonObject;
   }
+}
+
+/**
+ * Resolve a Host extension asset URL relative to the document's `<base href="./">` so sub-path
+ * deployments and Relay proxies keep their base prefix; falls back to the raw asset path.
+ */
+export function resolveHostExtensionAssetUrl(
+  input: Parameters<typeof hostExtensionAssetUrl>[0],
+  doc?: Pick<Document, "baseURI"> | null,
+): string {
+  const rawPath = hostExtensionAssetUrl(input);
+  const baseUri = doc?.baseURI;
+  if (typeof baseUri === "string" && baseUri.length > 0) {
+    try {
+      return new URL(rawPath.replace(/^\/+/u, ""), baseUri).href;
+    } catch {
+      // Fall back to the root-relative path if baseURI is invalid or non-hierarchical.
+    }
+  }
+  return rawPath;
 }
 
 function isHtmlElement(value: unknown): value is HTMLElement {
@@ -54,10 +74,16 @@ function isElement(value: unknown): value is Element {
   );
 }
 
+function isRevisionConflictError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /revision|conflict|stale/iu.test(message);
+}
+
 export interface ManagedWebExtensionResources {
   readonly api: WebExtensionApi;
   readonly signal: AbortSignal;
   readonly hasStorageListeners: () => boolean;
+  updateSettingsRevision(revision: number): void;
   notifyStorageChange(values: JsonObject): void;
   reclaim(activateDispose?: WebExtensionDispose): void;
 }
@@ -65,9 +91,9 @@ export interface ManagedWebExtensionResources {
 export interface CreateWebExtensionApiOptions {
   readonly ctx: ClientContext;
   readonly document: Document;
-  readonly entry: WebExtensionRuntimeEntry;
+  readonly entry: HostExtensionRuntimeEntry;
   readonly rpc: WebNativeExtensionRpcClient;
-  readonly onSettingsRevisionObserved: (revision: string) => void;
+  readonly onSettingsRevisionObserved: (revision: number) => void;
 }
 
 /** Build one isolated `WebExtensionApi` instance bound to a single `(id, activationId, digest)`. */
@@ -75,7 +101,8 @@ export function createWebExtensionApi(
   options: CreateWebExtensionApiOptions,
 ): ManagedWebExtensionResources {
   const { ctx, document: doc, entry, rpc, onSettingsRevisionObserved } = options;
-  const { id, activationId, assetBaseUrl } = entry;
+  const { id, activationId, digest } = entry;
+  const hasBackend = Boolean(entry.manifest.backend);
   const controller = new AbortController();
   const contributions = new ExtensionContributionRegistry(ctx, id, controller.signal);
 
@@ -83,6 +110,7 @@ export function createWebExtensionApi(
   const marked = new Map<Element, Map<string, string | null>>();
   const storageListeners = new Set<(values: JsonObject) => void>();
   const trackedDisposers = new Set<WebExtensionDispose>();
+  let currentSettingsRevision = entry.settingsRevision;
   let stopping = false;
 
   const guard = (): void => {
@@ -212,7 +240,7 @@ export function createWebExtensionApi(
     assets: {
       url(path: string): string {
         guard();
-        return `${assetBaseUrl}${encodeWebExtensionResourcePath(path)}`;
+        return resolveHostExtensionAssetUrl({ id, activationId, digest, path }, doc);
       },
     },
     storage: {
@@ -220,14 +248,38 @@ export function createWebExtensionApi(
         guard();
         const result = await rpc.settingsGet(id, activationId, controller.signal);
         guard();
-        onSettingsRevisionObserved(result.revision);
+        currentSettingsRevision = result.settingsRevision;
+        onSettingsRevisionObserved(result.settingsRevision);
         return cloneJsonObject(result.values);
       },
       async set(values: JsonObject): Promise<JsonObject> {
         guard();
-        const result = await rpc.settingsSet(id, activationId, values, controller.signal);
+        let result;
+        try {
+          result = await rpc.settingsSet(
+            id,
+            activationId,
+            currentSettingsRevision,
+            values,
+            controller.signal,
+          );
+        } catch (error) {
+          if (!isRevisionConflictError(error)) throw error;
+          guard();
+          const latest = await rpc.settingsGet(id, activationId, controller.signal);
+          guard();
+          currentSettingsRevision = latest.settingsRevision;
+          result = await rpc.settingsSet(
+            id,
+            activationId,
+            currentSettingsRevision,
+            values,
+            controller.signal,
+          );
+        }
         guard();
-        onSettingsRevisionObserved(result.revision);
+        currentSettingsRevision = result.settingsRevision;
+        onSettingsRevisionObserved(result.settingsRevision);
         deliverStorageChange(result.values);
         return cloneJsonObject(result.values);
       },
@@ -245,6 +297,9 @@ export function createWebExtensionApi(
     backend: {
       async invoke(method: string, params?: JsonValue): Promise<JsonValue> {
         guard();
+        if (!hasBackend) {
+          throw new Error(`Extension "${id}" does not declare a backend`);
+        }
         const result = await rpc.backendInvoke(id, activationId, method, params, controller.signal);
         guard();
         return result;
@@ -305,6 +360,9 @@ export function createWebExtensionApi(
     api,
     signal: controller.signal,
     hasStorageListeners: () => storageListeners.size > 0,
+    updateSettingsRevision(revision: number) {
+      currentSettingsRevision = revision;
+    },
     notifyStorageChange: deliverStorageChange,
     reclaim,
   };

@@ -52,7 +52,11 @@ impl Instance {
     }
 
     fn verify_image(&self) -> Result<()> {
-        if Self::from(&process_snapshot(self.pid)?) != *self {
+        let observed = Self::from(&process_snapshot(self.pid)?);
+        if observed.pid != self.pid
+            || observed.started_at_micros != self.started_at_micros
+            || !same_executable(&self.executable, &observed.executable)
+        {
             return Err("Desktop process executable or instance identity changed".into());
         }
         Ok(())
@@ -113,8 +117,32 @@ impl Owner {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn stripped_deleted_executable(observed: &Path) -> Option<PathBuf> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let original = observed
+        .as_os_str()
+        .as_bytes()
+        .strip_suffix(b" (deleted)")?;
+    (!observed.exists()).then(|| PathBuf::from(OsStr::from_bytes(original)))
+}
+
+fn same_executable(expected: &Path, observed: &Path) -> bool {
+    if observed == expected {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(original) = stripped_deleted_executable(observed) {
+        return original == expected;
+    }
+    false
+}
+
 fn check_installation(executable: &Path) -> Result<()> {
-    if std::env::current_exe()?.canonicalize()? != executable {
+    let current = std::env::current_exe()?.canonicalize()?;
+    if !same_executable(&current, executable) {
         return Err("Desktop belongs to a different installation; no GUI action taken".into());
     }
     Ok(())

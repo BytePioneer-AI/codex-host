@@ -247,3 +247,26 @@ fn recovers_release_controller() {
         }
     }
 }
+
+#[test]
+fn matches_replaced_linux_executable_only_when_unlinked() {
+    let temp = Temp::new();
+    let expected = temp.0.join("codexhost");
+    fs::write(&expected, b"new").unwrap();
+    let deleted = PathBuf::from(format!("{} (deleted)", expected.display()));
+    assert_eq!(
+        stripped_deleted_executable(&deleted).as_deref(),
+        Some(expected.as_path())
+    );
+    #[cfg(target_os = "linux")]
+    assert!(same_executable(&expected, &deleted));
+    let other = temp.0.join("other-codexhost (deleted)");
+    assert_ne!(
+        stripped_deleted_executable(&other).as_deref(),
+        Some(expected.as_path())
+    );
+    // A literal file on disk named "... (deleted)" must not masquerade as an unlinked binary.
+    fs::write(&deleted, b"spoof").unwrap();
+    assert_eq!(stripped_deleted_executable(&deleted), None);
+    assert!(!same_executable(&expected, &deleted));
+}

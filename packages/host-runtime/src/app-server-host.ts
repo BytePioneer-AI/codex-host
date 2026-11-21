@@ -5135,9 +5135,11 @@ export class AppServerHost {
   ): Promise<void> {
     const headPage = params.cursor === null || params.cursor === undefined;
     const requiresRefresh =
-      request.method === "thread/turns/list" ||
-      (request.method === "thread/items/list" && !thread.historyHydrated);
-    if (!thread.running && !historyFresh && headPage && requiresRefresh) {
+      (request.method === "thread/turns/list" && headPage) ||
+      (request.method === "thread/items/list" &&
+        !thread.historyHydrated &&
+        (headPage || (isRecord(params.cursor) && params.cursor.type === "item")));
+    if (!thread.running && !historyFresh && requiresRefresh) {
       const refreshed = await this.#refreshExternalThread(thread);
       if (refreshed) {
         await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));

@@ -6581,6 +6581,29 @@ export class AppServerHost {
         },
       };
     }
+    if (event.type === "session.title.changed") {
+      if (
+        this.#externalRuntime.get(thread.id) !== thread ||
+        thread.record.state !== "ready" ||
+        thread.record.title ||
+        typeof event.title !== "string" ||
+        !event.title.trim()
+      )
+        return;
+      try {
+        const record = await this.#repository.setTitle(thread.id, event.title, { ifUnnamed: true });
+        if (record.title !== event.title) return;
+        thread.record = record;
+        thread.thread.name = record.title;
+        await this.#writer.json({
+          method: "thread/name/updated",
+          params: { threadId: thread.id, threadName: record.title },
+        });
+      } catch (error) {
+        this.#diagnose(`External Session title could not be persisted: ${errorMessage(error)}`);
+      }
+      return;
+    }
     if (event.type === "session.state.changed") {
       try {
         if (event.state.nativeRef) {

@@ -348,6 +348,57 @@ describe("AppServerHost HarnessAdapter projection", () => {
     await stopFixture(fixture);
   });
 
+  it.each([false, true])(
+    "uses the native title for an unnamed Thread (renamed: %s)",
+    async (renamed) => {
+      const fixture = createFixture();
+      try {
+        const threadId = await startPiThread(fixture);
+        const session = fixture.adapter.sessions[0];
+        if (!session) throw new Error("Fake Session was not opened");
+        const nativeTitle = "Native task title";
+        const userTitle = "User title";
+        if (renamed) {
+          writeRequest(fixture.desktopInput, {
+            id: 2,
+            method: "thread/name/set",
+            params: { threadId, name: userTitle },
+          });
+          await fixture.collector.waitFor((message) => method(message, "thread/name/updated"));
+        }
+
+        const changes: string[] = [];
+        const unsubscribe = fixture.host.clientEvents.subscribe((event) => {
+          if (event.type === "changed" && event.threadId === threadId) changes.push(event.method);
+        });
+        try {
+          session.emitEvent({ type: "session.title.changed", title: nativeTitle });
+          session.emitEvent({ type: "session.state.changed", state: session.initialState });
+          await vi.waitFor(() =>
+            expect(changes).toContain("codexhost/thread/configuration/updated"),
+          );
+          expect(changes.includes("thread/name/updated")).toBe(!renamed);
+          const expectedTitle = renamed ? userTitle : nativeTitle;
+          writeRequest(fixture.desktopInput, {
+            id: 3,
+            method: "thread/read",
+            params: { threadId },
+          });
+          await expect(
+            fixture.collector.waitFor((message) => requestId(message, 3)),
+          ).resolves.toMatchObject({ result: { thread: { name: expectedTitle } } });
+          await expect(
+            fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId)),
+          ).resolves.toMatchObject({ title: expectedTitle });
+        } finally {
+          unsubscribe();
+        }
+      } finally {
+        await stopFixture(fixture);
+      }
+    },
+  );
+
   it("deletes an unused Pi prewarm locally", async () => {
     const fixture = createFixture();
     const officialWrite = vi.fn();

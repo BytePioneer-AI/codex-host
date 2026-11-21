@@ -137,6 +137,7 @@ export type TurnScopedEvent = Exclude<
   {
     type:
       | "session.state.changed"
+      | "session.title.changed"
       | "session.usage.changed"
       | "usage.request"
       | "usage.request.timing"

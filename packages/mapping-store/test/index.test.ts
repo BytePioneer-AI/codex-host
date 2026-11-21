@@ -794,6 +794,32 @@ describe("mapping-store package", () => {
     await second.close();
   });
 
+  it("applies a native title without changing recency and preserves a concurrent rename", async () => {
+    const directory = await temporaryStoreDirectory();
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const store = new MappingStore({ directory, now: () => now });
+    await store.initialize();
+    const id = await createReadyThread(store, "native-title", "");
+    now = new Date("2026-02-01T00:00:00.000Z");
+    try {
+      await expect(
+        store.setTitle(id, "First native title", { ifUnnamed: true }),
+      ).resolves.toMatchObject({
+        title: "First native title",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      const [renamed, native] = await Promise.all([
+        store.setTitle(id, "User title"),
+        store.setTitle(id, "Late native title", { ifUnnamed: true }),
+      ]);
+      expect(renamed).toMatchObject({ title: "User title", updatedAt: now.toISOString() });
+      expect(native).toEqual(renamed);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("persists preview separately without renaming or changing recency", async () => {
     const directory = await temporaryStoreDirectory();
     let now = new Date("2026-01-01T00:00:00.000Z");

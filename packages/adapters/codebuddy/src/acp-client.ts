@@ -6,12 +6,43 @@ import {
   RequestError,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type AnyMessage,
   type SessionNotification,
 } from "@agentclientprotocol/sdk";
 import { CodeBuddyCopyCleanup } from "./copy-cleanup.js";
 import { codeBuddyAcpOutput } from "./acp-stdio.js";
 import { codeBuddyInvocation } from "./command.js";
 import { bounded, CodeBuddyError, record } from "./common.js";
+
+const sessionEndCarrier = "codexhost.codebuddy/sessionEnd";
+
+/**
+ * Native `session_end` is not an ACP SDK 1.3 update variant, so the SDK rejects it before the
+ * handler. Carry it inside an accepted update; it keeps its place among the other updates.
+ */
+function carrySessionEnd(message: AnyMessage): AnyMessage {
+  if (!("method" in message) || message.method !== "session/update") return message;
+  const params = record(message.params);
+  const update = record(params.update);
+  if (update.sessionUpdate !== "session_end") return message;
+  return {
+    ...message,
+    params: {
+      ...params,
+      update: { sessionUpdate: "session_info_update", _meta: { [sessionEndCarrier]: update } },
+    },
+  };
+}
+
+function restoreSessionEnd(notification: SessionNotification): SessionNotification {
+  const update = notification.update;
+  if (update.sessionUpdate !== "session_info_update" || !update._meta?.[sessionEndCarrier])
+    return notification;
+  return {
+    ...notification,
+    update: update._meta[sessionEndCarrier] as SessionNotification["update"],
+  };
+}
 
 export interface CodeBuddyClientHandlers {
   update(notification: SessionNotification): void;
@@ -106,7 +137,8 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
     this.#connection = new ClientSideConnection(
       () => ({
         sessionUpdate: async (notification) => {
-          if (!this.#closing && !this.#failure) options.handlers.update(notification);
+          if (!this.#closing && !this.#failure)
+            options.handlers.update(restoreSessionEnd(notification));
         },
         requestPermission: (request) =>
           !this.#exitFailure && !this.#closing && !this.#failure
@@ -118,15 +150,7 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
           return options.handlers.question(params);
         },
       }),
-      ndJsonStream(
-        Writable.toWeb(this.#child.stdin) as Parameters<typeof ndJsonStream>[0],
-        Readable.toWeb(
-          this.#copyCleanup?.protocolOutput(this.#child.stdout) ??
-            (invocation.arguments.includes("--serve")
-              ? codeBuddyAcpOutput(this.#child.stdout)
-              : this.#child.stdout),
-        ) as Parameters<typeof ndJsonStream>[1],
-      ),
+      this.#protocolStream(invocation.arguments.includes("--serve")),
     );
     void this.#connection.closed
       .then(() => {
@@ -135,6 +159,26 @@ export class CodeBuddyAcpClient implements CodeBuddyClient {
       .catch((error) => {
         this.#fault(error);
       });
+  }
+
+  #protocolStream(serve: boolean) {
+    const stream = ndJsonStream(
+      Writable.toWeb(this.#child.stdin) as Parameters<typeof ndJsonStream>[0],
+      Readable.toWeb(
+        this.#copyCleanup?.protocolOutput(this.#child.stdout) ??
+          (serve ? codeBuddyAcpOutput(this.#child.stdout) : this.#child.stdout),
+      ) as Parameters<typeof ndJsonStream>[1],
+    );
+    return {
+      writable: stream.writable,
+      readable: stream.readable.pipeThrough(
+        new TransformStream<AnyMessage, AnyMessage>({
+          transform: (message, controller) => {
+            controller.enqueue(carrySessionEnd(message));
+          },
+        }),
+      ),
+    };
   }
 
   #fault(error: unknown) {

@@ -39,6 +39,7 @@ import * as nativeFork from "../src/fork.js";
 import { AntigravitySessionUsageTracker } from "../src/acp-usage.js";
 import {
   answerStep,
+  checkpointStep,
   createNativeHistoryDatabase,
   systemStep,
   textField,
@@ -2339,6 +2340,72 @@ describe("Antigravity idle wake Turns", () => {
       expect(all.findIndex((event) => event.type === "turn.autonomous.completed")).toBeGreaterThan(
         all.findIndex((event) => event.type === "turn.completed" && event.turnId === "t1"),
       );
+      await session.close();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits committed passive compaction checkpoints during a live turn and deduplicates at turn end", async () => {
+    const { session, outputs, transport, db } = await setup();
+    try {
+      // Unrelated wake checkpoint committed before or with another run_id must not leak
+      systemStep(db, 2, "wake-other");
+      checkpointStep(db, 3, { status: 3, run: "wake-other" });
+      // Foreground turn starts with user input and commits a passive checkpoint mid-turn
+      userStep(db, 4, "hello", "fg-run");
+      checkpointStep(db, 5, { status: 3, run: "fg-run", summary: "Compacted" });
+      transport.eventHandler?.({ type: "usage.context", used: 12_000, size: 200_000 });
+      await vi.waitFor(() =>
+        expect(
+          events(outputs).filter(
+            (event) =>
+              event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+          ),
+        ).toHaveLength(1),
+      );
+      // A second checkpoint committed before turn end is also emitted once before turn.completed
+      checkpointStep(db, 6, { status: 7, run: "fg-run", error: "Compaction failed" });
+      transport.result.resolve({ stopReason: "end_turn" });
+      await completed(outputs, "t1");
+      const all = events(outputs);
+      const started = all.filter(
+        (event) => event.type === "item.started" && event.item.type === "contextCompaction",
+      );
+      const done = all.filter(
+        (event) =>
+          event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+      );
+      expect(started).toHaveLength(2);
+      expect(done).toMatchObject([
+        {
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-5" },
+            outcome: { status: "succeeded" },
+          },
+        },
+        {
+          type: "item.completed",
+          turnId: "t1",
+          snapshot: {
+            item: { type: "contextCompaction", itemId: "checkpoint-6" },
+            outcome: {
+              status: "failed",
+              error: { code: "nativeFailure", message: "Compaction failed", retryable: false },
+            },
+          },
+        },
+      ]);
+      const turnDoneIndex = all.findIndex(
+        (event) => event.type === "turn.completed" && event.turnId === "t1",
+      );
+      const lastCompactionIndex = all.findLastIndex(
+        (event) =>
+          event.type === "item.completed" && event.snapshot.item.type === "contextCompaction",
+      );
+      expect(lastCompactionIndex).toBeLessThan(turnDoneIndex);
       await session.close();
     } finally {
       db.close();

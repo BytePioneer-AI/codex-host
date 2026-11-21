@@ -8,8 +8,11 @@ import path from "node:path";
 import type { ClientChannelEvents } from "./client-channel-events.js";
 import type { ConsoleHostReply } from "./app-server-host.js";
 import { matchesBearerToken } from "./bearer-token.js";
+import { HOST_EXTENSION_ZIP_MAX_BYTES, HOST_EXTENSIONS_RPC } from "@codexhost/shared-contracts";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
+const MAX_EXTENSION_REQUEST_BYTES =
+  4 * Math.ceil(HOST_EXTENSION_ZIP_MAX_BYTES / 3) + MAX_REQUEST_BYTES;
 export const CONSOLE_HOST_DESCRIPTOR_DIRECTORY = path.join("console", "hosts");
 
 export interface ConsoleHostDescriptor {
@@ -39,12 +42,14 @@ export function consoleHostDescriptorDirectory(environment: NodeJS.ProcessEnv): 
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {
+  const upload = request.url === "/extensions/rpc";
+  const limit = upload ? MAX_EXTENSION_REQUEST_BYTES : MAX_REQUEST_BYTES;
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
     const buffer = chunk as Buffer;
     size += buffer.length;
-    if (size > MAX_REQUEST_BYTES) throw new Error("Request body is too large");
+    if (size > limit) throw new Error("Request body is too large");
     chunks.push(buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -112,7 +117,10 @@ export async function startConsoleControlServer(options: {
         });
         return;
       }
-      if (request.method !== "POST" || request.url !== "/rpc") {
+      if (
+        request.method !== "POST" ||
+        (request.url !== "/rpc" && request.url !== "/extensions/rpc")
+      ) {
         reply(response, 404, { error: { code: -32601, message: "Not found" } });
         return;
       }
@@ -131,6 +139,16 @@ export async function startConsoleControlServer(options: {
         typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
       if (typeof record.method !== "string") {
         reply(response, 400, { error: { code: -32600, message: "method is required" } });
+        return;
+      }
+      if (
+        request.url === "/extensions/rpc" &&
+        record.method !== HOST_EXTENSIONS_RPC.install &&
+        record.method !== HOST_EXTENSIONS_RPC.update
+      ) {
+        reply(response, 400, {
+          error: { code: -32601, message: "Expected an extension install or update" },
+        });
         return;
       }
       reply(response, 200, await options.target.handleConsoleRequest(record.method, record.params));

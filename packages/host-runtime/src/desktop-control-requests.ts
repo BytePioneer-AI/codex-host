@@ -36,6 +36,7 @@ import {
   IDLE_RELEASE_SETTINGS_METHOD,
   idleReleaseSettingsSchema,
   isDesktopExtensionManagementMethod,
+  isHostExtensionManagementMethod,
   jsonValueSchema,
   LOADED_SESSIONS_METHOD,
   USAGE_STATISTICS_METHOD,
@@ -49,6 +50,8 @@ import {
 import { handleCredentialImports } from "./credential-imports.js";
 import type { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
 import { handleDesktopExtensionRequest } from "./desktop-extension-requests.js";
+import type { HostExtensionManager } from "./host-extension-manager.js";
+import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { errorMessage, rpcEnvelope, rpcError } from "./desktop-rpc.js";
 import { listedHarnessAccounts, listHarnessAccountSources } from "./harness-accounts.js";
 import type { HarnessDisplaySettingsStore } from "./harness-display-settings.js";
@@ -72,6 +75,7 @@ export interface DesktopControlRequestHost {
   diagnose(error: unknown): void;
   readonly environment: NodeJS.ProcessEnv;
   readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
+  readonly hostExtensions: HostExtensionManager | undefined;
   readonly preferences: HarnessPreferencesStore;
   readonly displaySettings: HarnessDisplaySettingsStore;
   readonly launchSettings: HarnessLaunchSettingsStore;
@@ -110,6 +114,17 @@ export class DesktopControlRequests {
   /** Returns false when `request` is not a control request, leaving it to Thread routing. */
   async handle(request: JsonRpcRequest): Promise<boolean> {
     const method = request.method;
+    if (isHostExtensionManagementMethod(method)) {
+      this.#host.dispatchReply(request, async () => {
+        const reply = await handleHostExtensionRequest(
+          this.#host.hostExtensions,
+          method,
+          request.params,
+        );
+        await this.#host.writeJson(rpcEnvelope(request, reply));
+      });
+      return true;
+    }
     if (isDesktopExtensionManagementMethod(method)) {
       this.#host.dispatchReply(request, async () => {
         await this.#host.writeJson(

@@ -24,7 +24,7 @@ import {
 } from "./installation.js";
 import { buildDiagnosticReport, issueUrl, serializeDiagnosticReport } from "./diagnostic-report.js";
 import { ConsoleHarnessError, type ConsoleHarnesses } from "./harnesses.js";
-import { INSTALL, extensionsRoute } from "./extensions.js";
+import { extensionsRoute, isExtensionUploadRoute } from "./extensions.js";
 import { HostUnavailableError, type ConsoleHostClient } from "./host-client.js";
 import { CONSOLE_PAGE_CSS, CONSOLE_PAGE_HTML } from "./page.js";
 import type { ConsolePaths } from "./paths.js";
@@ -356,7 +356,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       try {
         body = await readJsonBody(
           request,
-          route === INSTALL ? MAX_EXTENSION_INSTALL_BODY_BYTES : MAX_BODY_BYTES,
+          isExtensionUploadRoute(route) ? MAX_EXTENSION_INSTALL_BODY_BYTES : MAX_BODY_BYTES,
         );
       } catch (error) {
         if (!request.complete) response.setHeader("connection", "close");
@@ -370,7 +370,7 @@ export function startConsoleServer(options: ConsoleServerOptions): Promise<Runni
       body,
       options.paths.dataDirectory,
       url.searchParams,
-      options.environment,
+      options.host,
     );
     if (extensions) {
       sendJson(response, extensions.status, extensions.body);

@@ -48,6 +48,13 @@ export class ClientChannelEvents {
       revision,
     });
   }
+  extensionsChanged(revision: number): void {
+    this.publish({
+      type: "extensions-changed",
+      cursor: { epoch: this.epoch, sequence: ++this.sequence },
+      revision,
+    });
+  }
   private publish(event: Exclude<ClientChannelEvent, { type: "hello" }>) {
     this.history.push(event);
     if (this.history.length > this.capacity) this.history.shift();

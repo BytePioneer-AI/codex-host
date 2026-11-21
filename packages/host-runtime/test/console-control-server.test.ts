@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { HOST_EXTENSIONS_RPC } from "@codexhost/shared-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -65,6 +66,22 @@ describe("Host console channel", () => {
       });
       expect(await response.json()).toEqual({ result: { method: "codexhost/account/list" } });
       expect(target.handleConsoleRequest).toHaveBeenCalledWith("codexhost/account/list", {});
+
+      const upload = `http://127.0.0.1:${descriptor.port}/extensions/rpc`;
+      const headers = { authorization: `Bearer ${descriptor.token}` };
+      const params = { source: { type: "zip", base64: "AAAA".repeat(300_000) } };
+      const uploadBody = JSON.stringify({ method: HOST_EXTENSIONS_RPC.install, params });
+      expect((await fetch(upload, { method: "POST", body: uploadBody })).status).toBe(401);
+      expect((await fetch(upload, { method: "POST", body, headers })).status).toBe(400);
+      expect(
+        await (await fetch(upload, { method: "POST", body: uploadBody, headers })).json(),
+      ).toEqual({
+        result: { method: HOST_EXTENSIONS_RPC.install },
+      });
+      expect(target.handleConsoleRequest).toHaveBeenLastCalledWith(
+        HOST_EXTENSIONS_RPC.install,
+        params,
+      );
     } finally {
       await server.close();
     }

@@ -230,6 +230,119 @@ describe("External Thread failed history", () => {
       }
     },
   );
+
+  it("preserves nativeTurnRef and suppresses preview leak when Turn mapping persistence fails", async () => {
+    let api: DelegationControlApi | undefined;
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      onDelegationApi: (registration) => {
+        api = registration;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!api) throw new Error("No Delegation API");
+      const starting = api.start({
+        harnessId: "pi",
+        task: "secret failed first input",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const { threadId, turnId } = await starting;
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Session");
+      vi.spyOn(fixture.mappingStore, "upsertTurnMappings").mockRejectedValueOnce(
+        new Error("transient mapping store failure"),
+      );
+      session.appendText("reply before persistence failure");
+      session.succeedTurn();
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      // Native history persisted the turn as completed, while Host marked it failed.
+      const read = await api.read({ threadId, view: "messages" });
+      expect(read).toMatchObject({
+        totalTurns: 1,
+        turns: [{ turnId, turnNumber: 1, status: "failed" }],
+      });
+      const record = await fixture.mappingStore.getThread(hostThreadIdSchema.parse(threadId));
+      expect(record?.preview).toBeUndefined();
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("keeps later Host assistant reply when native failed history only saved an earlier segment", async () => {
+    let api: DelegationControlApi | undefined;
+    const adapter = rollbackCapableAdapter();
+    const fixture = createFixture({
+      externalAdapters: new Map([["pi", adapter]]),
+      onDelegationApi: (registration) => {
+        api = registration;
+      },
+    });
+    try {
+      await fixture.ready;
+      if (!api) throw new Error("No Delegation API");
+      const starting = api.start({
+        harnessId: "pi",
+        task: "first input",
+        cwd: "/synthetic",
+        parentThreadId: "parent-thread",
+      });
+      await answerOfficialParentCwd(fixture);
+      const { threadId, turnId } = await starting;
+      const session = adapter.sessions[0];
+      if (!session) throw new Error("Missing fake Session");
+      session.appendText("earlier reply");
+      const partialSnapshot = session.persistedSnapshot();
+      session.appendText(" and later reply");
+      session.failTurn({ code: "nativeFailure", message: "boom", retryable: false });
+      await fixture.collector.waitFor((message) => turnEvent(message, "turn/completed", turnId));
+
+      const fullNative = session.persistedSnapshot();
+      const nativeTurn = fullNative.turns[0];
+      if (!nativeTurn) throw new Error("Missing persisted failed turn");
+      vi.spyOn(session, "readSnapshot").mockResolvedValue({
+        ok: true,
+        value: {
+          ...fullNative,
+          turns: [
+            {
+              ...nativeTurn,
+              items: [
+                {
+                  item: {
+                    type: "agentMessage",
+                    itemId: partialSnapshot.turns[0]?.items[0]?.item.itemId ?? "native-agent-1",
+                    text: "earlier reply",
+                  },
+                  outcome: { status: "succeeded" },
+                },
+              ],
+            },
+          ],
+        },
+      });
+      const read = await api.read({ threadId, view: "messages" });
+      expect(read).toMatchObject({
+        totalTurns: 1,
+        turns: [
+          {
+            turnId,
+            status: "failed",
+            messages: [
+              { role: "user", text: "first input" },
+              { role: "agent", text: "earlier reply and later reply" },
+            ],
+          },
+        ],
+      });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
 });
 
 describe("External Thread metadata updates", () => {

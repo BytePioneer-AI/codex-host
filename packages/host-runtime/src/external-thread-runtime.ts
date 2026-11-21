@@ -1064,9 +1064,9 @@ export class ExternalThreadRuntime {
       const afterTurnId = thread.record.turnMappings.findLast(
         ({ hostTurnId }) => hostTurnId !== event.turnId,
       )?.hostTurnId;
-      const nativeTurnRef = thread.record.turnMappings.find(
-        ({ hostTurnId }) => hostTurnId === event.turnId,
-      )?.nativeTurnRef;
+      const nativeTurnRef =
+        thread.record.turnMappings.find(({ hostTurnId }) => hostTurnId === event.turnId)
+          ?.nativeTurnRef ?? event.nativeTurnRef;
       const failure = { hostTurnId: event.turnId, afterTurnId, nativeTurnRef, error } as const;
       const live = this.#liveFailures.get(thread.id) ?? new Map<string, LiveFailedTurn>();
       const items = Array.isArray(turn.items)

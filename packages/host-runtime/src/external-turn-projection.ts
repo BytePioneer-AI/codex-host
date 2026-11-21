@@ -24,6 +24,10 @@ export interface ProjectedTurn {
 export type ExternalThreadStatus = { type: "active"; activeFlags: [] } | { type: "idle" };
 export type LiveFailedTurn = { failure: FailedTurn; items: JsonObject[] };
 
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 /** Overlay Host failures without reordering Native Turns. Only live memory supplies Items. */
 export function withFailedTurns(
   native: JsonObject[],
@@ -37,13 +41,42 @@ export function withFailedTurns(
     const index = turns.findIndex(({ id }) => id === failure.hostTurnId);
     const original = turns[index];
     const items = Array.isArray(original?.items) ? [...original.items] : [];
-    const nativeItemTypes = new Set(
-      items.map((item) =>
-        item !== null && typeof item === "object" && !Array.isArray(item) ? item.type : undefined,
-      ),
-    );
+    const matchedNativeAgents = new Set<number>();
     for (const item of live?.get(failure.hostTurnId)?.items ?? []) {
-      if (!nativeItemTypes.has(item.type)) items.push(item);
+      if (item.type === "userMessage") {
+        if (!items.some((existing) => isJsonObject(existing) && existing.type === "userMessage"))
+          items.push(item);
+        continue;
+      }
+      if (item.type === "agentMessage" && typeof item.text === "string") {
+        const text = item.text;
+        const covered = items.findIndex(
+          (existing, i) =>
+            !matchedNativeAgents.has(i) &&
+            isJsonObject(existing) &&
+            existing.type === "agentMessage" &&
+            typeof existing.text === "string" &&
+            existing.text.startsWith(text),
+        );
+        if (covered !== -1) {
+          matchedNativeAgents.add(covered);
+          continue;
+        }
+        const prefix = items.findIndex(
+          (existing, i) =>
+            !matchedNativeAgents.has(i) &&
+            isJsonObject(existing) &&
+            existing.type === "agentMessage" &&
+            typeof existing.text === "string" &&
+            text.startsWith(existing.text),
+        );
+        if (prefix !== -1) {
+          matchedNativeAgents.add(prefix);
+          items[prefix] = { ...(items[prefix] as JsonObject), text };
+          continue;
+        }
+        items.push(item);
+      }
     }
     const failed = {
       startedAt: null,
@@ -218,6 +251,7 @@ export class ExternalTurnProjection {
         event = {
           type: "turn.completed",
           turnId: event.turnId,
+          ...(event.nativeTurnRef ? { nativeTurnRef: event.nativeTurnRef } : {}),
           outcome: {
             status: "failed",
             error: {

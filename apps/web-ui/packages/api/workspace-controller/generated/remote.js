@@ -185,6 +185,14 @@ const _deepseek_ai_dsh_api_workspace_controller_workspace_unpinSession_result$sc
   'pinnedSessionIds': z.array(z.intersection(z.string(), z.unknown())).readonly(),
 }))
 
+const workspaceMoveSectionRequest = () => z.object({
+  'sessionId': z.intersection(z.string(), z.unknown()).readonly(),
+  'sectionId': z.union([z.string(), z.null()]).readonly(),
+})
+const workspaceMoveSectionResult = () => z.object({
+  'sectionId': z.union([z.string(), z.null()]).readonly(),
+})
+
 export const TYPERT_REMOTE = {
   package: '@deepseek-ai/dsh-api-workspace-controller',
   descriptors: [
@@ -423,6 +431,28 @@ export const TYPERT_REMOTE = {
         create: _deepseek_ai_dsh_api_workspace_controller_workspace_insertSessionBefore_result$schema,
       },
       sourceLocation: {"file":"packages/api/workspace-controller/src/index.ts","line":145,"column":3},
+    },
+    {
+      id: '@deepseek-ai/dsh-api-workspace-controller#workspace/moveSessionToSection',
+      service: 'workspaceController',
+      namespace: 'workspace',
+      method: 'moveSessionToSection',
+      invocation: { kind: 'direct' },
+      parameters: [{
+        name: 'request',
+        wire: 'request',
+        source: 'json',
+        codec: {
+          mode: 'strict',
+          typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceMoveSessionToSectionRequest',
+          create: workspaceMoveSectionRequest,
+        },
+      }],
+      result: {
+        mode: 'strict',
+        typeSymbol: '@deepseek-ai/dsh-api-workspace-controller/types#WorkspaceMoveSessionToSectionValue',
+        create: workspaceMoveSectionResult,
+      },
     },
     {
       id: '@deepseek-ai/dsh-api-workspace-controller#workspace/pinSession',

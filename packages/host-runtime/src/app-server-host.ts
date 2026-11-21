@@ -111,6 +111,7 @@ import {
   type HarnessPluginDescriptor,
   externalThreadForkParamsSchema,
   clientThreadPinParamsSchema,
+  clientThreadSectionMoveSchema,
   harnessCommandCatalogSchema,
   type HarnessCommandCatalog,
   type HarnessCommandDescriptor,
@@ -2140,6 +2141,62 @@ export class AppServerHost {
       request.method === "codexhost/thread/pins/set"
     ) {
       this.#dispatchDesktopReply(request, () => this.#handleThreadPins(request));
+      return;
+    }
+    if (request.method === "codexhost/thread/sections/move") {
+      const move = clientThreadSectionMoveSchema.safeParse(request.params);
+      if (!move.success || move.data.sectionId === PINNED_THREAD_SECTION_ID) {
+        await this.#writer.json(rpcError(request, -32602, "Invalid custom Thread section move"));
+        return;
+      }
+      const params = { ...move.data, beforeThreadId: null };
+      this.#dispatchDesktopReply(request, () =>
+        this.#runSectionOperation(async () => {
+          const location = await this.#locateExternalThread(params.threadId);
+          if (await this.#writeResolutionError(request, location)) return;
+          if (location.kind !== "official") {
+            await this.#writer.json(
+              rpcError(
+                request,
+                -32078,
+                "Only native Codex Threads can change custom sections in Web",
+              ),
+            );
+            return;
+          }
+          const current = await this.#requestOfficial("thread/read", {
+            threadId: params.threadId,
+            includeTurns: false,
+          });
+          const thread = (current.result as JsonObject | undefined)?.thread;
+          if (
+            !isRecord(thread) ||
+            thread.id !== params.threadId ||
+            thread.archived === true ||
+            typeof thread.parentThreadId === "string" ||
+            (isRecord(thread.section) && thread.section.id === PINNED_THREAD_SECTION_ID)
+          ) {
+            await this.#writer.json(
+              rpcError(request, -32078, "An active, unpinned Codex Thread is required"),
+            );
+            return;
+          }
+          const sectionId = isRecord(thread.section) ? (thread.section.id ?? null) : null;
+          if (sectionId === params.sectionId) {
+            await this.#writer.json(rpcEnvelope(request, { result: {} }));
+            return;
+          }
+          await this.#moveThreadSection(
+            {
+              id: request.id,
+              ...(request.jsonrpc ? { jsonrpc: request.jsonrpc } : {}),
+              method: "thread/section/move",
+              params,
+            },
+            params,
+          );
+        }),
+      );
       return;
     }
     if (request.method === "codexhost/thread/sections/list") {

@@ -62,6 +62,7 @@ const OFFICIAL_METHODS: Readonly<Record<string, "native" | "host">> = {
   "codexhost/thread/commands/inspect": "host",
   "codexhost/thread/command/execute": "host",
   "codexhost/thread/pins/set": "host",
+  "codexhost/thread/sections/move": "host",
   "codexhost/thread/usage/inspect": "host",
   "codexhost/thread/inspect": "native",
 };

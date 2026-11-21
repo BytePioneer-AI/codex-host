@@ -47,6 +47,7 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",
+  "codexhost/thread/sections/move",
   "codexhost/thread/pins/set",
   "codexhost/harness/plugins/list",
   "codexhost/harness/inspect",
@@ -102,6 +103,12 @@ export const clientThreadSectionsSchema = z
   })
   .strict();
 export type ClientThreadSections = z.infer<typeof clientThreadSectionsSchema>;
+export const clientThreadSectionMoveSchema = z
+  .object({
+    threadId: z.string().min(1).max(1_024),
+    sectionId: z.string().min(1).max(1_024).nullable(),
+  })
+  .strict();
 
 /** Canonical external pin membership, shared with native Thread sections. */
 export const clientThreadPinsSchema = z.object({ threadIds: z.array(z.string().min(1)) }).strict();

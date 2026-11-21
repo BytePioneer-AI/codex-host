@@ -19,6 +19,7 @@ function serveOfficialSections(
   custom: Readonly<Record<string, readonly string[]>> = {},
 ) {
   const moves: JsonObject[] = [];
+  const sections = new Map(Object.entries(custom).map(([id, members]) => [id, [...members]]));
   let buffer = "";
   fixture.official.stdin.on("data", (chunk: Buffer) => {
     buffer += chunk.toString("utf8");
@@ -46,15 +47,21 @@ function serveOfficialSections(
         typeof params.sectionId === "string" &&
         params.sectionId in custom
       ) {
-        result = { data: (custom[params.sectionId] ?? []).map((id) => ({ id })), nextCursor: null };
+        result = {
+          data: (sections.get(params.sectionId) ?? []).map((id) => ({ id })),
+          nextCursor: null,
+        };
       } else if (request.method === "thread/read") {
         const threadId = String(params.threadId);
+        const section = [...sections].find(([, members]) => members.includes(threadId))?.[0];
         result = {
           thread: {
             id: threadId,
             section: pinned.includes(threadId)
               ? { id: PINNED, name: "Pinned", appearance: null }
-              : null,
+              : section
+                ? { id: section, name: section, appearance: null }
+                : null,
           },
         };
       } else if (request.method === "thread/section/move") {
@@ -66,6 +73,12 @@ function serveOfficialSections(
           const before = (params.beforeThreadId as string | null | undefined) ?? null;
           pinned.splice(before === null ? pinned.length : pinned.indexOf(before), 0, threadId);
         }
+        for (const [id, members] of sections)
+          sections.set(
+            id,
+            members.filter((member) => member !== threadId),
+          );
+        if (typeof params.sectionId === "string") sections.get(params.sectionId)?.push(threadId);
         result = {};
       }
       if (result === undefined) continue;
@@ -117,6 +130,31 @@ describe("External Thread sections through AppServerHost", () => {
           ],
         },
       });
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
+  it("moves only unpinned official Threads through the Web custom-section command", async () => {
+    const fixture = createFixture();
+    try {
+      const external = await startPiThread(fixture);
+      const official = serveOfficialSections(fixture, ["pinned-thread"], { Research: [] });
+      const move = (threadId: string, sectionId: string | null) =>
+        fixture.host.handleClientRequest("codexhost/thread/sections/move", { threadId, sectionId });
+      await expect(move("official-thread", "Research")).resolves.toEqual({ result: {} });
+      await expect(move("official-thread", null)).resolves.toEqual({ result: {} });
+      await expect(move(external, "Research")).resolves.toMatchObject({ error: { code: -32078 } });
+      await expect(move("pinned-thread", "Research")).resolves.toMatchObject({
+        error: { code: -32078 },
+      });
+      await expect(move("official-thread", PINNED)).resolves.toMatchObject({
+        error: { code: -32602 },
+      });
+      expect(official.moves).toEqual([
+        { threadId: "official-thread", sectionId: "Research", beforeThreadId: null },
+        { threadId: "official-thread", sectionId: null, beforeThreadId: null },
+      ]);
     } finally {
       await stopFixture(fixture);
     }

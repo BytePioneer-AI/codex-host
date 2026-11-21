@@ -103,6 +103,7 @@ export interface IWorkspaces {
    * @param sessionId - Session to unpin.
    */
   unpinSession(sessionId: SessionId): Promise<void>;
+  moveSessionToSection?(sessionId: SessionId, sectionId: string | null): Promise<void>;
   /**
    * Move a Session within one Workspace account.
    * @param workspaceId - owning Workspace.
@@ -177,6 +178,13 @@ export class WorkspaceController extends Service implements IWorkspaces {
   async pinSession(sessionId: SessionId): Promise<void> {
     const result = await this.model.pinSession(sessionId);
     if (!result.ok) throw commandError("session pin", result.error);
+  }
+
+  async moveSessionToSection(sessionId: SessionId, sectionId: string | null): Promise<void> {
+    const result = await this.model.moveSessionToSection({ sessionId, sectionId });
+    if (!result.ok) throw commandError("move to section", result.error);
+    if (result.value.sectionId !== sectionId)
+      throw new Error("The requested section change was not confirmed.");
   }
 
   async unpinSession(sessionId: SessionId): Promise<void> {

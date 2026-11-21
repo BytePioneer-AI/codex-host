@@ -160,7 +160,16 @@ export interface WorkspacePinValue {
   readonly pinnedSessionIds: readonly SessionId[];
 }
 
-/** Read-only groups supplied by the native Codex app-server. */
+export interface WorkspaceMoveSessionToSectionRequest {
+  readonly sessionId: SessionId;
+  readonly sectionId: string | null;
+}
+
+export interface WorkspaceMoveSessionToSectionValue {
+  readonly sectionId: string | null;
+}
+
+/** Groups supplied by the native Codex app-server. */
 export interface WorkspaceThreadSection {
   readonly id: string;
   readonly name: string;

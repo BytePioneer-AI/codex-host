@@ -57,6 +57,7 @@ const METHODS = new Set([
   "codexhost/thread/tree/read",
   "codexhost/thread/pins/list",
   "codexhost/thread/sections/list",
+  "codexhost/thread/sections/move",
   "codexhost/thread/pins/set",
   "codexhost/harness/display-settings/get",
   "codexhost/harness/display-settings/set",

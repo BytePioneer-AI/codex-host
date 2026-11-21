@@ -253,6 +253,10 @@ export class Workspaces {
   /** Read-only native Thread sections; only the app-server persists them. */
   private referenceThreadSections: Array<{ id: string; name: string; threadIds: string[] }> = [];
 
+  hasThreadSection(id: string): boolean {
+    return this.referenceThreadSections.some((section) => section.id === id);
+  }
+
   setReferenceThreadSections(
     sections: Array<{ id: string; name: string; threadIds: string[] }>,
   ): void {

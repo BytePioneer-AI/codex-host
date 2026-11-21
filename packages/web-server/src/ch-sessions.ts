@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
   clientThreadSectionsSchema,
+  clientThreadSectionMoveSchema,
   WEB_FOLLOW_PROJECTION_KEYS,
   webTurnDiffsRequestSchema,
   webToolOutputReferenceSchema,
@@ -1116,6 +1117,31 @@ export class ChSessions {
         return { pinnedSessionIds };
       });
     }
+    rpc.register("workspace/moveSessionToSection", async (args) => {
+      const input = requestOf<{ sessionId: string; sectionId: string | null }>(args);
+      const move = clientThreadSectionMoveSchema.safeParse({
+        threadId: input.sessionId,
+        sectionId: input.sectionId,
+      });
+      if (!move.success)
+        throw new RpcError("workspace/section-invalid", "Invalid Thread section move.");
+      const { threadId, sectionId } = move.data;
+      if (
+        this.threads.harnessId(threadId) !== "codex" ||
+        this.rows.get(threadId)?.parentThreadId ||
+        this.workspaces.isArchived(threadId) ||
+        this.workspaces.pinnedSessionIds().includes(threadId) ||
+        (sectionId !== null && !this.workspaces.hasThreadSection(sectionId))
+      )
+        throw new RpcError(
+          "workspace/section-unavailable",
+          "This Thread or section is unavailable for a move.",
+        );
+      await this.host.request("codexhost/thread/sections/move", move.data);
+      await this.refreshing?.catch(() => undefined);
+      await this.refresh().catch(() => undefined);
+      return { sectionId };
+    });
     rpc.register("session/list", async (args, context) => {
       const {
         includeArchived = false,

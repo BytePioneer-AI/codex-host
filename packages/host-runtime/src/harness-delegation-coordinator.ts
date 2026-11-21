@@ -13,6 +13,7 @@ import {
   encodeExternalTransportSelection,
   transportModelIdForHarness,
   type ExternalHarnessId,
+  type ExternalThreadRpcError,
   type JsonObject,
   type RoutedHarnessId,
 } from "@codexhost/protocol-core";
@@ -66,6 +67,12 @@ type ParentMetadata = { cwd?: string; title?: string };
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function externalThreadError(error: ExternalThreadRpcError): DelegationControlError {
+  return new DelegationControlError("INTERNAL_ERROR", error.message, {
+    externalThreadCode: error.code,
+  });
 }
 
 function terminal(status: DelegationThreadSnapshot["status"]): boolean {
@@ -464,14 +471,8 @@ export class HarnessDelegationCoordinator {
     }
     const location = await this.#externalRuntime.locate(input.threadId);
     if (location.kind === "official") return this.#sendOfficial(input);
-    if (location.kind === "error") {
-      throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
-    }
-    const resolution = await this.#externalRuntime.resolve(input.threadId);
-    if (resolution.kind !== "external") {
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
-    }
-    const thread = resolution.thread;
+    if (location.kind === "error") throw externalThreadError(location.error);
+    const { thread } = await this.#resolveExternalThread(input.threadId);
     if (thread.record.subagent) {
       throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only", {
         readOnly: true,
@@ -506,14 +507,8 @@ export class HarnessDelegationCoordinator {
   async #cancel(input: ThreadCancelInput): Promise<ThreadCancelResult> {
     const location = await this.#externalRuntime.locate(input.threadId);
     if (location.kind === "official") return this.#cancelOfficial(input);
-    if (location.kind === "error") {
-      throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
-    }
-    const resolution = await this.#externalRuntime.resolve(input.threadId);
-    if (resolution.kind !== "external") {
-      throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
-    }
-    const thread = resolution.thread;
+    if (location.kind === "error") throw externalThreadError(location.error);
+    const { thread } = await this.#resolveExternalThread(input.threadId);
     if (thread.record.subagent) {
       throw new DelegationControlError("DELEGATION_FAILED", "Thread is read-only");
     }
@@ -538,8 +533,7 @@ export class HarnessDelegationCoordinator {
     if (location.kind === "official") {
       return this.#withPendingQuestions(await this.#readOfficial(input), input.threadId);
     }
-    if (location.kind === "error")
-      throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
+    if (location.kind === "error") throw externalThreadError(location.error);
     const { thread, turns, busy } = await this.#readExternalThread(input.threadId);
     const snapshot = projectDelegationThreadSnapshot({
       threadId: thread.id,
@@ -570,8 +564,7 @@ export class HarnessDelegationCoordinator {
           throw new DelegationControlError("UNSUPPORTED", "Thread export is unavailable");
         return this.#exportOfficial(input);
       }
-      if (location.kind === "error")
-        throw new DelegationControlError("THREAD_NOT_FOUND", location.error.message);
+      if (location.kind === "error") throw externalThreadError(location.error);
       const { thread, turns, busy } = await this.#readExternalThread(input.threadId, true);
       return exportDelegationThread(
         input,
@@ -587,17 +580,21 @@ export class HarnessDelegationCoordinator {
     });
   }
 
-  async #readExternalThread(threadId: string, includeLiveItems = false) {
+  async #resolveExternalThread(threadId: string) {
     const resolution = await this.#externalRuntime.resolve(threadId);
-    if (resolution.kind === "error") {
-      throw new DelegationControlError("INTERNAL_ERROR", resolution.error.message);
-    }
-    if (resolution.kind !== "external") {
+    if (resolution.kind === "error") throw externalThreadError(resolution.error);
+    if (resolution.kind === "official") {
+      // We already located an external mapping; it disappeared before resolution.
       throw new DelegationControlError("THREAD_NOT_FOUND", "Thread was not found");
     }
-    const thread = resolution.thread;
-    if (!this.#externalThreadBusy(thread) && !resolution.historyFresh) {
+    return resolution;
+  }
+
+  async #readExternalThread(threadId: string, includeLiveItems = false) {
+    const { thread, historyFresh } = await this.#resolveExternalThread(threadId);
+    if (!this.#externalThreadBusy(thread) && !historyFresh) {
       const error = await this.#externalRuntime.refresh(thread);
+      if (error?.code === -32075) throw externalThreadError(error);
       // A Harness that died cannot serve its native history, but the Host already
       // projected the terminal Turn. Report that Turn only while it is still the
       // latest attempt, so an older Turn never stands in for a later start.
@@ -606,8 +603,7 @@ export class HarnessDelegationCoordinator {
         thread.projectedTerminalTurnId !== null &&
         last?.id === thread.projectedTerminalTurnId &&
         (last.status === "completed" || last.status === "failed" || last.status === "interrupted");
-      if (error && !projectedTerminal)
-        throw new DelegationControlError("INTERNAL_ERROR", error.message);
+      if (error && !projectedTerminal) throw externalThreadError(error);
     }
     const projector = thread.activeTurnId
       ? thread.projectedTurns.get(thread.activeTurnId)?.projector

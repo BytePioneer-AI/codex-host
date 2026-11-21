@@ -2432,6 +2432,8 @@ describe("Claude history replacement fence", () => {
     } as unknown as SDKMessage);
     await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+    // The closed SDK stream alone does not permit a later close to confirm release.
+    await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
     expect(value.fakeQuery.stopTask).toHaveBeenCalledWith("still-running");
   });
 
@@ -2469,14 +2471,38 @@ describe("Claude history replacement fence", () => {
     },
   );
 
-  it("rejects close if native output cannot be drained", async () => {
+  it("rechecks a late SDK output drain after a failed close without closing the Query again", async () => {
     const value = fixture();
     await value.transport.start();
+    const finishOutput = value.fakeQuery.close.bind(value.fakeQuery);
     const close = vi.spyOn(value.fakeQuery, "close").mockImplementation(() => undefined);
     try {
+      const first = value.transport.close();
+      expect(value.transport.close()).toBe(first);
+      await expect(first).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.start()).rejects.toThrow("closing");
       await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      finishOutput();
+      const confirmed = value.transport.close();
+      await expect(confirmed).resolves.toBeUndefined();
+      expect(value.transport.close()).toBe(confirmed);
+      expect(close).toHaveBeenCalledOnce();
+      expect(value.onFault).not.toHaveBeenCalled();
     } finally {
-      close.mockRestore();
+      finishOutput();
+    }
+  });
+
+  it("retries an SDK Query close that threw before it could finish output", async () => {
+    const value = fixture();
+    await value.transport.start();
+    vi.spyOn(value.fakeQuery, "close").mockImplementationOnce(() => {
+      throw new Error("failed to close Query");
+    });
+    try {
+      await expect(value.transport.close()).rejects.toThrow("shutdown could not be confirmed");
+      await expect(value.transport.close()).resolves.toBeUndefined();
+    } finally {
       value.fakeQuery.close();
     }
   });

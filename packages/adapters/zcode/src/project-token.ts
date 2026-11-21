@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { ZcodeError } from "./errors.js";
+import { plaintextCredential } from "./credentials.js";
+import type { CredentialReader } from "./oauth-account.js";
 
 const locationSchema = z.object({
   organizationId: z.string().trim().min(1),
@@ -16,10 +18,11 @@ export interface ProjectCredential {
 
 /** Read only Desktop's exact personal project locator; never select a Team or create a key. */
 export async function readProjectCredential(
-  credential: (key: string) => Promise<string>,
+  credential: CredentialReader,
   family: "zai" | "bigmodel",
   identity: string,
   origin: string,
+  account: { userId: string; sessionRevision: string; linkedAccessToken: string | undefined },
 ): Promise<ProjectCredential | undefined> {
   const key = `project-key-location:v1:${encodeURIComponent(
     JSON.stringify([origin, family, identity, null, 1, "non-team"]),
@@ -27,7 +30,9 @@ export async function readProjectCredential(
   const raw = await credential(key);
   if (!raw) return undefined;
   const location = locationSchema.parse(JSON.parse(raw));
-  const login = (await credential(`oauth:${family}:access_token`)).trim();
+  const login = (
+    account.linkedAccessToken ?? (await credential(`oauth:${family}:access_token`))
+  ).trim();
   const loginToken = login.replace(/^Bearer\s+/i, "").trim();
   if (!loginToken) throw projectCredentialError();
   // Match Desktop's account scope used by the CLI's rejected-token retry protocol.
@@ -39,6 +44,9 @@ export async function readProjectCredential(
         null,
         login,
         (await credential("zcodejwttoken")).trim() || null,
+        account.sessionRevision || null,
+        identity,
+        account.userId,
       ]),
     )
     .digest("hex");
@@ -100,16 +108,17 @@ export class ProjectToken {
       if (!parsed.success || parsed.data.success === false || parsed.data.data.enable === false)
         throw projectCredentialError();
       const data = parsed.data.data;
+      const token = plaintextCredential(data.accessToken);
       const expiresAt = Math.min(data.expiresAt * 1000, started + data.expiresIn * 1000);
       signal.throwIfAborted();
       if (expiresAt <= Date.now()) throw projectCredentialError();
       this.#cached = {
         scope,
-        token: data.accessToken,
+        token,
         expiresAt,
-        fingerprint: createHash("sha256").update(data.accessToken).digest("hex"),
+        fingerprint: createHash("sha256").update(token).digest("hex"),
       };
-      return data.accessToken;
+      return token;
     } catch (error) {
       signal.throwIfAborted();
       if (error instanceof ZcodeError) throw error;

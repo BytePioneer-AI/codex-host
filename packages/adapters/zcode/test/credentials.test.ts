@@ -81,6 +81,19 @@ describe("ZCode credential snapshots", () => {
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ channel: OS_VECTOR });
   });
 
+  it("resolves one source per snapshot and rejects an envelope naming another source", async () => {
+    await save({ channel: OS_VECTOR, second: OS_VECTOR, managed: ENV_VECTOR });
+    await writeFile(secretFile, SECRET, { mode: 0o600 });
+    const load = vi.fn(async () => OS_KEY);
+    const read = await readCredentials(installation, {}, load);
+    await expect(read("managed")).rejects.toThrow(/original key is unavailable/);
+    await expect(Promise.all([read("channel"), read("second")])).resolves.toEqual([
+      "bigmodel",
+      "bigmodel",
+    ]);
+    expect(load).toHaveBeenCalledOnce();
+  });
+
   it("does not use an environment or private file key for an OS envelope", async () => {
     // Keep the payload/fingerprint for the managed key but request the OS source.
     await save({ token: ENV_VECTOR.replace(":env:", ":os:") });

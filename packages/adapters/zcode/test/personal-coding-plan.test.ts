@@ -234,11 +234,116 @@ describe("Personal Coding Plan read-only account integration", () => {
     );
   }
 
+  const cnUser = "synthetic-cn-user";
+  async function cnLogin(linkedUser = cnUser, linkedToken = LOGIN) {
+    await projectLogin("bigmodel");
+    Reflect.deleteProperty(credentials, "oauth:bigmodel:user_info");
+    credentials["oauth:active_provider"] = "zai_cn";
+    credentials["oauth:zai_cn:user_info"] = JSON.stringify({ user_id: cnUser });
+    credentials["oauth:zai_cn:access_token"] = "synthetic-cn-upstream-token";
+    credentials["oauth:linked_bigmodel"] = JSON.stringify({
+      userId: linkedUser,
+      customerId: userId,
+      accessToken: linkedToken,
+    });
+    credentials["oauth:session_revision"] = "synthetic-revision";
+    installation.version = "3.18.2";
+    await saveCredentials("v2");
+  }
+
+  it("uses only a bound BigModel login to mint the project token used for CN personal entitlement", async () => {
+    await cnLogin();
+    const config = await accountConfig(installation, environment);
+    expect(config).toMatchObject({ signedIn: true });
+    expect(config.params.states[id("bigmodel")]).toMatchObject({
+      availability: "available",
+      entitled: true,
+      current: true,
+    });
+    expect(config.params.states[id("zai")]).toBeUndefined();
+    expect(fetch).toHaveBeenCalledWith(
+      "https://bigmodel.cn/api/biz/v1/organization/org%2Fone/projects/project%2Fone/api_keys/key%2Fone/access_tokens",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: `Bearer ${LOGIN}` }),
+      }),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "https://bigmodel.cn/api/biz/subscription/list",
+      expect.objectContaining({ headers: { Authorization: TOKEN } }),
+    );
+    expect(await auth(config, request("bigmodel"))).toMatchObject({
+      requestAuth: { apiKey: TOKEN, apiKeyId: location.apiKeyId },
+    });
+    expect(JSON.stringify(config.params)).not.toMatch(/synthetic-|enc:v2:/);
+  });
+
+  it.each(["unlinked", "stale link", "opaque linked token"])(
+    "does not use personal credentials for a CN login with %s",
+    async (scenario) => {
+      await cnLogin(
+        scenario === "stale link" ? "other-cn-user" : cnUser,
+        scenario === "opaque linked token" ? "Bearer enc:v9:fixture" : LOGIN,
+      );
+      if (scenario === "unlinked") {
+        Reflect.deleteProperty(credentials, "oauth:linked_bigmodel");
+        await saveCredentials("v2");
+      }
+      const config = await accountConfig(installation, environment);
+      expect(config.signedIn).toBe(true);
+      expect(config.params.states[id("bigmodel")]).toMatchObject({ entitled: false });
+      expect((await auth(config, request("bigmodel"))).headersApplied).toBe(false);
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("checks BigModel Start for an unlinked CN login using only the ZCode JWT", async () => {
+    await cnLogin();
+    Reflect.deleteProperty(credentials, "oauth:linked_bigmodel");
+    await saveCredentials("v2");
+    await writeFile(
+      path.join(installation.dataRoot, "telemetry-state.json"),
+      JSON.stringify({ deviceMid: "fixture" }),
+    );
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            plans: [{ status: "active", plan_id: "start-plan" }],
+            balances: [{ capabilities: ["model:GLM-5.3"] }],
+          },
+        }),
+      ),
+    );
+    const config = await accountConfig(installation, environment);
+    expect(config).toMatchObject({ signedIn: true, startPlanChecked: true, startPlan: true });
+    expect(config.params.states["account:bigmodel-start-plan"]).toMatchObject({ entitled: true });
+    expect(config.params.states["account:zai-start-plan"]).toBeUndefined();
+    expect(config.params.states[id("bigmodel")]).toMatchObject({ entitled: false });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      expect.any(URL),
+      expect.objectContaining({
+        headers: { Authorization: `Bearer ${JWT}`, "X-Device-Mid": "fixture" },
+      }),
+    );
+  });
+
+  async function rejectProjectToken(config: Awaited<ReturnType<typeof accountConfig>>) {
+    const result = await auth(config, request("bigmodel"));
+    if (!result.headersApplied || !result.requestAuth || !("accountScope" in result.requestAuth))
+      throw new Error("missing project account scope");
+    return {
+      ...request("bigmodel"),
+      expectedAccountScope: result.requestAuth.accountScope,
+      rejectedProjectTokenFingerprint: createHash("sha256").update(TOKEN).digest("hex"),
+    };
+  }
+
   it.each(["before", "during"])(
     "returns no authentication diagnostic when cancelled %s token exchange",
     async (when) => {
       await projectLogin();
       const config = await accountConfig(installation, environment);
+      const retry = await rejectProjectToken(config);
       const controller = new AbortController();
       const reason = new Error(LOGIN);
       vi.mocked(fetch)
@@ -248,7 +353,7 @@ describe("Personal Coding Plan read-only account integration", () => {
           throw reason;
         });
       if (when === "before") controller.abort(reason);
-      expect(await auth(config, request("bigmodel"), controller.signal)).toEqual({
+      expect(await auth(config, retry, controller.signal)).toEqual({
         headersApplied: false,
       });
       expect(fetch).toHaveBeenCalledTimes(when === "before" ? 0 : 1);
@@ -276,24 +381,15 @@ describe("Personal Coding Plan read-only account integration", () => {
       });
       expect(fetch).toHaveBeenCalledWith(
         `${personalCodingPlanOrigin(family, environment)}/api/biz/subscription/list`,
-        expect.objectContaining({ headers: { Authorization: LOGIN } }),
+        expect.objectContaining({ headers: { Authorization: TOKEN } }),
       );
-      expect(
-        vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/access_tokens")),
-      ).toBe(false);
+      vi.mocked(fetch).mockClear();
       const result = await auth(config, request(family));
       expect(result).toMatchObject({
         headersApplied: true,
         requestAuth: { apiKey: TOKEN, apiKeyId: location.apiKeyId },
       });
-      expect(fetch).toHaveBeenCalledWith(
-        `${personalCodingPlanOrigin(family, environment)}/api/biz/v1/organization/org%2Fone/projects/project%2Fone/api_keys/key%2Fone/access_tokens`,
-        expect.objectContaining({
-          method: "POST",
-          headers: { Authorization: `Bearer ${LOGIN}`, "Content-Type": "application/json" },
-          redirect: "error",
-        }),
-      );
+      expect(fetch).not.toHaveBeenCalled(); // Reuse the project token obtained for entitlement.
       expect(JSON.stringify(config.params)).not.toContain(LOGIN);
       expect(JSON.stringify(config.params)).not.toContain(TOKEN);
       expect(await readFile(path.join(installation.dataRoot, "credentials.json"), "utf8")).toBe(
@@ -333,6 +429,7 @@ describe("Personal Coding Plan read-only account integration", () => {
     async (change) => {
       await projectLogin();
       const config = await accountConfig(installation, environment);
+      const retry = await rejectProjectToken(config);
       vi.mocked(fetch).mockImplementation(async () => {
         if (change === "identity") await login("bigmodel", "another-user");
         if (change === "selection") await select("bigmodel", "team-coding-plan");
@@ -359,7 +456,7 @@ describe("Personal Coding Plan read-only account integration", () => {
           }),
         );
       });
-      const result = await auth(config, request("bigmodel"));
+      const result = await auth(config, retry);
       expect(result.headersApplied).toBe(false);
       expect(JSON.stringify(result)).not.toContain(TOKEN);
     },

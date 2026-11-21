@@ -4,7 +4,11 @@ import { open, readFile } from "node:fs/promises";
 import { homedir, platform, userInfo } from "node:os";
 import path from "node:path";
 import { z } from "zod";
-import { readSystemCredentialKey, type ReadSystemKey } from "./credential-keyring.js";
+import {
+  KeychainReadTimeout,
+  readSystemCredentialKey,
+  type ReadSystemKey,
+} from "./credential-keyring.js";
 import { ZcodeError } from "./errors.js";
 import type { ZcodeInstallation } from "./installation.js";
 
@@ -70,7 +74,8 @@ function decodeSegment(value: string): Buffer {
 }
 
 type KeySource = "os" | "env";
-async function decryptV2(value: string, getKey: (source: KeySource) => Promise<Buffer>) {
+type KeyMaterial = { source: KeySource; key: Buffer };
+async function decryptV2(value: string, getKey: () => Promise<KeyMaterial>) {
   const [source, fingerprint, payload, extra] = value.slice(V2.length).split(":");
   if (
     (source !== "os" && source !== "env") ||
@@ -87,8 +92,10 @@ async function decryptV2(value: string, getKey: (source: KeySource) => Promise<B
   const tag = decodeSegment(encodedTag);
   const data = decodeSegment(encodedData);
   if (iv.length !== 12 || tag.length !== 16) throw invalidV2();
-  const key = await getKey(source);
-  if (digest(key).toString("hex").slice(0, 24) !== fingerprint) throw unavailableV2();
+  const material = await getKey();
+  const { key } = material;
+  if (source !== material.source || digest(key).toString("hex").slice(0, 24) !== fingerprint)
+    throw unavailableV2();
   try {
     return decryptGcm(iv, tag, data, key);
   } catch {
@@ -118,19 +125,18 @@ async function readSecretFile(file: string, implicit: boolean) {
 
 /** ZCode v3.18.2 source selection, without initialization, migration or keyring locks. */
 async function loadV2Key(
-  source: KeySource,
   file: string,
   values: Record<string, string>,
   environment: NodeJS.ProcessEnv,
   readSystemKey: ReadSystemKey,
-) {
+): Promise<KeyMaterial> {
   try {
     const secret = environment.ZCODE_CREDENTIAL_SECRET;
     const explicitFile = environment.ZCODE_CREDENTIAL_SECRET_FILE;
-    if ((secret && explicitFile) || (source === "os" && (secret || explicitFile)))
-      throw unavailableV2();
-    if (secret) return digest(secret);
-    if (explicitFile) return digest(await readSecretFile(explicitFile, false));
+    if (secret && explicitFile) throw unavailableV2();
+    if (secret) return { source: "env", key: digest(secret) };
+    if (explicitFile)
+      return { source: "env", key: digest(await readSecretFile(explicitFile, false)) };
     const directory = path.dirname(file);
     const marker = await readFile(path.join(directory, "credential-source"), "utf8").catch(
       (error: unknown) => {
@@ -139,19 +145,35 @@ async function loadV2Key(
       },
     );
     if (marker !== undefined && marker !== "os\n") throw unavailableV2();
-    if (source === "env") {
-      if (marker || Object.values(values).some((value) => value.startsWith(`${V2}os:`)))
-        throw unavailableV2();
-      return digest(await readSecretFile(path.join(directory, "credential-secret"), true));
+    const hasOsEnvelope = Object.values(values).some((value) => value.startsWith(`${V2}os:`));
+    if (!hasOsEnvelope) {
+      if (marker) throw unavailableV2();
+      return {
+        source: "env",
+        key: digest(await readSecretFile(path.join(directory, "credential-secret"), true)),
+      };
     }
     const encoded = await readSystemKey(digest(file).toString("hex"));
     if (!encoded || encoded.length !== 43) throw unavailableV2();
     const key = decodeSegment(encoded);
     if (key.length !== 32) throw unavailableV2();
-    return key;
-  } catch {
+    return { source: "os", key };
+  } catch (error) {
+    if (error instanceof KeychainReadTimeout)
+      throw new ZcodeCredentialError(
+        "ZCode could not read credentials: macOS Keychain read timed out. If macOS prompts you, allow access to ZCode Credential Encryption, then re-detect ZCode.",
+      );
     throw unavailableV2();
   }
+}
+
+/** Apply the same fail-closed check to credentials nested inside decoded JSON. */
+export function plaintextCredential(value: string): string {
+  if (/^\s*(?:Bearer\s+)*enc:/i.test(value))
+    throw new ZcodeCredentialError(
+      "Cannot read ZCode credentials: unsupported encrypted credential format (enc:).",
+    );
+  return value;
 }
 
 /** Read one immutable file snapshot; decrypt only requested keys, never write the shared store. */
@@ -168,32 +190,19 @@ export async function readCredentials(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return async () => "";
     throw new ZcodeCredentialError("Cannot read ZCode credentials.");
   }
-  const keys: Partial<Record<KeySource, Promise<Buffer>>> = {};
+  let keyMaterial: Promise<KeyMaterial> | undefined;
   return async (key) => {
     const value = Object.hasOwn(values, key) ? values[key] : undefined;
     if (value === undefined) return "";
-    const plain = value.startsWith(V1)
-      ? decryptV1(value, environment)
-      : value.startsWith(V2)
-        ? await decryptV2(
-            value,
-            (source) =>
-              (keys[source] ??= loadV2Key(source, file, values, environment, readSystemKey)),
-          )
-        : value;
-    // Neither an unknown envelope nor a wrapped/possibly nested ciphertext is usable auth.
-    if (/^\s*(?:Bearer\s+)*enc:/i.test(plain))
-      throw new ZcodeCredentialError(
-        "Cannot read ZCode credentials: unsupported encrypted credential format (enc:).",
-      );
-    return plain;
+    return plaintextCredential(
+      value.startsWith(V1)
+        ? decryptV1(value, environment)
+        : value.startsWith(V2)
+          ? await decryptV2(
+              value,
+              () => (keyMaterial ??= loadV2Key(file, values, environment, readSystemKey)),
+            )
+          : value,
+    );
   };
-}
-
-export async function readCredential(
-  installation: ZcodeInstallation,
-  environment: NodeJS.ProcessEnv,
-  key: string,
-): Promise<string> {
-  return (await readCredentials(installation, environment))(key);
 }

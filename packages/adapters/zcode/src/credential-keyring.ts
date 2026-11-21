@@ -4,6 +4,8 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 const SERVICE = "ZCode Credential Encryption";
+const KEYCHAIN_PASSWORD_TIMEOUT_MS = 30_000;
+export class KeychainReadTimeout extends Error {}
 export type ReadSystemKey = (account: string) => Promise<string | undefined>;
 
 // @napi-rs/keyring 2.1.2 uses windows-native-keyring-store 1.1.0: its default generic
@@ -52,50 +54,47 @@ export const readSystemCredentialKey: ReadSystemKey = async (account) => {
     ZCODE_CREDENTIAL_SECRET: undefined,
     ZCODE_CREDENTIAL_SECRET_FILE: undefined,
   };
-  const run = async (file: string, args: string[]) =>
-    (await execute(file, args, { env, timeout: 5000, maxBuffer: 4096, windowsHide: true })).stdout;
+  const run = async (file: string, args: string[], timeout = 5_000) =>
+    (await execute(file, args, { env, timeout, maxBuffer: 4096, windowsHide: true })).stdout;
   try {
-    let value: string;
     if (process.platform === "win32") {
       const root = process.env.SystemRoot;
       if (!root || !path.isAbsolute(root)) return;
       const powershell = path.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
       // Encode the public script to preserve quoting through Windows argument parsing.
       const command = `${WIN32_READER}\n[Console]::Write([ZCodeKeyReader]::Read('${account}.${SERVICE}'))`;
-      value = await run(powershell, [
+      const value = await run(powershell, [
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
         "-EncodedCommand",
         Buffer.from(command, "utf16le").toString("base64"),
       ]);
+      return value.replace(/\r?\n$/, "");
     } else if (process.platform === "darwin") {
       const security = "/usr/bin/security";
       const keychain = /^\s*"([^"\r\n]+)"\s*$/.exec(
         await run(security, ["default-keychain", "-d", "user"]),
       )?.[1];
       if (!keychain || !path.isAbsolute(keychain)) return;
-      value = await run(security, [
-        "find-generic-password",
-        "-s",
-        SERVICE,
-        "-a",
-        account,
-        "-w",
-        keychain,
-      ]);
+      // Unlike the lookup of the default path, reading the value can prompt the user.
+      const value = await run(
+        security,
+        ["find-generic-password", "-s", SERVICE, "-a", account, "-w", keychain],
+        KEYCHAIN_PASSWORD_TIMEOUT_MS,
+      ).catch((error: unknown) => {
+        const failure = error as { killed?: boolean; code?: unknown; signal?: string } | null;
+        if (failure?.killed && failure.code === null && failure.signal === "SIGTERM")
+          throw new KeychainReadTimeout();
+        return undefined;
+      });
+      return value?.replace(/\r?\n$/, "");
     } else if (process.platform === "linux") {
-      value = await run("/usr/bin/secret-tool", [
-        "lookup",
-        "service",
-        SERVICE,
-        "username",
-        account,
-      ]);
-    } else return;
-    return value.replace(/\r?\n$/, "");
-  } catch {
+      // secret-tool does not append a newline to pipe output.
+      return await run("/usr/bin/secret-tool", ["lookup", "service", SERVICE, "username", account]);
+    }
+  } catch (error) {
     // Child-process errors can carry stdout, stderr, and command details. Never forward them.
-    return undefined;
+    if (error instanceof KeychainReadTimeout) throw error;
   }
 };

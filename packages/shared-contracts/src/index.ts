@@ -6,6 +6,8 @@ export * from "./desktop-extensions.js";
 export * from "./web-native-extensions.js";
 export * from "./web-extension-management.js";
 export * from "./desktop-extension-management.js";
+export * from "./host-extensions.js";
+export * from "./host-extension-management.js";
 export * from "./thread-archive-confirm.js";
 export * from "./voice.js";
 export * from "./skills.js";

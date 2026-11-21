@@ -21,17 +21,32 @@ export async function downloadExtensionBytes(
   url: string,
   limit: number,
   headers?: Record<string, string>,
+  options?: { signal?: AbortSignal; allowUrl?: (url: URL) => boolean },
 ) {
   const parsed = desktopExtensionHttpUrlSchema.safeParse(url);
   if (!parsed.success)
     throw new DesktopExtensionPackageError("Expected a credential-free HTTP(S) URL");
   try {
     if (isGitHubDesktopExtensionZipballUrl(new URL(parsed.data))) headers ??= githubHeaders;
-    const response = await fetch(parsed.data, {
-      signal: AbortSignal.timeout(12_000),
-      redirect: "follow",
-      ...(headers ? { headers } : {}),
-    });
+    const timeout = AbortSignal.timeout(12_000);
+    const signal = options?.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
+    let target = new URL(parsed.data);
+    const allowUrl = options?.allowUrl;
+    let response: Response;
+    for (let redirects = 0; ; redirects++) {
+      if (allowUrl && !allowUrl(target))
+        throw new DesktopExtensionPackageError("Unsafe download URL");
+      response = await fetch(target.href, {
+        signal,
+        redirect: allowUrl ? "manual" : "follow",
+        ...(headers ? { headers } : {}),
+      });
+      const location = response.headers.get("location");
+      if (!allowUrl || !location || ![301, 302, 303, 307, 308].includes(response.status)) break;
+      await response.body?.cancel();
+      if (redirects >= 4) throw new DesktopExtensionPackageError("Too many download redirects");
+      target = new URL(location, target);
+    }
     const body = response.body;
     if (!response.ok || !body || Number(response.headers.get("content-length")) > limit) {
       await body?.cancel().catch(() => undefined);

@@ -60,6 +60,39 @@ export {
   type WebNativeExtensionInstallation,
 } from "./web-native-extension-files.js";
 export {
+  hostExtensionsRoot,
+  hostExtensionDataRoot,
+  hostExtensionDataDirectory,
+  type HostExtensionLocation,
+} from "./host-extension-io.js";
+export {
+  discoverHostExtensions,
+  readHostExtension,
+  readHostExtensionBackend,
+  readHostExtensionAsset,
+  readHostExtensionConfiguration,
+  updateHostExtensionConfiguration,
+  rollbackHostExtension,
+  uninstallHostExtension,
+  HostExtensionInstallConflict,
+  HostExtensionRevisionConflict,
+  type HostExtensionActivePointer,
+  type HostExtensionCommitExpectation,
+  type HostExtensionDiskInstallation,
+  type PreparedHostExtension,
+} from "./host-extension-files.js";
+export {
+  fetchHostExtensionCatalog,
+  installHostExtension,
+  prepareHostExtension,
+  type HostExtensionPrepareOptions,
+} from "./host-extension-sources.js";
+export {
+  readHostExtensionSettings,
+  writeHostExtensionSettings,
+  HostExtensionSettingsRevisionConflict,
+} from "./host-extension-settings.js";
+export {
   pluginResourcePath,
   readPluginConfiguration,
   readPluginFile,

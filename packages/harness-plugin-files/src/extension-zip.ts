@@ -201,9 +201,12 @@ const inflate = promisify(inflateRaw);
 export async function readExtensionZip(
   zip: Buffer,
   subpath?: string,
+  maxEntryBytes?: number,
 ): Promise<Map<string, Buffer>> {
   const entries: ZipEntry[] = [];
   for (const entry of indexExtensionZip(zip, true)) {
+    if (maxEntryBytes !== undefined)
+      check(entry.size <= maxEntryBytes, "entry exceeds the size limit");
     entries.push(entry);
     if (entries.length % 32 === 0) await yieldToEventLoop();
   }

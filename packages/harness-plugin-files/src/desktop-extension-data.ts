@@ -113,10 +113,16 @@ export async function writeExtensionSettings(
   return object;
 }
 
-export async function writePrivateExtensionFile(directory: string, name: string, text: string) {
+export async function writePrivateExtensionFile(
+  directory: string,
+  name: string,
+  text: string,
+  assertLocked?: () => void,
+) {
   const temporary = path.join(directory, `.write-${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
+    assertLocked?.();
     await replaceSettingsFile(temporary, path.join(directory, name));
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);

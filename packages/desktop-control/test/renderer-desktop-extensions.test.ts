@@ -1,19 +1,20 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import {
   desktopExtensionsStatusPath,
-  installFromZipBuffer,
-  uninstallDesktopExtension,
-  writeDesktopExtensionConfiguration,
+  installHostExtension,
+  readHostExtension,
+  uninstallHostExtension,
+  updateHostExtensionConfiguration,
 } from "@codexhost/harness-plugin-files";
 import {
   desktopExtensionsDiagnosticSchema,
   type DesktopExtensionStatus,
 } from "@codexhost/shared-contracts";
-import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
+import { extensionZip, makeZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import { RendererDesktopExtensions } from "../src/renderer-desktop-extensions.js";
 import { createRendererCdpControlSession } from "../src/renderer-cdp-control-session.js";
 
@@ -22,30 +23,49 @@ let root: string;
 const controllers: RendererDesktopExtensions[] = [];
 beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "extension-controller-"));
-  root = path.join(directory, "desktop-extensions");
+  root = path.join(directory, "host-extensions");
 });
 afterEach(async () => {
   for (const controller of controllers.splice(0)) controller.close();
   await rm(directory, { recursive: true, force: true });
 });
 
-async function install(id: string, script: string) {
-  const folder = path.join(root, id);
-  await mkdir(folder, { recursive: true, mode: 0o700 });
-  await writeFile(
-    path.join(folder, "manifest.json"),
-    JSON.stringify({
-      manifestVersion: 1,
-      id,
-      name: { en: `Extension ${id}`, "zh-CN": `扩展 ${id}` },
-      categories: ["interface", "workflow"],
-      version: "1",
-      desktopApi: 1,
-      desktop: { script: "desktop.js" },
-      slots: [],
-    }),
+async function install(id: string, script: string, slots: string[] = []) {
+  return installZip(
+    id,
+    makeZip([
+      {
+        name: "manifest.json",
+        data: JSON.stringify({
+          manifestVersion: 2,
+          id,
+          version: "1",
+          name: { en: id, "zh-CN": id },
+          description: { en: id, "zh-CN": id },
+          slots,
+          desktop: { apiVersion: 1, script: "desktop.js" },
+        }),
+      },
+      { name: "desktop.js", data: script },
+    ]),
   );
-  await writeFile(path.join(folder, "desktop.js"), script);
+}
+
+async function installZip(id: string, zipBuffer: Buffer) {
+  const current = await readHostExtension({ dataDir: directory, id });
+  return installHostExtension({
+    dataDir: directory,
+    source: { type: "zip", zipBuffer },
+    expectedDigest: current?.digest ?? null,
+  });
+}
+
+async function enable(...ids: string[]) {
+  for (const id of ids) await updateHostExtensionConfiguration(directory, { action: "enable", id });
+}
+
+function recover() {
+  return updateHostExtensionConfiguration(directory, { action: "disableAll" });
 }
 
 function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
@@ -140,8 +160,8 @@ function fakeRenderer(initial: Record<string, DesktopExtensionStatus> = {}) {
 }
 
 it("observes package replacements and uninstalls without polling or reloading Desktop", async () => {
-  await installFromZipBuffer({ extensionsRoot: root, zipBuffer: extensionZip() });
-  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: ["sample"] }));
+  await installZip("sample", extensionZip());
+  await enable("sample");
   const target = fakeRenderer();
   const extensions = controller();
   extensions.attach("target", target);
@@ -150,34 +170,37 @@ it("observes package replacements and uninstalls without polling or reloading De
   expect(original).toMatchObject({ state: "running", hash: expect.any(String) });
   const originalHash = original?.hash;
   if (!originalHash) throw new Error("Extension is not running");
-  await installFromZipBuffer({
-    extensionsRoot: root,
-    zipBuffer: extensionZip({ version: "2.0.0" }),
-  });
+  await installZip("sample", extensionZip({ version: "2.0.0" }));
   await expect
     .poll(() => target.state.sample)
     .toMatchObject({ state: "running", hash: expect.not.stringMatching(originalHash) });
-  await uninstallDesktopExtension({ dataDir: directory, id: "sample" });
+  await uninstallHostExtension({ dataDir: directory, id: "sample" });
   await expect.poll(() => target.state).toEqual({});
   expect(target.pages.size).toBe(0);
   expect(target.reloads).toBe(0);
 });
 
-it("never injects a backend-only package into the renderer snapshot", async () => {
-  await install("badge", "define({activate(){}})");
-  await installFromZipBuffer({
-    extensionsRoot: root,
-    zipBuffer: extensionZip({
+it("only injects enabled Desktop capabilities without a slot conflict", async () => {
+  await install("badge", "define({activate(){}})", ["sidebar.thread-badge"]);
+  await install("conflict", "define({activate(){}})", ["sidebar.thread-badge"]);
+  await install("disabled", "define({activate(){}})");
+  await installZip(
+    "sample",
+    extensionZip({
       manifest: { desktop: undefined, backend: { script: "backend.mjs" } },
       extras: [{ name: "backend.mjs", data: "export function activate() {}" }],
     }),
-  });
-  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: ["badge", "sample"] }));
+  );
+  await enable("badge", "sample", "conflict");
   const renderer = fakeRenderer();
   const extensions = controller();
   extensions.attach("target", renderer);
   await extensions.refresh();
   expect(Object.keys(renderer.state)).toEqual(["badge"]);
+  const doc = desktopExtensionsDiagnosticSchema.parse(
+    JSON.parse(await readFile(desktopExtensionsStatusPath(directory), "utf8")),
+  );
+  expect(doc.extensions.conflict).toMatchObject({ state: "conflict", conflictWith: "badge" });
 });
 
 function controller() {
@@ -191,7 +214,7 @@ function controller() {
 it("replaces the one future snapshot before live apply and avoids resending unchanged entries", async () => {
   await install("tree", "/* tree-v1 */ define({activate(){}})");
   await install("badge", "/* badge-v1 */ define({activate(){}})");
-  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["tree", "badge"] }));
+  await enable("tree", "badge");
   const c = controller();
   const renderer = fakeRenderer();
   c.attach("first", renderer);
@@ -222,7 +245,7 @@ it.each(["same", "new"])(
   "replaces a CDP session on the %s target before retiring its snapshot",
   async (kind) => {
     await install("tree", "define({activate(){}})");
-    await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["tree"] }));
+    await enable("tree");
     const c = controller();
     const old = fakeRenderer();
     const next = fakeRenderer();
@@ -266,34 +289,10 @@ it.each(["same", "new"])(
   },
 );
 
-it("records a superseded recovery token even if the newer enabled selection cannot be applied", async () => {
-  await install("badge", "define({activate(){}})");
-  const failures: unknown[] = [];
-  const c = new RendererDesktopExtensions(directory, (error) => failures.push(error));
-  controllers.push(c);
-  const renderer = fakeRenderer();
-  c.attach("target", renderer);
-  await c.refresh();
-  const reloadToken = "e3472f62-d37b-46e4-9a56-b421680b920c";
-  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["badge"], reloadToken }));
-  renderer.failLiveApply = true;
-  await c.refresh();
-  expect(failures).toEqual([new Error("Live reconciliation unavailable")]);
-  const doc = desktopExtensionsDiagnosticSchema.parse(
-    JSON.parse(await readFile(desktopExtensionsStatusPath(directory), "utf8")),
-  );
-  expect(doc.handledReloadToken).toBe(reloadToken);
-  renderer.failLiveApply = false;
-  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: [] }));
-  await c.refresh();
-  expect(renderer.reloads).toBe(0);
-  expect(renderer.state).toEqual({});
-});
-
 it("resends the script when the registered hash matches but its state is failed", async () => {
   const script = "/* badge body */ define({activate(){}})";
   await install("badge", script);
-  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["badge"] }));
+  await enable("badge");
   const c = controller();
   const renderer = fakeRenderer();
   c.attach("target", renderer);
@@ -307,7 +306,7 @@ it("resends the script when the registered hash matches but its state is failed"
 it("leaves offline reloads extension-free and reconnects from the latest selection", async () => {
   await install("tree", "define({activate(){}})");
   await install("badge", "define({activate(){}})");
-  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["tree", "badge"] }));
+  await enable("tree", "badge");
   const online = controller();
   const old = fakeRenderer();
   online.attach("target", old);
@@ -315,7 +314,7 @@ it("leaves offline reloads extension-free and reconnects from the latest selecti
   expect(Object.keys(old.state)).toEqual(["tree", "badge"]);
   online.close();
   old.close();
-  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: ["badge"] }));
+  await updateHostExtensionConfiguration(directory, { action: "disable", id: "tree" });
   old.reset();
   expect(old.state).toEqual({});
   const reconnected = controller();
@@ -325,9 +324,9 @@ it("leaves offline reloads extension-free and reconnects from the latest selecti
   expect(Object.keys(active.state)).toEqual(["badge"]);
 });
 
-it("reads before injecting on restart and persists completed recovery tokens across Controllers", async () => {
+it("reads before injecting on restart and clears the registered and live snapshots on recovery", async () => {
   await install("tree", "define({activate(){}})");
-  await writeDesktopExtensionConfiguration(root, 0, () => ({ enabled: ["tree"] }));
+  await enable("tree");
   const first = controller();
   const old = fakeRenderer();
   first.attach("target", old);
@@ -340,17 +339,10 @@ it("reads before injecting on restart and persists completed recovery tokens acr
   expect(active.events[0]).toBe("status");
   expect(active.pages.size).toBe(1);
   expect(active.events).not.toContain("live");
-  const reloadToken = "e3472f62-d37b-46e4-9a56-b421680b920c";
-  await writeDesktopExtensionConfiguration(root, 1, () => ({ enabled: [], reloadToken }));
+  await recover();
   await second.refresh();
-  await second.refresh();
-  expect(active.events.slice(-6)).toContain("reload");
-  expect(active.reloads).toBe(1);
   expect(active.pages.size).toBe(0);
-  const doc = desktopExtensionsDiagnosticSchema.parse(
-    JSON.parse(await readFile(desktopExtensionsStatusPath(directory), "utf8")),
-  );
-  expect(doc.handledReloadToken).toBe(reloadToken);
+  expect(active.state).toEqual({});
   second.close();
   const third = controller();
   const recovered = fakeRenderer();

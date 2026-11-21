@@ -50,6 +50,7 @@ import type { SharedThreadBridge } from "./shared-thread-bridge.js";
 import {
   isConsoleHostMethod,
   isDesktopExtensionManagementMethod,
+  isHostExtensionManagementMethod,
   consoleOpenParamsSchema,
   consoleOpenResultSchema,
   webOpenParamsSchema,
@@ -292,6 +293,8 @@ import {
   type ProjectedTurn,
 } from "./external-turn-projection.js";
 import { DesktopExtensionBackendManager } from "./desktop-extension-backend-manager.js";
+import { HostExtensionManager } from "./host-extension-manager.js";
+import { handleHostExtensionRequest } from "./host-extension-requests.js";
 import { codexhostDataDirectory } from "./external-clients.js";
 import { DesktopControlRequests } from "./desktop-control-requests.js";
 import { DesktopThreadRouting } from "./desktop-thread-routing.js";
@@ -401,6 +404,7 @@ import {
 
 export interface AppServerHostOptions {
   desktopExtensionBackends?: DesktopExtensionBackendManager | undefined;
+  hostExtensions?: HostExtensionManager | undefined;
   /** Private external-session owner: never forwards requests to native Codex. */
   externalOnly?: boolean;
   /** Shared service's live Desktop connection count, not native client subscriptions. */
@@ -886,6 +890,7 @@ export class AppServerHost {
   readonly #client: ClientChannelHost;
   readonly #desktopControl: DesktopControlRequests;
   readonly desktopExtensionBackends: DesktopExtensionBackendManager | undefined;
+  readonly hostExtensions: HostExtensionManager | undefined;
   readonly #threadRouting: DesktopThreadRouting;
   readonly #threadPins: ThreadPins;
   readonly #threadTree: ThreadTree;
@@ -1304,7 +1309,17 @@ export class AppServerHost {
             codexhostDataDirectory(desktopEnvironment),
             (message) => this.#diagnose(message),
           ));
+    this.hostExtensions =
+      desktopEnvironment.CODEXHOST_REMOTE_SSH_MANAGED === "1"
+        ? undefined
+        : (options.hostExtensions ??
+          new HostExtensionManager(
+            codexhostDataDirectory(desktopEnvironment),
+            (revision) => this.clientEvents.extensionsChanged(revision),
+            (message) => this.#diagnose(message),
+          ));
     this.#desktopControl = new DesktopControlRequests({
+      hostExtensions: this.hostExtensions,
       desktopExtensionBackends: this.desktopExtensionBackends,
       writeJson: (value) => this.#writer.json(value),
       dispatchReply: (request, run, threadId) => this.#dispatchDesktopReply(request, run, threadId),
@@ -1404,6 +1419,7 @@ export class AppServerHost {
   close(): void {
     if (this.#closeRequested) return;
     this.#closeRequested = true;
+    if (!this.#options.hostExtensions) void this.hostExtensions?.close();
     this.#skills?.dispose();
     this.#options.sharedThreads?.close();
     this.#externalRuntime.idleRelease.disable();
@@ -1552,6 +1568,7 @@ export class AppServerHost {
       }
     } catch (error) {
       this.#diagnose(`Host initialization failed: ${errorMessage(error)}`);
+      if (!this.#options.hostExtensions) await this.hostExtensions?.close();
       this.#skills?.dispose();
       this.#pluginLoadAbort.abort();
       await this.#pluginLoading;
@@ -1577,6 +1594,7 @@ export class AppServerHost {
           .catch((closeError: unknown) => this.#diagnose(closeError));
       }
     }
+    if (!this.#closeRequested && !this.#options.hostExtensions) void this.hostExtensions?.start();
     if (!this.#closeRequested && !this.#options.desktopExtensionBackends)
       this.desktopExtensionBackends?.start();
     // Load statistics plugins before native subscription negotiation; Session plugins continue
@@ -1601,7 +1619,10 @@ export class AppServerHost {
       this.#treeWatch.close();
       this.#options.sharedThreads?.close();
       this.#pluginLoadAbort.abort();
-      if (!this.#options.desktopExtensionBackends) await this.desktopExtensionBackends?.close();
+      await Promise.all([
+        this.#options.hostExtensions ? undefined : this.hostExtensions?.close(),
+        this.#options.desktopExtensionBackends ? undefined : this.desktopExtensionBackends?.close(),
+      ]);
       // Stop replacement waiters before waiting for their tracked Host operations.
       this.#externalSteering.close();
       await this.#desktopRequests.drain();
@@ -1735,6 +1756,8 @@ export class AppServerHost {
     params: unknown,
     timeoutMs = CONSOLE_REQUEST_TIMEOUT_MS,
   ): Promise<ConsoleHostReply> {
+    if (isHostExtensionManagementMethod(method))
+      return handleHostExtensionRequest(this.hostExtensions, method, params);
     if (!isConsoleHostMethod(method)) {
       return { error: { code: -32601, message: `${method} is not available to the console` } };
     }
@@ -1814,6 +1837,8 @@ export class AppServerHost {
 
   /** Public client operations stay on this owner and never fall through to official Codex. */
   handleClientRequest(method: string, input: unknown): Promise<ConsoleHostReply> {
+    if (isHostExtensionManagementMethod(method))
+      return handleHostExtensionRequest(this.hostExtensions, method, input);
     return this.#client.handleClientRequest(method, input);
   }
 
@@ -2084,7 +2109,8 @@ export class AppServerHost {
         request.method.startsWith("codexhost/account/") ||
         request.method.startsWith("codexhost/update/") ||
         isModelPriceOverridesMethod(request.method) ||
-        isDesktopExtensionManagementMethod(request.method)
+        isDesktopExtensionManagementMethod(request.method) ||
+        isHostExtensionManagementMethod(request.method)
       )
     ) {
       await this.#writer.json(

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { HOST_EXTENSIONS_RPC as EXT } from "@codexhost/shared-contracts";
 import { extensionZip } from "../../../tests/fixtures/desktop-extension-zip.js";
 import type { ConsoleHarnesses } from "../src/harnesses.js";
 import { HostUnavailableError, type ConsoleHostClient } from "../src/host-client.js";
@@ -106,7 +107,12 @@ async function start(
     updates,
     harnesses: fakeHarnesses(),
     pageScript: "window.consoleLoaded = true;\n",
-    host: options.host ?? { available: vi.fn(async () => false), request: vi.fn() },
+    host: options.host ?? {
+      available: vi.fn(async () => false),
+      request: vi.fn(async () => {
+        throw new HostUnavailableError();
+      }),
+    },
     ...(options.environment ? { environment: options.environment } : {}),
     inspect: async () => inspectDocument(options.codexRunning ?? false),
     launch: options.launch ?? vi.fn(),
@@ -119,7 +125,7 @@ async function start(
 
 const CHANGE = { "x-codexhost-console": "1" };
 
-it("ignores Pi extensions when listing Desktop extensions and diagnoses broken configuration", async () => {
+it("lists unified extensions offline, ignores Pi extensions and diagnoses broken configuration", async () => {
   for (const id of ["pi-codex-fast", "pi-subagent-observer"])
     await mkdir(path.join(directory, "extensions", id), { recursive: true, mode: 0o700 });
   const { base } = await start();
@@ -127,9 +133,9 @@ it("ignores Pi extensions when listing Desktop extensions and diagnoses broken c
   const fresh = await list();
   expect(fresh.extensions).toEqual([]);
   expect(fresh.diagnostics).toEqual([]);
-  expect(fresh.configuration).toEqual({ version: 1, revision: 0, enabled: [] });
+  expect(fresh.configuration).toEqual({ revision: 0, enabled: [] });
 
-  const root = path.join(directory, "desktop-extensions");
+  const root = path.join(directory, "host-extensions");
   await mkdir(root, { mode: 0o700 });
   expect((await list()).diagnostics).toEqual([]);
   await writeFile(path.join(root, "enabled.json"), "{!");
@@ -139,119 +145,101 @@ it("ignores Pi extensions when listing Desktop extensions and diagnoses broken c
   });
 });
 
-it("serves the market offline and accepts ZIP uploads above 5 MiB only on the guarded install route", async () => {
-  const file = path.join(directory, "catalog.json");
-  await writeFile(
-    file,
-    JSON.stringify({ schemaVersion: 1, generatedAt: new Date().toISOString(), extensions: [] }),
-  );
-  const { base } = await start({ environment: { CODEXHOST_DESKTOP_EXTENSIONS_CATALOG_URL: file } });
+it("proxies catalog.v2 and bounded ZIP uploads to the shared Host, with the Console write guard", async () => {
+  const now = new Date().toISOString();
+  const catalogUrl = "https://example.com/catalog.v2.json";
+  const installed = {
+    id: "sample",
+    replaced: false,
+    activationId: "e3472f62-d37b-46e4-9a56-b421680b920c",
+    digest: "a".repeat(64),
+    installedAt: now,
+    manifest: {
+      manifestVersion: 2,
+      id: "sample",
+      version: "1",
+      name: { en: "Sample", "zh-CN": "示例" },
+      description: { en: "Sample", "zh-CN": "示例" },
+      web: { apiVersion: 1, entry: "web.mjs" },
+    },
+  };
+  const request = vi.fn(async (method: string) => ({
+    result:
+      method === EXT.catalog
+        ? {
+            schemaVersion: 2,
+            catalogUrl,
+            generatedAt: now,
+            fetchedAt: now,
+            cached: false,
+            extensions: [],
+          }
+        : method === EXT.uninstall
+          ? { id: "sample", removed: true }
+          : installed,
+  }));
+  const { base } = await start({ host: { available: async () => true, request } });
   const endpoint = `${base}/api/extensions`;
   expect(await (await fetch(`${endpoint}/catalog?forceRefresh=true`)).json()).toMatchObject({
-    source: "remote",
-    catalogUrl: file,
+    schemaVersion: 2,
+    catalogUrl,
     extensions: [],
   });
+  expect(request).toHaveBeenCalledWith(EXT.catalog, { forceRefresh: true });
   const upload = (size: number) => ({
     source: {
-      type: "zip-base64",
-      fileName: "sample.zip",
-      contentBase64: extensionZip({
-        extras: [{ name: "asset.bin", data: Buffer.alloc(size) }],
+      type: "zip",
+      base64: extensionZip({
+        extras: [{ name: "assets/art.png", data: Buffer.alloc(size) }],
       }).toString("base64"),
     },
   });
   const post = (action: string, body: unknown, headers: Record<string, string> = CHANGE) =>
     fetch(`${endpoint}/${action}`, { method: "POST", headers, body: JSON.stringify(body) });
   expect((await post("install", upload(0), {})).status).toBe(403);
-  expect((await post("uninstall", { id: "sample" }, {})).status).toBe(403);
-  const installed = await post("install", upload(6 * 1024 * 1024));
-  expect(installed.status).toBe(200);
-  expect(await installed.json()).toMatchObject({
-    extensionId: "sample",
-    replaced: false,
-    list: { extensions: [{ id: "sample", enabled: false }] },
-  });
+  expect(
+    (
+      await post("install", {
+        source: { type: "zip", localZipPath: path.join(directory, "arc.zip") },
+      })
+    ).status,
+  ).toBe(400);
+  const blob = upload(6 * 1024 * 1024);
+  const response = await post("install", blob);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(installed);
+  expect(request).toHaveBeenLastCalledWith(EXT.install, blob);
   expect((await post("uninstall", upload(17 * 1024))).status).toBe(400);
-  const removed = await post("uninstall", { id: "sample" });
-  expect(removed.status).toBe(200);
-  expect(await removed.json()).toMatchObject({ removedId: "sample", list: { extensions: [] } });
+  expect(await (await post("uninstall", { id: "sample" })).json()).toEqual({
+    id: "sample",
+    removed: true,
+  });
 });
 
-it("manages Desktop extensions offline and protects all selection changes", async () => {
-  const root = path.join(directory, "desktop-extensions");
-  const name = { en: "Sidebar layout", "zh-CN": "侧栏布局" };
-  const categories = ["interface", "appearance"];
-  for (const [id, desktopApi] of [
-    ["layout", 1],
-    ["badge", 1],
-    ["future", 2],
-  ] as const) {
-    const folder = path.join(root, id);
-    await mkdir(folder, { recursive: true, mode: 0o700 });
-    await writeFile(
-      path.join(folder, "manifest.json"),
-      JSON.stringify({
-        id,
-        desktopApi,
-        manifestVersion: 1,
-        version: "1",
-        name: id === "layout" ? name : id,
-        categories,
-        desktop: { script: "desktop.js" },
-        slots: ["sidebar.thread-badge"],
-      }),
-    );
-    await writeFile(path.join(folder, "desktop.js"), "define({activate(){}})");
-  }
-  const diagnostics = path.join(directory, "diagnostics");
-  await mkdir(diagnostics, { recursive: true });
-  await writeFile(
-    path.join(diagnostics, "desktop-extensions-v1.json"),
-    JSON.stringify({
-      controllerPid: process.pid,
-      updatedAt: new Date(0).toISOString(),
-      targetId: "old-target",
-      extensions: {},
-    }),
-  );
-  const { base } = await start();
-  const send = (action: string, body: unknown, headers = CHANGE) =>
+it("routes recovery through the owner and refuses to write extension state while it is offline", async () => {
+  const request = vi.fn(async (method: string) => {
+    if (method === EXT.recover)
+      return { result: { state: "saved", configuration: { revision: 3, enabled: [] } } };
+    if (method === EXT.enable) return { result: { state: "revision-conflict", revision: 3 } };
+    throw new HostUnavailableError();
+  });
+  const { base } = await start({ host: { available: async () => true, request } });
+  const send = (action: string, body: unknown) =>
     fetch(`${base}/api/extensions/${action}`, {
       method: "POST",
-      headers,
+      headers: CHANGE,
       body: JSON.stringify(body),
     });
-  expect(
-    (await send("enable", { id: "layout", expectedRevision: 0 }, {} as typeof CHANGE)).status,
-  ).toBe(403);
-  expect((await send("enable", { id: "future", expectedRevision: 0 })).status).toBe(400);
-  expect((await send("enable", { id: "layout", expectedRevision: 0 })).status).toBe(200);
-  const conflict = await send("enable", { id: "badge", expectedRevision: 1 });
+  expect(await (await send("disable-all-and-reload", {})).json()).toMatchObject({
+    state: "saved",
+    configuration: { enabled: [], revision: 3 },
+  });
+  const conflict = await send("enable", { id: "sample", expectedRevision: 1 });
   expect(conflict.status).toBe(409);
-  expect(await conflict.json()).toEqual({
-    conflictWith: "layout",
-    error: "Slot already occupied by layout",
-  });
+  expect(await conflict.json()).toMatchObject({ revision: 3 });
+  expect((await send("disable", { id: "sample", expectedRevision: 3 })).status).toBe(503);
   expect(await (await fetch(`${base}/api/extensions`)).json()).toMatchObject({
-    desktopConnected: false,
-    extensions: expect.arrayContaining([
-      expect.objectContaining({
-        id: "layout",
-        enabled: true,
-        manifest: expect.objectContaining({ name, categories }),
-        status: { state: "waiting" },
-      }),
-    ]),
-  });
-  const first = await (await send("disable-all-and-reload", {})).json();
-  const second = await (await send("disable-all-and-reload", {})).json();
-  expect(first).toMatchObject({
-    configuration: { enabled: [], revision: 2, reloadToken: expect.any(String) },
-  });
-  expect(second.configuration.reloadToken).not.toBe(first.configuration.reloadToken);
-  expect(await (await fetch(`${base}/api/extensions`)).json()).toMatchObject({
-    configuration: second.configuration,
+    configuration: { enabled: [], revision: 0 },
   });
 });
 

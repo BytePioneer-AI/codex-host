@@ -29,8 +29,7 @@ import {
   takeNpmEntrypoint,
 } from "./background-controls.ts";
 import { registerUiExtensionRpc } from "./ui-extension-rpc.ts";
-import { registerWebExtensionRpc } from "./web-extension-rpc.ts";
-import { WebNativeExtensions } from "./web-native-extensions.ts";
+import { isHostExtensionHttpPath, serveHostExtensionHttp } from "./host-extension-http.ts";
 import {
   downloadWorkspaceFile,
   issueWorkspaceDownloadTicket,
@@ -457,8 +456,6 @@ registerBackgroundControls(rpc, accessTokens, {
 });
 registerMisc(rpc, { events });
 registerUiExtensionRpc(rpc, extensions);
-const nativeExtensions = new WebNativeExtensions(data, auth !== undefined && !values["safe-mode"]);
-const webExtensionHttp = registerWebExtensionRpc(rpc, nativeExtensions, extensions, trust);
 registerVoiceStatus(rpc, chHost);
 
 /** Harness icon URLs are stable; serve the cached copy while revalidating in the background.
@@ -533,7 +530,13 @@ const server = createWebServer((request, response) => {
       if (admission.handled) return;
       requestAuth = admission.auth;
     }
-    if (await webExtensionHttp.serve(request, response, pathname, requestAuth)) return;
+    if (isHostExtensionHttpPath(pathname)) {
+      await serveHostExtensionHttp(chHost, trust, request, response, pathname, {
+        requestAuth,
+        safeMode: values["safe-mode"],
+      });
+      return;
+    }
     if (
       pathname === "/api/workspace-file/download" &&
       (request.method === "GET" || request.method === "HEAD")
@@ -569,7 +572,10 @@ const server = createWebServer((request, response) => {
           .end("cross-origin request rejected");
         return;
       }
-      await serveChClientGateway(chHost, request, response, requestAuth !== undefined);
+      await serveChClientGateway(chHost, request, response, {
+        authenticated: requestAuth !== undefined,
+        safeMode: values["safe-mode"],
+      });
       return;
     }
     if (request.method === "POST" && pathname.startsWith("/api/")) {
@@ -805,10 +811,6 @@ server.listen(Number(values.port), values.host, async () => {
     }
   }
   console.log(`codexhost web: ${localUrl}`);
-  // The recovery route is already listening, even if extension activation hangs or fails.
-  void nativeExtensions.start().catch(() => {
-    console.warn("[extensions] Web native packages could not be restored; see /extensions");
-  });
   const urls = reachableNetworkUrls(
     accessTokens !== undefined && local
       ? (await readNetworkAccess()).networkUrls
@@ -851,8 +853,6 @@ server.listen(Number(values.port), values.host, async () => {
 let shuttingDown: Promise<void> | undefined;
 function shutdown(exitCode = 0): Promise<void> {
   return (shuttingDown ??= (async () => {
-    const stoppingNative = nativeExtensions.stop();
-    const closingUploads = webExtensionHttp.close();
     try {
       relay.close();
       shellReload?.close();
@@ -871,7 +871,6 @@ function shutdown(exitCode = 0): Promise<void> {
       console.error("[web] shutdown failed", error);
       exitCode ||= 1;
     } finally {
-      await Promise.allSettled([stoppingNative, closingUploads]);
       process.exit(exitCode);
     }
   })());

@@ -3,8 +3,12 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import path from "node:path";
 import { Script } from "node:vm";
 import { build } from "esbuild";
-import { readDesktopExtensionScreenshot } from "@codexhost/harness-plugin-files";
 import {
+  readDesktopExtensionIcon,
+  readDesktopExtensionScreenshot,
+} from "@codexhost/harness-plugin-files";
+import {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
   DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
   DESKTOP_EXTENSION_SCRIPT_MAX_BYTES,
@@ -60,19 +64,29 @@ new Script(script.text);
 const style = manifest.desktop.style
   ? await readFile(path.join(source, "src", "desktop.css"))
   : undefined;
-const screenshots = [];
-for (const resource of manifest.screenshots ?? []) {
+const images = [];
+const imagePaths = new Set(manifest.screenshots);
+if (manifest.icon) imagePaths.add(manifest.icon);
+for (const resource of imagePaths) {
+  const isIcon = resource === manifest.icon;
   if (["manifest.json", "desktop.js", "desktop.css"].includes(resource.split("/")[0].toLowerCase()))
-    throw new Error(`Screenshot ${JSON.stringify(resource)} conflicts with a generated file`);
-  const { bytes } = await readDesktopExtensionScreenshot(source, resource);
-  screenshots.push([resource, bytes, DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES]);
+    throw new Error(
+      `${isIcon ? "Icon" : "Screenshot"} ${JSON.stringify(resource)} conflicts with a generated file`,
+    );
+  const readImage = isIcon ? readDesktopExtensionIcon : readDesktopExtensionScreenshot;
+  const { bytes } = await readImage(source, resource);
+  images.push([
+    resource,
+    bytes,
+    isIcon ? DESKTOP_EXTENSION_ICON_MAX_BYTES : DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
+  ]);
 }
 const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + "\n");
 desktopExtensionManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")));
 const files = [
   ["desktop.js", script.contents, DESKTOP_EXTENSION_SCRIPT_MAX_BYTES],
   ...(style ? [["desktop.css", style, DESKTOP_EXTENSION_STYLE_MAX_BYTES]] : []),
-  ...screenshots,
+  ...images,
   ["manifest.json", manifestBytes, DESKTOP_EXTENSION_MANIFEST_MAX_BYTES],
 ];
 for (const [name, bytes, limit] of files) {
@@ -84,7 +98,7 @@ const directory = path.join(root, manifest.id);
 await prepareDirectory(directory);
 if (source === (await realpath(directory)))
   throw new Error("Use a different output directory from the extension source");
-for (const [resource] of screenshots) {
+for (const [resource] of images) {
   let parent = directory;
   for (const segment of resource.split("/").slice(0, -1)) {
     parent = path.join(parent, segment);

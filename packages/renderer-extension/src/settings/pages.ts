@@ -94,13 +94,13 @@ function windowsInstallerDownloadUrl(window: Window | null | undefined, version:
 
 export const DEFAULT_RENDERER_SETTINGS_PAGE_IDS = [
   "connections",
+  "desktop-extensions",
   "mobile-web",
   "remote-connections",
   "accounts",
   "session-import",
   "usage-statistics",
   "appearance",
-  "desktop-extensions",
   "updates",
   "about",
 ] as const;
@@ -709,6 +709,7 @@ export function createDefaultRendererSettingsPages(
 ): readonly RendererSettingsPageDefinition[] {
   return Object.freeze([
     createConnectionsSettingsPage(messages, getDiagnostics, undefined, getRemoteConnections),
+    createDesktopExtensionsSettingsPage(messages, getDesktopExtensionsClient, pluginPages),
     createMobileWebPage(messages, () => {
       const client = getUpdateClient();
       return client?.openWeb?.bind(client);
@@ -729,7 +730,6 @@ export function createDefaultRendererSettingsPages(
       usageStatisticsHosts,
     ),
     createAppearanceSettingsPage(messages, getLoadedSessionsClient),
-    createDesktopExtensionsSettingsPage(messages, getDesktopExtensionsClient, pluginPages),
     updatesPage(messages, getUpdateClient),
     aboutPage(messages, getUpdateClient),
   ]);

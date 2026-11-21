@@ -194,6 +194,9 @@ export function apply(ctx: ClientContext): void {
                     /* surfaced on the store */
                   });
               },
+              ...(available && !String(sessionId).startsWith("web-remote:")
+                ? { refreshModels: (harnessId) => models.refreshModels(harnessId) }
+                : {}),
               select: (selection: ModelSelection) =>
                 available ? directory.select(selection) : Promise.resolve(undefined),
               setFavorite: (provider, modelId, enabled) =>

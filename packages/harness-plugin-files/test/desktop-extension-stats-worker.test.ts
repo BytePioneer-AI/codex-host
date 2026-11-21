@@ -6,13 +6,16 @@ it("counts valid install IDs and returns a CORS-enabled snapshot across KV pages
     ["count:existing", "7"],
     ["other-key", "99"],
   ]);
+  async function get(key: string): Promise<string | null>;
+  async function get(keys: string[]): Promise<Map<string, string | null>>;
+  async function get(key: string | string[]) {
+    return Array.isArray(key)
+      ? new Map(key.map((name) => [name, storage.get(name) ?? null]))
+      : (storage.get(key) ?? null);
+  }
   const env = {
     STATS_KV: {
-      async get(key: string | string[]) {
-        return Array.isArray(key)
-          ? new Map(key.map((name) => [name, storage.get(name) ?? null]))
-          : (storage.get(key) ?? null);
-      },
+      get,
       async put(key: string, value: string) {
         storage.set(key, value);
       },

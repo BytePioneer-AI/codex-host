@@ -98,7 +98,11 @@ import type {
   HarnessPluginContext,
   HarnessUsageStatisticsAdapter,
 } from "@codexhost/harness-adapter/plugin";
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type {
+  StoredSectionPlacementV1,
+  StoredThreadRecordV1,
+  StoredThreadSummaryV1,
+} from "@codexhost/mapping-store";
 import {
   type HarnessAccountInspectResult,
   codexAccountUsageParamsSchema,
@@ -137,6 +141,7 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  THREAD_OWNERSHIP_LIST_MAX_LENGTH,
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
   threadSteeringContextSchema,
@@ -358,6 +363,7 @@ import { USAGE_STATISTICS_METHOD } from "@codexhost/shared-contracts";
 import {
   CodexTurnProjector,
   decodeCreateRoute,
+  historicalPlanUpdate,
   decodeExternalTransportSelection,
   encodeExternalTransportSelection,
   decodeThreadListRequest,
@@ -856,8 +862,9 @@ export class AppServerHost {
   #sessionImportRequests: SessionImportRequests | undefined;
   readonly #delegationApi: DelegationControlRegistration;
   #unregisterDelegationApi: (() => void) | undefined;
-  #unsubscribeAccountState: (() => void) | undefined;
+  #unsubscribeOfficialState: (() => void) | undefined;
   #activeOfficialTurns = new Map<string, string>();
+  #threadIdleListeners = new Set<(threadId: string) => void>();
   /** Active reply guards by request ID; each records whether its request was answered. */
   readonly #replyGuards = new Map<unknown, Set<{ answered: boolean }>>();
   #pendingOfficialTurnStarts = new Map<
@@ -903,6 +910,7 @@ export class AppServerHost {
   readonly #pluginLoadAbort = new AbortController();
   #pluginLoading: Promise<void> | undefined;
   #usagePluginsReady: Promise<void> | undefined;
+  #sharedUsageGeneration: number | undefined;
   readonly #desktopRequests = new DesktopRequestQueue();
   #drainActiveWorkOnInputEnd = false;
   #desktopInputEnded = false;
@@ -987,6 +995,7 @@ export class AppServerHost {
             native: {
               events: this.clientEvents,
               asyncQuestions: this.#asyncQuestions,
+              refreshBeforeRequest: () => this.#officialRuntimeScope.refreshBeforeRequest(),
               request: (method: string, params: JsonObject) =>
                 this.#requestClientNative(method, params),
               respond: (
@@ -1050,6 +1059,7 @@ export class AppServerHost {
       }));
     this.#officialRuntime = new OfficialRuntimeClient({
       scope: this.#officialRuntimeScope,
+      refreshBeforeRequests: !options.externalOnly,
       onBackendStopped: () => {
         this.#pendingOfficialTurnStarts.clear();
         this.#activeOfficialTurns.clear();
@@ -1076,8 +1086,17 @@ export class AppServerHost {
             this.#diagnose("Codex Account identity or notification could not be updated"),
         })
       : undefined;
-    this.#unsubscribeAccountState = this.#officialRuntimeScope.gate.subscribe(() => {
-      if (this.#options.externalOnly) return;
+    const { gate, owner } = this.#officialRuntimeScope;
+    let readyGeneration = gate.phase === "ready" ? owner.generation : undefined;
+    this.#unsubscribeOfficialState = gate.subscribe(() => {
+      if (this.#options.externalOnly) {
+        // Only the shared channel owner publishes catalog invalidations for the scope.
+        if (gate.phase !== "ready") return;
+        const replaced = readyGeneration !== undefined && readyGeneration !== owner.generation;
+        readyGeneration = owner.generation;
+        if (replaced) this.clientEvents.harnessInspectionChanged("codex");
+        return;
+      }
       const snapshot = this.#accountControl.snapshot();
       void this.#writer
         .json({ method: "codexhost/account/changed", params: jsonValueSchema.parse(snapshot) })
@@ -1184,8 +1203,19 @@ export class AppServerHost {
       {
         listHarnesses: () =>
           this.#waitForPlugins().then(() => this.#delegationCoordinator.listHarnesses()),
-        inspect: (input) =>
-          this.#waitForPlugins().then(() => this.#delegationCoordinator.inspect(input)),
+        inspect: async (input) => {
+          await this.#waitForPlugins();
+          try {
+            return await this.#delegationCoordinator.inspect(input);
+          } finally {
+            if (
+              input.refresh === true &&
+              (input.harnessId === "codex" || this.#externalAdapters.has(input.harnessId))
+            ) {
+              this.clientEvents.harnessInspectionChanged(input.harnessId);
+            }
+          }
+        },
         start: (input) =>
           maintenanceOperation(async () => {
             if (options.sharedDelegation && input.harnessId !== "codex") {
@@ -1217,6 +1247,12 @@ export class AppServerHost {
           const thread = this.#externalRuntime.get(threadId);
           return thread ? this.#executionHosts.get(thread) : undefined;
         },
+        onThreadIdle: (listener) => {
+          this.#threadIdleListeners.add(listener);
+          return () => {
+            this.#threadIdleListeners.delete(listener);
+          };
+        },
       },
       options.externalOnly ? options.sharedThreads : undefined,
     );
@@ -1236,6 +1272,7 @@ export class AppServerHost {
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
       persistTerminalIdentity: (thread, event) =>
         this.#externalRuntime.persistTerminalIdentity(thread, event),
+      touchThread: (thread) => this.#externalRuntime.touch(thread),
       resolveDesktopApproval: (interactionId, thread) =>
         this.#resolveDesktopApproval(interactionId, thread),
       resolveDesktopQuestion: (interactionId, thread) =>
@@ -1511,8 +1548,8 @@ export class AppServerHost {
       await this.#closeAdapters();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
-      this.#unsubscribeAccountState?.();
-      this.#unsubscribeAccountState = undefined;
+      this.#unsubscribeOfficialState?.();
+      this.#unsubscribeOfficialState = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((closeError) => this.#diagnose(closeError));
       }
@@ -1587,8 +1624,8 @@ export class AppServerHost {
       this.#routeObservationTracker.clear();
       this.#unregisterDelegationApi?.();
       this.#unregisterDelegationApi = undefined;
-      this.#unsubscribeAccountState?.();
-      this.#unsubscribeAccountState = undefined;
+      this.#unsubscribeOfficialState?.();
+      this.#unsubscribeOfficialState = undefined;
       if (this.#options.closeMappingStoreOnExit !== false) {
         await this.#repository.close().catch((error) => this.#diagnose(error));
       }
@@ -1700,10 +1737,25 @@ export class AppServerHost {
         timeoutMs,
       );
     });
-    this.#dispatchDesktopRequest(() =>
+    const configurationThreadId =
+      (method === "codexhost/thread/model/select" ||
+        method === "codexhost/thread/thinking/select" ||
+        method === "codexhost/thread/permission-mode/select") &&
+      isRecord(request.params) &&
+      typeof request.params.threadId === "string"
+        ? request.params.threadId
+        : undefined;
+    const handle = () =>
       this.#guardReply(request, () =>
         this.#handleDesktopRequest(request, Buffer.from(JSON.stringify(request)), origin),
-      ),
+      );
+    // Keep a selection's state observation and save in the same queue as Desktop.
+    this.#dispatchDesktopRequest(() =>
+      configurationThreadId
+        ? this.#desktopRequests.run(configurationThreadId, () =>
+            this.#externalRuntime.idleRelease.runOperation(configurationThreadId, handle),
+          )
+        : handle(),
     );
     try {
       const message = await reply;
@@ -2166,6 +2218,7 @@ export class AppServerHost {
     for (const listener of this.#nativeSettingsNotifications) listener(input.value);
     this.#treeWatch.observe(input.value, true);
     if (this.#options.externalOnly) {
+      this.#observeOfficialUsage(input.value, Date.now());
       this.#client.observeNativeMessage(input.value);
       // Native children created through Delegation still have a native owner
       // and lifecycle. Their rendering stays on the GUI's native connection.
@@ -2219,15 +2272,7 @@ export class AppServerHost {
         if (forwarded === parsed) await this.#writer.frame(input.frame);
         else await this.#writer.json(forwarded);
       }
-      // Plugin startup and history I/O must never delay the official protocol. Promise
-      // callbacks preserve observation order and the original receipt timestamps.
-      void (this.#usagePluginsReady ?? Promise.resolve())
-        .then(async () => {
-          for (const threadId of this.#observedSessionUsage.observe(parsed, observedAtMs)) {
-            await this.#writer.json({ method: THREAD_USAGE_UPDATED_METHOD, params: { threadId } });
-          }
-        })
-        .catch((error: unknown) => this.#diagnose(error));
+      this.#observeOfficialUsage(parsed, observedAtMs);
     } finally {
       // A start response settles only its own request, after the response reaches Desktop.
       this.#observeOfficialTurnStartResponse(parsed);
@@ -2242,14 +2287,46 @@ export class AppServerHost {
     }
   }
 
-  async #initializeSharedOfficial(): Promise<void> {
+  #observeOfficialUsage(value: JsonValue, observedAtMs: number): void {
+    // Don't delay the native protocol while the plugin is loading.
+    void (this.#usagePluginsReady ?? Promise.resolve())
+      .then(async () => {
+        for (const threadId of this.#observedSessionUsage.observe(value, observedAtMs)) {
+          if (this.#options.externalOnly)
+            this.clientEvents.changed(threadId, THREAD_USAGE_UPDATED_METHOD);
+          else
+            await this.#writer.json({ method: THREAD_USAGE_UPDATED_METHOD, params: { threadId } });
+        }
+      })
+      .catch((error: unknown) => this.#diagnose(error));
+  }
+
+  async #initializeSharedOfficial(refresh = true): Promise<void> {
     // The independent owner starts native Codex only when native metadata or
     // an explicit native Delegation needs it, not when Web merely connects.
+    if (refresh) {
+      const refreshing = this.#officialRuntimeScope.refreshBeforeRequest();
+      if (refreshing) await refreshing;
+    }
     await this.#officialRuntime.initialize();
-    await this.#officialRuntime.initializeProtocol({
+    const generation = this.#officialRuntimeScope.owner.generation;
+    if (this.#sharedUsageGeneration === generation) return;
+    void this.#waitForPlugins();
+    await this.#usagePluginsReady;
+    const params = {
       clientInfo: { name: "codexhost-shared-threads", version: "1" },
       capabilities: { experimentalApi: true },
-    });
+    };
+    const nativeParams = {
+      ...params,
+      ...this.#observedSessionUsage.requestOptions("initialize", params),
+    };
+    await this.#officialRuntime.initializeProtocol(nativeParams);
+    // Concurrent requests share the handshake; reset in-flight timing only once.
+    if (this.#sharedUsageGeneration !== generation) {
+      this.#observedSessionUsage.initialized(nativeParams);
+      this.#sharedUsageGeneration = generation;
+    }
   }
 
   #finishOfficialTurn(value: JsonValue): void {
@@ -2263,14 +2340,15 @@ export class AppServerHost {
     this.#signalActiveWorkChanged();
   }
 
-  async #requestOfficial(method: string, params: JsonObject): Promise<JsonObject> {
-    if (this.#options.externalOnly) await this.#initializeSharedOfficial();
-    return this.#officialRuntime.request(method, params);
+  async #requestOfficial(method: string, params: JsonObject, refresh = true): Promise<JsonObject> {
+    if (this.#options.externalOnly) await this.#initializeSharedOfficial(refresh);
+    const options = this.#observedSessionUsage.requestOptions(method, params);
+    return this.#officialRuntime.request(method, options ? { ...params, ...options } : params);
   }
 
   async #requestClientNative(method: string, params: JsonObject): Promise<ConsoleHostReply> {
     try {
-      const response = await this.#requestOfficial(method, params);
+      const response = await this.#requestOfficial(method, params, false);
       if (isRecord(response.error)) {
         return {
           error: {
@@ -2439,7 +2517,12 @@ export class AppServerHost {
       if (delegation) {
         await this.#repository.setDelegationStatus(delegation.delegationId, status);
       }
+      this.#notifyThreadIdle(params.threadId);
     }
+  }
+
+  #notifyThreadIdle(threadId: string): void {
+    for (const listener of this.#threadIdleListeners) listener(threadId);
   }
 
   async #canHandleDelegationStart(input: DelegationStartInput): Promise<boolean> {
@@ -3077,7 +3160,7 @@ export class AppServerHost {
     };
     const decoded = decodeThreadListRequest(request);
     if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
-    const records = await this.#repository.listSummaries();
+    const { records, sharedOwners } = await this.#localThreadCatalog();
     const result = await aggregateThreadList({
       query: decoded,
       records,
@@ -3101,7 +3184,7 @@ export class AppServerHost {
           rememberNativeListSeconds(
             {
               threadId: entry.id,
-              harnessId: record ? (record.harnessId as ExternalHarnessId) : "codex",
+              harnessId: sharedOwners?.get(entry.id) ?? record?.harnessId ?? "codex",
               deepLink: `codex://threads/${entry.id}`,
               status,
               ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
@@ -3174,13 +3257,7 @@ export class AppServerHost {
       const result = await readThreadCatalog({
         includeArchived: parsed.data.includeArchived ?? false,
         ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
-        readLocal: async () => {
-          const [records, placements] = await Promise.all([
-            this.#repository.listSummaries(),
-            this.#repository.listSectionPlacements(),
-          ]);
-          return { records, placements };
-        },
+        readLocal: () => this.#localThreadCatalog(),
         ...(this.#options.sharedThreads ? { sharedThreads: this.#options.sharedThreads } : {}),
         runtimeFor: (id) => this.#listRuntimeState(id),
         ...(this.#options.externalOnly
@@ -3210,8 +3287,8 @@ export class AppServerHost {
     const timing = new ThreadListTiming();
     let ok = false;
     try {
-      const [records, placements] = await timing.measure("store", () =>
-        Promise.all([this.#repository.listSummaries(), this.#repository.listSectionPlacements()]),
+      const { records, placements } = await timing.measure("store", () =>
+        this.#localThreadCatalog(),
       );
       timing.counts.mappingRecords = records.length;
       timing.counts.placements = placements.length;
@@ -3276,6 +3353,44 @@ export class AppServerHost {
     }
   }
 
+  /**
+   * Local records and placements, minus Threads the shared Host owns. A viewer's Mapping Store can
+   * keep a copy from before the Thread was shared; the shared Host's row is canonical even when
+   * the current query excludes it (archived, moved out of a section).
+   */
+  async #localThreadCatalog(): Promise<{
+    records: StoredThreadSummaryV1[];
+    placements: StoredSectionPlacementV1[];
+    sharedOwners?: ReadonlyMap<string, string>;
+  }> {
+    const [records, placements] = await Promise.all([
+      this.#repository.listSummaries(),
+      this.#repository.listSectionPlacements(),
+    ]);
+    const shared = this.#options.sharedThreads;
+    if (!shared) return { records, placements };
+    const ids = [...new Set([...records, ...placements].map((entry) => entry.hostThreadId))];
+    const sharedOwners = new Map<string, string>();
+    try {
+      for (let offset = 0; offset < ids.length; offset += THREAD_OWNERSHIP_LIST_MAX_LENGTH) {
+        const owners = await shared.ownership(
+          ids.slice(offset, offset + THREAD_OWNERSHIP_LIST_MAX_LENGTH),
+        );
+        for (const [id, harnessId] of owners) sharedOwners.set(id, harnessId);
+      }
+    } catch (error) {
+      // Without the shared Host the local store is the only catalog left.
+      this.#diagnose(error);
+      return { records, placements };
+    }
+    if (sharedOwners.size === 0) return { records, placements };
+    return {
+      records: records.filter((record) => !sharedOwners.has(record.hostThreadId)),
+      placements: placements.filter((placement) => !sharedOwners.has(placement.hostThreadId)),
+      sharedOwners,
+    };
+  }
+
   #listRuntimeState(threadId: string): ExternalThreadListRuntimeState | null {
     const subagentStatus = this.#subagentThreadStatuses.get(threadId);
     if (subagentStatus) return { running: subagentStatus === "active" };
@@ -3297,12 +3412,12 @@ export class AppServerHost {
     query: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const [records, localPlacements, sharedPlacements, sharedThreads] = await Promise.all([
-        this.#repository.listSummaries(),
-        this.#repository.listSectionPlacements(),
-        this.#options.sharedThreads?.placements() ?? [],
-        this.#options.sharedThreads?.list(query.params) ?? [],
-      ]);
+      const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
+        await Promise.all([
+          this.#localThreadCatalog(),
+          this.#options.sharedThreads?.placements() ?? [],
+          this.#options.sharedThreads?.list(query.params) ?? [],
+        ]);
       const sharedIds = new Set(sharedPlacements.map((p) => p.hostThreadId));
       const placements = [
         ...localPlacements.filter((p) => !sharedIds.has(p.hostThreadId)),
@@ -4456,13 +4571,33 @@ export class AppServerHost {
       if (!projected.effectiveModel) {
         throw new Error("Harness Session did not report an effective Model");
       }
-      // Resume and Fork read the saved selection, so keep it on the confirmed Model.
-      const transportModelId = encodeExternalTransportSelection(thread.harnessId, {
+      // Resume and Fork read the saved selection, so keep it on the confirmed Model
+      // and update or clear Thinking so incompatible options are not replayed on Resume.
+      const nextSelection = {
         ...(decodeExternalTransportSelection(thread.harnessId, thread.transportModelId) ?? {}),
         model: projected.effectiveModel,
-      });
+      };
+      if (projected.effectiveThinkingOptionId) {
+        nextSelection.thinkingOptionId = projected.effectiveThinkingOptionId;
+      } else {
+        delete nextSelection.thinkingOptionId;
+      }
+      const transportModelId = encodeExternalTransportSelection(thread.harnessId, nextSelection);
       thread.transportModelId = transportModelId;
       thread.requestedModel = projected.effectiveModel;
+      if (projected.effectiveThinkingOptionId) {
+        thread.requestedThinkingOptionId = projected.effectiveThinkingOptionId;
+      } else {
+        delete thread.requestedThinkingOptionId;
+      }
+      thread.thread = externalThreadValue({
+        record: { ...thread.record, transportModelId },
+        turns: thread.turns,
+        sessionId: thread.sessionId,
+        running: thread.running,
+      });
+      // Resume restores the saved selection, so an unsaved change must not
+      // be reported as a completed selection.
       try {
         thread.record = await this.#repository.setTransportModelId(
           thread.record.hostThreadId,
@@ -4470,9 +4605,17 @@ export class AppServerHost {
         );
       } catch (error) {
         this.#diagnose(error);
+        await this.#writer.json(
+          rpcError(
+            request,
+            -32078,
+            `Model was applied but could not be saved: ${errorMessage(error)}`,
+          ),
+        );
+        return;
       }
       thread.thread = externalThreadValue({
-        record: { ...thread.record, transportModelId },
+        record: thread.record,
         turns: thread.turns,
         sessionId: thread.sessionId,
         running: thread.running,
@@ -4560,13 +4703,22 @@ export class AppServerHost {
           );
         } catch (error) {
           this.#diagnose(error);
+          await this.#writer.json(
+            rpcError(
+              request,
+              -32078,
+              `Thinking was applied but could not be saved: ${errorMessage(error)}`,
+            ),
+          );
+          return;
+        } finally {
+          thread.thread = externalThreadValue({
+            record: { ...thread.record, transportModelId },
+            turns: thread.turns,
+            sessionId: thread.sessionId,
+            running: thread.running,
+          });
         }
-        thread.thread = externalThreadValue({
-          record: { ...thread.record, transportModelId },
-          turns: thread.turns,
-          sessionId: thread.sessionId,
-          running: thread.running,
-        });
       }
       await this.#writer.json(rpcEnvelope(request, { result: jsonValueSchema.parse(projected) }));
     } catch (error) {
@@ -5171,7 +5323,10 @@ export class AppServerHost {
         },
       }),
     );
-    if (includeTurns) this.#markExternalHistoryRead(thread, readTurns);
+    if (includeTurns) {
+      this.#markExternalHistoryRead(thread, readTurns);
+      await this.#replayExternalPlan(thread);
+    }
     await this.#replayExternalUsage(thread);
   }
 
@@ -5183,9 +5338,11 @@ export class AppServerHost {
   ): Promise<void> {
     const headPage = params.cursor === null || params.cursor === undefined;
     const requiresRefresh =
-      request.method === "thread/turns/list" ||
-      (request.method === "thread/items/list" && !thread.historyHydrated);
-    if (!thread.running && !historyFresh && headPage && requiresRefresh) {
+      (request.method === "thread/turns/list" && headPage) ||
+      (request.method === "thread/items/list" &&
+        !thread.historyHydrated &&
+        (headPage || (isRecord(params.cursor) && params.cursor.type === "item")));
+    if (!thread.running && !historyFresh && requiresRefresh) {
       const refreshed = await this.#refreshExternalThread(thread);
       if (refreshed) {
         await this.#writer.json(rpcError(request, refreshed.code, refreshed.message));
@@ -5286,7 +5443,9 @@ export class AppServerHost {
             : "External Thread history projection failed",
         ),
       );
+      return;
     }
+    await this.#replayExternalPlan(thread);
   }
 
   #externalHistoryTurns(thread: ExternalThread, forClient = false): JsonObject[] {
@@ -5356,7 +5515,29 @@ export class AppServerHost {
       }
       consumedEnd.set(live.type, aligned);
     }
-    return { ...turn, items: [...items, ...remaining.values()] };
+    const merged = [...items, ...remaining.values()];
+    if (turn.status === "completed") {
+      const last = merged.at(-1);
+      if (
+        last &&
+        last.type === "agentMessage" &&
+        last.phase == null &&
+        typeof last.text === "string" &&
+        last.text.trim().length > 0 &&
+        background.has(last.id as HostItemId)
+      ) {
+        return {
+          ...turn,
+          items: merged.map((item, index) => {
+            if (index === merged.length - 1) return { ...item, phase: "final_answer" };
+            return item.type === "agentMessage" && item.phase === "final_answer"
+              ? { ...item, phase: null }
+              : item;
+          }),
+        };
+      }
+    }
+    return { ...turn, items: merged };
   }
 
   #externalThreadBusy(thread: ExternalThread): boolean {
@@ -5369,7 +5550,7 @@ export class AppServerHost {
     requestedTurnId: string,
   ): Promise<void> {
     if (this.#externalThreadBusy(thread)) {
-      throw new Error("External Thread already has an active Turn");
+      throw new DelegationControlError("THREAD_BUSY", "External Thread already has an active Turn");
     }
     const turnId = hostTurnIdSchema.parse(requestedTurnId);
     const projection: ProjectedTurn = {
@@ -5402,6 +5583,9 @@ export class AppServerHost {
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       this.#signalActiveWorkChanged();
+      if (result.error.code === "sessionBusy") {
+        throw new DelegationControlError("THREAD_BUSY", result.error.message);
+      }
       throw new Error(result.error.message);
     }
     await this.#releaseInjectedText(thread, turnId, injected);
@@ -6206,11 +6390,17 @@ export class AppServerHost {
         thread.id,
         new Error("External Harness output ended before replacement"),
       );
-      const needsSettlement = thread.running || Boolean(thread.activeTurnId);
+      const needsSettlement = thread.running || thread.activeTurnId !== null;
+      // A readonly Subagent can outlive the Turn without ever ending its own
+      // output stream. Retire it when the parent stream ends, even if the Turn settled.
       if (!this.#closeRequested && (needsSettlement || this.#hasRunningSubagents(thread.id))) {
         if (needsSettlement) {
-          // Retire snapshot Subagents before settling so the parent can go idle.
+          // Retire Subagents before projecting failure so the parent can go idle.
           await this.#retireRunningSubagents(thread);
+          // A Session that died (for example a Harness subagent that was killed
+          // natively) can end its output stream without a terminal Turn event.
+          // Without settling here the Thread stays busy forever and every later
+          // submission fails with "External Thread already has an active Turn".
           await settleExternalOutputFailure(
             thread,
             new Error("External Harness output ended before the active Turn settled"),
@@ -6218,10 +6408,10 @@ export class AppServerHost {
             (failure) => this.#diagnose(failure),
           );
         }
-        // A completed parent or the catch block may have already settled the Turn.
-        // Settlement can also re-register running Subagents from the Item ledger.
-        await this.#retireRunningSubagents(thread);
-        if (!thread.activeTurnId) {
+        // Completed Turn projections can remain for late background output;
+        // only active work should prevent the final status cleanup.
+        if (!thread.running && !thread.activeTurnId) {
+          await this.#retireSubagentsAfterFailure(thread);
           if (thread.record.subagent) {
             await this.#setSubagentThreadStatus(thread.id, "idle");
             // The parent Session may be gone too and will never emit a status
@@ -6233,17 +6423,19 @@ export class AppServerHost {
               thread.id,
               "idle",
             );
-          } else if (!thread.running && !this.#hasRunningSubagents(thread.id)) {
-            // The Turn projection may have seen a since-retired Subagent and
-            // kept this Thread active; settle the published status now.
+          } else if (
+            !thread.record.subagent &&
+            !this.#hasRunningSubagents(thread.id) &&
+            isRecord(thread.thread.status) &&
+            thread.thread.status.type === "active"
+          ) {
+            // The Turn projection may have kept the Thread active for a since-retired Subagent.
             await this.#setThreadStatus(thread, { type: "idle" });
           }
         }
         this.#signalActiveWorkChanged();
-        // A settled Turn that ends as a failure already pauses the queue with
-        // "failed" and publishes once from the Turn projection; only pause with
-        // "outcome-unknown" when no pause was published, so the Desktop never
-        // receives two inconsistent pause notifications.
+        // Subagent cleanup alone does not pause or start queued work. Only an
+        // unfinished Turn needs the fallback, unless its failure already paused the queue.
         if (
           needsSettlement &&
           !this.#externalQueue.isPaused(thread.id) &&
@@ -6266,6 +6458,66 @@ export class AppServerHost {
       return;
     }
     let event = output.event;
+    if (event.type === "turn.autonomous.completed") {
+      let turn: JsonObject | undefined;
+      try {
+        if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
+          await this.#notifyExternalThreadStarted(thread.thread);
+        }
+        turn = await this.#externalRuntime.appendAutonomousTurn(thread, event.snapshot);
+      } catch (error) {
+        // The committed native Turn can be recovered by a history read. It does not own the
+        // foreground Turn or the output stream.
+        this.#diagnose(
+          `External autonomous Turn could not be recorded (threadId=${thread.id}): ${errorMessage(error)}`,
+        );
+        return;
+      }
+      if (!turn) {
+        // A concurrent native-history read may already have installed this Turn.
+        this.clientEvents.changed(thread.id, "turn/completed");
+        return;
+      }
+      const threadId = thread.id;
+      const turnId = hostTurnIdSchema.parse(turn.id);
+      const items = Array.isArray(turn.items) ? turn.items : [];
+      await this.#writer.json({
+        method: "turn/started",
+        params: {
+          threadId,
+          turn: {
+            ...turn,
+            items: items.filter((item) => isRecord(item) && item.type === "userMessage"),
+            status: "inProgress",
+            completedAt: null,
+            durationMs: null,
+          },
+        },
+      });
+      for (const item of items) {
+        if (isRecord(item) && item.type === "userMessage") continue;
+        await this.#writer.json({ method: "item/started", params: { threadId, turnId, item } });
+        await this.#writer.json({ method: "item/completed", params: { threadId, turnId, item } });
+      }
+      await this.#writer.json({ method: "turn/completed", params: { threadId, turn } });
+      return;
+    }
+    if (thread.sessionUnavailable && "turnId" in event) {
+      const projector = thread.projectedTurns.get(event.turnId)?.projector;
+      if (!projector) return;
+      // Completed Turns still own background output and any open detached Items.
+      if (
+        projector.completed &&
+        event.type !== "item.background.started" &&
+        !(event.type === "item.updated" && projector.hasOpenDetachedItem(event.itemId)) &&
+        !(
+          event.type === "item.completed" &&
+          projector.hasOpenDetachedItem(event.snapshot.item.itemId)
+        )
+      ) {
+        return;
+      }
+    }
     if (this.#meterTurnTiming(thread, event)) await this.#notifyThreadUsage(thread);
     if (event.type === "item.started" && event.item.type === "subagentDelegation") {
       event = {
@@ -6361,9 +6613,15 @@ export class AppServerHost {
       });
       return;
     }
-    if (event.type === "usage.request" || event.type === "usage.history") {
+    if (
+      event.type === "usage.request" ||
+      event.type === "usage.request.timing" ||
+      event.type === "usage.history"
+    ) {
       if (this.#externalRuntime.get(thread.id) !== thread) return;
-      if (event.type === "usage.request") {
+      if (event.type === "usage.request.timing") {
+        if (!thread.usageMeter.recordRequestTiming(event.timing, event.turnId)) return;
+      } else if (event.type === "usage.request") {
         const changed = thread.usageMeter.recordRequest(event.request, thread.activeTurnId);
         // Replayed history is announced once by the following usage.history.
         if (!changed || event.request.historical === true) return;
@@ -6412,6 +6670,12 @@ export class AppServerHost {
       if (this.#externalQueue.pause(thread.id, "outcome-unknown"))
         await this.#publishExternalQueue(thread.id);
       this.#diagnose(`${thread.harnessId} Harness Session faulted: ${event.error.message}`);
+      for (const { projector } of [...thread.projectedTurns.values()]) {
+        for (const failure of projector.failureEvents(event.error)) {
+          await this.#projectHarnessOutput(thread, { kind: "event", event: failure });
+        }
+      }
+      await this.#retireSubagentsAfterFailure(thread);
       // Idle Threads must not keep a dead Session; the next open restores from disk.
       if (
         !thread.running &&
@@ -6585,6 +6849,15 @@ export class AppServerHost {
     }
   }
 
+  async #retireSubagentsAfterFailure(thread: ExternalThread): Promise<void> {
+    // Failure projection can register running Subagents from the Item ledger.
+    if (!this.#hasRunningSubagents(thread.id)) return;
+    await this.#retireRunningSubagents(thread);
+    if (!thread.running && !thread.activeTurnId) {
+      await this.#setThreadStatus(thread, { type: "idle" });
+    }
+  }
+
   async #setSubagentThreadStatus(threadId: string, status: "active" | "idle"): Promise<void> {
     const previousStatus = this.#subagentThreadStatuses.get(threadId);
     const child = this.#externalRuntime.get(threadId);
@@ -6617,6 +6890,7 @@ export class AppServerHost {
         status: status === "active" ? { type: "active", activeFlags: [] } : { type: "idle" },
       },
     });
+    if (status === "idle") this.#notifyThreadIdle(threadId);
   }
 
   async #projectApproval(
@@ -7093,6 +7367,7 @@ export class AppServerHost {
       emittedAtMs: Date.now(),
       params: { threadId: thread.id, status },
     });
+    if (status.type === "idle") this.#notifyThreadIdle(thread.id);
   }
 
   #latestCompletedTurnId(thread: ExternalThread): HostTurnId | null {
@@ -7128,6 +7403,22 @@ export class AppServerHost {
   #meterTurnTiming(thread: ExternalThread, event: HostEvent): boolean {
     if (this.#externalRuntime.get(thread.id) !== thread) return false;
     return thread.usageMeter.observeTurn(event);
+  }
+
+  /**
+   * Desktop restores a plan only from turn/plan/updated, never from Thread history. Only a
+   * Harness whose plan outlives its Turn gets it replayed; other plans stay with their Turn.
+   */
+  async #replayExternalPlan(thread: ExternalThread): Promise<void> {
+    if (thread.session.capabilities.persistentPlan !== true) return;
+    const update = thread.livePlan
+      ? { method: "turn/plan/updated", params: thread.livePlan }
+      : historicalPlanUpdate(
+          thread.id,
+          ownTurns(thread.record, thread.turns),
+          thread.historicalPlans,
+        );
+    if (update) await this.#writer.json(update);
   }
 
   async #replayExternalUsage(thread: ExternalThread): Promise<void> {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import {
+  DESKTOP_EXTENSION_ICON_MAX_BYTES,
   DESKTOP_EXTENSION_LIMIT,
   DESKTOP_EXTENSION_LIST_SCREENSHOTS_MAX_BYTES,
   DESKTOP_EXTENSION_MANIFEST_MAX_BYTES,
@@ -23,6 +24,7 @@ export type DesktopExtensionInstallation = { id: string } & (
       script?: string;
       style?: string;
       backend?: { directory: string; scriptPath: string; hash: string; installation: string };
+      iconDataUrl?: string;
       screenshotDataUrls?: string[];
     }
   | { state: "invalid" | "incompatible"; error: string }
@@ -102,16 +104,16 @@ const jpegSignature = Buffer.from([0xff, 0xd8, 0xff]);
 const riffSignature = Buffer.from("RIFF");
 const webpSignature = Buffer.from("WEBP");
 
-/** Both installation discovery and packaging require the declared image type to match its bytes. */
-export async function readDesktopExtensionScreenshot(root: string, relative: string) {
+async function readDesktopExtensionImage(
+  root: string,
+  relative: string,
+  maxBytes: number,
+  label: string,
+) {
   try {
     const mime = desktopExtensionScreenshotMimeType(relative);
     if (!mime) throw new Error("Unsupported image extension");
-    const bytes = await readExtensionResource(
-      root,
-      relative,
-      DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
-    );
+    const bytes = await readExtensionResource(root, relative, maxBytes);
     const matches =
       mime === "image/png"
         ? bytes.subarray(0, 8).equals(pngSignature)
@@ -127,8 +129,25 @@ export async function readDesktopExtensionScreenshot(root: string, relative: str
       : error instanceof Error
         ? error.message
         : String(error);
-    throw new Error(`Screenshot ${JSON.stringify(relative)}: ${reason}`, { cause: error });
+    throw new Error(`${label} ${JSON.stringify(relative)}: ${reason}`, { cause: error });
   }
+}
+
+export function readDesktopExtensionIcon(root: string, relative: string) {
+  return readDesktopExtensionImage(root, relative, DESKTOP_EXTENSION_ICON_MAX_BYTES, "Icon");
+}
+
+export function readDesktopExtensionScreenshot(root: string, relative: string) {
+  return readDesktopExtensionImage(
+    root,
+    relative,
+    DESKTOP_EXTENSION_SCREENSHOT_MAX_BYTES,
+    "Screenshot",
+  );
+}
+
+function toImageDataUrl({ bytes, mime }: Awaited<ReturnType<typeof readDesktopExtensionImage>>) {
+  return `data:${mime};base64,${bytes.toString("base64")}`;
 }
 
 export function isDesktopExtensionTransactionEntry(name: string): boolean {
@@ -179,6 +198,13 @@ async function discover(
       ...(style ? { style: decoder.decode(style) } : {}),
       ...(backendEntry ? { backend: backendEntry } : {}),
     };
+    if (parsed.manifest.icon) {
+      // A missing or unreadable logo does not affect an installed extension's availability.
+      const icon = await readDesktopExtensionIcon(directory, parsed.manifest.icon).catch(
+        () => undefined,
+      );
+      if (icon) item.iconDataUrl = toImageDataUrl(icon);
+    }
     const screenshots = [];
     let screenshotBytes = 0;
     for (const relative of parsed.manifest.screenshots ?? []) {
@@ -190,9 +216,7 @@ async function discover(
       screenshotBudget.omitted = true;
     } else if (screenshots.length) {
       screenshotBudget.remaining -= screenshotBytes;
-      item.screenshotDataUrls = screenshots.map(
-        ({ bytes, mime }) => `data:${mime};base64,${bytes.toString("base64")}`,
-      );
+      item.screenshotDataUrls = screenshots.map(toImageDataUrl);
     }
     return item;
   } catch (error) {

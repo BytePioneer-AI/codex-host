@@ -54,13 +54,15 @@ Pi 当前 Model 同时具备 Codex OAuth、Codex API 和本地 `priority` 元数
 
 依据：[Pi 官方 README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md) 的 Philosophy 与 Extensions，以及本机 `pi --help` / RPC 文档。官方核心不提供 permission popups，允许通过扩展自定义确认流程；permission-gate / plan-mode 扩展示例分别采用命令匹配和工具过滤，不是核心权限模式。
 
-## Antigravity ACP 审批、派生与压缩
+## Antigravity ACP 审批、派生、压缩与空闲唤醒
 
 Antigravity 通过官方 `agy acp`（要求 `agy >= 1.5.8`，已用本机 `1.5.9` 实测）接入：
 
 - **权限与交互**：原生提供 `default`、`accept-edits`、`auto`、`plan` 四种 ACP 模式（`session/set_mode`）及进程启动级 `dangerously-skip-permissions`；工具审批走原生 `session/request_permission`，`ask_question` 走原生客户端 `elicitation/create`（`form` 模式），不使用私有 Hook 桥。详见 [Antigravity 权限与交互](antigravity/antigravity-tool-approval.md)。
-- **历史读取**：只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`，不启动 `agy`，不走 `session/load`（ACP 回放在 stdout 受阻时会提前回复并跨轮乱序，不可作为完整来源）。活动库读取已提交的 WAL 快照并跳过仍在生成的步骤；数据库不可读或格式未知时返回“历史不可用”，不降级。连续用户输入沿用既有分组规则合并，保证已存 Turn 身份稳定。
-- **历史派生（Fork / Rollback）**：`agy acp` 1.5.9 未提供 `session/fork` RPC（返回 `-32601 Method not found`）。Adapter 在会话空闲态克隆 `~/.gemini/antigravity-cli/conversations/<id>.db`，按原生 `steps` 表 `step_type = 14`（`user_input`）边界裁剪并同步 `conversation_summaries.db` 后，经 `session/resume` 打开派生会话；活动 Turn 期间返回 `sessionBusy`。
+- **历史读取**：只读 `~/.gemini/antigravity-cli/conversations/<id>.db` 的 `steps`，不启动 `agy`，不走 `session/load`（ACP 回放在 stdout 受阻时会提前回复并跨轮乱序，不可作为完整来源）。活动库读取已提交的 WAL 快照并跳过仍在生成的步骤；数据库不可读或格式未知时返回“历史不可用”，不降级。连续用户输入沿用既有分组规则合并，保证已存 Turn 身份稳定。有原生调用 ID 和工具名称的已完成工具步骤没有对应 planner 调用时，仍可按所属回合恢复；工具输出字段缺失时使用已存错误信息（若有），不影响其余历史读取。
+- **空闲唤醒**：定时器或后台任务唤起的独立原生运行（`step_type = 101` 系统消息起始，同一运行 ID 的连续系统消息合并）有已提交的最终回答时，作为无用户消息的独立 Turn 展示，保留上一轮的最终回答。ACP 的空闲输出通知触发有界的 SQLite 提交观察，不显示未提交的逐字流，也不占用前台执行位。已有 Turn 所属的迟到输出不创建自主 Turn；已归属的尾部后台消息仍可成为该 Turn 的最终回答。
+- **历史身份与检查点**：读取时保留每条原生用户输入的序号。合并展示的 Turn 使用其覆盖的最后一条原生用户输入生成分叉检查点，不使用界面分组下标；例如 15 条原生输入显示为 14 组，末组的检查点仍保留完整的 15 条输入。有效的已有身份可以与检查点不同，稀疏编号和非数字旧身份继续保留；没有已有映射时，依据原生边界生成身份，使首次读取与带映射重读保持一致。
+- **历史派生（Fork / Rollback）**：`agy acp` 1.5.9 未提供 `session/fork` RPC。Adapter 克隆原生 SQLite，按用户输入或已结算的独立唤醒边界裁剪并同步 `conversation_summaries.db`，再经 `session/resume` 打开派生会话。Rollback 只在空闲态可用；运行中 Fork 仅支持当前会话已确认、严格早于活动 Turn 的用户检查点，要求源库为 WAL 且无正在运行的子代理。
 - **压缩与实时命令**：命令目录保留内置 `antigravity.compact`（`/compact`）并通过 ACP `available_commands_update` 合并原生实时命令。在 ACP 模式下，`/compact` 作为原生斜杠命令随 `session/prompt` 发送给 `agy acp` 执行，但 ACP 流不推送旧 PrintMode 专有的 `checkpoint` 步骤事件，因此不合成独立的 `contextCompaction` Item。
 
 ## Copilot 原生接入

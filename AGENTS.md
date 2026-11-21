@@ -30,12 +30,12 @@
   - `console-server/`: local codexhost console that works without Codex Desktop (diagnostics, updates, Harness launch settings)
   - `shared-contracts/`: browser-safe types and runtime schemas
   - `renderer-extension/`: injected browser UI and Desktop extension host
-  - `desktop-extensions/`: optional Desktop UI extension examples; see [Desktop UI extensions](docs/architecture/desktop-ui-extensions.md) when authoring or testing one
 
 ### Build and Release
 
 - `scripts/release/`: release preparation, packaging, and publishing
 - `tools/`: development utilities and technical Gates
+- `registry/desktop-extensions/`: standalone index template for independently distributed [Desktop UI extensions](docs/architecture/desktop-ui-extensions.md)
 
 ## Boundary Rules
 
@@ -57,7 +57,7 @@ Load a skill only when its task occurs; read its `SKILL.md` before following it.
 | Task | Skill |
 | --- | --- |
 | Version releases, Release Notes, preview channels, and release recovery | [codexhost-release](.agents/skills/codexhost-release/SKILL.md) |
-| Overview table of a batch of PRs with a 1–5 recommendation score | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
+| Triage a batch of PRs: overview table with 1–5 score, real-test plan, merge/close/label after approval | [codexhost-pr-overview](.agents/skills/codexhost-pr-overview/SKILL.md) |
 | Reviewing a PR or local diff for correctness and boundaries | [codexhost-code-review](.agents/skills/codexhost-code-review/SKILL.md) |
 | Quickly trying a feature in a Web or Desktop run with its own data directory | [codexhost-isolated-testing](.agents/skills/codexhost-isolated-testing/SKILL.md) |
 | Finding evidence-backed simplification candidates (read-only audit) | [codexhost-find-simplifications](.agents/skills/codexhost-find-simplifications/SKILL.md) |

@@ -1,11 +1,16 @@
 import type {
   DesktopExtensionMutationResult,
+  DesktopExtensionsCatalogResult,
   DesktopExtensionsListResult,
 } from "@codexhost/shared-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/settings/icons.js", () => ({
-  createRendererSettingsIcon: () => ({ classList: { add() {} } }),
+  createRendererSettingsIcon: (name: string, size?: number) => ({
+    iconName: name,
+    size,
+    classList: { add() {} },
+  }),
   isRendererSettingsIconName: () => true,
 }));
 
@@ -15,7 +20,10 @@ import {
   createDesktopExtensionsSettingsPage,
   type RendererDesktopExtensionsClient,
 } from "../../src/settings/desktop-extensions-page.js";
-import { formatExtensionStarCount } from "../../src/settings/desktop-extensions-shared.js";
+import {
+  createExtensionIconElement,
+  formatExtensionStarCount,
+} from "../../src/settings/desktop-extensions-shared.js";
 import { rendererSettingsMessages } from "../../src/settings/localization.js";
 import { createDefaultRendererSettingsPages } from "../../src/settings/pages.js";
 
@@ -360,21 +368,205 @@ describe("Desktop extensions settings page", () => {
     expect(formatExtensionStarCount(10_000)).toBe("10k");
   });
 
-  it("registers desktop-extensions in default settings pages with bilingual labels", () => {
-    const zhPage = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN")).find(
-      ({ id }) => id === "desktop-extensions",
+  it("registers desktop-extensions as the second default settings page with Plugins bilingual labels", () => {
+    const zhPages = createDefaultRendererSettingsPages(rendererSettingsMessages("zh-CN"));
+    const enPages = createDefaultRendererSettingsPages(rendererSettingsMessages("en"));
+    expect(zhPages.map(({ id }) => id).slice(0, 3)).toEqual([
+      "connections",
+      "desktop-extensions",
+      "mobile-web",
+    ]);
+    expect(enPages.map(({ id }) => id).slice(0, 3)).toEqual([
+      "connections",
+      "desktop-extensions",
+      "mobile-web",
+    ]);
+    expect(zhPages[1]?.label).toBe("插件");
+    expect(enPages[1]?.label).toBe("Plugins");
+  });
+
+  it("renders custom extension icons, blocks unsafe protocols, falls back on image error, and maps all 6 categories to Lucide vector icons", async () => {
+    const validDataUrl = "data:image/png;base64,iVBORw0KGgo=";
+    const validHttpsUrl = "https://cdn.example.com/extensions/logo.png";
+
+    // 1) All 6 categories + uncategorized fallback map cleanly to their rounded vector icon & category tone.
+    const doc = new FakeDocument();
+    const categoryCases = [
+      {
+        categories: ["appearance"] as const,
+        expectedCategory: "appearance",
+        expectedIcon: "palette",
+      },
+      {
+        categories: ["interface"] as const,
+        expectedCategory: "interface",
+        expectedIcon: "layout-grid",
+      },
+      { categories: ["workflow"] as const, expectedCategory: "workflow", expectedIcon: "zap" },
+      {
+        categories: ["analytics"] as const,
+        expectedCategory: "analytics",
+        expectedIcon: "chart-column",
+      },
+      {
+        categories: ["integrations"] as const,
+        expectedCategory: "integrations",
+        expectedIcon: "plug",
+      },
+      { categories: ["tools"] as const, expectedCategory: "tools", expectedIcon: "puzzle" },
+      { categories: undefined, expectedCategory: "tools", expectedIcon: "puzzle" },
+    ];
+    for (const testCase of categoryCases) {
+      const cardIcon = createExtensionIconElement({
+        document: doc as unknown as Document,
+        categories: testCase.categories,
+        size: "card",
+        alt: "Test",
+      }) as unknown as FakeElement;
+      expect(cardIcon.className).toContain("settings-extensions-icon--card");
+      expect(cardIcon.dataset.iconKind).toBe("fallback");
+      expect(cardIcon.dataset.iconCategory).toBe(testCase.expectedCategory);
+      expect(cardIcon.dataset.iconName).toBe(testCase.expectedIcon);
+      expect((cardIcon.children[0] as { iconName?: string; size?: number }).iconName).toBe(
+        testCase.expectedIcon,
+      );
+      expect((cardIcon.children[0] as { size?: number }).size).toBe(16);
+    }
+
+    // 2) Unsafe protocols (javascript:, file:, data:image/svg+xml) are rejected and fall back to vector icons.
+    for (const unsafeUrl of [
+      "javascript:alert(1)",
+      "file:///etc/passwd",
+      "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+      "data:text/html;base64,PGh0bWw+",
+    ]) {
+      const safeFallback = createExtensionIconElement({
+        document: doc as unknown as Document,
+        iconUrl: unsafeUrl,
+        categories: ["workflow"],
+        size: "detail",
+        alt: "Unsafe",
+      }) as unknown as FakeElement;
+      expect(safeFallback.className).toContain("settings-extensions-icon--detail");
+      expect(safeFallback.dataset.iconKind).toBe("fallback");
+      expect(safeFallback.dataset.iconName).toBe("zap");
+      expect(descendants(safeFallback).filter((el) => el.tagName === "img")).toHaveLength(0);
+    }
+
+    // 3) Image load failure (error event) degrades gracefully to the category vector icon without broken <img>.
+    const degradingIcon = createExtensionIconElement({
+      document: doc as unknown as Document,
+      iconUrl: validHttpsUrl,
+      categories: ["analytics"],
+      size: "card",
+      alt: "Broken Remote",
+    }) as unknown as FakeElement;
+    expect(degradingIcon.dataset.iconKind).toBe("image");
+    const brokenImg = must(descendants(degradingIcon).find((el) => el.tagName === "img"));
+    expect(brokenImg.src).toBe(validHttpsUrl);
+    brokenImg.dispatch("error");
+    expect(degradingIcon.dataset.iconKind).toBe("fallback");
+    expect(degradingIcon.dataset.iconName).toBe("chart-column");
+    expect(descendants(degradingIcon).filter((el) => el.tagName === "img")).toHaveLength(0);
+
+    // 4) Installed cards prefer local iconDataUrl, fall back to catalog icon, then category vector icon; detail modal mirrors it.
+    const list = sampleList();
+    const first = must(list.extensions[0]);
+    const second = must(list.extensions[1]);
+    const listWithIcons: DesktopExtensionsListResult = {
+      ...list,
+      extensions: [{ ...first, iconDataUrl: validDataUrl }, second, ...list.extensions.slice(2)],
+    };
+    const client: RendererDesktopExtensionsClient = {
+      listDesktopExtensions: vi.fn(async () => listWithIcons),
+      listDesktopExtensionCatalog: vi.fn(async (): Promise<DesktopExtensionsCatalogResult> => ({
+        catalogUrl: "https://example.com/catalog.json",
+        source: "remote",
+        fetchedAt: "2026-07-02T00:00:00.000Z",
+        cached: false,
+        extensions: [
+          {
+            id: first.id,
+            name: { en: "Sidebar Thread Tree", "zh-CN": "侧栏委派树" },
+            description: { en: "Desc", "zh-CN": "描述" },
+            version: "1.0.0",
+            author: "CodexHost",
+            categories: ["interface"],
+            slots: ["sidebar.thread-layout"],
+            trustTier: "official",
+            repository: "https://example.com/tree",
+            icon: "https://cdn.example.com/ignored-because-local-exists.png",
+            downloadUrl: "https://example.com/tree.zip",
+            sha256: "a".repeat(64),
+          },
+          {
+            id: second.id,
+            name: { en: "Nord Dark", "zh-CN": "Nord 深色" },
+            description: { en: "Desc", "zh-CN": "描述" },
+            version: "1.0.0",
+            author: "Community",
+            categories: ["appearance"],
+            slots: ["appearance.theme"],
+            trustTier: "community",
+            repository: "https://example.com/nord",
+            icon: validHttpsUrl,
+            downloadUrl: "https://example.com/nord.zip",
+            sha256: "b".repeat(64),
+          },
+        ],
+      })),
+    };
+
+    const mounted = mountPage("zh-CN", () => client);
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const firstCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === first.id,
+      ),
     );
-    const enPage = createDefaultRendererSettingsPages(rendererSettingsMessages("en")).find(
-      ({ id }) => id === "desktop-extensions",
+    const firstIcon = must(
+      descendants(firstCard).find((el) => el.className.includes("settings-extensions-icon--card")),
     );
-    expect(zhPage?.label).toBe("Desktop 扩展");
-    expect(enPage?.label).toBe("Desktop Extensions");
+    expect(firstIcon.dataset.iconKind).toBe("image");
+    expect(must(descendants(firstIcon).find((el) => el.tagName === "img")).src).toBe(validDataUrl);
+
+    const secondCard = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "article" && el.dataset.extensionId === second.id,
+      ),
+    );
+    const secondIcon = must(
+      descendants(secondCard).find((el) => el.className.includes("settings-extensions-icon--card")),
+    );
+    expect(secondIcon.dataset.iconKind).toBe("image");
+    expect(must(descendants(secondIcon).find((el) => el.tagName === "img")).src).toBe(
+      validHttpsUrl,
+    );
+
+    // Detail modal renders a 44px detail icon matching the installed priority.
+    firstCard.dispatch("click");
+    const detailDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-detail-dialog"),
+      ),
+    );
+    const detailIcon = must(
+      descendants(detailDialog).find((el) =>
+        el.className.includes("settings-extensions-icon--detail"),
+      ),
+    );
+    expect(detailIcon.dataset.iconKind).toBe("image");
+    expect(must(descendants(detailIcon).find((el) => el.tagName === "img")).src).toBe(validDataUrl);
+    detailDialog.close();
+    mounted.dispose();
   });
 
   it("renders empty-state directory guidance in Chinese and English", async () => {
     const client: RendererDesktopExtensionsClient = {
       listDesktopExtensions: vi.fn(async () => ({
-        configuration: { version: 1, revision: 0, enabled: [] },
+        configuration: { version: 1 as const, revision: 0, enabled: [] },
         desktopConnected: false,
         diagnostics: [],
         extensions: [],
@@ -1465,7 +1657,7 @@ describe("Desktop extensions settings page", () => {
     expect(storage.get("codexhost.desktopExtensions.contentLocale")).toBe("en");
     expect(enOption.getAttribute("aria-checked")).toBe("true");
     // Shell controls remain Chinese.
-    expect(textOf(mounted.content)).toContain("导入扩展");
+    expect(textOf(mounted.content)).toContain("导入插件");
 
     const filterLabels = () =>
       descendants(mounted.content)
@@ -1537,10 +1729,79 @@ describe("Desktop extensions settings page", () => {
     restored.dispose();
   });
 
+  it("opens the Create plugin modal with a copyable AI prompt and registry submission links", async () => {
+    const client = {
+      listDesktopExtensions: vi.fn(async () => sampleList()),
+    };
+    const mounted = mountPage("zh-CN", () => client);
+    await vi.waitFor(() => expect(textOf(mounted.content)).toContain("侧栏委派树"));
+
+    const createButton = must(
+      descendants(mounted.content).find(
+        (el) => el.tagName === "button" && el.dataset.action === "open-create",
+      ),
+    );
+    expect(textOf(createButton)).toBe("制作插件");
+    createButton.dispatch("click");
+
+    const createDialog = must(
+      descendants(mounted.content).find(
+        (el) =>
+          el.tagName === "dialog" && el.className.includes("settings-extensions-create-dialog"),
+      ),
+    );
+    expect(createDialog.open).toBe(true);
+    const promptTextarea = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "textarea" && el.dataset.createField === "prompt",
+      ),
+    );
+    expect(promptTextarea.value).toContain("codexhost-add-desktop-extension/SKILL.md");
+    expect(promptTextarea.value).toContain("BytePioneer-AI/codexhost-extensions-registry");
+
+    const skillLink = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "a" && el.dataset.createLink === "skill",
+      ),
+    );
+    expect(skillLink.href).toBe(
+      "https://github.com/BytePioneer-AI/codex-host/blob/main/.agents/skills/codexhost-add-desktop-extension/SKILL.md",
+    );
+    expect(skillLink.target).toBe("_blank");
+    expect(skillLink.rel).toBe("noopener noreferrer");
+
+    const submitLink = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "a" && el.dataset.createLink === "submit",
+      ),
+    );
+    expect(submitLink.href).toBe(
+      "https://github.com/BytePioneer-AI/codexhost-extensions-registry/issues/new/choose",
+    );
+    expect(submitLink.target).toBe("_blank");
+    expect(submitLink.rel).toBe("noopener noreferrer");
+
+    const copyPromptButton = must(
+      descendants(createDialog).find(
+        (el) => el.tagName === "button" && el.dataset.action === "copy-create-prompt",
+      ),
+    );
+    copyPromptButton.dispatch("click");
+    await vi.waitFor(() =>
+      expect(mounted.document.clipboardWriteText).toHaveBeenCalledWith(promptTextarea.value),
+    );
+    expect(textOf(copyPromptButton)).toBe("已复制");
+
+    createDialog.close();
+    mounted.dispose();
+  });
+
   it("shows an unavailable state when the Host does not support Desktop extension RPCs", async () => {
     const mounted = mountPage("en", () => ({
       listDesktopExtensions: vi.fn(async () => {
-        throw new RendererMethodUnavailableError("codexhost/desktop/extensions/list");
+        throw new RendererMethodUnavailableError("codexhost/desktop/extensions/list", {
+          code: -32601,
+        });
       }),
     }));
     await vi.waitFor(() =>

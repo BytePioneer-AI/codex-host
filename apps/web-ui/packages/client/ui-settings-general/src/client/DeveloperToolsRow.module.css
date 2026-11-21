@@ -18,3 +18,11 @@
   font-size: 12px;
   line-height: 18px;
 }
+
+@media (max-width: 640px) {
+  .row {
+    min-height: 44px;
+    gap: 14px;
+    padding: 12px 0;
+  }
+}

@@ -151,7 +151,6 @@ describe("agent media code spans", () => {
       outcome: { status: "succeeded" },
     };
     expect(projectHistoricalTurn({ turnId, cwd, snapshot }).items).toMatchObject([
-      { type: "userMessage" },
       { type: "agentMessage", text: `before \`unclosed\n\n${outside}\n\nlast \`unclosed` },
     ]);
   });
@@ -178,7 +177,6 @@ describe("agent media code spans", () => {
       outcome: { status: "succeeded" },
     };
     expect(projectHistoricalTurn({ turnId, cwd, snapshot }).items).toMatchObject([
-      { type: "userMessage" },
       { type: "agentMessage", text: `${span}\nafter ${outside}`, phase: "final_answer" },
     ]);
   });

@@ -7,6 +7,7 @@
 .content {
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .body,
@@ -80,9 +81,12 @@
   font-size: 12.5px;
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.guideToggle:hover {
+.guideToggle:active {
   color: var(--dsw-alias-label-primary);
 }
 
@@ -148,4 +152,73 @@
 
 .wide {
   width: 100%;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .guideToggle:hover {
+    color: var(--dsw-alias-label-primary);
+  }
+}
+
+@media (pointer: coarse) {
+  .field input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .registry {
+    min-height: 44px;
+  }
+
+  .registry select {
+    min-height: 42px;
+    font-size: 16px;
+  }
+
+  .guideToggle {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .dialog {
+    width: 100%;
+    max-height: 100%;
+  }
+
+  .footer {
+    gap: 12px;
+  }
+
+  .options {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .registry {
+    justify-content: space-between;
+    min-height: 44px;
+    padding: 0 12px;
+    background: var(--dsw-alias-bg-module-platform);
+  }
+
+  .registry select {
+    min-height: 42px;
+    margin-left: auto;
+    background: transparent;
+    text-align: end;
+  }
+
+  .guideToggle {
+    min-height: 44px;
+    padding: 0 2px;
+    font-size: 13px;
+  }
+
+  .wide {
+    min-height: 44px;
+    font-size: 15px;
+    font-weight: 500;
+  }
 }

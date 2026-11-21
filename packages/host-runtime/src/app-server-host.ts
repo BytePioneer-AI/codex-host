@@ -98,7 +98,11 @@ import type {
   HarnessPluginContext,
   HarnessUsageStatisticsAdapter,
 } from "@codexhost/harness-adapter/plugin";
-import type { StoredThreadRecordV1 } from "@codexhost/mapping-store";
+import type {
+  StoredSectionPlacementV1,
+  StoredThreadRecordV1,
+  StoredThreadSummaryV1,
+} from "@codexhost/mapping-store";
 import {
   type HarnessAccountInspectResult,
   codexAccountUsageParamsSchema,
@@ -137,6 +141,7 @@ import {
   threadThinkingSelectParamsSchema,
   threadOwnershipListParamsSchema,
   threadOwnershipListResultSchema,
+  THREAD_OWNERSHIP_LIST_MAX_LENGTH,
   threadSteeringInspectParamsSchema,
   threadSteeringInspectResultSchema,
   threadSteeringContextSchema,
@@ -3115,7 +3120,7 @@ export class AppServerHost {
     };
     const decoded = decodeThreadListRequest(request);
     if (!decoded) throw new Error("Delegation thread/list request could not be decoded");
-    const records = await this.#repository.listSummaries();
+    const { records, sharedOwners } = await this.#localThreadCatalog();
     const result = await aggregateThreadList({
       query: decoded,
       records,
@@ -3139,7 +3144,7 @@ export class AppServerHost {
           rememberNativeListSeconds(
             {
               threadId: entry.id,
-              harnessId: record ? (record.harnessId as ExternalHarnessId) : "codex",
+              harnessId: sharedOwners?.get(entry.id) ?? record?.harnessId ?? "codex",
               deepLink: `codex://threads/${entry.id}`,
               status,
               ...(typeof entry.cwd === "string" ? { cwd: entry.cwd } : {}),
@@ -3212,13 +3217,7 @@ export class AppServerHost {
       const result = await readThreadCatalog({
         includeArchived: parsed.data.includeArchived ?? false,
         ...(parsed.data.officialCursor ? { officialCursor: parsed.data.officialCursor } : {}),
-        readLocal: async () => {
-          const [records, placements] = await Promise.all([
-            this.#repository.listSummaries(),
-            this.#repository.listSectionPlacements(),
-          ]);
-          return { records, placements };
-        },
+        readLocal: () => this.#localThreadCatalog(),
         ...(this.#options.sharedThreads ? { sharedThreads: this.#options.sharedThreads } : {}),
         runtimeFor: (id) => this.#listRuntimeState(id),
         ...(this.#options.externalOnly
@@ -3248,8 +3247,8 @@ export class AppServerHost {
     const timing = new ThreadListTiming();
     let ok = false;
     try {
-      const [records, placements] = await timing.measure("store", () =>
-        Promise.all([this.#repository.listSummaries(), this.#repository.listSectionPlacements()]),
+      const { records, placements } = await timing.measure("store", () =>
+        this.#localThreadCatalog(),
       );
       timing.counts.mappingRecords = records.length;
       timing.counts.placements = placements.length;
@@ -3314,6 +3313,44 @@ export class AppServerHost {
     }
   }
 
+  /**
+   * Local records and placements, minus Threads the shared Host owns. A viewer's Mapping Store can
+   * keep a copy from before the Thread was shared; the shared Host's row is canonical even when
+   * the current query excludes it (archived, moved out of a section).
+   */
+  async #localThreadCatalog(): Promise<{
+    records: StoredThreadSummaryV1[];
+    placements: StoredSectionPlacementV1[];
+    sharedOwners?: ReadonlyMap<string, string>;
+  }> {
+    const [records, placements] = await Promise.all([
+      this.#repository.listSummaries(),
+      this.#repository.listSectionPlacements(),
+    ]);
+    const shared = this.#options.sharedThreads;
+    if (!shared) return { records, placements };
+    const ids = [...new Set([...records, ...placements].map((entry) => entry.hostThreadId))];
+    const sharedOwners = new Map<string, string>();
+    try {
+      for (let offset = 0; offset < ids.length; offset += THREAD_OWNERSHIP_LIST_MAX_LENGTH) {
+        const owners = await shared.ownership(
+          ids.slice(offset, offset + THREAD_OWNERSHIP_LIST_MAX_LENGTH),
+        );
+        for (const [id, harnessId] of owners) sharedOwners.set(id, harnessId);
+      }
+    } catch (error) {
+      // Without the shared Host the local store is the only catalog left.
+      this.#diagnose(error);
+      return { records, placements };
+    }
+    if (sharedOwners.size === 0) return { records, placements };
+    return {
+      records: records.filter((record) => !sharedOwners.has(record.hostThreadId)),
+      placements: placements.filter((placement) => !sharedOwners.has(placement.hostThreadId)),
+      sharedOwners,
+    };
+  }
+
   #listRuntimeState(threadId: string): ExternalThreadListRuntimeState | null {
     const subagentStatus = this.#subagentThreadStatuses.get(threadId);
     if (subagentStatus) return { running: subagentStatus === "active" };
@@ -3335,12 +3372,12 @@ export class AppServerHost {
     query: DecodedThreadListRequest,
   ): Promise<void> {
     try {
-      const [records, localPlacements, sharedPlacements, sharedThreads] = await Promise.all([
-        this.#repository.listSummaries(),
-        this.#repository.listSectionPlacements(),
-        this.#options.sharedThreads?.placements() ?? [],
-        this.#options.sharedThreads?.list(query.params) ?? [],
-      ]);
+      const [{ records, placements: localPlacements }, sharedPlacements, sharedThreads] =
+        await Promise.all([
+          this.#localThreadCatalog(),
+          this.#options.sharedThreads?.placements() ?? [],
+          this.#options.sharedThreads?.list(query.params) ?? [],
+        ]);
       const sharedIds = new Set(sharedPlacements.map((p) => p.hostThreadId));
       const placements = [
         ...localPlacements.filter((p) => !sharedIds.has(p.hostThreadId)),

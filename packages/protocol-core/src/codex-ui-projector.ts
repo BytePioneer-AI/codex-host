@@ -992,10 +992,18 @@ export class CodexTurnProjector {
    */
   openDetachedWireItems(): ReadonlyMap<HostItemId, JsonObject> {
     const items = new Map<HostItemId, JsonObject>();
+    const hasOpenDetachedFileChange = [...this.#detached].some((itemId) => {
+      const projected = this.#items.get(itemId);
+      return projected?.item.type === "fileChange" && this.hasOpenDetachedItem(itemId);
+    });
     for (const itemId of this.#wireItemOrder) {
       if (!this.#detached.has(itemId)) continue;
       const projected = this.#items.get(itemId);
-      if (!projected || projected.outcome) continue;
+      if (
+        !projected ||
+        (projected.outcome && !(itemId === this.#fileItemId && hasOpenDetachedFileChange))
+      )
+        continue;
       items.set(
         itemId,
         projectItem(

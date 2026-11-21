@@ -280,6 +280,7 @@ export function rendererModelPickerPresentation(
     modelLabel = "Loading models...";
   } else if (view.status === "selecting") modelLabel = "Selecting...";
   else if (view.status === "empty") modelLabel = "No models";
+  else if (view.catalog && view.selected && resolvedModelLabel) modelLabel = resolvedModelLabel;
   else if (view.status === "error") modelLabel = "Models unavailable";
   return {
     modelLabel,

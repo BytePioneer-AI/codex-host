@@ -110,6 +110,7 @@ import { readClaudeQueuedCommand } from "./claude-queued-command.js";
 import {
   CLAUDE_DEFAULT_MODEL_REF,
   decodeClaudeModelRef,
+  encodeClaudeModelRef,
   normalizeClaudeModelCatalog,
 } from "./model-catalog.js";
 import {
@@ -154,6 +155,18 @@ import type {
   ClaudeTurnEvent,
   ClaudeTurnTransport,
 } from "./transport.js";
+
+const CLAUDE_FABLE_ALIAS_ID = encodeClaudeModelRef("fable").id;
+
+function claudeModelState(
+  effectiveModel: HarnessModelRef | undefined,
+): Pick<HarnessSessionState, "effectiveModel" | "resolvedModelLabel"> {
+  if (!effectiveModel) return {};
+  // The SDK can list only concrete Fable versions while the session uses the provider's alias.
+  return effectiveModel.id === CLAUDE_FABLE_ALIAS_ID
+    ? { effectiveModel, resolvedModelLabel: "Fable" }
+    : { effectiveModel };
+}
 
 export interface ClaudeCodeAdapterOptions {
   command?: string;
@@ -809,7 +822,7 @@ class ClaudeHarnessSession implements HarnessSession {
           nativeRef: this.#nativeRef,
           ...(options.knownConfiguration
             ? {
-                ...(options.requestedModel ? { effectiveModel: options.requestedModel } : {}),
+                ...claudeModelState(options.requestedModel),
                 effectiveThinkingOptionId: this.#requestedThinkingOptionId,
                 effectivePermissionModeId: this.#requestedPermissionModeId,
               }
@@ -2033,7 +2046,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const supported = this.#supportedThinkingOptionIds(effectiveModel);
     return {
       ...(nativeReady ? { nativeRef: this.#nativeRef } : {}),
-      ...(effectiveModel ? { effectiveModel } : {}),
+      ...claudeModelState(effectiveModel),
       effectiveThinkingOptionId: this.#requestedThinkingOptionId,
       // A live Claude Code keeps running a choice made before the catalog arrived; it stays
       // listed until the next Model switch fits it.

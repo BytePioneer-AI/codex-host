@@ -124,6 +124,12 @@ import {
   isNativeProjectThreadCreator,
 } from "@codexhost/desktop-control/renderer-bindings";
 import { loadCodexNativeServices } from "./codex-native-services.js";
+import {
+  loadSidebarCatalog,
+  sidebarCatalogForWindow,
+  reconcileRemoteSidebarThread,
+  observeRemoteSidebarClosures,
+} from "./remote-sidebar-history.js";
 import { openCodexSchedules, openCodexThread } from "./codex-schedule-navigation.js";
 import { createDesktopTreeRelay, openLocalExtensionThread } from "./desktop-extension-api.js";
 import { installDesktopExtensionHost } from "./desktop-extension-host.js";
@@ -854,9 +860,22 @@ export function installRendererBindingProbe(
     return null;
   };
   const sidebarThreadState = installRendererSidebarThreadState();
+  const catalogForWindow = sidebarCatalogForWindow(() => loadSidebarCatalog(window));
   const sidebarDom = new BrowserSidebarAgentIconDom(document);
   const sidebarAgentIcons = installRendererSidebarAgentIcons({
     dom: sidebarDom,
+    checkRemotePlaceholder(hostId, threadId, cwd) {
+      const current = () => window.__codexhostHostRoutingV1?.forHost(hostId)?.manager;
+      const manager = current();
+      if (!manager || !("kind" in manager) || manager.kind !== "main-process-rpc") return;
+      return reconcileRemoteSidebarThread(
+        manager,
+        { hostId, threadId },
+        cwd,
+        catalogForWindow,
+        () => !disposed && current() === manager,
+      );
+    },
     getClient: (hostId) => modelClientForHost(hostId),
     getPlugins: (hostId) => {
       if (hostId === "durable") return undefined;
@@ -876,6 +895,10 @@ export function installRendererBindingProbe(
     },
     getLocalAgent: localAgentForSidebarThread,
   });
+  const stopSidebarClosures = observeRemoteSidebarClosures(
+    window,
+    sidebarAgentIcons.remoteThreadClosed,
+  );
   let connectionDiagnostics: RendererConnectionDiagnostics | null = null;
   const remoteConnections = createRemoteConnectionsControl(window, modelClientForHost);
   const usageStatistics = createRendererUsageStatisticsSource({
@@ -3881,6 +3904,7 @@ export function installRendererBindingProbe(
       delegationMention?.dispose();
       skillLibrary.dispose();
       disposeSkillReferences();
+      stopSidebarClosures();
       sidebarAgentIcons.dispose();
       sidebarThreadState.dispose();
       nativeScheduleControls.dispose();

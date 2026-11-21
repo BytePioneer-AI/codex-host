@@ -53,6 +53,12 @@ class FakeRow implements SidebarAgentIconRow {
     return this.id;
   }
 
+  path: string | null = null;
+
+  placeholderPath(): string | null {
+    return this.path;
+  }
+
   draftId(): string | null {
     return this.draft;
   }
@@ -166,6 +172,120 @@ describe("Renderer sidebar Agent ownership", () => {
     vi.unstubAllGlobals();
   });
 
+  it("checks SSH path rows only after native ownership and rechecks them on closure", async () => {
+    const host = "remote-ssh-discovered:test";
+    const agents = ["codex", "claude-code", "deepseek-harness"] as const;
+    const rows = agents.map(() => new FakeRow(crypto.randomUUID(), null, host));
+    for (const row of rows) row.path = "/workspace";
+    const dom = new FakeDom(rows);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => {
+        const agent = agents[rows.findIndex((row) => row.id === threadId)];
+        return !agent || agent === "codex"
+          ? { threadId, owner: "codex" as const }
+          : { threadId, owner: "external" as const, harnessId: harnessIdSchema.parse(agent) };
+      }),
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(1));
+      const native = rows[0];
+      if (!native?.id) throw new Error("Missing test thread");
+      expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, native.id, "/workspace");
+      icons.remoteThreadClosed(host, native.id);
+      await vi.waitFor(() => expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2));
+      expect(rows.map((row) => row.agent)).toEqual(agents);
+    } finally {
+      icons.dispose();
+    }
+  });
+
+  it("rechecks a closed SSH path row even while the Composer still knows its Agent", async () => {
+    const host = "remote-ssh-discovered:test";
+    const id = crypto.randomUUID();
+    const row = new FakeRow(id, null, host);
+    const duplicate = new FakeRow(id, null, host);
+    row.path = "/workspace";
+    let external = true;
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) =>
+        external
+          ? { threadId, owner: "external", harnessId: harnessIdSchema.parse("claude-code") }
+          : { threadId, owner: "codex" },
+      ),
+    }));
+    const checkRemotePlaceholder = vi.fn();
+    const icons = installRendererSidebarAgentIcons({
+      dom: new FakeDom([duplicate, row]),
+      getLocalAgent: () => "claude-code",
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      expect(row.agent).toBe("claude-code");
+      await settle();
+      expect(checkRemotePlaceholder).not.toHaveBeenCalled();
+      external = false;
+      icons.remoteThreadClosed(host, id);
+      expect(row.agent).toBe("claude-code");
+      await vi.waitFor(() =>
+        expect(checkRemotePlaceholder).toHaveBeenCalledWith(host, id, "/workspace"),
+      );
+    } finally {
+      icons.dispose();
+    }
+  });
+
+  it("checks a late path on settled ownership and bounds retries after a failed check", async () => {
+    vi.useFakeTimers();
+    const host = "remote-ssh-discovered:test";
+    const row = new FakeRow(crypto.randomUUID(), null, host);
+    const dom = new FakeDom([row]);
+    const client = clientWith(async ({ threadIds }) => ({
+      threads: threadIds.map((threadId) => ({ threadId, owner: "codex" })),
+    }));
+    const checkRemotePlaceholder = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(undefined);
+    const icons = installRendererSidebarAgentIcons({
+      dom,
+      getClient: () => client,
+      checkRemotePlaceholder,
+    });
+    try {
+      await vi.runAllTimersAsync();
+      const ownershipRequests = vi.mocked(client.listThreadOwnership).mock.calls.length;
+      row.path = "/workspace";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(2);
+      checkRemotePlaceholder.mockRejectedValue(new Error("still offline"));
+      row.path = "/another";
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(4);
+      checkRemotePlaceholder.mockResolvedValue(undefined);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
+      dom.change();
+      await vi.runAllTimersAsync();
+      expect(checkRemotePlaceholder).toHaveBeenCalledTimes(5);
+      expect(client.listThreadOwnership).toHaveBeenCalledTimes(ownershipRequests);
+    } finally {
+      icons.dispose();
+      vi.useRealTimers();
+    }
+  });
   it.each([
     ["button", "data-interactive-row-button"],
     ["a", "data-interactive-row-link"],

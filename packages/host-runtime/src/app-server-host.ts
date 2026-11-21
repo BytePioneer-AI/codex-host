@@ -4432,7 +4432,7 @@ export class AppServerHost {
     if (!commands) {
       throw new ExternalCommandError(-32078, "External Harness does not expose commands");
     }
-    if (this.#closeRequested || this.#externalRuntime.get(thread.id) !== thread) {
+    if (!this.#externalSessionAvailable(thread)) {
       throw new ExternalCommandError(-32073, "External Thread is no longer available");
     }
     // Admission belongs to the caller. A steering replacement retains its
@@ -4478,6 +4478,9 @@ export class AppServerHost {
     try {
       if (thread.unsubmittedPrewarm && (await this.#externalRuntime.submitPrewarm(thread))) {
         await this.#notifyExternalThreadStarted(thread.thread);
+      }
+      if (!this.#externalSessionAvailable(thread)) {
+        throw new ExternalCommandError(-32073, "External Thread is no longer available");
       }
       const result = await commands.execute({
         turnId,
@@ -5562,6 +5565,14 @@ export class AppServerHost {
     return thread.running || this.#externalSteering.hasPending(thread.id);
   }
 
+  #externalSessionAvailable(thread: ExternalThread): boolean {
+    return (
+      !this.#closeRequested &&
+      !thread.sessionUnavailable &&
+      this.#externalRuntime.get(thread.id) === thread
+    );
+  }
+
   async #startDelegatedExternalTurn(
     thread: ExternalThread,
     text: string,
@@ -5588,25 +5599,32 @@ export class AppServerHost {
       promise: Promise.resolve(),
       resolve: () => undefined,
     });
-    const stored = await this.#repository.find(thread.id);
-    const injected = withInjectedText(stored, text);
-    const result = await thread.session.execute({
-      type: "turn.start",
-      turnId,
-      input: [{ type: "text", text: injected.text }],
-    });
-    if (!result.ok) {
+    try {
+      const stored = await this.#repository.find(thread.id);
+      if (!this.#externalSessionAvailable(thread)) {
+        throw new Error("External Harness Session is no longer available");
+      }
+      const injected = withInjectedText(stored, text);
+      const result = await thread.session.execute({
+        type: "turn.start",
+        turnId,
+        input: [{ type: "text", text: injected.text }],
+      });
+      if (!result.ok) {
+        if (result.error.code === "sessionBusy") {
+          throw new DelegationControlError("THREAD_BUSY", result.error.message);
+        }
+        throw new Error(result.error.message);
+      }
+      await this.#releaseInjectedText(thread, turnId, injected);
+    } catch (error) {
       thread.running = false;
       thread.activeTurnId = null;
       thread.projectedTurns.delete(turnId);
       thread.responseGates.delete(turnId);
       this.#signalActiveWorkChanged();
-      if (result.error.code === "sessionBusy") {
-        throw new DelegationControlError("THREAD_BUSY", result.error.message);
-      }
-      throw new Error(result.error.message);
+      throw error;
     }
-    await this.#releaseInjectedText(thread, turnId, injected);
   }
 
   async #injectExternalThreadItems(
@@ -6246,7 +6264,7 @@ export class AppServerHost {
     turn: JsonObject;
     gate: TurnProjectionGate;
   }> {
-    if (this.#closeRequested || this.#externalRuntime.get(thread.id) !== thread) {
+    if (!this.#externalSessionAvailable(thread)) {
       throw new ExternalSteerError(-32073, "External Thread is no longer available");
     }
     if (
@@ -6285,6 +6303,9 @@ export class AppServerHost {
       }
       const stored = await this.#repository.find(thread.id);
       const injected = withInjectedText(stored, rewriteDelegationMentionText(text));
+      if (!this.#externalSessionAvailable(thread)) {
+        throw new ExternalSteerError(-32073, "External Thread is no longer available");
+      }
       const result = await thread.session.execute({
         type: "turn.start",
         turnId,
@@ -6387,6 +6408,9 @@ export class AppServerHost {
           this.#projectHarnessOutput(thread, output),
         );
       }
+      // Even an idle Session cannot deliver the next Turn's events after EOF.
+      thread.sessionUnavailable = true;
+      thread.stateObserver.fault(new Error("External Harness output ended"));
     } catch (error) {
       this.#externalRuntime.idleRelease.outputFailed(thread);
       this.#diagnose(

@@ -249,6 +249,14 @@ export function installRendererHostRpcRouting(
             },
           }
         : {}),
+      ...(typeof rpc.discardConversationFromCache === "function"
+        ? {
+            discardConversationFromCache: async (threadId: string) => {
+              if (!isCurrent()) throw new Error("Remote manager retired");
+              return rpc.discardConversationFromCache?.(threadId);
+            },
+          }
+        : {}),
       ...(typeof rpc.replyWithCommandExecutionApprovalDecision === "function"
         ? {
             replyWithCommandExecutionApprovalDecision: async (

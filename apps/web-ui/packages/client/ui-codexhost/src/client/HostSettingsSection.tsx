@@ -23,6 +23,7 @@ export interface HostSettingsSectionFace {
   pageId: string;
   locale: HostSettingsSource<string>;
   colorScheme: HostSettingsSource<"light" | "dark">;
+  shadowCss?: string;
 }
 
 let loading: Promise<WebSettingsPages> | undefined;
@@ -60,6 +61,7 @@ export function HostSettingsSection({
   pageId,
   locale,
   colorScheme,
+  shadowCss,
 }: HostSettingsSectionFace & PropsLocale<"codexhostImport">) {
   const host = useRef<HTMLDivElement>(null);
   const [waitingForPages, setWaitingForPages] = useState(() => registeredPages() === undefined);
@@ -82,6 +84,14 @@ export function HostSettingsSection({
             locale: activeLocale,
             colorScheme: activeScheme,
           });
+          if (shadowCss && host.current.shadowRoot) {
+            const extraSheet = new CSSStyleSheet();
+            extraSheet.replaceSync(shadowCss);
+            host.current.shadowRoot.adoptedStyleSheets = [
+              ...host.current.shadowRoot.adoptedStyleSheets,
+              extraSheet,
+            ];
+          }
           setWaitingForPages(false);
         });
       })
@@ -93,7 +103,7 @@ export function HostSettingsSection({
       if (frame !== 0) cancelAnimationFrame(frame);
       unmount?.();
     };
-  }, [pageId, activeLocale, activeScheme]);
+  }, [pageId, activeLocale, activeScheme, shadowCss]);
   return (
     <>
       {error ? (

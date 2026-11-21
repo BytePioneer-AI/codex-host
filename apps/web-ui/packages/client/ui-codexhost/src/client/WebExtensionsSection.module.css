@@ -8,12 +8,20 @@
 
 /* Single-line header matching Desktop Plugins page */
 .header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px 12px;
   margin-bottom: 2px;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .title {
@@ -852,14 +860,32 @@
   }
 }
 
-/* Mobile [data-phone] ergonomics */
+/* Mobile [data-phone] and narrow viewport (<= 640px) ergonomics */
 :global([data-phone]) .page {
   gap: 12px;
+}
+
+:global([data-phone]) .headerLeft {
+  flex: 1 1 100%;
+  justify-content: space-between;
 }
 
 :global([data-phone]) .toolbar {
   width: 100%;
   justify-content: flex-start;
+}
+
+:global([data-phone]) .menuCompact {
+  left: 0;
+  right: auto;
+}
+
+:global([data-phone]) .moreMenuAnchor {
+  position: static;
+}
+
+:global([data-phone]) .moreMenuAnchor .menu {
+  max-width: calc(100vw - 32px);
 }
 
 :global([data-phone]) .controlsBar {
@@ -887,4 +913,56 @@
 :global([data-phone]) .emptyCard {
   flex-direction: column;
   align-items: stretch;
+}
+
+@media (max-width: 640px) {
+  .headerLeft {
+    flex: 1 1 100%;
+    justify-content: space-between;
+  }
+
+  .toolbar {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .menuCompact {
+    left: 0;
+    right: auto;
+  }
+
+  .moreMenuAnchor {
+    position: static;
+  }
+
+  .moreMenuAnchor .menu {
+    max-width: calc(100vw - 32px);
+  }
+
+  .controlsBar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .segmented {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .searchBox {
+    flex: 1 1 auto;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .marketNotice,
+  .emptyCard {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }

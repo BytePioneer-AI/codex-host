@@ -56,7 +56,7 @@ import {
 import type {} from "@deepseek-ai/dsh-client-ui-chat/client";
 import type {} from "@deepseek-ai/dsh-api-remotes/client";
 import { ConnectDevicesSection } from "./ConnectDevicesSection.tsx";
-import { WebExtensionsSection, type WebExtensionsFace } from "./WebExtensionsSection.tsx";
+import { PluginsSection, type PluginsSectionFace } from "./PluginsSection.tsx";
 import { watchAuthentication } from "./auth-watch.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
@@ -105,7 +105,6 @@ const HOST_SETTINGS_PAGES = [
   ["delegation", "settings.delegation", 3.5],
   ["usage-statistics", "settings.usage", 4],
   ["resources", "settings.resources", 5],
-  ["desktop-extensions", "settings.desktopExtensions", 6.5],
   ["updates", "settings.updates", 7],
   ["about", "settings.about", 8],
 ] as const;
@@ -422,12 +421,13 @@ export function apply(ctx: ClientContext): void {
         order: 6,
         label: () => t("settings.extensions"),
         locale: NS,
-        inject: (): WebExtensionsFace => ({
+        inject: (): PluginsSectionFace => ({
           resolveText: (text) => ctx.locale.resolveText(text),
           locale,
+          colorScheme,
         }),
       },
-      WebExtensionsSection,
+      PluginsSection,
     ),
   );
   ctx.slots.inject("settings.section", () =>

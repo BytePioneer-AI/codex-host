@@ -273,8 +273,13 @@ export async function runDelegationCli(input: {
       }
     }
     if (group === "client") {
-      rejectUnknown(parsed, []);
-      writeJson(output, await runClientCommand(command, parsed.positionals, environment));
+      rejectUnknown(parsed, ["--scope"]);
+      writeJson(
+        output,
+        await runClientCommand(command, parsed.positionals, environment, {
+          scope: value(parsed, "--scope"),
+        }),
+      );
       return 0;
     }
     if ((group === "host" && command === "info") || (group === "project" && command === "list")) {

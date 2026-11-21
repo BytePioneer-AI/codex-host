@@ -360,7 +360,7 @@ export type DelegationControlErrorCode =
   | "RESPONSE_TOO_LARGE"
   | "RUNTIME_UNREACHABLE"
   | "DELEGATION_FAILED"
-  /** A result file is outside the Thread's exportable files. */
+  /** The client lacks the scope, or a result file is outside the Thread's exportable files. */
   | "FORBIDDEN"
   /** The operation requires a known local execution workspace. */
   | "UNSUPPORTED"

@@ -362,6 +362,25 @@ export type {
   UpdateStatus,
   UpdateStatusResult,
 } from "./updates.js";
+export {
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  RELEASE_ANNOUNCEMENT_MAX_THEMES,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementContentSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
+  releaseAnnouncementSchema,
+  releaseAnnouncementThemeSchema,
+} from "./release-announcement.js";
+export type {
+  ReleaseAnnouncement,
+  ReleaseAnnouncementAcknowledgeParams,
+  ReleaseAnnouncementContent,
+  ReleaseAnnouncementGetParams,
+  ReleaseAnnouncementGetResult,
+  ReleaseAnnouncementTheme,
+} from "./release-announcement.js";
 export { WORKSPACE_CONTRACT_VERSION } from "./version.js";
 
 export const workspaceContractVersionSchema = z.literal(WORKSPACE_CONTRACT_VERSION);

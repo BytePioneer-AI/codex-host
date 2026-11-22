@@ -86,6 +86,8 @@ export const CLIENT_CHANNEL_METHODS = [
   "codexhost/update/check",
   "codexhost/update/start",
   "codexhost/update/status",
+  "codexhost/announcement/get",
+  "codexhost/announcement/acknowledge",
   "codexhost/sessions/loaded/list",
 ] as const;
 /** Canonical external pin membership, shared with native Thread sections. */

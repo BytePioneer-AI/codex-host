@@ -369,8 +369,6 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
   return { models, defaultModel };
 }
 
-/** Best-effort native model id for a transport-safe ref (labels never round-trip). */
-
 export const hermesInventoryPathsForTests = {
   os,
   path,

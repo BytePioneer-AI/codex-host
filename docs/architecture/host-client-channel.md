@@ -51,6 +51,10 @@ Web 的排队提交通过 `thread/read {includeTurns: false}` 读取运行态，
 
 `codexhost/thread/queue/send-now` 在空闲时调用 `thread/queue/start`，活动 Turn 内则读取原队列项，以其完整输入和 `clientUserMessageId` 调用带 `expectedTurnId` 的 `turn/steer`，确认接受后才删除队列项。拒绝或结果未知不回退启动新 Turn；已接受但删除未确认时返回 `-32095`，保留“输入已接受，不要重发”的明确错误信息，不把它归为发送结果完全未知。相同 Thread／队列项的该操作复用当前 Host 的有界进程内回执，不承诺跨重启去重，也不能将两次原生写入变成原子操作。模型、Thinking 与权限选择转为 `thread/settings/update`，仅在匹配的 `thread/settings/updated` 通知确认后发布结果，空响应不表示已生效。权限选项来自 `permissionProfile/list` 中允许选择的档案，保留官方 ID。
 
+远程 Web 通过 Desktop Controller 路由到拥有 Thread 的 Host。新 Controller 在轻量状态读回执中声明 `supportsDelivery: true`。旧 Controller 或明确拒绝队列能力的旧远端，仍可通过既有 `thread/resume` 和 `turn/start` 处理普通空闲发送。连接代次与请求身份保持一致。显式排队和结果未知的写入不切换入口。远程原生 Codex 的 `thread/queue/add` 和自动 `thread/queue/start` 分别确认，接受后的启动超时保留入队回执。外部 Host 的严格插话与队列认领见 [外部 Thread 插话](external-thread-steering.md)和[跟进消息队列](external-thread-queue.md)。
+
+本机 Web 发出的插话带上提交时观察到的 Host Turn ID。目标结束或被替换时，拒绝本次投递，浏览器保留草稿。
+
 官方 Thread 的客户端命令目录提供 `/compact`、`/review` 和 `skills/list` 返回的启用 Skill，Desktop 的 Host 命令目录仍为空，使用其官方菜单。菜单中的压缩和默认审查分别调用 `thread/compact/start`、`review/start`（`uncommittedChanges`）；显式发送 `/review 指令` 使用 `custom` target。压缩不接受文本参数，这两类操作不能排队或 Steer，不降级成普通 Prompt。Skill 同名时保留官方列表中首个有效启用项，目录通过 `warnings` 报告忽略的条目、解析错误或 Skills 加载失败，不影响有效入口；Skills 不可用时仍保留压缩和审查。尚无 Thread 的 Web 草稿通过 `codexhost/harness/commands/inspect {harnessId: "codex", cwd}` 按草稿工作区调用官方 `skills/list`，不启动或恢复 Thread；该目录只含 Skill（压缩和审查需要 Thread），没有工作区时为空。`$name` carrier 保留原生前缀，发送时按当前工作区官方目录解析为 `type: "skill"` 的 `name/path` 输入，原有文本、附件及队列／Steer 语义保留；Skill 已失效或目录读取失败则拒绝发送，不退化为普通提示词。命令回执只在官方返回 Turn ID 时携带 `turnId`，压缩的空响应不生成虚构 Turn；执行进度仍以官方通知与历史为准。置顶和用量复用 Host 已有官方实现。官方 Thread 支持同目录 Web Fork，不开放 Web 历史回退。
 
 官方 Fork 使用既有 `thread/fork {threadId, lastTurnId, excludeTurns: true}`，保留指定轮次及之前的原生上下文；不传模型、权限或 cwd 默认值覆盖。新 Thread 的订阅与实际配置按响应中的 `thread.id` 登记，不覆盖来源 Thread 的配置。新身份仍由官方持久化并与 Desktop 共用，不创建 Mapping Store 记录；通知使客户端目录失效重读。GUI 的原生 Fork 转发路径保持不变，结果未知不自动重试。

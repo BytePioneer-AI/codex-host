@@ -236,6 +236,7 @@ it("archives and undoes through workspace RPCs without losing local archives or 
         if (loseRead) throw new Error("read unavailable");
         return { result: { thread: row }, epoch: "epoch", requests: [] };
       }
+      if (op.kind === "queue") return { available: false };
       if (op.kind === "usage") throw new Error("method unavailable");
       writes.push(op);
       if (loseWrite) throw new Error("unknown outcome");
@@ -1061,7 +1062,7 @@ it("routes remote model and permission changes as single-setting configure opera
     line: "/permission bypassPermissions",
   });
   assert.ok(permissionResult.ok);
-  const permissionOperation = fixture.calls.at(-2);
+  const permissionOperation = fixture.calls.findLast((operation) => operation.kind === "configure");
   assert.equal(permissionOperation?.kind, "configure");
   assert.deepEqual(
     permissionOperation &&

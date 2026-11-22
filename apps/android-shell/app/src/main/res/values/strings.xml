@@ -2,9 +2,14 @@
 <resources>
     <string name="app_name">codexhost</string>
     <string name="host_list">Your computers</string>
+    <string name="host_list_subtitle">Tap a computer to open its workspace</string>
     <string name="host_list_empty">No computers yet. Scan the connection QR code from codexhost on your computer.</string>
+    <string name="host_list_empty_title">No computers connected</string>
+    <string name="host_list_empty_body">Open Remote Access in CodexHost on your computer and scan the QR code to connect.</string>
     <string name="add_host">Scan to add</string>
     <string name="check_update">Check for updates</string>
+    <string name="more_actions">More options</string>
+    <string name="back">Back</string>
     <string name="update_checking">Checking for updates…</string>
     <string name="update_current">No newer release found.</string>
     <string name="update_failed">Could not check for updates. Try again later.</string>
@@ -27,6 +32,8 @@
     <string name="scan_description">Point the camera at the connection QR code in codexhost on your computer.</string>
     <string name="camera_unavailable">Camera unavailable. Enter the connection link manually.</string>
     <string name="camera_permission">Allow camera access</string>
+    <string name="switch_to_manual">Enter manually instead</string>
+    <string name="manual_security_note">Public addresses require HTTPS. Unencrypted HTTP is restricted to local private networks.</string>
     <string name="connection_link">Connection link or address</string>
     <string name="access_token">Access token (if not in the link)</string>
     <string name="pair_action">Verify and connect</string>
@@ -42,6 +49,11 @@
     <string name="webview_unsupported">Update or enable Android System WebView to open a protected session.</string>
     <string name="cookie_error">Could not save the session cookie. Try again.</string>
     <string name="session_connecting">Connecting…</string>
+    <string name="connecting_subtitle">Establishing an isolated encrypted session…</string>
+    <string name="connection_failed_title">Connection interrupted</string>
+    <string name="token_revoked_title">Sign-in expired</string>
+    <string name="session_status_https">HTTPS</string>
+    <string name="session_status_lan">LAN</string>
     <string name="switch_host">Switch computer</string>
     <string name="retry">Retry</string>
     <string name="offline">No network connection. Reconnect and try again.</string>
@@ -53,4 +65,9 @@
     <string name="take_photo">Take a photo</string>
     <string name="choose_file">Choose files</string>
     <string name="picker_error">Could not open an app for this attachment.</string>
+    <string name="version_label">v%1$s</string>
+    <string name="drawer_title">Switch computer</string>
+    <string name="drawer_active_badge">Active</string>
+    <string name="drawer_all_hosts">All computers</string>
+    <string name="drawer_handle_desc">Open computer switcher</string>
 </resources>

@@ -2,11 +2,17 @@ package ai.bytepioneer.codexhost.android
 
 import android.content.Intent
 import android.os.Bundle
-import android.text.InputFilter
 import android.text.format.DateUtils
+import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
-import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.appcompat.widget.PopupMenu
+import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.DiffUtil
@@ -15,34 +21,55 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import ai.bytepioneer.codexhost.android.core.HostProfile
 import ai.bytepioneer.codexhost.android.core.Origin
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 internal class HostListActivity : NativeActivity() {
     private val adapter = ComputerRows()
-    private lateinit var empty: android.widget.TextView
+    private lateinit var subtitleText: TextView
+    private lateinit var errorBanner: View
+    private lateinit var errorBannerText: TextView
+    private lateinit var emptyContainer: View
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var bottomCtaContainer: View
     private var deleting = false
     private var checking = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val screen = screen()
-        val header = column(16)
-        header.addView(label(R.string.host_list, 28f))
-        header.addView(button(R.string.add_host) {
-            if (!deleting) startActivity(Intent(this, PairHostActivity::class.java))
-        })
-        header.addView(button(R.string.check_update, ::checkUpdates))
-        screen.addView(header)
-        empty = label(R.string.host_list_empty).apply { setPadding(dp(16), 0, dp(16), 0) }
-        screen.addView(empty)
-        screen.addView(RecyclerView(this).also {
-            it.layoutManager = LinearLayoutManager(this)
-            it.adapter = adapter
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        setContentView(R.layout.activity_host_list)
+
+        val root = findViewById<View>(R.id.rootContainer)
+        val topBar = findViewById<View>(R.id.topBar)
+        installEdgeToEdge(root, topBar, root)
+
+        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName.orEmpty() }
+            .getOrDefault("")
+        findViewById<TextView>(R.id.versionBadge).apply {
+            isVisible = version.isNotBlank()
+            text = getString(R.string.version_label, version)
+        }
+
+        subtitleText = findViewById(R.id.subtitleText)
+        errorBanner = findViewById(R.id.errorBanner)
+        errorBannerText = findViewById(R.id.errorBannerText)
+        emptyContainer = findViewById(R.id.emptyContainer)
+        bottomCtaContainer = findViewById(R.id.bottomCtaContainer)
+
+        recyclerView = findViewById<RecyclerView>(R.id.hostRecyclerView).apply {
+            layoutManager = LinearLayoutManager(this@HostListActivity)
+            adapter = this@HostListActivity.adapter
+        }
+
+        val openPair = { if (!deleting) startActivity(Intent(this, PairHostActivity::class.java)) }
+        findViewById<MaterialButton>(R.id.emptyAddButton).setOnClickListener { openPair() }
+        findViewById<MaterialButton>(R.id.addHostButton).setOnClickListener { openPair() }
+        findViewById<MaterialButton>(R.id.checkUpdateButton).setOnClickListener {
+            HostActions.checkForUpdates(this, { checking }, { checking = it }, ::openInBrowser)
+        }
     }
 
     override fun onResume() {
@@ -54,39 +81,36 @@ internal class HostListActivity : NativeActivity() {
         try {
             val hosts = store.list()
             adapter.submitList(hosts)
-            empty.setText(R.string.host_list_empty)
-            empty.isVisible = hosts.isEmpty()
+            errorBanner.isVisible = false
+            val isEmpty = hosts.isEmpty()
+            emptyContainer.isVisible = isEmpty
+            recyclerView.isVisible = !isEmpty
+            bottomCtaContainer.isVisible = !isEmpty
+            subtitleText.isVisible = !isEmpty
         } catch (_: Exception) {
             adapter.submitList(emptyList())
-            empty.setText(R.string.storage_error)
-            empty.isVisible = true
+            emptyContainer.isVisible = false
+            recyclerView.isVisible = false
+            bottomCtaContainer.isVisible = false
+            subtitleText.isVisible = false
+            errorBannerText.setText(R.string.storage_error)
+            errorBanner.isVisible = true
         }
     }
 
     private fun rename(profile: HostProfile) {
         if (deleting) return
-        val input = EditText(this).apply {
-            hint = getString(R.string.host_name)
-            filters = arrayOf(InputFilter.LengthFilter(80))
-            setSingleLine()
-            setText(profile.name)
-            selectAll()
+        HostActions.showRenameDialog(this, profile) { name ->
+            if (runCatching { store.rename(profile.id, name) }.isFailure) tell(R.string.storage_error)
+            refresh()
         }
-        MaterialAlertDialogBuilder(this).setTitle(R.string.rename)
-            .setView(column(12).apply { addView(input) })
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isNotBlank()) {
-                    if (runCatching { store.rename(profile.id, name) }.isFailure) tell(R.string.storage_error)
-                    refresh()
-                }
-            }.show()
     }
 
     private fun delete(profile: HostProfile) {
         if (deleting) return
-        MaterialAlertDialogBuilder(this).setMessage(getString(R.string.delete_host_message, profile.name))
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.delete)
+            .setMessage(getString(R.string.delete_host_message, profile.name))
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.delete) { _, _ ->
                 deleting = true
@@ -108,79 +132,91 @@ internal class HostListActivity : NativeActivity() {
                         deleting = false
                     }
                 }
-            }.show()
-    }
-
-    private fun checkUpdates() {
-        if (checking) return
-        checking = true
-        tell(R.string.update_checking)
-        lifecycleScope.launch {
-            try {
-                val installed = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
-                val update = withContext(Dispatchers.IO) { ReleaseUpdates.check(installed) }
-                if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) return@launch
-                if (update == null) {
-                    tell(R.string.update_current)
-                } else {
-                    val apk = update.apkUrl
-                    val dialog = MaterialAlertDialogBuilder(this@HostListActivity).setTitle(R.string.check_update)
-                        .setNegativeButton(android.R.string.cancel, null)
-                    if (apk == null) {
-                        dialog.setMessage(getString(R.string.update_no_apk, update.version))
-                            .setPositiveButton(R.string.view_release) { _, _ -> openInBrowser(update.releaseUrl) }
-                    } else {
-                        dialog.setMessage(getString(R.string.update_available, update.version))
-                            .setPositiveButton(R.string.download_apk) { _, _ -> openInBrowser(apk) }
-                    }
-                    dialog.show()
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                tell(R.string.update_failed)
-            } finally {
-                checking = false
             }
-        }
+            .show()
     }
 
     private inner class ComputerRows : ListAdapter<HostProfile, ComputerRow>(object : DiffUtil.ItemCallback<HostProfile>() {
         override fun areItemsTheSame(oldItem: HostProfile, newItem: HostProfile) = oldItem.id == newItem.id
         override fun areContentsTheSame(oldItem: HostProfile, newItem: HostProfile) = oldItem == newItem
     }) {
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = ComputerRow(column(16))
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ComputerRow {
+            val view = LayoutInflater.from(parent.context).inflate(R.layout.item_host_card, parent, false)
+            return ComputerRow(view)
+        }
+
         override fun onBindViewHolder(holder: ComputerRow, position: Int) = holder.bind(getItem(position))
     }
 
-    private inner class ComputerRow(private val row: LinearLayout) : RecyclerView.ViewHolder(row) {
-        private val name = label(size = 21f)
-        private val address = label()
-        private val details = label(size = 14f)
+    private inner class ComputerRow(view: View) : RecyclerView.ViewHolder(view) {
+        private val card: MaterialCardView = view.findViewById(R.id.hostCard)
+        private val iconTile: FrameLayout = view.findViewById(R.id.hostIconTile)
+        private val hostIcon: ImageView = view.findViewById(R.id.hostIcon)
+        private val name: TextView = view.findViewById(R.id.hostName)
+        private val address: TextView = view.findViewById(R.id.hostAddress)
+        private val transportBadge: LinearLayout = view.findViewById(R.id.transportBadge)
+        private val transportIcon: ImageView = view.findViewById(R.id.transportIcon)
+        private val transportText: TextView = view.findViewById(R.id.transportText)
+        private val lastOpenedText: TextView = view.findViewById(R.id.lastOpenedText)
+        private val moreButton: ImageButton = view.findViewById(R.id.moreButton)
         private var profile: HostProfile? = null
 
         init {
-            row.addView(name)
-            row.addView(address)
-            row.addView(details)
-            row.addView(LinearLayout(this@HostListActivity).apply {
-                addView(button(R.string.open_host) {
-                    if (!deleting) profile?.let { startActivity(SessionWebActivity.intent(this@HostListActivity, it.id)) }
-                })
-                addView(button(R.string.rename) { profile?.let(::rename) })
-                addView(button(R.string.delete) { profile?.let(::delete) })
-            })
+            card.setOnClickListener {
+                if (!deleting) profile?.let { startActivity(SessionWebActivity.intent(this@HostListActivity, it.id)) }
+            }
+            card.setOnLongClickListener {
+                showRowMenu()
+                true
+            }
+            moreButton.setOnClickListener { showRowMenu() }
+        }
+
+        private fun showRowMenu() {
+            val current = profile ?: return
+            PopupMenu(this@HostListActivity, moreButton).apply {
+                menu.add(0, MENU_RENAME, 0, R.string.rename)
+                menu.add(0, MENU_DELETE, 1, R.string.delete)
+                setOnMenuItemClickListener { item ->
+                    when (item.itemId) {
+                        MENU_RENAME -> rename(current)
+                        MENU_DELETE -> delete(current)
+                    }
+                    true
+                }
+                show()
+            }
         }
 
         fun bind(value: HostProfile) {
             profile = value
             name.text = value.name
             address.text = value.origin
-            val transport = getString(if (Origin.parse(value.origin)?.secure == true) R.string.secure_label else R.string.private_cleartext_label)
-            val last = value.lastOpenedAtMillis?.let {
-                getString(R.string.last_opened, DateUtils.getRelativeTimeSpanString(it, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS))
+
+            val secure = Origin.parse(value.origin)?.secure == true
+            val accent = ContextCompat.getColor(
+                this@HostListActivity,
+                if (secure) R.color.brand_emerald_text else R.color.warn_amber,
+            )
+            iconTile.setBackgroundResource(if (secure) R.drawable.bg_card_icon_secure else R.drawable.bg_card_icon_local)
+            hostIcon.setColorFilter(accent)
+            transportBadge.setBackgroundResource(if (secure) R.drawable.bg_pill_secure else R.drawable.bg_pill_local)
+            transportIcon.setImageResource(if (secure) R.drawable.ic_lock else R.drawable.ic_wifi)
+            transportIcon.setColorFilter(accent)
+            transportText.setTextColor(accent)
+            transportText.setText(if (secure) R.string.secure_label else R.string.private_cleartext_label)
+
+            lastOpenedText.text = value.lastOpenedAtMillis?.let {
+                getString(
+                    R.string.last_opened,
+                    DateUtils.getRelativeTimeSpanString(it, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS),
+                )
             } ?: getString(R.string.last_opened_never)
-            details.text = "$transport\n$last"
         }
+    }
+
+    private companion object {
+        private const val MENU_RENAME = 1
+        private const val MENU_DELETE = 2
     }
 }

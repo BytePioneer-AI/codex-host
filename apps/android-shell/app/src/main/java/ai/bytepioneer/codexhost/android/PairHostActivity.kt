@@ -1,19 +1,20 @@
 package ai.bytepioneer.codexhost.android
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.os.Bundle
-import android.text.InputType
 import android.view.View
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
-import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
@@ -24,7 +25,8 @@ import ai.bytepioneer.codexhost.android.core.NetworkSecurityPolicy
 import ai.bytepioneer.codexhost.android.core.PairingLink
 import ai.bytepioneer.codexhost.android.core.PairingLinkParser
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.button.MaterialButtonToggleGroup
+import com.google.android.material.progressindicator.CircularProgressIndicator
+import com.google.android.material.textfield.TextInputEditText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,110 +36,157 @@ internal class PairHostActivity : NativeActivity() {
     private lateinit var scanner: QrScanner
     private lateinit var scanPanel: LinearLayout
     private lateinit var manualPanel: ScrollView
-    private lateinit var permit: MaterialButton
-    private lateinit var status: TextView
-    private lateinit var tabs: MaterialButtonToggleGroup
-    private lateinit var scanTab: MaterialButton
-    private lateinit var manualTab: MaterialButton
+    private lateinit var permissionOverlay: View
+    private lateinit var statusBanner: View
+    private lateinit var statusIcon: ImageView
+    private lateinit var statusProgress: CircularProgressIndicator
+    private lateinit var statusText: TextView
+    private lateinit var scanTab: LinearLayout
+    private lateinit var scanTabIcon: ImageView
+    private lateinit var scanTabText: TextView
+    private lateinit var manualTab: LinearLayout
+    private lateinit var manualTabIcon: ImageView
+    private lateinit var manualTabText: TextView
     private lateinit var verify: MaterialButton
-    private lateinit var address: EditText
-    private lateinit var token: EditText
+    private lateinit var address: TextInputEditText
+    private lateinit var token: TextInputEditText
+    private var scanMode = true
     private var busy = false
+
     private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted && scanPanel.isVisible) startCamera() else tabs.check(manualTab.id)
+        if (granted && scanMode) startCamera() else showTab(false)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        val screen = screen(includeIme = true)
-        screen.addView(label(R.string.pair_title, 28f).apply { setPadding(dp(16), dp(12), dp(16), dp(8)) })
-        scanTab = tab(R.string.scan_tab)
-        manualTab = tab(R.string.manual_tab)
-        tabs = MaterialButtonToggleGroup(this).apply {
-            isSingleSelection = true
-            isSelectionRequired = true
-            addView(scanTab)
-            addView(manualTab)
-        }
-        screen.addView(tabs)
-        status = label().apply { setPadding(dp(16), dp(8), dp(16), dp(8)); isVisible = false }
-        screen.addView(status)
+        setContentView(R.layout.activity_pair_host)
 
-        val preview = PreviewView(this).apply { implementationMode = PreviewView.ImplementationMode.COMPATIBLE }
+        val root = findViewById<View>(R.id.rootContainer)
+        val topBar = findViewById<View>(R.id.topBar)
+        installEdgeToEdge(root, topBar, root, includeIme = true)
+
+        findViewById<ImageButton>(R.id.backButton).setOnClickListener { finish() }
+
+        scanTab = findViewById(R.id.scanTab)
+        scanTabIcon = findViewById(R.id.scanTabIcon)
+        scanTabText = findViewById(R.id.scanTabText)
+        manualTab = findViewById(R.id.manualTab)
+        manualTabIcon = findViewById(R.id.manualTabIcon)
+        manualTabText = findViewById(R.id.manualTabText)
+
+        statusBanner = findViewById(R.id.statusBanner)
+        statusIcon = findViewById(R.id.statusIcon)
+        statusProgress = findViewById(R.id.statusProgress)
+        statusText = findViewById(R.id.statusText)
+
+        scanPanel = findViewById(R.id.scanPanel)
+        manualPanel = findViewById(R.id.manualPanel)
+        permissionOverlay = findViewById(R.id.permissionOverlay)
+
+        val preview = findViewById<PreviewView>(R.id.cameraPreview).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        }
         scanner = QrScanner(this, preview)
-        permit = button(R.string.camera_permission) { cameraPermission.launch(Manifest.permission.CAMERA) }
-        scanPanel = column(16).apply {
-            addView(label(R.string.scan_description))
-            addView(permit)
-            addView(preview, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        }
-        screen.addView(scanPanel, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        address = field(R.string.connection_link, InputType.TYPE_TEXT_VARIATION_URI)
-        token = field(R.string.access_token, InputType.TYPE_TEXT_VARIATION_PASSWORD)
-        address.setText(intent.getStringExtra(EXTRA_ORIGIN).orEmpty())
-        verify = button(R.string.pair_action) { submit(PairingLinkParser.parse(address.text.toString(), token.text.toString())) }
-        manualPanel = ScrollView(this).apply {
-            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
-            addView(column(16).apply {
-                isFocusableInTouchMode = true
-                addView(address)
-                addView(token)
-                addView(verify)
-                requestFocus()
-            })
+        findViewById<MaterialButton>(R.id.permitCameraButton).setOnClickListener {
+            cameraPermission.launch(Manifest.permission.CAMERA)
         }
-        screen.addView(manualPanel, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        findViewById<MaterialButton>(R.id.switchToManualButton).setOnClickListener {
+            showTab(false)
+        }
 
-        tabs.addOnButtonCheckedListener { _, id, checked -> if (checked) showTab(id == scanTab.id) }
+        address = findViewById<TextInputEditText>(R.id.addressInput).apply {
+            imeOptions = EditorInfo.IME_ACTION_NEXT or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            isSaveEnabled = false
+            setText(intent.getStringExtra(EXTRA_ORIGIN).orEmpty())
+        }
+        token = findViewById<TextInputEditText>(R.id.tokenInput).apply {
+            imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            isSaveEnabled = false
+        }
+        verify = findViewById<MaterialButton>(R.id.verifyButton).apply {
+            setOnClickListener {
+                submit(PairingLinkParser.parse(address.text?.toString().orEmpty(), token.text?.toString().orEmpty()))
+            }
+        }
+        findViewById<View>(R.id.manualCardContent).requestFocus()
+
+        scanTab.setOnClickListener {
+            if (!busy) showTab(true)
+        }
+        manualTab.setOnClickListener {
+            showTab(false)
+        }
+
         val scan = savedInstanceState?.getBoolean(SCAN_MODE) ?: true
-        tabs.check(if (scan) scanTab.id else manualTab.id)
+        showTab(scan)
         if (scan && savedInstanceState == null && !hasCameraPermission()) {
             cameraPermission.launch(Manifest.permission.CAMERA)
         }
     }
 
-    private fun tab(textId: Int) = MaterialButton(this).apply { id = View.generateViewId(); setText(textId) }
-
-    private fun field(hintId: Int, variation: Int) = EditText(this).apply {
-        setHint(hintId)
-        setSingleLine()
-        inputType = InputType.TYPE_CLASS_TEXT or variation
-        imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
-        isSaveEnabled = false
-    }
-
-    private fun hasCameraPermission() = checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    private fun hasCameraPermission() =
+        checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     private fun showTab(scan: Boolean) {
+        scanMode = scan
         scanPanel.isVisible = scan
         manualPanel.isVisible = !scan
+        updateTabStyles(scan)
         if (scan) {
             WindowCompat.getInsetsController(window, scanPanel).hide(WindowInsetsCompat.Type.ime())
             startCamera()
-        } else scanner.stop()
+        } else {
+            scanner.stop()
+        }
+    }
+
+    private fun updateTabStyles(scan: Boolean) {
+        val activeText = ContextCompat.getColor(this, R.color.text_primary)
+        val inactiveText = ContextCompat.getColor(this, R.color.text_secondary)
+        val activeWeight = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        val regularWeight = Typeface.create("sans-serif", Typeface.NORMAL)
+
+        scanTab.setBackgroundResource(if (scan) R.drawable.bg_segment_active else 0)
+        scanTabIcon.setColorFilter(if (scan) activeText else inactiveText)
+        scanTabText.setTextColor(if (scan) activeText else inactiveText)
+        scanTabText.typeface = if (scan) activeWeight else regularWeight
+
+        manualTab.setBackgroundResource(if (!scan) R.drawable.bg_segment_active else 0)
+        manualTabIcon.setColorFilter(if (!scan) activeText else inactiveText)
+        manualTabText.setTextColor(if (!scan) activeText else inactiveText)
+        manualTabText.typeface = if (!scan) activeWeight else regularWeight
     }
 
     private fun startCamera() {
-        permit.isVisible = !hasCameraPermission()
-        if (hasCameraPermission()) scanner.start({ text ->
-            val link = PairingLinkParser.parse(text)
-            tabs.check(manualTab.id)
-            if (link != null) {
-                address.setText(link.origin.address)
-                token.setText(link.token)
-            }
-            submit(link)
-        }, {
-            tabs.check(manualTab.id)
-            message(R.string.camera_unavailable)
-        })
+        val permitted = hasCameraPermission()
+        permissionOverlay.isVisible = !permitted
+        if (permitted) {
+            scanner.start({ text ->
+                val link = PairingLinkParser.parse(text)
+                showTab(false)
+                if (link != null) {
+                    address.setText(link.origin.address)
+                    token.setText(link.token)
+                }
+                submit(link)
+            }, {
+                showTab(false)
+                message(R.string.camera_unavailable)
+            })
+        }
     }
 
-    private fun message(id: Int) {
-        status.setText(id)
-        status.isVisible = true
+    private fun message(id: Int, inProgress: Boolean = false) {
+        statusBanner.setBackgroundResource(if (inProgress) R.drawable.bg_banner_info else R.drawable.bg_banner_error)
+        statusIcon.isVisible = !inProgress
+        statusProgress.isVisible = inProgress
+        statusText.setTextColor(
+            ContextCompat.getColor(this, if (inProgress) R.color.brand_emerald_text else R.color.error_red),
+        )
+        statusText.setText(id)
+        statusBanner.isVisible = true
     }
 
     private fun submit(link: PairingLink?) {
@@ -149,7 +198,7 @@ internal class PairHostActivity : NativeActivity() {
         verify.isEnabled = false
         scanTab.isEnabled = false
         WindowCompat.getInsetsController(window, token).hide(WindowInsetsCompat.Type.ime())
-        message(R.string.pair_connecting)
+        message(R.string.pair_connecting, inProgress = true)
         lifecycleScope.launch {
             try {
                 when (val result = withContext(Dispatchers.IO) { AuthSessionClient().login(link.origin, link.token) }) {
@@ -161,8 +210,8 @@ internal class PairHostActivity : NativeActivity() {
                             message(R.string.cookie_error)
                             return@launch
                         }
-                        token.text.clear()
-                        address.text.clear()
+                        token.text?.clear()
+                        address.text?.clear()
                         startActivity(SessionWebActivity.intent(this@PairHostActivity, profile.id))
                         finish()
                     }
@@ -184,7 +233,7 @@ internal class PairHostActivity : NativeActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean(SCAN_MODE, scanPanel.isVisible)
+        outState.putBoolean(SCAN_MODE, scanMode)
         super.onSaveInstanceState(outState)
     }
 

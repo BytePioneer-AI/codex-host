@@ -159,6 +159,8 @@ import {
   type ThreadOwnershipListResult,
   type ThreadUsageInspection,
   type ThreadUsageInspectionParams,
+  THREAD_MODEL_RESUME_INSPECT_METHOD,
+  harnessResolvedModelLabelSchema,
   type UpdateCheckResult,
   type UpdateStartResult,
   type UpdateStatusResult,
@@ -333,12 +335,16 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   ): Promise<HarnessInspection>;
   openHarnessWebUi?(input: HarnessWebUiOpenParams): Promise<void>;
   inspectThread(input: ThreadInspectionParams): Promise<ThreadInspection>;
+  inspectThreadModelResume?(input: ThreadModelSelectParams): Promise<string | null>;
   inspectHarnessCommands(input: HarnessCommandsInspectParams): Promise<HarnessCommandCatalog>;
   inspectThreadCommands(input: ThreadCommandsInspectParams): Promise<HarnessCommandCatalog>;
   executeThreadCommand(input: ThreadCommandExecuteParams): Promise<ThreadCommandExecuteResult>;
   listThreadOwnership(input: ThreadOwnershipListParams): Promise<ThreadOwnershipListResult>;
   inspectThreadUsage(input: ThreadUsageInspectionParams): Promise<ThreadUsageInspection>;
   subscribeThreadUsage?(listener: (update: ThreadUsageInspection) => void): () => void;
+  subscribeCompletedTurns?(
+    listener: (threadId: ThreadInspectionParams["threadId"]) => void,
+  ): () => void;
   selectThreadModel(input: ThreadModelSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadThinking(input: ThreadThinkingSelectParams): Promise<HarnessModelSelectionState>;
   selectThreadPermissionMode(
@@ -683,6 +689,21 @@ export function createRendererModelClient(
       return threadInspectionSchema.parse(result);
     },
     inspectHarnessCommands,
+    async inspectThreadModelResume(input: ThreadModelSelectParams): Promise<string | null> {
+      try {
+        return harnessResolvedModelLabelSchema
+          .nullable()
+          .parse(
+            await manager.sendRequest(
+              THREAD_MODEL_RESUME_INSPECT_METHOD,
+              threadModelSelectParamsSchema.parse(input),
+            ),
+          );
+      } catch (error) {
+        if (error instanceof RendererMethodUnavailableError) return null;
+        throw error;
+      }
+    },
     inspectThreadCommands,
     executeThreadCommand,
     async listThreadOwnership(
@@ -700,6 +721,17 @@ export function createRendererModelClient(
       return result;
     },
     inspectThreadUsage,
+    subscribeCompletedTurns(listener: (threadId: ThreadInspectionParams["threadId"]) => void) {
+      return (
+        notificationTarget(source)?.addNotificationCallback?.(
+          TURN_COMPLETED_METHOD,
+          (notification) => {
+            const threadId = notifiedThreadId(notification);
+            if (threadId) listener(threadId);
+          },
+        ) ?? (() => undefined)
+      );
+    },
     subscribeThreadUsage(listener: (update: ThreadUsageInspection) => void): () => void {
       const notifications = notificationTarget(source);
       if (!notifications?.addNotificationCallback) {

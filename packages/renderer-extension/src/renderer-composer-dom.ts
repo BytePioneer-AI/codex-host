@@ -4,7 +4,6 @@ import type {
   RendererAgent,
   RendererAgentAvailability,
 } from "./agent-selection-state.js";
-import { catalogModelForRef } from "@codexhost/shared-contracts";
 import type {
   AccountBalanceSnapshot,
   AccountCreditsSnapshot,
@@ -19,6 +18,7 @@ import {
   type RendererAgentPickerControl,
 } from "./renderer-agent-picker.js";
 import {
+  isRendererModelReady,
   mountRendererModelPicker,
   renderRendererModelPicker,
   syncRendererModelTriggerClass,
@@ -833,7 +833,6 @@ export function renderComposerAgentControl(
   }
 
   const selectedModel = modelView.selected;
-  const selectedCatalogModel = catalogModelForRef(modelView.catalog, selectedModel);
   const availableThinkingOptions =
     modelView.thinkingSelectionSupported === false
       ? []
@@ -841,9 +840,8 @@ export function renderComposerAgentControl(
   const thinkingReady =
     availableThinkingOptions.length === 0 ||
     availableThinkingOptions.some(({ id }) => id === modelView.selectedThinkingOptionId);
-  const modelReady = selectedModel !== undefined && selectedCatalogModel !== undefined;
   const modelBlocked =
-    state.agent !== "codex" && (modelView.status === "selecting" || !modelReady || !thinkingReady);
+    state.agent !== "codex" && (!isRendererModelReady(modelView) || !thinkingReady);
   // Recording replaces the native footer, including its permission trigger.
   // Submission depends on confirmed Harness configuration, not that UI slot;
   // native ownership verification still guards picker visibility and placement.

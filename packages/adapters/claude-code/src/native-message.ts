@@ -1,6 +1,6 @@
 import { subagentConfiguration } from "@codexhost/harness-adapter";
 import { claudeUsageRecord, isClaudeModelRequest } from "./claude-usage.js";
-import { jsonValueSchema } from "@codexhost/shared-contracts";
+import { harnessResolvedModelLabelSchema, jsonValueSchema } from "@codexhost/shared-contracts";
 
 import { parseClaudeNativeFileChange } from "./file-change.js";
 import { isClaudeNarrationSignature } from "./thinking-signature.js";
@@ -673,7 +673,12 @@ export class ClaudeNativeTurnAccumulator {
             isRecord(server) && typeof server.name === "string" ? [server.name] : [],
           )
         : undefined;
-      events.push({ type: "segment.started", ...(mcpServers ? { mcpServers } : {}) });
+      const model = harnessResolvedModelLabelSchema.safeParse(message.model);
+      events.push({
+        type: "segment.started",
+        ...(mcpServers ? { mcpServers } : {}),
+        ...(model.success ? { model: model.data } : {}),
+      });
       return;
     }
     if (message.subtype !== "background_tasks_changed" || !Array.isArray(message.tasks)) return;

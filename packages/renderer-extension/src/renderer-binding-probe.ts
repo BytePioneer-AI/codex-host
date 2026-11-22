@@ -90,7 +90,7 @@ import {
 } from "./versioned-renderer-adapter.js";
 import type { RendererModelClient } from "./renderer-model-client.js";
 import { RendererMethodUnavailableError } from "./renderer-request-sender.js";
-import { thinkingOptionsForModel } from "./renderer-model-picker.js";
+import { isRendererModelReady, thinkingOptionsForModel } from "./renderer-model-picker.js";
 import { readClaudePermissionModePreference } from "./renderer-permission-mode-preference.js";
 import { isPermissionModeControlReady } from "./renderer-permission-mode-picker.js";
 import {
@@ -270,11 +270,7 @@ function isExternalConfigurationReadyView(
   modelView: ExternalModelControlView,
   permissionModeView: ExternalPermissionModeControlView,
 ): boolean {
-  return (
-    modelView.status !== "selecting" &&
-    catalogModelForRef(modelView.catalog, modelView.selected) !== undefined &&
-    isPermissionModeControlReady(permissionModeView)
-  );
+  return isRendererModelReady(modelView) && isPermissionModeControlReady(permissionModeView);
 }
 
 function isExternalConfigurationStable(
@@ -1793,14 +1789,25 @@ export function installRendererBindingProbe(
         return;
       }
       if (current.phase === "locked" && previousModel && !previousModelAvailable) {
+        const threadId = threadIdFromComposerModelTarget(mounted.modelTarget);
+        const restoredModelLabel = threadId
+          ? await client.inspectThreadModelResume?.({ threadId, model: previousModel })
+          : undefined;
+        if (
+          !isCurrentModelRequest(mounted, generation) ||
+          modelClientForHostFrom(requestModelControl, requestHostId) !== client
+        )
+          return;
         const resolvedModelLabel = mounted.threadConfiguration?.resolvedModelLabel;
         mounted.modelView = {
-          status: "error",
+          status: restoredModelLabel ? "ready" : "error",
           catalog: inspection.catalog,
           selected: previousModel,
           ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
           thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
-          error: "Existing Thread Model is absent from the current Catalog",
+          ...(restoredModelLabel
+            ? { restoredModelLabel }
+            : { error: "Existing Thread Model is absent from the current Catalog" }),
         };
         if (selectedPermissionModeId && mounted.permissionModeView.catalog) {
           mounted.permissionModeView = {
@@ -1966,32 +1973,47 @@ export function installRendererBindingProbe(
         refresh: true,
       });
       if (inspection.status !== "ready") return;
-      for (const [candidate, request] of targets) {
-        if (
-          catalogRequests.get(candidate) !== request ||
-          !matchesTarget(candidate) ||
-          !isCurrentModelRequest(candidate, request.generation)
-        )
-          continue;
-        // A catalog refresh does not write the Composer's confirmed selection.
-        const { selected, selectedThinkingOptionId, resolvedModelLabel } = candidate.modelView;
-        const catalog =
-          selected && candidate.threadConfiguration
-            ? catalogWithConfigurationState(
-                inspection.catalog,
-                selected,
-                candidate.threadConfiguration,
-              )
-            : inspection.catalog;
-        candidate.modelView = {
-          status: "ready",
-          catalog,
-          ...(selected ? { selected } : {}),
-          ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
-          ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
-          thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
-        };
-      }
+      await Promise.allSettled(
+        [...targets].map(async ([candidate, request]) => {
+          if (
+            catalogRequests.get(candidate) !== request ||
+            !matchesTarget(candidate) ||
+            !isCurrentModelRequest(candidate, request.generation)
+          )
+            return;
+          // A catalog refresh does not write the Composer's confirmed selection.
+          const { selected, selectedThinkingOptionId, resolvedModelLabel } = candidate.modelView;
+          const threadId = threadIdFromComposerModelTarget(candidate.modelTarget);
+          const missingFromCatalog = selected && !catalogModelForRef(inspection.catalog, selected);
+          const restoredModelLabel =
+            threadId && selected && missingFromCatalog
+              ? await client.inspectThreadModelResume?.({ threadId, model: selected })
+              : undefined;
+          if (
+            catalogRequests.get(candidate) !== request ||
+            !matchesTarget(candidate) ||
+            !isCurrentModelRequest(candidate, request.generation)
+          )
+            return;
+          const catalog =
+            selected && candidate.threadConfiguration && !missingFromCatalog
+              ? catalogWithConfigurationState(
+                  inspection.catalog,
+                  selected,
+                  candidate.threadConfiguration,
+                )
+              : inspection.catalog;
+          candidate.modelView = {
+            status: missingFromCatalog && !restoredModelLabel ? "error" : "ready",
+            catalog,
+            ...(selected ? { selected } : {}),
+            ...(selectedThinkingOptionId ? { selectedThinkingOptionId } : {}),
+            ...(resolvedModelLabel ? { resolvedModelLabel } : {}),
+            thinkingSelectionSupported: inspection.capabilities.configuration.selectThinkingOption,
+            ...(restoredModelLabel ? { restoredModelLabel } : {}),
+          };
+        }),
+      );
     } catch {
       // Keep the usable catalog when the Host could not refresh it.
     } finally {
@@ -2019,6 +2041,7 @@ export function installRendererBindingProbe(
     const previousThinking = controller.thinkingOptionForAgent(mounted.composer, agent);
     const previousPermissionModeId = controller.permissionModeForAgent(mounted.composer, agent);
     const supportsThinkingSelection = mounted.modelView.thinkingSelectionSupported === true;
+    const previousView = mounted.modelView;
     const generation = controller.beginModelRequest(mounted.composer);
     mounted.modelView = {
       status: "selecting",
@@ -2148,6 +2171,7 @@ export function installRendererBindingProbe(
         );
       }
       mounted.modelView = {
+        ...previousView,
         status: "error",
         catalog,
         ...(previousModel ? { selected: previousModel } : {}),
@@ -2939,7 +2963,47 @@ export function installRendererBindingProbe(
           if (modelClientForHost(target) !== client) return;
           applyThreadUsageUpdate(target, update);
         });
-        usageSubscriptions.set(target, { client, dispose });
+        const disposeCompleted = client.subscribeCompletedTurns?.((threadId) => {
+          if (modelClientForHost(target) !== client) return;
+          for (const mounted of mountedByComposer.values()) {
+            const view = mounted.modelView;
+            if (
+              mounted.hostId !== target ||
+              threadIdFromComposerModelTarget(mounted.modelTarget) !== threadId ||
+              !view.restoredModelLabel
+            )
+              continue;
+            const generation = controller.modelRequestGeneration(mounted.composer);
+            void client
+              .inspectThread({ threadId })
+              .then((inspection) => {
+                if (
+                  mountedByComposer.get(mounted.composer) !== mounted ||
+                  composerClient(mounted) !== client ||
+                  !isCurrentModelRequest(mounted, generation) ||
+                  !mounted.modelView.restoredModelLabel ||
+                  mounted.modelView.selected?.id !== view.selected?.id ||
+                  inspection.owner !== "external" ||
+                  inspection.effectiveModel?.id !== view.selected?.id ||
+                  !inspection.resolvedModelLabel
+                )
+                  return;
+                mounted.modelView = {
+                  ...mounted.modelView,
+                  resolvedModelLabel: inspection.resolvedModelLabel,
+                };
+                renderMounted(mounted);
+              })
+              .catch(() => undefined);
+          }
+        });
+        usageSubscriptions.set(target, {
+          client,
+          dispose: () => {
+            dispose();
+            disposeCompleted?.();
+          },
+        });
         connectionsChanged = true;
       } catch {
         // A missing notification channel must not block request-based usage reads.

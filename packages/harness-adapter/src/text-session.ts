@@ -661,6 +661,8 @@ export interface HarnessSession {
    * A read is advisory: turn.steer must recheck admission before handing input to the Harness.
    */
   readCapabilities?(): Promise<HarnessSessionCapabilities>;
+  /** A label for a saved Model the Adapter validates with the native Session before sending input. */
+  restoredModelLabel?(model: HarnessModelRef): string | undefined;
   refreshUsage?(): Promise<void>;
   /** Native background work (e.g. a background command) is still running; the Session must not be released. */
   hasBackgroundWork?(): boolean;

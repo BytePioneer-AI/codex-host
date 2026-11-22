@@ -97,7 +97,7 @@ export interface ClaudeLastRequestUsage {
 
 export type ClaudeTurnEvent =
   /** `mcpServers` lists the configured MCP server names Claude reported for this Segment. */
-  | { type: "segment.started"; mcpServers?: string[] }
+  | { type: "segment.started"; mcpServers?: string[]; model?: string }
   | { type: "subagents.live"; nativeSubagentIds: string[] }
   | { type: "compaction.started" }
   | { type: "compaction.completed"; outcome: "succeeded" | "failed" }

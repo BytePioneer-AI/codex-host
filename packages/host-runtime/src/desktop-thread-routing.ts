@@ -20,6 +20,7 @@ import {
 } from "@codexhost/protocol-core";
 import {
   THREAD_ARCHIVE_CONFIRM_METHOD,
+  THREAD_MODEL_RESUME_INSPECT_METHOD,
   THREAD_QUESTIONS_LIST_METHOD,
   THREAD_QUESTION_RESPOND_METHOD,
   harnessCommandsInspectParamsSchema,
@@ -98,6 +99,7 @@ export interface DesktopThreadRoutingHost {
   startExternalThread(request: JsonRpcRequest, harnessId: ExternalHarnessId): Promise<void>;
   forkExternalThreadFromRenderer(request: JsonRpcRequest): Promise<void>;
   inspectThread(request: JsonRpcRequest): Promise<void>;
+  inspectThreadModelResume(request: JsonRpcRequest): Promise<void>;
   inspectThreadUsage(request: JsonRpcRequest): Promise<void>;
   listThreadOwnership(request: JsonRpcRequest): Promise<void>;
   confirmThreadArchived(request: JsonRpcRequest): Promise<void>;
@@ -217,6 +219,10 @@ export class DesktopThreadRouting {
     }
     if (request.method === "codexhost/thread/inspect") {
       await this.#host.inspectThread(request);
+      return true;
+    }
+    if (request.method === THREAD_MODEL_RESUME_INSPECT_METHOD) {
+      await this.#host.inspectThreadModelResume(request);
       return true;
     }
     if (request.method === "codexhost/thread/usage/inspect") {

@@ -15,6 +15,7 @@ import {
 
 import {
   isRendererModelPickerDisabled,
+  isRendererModelReady,
   mountRendererModelPicker,
   renderRendererModelPicker,
   rendererModelPickerPresentation,
@@ -441,6 +442,19 @@ describe("Renderer combined Model and Thinking picker presentation", () => {
     };
     expect(rendererModelPickerPresentation(view)).toMatchObject({ modelLabel: "Fable" });
     expect(isRendererModelPickerDisabled(view)).toBe(false);
+    expect(isRendererModelReady(view)).toBe(false);
+    const restored = {
+      ...view,
+      status: "ready" as const,
+      restoredModelLabel: "Fable",
+      resolvedModelLabel: "claude-fable-current",
+    };
+    expect(isRendererModelReady(restored)).toBe(true);
+    expect(rendererModelPickerPresentation(restored)).toMatchObject({
+      modelLabel: "Fable",
+      resolvedModelLabel: "claude-fable-current",
+    });
+    expect(isRendererModelReady({ ...restored, status: "selecting" })).toBe(false);
   });
 });
 

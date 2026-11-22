@@ -1345,6 +1345,7 @@ export class AppServerHost {
       startExternalThread: (request, harnessId) => this.#startExternalThread(request, harnessId),
       forkExternalThreadFromRenderer: (request) => this.#forkExternalThreadFromRenderer(request),
       inspectThread: (request) => this.#inspectThread(request),
+      inspectThreadModelResume: (request) => this.#inspectThreadModelResume(request),
       inspectThreadUsage: (request) => this.#inspectThreadUsage(request),
       listThreadOwnership: (request) => this.#listThreadOwnership(request),
       confirmThreadArchived: (request) => this.#confirmThreadArchived(request),
@@ -3930,6 +3931,23 @@ export class AppServerHost {
     const response = await this.#sessionImportRequests.handle(request);
     await this.#writer.json(rpcEnvelope(request, response.body));
     if (response.importedThread) await this.#notifyExternalThreadStarted(response.importedThread);
+  }
+
+  async #inspectThreadModelResume(request: JsonRpcRequest): Promise<void> {
+    const params = threadModelSelectParamsSchema.safeParse(request.params);
+    if (!params.success) {
+      await this.#writer.json(rpcError(request, -32602, "Invalid Thread Model inspection params"));
+      return;
+    }
+    const { threadId, model } = params.data;
+    const resolution = await this.#resolveExternalThread(threadId);
+    if (await this.#writeResolutionError(request, resolution)) return;
+    const restoredLabel =
+      resolution.kind === "external" &&
+      resolution.thread.stateObserver.state.effectiveModel?.id === model.id
+        ? resolution.thread.session.restoredModelLabel?.(model)
+        : undefined;
+    await this.#writer.json(rpcEnvelope(request, { result: restoredLabel ?? null }));
   }
 
   async #inspectThread(request: JsonRpcRequest): Promise<void> {

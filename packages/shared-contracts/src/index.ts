@@ -209,6 +209,7 @@ export {
   harnessModelSelectionStateSchema,
   harnessPermissionModeScopeSchema,
   harnessResolvedModelLabelSchema,
+  THREAD_MODEL_RESUME_INSPECT_METHOD,
   harnessSessionCapabilitiesSchema,
   harnessThinkingOptionIdSchema,
   harnessThinkingOptionSchema,

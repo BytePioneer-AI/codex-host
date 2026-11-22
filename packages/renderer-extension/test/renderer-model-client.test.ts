@@ -2,6 +2,7 @@ import {
   HARNESS_INSTALLATION_START_METHOD,
   HARNESS_LAUNCH_SETTINGS_GET_METHOD,
   HARNESS_LAUNCH_SETTINGS_SET_METHOD,
+  THREAD_MODEL_RESUME_INSPECT_METHOD,
   harnessIdSchema,
   harnessModelRefSchema,
   harnessPermissionModeIdSchema,
@@ -75,6 +76,23 @@ const inspection = {
 };
 
 describe("Renderer fixed Model request client", () => {
+  it.each([true, false])(
+    "reads a saved Model without selecting it (Host supports method: %s)",
+    async (supported) => {
+      const threadId = hostThreadIdSchema.parse("11111111-1111-4111-8111-111111111111");
+      const input = { threadId, model };
+      const sendRequest = vi.fn();
+      if (supported) sendRequest.mockResolvedValue("Fable");
+      else sendRequest.mockRejectedValue({ code: -32601 });
+      const client = createRendererModelClient([{ sendRequest }]);
+      if (!client?.inspectThreadModelResume) throw new Error("Missing Model inspection client");
+      await expect(client.inspectThreadModelResume(input)).resolves.toBe(
+        supported ? "Fable" : null,
+      );
+      expect(sendRequest).toHaveBeenCalledWith(THREAD_MODEL_RESUME_INSPECT_METHOD, input);
+    },
+  );
+
   it("parses a Desktop extension slot conflict without treating it as a successful save", async () => {
     const listing = {
       configuration: { version: 1, revision: 7, enabled: ["layout"] },
@@ -519,6 +537,7 @@ describe("Renderer fixed Model request client", () => {
       "inspectHarnessCommands",
       "inspectThread",
       "inspectThreadCommands",
+      "inspectThreadModelResume",
       "inspectThreadUsage",
       "installDesktopExtension",
       "installation",
@@ -553,6 +572,7 @@ describe("Renderer fixed Model request client", () => {
       "setupSsh",
       "startUpdate",
       "subscribeCodexAccounts",
+      "subscribeCompletedTurns",
       "subscribeHarnessDisplaySettings",
       "subscribeHarnessPreferences",
       "subscribeSkillsChanged",

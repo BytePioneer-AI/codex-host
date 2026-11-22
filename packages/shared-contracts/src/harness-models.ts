@@ -321,6 +321,8 @@ export const threadModelSelectParamsSchema = z
 
 export type ThreadModelSelectParams = z.infer<typeof threadModelSelectParamsSchema>;
 
+export const THREAD_MODEL_RESUME_INSPECT_METHOD = "codexhost/thread/model/resume/inspect";
+
 export const threadThinkingSelectParamsSchema = z
   .object({
     threadId: hostThreadIdSchema,

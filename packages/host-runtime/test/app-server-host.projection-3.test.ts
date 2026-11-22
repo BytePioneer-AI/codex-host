@@ -15,6 +15,7 @@ import {
   type JsonObject,
 } from "@codexhost/protocol-core";
 import {
+  THREAD_MODEL_RESUME_INSPECT_METHOD,
   encodeHarnessPluginRoute,
   harnessCommandDescriptorSchema,
   harnessIdSchema,
@@ -44,6 +45,40 @@ import {
 } from "./app-server-host-fixture.js";
 
 describe("AppServerHost HarnessAdapter projection", () => {
+  it("inspects only the model saved on the owning Thread", async () => {
+    const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));
+    const fixture = createFixture({
+      externalAdapters: new Map<ExternalHarnessId, FakeHarnessAdapter>([["claude-code", claude]]),
+    });
+    try {
+      const threadId = await startExternalThread(fixture, CLAUDE_CODE_NATIVE_TRANSPORT_MODEL_ID);
+      const session = claude.sessions[0];
+      const selected = session?.state.effectiveModel;
+      const other = claude.catalog.models.find((entry) => entry.ref.id !== selected?.id)?.ref;
+      if (!session || !selected || !other) throw new Error("Missing fake Claude models");
+      Object.assign(session, { restoredModelLabel: () => "Retained alias" });
+
+      for (const [id, model, result] of [
+        [41, selected, "Retained alias"],
+        [42, other, null],
+      ] as const) {
+        writeRequest(fixture.desktopInput, {
+          id,
+          method: THREAD_MODEL_RESUME_INSPECT_METHOD,
+          params: { threadId, model },
+        });
+        await expect(
+          fixture.collector.waitFor((message) => requestId(message, id)),
+        ).resolves.toMatchObject({
+          id,
+          result,
+        });
+      }
+    } finally {
+      await stopFixture(fixture);
+    }
+  });
+
   it("selects a registered non-Pi Thread Model through its owning Session", async () => {
     const pi = new FakeHarnessAdapter(harnessIdSchema.parse("pi"));
     const claude = new FakeHarnessAdapter(harnessIdSchema.parse("claude-code"));

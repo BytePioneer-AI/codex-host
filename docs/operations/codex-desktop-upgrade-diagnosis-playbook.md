@@ -389,6 +389,8 @@ qwen-code
 
 如果 RPC 返回 `status: ready`，说明 Harness、账号和网络不是根因。
 
+已恢复会话的模型可能与当前目录使用不同标识。对 Claude Code 的 `fable` 别名，Desktop 会读取当前会话的恢复能力，菜单仍使用原生目录。发送第一条输入前，Adapter 在实际恢复的 Claude 会话中用原生模型选择核验保存的别名。Claude 拒绝时，Host 返回拒绝原因并停止发送。
+
 #### 情况 B：Request Bridge 查找失败
 
 如果直接调用真实 bridge 可以成功，但 Renderer Model client 失败，重点检查：

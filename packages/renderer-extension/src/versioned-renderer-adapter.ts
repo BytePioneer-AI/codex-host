@@ -984,6 +984,8 @@ export function installCurrentRendererAdapter(): {
     inspectHarness: (...args: Parameters<RendererModelClient["inspectHarness"]>) =>
       currentModelClient().inspectHarness(...args),
     inspectThread: (input: ThreadInspectionParams) => currentModelClient().inspectThread(input),
+    inspectThreadModelResume: (input: ThreadModelSelectParams) =>
+      currentModelClient().inspectThreadModelResume?.(input) ?? Promise.resolve(null),
     inspectHarnessCommands: (input: HarnessCommandsInspectParams) =>
       currentModelClient().inspectHarnessCommands(input),
     inspectThreadCommands: (input: ThreadCommandsInspectParams) =>

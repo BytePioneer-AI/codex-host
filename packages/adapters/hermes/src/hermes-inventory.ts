@@ -6,7 +6,7 @@ import path from "node:path";
 import type { HarnessModelRef } from "@codexhost/shared-contracts";
 import { nativeHermesPythonCommand } from "./hermes-runtime.js";
 
-import { decodeHermesModelRefId, encodeHermesModelRef } from "./hermes-models.js";
+import { hermesModelRef } from "./hermes-models.js";
 
 /**
  * Legacy `hermes` launchers exec the agent repository's virtualenv interpreter:
@@ -332,7 +332,6 @@ export interface HermesCatalogModel {
   description?: string;
 }
 
-/** Encode inventory rows into transport-safe catalog models (base64url refs). */
 export function catalogModelsFromInventory(inventory: HermesInventory): {
   models: HermesCatalogModel[];
   defaultModel: HarnessModelRef | null;
@@ -343,7 +342,7 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
   for (const model of inventory.models) {
     if (model.available === false) continue;
     const nativeModelId = model.modelId;
-    const ref = encodeHermesModelRef(nativeModelId);
+    const ref = hermesModelRef(nativeModelId);
     if (!ref) continue;
     if (
       inventory.currentModelId &&
@@ -371,9 +370,6 @@ export function catalogModelsFromInventory(inventory: HermesInventory): {
 }
 
 /** Best-effort native model id for a transport-safe ref (labels never round-trip). */
-export function nativeModelIdFromRefId(refId: string): string | null {
-  return decodeHermesModelRefId(refId);
-}
 
 export const hermesInventoryPathsForTests = {
   os,

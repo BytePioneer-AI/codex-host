@@ -32,7 +32,7 @@ import {
   type NativeTurnRef,
 } from "@codexhost/shared-contracts";
 
-import { encodeKimiModelRef } from "./models.js";
+import { kimiModelRef } from "./models.js";
 import { canonicalizeKimiToolName } from "./projection.js";
 import { activeKimiWireRecords } from "./wire-history.js";
 
@@ -643,7 +643,7 @@ export async function parseKimiWireLog(
       input: turn.input.length > 0 ? turn.input : [{ type: "text", text: "" }],
       items,
       outcome,
-      ...(turn.model ? { model: encodeKimiModelRef(turn.model) } : {}),
+      ...(turn.model ? { model: kimiModelRef(turn.model) } : {}),
       ...(turn.startedAtMs !== undefined ? { startedAtMs: turn.startedAtMs } : {}),
       ...(turn.completedAtMs !== undefined ? { completedAtMs: turn.completedAtMs } : {}),
     });

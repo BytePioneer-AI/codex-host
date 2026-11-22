@@ -27,7 +27,10 @@ import {
 } from "../src/claude-code-adapter.js";
 import { ClaudeCodeExecutableError } from "../src/command.js";
 import { ClaudeUltracodeUnavailableError } from "../src/ultracode.js";
-import { CLAUDE_DEFAULT_MODEL_REF, encodeClaudeModelRef } from "../src/model-catalog.js";
+import {
+  CLAUDE_DEFAULT_MODEL_REF,
+  claudeModelRef as encodeClaudeModelRef,
+} from "../src/model-catalog.js";
 import {
   claudeBypassPermissionsAvailable,
   type ClaudePermissionMode,
@@ -6205,9 +6208,10 @@ describe("Claude Code HarnessAdapter", () => {
     await session.close();
   });
 
-  it("applies a create-time alias lazily and publishes the configured Model before the Turn", async () => {
+  it("applies a create-time Model lazily and publishes the exact native ID before the Turn", async () => {
     const { adapter, dependencies, transports } = fixture();
-    const selected = encodeClaudeModelRef("sonnet");
+    const id = " provider/模型 [1m] & (test) ";
+    const selected = encodeClaudeModelRef(id);
     const thinkingOptionId = harnessThinkingOptionIdSchema.parse("max");
     const opened = await adapter.open({
       kind: "create",
@@ -6223,7 +6227,7 @@ describe("Claude Code HarnessAdapter", () => {
     await expect(session.execute(textTurn("selected-first"))).resolves.toMatchObject({ ok: true });
     expect(dependencies.createTransport).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "sonnet",
+        model: id,
         openMode: "create",
         thinkingOptionId: "max",
       }),

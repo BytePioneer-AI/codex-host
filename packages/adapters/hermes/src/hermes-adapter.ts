@@ -28,6 +28,7 @@ import { HermesGatewayTransport } from "./gateway-transport.js";
 import { GatewayTransportPool, startGatewayTransport } from "./gateway-transport-pool.js";
 import type { HermesPythonRuntime } from "./hermes-runtime.js";
 import { HermesGatewayHistoryError } from "./gateway-history.js";
+import { normalizeStoredHermesModelRef } from "./hermes-models.js";
 import { hermesGatewayThinkingOptions } from "./gateway-session-transport.js";
 import type { HarnessUsageStatisticsCapability } from "@codexhost/harness-adapter";
 import { createHermesUsageStatistics } from "./usage-statistics.js";
@@ -47,6 +48,7 @@ export interface HermesAdapterOptions {
 const IMPORT_TIMEOUT_MS = 20_000;
 
 export class HermesAdapter implements HarnessAdapter {
+  readonly normalizeStoredModelRef = normalizeStoredHermesModelRef;
   readonly commandCatalog = HERMES_COMMAND_CATALOG;
   readonly liveCommandCatalog = true;
   readonly harnessId: HarnessId = hermesHarnessId;

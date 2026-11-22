@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { harnessModelCatalogSchema } from "@codexhost/shared-contracts";
+import { harnessModelCatalogSchema, harnessModelRefSchema } from "@codexhost/shared-contracts";
 import { modelRef } from "@codexhost/adapter-codebuddy";
 import * as command from "../src/command.js";
 import {
@@ -10,6 +10,7 @@ import {
   mergeWorkBuddyProductModels,
   parseWorkBuddyProductModels,
 } from "../src/product-models.js";
+import { WorkBuddyAdapter } from "../src/workbuddy-adapter.js";
 
 describe("WorkBuddy product Model metadata", () => {
   it("loads bundled product models with credential preload arguments", async () => {
@@ -92,9 +93,13 @@ describe("WorkBuddy product Model metadata", () => {
       defaultModel: modelRef("auto"),
       models: [
         { ref: modelRef("auto"), label: "Auto" },
-        { ref: modelRef("glm-5.2"), label: "GLM-5.2 · 0.79x" },
-        { ref: modelRef("hy3"), label: "Hy3 · 0.00x" },
+        { ref: { id: "glm-5.2" }, label: "GLM-5.2 · 0.79x" },
+        { ref: { id: "hy3" }, label: "Hy3 · 0.00x" },
       ],
+    });
+    const saved = harnessModelRefSchema.parse({ id: "cb.Z2xtLTUuMg" });
+    expect(new WorkBuddyAdapter().normalizeStoredModelRef(saved, merged)).toEqual({
+      id: "glm-5.2",
     });
   });
 });

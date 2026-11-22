@@ -98,6 +98,14 @@ import {
   threadOwnershipListResultSchema,
   threadUsageInspectionParamsSchema,
   threadUsageInspectionSchema,
+  RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD,
+  RELEASE_ANNOUNCEMENT_GET_METHOD,
+  releaseAnnouncementAcknowledgeParamsSchema,
+  releaseAnnouncementGetParamsSchema,
+  releaseAnnouncementGetResultSchema,
+  type ReleaseAnnouncementAcknowledgeParams,
+  type ReleaseAnnouncementGetParams,
+  type ReleaseAnnouncementGetResult,
   updateCheckResultSchema,
   updateEmptyParamsSchema,
   updateStartResultSchema,
@@ -320,6 +328,10 @@ export interface RendererModelClient extends Partial<RendererSessionImportClient
   checkUpdate(): Promise<UpdateCheckResult | null>;
   startUpdate(): Promise<UpdateStartResult>;
   readUpdateStatus(): Promise<UpdateStatusResult>;
+  getReleaseAnnouncement?(
+    input?: ReleaseAnnouncementGetParams,
+  ): Promise<ReleaseAnnouncementGetResult | null>;
+  acknowledgeReleaseAnnouncement?(input: ReleaseAnnouncementAcknowledgeParams): Promise<void>;
   openConsole?(): Promise<ConsoleOpenResult>;
   openWeb?(): Promise<WebOpenResult>;
   inspectCodexAccountUsage?(input: CodexAccountUsageParams): Promise<CodexAccountUsageResult>;
@@ -866,6 +878,19 @@ export function createRendererModelClient(
         updateEmptyParamsSchema.parse({}),
       );
       return updateStatusResultSchema.parse(result);
+    },
+    async getReleaseAnnouncement(
+      input: ReleaseAnnouncementGetParams = {},
+    ): Promise<ReleaseAnnouncementGetResult | null> {
+      const params = releaseAnnouncementGetParamsSchema.parse(input);
+      const result = await manager.sendRequest(RELEASE_ANNOUNCEMENT_GET_METHOD, params);
+      return releaseAnnouncementGetResultSchema.parse(result);
+    },
+    async acknowledgeReleaseAnnouncement(
+      input: ReleaseAnnouncementAcknowledgeParams,
+    ): Promise<void> {
+      const params = releaseAnnouncementAcknowledgeParamsSchema.parse(input);
+      await manager.sendRequest(RELEASE_ANNOUNCEMENT_ACKNOWLEDGE_METHOD, params);
     },
     async openWeb(): Promise<WebOpenResult> {
       const result = await manager.sendRequest(WEB_OPEN_METHOD, webOpenParamsSchema.parse({}));

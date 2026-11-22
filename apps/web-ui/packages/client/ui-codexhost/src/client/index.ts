@@ -62,6 +62,7 @@ import { PluginsSettingsEntry } from "./PluginsSettingsEntry.tsx";
 import { createPluginsNavigation, PLUGINS_PANEL_ID } from "./plugins-navigation.ts";
 import { webExtensionAppearance } from "./native-extensions/surface.ts";
 import { watchAuthentication } from "./auth-watch.ts";
+import { watchReleaseAnnouncement } from "./release-announcement.ts";
 import { ensureServiceWorker, resubmitNotifications } from "./notifications.ts";
 import { NotificationsRow } from "./NotificationsRow.tsx";
 import type {} from "@deepseek-ai/dsh-client-web";
@@ -546,6 +547,15 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(
     () => watchAuthentication((ctx.get("connection") as ConnectionHandle).state),
     "ui-codexhost: enter sign-in when the token is revoked",
+  );
+  ctx.effect(
+    () =>
+      watchReleaseAnnouncement({
+        connection: ctx.get("connection") as ConnectionHandle,
+        locale,
+        colorScheme,
+      }),
+    "ui-codexhost: release announcement",
   );
   const openFromUrl = (): void => {
     const url = new URL(window.location.href);

@@ -73,9 +73,11 @@ fn login_environment_finds_tools_despite_a_system_node_and_noisy_startup() {
     std::fs::create_dir_all(&system).unwrap();
     std::fs::create_dir_all(&selected).unwrap();
     executable(&system.join("node"), "#!/bin/sh\nexit 1\n");
-    for tool in ["node", "npm", "codex", "codexhost"] {
+    for tool in ["codex", "codexhost"] {
         executable(&selected.join(tool), "#!/bin/sh\nexit 0\n");
     }
+    executable(&selected.join("node"), "#!/bin/sh\necho cli-darwin-arm64\n");
+    executable(&selected.join("npm"), "#!/bin/sh\necho 1.2.3\n");
     // A shell fixture loads a version manager only when both login and interactive flags
     // are present. Its output exceeds a pipe buffer and contains non-UTF8 bytes.
     let shell = root.join("user shell");
@@ -481,12 +483,9 @@ fn maintenance_finds_tools_beside_the_recorded_node() {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::create_dir_all(root.join(".codexhost/remote")).unwrap();
     std::fs::write(root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
-    for tool in ["node", "npm", "codexhost"] {
-        use std::os::unix::fs::PermissionsExt;
-        let path = bin.join(tool);
-        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
+    executable(&bin.join("node"), "#!/bin/sh\necho cli-linux-arm64\n");
+    executable(&bin.join("npm"), "#!/bin/sh\necho 1.2.3\n");
+    executable(&bin.join("codexhost"), "#!/bin/sh\nexit 0\n");
     let mut r = request();
     for (action, version) in [("update", Some("1.2.3")), ("repair", None)] {
         r.action = action.into();
@@ -547,6 +546,67 @@ fn install_refuses_to_replace_existing_remote_services() {
     assert!(!value.contains("remote stop"));
 }
 #[cfg(unix)]
+const RELEASE_MOCKS: &str = r#"
+node(){ case "$2" in *process.platform*) echo cli-darwin-arm64;; esac; }
+codex(){ :; }
+codexhost(){ echo "$*" >> "$HOME/calls"; }
+npm(){
+  echo "$*" >> "$HOME/calls"
+  case "$1" in
+    view)
+      if [ "$2" = "${FAIL_SPEC:-}" ]; then
+        printf '%s\n' "$VIEW_RESULT"
+        return "$VIEW_CODE"
+      fi
+      echo "${2##*@}";;
+    root) echo "$HOME/npm root";;
+  esac
+}
+"#;
+
+#[cfg(unix)]
+#[test]
+fn ssh_install_and_update_require_both_exact_published_versions_before_mutating() {
+    let root = std::env::temp_dir().join(format!("codexhost-ssh-view-{}", std::process::id()));
+    for action in ["install", "update"] {
+        let home = root.join(action);
+        std::fs::create_dir_all(&home).unwrap();
+        if action == "update" {
+            std::fs::create_dir_all(home.join(".codexhost/remote")).unwrap();
+            std::fs::write(home.join(".codexhost/remote/manifest.json"), "{}").unwrap();
+        }
+        let mut request = request();
+        request.action = action.into();
+        request.version = Some("1.2.3".into());
+        let script = format!("{RELEASE_MOCKS}{}", script(&request).unwrap());
+        for (spec, result, code) in [
+            ("@codexhost/cli@1.2.3", "", "0"),
+            ("@codexhost/cli-darwin-arm64@1.2.3", "", "1"),
+            ("@codexhost/cli-darwin-arm64@1.2.3", "1.2.2", "0"),
+            ("@codexhost/cli-darwin-arm64@1.2.3", "1.2.3", "1"),
+        ] {
+            std::fs::write(home.join("calls"), "").unwrap();
+            let output = Command::new("/bin/sh")
+                .args(["-c", &script])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &home)
+                .env("FAIL_SPEC", spec)
+                .env("VIEW_RESULT", result)
+                .env("VIEW_CODE", code)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(53), "{action}: {spec}");
+            let calls = std::fs::read_to_string(home.join("calls")).unwrap();
+            assert!(calls.contains(&format!(
+                "view {spec} version --fetch-retries=0 --fetch-timeout=30000"
+            )));
+            assert!(calls.lines().all(|call| call.starts_with("view ")));
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[cfg(unix)]
 #[test]
 fn executes_initial_setup_and_refuses_an_existing_installation() {
     let root = std::env::temp_dir().join(format!(
@@ -561,8 +621,7 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     let mut r = request();
     r.action = "install".into();
     r.version = Some("1.2.3".into());
-    let mocks = r#"node(){ :; }; npm(){ printf '%s\n' "$*" >> "$HOME/calls"; }; codex(){ :; }; codexhost(){ printf '%s\n' "$*" >> "$HOME/calls"; }; "#;
-    let value = format!("{mocks}{}", script(&r).unwrap());
+    let value = format!("{RELEASE_MOCKS}{}", script(&r).unwrap());
     let first = Command::new("sh")
         .args(["-c", &value])
         .env("HOME", &root)
@@ -572,7 +631,11 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     let calls = std::fs::read_to_string(root.join("calls")).unwrap();
     assert_eq!(
         calls,
-        "install -g @codexhost/cli@1.2.3\nremote install\nremote start\n"
+        concat!(
+            "view @codexhost/cli@1.2.3 version --fetch-retries=0 --fetch-timeout=30000\n",
+            "view @codexhost/cli-darwin-arm64@1.2.3 version --fetch-retries=0 --fetch-timeout=30000\n",
+            "install -g --include=optional @codexhost/cli@1.2.3\nremote install\nremote start\n",
+        )
     );
     std::fs::create_dir_all(root.join(".codexhost/remote")).unwrap();
     std::fs::write(root.join(".codexhost/remote/manifest.json"), "{}").unwrap();
@@ -586,7 +649,8 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
     assert!(!root.join(".codexhost/ssh-setup.lock").exists());
     r.action = "update".into();
     r.version = Some("1.2.4".into());
-    let update = format!("{mocks}{}", script(&r).unwrap());
+    std::fs::create_dir_all(root.join("npm root/@codexhost/cli-darwin-arm64")).unwrap();
+    let update = format!("{RELEASE_MOCKS}{}", script(&r).unwrap());
     let updated = Command::new("sh")
         .args(["-c", &update])
         .env("HOME", &root)
@@ -594,13 +658,13 @@ fn executes_initial_setup_and_refuses_an_existing_installation() {
         .unwrap();
     assert!(updated.status.success());
     let calls = format!(
-        "{calls}view @codexhost/cli@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nremote stop\ninstall -g @codexhost/cli@1.2.4\nremote install\nremote stop\nremote start\n"
+        "{calls}view @codexhost/cli@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nview @codexhost/cli-darwin-arm64@1.2.4 version --fetch-retries=0 --fetch-timeout=30000\nroot --global\nremote stop\ninstall -g --include=optional @codexhost/cli@1.2.4 @codexhost/cli-darwin-arm64@1.2.4\nremote install\nremote stop\nremote start\n"
     );
     assert_eq!(std::fs::read_to_string(root.join("calls")).unwrap(), calls);
     assert!(!root.join(".codexhost/ssh-setup.lock").exists());
     r.action = "repair".into();
     r.version = None;
-    let repair = format!("{mocks}{}", script(&r).unwrap());
+    let repair = format!("{RELEASE_MOCKS}{}", script(&r).unwrap());
     let repaired = Command::new("sh")
         .args(["-c", &repair])
         .env("HOME", &root)

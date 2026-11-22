@@ -98,7 +98,7 @@ Each computer shows its own available actions. Operations run only when you clic
 
 - **Install and connect** installs the remote service, then connects.
 - **Match local version** appears for older remote versions. Click to update and restart immediately.
-- **Update remote service** appears when the remote end is too old to report its version. Click to install the local version over SSH, then reconfigure and start the remote service.
+- **Update remote service** appears when an installed remote service is damaged, fails to connect, or cannot report its version (including older releases). Click to install the local version over SSH, then reconfigure and start the remote service.
 - **Restart and connect** appears when a newer build is installed but an older build is running. Click to restart immediately.
 - **Reconnect** appears when a connection fails. It disconnects and connects again right away.
 - **Repair remote service** appears only when remote status is unavailable, the connection failed, or an update failed. It stops the service, removes its connection setup, configures it again and starts it. It does not uninstall or update the codexhost package.

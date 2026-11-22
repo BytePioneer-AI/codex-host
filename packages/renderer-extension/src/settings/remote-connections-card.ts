@@ -340,12 +340,8 @@ export function renderRemoteCard(
     // Without an installed service the connection reaches stock Codex, which also rejects the
     // version query; that is a missing installation, not an outdated one.
     const outdated = !remote && !!row.remoteIssue?.outdated && row.installation !== "not-installed";
-    if (outdated) {
-      // Repairing or rechecking cannot help a service that predates version management.
-      const upgrade = command("upgrade", t("更新远程服务", "Update remote service"), true);
-      upgrade.disabled ||= !remoteInstallVersion(local);
-      serviceActions.append(upgrade);
-    } else if (remoteTroubled(row)) {
+    const troubled = remoteTroubled(row);
+    if (!outdated && troubled) {
       if (row.installation !== "not-installed") {
         const repair = command("repair", t("修复远程服务", "Repair remote service"));
         repair.title = t(
@@ -355,6 +351,18 @@ export function renderRemoteCard(
         serviceActions.append(repair);
       }
       if (!remote) serviceActions.append(command("recheck", t("重新检测", "Check again")));
+    }
+    const needsReinstall =
+      row.installation !== "unknown" &&
+      row.installation !== "not-installed" &&
+      !remoteBusy(remote) &&
+      (remote
+        ? !remote.updateSupported && remote.installedVersion === null
+        : row.installation === "installed" && troubled);
+    if (outdated || needsReinstall) {
+      const upgrade = command("upgrade", t("更新远程服务", "Update remote service"), true);
+      upgrade.disabled ||= !remoteInstallVersion(local);
+      serviceActions.append(upgrade);
     }
     const target = remote ? remoteMaintenanceTarget(local, remote) : null;
     if (row.installation === "not-installed") {

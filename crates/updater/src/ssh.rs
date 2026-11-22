@@ -35,6 +35,17 @@ fn release_version(request: &Request) -> Result<&str, Box<dyn Error>> {
     }
     Ok(version)
 }
+fn release_preflight(version: &str) -> String {
+    format!(
+        r#"CH_PLAT=$(node -e 'console.log("cli-" + process.platform + "-" + process.arch)') || exit 44;
+case "$CH_PLAT" in cli-darwin-arm64|cli-darwin-x64|cli-linux-arm64|cli-linux-x64) ;; *) exit 44;; esac;
+for CH_SPEC in "@codexhost/cli@{version}" "@codexhost/$CH_PLAT@{version}"; do
+  CH_VERSION=$(npm view "$CH_SPEC" version --fetch-retries=0 --fetch-timeout=30000 2>/dev/null) || exit 53;
+  [ "$CH_VERSION" = "{version}" ] || exit 53;
+done;
+"#
+    )
+}
 fn script(request: &Request) -> Result<String, Box<dyn Error>> {
     if request.hostname.is_empty()
         || request.hostname.starts_with('-')
@@ -66,8 +77,16 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         "inspect" => Ok(probe.into()),
         "install" => {
             let version = release_version(request)?;
+            let preflight = release_preflight(version);
             Ok(format!(
-                "{node}set -e; {lock}[ ! -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 43; case $(uname -s) in Darwin|Linux) ;; *) exit 44;; esac; command -v npm >/dev/null 2>&1 || exit 56; command -v codex >/dev/null 2>&1 || exit 57; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || exit 46; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
+                r#"{node}set -e; {lock}
+[ ! -f "$HOME/.codexhost/remote/manifest.json" ] || exit 43
+command -v npm >/dev/null 2>&1 || exit 56
+command -v codex >/dev/null 2>&1 || exit 57
+{preflight}npm install -g --include=optional @codexhost/cli@{version} >/dev/null 2>&1 || exit 46
+codexhost remote install >/dev/null 2>&1 || exit 47
+codexhost remote start >/dev/null 2>&1 || {started} || exit 48
+printf '\n__CODEXHOST_SSH_STATE__=installed\n'"#
             ))
         }
         // For services too old to update themselves. A newer CLI refuses to stop an installation
@@ -75,8 +94,23 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); pr
         // the new CLI migrates the installation before stopping whatever is still running.
         "update" => {
             let version = release_version(request)?;
+            let preflight = release_preflight(version);
             Ok(format!(
-                "{node}set -e; {lock}[ -f \"$HOME/.codexhost/remote/manifest.json\" ] || exit 52; command -v npm >/dev/null 2>&1 || exit 56; npm view @codexhost/cli@{version} version --fetch-retries=0 --fetch-timeout=30000 >/dev/null 2>&1 || exit 53; if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi; npm install -g @codexhost/cli@{version} >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}; command -v codexhost >/dev/null || exit 54; codexhost remote install >/dev/null 2>&1 || exit 47; codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50; codexhost remote start >/dev/null 2>&1 || {started} || exit 48; printf '\\n__CODEXHOST_SSH_STATE__=installed\\n'"
+                r#"{node}set -e; {lock}
+[ -f "$HOME/.codexhost/remote/manifest.json" ] || exit 52
+command -v npm >/dev/null 2>&1 || exit 56
+{preflight}set -- @codexhost/cli@{version}
+CH_ROOT=$(npm root --global 2>/dev/null || true)
+if [ -n "$CH_ROOT" ] && [ -d "$CH_ROOT/@codexhost/$CH_PLAT" ]; then
+  set -- "$@" "@codexhost/$CH_PLAT@{version}"
+fi
+if command -v codexhost >/dev/null; then codexhost remote stop >/dev/null 2>&1 || true; fi
+npm install -g --include=optional "$@" >/dev/null 2>&1 || {{ codexhost remote start >/dev/null 2>&1 || true; exit 46; }}
+command -v codexhost >/dev/null || exit 54
+codexhost remote install >/dev/null 2>&1 || exit 47
+codexhost remote stop >/dev/null 2>&1 || {stock} || exit 50
+codexhost remote start >/dev/null 2>&1 || {started} || exit 48
+printf '\n__CODEXHOST_SSH_STATE__=installed\n'"#
             ))
         }
         // A damaged installation is exactly what the CLI refuses to stop, so the first stop is

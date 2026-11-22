@@ -453,6 +453,7 @@ export function createRemoteConnectionsPage(
         const reconnect = async (): Promise<void> => {
           installations.delete(hostId);
           inspectFailures.delete(hostId);
+          if (connection.autoConnect) await setConnected(false);
           await setConnected(true);
         };
         switch (action) {

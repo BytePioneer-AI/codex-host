@@ -294,3 +294,24 @@ it("performs a fresh manual inspection after an in-flight check finishes", async
   expect(b.control.setup).toHaveBeenCalledTimes(2);
   dispose?.();
 });
+
+it.each([true, false])("reconnects after SSH upgrade with auto-connect %s", async (autoConnect) => {
+  const b = setup();
+  const host = { ...connection("host"), autoConnect };
+  b.control.ssh.list.mockResolvedValue([host]);
+  const dispose = b.mount();
+  await settle();
+  ui.actions.get("host")?.("upgrade");
+  await settle();
+  expect(b.control.setup).toHaveBeenCalledWith(host, "update", "0.13.2");
+  const signal = b.controller.signal;
+  expect(b.control.ssh.connect.mock.calls).toEqual(
+    autoConnect
+      ? [
+          ["host", false, signal],
+          ["host", true, signal],
+        ]
+      : [["host", true, signal]],
+  );
+  dispose?.();
+});

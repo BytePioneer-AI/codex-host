@@ -1,0 +1,7 @@
+{
+  "identifier": "embedded-pages",
+  "description": "Launcher controls for the bundled onboarding and loading pages; no remote origin has IPC permissions.",
+  "webviews": ["main"],
+  "local": true,
+  "permissions": ["allow-choose-surface", "allow-retry", "allow-open-console", "allow-get-state"]
+}

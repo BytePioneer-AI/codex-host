@@ -9,6 +9,7 @@ const EXECUTABLES: &[&str] = &[
     "bin/codexhost-start.exe",
     "runtime/node.exe",
     "libexec/codexhost-shim.exe",
+    "libexec/codexhost-shell.exe",
     "libexec/codexhost-node-repl.exe",
     "libexec/codexhost-updater.exe",
 ];
@@ -139,6 +140,13 @@ mod tests {
             installation_executables(&fixture.0.join("target")).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn includes_the_optional_desktop_shell_as_a_shutdown_target() {
+        let fixture = Fixture::new();
+        let shell = fixture.file("libexec/codexhost-shell.exe");
+        assert_eq!(installation_executables(&fixture.0).unwrap(), vec![shell]);
     }
 
     #[test]

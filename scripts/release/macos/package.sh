@@ -78,6 +78,11 @@ chmod 755 \
   "$RESOURCES/libexec/codexhost-updater" \
   "$RESOURCES/runtime/node"
 
+# The libexec copy includes the desktop shell when the payload provides it.
+if [[ -f "$PAYLOAD_ROOT/libexec/codexhost-shell" ]]; then
+  chmod 755 "$RESOURCES/libexec/codexhost-shell"
+fi
+
 mkdir -p "$ASSETS_DIR"
 node "$(cd "$(dirname "$0")" && pwd)/assets.mjs" --output "$ASSETS_DIR"
 mkdir -p "$ASSETS_DIR/codexhost.iconset"
@@ -129,6 +134,9 @@ PLIST
 /usr/bin/codesign --force --sign - "$RESOURCES/runtime/node"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shim"
 /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-updater"
+if [[ -f "$RESOURCES/libexec/codexhost-shell" ]]; then
+  /usr/bin/codesign --force --sign - "$RESOURCES/libexec/codexhost-shell"
+fi
 /usr/bin/codesign --force --sign - "$CONTENTS/MacOS/codexhost"
 /usr/bin/codesign --force --sign - "$APP_PATH"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"

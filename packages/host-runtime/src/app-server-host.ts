@@ -898,6 +898,8 @@ export class AppServerHost {
   #subagentThreadStatuses = new Map<string, "active" | "idle">();
   #runningSubagentsByParent = new Map<string, Set<string>>();
   #pendingExternalCommandRequests = new Set<string>();
+  /** External Threads whose `thread/started` already reached the connected clients. */
+  readonly #announcedExternalThreadIds = new Set<string>();
   readonly #externalQueue = new ExternalThreadQueue();
   readonly #queuedTurnStarts = new Map<
     string,
@@ -1275,6 +1277,7 @@ export class AppServerHost {
       outputFailed: (thread) => this.#externalRuntime.idleRelease.outputFailed(thread),
       submitPrewarm: (thread) => this.#externalRuntime.submitPrewarm(thread),
       notifyExternalThreadStarted: (thread) => this.#notifyExternalThreadStarted(thread),
+      ensureExternalThreadAnnounced: (thread) => this.#ensureExternalThreadAnnounced(thread),
       persistTerminalIdentity: (thread, event) =>
         this.#externalRuntime.persistTerminalIdentity(thread, event),
       retainFailedTurn: (...args) => this.#externalRuntime.retainFailedTurn(...args),
@@ -5180,11 +5183,23 @@ export class AppServerHost {
   }
 
   async #notifyExternalThreadStarted(thread: JsonObject): Promise<void> {
+    if (typeof thread.id === "string") this.#announcedExternalThreadIds.add(thread.id);
     await this.#writer.json({
       method: "thread/started",
       emittedAtMs: Date.now(),
       params: { thread: { ...thread, turns: [] } },
     });
+  }
+
+  /**
+   * Announces an External Thread once before its Turn events flow. Threads with a
+   * deferred Native identity (for example a prewarm draft adopted by the first
+   * `turn/start`) are otherwise invisible to Desktop, which silently drops every
+   * `turn/started`/`turn/completed` for the unknown conversation.
+   */
+  async #ensureExternalThreadAnnounced(thread: ExternalThread): Promise<void> {
+    if (this.#announcedExternalThreadIds.has(thread.id)) return;
+    await this.#notifyExternalThreadStarted(thread.thread);
   }
 
   async #revertExternalThread(
@@ -6525,6 +6540,7 @@ export class AppServerHost {
       const threadId = thread.id;
       const turnId = hostTurnIdSchema.parse(turn.id);
       const items = Array.isArray(turn.items) ? turn.items : [];
+      await this.#ensureExternalThreadAnnounced(thread);
       await this.#writer.json({
         method: "turn/started",
         params: {

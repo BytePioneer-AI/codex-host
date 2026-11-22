@@ -69,5 +69,4 @@
     <string name="drawer_title">Switch computer</string>
     <string name="drawer_active_badge">Active</string>
     <string name="drawer_all_hosts">All computers</string>
-    <string name="drawer_handle_desc">Open computer switcher</string>
 </resources>

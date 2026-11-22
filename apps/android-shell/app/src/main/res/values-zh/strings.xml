@@ -69,5 +69,4 @@
     <string name="drawer_title">切换电脑</string>
     <string name="drawer_active_badge">当前</string>
     <string name="drawer_all_hosts">全部电脑列表</string>
-    <string name="drawer_handle_desc">打开电脑切换菜单</string>
 </resources>

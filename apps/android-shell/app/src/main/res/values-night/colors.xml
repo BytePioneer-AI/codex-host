@@ -30,8 +30,6 @@
     <color name="icon_tile_bg">#F4F6F9</color>
     <color name="scanner_scrim">#B8080A0E</color>
     <color name="scanner_frame">#27BE99</color>
-    <color name="edge_handle_fill">#66F5F6F8</color>
-    <color name="edge_handle_stroke">#26FFFFFF</color>
 
     <color name="status_connected">#27BE99</color>
     <color name="status_connecting">#E8A838</color>

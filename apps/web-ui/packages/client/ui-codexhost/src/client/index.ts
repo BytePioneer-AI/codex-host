@@ -71,6 +71,7 @@ import { WallpaperRow, type WallpaperFace } from "./WallpaperRow.tsx";
 import { ImportPage, type ImportPageFace } from "./ImportPage.tsx";
 import { HostSettingsSection, type HostSettingsSectionFace } from "./HostSettingsSection.tsx";
 import { SettingsLauncher, type SettingsLauncherFace } from "./SettingsLauncher.tsx";
+import { AndroidHostSwitcherAction } from "./AndroidHostSwitcherAction.tsx";
 import type {} from "@deepseek-ai/dsh-client-ui-theme/client";
 import { en, zh, type ImportLocaleKey } from "./locales.ts";
 
@@ -417,6 +418,17 @@ export function apply(ctx: ClientContext): void {
         locale: NS,
       },
       NotificationsRow,
+    ),
+  );
+  ctx.slots.inject("sidebar.footer.action", () =>
+    ctx.slots.register(
+      {
+        name: "sidebar.footer.action",
+        id: "codexhost-android-host-switcher",
+        order: 10,
+        locale: NS,
+      },
+      AndroidHostSwitcherAction,
     ),
   );
 

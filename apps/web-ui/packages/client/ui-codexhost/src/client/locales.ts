@@ -33,6 +33,7 @@ export const en = {
   "discovery.failed": "Native command catalog unavailable:",
 
   remoteAccess: "Remote access",
+  "android.switchHost": "Switch computer",
   "settings.open": "Settings",
   "settings.updateAvailable": "Settings · A new version is available",
   "settings.extensions": "Plugins",
@@ -727,6 +728,7 @@ export const zh: Record<ImportLocaleKey, string> = {
   "discovery.failed": "原生命令目录不可用：",
 
   remoteAccess: "远程访问",
+  "android.switchHost": "切换电脑",
   "settings.open": "设置",
   "settings.updateAvailable": "设置 · 有新版本可用",
   "settings.extensions": "插件",

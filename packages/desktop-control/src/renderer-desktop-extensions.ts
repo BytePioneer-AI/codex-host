@@ -138,7 +138,7 @@ export class RendererDesktopExtensions {
   #target: Target | undefined;
   #closed = false;
   #queue: Promise<void> = Promise.resolve();
-  #pendingScan: Promise<void> | undefined;
+  #queuedScan: Promise<void> | undefined;
   #pendingPoll = false;
   #lastEnsure = 0;
   constructor(
@@ -204,25 +204,19 @@ export class RendererDesktopExtensions {
     if (this.#closed) return;
     clearTimeout(this.#debounce);
     this.#debounce = setTimeout(() => {
-      // If discovery is already in flight it may have read the pre-change generation.
-      void (this.#pendingScan ?? Promise.resolve()).then(() => {
-        if (!this.#closed) void this.refresh();
-      });
+      void this.refresh();
     }, DEBOUNCE_MS);
     this.#debounce.unref();
   }
 
   refresh(): Promise<void> {
-    if (this.#pendingScan) return this.#pendingScan;
-    const promise = this.#enqueue(async () => {
+    if (this.#closed) return Promise.resolve();
+    // Share only a queued scan: a running one may already have read the old generation.
+    return (this.#queuedScan ??= this.#enqueue(async () => {
+      this.#queuedScan = undefined;
       const target = this.#target;
       if (target) await this.#reconcile(target);
-    });
-    this.#pendingScan = promise;
-    void promise.finally(() => {
-      if (this.#pendingScan === promise) this.#pendingScan = undefined;
-    });
-    return promise;
+    }));
   }
 
   close(): void {

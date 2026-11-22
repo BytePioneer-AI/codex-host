@@ -32,32 +32,92 @@ const githubDownload = (url: URL) =>
 let cache: { result: HostExtensionsCatalogResult; expires: number } | undefined;
 let pending: Promise<HostExtensionsCatalogResult> | undefined;
 
-async function raceCatalog(): Promise<HostExtensionsCatalogResult> {
-  const controller = new AbortController();
+const PRIMARY_GRACE_MS = 1_500;
+const PRIMARY_FORCE_REFRESH_GRACE_MS = 3_000;
+
+function catalogGeneratedAtMs(result: HostExtensionsCatalogResult): number {
+  const parsed = Date.parse(result.generatedAt);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function pickFresherCatalog(
+  primary: HostExtensionsCatalogResult,
+  mirror: HostExtensionsCatalogResult,
+): HostExtensionsCatalogResult {
+  return catalogGeneratedAtMs(mirror) > catalogGeneratedAtMs(primary) ? mirror : primary;
+}
+
+async function fetchCatalogFrom(
+  catalogUrl: string,
+  signal: AbortSignal,
+  forceRefresh: boolean,
+): Promise<HostExtensionsCatalogResult> {
+  const bytes = await downloadExtensionBytes(
+    catalogUrl,
+    2 * 1024 * 1024,
+    {
+      accept: "application/json",
+      ...(forceRefresh ? { "cache-control": "no-cache" } : {}),
+    },
+    {
+      signal,
+      allowUrl: (url) => url.origin === new URL(catalogUrl).origin && httpsDownload(url),
+    },
+  );
+  return {
+    ...hostExtensionCatalogSchema.parse(JSON.parse(utf8.decode(bytes))),
+    catalogUrl,
+    fetchedAt: new Date().toISOString(),
+    cached: false,
+  };
+}
+
+async function raceCatalog(forceRefresh: boolean): Promise<HostExtensionsCatalogResult> {
+  const primaryController = new AbortController();
+  const mirrorController = new AbortController();
+  const primaryPromise = fetchCatalogFrom(
+    HOST_EXTENSION_CATALOG_URL,
+    primaryController.signal,
+    forceRefresh,
+  );
+  const mirrorPromise = fetchCatalogFrom(
+    HOST_EXTENSION_CATALOG_MIRROR_URL,
+    mirrorController.signal,
+    forceRefresh,
+  );
+  // Prevent unhandled rejection when one branch wins before the other settles.
+  primaryPromise.catch(() => undefined);
+  mirrorPromise.catch(() => undefined);
+
   try {
-    return await Promise.any(
-      [HOST_EXTENSION_CATALOG_URL, HOST_EXTENSION_CATALOG_MIRROR_URL].map(async (catalogUrl) => {
-        const bytes = await downloadExtensionBytes(
-          catalogUrl,
-          2 * 1024 * 1024,
-          { accept: "application/json" },
-          {
-            signal: controller.signal,
-            allowUrl: (url) => url.origin === new URL(catalogUrl).origin && httpsDownload(url),
-          },
-        );
-        return {
-          ...hostExtensionCatalogSchema.parse(JSON.parse(utf8.decode(bytes))),
-          catalogUrl,
-          fetchedAt: new Date().toISOString(),
-          cached: false,
-        };
+    const first = await Promise.any([
+      primaryPromise.then((result) => ({ source: "primary" as const, result })),
+      mirrorPromise.then((result) => ({ source: "mirror" as const, result })),
+    ]);
+    if (first.source === "primary") {
+      mirrorController.abort();
+      return first.result;
+    }
+    const graceMs = forceRefresh ? PRIMARY_FORCE_REFRESH_GRACE_MS : PRIMARY_GRACE_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const primaryWithinGrace = await Promise.race([
+      primaryPromise.catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), graceMs);
       }),
-    );
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+    if (primaryWithinGrace) {
+      return pickFresherCatalog(primaryWithinGrace, first.result);
+    }
+    primaryController.abort();
+    return first.result;
   } catch (cause) {
     throw new Error("Host extension catalog unavailable", { cause });
   } finally {
-    controller.abort();
+    primaryController.abort();
+    mirrorController.abort();
   }
 }
 
@@ -67,7 +127,7 @@ export async function fetchHostExtensionCatalog({
   if (!forceRefresh && cache && Date.now() < cache.expires)
     return { ...structuredClone(cache.result), cached: true };
   if (pending) return structuredClone(await pending);
-  const request = raceCatalog();
+  const request = raceCatalog(forceRefresh);
   pending = request;
   try {
     const result = await request;

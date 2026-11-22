@@ -117,7 +117,7 @@ export function ConnectionCard({
     ? tailscale.status === "not-serving"
     : direct && background !== undefined && !background.lan && selected !== undefined;
   const primaryMethods: Kind[] = [
-    ...(relay !== undefined ? (["relay"] as const) : []),
+    ...(relay !== undefined ? (["relay", "self-hosted-relay"] as const) : []),
     "lan",
     "tailscale-https",
   ];
@@ -129,10 +129,6 @@ export function ConnectionCard({
       kind !== "tailscale" &&
       addresses.some((entry) => entry.kind === kind),
   );
-  const advancedMethods: Kind[] = [
-    ...(relay !== undefined ? (["self-hosted-relay"] as const) : []),
-    ...extras,
-  ];
 
   const tailscaleChosen = method === "tailscale-https" || method === "tailscale";
   const hasTailscaleIp = addresses.some((entry) => entry.kind === "tailscale");
@@ -196,9 +192,10 @@ export function ConnectionCard({
             <span>{t(LABEL[kind])}</span>
             {active && <span className={css.activeBadge}>{t("connectDevices.relay.inUse")}</span>}
           </span>
-          {(kind === "lan" || kind === "tailscale-https" || kind === "relay") && (
-            <span className={css.meta}>{t(SUMMARY[kind])}</span>
-          )}
+          {(kind === "lan" ||
+            kind === "tailscale-https" ||
+            kind === "relay" ||
+            kind === "self-hosted-relay") && <span className={css.meta}>{t(SUMMARY[kind])}</span>}
         </span>
       </label>
     );
@@ -222,7 +219,6 @@ export function ConnectionCard({
             {active && <span className={css.activeBadge}>{t("connectDevices.relay.inUse")}</span>}
             <span className={css.routeAddress}>{routeHost(kind)}</span>
           </span>
-          {kind === "self-hosted-relay" && <span className={css.meta}>{t(SUMMARY[kind])}</span>}
         </span>
       </label>
     );
@@ -473,17 +469,11 @@ export function ConnectionCard({
           {method === "self-hosted-relay" && relay !== undefined && <SelfHostedRelayHelp t={t} />}
         </div>
       </div>
-      {advancedMethods.length > 0 && (
+      {extras.length > 0 && (
         <div className={css.moreMethods}>
-          <details className={css.other} open={advancedMethods.includes(method) ? true : undefined}>
-            <summary>
-              {t(
-                relay !== undefined
-                  ? "connectDevices.advancedMethods"
-                  : "connectDevices.otherMethods",
-              )}
-            </summary>
-            <div className={css.extraRoutes}>{advancedMethods.map(advancedOption)}</div>
+          <details className={css.other} open={extras.includes(method) ? true : undefined}>
+            <summary>{t("connectDevices.otherMethods")}</summary>
+            <div className={css.extraRoutes}>{extras.map(advancedOption)}</div>
           </details>
         </div>
       )}
